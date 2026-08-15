@@ -5045,6 +5045,7 @@ impl AppState {
             "capture.get" => self.capture_get(params),
             "capture.answer" => self.capture_answer(params),
             "capture.reroute" => self.capture_reroute(params),
+            "capture.cancel" => self.capture_cancel(params),
             "archive.list" => self.archive_list(params),
             "archived.list" => Ok(self.archived_list()),
             // Canonical Issue surface. The existing plan id and plan-store path
@@ -7374,24 +7375,68 @@ impl AppState {
 
     /// `capture.answer` — the user answers the router's question, and the
     /// router looks at the capture again with the answer in hand.
+    ///
+    /// The answer is either words they typed (`text`) or one of the options the
+    /// router offered (`option_id`, or `option_index` counting from the first
+    /// one offered). A tapped option reaches the router as words too: the label
+    /// the user saw and the destination it stood for.
     fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
-        let text = require_str(params, "text")?;
-        let text = text.trim();
-        if text.is_empty() {
-            return Err("capture.answer: text is empty — that answers nothing".to_string());
-        }
-        let answered = self
+        let capture = self
             .captures
             .get(&capture_id)
-            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?
-            .answered(text)?;
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        let answered = match chosen_option_id(capture, params)? {
+            Some(option_id) => capture.answered_with_option(&option_id)?,
+            None => {
+                let text = require_str(params, "text")?;
+                let text = text.trim();
+                if text.is_empty() {
+                    return Err("capture.answer: text is empty — that answers nothing".to_string());
+                }
+                capture.answered(text)?
+            }
+        };
         self.save_capture(answered)?;
         if let Err(error) = self.begin_routing(&capture_id) {
             eprintln!("capture {capture_id}: could not re-fire the router: {error}");
             self.mark_routing_failed(&capture_id);
         }
         self.capture_get(&json!({ "capture_id": capture_id }))
+    }
+
+    /// `capture.cancel` — the user abandons a capture rather than answering it.
+    ///
+    /// The counterpart of every question: a decision surface with no way out
+    /// leaves the user answering a question they have stopped caring about. The
+    /// router working on it is stopped, and the record goes — a capture nobody
+    /// wants routed is not a row anybody should have to look at again.
+    ///
+    /// Only while the capture is still its own presence. Once it became an
+    /// issue or a branch, that work is what there is to cancel, and it is
+    /// cancelled where it lives.
+    fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
+        let capture_id = require_str(params, "capture_id")?;
+        let capture = self
+            .captures
+            .get(&capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        if !capture.is_on_the_feed() {
+            return Err(format!(
+                "capture.cancel: this capture already became {}; cancel that instead",
+                capture
+                    .routing
+                    .as_ref()
+                    .map(|routing| routing.kind.as_str())
+                    .unwrap_or("work")
+            ));
+        }
+        self.abandon_router_session(&capture_id);
+        self.require_store()?
+            .delete_capture(&capture_id)
+            .map_err(|e| e.to_string())?;
+        self.captures.remove(&capture_id);
+        Ok(json!({ "capture_id": capture_id, "cancelled": true }))
     }
 
     /// `capture.reroute` — the user moves a capture the router got wrong.
@@ -7695,7 +7740,9 @@ impl AppState {
                 &instruction,
                 rationale,
             ),
-            BridgeAction::AskUser { question } => self.router_ask_user(capture_id, &question),
+            BridgeAction::AskUser { question, options } => {
+                self.router_ask_user(capture_id, &question, &options)
+            }
             coding_tool => Err(format!(
                 "{} is a coding agent's tool; this session routes captures",
                 coding_tool.tool_name()
@@ -7814,7 +7861,16 @@ impl AppState {
     /// The router asks the one question that would let it decide. The capture
     /// goes back to unrouted — a question is not a route — and the question is
     /// what the inbox entry says it needs.
-    fn router_ask_user(&mut self, capture_id: &str, question: &str) -> Result<Value, String> {
+    ///
+    /// The router may offer up to three concrete choices beside the question.
+    /// They are a shortcut through the answer, not a narrowing of it: typing an
+    /// answer, and abandoning the capture, are there whatever it offered.
+    fn router_ask_user(
+        &mut self,
+        capture_id: &str,
+        question: &str,
+        options: &[crate::capture::CaptureOptionDraft],
+    ) -> Result<Value, String> {
         let question = question.trim();
         if question.is_empty() {
             return Err("ask_user: the question is empty".to_string());
@@ -7826,13 +7882,13 @@ impl AppState {
         if capture.awaiting_answer() {
             return Err("you have already asked about this capture".to_string());
         }
+        let options = crate::capture::numbered_options(options)?;
         let asked = capture.asked(crate::capture::CaptureQuestion {
-            text: question.to_string(),
-            asked_at: now_rfc3339(),
-            answer: None,
+            options: options.clone(),
+            ..crate::capture::CaptureQuestion::new(question, now_rfc3339())
         });
         self.save_capture(asked)?;
-        Ok(json!({ "capture_id": capture_id, "asked": question }))
+        Ok(json!({ "capture_id": capture_id, "asked": question, "options": options }))
     }
 
     /// Whether a capture is still the router's to decide.
@@ -12895,6 +12951,34 @@ fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
 /// can never disagree about what the user said.
 fn capture_json(capture: &crate::capture::Capture) -> Value {
     serde_json::to_value(capture).expect("a capture always serializes")
+}
+
+/// Which of the router's options the user tapped, named either by id or by
+/// position — `None` when they typed an answer instead.
+///
+/// An id or an index that names nothing is refused rather than falling through
+/// to the typed answer: a tap that misses is a tap the user thinks landed.
+fn chosen_option_id(
+    capture: &crate::capture::Capture,
+    params: &Value,
+) -> Result<Option<String>, String> {
+    if let Some(option_id) = params
+        .get("option_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|option_id| !option_id.is_empty())
+    {
+        return Ok(Some(option_id.to_string()));
+    }
+    let Some(index) = params.get("option_index").and_then(Value::as_u64) else {
+        return Ok(None);
+    };
+    capture
+        .question
+        .as_ref()
+        .and_then(|question| question.option_at(index as usize))
+        .map(|option| Some(option.id.clone()))
+        .ok_or_else(|| format!("capture.answer: no option was offered at position {index}"))
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -31325,12 +31409,9 @@ mod tests {
         }
         assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
 
-        state.captures.get_mut(&capture_id).unwrap().question =
-            Some(crate::capture::CaptureQuestion {
-                text: "which project is this?".to_string(),
-                asked_at: now_rfc3339(),
-                answer: None,
-            });
+        state.captures.get_mut(&capture_id).unwrap().question = Some(
+            crate::capture::CaptureQuestion::new("which project is this?", now_rfc3339()),
+        );
         let asking = capture_rows(&mut state).remove(0);
         assert_eq!(asking["unread"], true);
         assert_eq!(asking["unread_reason"], "router_question");
@@ -31370,11 +31451,10 @@ mod tests {
         store.save_capture(&routed).unwrap();
         let mut asking =
             crate::capture::Capture::new("capture-asking", "do the thing", now_rfc3339());
-        asking.question = Some(crate::capture::CaptureQuestion {
-            text: "which project?".to_string(),
-            asked_at: now_rfc3339(),
-            answer: None,
-        });
+        asking.question = Some(crate::capture::CaptureQuestion::new(
+            "which project?",
+            now_rfc3339(),
+        ));
         store.save_capture(&asking).unwrap();
 
         let mut state = qa_state(&repo, dir.path());
@@ -31602,6 +31682,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -31614,6 +31695,279 @@ mod tests {
         let row = capture_rows(&mut state).remove(0);
         assert_eq!(row["unread"], true);
         assert_eq!(row["unread_reason"], "router_question");
+        assert_eq!(
+            row["question"]["options"],
+            json!([]),
+            "a question with no options is still a question"
+        );
+    }
+
+    /// The two choices a router thought of, offered beside the question — and
+    /// carried to every surface that shows the capture, because a choice the
+    /// client cannot see is a choice nobody can tap.
+    fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
+        state
+            .on_router_mcp_action(
+                capture_id,
+                BridgeAction::AskUser {
+                    question: "which project is this about?".to_string(),
+                    options: vec![
+                        crate::capture::CaptureOptionDraft {
+                            label: "File as an issue on Build".to_string(),
+                            project_id: Some("proj-build".to_string()),
+                            kind: Some(crate::capture::CaptureTarget::Issue),
+                            branch: None,
+                        },
+                        crate::capture::CaptureOptionDraft {
+                            label: "New branch on Do".to_string(),
+                            project_id: Some("proj-do".to_string()),
+                            kind: Some(crate::capture::CaptureTarget::Branch),
+                            branch: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+    }
+
+    /// The router's suggestions reach `capture.get`, `capture.list` and the
+    /// feed row, numbered and whole. Anything less and the decision surface has
+    /// a question with no buttons under it.
+    #[test]
+    fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+
+        let expected = json!([
+            {
+                "id": "option-1",
+                "label": "File as an issue on Build",
+                "project_id": "proj-build",
+                "kind": "issue",
+                "branch": Value::Null,
+            },
+            {
+                "id": "option-2",
+                "label": "New branch on Do",
+                "project_id": "proj-do",
+                "kind": "branch",
+                "branch": Value::Null,
+            },
+        ]);
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["question"]["options"], expected);
+        assert_eq!(record["question"]["chosen_option_id"], Value::Null);
+
+        let listed = state.handle(req("capture.list", json!({})));
+        assert_eq!(
+            listed["result"]["captures"][0]["question"]["options"],
+            expected
+        );
+
+        let row = capture_rows(&mut state).remove(0);
+        assert_eq!(row["question"]["options"], expected);
+
+        // And a fresh daemon over the same store still has the offer.
+        let mut rebooted = qa_state(&repo, dir.path());
+        assert_eq!(
+            capture_record(&mut rebooted, &capture_id)["question"]["options"],
+            expected
+        );
+    }
+
+    /// Tapping a choice answers the question in words the router can act on:
+    /// the label the user saw, and the destination it stood for.
+    #[test]
+    fn choosing_an_option_answers_the_router_in_its_own_terms() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+        state.pending_agent_turns.clear();
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "option_id": "option-2" }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        let question = &answered["result"]["question"];
+        assert_eq!(
+            question["answer"],
+            "New branch on Do — route this to project proj-do as a branch"
+        );
+        assert_eq!(question["chosen_option_id"], "option-2");
+        assert_eq!(
+            question["options"].as_array().unwrap().len(),
+            2,
+            "what the user was shown stays on the record"
+        );
+
+        let turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == capture_id)
+            .expect("the router is re-fired with the choice in hand");
+        assert!(turn.cold.contains("proj-do"), "{}", turn.cold);
+        assert!(turn.cold.contains("New branch on Do"), "{}", turn.cold);
+    }
+
+    /// A client that tracked positions rather than ids taps the same choice.
+    #[test]
+    fn an_option_can_be_chosen_by_position() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "option_index": 0 }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["question"]["chosen_option_id"], "option-1",
+            "position 0 is the first option offered"
+        );
+    }
+
+    /// The keyboard never goes away: a question that offered choices still
+    /// takes words, and words are not recorded as a tap.
+    #[test]
+    fn free_form_answers_a_question_that_offered_options() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "text": "neither, it is the relay" }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["question"]["answer"],
+            "neither, it is the relay"
+        );
+        assert_eq!(
+            answered["result"]["question"]["chosen_option_id"],
+            Value::Null
+        );
+    }
+
+    /// A tap that names nothing is refused rather than quietly read as an
+    /// answer of some other kind: the user believes the tap landed.
+    #[test]
+    fn an_option_nobody_offered_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        for chosen in [
+            json!({ "capture_id": capture_id, "option_id": "option-9" }),
+            json!({ "capture_id": capture_id, "option_index": 7 }),
+            json!({ "capture_id": capture_id, "option_id": "option-9", "text": "the relay" }),
+        ] {
+            let missed = state.handle(req("capture.answer", chosen.clone()));
+            assert_eq!(missed["ok"], false, "{chosen}: {missed:?}");
+        }
+        assert_eq!(
+            capture_record(&mut state, &capture_id)["question"]["answer"],
+            Value::Null
+        );
+    }
+
+    /// Four choices is a menu. The router is told so, and the question is not
+    /// asked with three of them and the fourth quietly dropped.
+    #[test]
+    fn a_router_offering_more_than_three_options_is_refused_the_question() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+
+        let too_many = state.on_router_mcp_action(
+            &capture_id,
+            BridgeAction::AskUser {
+                question: "which project is this about?".to_string(),
+                options: (1..=4)
+                    .map(|n| crate::capture::CaptureOptionDraft {
+                        label: format!("project {n}"),
+                        ..crate::capture::CaptureOptionDraft::default()
+                    })
+                    .collect(),
+            },
+        );
+        assert!(too_many.is_err(), "{too_many:?}");
+        assert_eq!(
+            capture_record(&mut state, &capture_id)["question"],
+            Value::Null,
+            "a question Build refused is a question nobody was asked"
+        );
+    }
+
+    /// The way out of a decision. A capture nobody wants routed stops the
+    /// router, leaves the feed, and takes its record with it.
+    #[test]
+    fn cancelling_a_capture_ends_the_routing_and_removes_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+
+        let cancelled = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        assert_eq!(cancelled["result"]["cancelled"], true);
+
+        assert!(!state.router_sessions.contains_key(&capture_id));
+        assert!(!scratch.exists(), "the router's scratch goes with it");
+        assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
+        assert_eq!(
+            state.handle(req("capture.list", json!({})))["result"]["captures"],
+            json!([])
+        );
+        assert_eq!(
+            Store::new(dir.path().join("store"))
+                .load_all_captures()
+                .unwrap(),
+            Vec::new(),
+            "and a reboot does not bring it back"
+        );
+
+        let again = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(again["ok"], false, "{again:?}");
+    }
+
+    /// Once a capture became work, that work is what there is to cancel. A
+    /// cancel here would drop the record that says where it went and leave the
+    /// issue behind it unexplained.
+    #[test]
+    fn a_capture_that_became_work_is_not_cancelled_from_here() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "ship it");
+        let project_id = state.projects[0].id.clone();
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id,
+                    goal: "ship it".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+
+        let refused = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(state.captures.contains_key(&capture_id));
     }
 
     /// The answer comes back and the router looks again — with the answer in
@@ -31628,6 +31982,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -31688,6 +32043,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();

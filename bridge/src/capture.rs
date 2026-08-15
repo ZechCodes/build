@@ -76,14 +76,168 @@ pub struct CaptureRouting {
     pub rationale: Option<String>,
 }
 
+/// How many options a router may offer beside its question. Three concrete
+/// choices is an offer; a fourth is a menu, and a menu is the friction capture
+/// exists to remove.
+pub const MAX_CAPTURE_OPTIONS: usize = 3;
+
+/// One concrete choice offered beside the router's question, as Build stores it.
+///
+/// The label is what the user taps. The route hint is the destination that
+/// label stood for, in the same terms a reroute names one — enough that the
+/// answer says where to go and not only that the user chose something.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureOption {
+    /// Stable within this question, and assigned here rather than by the
+    /// router: an id the user taps is worth something only if it names one
+    /// option and always the same one.
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub kind: Option<CaptureTarget>,
+    /// The branch a branch option continues, when the router named one.
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+impl CaptureOption {
+    /// What the router reads when the user taps this option: the label they
+    /// saw, and the destination it stood for spelled out in the terms the
+    /// router routes in. An option with no route hint is only what it says.
+    pub fn as_answer(&self) -> String {
+        match self.route_phrase() {
+            Some(phrase) => format!("{} — {phrase}", self.label),
+            None => self.label.clone(),
+        }
+    }
+
+    /// The destination clause of the answer, or `None` when this option is a
+    /// label and nothing more.
+    fn route_phrase(&self) -> Option<String> {
+        let mut phrase = match self.project_id.as_deref() {
+            Some(project_id) => format!("route this to project {project_id}"),
+            None if self.kind.is_none() => return None,
+            None => "route this".to_string(),
+        };
+        match self.kind {
+            Some(CaptureTarget::Issue) => phrase.push_str(" as an issue"),
+            Some(CaptureTarget::Branch) => phrase.push_str(" as a branch"),
+            None => {}
+        }
+        if let Some(branch) = &self.branch {
+            phrase.push_str(&format!(", on the branch {branch}"));
+        }
+        Some(phrase)
+    }
+}
+
+/// An option as the router offers it: everything but the id, which is Build's
+/// to give.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureOptionDraft {
+    pub label: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub kind: Option<CaptureTarget>,
+    #[serde(default)]
+    pub branch: Option<String>,
+}
+
+impl CaptureOptionDraft {
+    /// This draft as the `position`th option offered (1-based), with whitespace
+    /// off its text.
+    pub fn numbered(&self, position: usize) -> CaptureOption {
+        let trimmed = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let branch = trimmed(&self.branch);
+        CaptureOption {
+            id: format!("option-{position}"),
+            label: self.label.trim().to_string(),
+            project_id: trimmed(&self.project_id),
+            // A branch name says the option is a branch, so the router never
+            // has to say it twice.
+            kind: self.kind.or(branch.as_ref().map(|_| CaptureTarget::Branch)),
+            branch,
+        }
+    }
+}
+
+/// The router's offer, numbered and checked. Refused when there are too many,
+/// when one carries no label, or when one names a branch it could not be on.
+pub fn numbered_options(drafts: &[CaptureOptionDraft]) -> Result<Vec<CaptureOption>, String> {
+    if drafts.len() > MAX_CAPTURE_OPTIONS {
+        return Err(format!(
+            "at most {MAX_CAPTURE_OPTIONS} options can be offered beside a question; {} were",
+            drafts.len()
+        ));
+    }
+    drafts
+        .iter()
+        .enumerate()
+        .map(|(index, draft)| {
+            let option = draft.numbered(index + 1);
+            if option.label.is_empty() {
+                return Err("an option with no label is nothing the user can choose".to_string());
+            }
+            if option.kind == Some(CaptureTarget::Issue) && option.branch.is_some() {
+                return Err(format!(
+                    "option {:?} names a branch and an issue; an issue has no branch to be on",
+                    option.label
+                ));
+            }
+            Ok(option)
+        })
+        .collect()
+}
+
 /// The router's clarifying question, asked only when even the project is
 /// ambiguous, and the answer when the user gives one.
+///
+/// The question may carry up to three concrete choices. They are an offer and
+/// never a requirement: typing an answer, and abandoning the capture, are
+/// available whatever the router thought of.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureQuestion {
     pub text: String,
     pub asked_at: String,
     #[serde(default)]
     pub answer: Option<String>,
+    #[serde(default)]
+    pub options: Vec<CaptureOption>,
+    /// Which option the user tapped, when they tapped one rather than typed.
+    #[serde(default)]
+    pub chosen_option_id: Option<String>,
+}
+
+impl CaptureQuestion {
+    /// A question with nothing answered and nothing offered.
+    pub fn new(text: impl Into<String>, asked_at: impl Into<String>) -> CaptureQuestion {
+        CaptureQuestion {
+            text: text.into(),
+            asked_at: asked_at.into(),
+            answer: None,
+            options: Vec::new(),
+            chosen_option_id: None,
+        }
+    }
+
+    /// The option this question offered under `option_id`.
+    pub fn option(&self, option_id: &str) -> Option<&CaptureOption> {
+        self.options.iter().find(|option| option.id == option_id)
+    }
+
+    /// The option at `index`, counting from the first one offered.
+    pub fn option_at(&self, index: usize) -> Option<&CaptureOption> {
+        self.options.get(index)
+    }
 }
 
 /// One capture: the durable record of something the user said.
@@ -231,6 +385,27 @@ impl Capture {
         })
     }
 
+    /// The record once the user tapped one of the options the router offered.
+    ///
+    /// The choice reaches the router as words — the label, and the destination
+    /// it stood for — because the router decides in words and a tap it cannot
+    /// read is a tap that decides nothing. Which option was tapped is kept
+    /// beside the answer, so the record says what the user was shown and what
+    /// of it they picked.
+    pub fn answered_with_option(&self, option_id: &str) -> Result<Capture, String> {
+        let option = self
+            .question
+            .as_ref()
+            .and_then(|question| question.option(option_id))
+            .ok_or_else(|| format!("no option {option_id:?} was offered with that question"))?;
+        let chosen_option_id = option.id.clone();
+        let mut answered = self.answered(option.as_answer())?;
+        if let Some(question) = answered.question.as_mut() {
+            question.chosen_option_id = Some(chosen_option_id);
+        }
+        Ok(answered)
+    }
+
     /// The record once the router gave up — or stopped without deciding, which
     /// is the same thing from the user's side. A capture that already reached a
     /// destination is left alone: a router exiting after a route is a router
@@ -281,10 +456,243 @@ mod tests {
 
     fn question(answer: Option<&str>) -> CaptureQuestion {
         CaptureQuestion {
-            text: "which project?".to_string(),
-            asked_at: "2026-08-13T10:00:01Z".to_string(),
             answer: answer.map(str::to_string),
+            ..CaptureQuestion::new("which project?", "2026-08-13T10:00:01Z")
         }
+    }
+
+    fn draft(label: &str) -> CaptureOptionDraft {
+        CaptureOptionDraft {
+            label: label.to_string(),
+            ..CaptureOptionDraft::default()
+        }
+    }
+
+    /// A question with the two concrete choices the router thought of, and the
+    /// free-form answer still available beside them.
+    fn asking_with_options() -> Capture {
+        let options = numbered_options(&[
+            CaptureOptionDraft {
+                label: "File as an issue on Build".to_string(),
+                project_id: Some("proj-build".to_string()),
+                kind: Some(CaptureTarget::Issue),
+                branch: None,
+            },
+            CaptureOptionDraft {
+                label: "New branch on Do".to_string(),
+                project_id: Some("proj-do".to_string()),
+                kind: Some(CaptureTarget::Branch),
+                branch: None,
+            },
+        ])
+        .unwrap();
+        capture(CaptureState::Routing).asked(CaptureQuestion {
+            options,
+            ..CaptureQuestion::new("which project?", "2026-08-13T10:00:01Z")
+        })
+    }
+
+    /// A question with no options is the question this surface started with:
+    /// options are an offer, never a requirement.
+    #[test]
+    fn a_question_may_offer_no_options_at_all() {
+        assert_eq!(numbered_options(&[]).unwrap(), Vec::new());
+        let asked = capture(CaptureState::Routing).asked(question(None));
+        assert!(asked.question.as_ref().unwrap().options.is_empty());
+        assert!(asked.awaiting_answer());
+    }
+
+    /// Options are numbered by Build, not by the router: an id the user taps is
+    /// only worth anything if it names one option and always the same one.
+    #[test]
+    fn options_are_numbered_in_the_order_the_router_offered_them() {
+        let options = numbered_options(&[draft("first"), draft("second"), draft("third")]).unwrap();
+        let ids: Vec<&str> = options.iter().map(|option| option.id.as_str()).collect();
+        assert_eq!(ids, vec!["option-1", "option-2", "option-3"]);
+        let labels: Vec<&str> = options.iter().map(|option| option.label.as_str()).collect();
+        assert_eq!(labels, vec!["first", "second", "third"]);
+    }
+
+    /// Three is the whole offer. A fourth choice is a menu, and a menu is the
+    /// friction capture exists to remove.
+    #[test]
+    fn a_fourth_option_is_refused() {
+        let four = [draft("a"), draft("b"), draft("c"), draft("d")];
+        assert_eq!(MAX_CAPTURE_OPTIONS, 3);
+        assert!(numbered_options(&four[..MAX_CAPTURE_OPTIONS]).is_ok());
+        assert!(numbered_options(&four).is_err());
+    }
+
+    #[test]
+    fn an_option_with_nothing_written_on_it_is_refused() {
+        assert!(numbered_options(&[draft("   ")]).is_err());
+        let trimmed = numbered_options(&[draft("  File it  ")]).unwrap();
+        assert_eq!(trimmed[0].label, "File it");
+    }
+
+    /// A branch name says the option is a branch. Naming one on an issue is two
+    /// destinations in one choice, and the user would be tapping a guess.
+    #[test]
+    fn a_branch_name_makes_an_option_a_branch_and_never_an_issue() {
+        let inferred = numbered_options(&[CaptureOptionDraft {
+            label: "Continue the login work".to_string(),
+            project_id: Some("proj-build".to_string()),
+            kind: None,
+            branch: Some("fix-login".to_string()),
+        }])
+        .unwrap();
+        assert_eq!(inferred[0].kind, Some(CaptureTarget::Branch));
+        assert_eq!(inferred[0].branch.as_deref(), Some("fix-login"));
+
+        assert!(
+            numbered_options(&[CaptureOptionDraft {
+                label: "File it".to_string(),
+                project_id: None,
+                kind: Some(CaptureTarget::Issue),
+                branch: Some("fix-login".to_string()),
+            }])
+            .is_err(),
+            "an issue has no branch to be on"
+        );
+    }
+
+    /// What the router reads when the user taps a choice: the label they saw,
+    /// and the destination it stood for spelled out in the terms the router
+    /// routes in.
+    #[test]
+    fn a_chosen_option_reads_as_an_answer_naming_the_destination() {
+        let options = numbered_options(&[
+            CaptureOptionDraft {
+                label: "File as an issue on Build".to_string(),
+                project_id: Some("proj-build".to_string()),
+                kind: Some(CaptureTarget::Issue),
+                branch: None,
+            },
+            CaptureOptionDraft {
+                label: "Continue the login work".to_string(),
+                project_id: Some("proj-build".to_string()),
+                kind: Some(CaptureTarget::Branch),
+                branch: Some("fix-login".to_string()),
+            },
+            CaptureOptionDraft {
+                label: "It is about Do".to_string(),
+                project_id: Some("proj-do".to_string()),
+                kind: None,
+                branch: None,
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            options[0].as_answer(),
+            "File as an issue on Build — route this to project proj-build as an issue"
+        );
+        assert_eq!(
+            options[1].as_answer(),
+            "Continue the login work — route this to project proj-build as a branch, on the branch fix-login"
+        );
+        assert_eq!(
+            options[2].as_answer(),
+            "It is about Do — route this to project proj-do"
+        );
+        assert_eq!(
+            draft("Just this").numbered(1).as_answer(),
+            "Just this",
+            "an option with no route hint is only what it says"
+        );
+    }
+
+    /// Tapping an option answers the question: the router hears the choice as
+    /// words, and the record remembers which one was tapped.
+    #[test]
+    fn choosing_an_option_answers_the_question_in_words() {
+        let asking = asking_with_options();
+        let chosen = asking.answered_with_option("option-2").unwrap();
+        assert!(!chosen.awaiting_answer());
+        let question = chosen.question.as_ref().unwrap();
+        assert_eq!(
+            question.answer.as_deref(),
+            Some("New branch on Do — route this to project proj-do as a branch")
+        );
+        assert_eq!(question.chosen_option_id.as_deref(), Some("option-2"));
+        assert_eq!(
+            question.options.len(),
+            2,
+            "the offer stays on the record it was made from"
+        );
+        assert!(asking.awaiting_answer(), "the record it read is untouched");
+    }
+
+    /// An id or a position picks the same choice, so a client that tracked
+    /// either one is answering the same question.
+    #[test]
+    fn an_option_is_reachable_by_id_and_by_position() {
+        let asking = asking_with_options();
+        let question = asking.question.as_ref().unwrap();
+        assert_eq!(
+            question.option("option-1").unwrap().label,
+            "File as an issue on Build"
+        );
+        assert_eq!(
+            question.option_at(0).map(|option| option.id.as_str()),
+            Some("option-1"),
+            "position 0 is the first option offered"
+        );
+        assert_eq!(
+            question.option_at(1).map(|option| option.id.as_str()),
+            Some("option-2")
+        );
+        assert!(question.option("option-9").is_none());
+        assert!(question.option_at(2).is_none());
+    }
+
+    /// A choice nobody offered is not a choice. Answering with one would put
+    /// words in the user's mouth that the router never proposed.
+    #[test]
+    fn an_option_that_was_never_offered_is_refused() {
+        assert!(asking_with_options()
+            .answered_with_option("option-9")
+            .is_err());
+        assert!(
+            capture(CaptureState::Unrouted)
+                .answered_with_option("option-1")
+                .is_err(),
+            "nothing was asked, so nothing was offered"
+        );
+        let already = asking_with_options()
+            .answered_with_option("option-1")
+            .unwrap();
+        assert!(already.answered_with_option("option-2").is_err());
+    }
+
+    /// A free-form answer to a question that offered options is still an
+    /// answer: the choices never take the keyboard away.
+    #[test]
+    fn free_form_still_answers_a_question_that_offered_options() {
+        let typed = asking_with_options()
+            .answered("neither, it is the relay")
+            .unwrap();
+        assert!(!typed.awaiting_answer());
+        let question = typed.question.as_ref().unwrap();
+        assert_eq!(question.answer.as_deref(), Some("neither, it is the relay"));
+        assert_eq!(
+            question.chosen_option_id, None,
+            "nothing was tapped, so nothing is recorded as tapped"
+        );
+    }
+
+    /// A question written by an older bridge has no options and no choice, and
+    /// still loads: the offer is the new part, not the question.
+    #[test]
+    fn a_question_loads_without_the_options_it_never_had() {
+        let loaded: Capture = serde_json::from_str(
+            r#"{"id":"capture-1","text":"ship it","created_at":"2026-08-13T10:00:00Z",
+                "question":{"text":"which project?","asked_at":"2026-08-13T10:00:01Z"}}"#,
+        )
+        .unwrap();
+        let question = loaded.question.as_ref().unwrap();
+        assert!(question.options.is_empty());
+        assert_eq!(question.chosen_option_id, None);
+        assert!(loaded.awaiting_answer());
     }
 
     /// A capture is unfinished business until it is routed AND quiet.

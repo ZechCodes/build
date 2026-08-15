@@ -287,7 +287,10 @@ The decision rule, in order:
    so a wrong guess costs them a diff to unpick. When in doubt, file the issue.
 3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
    time is the friction this surface exists to remove; a best-guess issue is
-   almost always the better answer.
+   almost always the better answer. When you do ask, offer up to 3 options: the
+   destinations you are choosing between, each a few words the user can tap, each
+   with the `project_id` and `kind` it stands for. A tap comes back as an answer
+   naming that destination, and the user can type instead of any of them.
 
 Call exactly one of `create_issue`, `dispatch_branch` or `ask_user`, then call
 `done` with phase=\"route\", status=\"completed\" and one concise sentence saying
@@ -882,9 +885,12 @@ mod tests {
             "Otherwise call `create_issue` on the project the capture most likely belongs to.",
             "An issue is inert — a record, no worktree, no agent — so a wrong guess costs the user one tap.",
             "A branch dispatch starts an agent that changes code, so a wrong guess costs them a diff to unpick.",
-            // Rule 3: the one case a question beats a guess.
+            // Rule 3: the one case a question beats a guess, and the shape of
+            // the offer that goes with it.
             "Call `ask_user` ONLY when even the project is ambiguous.",
             "a best-guess issue is almost always the better answer.",
+            "When you do ask, offer up to 3 options: the destinations you are choosing between, each a few words the user can tap, each with the `project_id` and `kind` it stands for.",
+            "the user can type instead of any of them.",
         ] {
             assert!(
                 router.contains(rule),

@@ -763,6 +763,15 @@ impl Store {
         write_record_atomically(&self.capture_path(&record.id), &json)
     }
 
+    /// Forget one capture, and the half-written copy of it a crashed save may
+    /// have left. Only ever called for a capture the user abandoned: nothing
+    /// else in Build deletes what they said.
+    pub fn delete_capture(&self, capture_id: &str) -> Result<(), StoreError> {
+        let path = self.capture_path(capture_id);
+        remove_file_if_present(&path)?;
+        remove_file_if_present(&path.with_extension("json.tmp"))
+    }
+
     /// Load every capture, oldest first. Same discipline as the other loaders:
     /// a missing dir means none, an unparseable record is a hard error naming
     /// the file — a capture the store cannot read is the user's own words lost.
@@ -1701,6 +1710,41 @@ mod tests {
             .map(|capture| capture.id)
             .collect();
         assert_eq!(ids, vec!["capture-a", "capture-b", "capture-c"]);
+    }
+
+    /// A capture the user abandoned is gone, and gone across a reboot: the one
+    /// deletion this store does, and it happens only when they asked for it.
+    #[test]
+    fn a_cancelled_capture_is_forgotten_and_stays_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        store
+            .save_capture(&Capture::new(
+                "capture-1",
+                "ship it",
+                "2026-08-13T10:00:00Z",
+            ))
+            .unwrap();
+        store
+            .save_capture(&Capture::new(
+                "capture-2",
+                "and this",
+                "2026-08-13T10:00:01Z",
+            ))
+            .unwrap();
+
+        store.delete_capture("capture-1").unwrap();
+        let ids: Vec<String> = store
+            .load_all_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.id)
+            .collect();
+        assert_eq!(ids, vec!["capture-2"], "only the one asked for");
+
+        store
+            .delete_capture("capture-1")
+            .expect("forgetting what is already forgotten is not an error");
     }
 
     /// No captures dir means no captures — a first boot is not an error.

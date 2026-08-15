@@ -10690,6 +10690,7 @@ impl AppState {
                 self.entity_updated_at.remove(run_id);
                 self.entity_state_changed_at.remove(run_id);
                 self.entity_last_state.remove(run_id);
+                self.run_files_changed_at.remove(run_id);
                 self.invalidate_run_stat(run_id);
                 self.invalidate_external_scan(project_id);
             }
@@ -10878,6 +10879,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.invalidate_run_stat(&run_id);
 
         if worktree.path.exists() {
@@ -11071,6 +11073,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.reap_orphaned_terminals();
         Ok(archived_worktree)
     }
@@ -11105,6 +11108,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.invalidate_run_stat(&run_id);
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
@@ -11221,7 +11225,11 @@ impl AppState {
                 .map(|issue_id| self.issue_candidate(issue_id)),
         );
         candidates.extend(self.capture_candidates());
-        crate::branch::fold_work_items(candidates)
+        let mut items = crate::branch::fold_work_items(candidates);
+        // The inbox reads oldest first, and the order it reads in is decided
+        // here rather than by every client that renders it.
+        crate::branch::sort_by_anchor(&mut items);
+        items
     }
 
     /// The branch row for a run: the source that knows the most, because it is
@@ -31254,6 +31262,113 @@ mod tests {
                 .iter()
                 .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id)),
             "and the issue is back in the inbox"
+        );
+    }
+
+    /// The inbox reads oldest first, and the bridge hands it over in that
+    /// order: a fresh pickup appends to the bottom instead of shoving what has
+    /// been waiting longest down the list.
+    #[test]
+    fn the_feed_arrives_oldest_first() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let older = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "filed last week", "dispatch": false }),
+        )));
+        let newer = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "filed yesterday", "dispatch": false }),
+        )));
+        state
+            .attention
+            .get_mut(&older)
+            .expect("anchored at creation")
+            .anchor_at = Some(hours_ago(200));
+        state
+            .attention
+            .get_mut(&newer)
+            .expect("anchored at creation")
+            .anchor_at = Some(hours_ago(20));
+
+        let order: Vec<String> = work_item_rows(&mut state)
+            .iter()
+            .filter_map(|row| row["issue_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            order,
+            vec![older.clone(), newer.clone()],
+            "oldest at the top"
+        );
+
+        // Picking the older one back up sends it to the bottom.
+        state
+            .attention
+            .get_mut(&older)
+            .expect("anchored above")
+            .last_user_message_at = Some(hours_ago(13));
+        state.handle(req(
+            "thread.post",
+            json!({ "entity_id": older, "body": "picking this back up" }),
+        ));
+        let order: Vec<String> = work_item_rows(&mut state)
+            .iter()
+            .filter_map(|row| row["issue_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(order, vec![newer, older], "a fresh pickup appends");
+    }
+
+    /// The diff cache is the file watcher: two computes that disagree are work
+    /// landing on disk, and that is what dates a branch nobody has committed
+    /// on. A recompute after an invalidation is not a filesystem event — there
+    /// was nothing to disagree with.
+    #[test]
+    fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-watched".to_string();
+        let stat =
+            |files: u64| json!({ "files_changed": files, "insertions": files, "deletions": 0 });
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(1),
+        });
+        assert!(
+            !state.run_files_changed_at.contains_key(&run_id),
+            "the first compute has nothing to disagree with"
+        );
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(1),
+        });
+        assert!(
+            !state.run_files_changed_at.contains_key(&run_id),
+            "an unchanged tree is not a change"
+        );
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(2),
+        });
+        let changed_at = state
+            .run_files_changed_at
+            .get(&run_id)
+            .cloned()
+            .expect("files moved");
+        assert!(changed_at > hours_ago(1), "stamped now: {changed_at}");
+
+        // And it is the run's, so deleting the run takes it with them.
+        state.invalidate_run_stat(&run_id);
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(9),
+        });
+        assert_eq!(
+            state.run_files_changed_at.get(&run_id),
+            Some(&changed_at),
+            "a recompute after an invalidation had nothing to compare against"
         );
     }
 

@@ -154,6 +154,27 @@ pub fn branch_can_finish(sync: &BranchSync) -> bool {
     sync.uncommitted_files == 0 && sync.upstream.is_some() && sync.ahead == Some(0)
 }
 
+/// Put the feed in the order the inbox reads it: by anchor, oldest first.
+///
+/// Oldest at the top is the whole shape of the list — what you took on longest
+/// ago is what you have been ignoring longest, and a fresh pickup appends to
+/// the bottom rather than shoving everything down. A row with no anchor at all
+/// (a checkout whose history could not be read) sorts last: unknown age is not
+/// evidence of being old.
+///
+/// Stable, so rows that share an anchor keep the order the fold gave them.
+pub fn sort_by_anchor(rows: &mut [Value]) {
+    rows.sort_by(|left, right| {
+        let key = |row: &Value| {
+            row["anchor"]
+                .as_str()
+                .map(str::to_string)
+                .map_or((true, String::new()), |anchor| (false, anchor))
+        };
+        key(left).cmp(&key(right))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +339,25 @@ mod tests {
             issue_candidate("plan-2"),
         ]);
         assert_eq!(labels(&folded), vec!["capture", "implementation", "plan-2"]);
+    }
+
+    /// Oldest first, so the top of the inbox is what has been waiting longest,
+    /// and a row nobody can date sorts under the ones somebody can.
+    #[test]
+    fn the_feed_reads_oldest_first_with_undatable_rows_last() {
+        let row = |label: &str, anchor: Value| json!({ "from": label, "anchor": anchor });
+        let mut rows = vec![
+            row("undatable", Value::Null),
+            row("yesterday", json!("2026-08-14T09:00:00Z")),
+            row("last-week", json!("2026-08-07T09:00:00Z")),
+            row("also-last-week", json!("2026-08-07T09:00:00Z")),
+        ];
+        sort_by_anchor(&mut rows);
+        assert_eq!(
+            labels(&rows),
+            vec!["last-week", "also-last-week", "yesterday", "undatable"],
+            "ties keep the order the fold gave them"
+        );
     }
 
     #[test]

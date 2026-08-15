@@ -341,7 +341,7 @@ describe("capture rows", () => {
     expect(html).not.toContain("data-capture-answer");
   });
 
-  it("ask the router's question on the row, and take the answer there", () => {
+  it("say the router asked, and open the page that answers it", () => {
     const entry = entryOf(
       captureItem({
         state: "unrouted",
@@ -352,10 +352,32 @@ describe("capture rows", () => {
       }),
     );
     expect(entry.reason).toBe("Which project is the login redirect in?");
+    // The row is where the question is seen; deciding it is its own surface.
+    expect(entry.route).toEqual({ name: "capture", id: "capture-1" });
     const html = inboxRowHtml(entry, {});
     expect(html).toContain("Which project is the login redirect in?");
-    expect(html).toContain('data-capture-answer="capture-1"');
-    expect(html).toContain('data-capture-answer-send="capture-1"');
+    expect(html).toContain("Waiting for your answer");
+    expect(html).not.toContain("capture-spinner"); // nobody is working on it — it is waiting on you
+    expect(html).not.toContain("data-capture-answer");
+  });
+
+  it("open the decision page for every capture nothing has decided yet", () => {
+    expect(entryOf(captureItem({ state: "unrouted" })).route).toEqual({ name: "capture", id: "capture-1" });
+    expect(entryOf(captureItem({ state: "routing" })).route).toEqual({ name: "capture", id: "capture-1" });
+    expect(entryOf(captureItem({ state: "failed" })).route).toEqual({ name: "capture", id: "capture-1" });
+    // One this client is still holding has no record to decide about yet.
+    expect(entryOf(captureItem({ state: "queued" })).route).toBeNull();
+    // And one that reached a destination opens the work it became.
+    expect(
+      entryOf(captureItem({ state: "routed", project_id: "p1", issue_id: "iss-9", routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }))
+        .route,
+    ).toEqual({ name: "issue", projectId: "p1", id: "iss-9" });
+  });
+
+  it("mark the row the decision page is standing on", () => {
+    const entries = inboxEntries({ items: [captureItem({ state: "unrouted" }), branch()], nowMs: NOW });
+    expect(activeEntryKey({ name: "capture", id: "capture-1" }, entries)).toBe("capture:capture-1");
+    expect(activeEntryKey({ name: "capture", id: "capture-9" }, entries)).toBeNull();
   });
 
   it("open the destination picker on the row that asked for it", () => {

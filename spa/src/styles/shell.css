@@ -94,8 +94,6 @@ body.inbox-collapsed #inbox-open { display:block; }
   animation:capture-spin 1s linear infinite; }
 @keyframes capture-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .capture-spinner { animation:none; } }
-.capture-question { display:flex; gap:6px; align-items:center; margin-top:4px; }
-.capture-question .capture-answer { flex:1; min-width:0; font-size:12px; }
 .capture-chip { cursor:pointer; }
 .reroute-menu { top:calc(100% + 4px); right:0; left:auto; bottom:auto; min-width:220px; padding:6px; }
 .reroute-project { display:flex; align-items:center; gap:8px; padding:4px 6px; }
@@ -103,6 +101,39 @@ body.inbox-collapsed #inbox-open { display:block; }
 .reroute-kinds { flex:none; display:flex; gap:4px; }
 .reroute-branch { display:flex; align-items:center; gap:4px; padding:0 6px 6px; }
 .reroute-branch input { flex:1; min-width:0; font-size:12px; }
+
+/* ---- the capture decision page ----
+   What to do with a capture, on one page: what was said, what the router asked,
+   the choices it offered as one tap each, a destination named by hand, words,
+   and the way out. A reading page, so it sizes to the column rather than
+   filling it. */
+.capture-decide { max-width:620px; }
+.capture-decide .panel { max-width:none; }
+.capture-said-text { font-size:14px; color:var(--ink); white-space:pre-wrap;
+  overflow-wrap:anywhere; }
+.capture-decide-status { display:flex; align-items:center; gap:6px; margin-top:10px;
+  font-size:12px; color:var(--ink2); }
+.capture-ask-text { margin:0 0 12px; font-size:14px; color:var(--amber); }
+.capture-answered { font-size:12px; margin-bottom:10px; overflow-wrap:anywhere; }
+/* The offer is meant to be one tap, so a choice is a target rather than a line
+   of text with a button beside it. */
+.capture-options { display:flex; flex-direction:column; gap:8px; }
+.capture-option { display:flex; flex-direction:column; gap:3px; text-align:left;
+  font:inherit; cursor:pointer; padding:11px 13px; border-radius:10px;
+  border:1px solid var(--line2); background:var(--panel2); color:var(--ink); }
+.capture-option:hover { border-color:var(--accent); }
+.capture-option:disabled { opacity:.55; cursor:default; }
+.capture-option.chosen { border-color:var(--accent); }
+.capture-option-label { font-weight:650; font-size:13.5px; }
+.capture-option-where { font-family:var(--mono); font-size:11.5px; color:var(--dim); }
+.capture-manual { display:flex; flex-direction:column; gap:5px; }
+.capture-manual select, .capture-manual input { width:100%; font-size:12.5px; }
+.capture-manual label { font-size:11px; color:var(--dim); }
+.capture-freeform textarea { width:100%; resize:vertical; font-size:13px; margin-bottom:10px; }
+.capture-decide-foot { display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  margin-top:18px; font-size:11.5px; }
+.capture-decide-error { display:block; margin-top:12px; font-size:12.5px; }
+.capture-decide-error[hidden] { display:none; }
 
 /* ---- inbox entries ----
    One list across every project, so a row has to carry its own context: what

@@ -10,6 +10,13 @@ describe("routeFromHash", () => {
     expect(routeFromHash("#/nope")).toEqual({ name: "inbox" });
   });
 
+  it("parses a capture's decision page, which is named by the capture alone", () => {
+    expect(routeFromHash("#/capture/capture-1")).toEqual({ name: "capture", id: "capture-1" });
+    expect(routeFromHash("#/capture/capture%201")).toEqual({ name: "capture", id: "capture 1" });
+    // A capture route with no capture names nothing.
+    expect(routeFromHash("#/capture")).toEqual({ name: "inbox" });
+  });
+
   it("parses a branch work item with its two tabs", () => {
     expect(routeFromHash("#/project/proj-1/branch/main/changes")).toEqual({
       name: "branch", projectId: "proj-1", branch: "main", tab: "changes",
@@ -193,6 +200,8 @@ describe("hashFromRoute", () => {
       { name: "branch", projectId: "a b", branch: "a branch", tab: "changes" },
       { name: "issue", projectId: "p", id: "pl-1" },
       { name: "issue", projectId: "a b", id: "pl 1", stage: "stage 2" },
+      { name: "capture", id: "capture-1" },
+      { name: "capture", id: "capture 1" },
     ]) {
       expect([route, routeFromHash(hashFromRoute(route))]).toEqual([route, route]);
     }
@@ -205,6 +214,8 @@ describe("hashFromRoute", () => {
     expect(hashFromRoute({ name: "branch", projectId: "p", branch: "build/x" })).toBe("#/project/p/branch/build%2Fx/changes");
     expect(hashFromRoute({ name: "issue", projectId: "p", id: "i-1" })).toBe("#/project/p/issue/i-1");
     expect(hashFromRoute({ name: "issue", projectId: "p", id: "i-1", stage: "s2" })).toBe("#/project/p/issue/i-1/stage/s2");
+    expect(hashFromRoute({ name: "capture", id: "capture-1" })).toBe("#/capture/capture-1");
+    expect(hashFromRoute({ name: "capture" })).toBe("#/inbox");
     expect(hashFromRoute({ name: "account" })).toBe("#/account/settings");
   });
 

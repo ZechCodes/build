@@ -66,12 +66,18 @@ export function unreadReasonText(reason, kind) {
 
 /** Where an entry opens. A branch is (project, branch name); an issue is its
  *  own surface. A checkout with no branch is nameable by no URL, so it opens
- *  nowhere until it is on one. A capture opens wherever it was routed — until
- *  it is routed, there is nowhere to go. */
+ *  nowhere until it is on one.
+ *
+ *  A capture opens wherever it was routed. Until it is routed it opens its own
+ *  decision page — what to do with it is a question, and a question deserves a
+ *  surface. One this client is still holding has no record to decide about, so
+ *  it opens nowhere. */
 export function entryRoute(item) {
   if (item.kind === "capture") {
-    if (!item.routing) return null;
-    return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
+    if (item.routing) {
+      return entryRoute({ ...item, kind: item.routing.kind === "issue" ? "issue" : "branch" });
+    }
+    return item.state === "queued" ? null : { name: "capture", id: item.capture_id };
   }
   if (item.kind === "issue") {
     return item.issue_id ? { name: "issue", projectId: item.project_id, id: item.issue_id } : null;
@@ -104,11 +110,14 @@ const CAPTURE_STATUS = {
 };
 
 /** The line a capture row shows about its route: where it went, else what is
- *  happening to it. */
+ *  happening to it. A question nobody has answered is not the router working —
+ *  it is the router waiting on the user, and saying "waiting to be routed"
+ *  there names the wrong party. */
 export function captureStatusText(entry) {
   if (entry.captureState === "routed" && entry.routedTo) {
     return `→ ${entry.routedTo.project} as ${entry.routedTo.kind}`;
   }
+  if (entry.question) return "Waiting for your answer";
   return CAPTURE_STATUS[entry.captureState] || "";
 }
 
@@ -212,6 +221,10 @@ export function inboxEntries({ items = [], nowMs = Date.now(), minimum = INBOX_M
 /** The entry the current route is standing on, so the list can mark it. */
 export function activeEntryKey(route, entries) {
   if (!route) return null;
+  if (route.name === "capture") {
+    const capture = entries.find((entry) => entry.kind === "capture" && entry.captureId === route.id);
+    return capture ? capture.key : null;
+  }
   // A capture names where it was routed, but it is not that work item — the row
   // the route stands on is the branch or the issue itself.
   const work = entries.filter((entry) => entry.kind !== "capture");
@@ -295,8 +308,12 @@ export function inboxListHtml(entries, ui = {}) {
 //
 // A capture is on the inbox while it is still unfinished business — being
 // routed, failed, or holding a question. The row is where routing is made
-// visible and reversible: it says where the capture went, takes the answer to
-// the router's question, and offers the two verbs that move it.
+// visible and reversible: it says where the capture went, says when the router
+// is waiting on an answer, and offers the two verbs that move it.
+//
+// The answer itself is not taken here. What to do with a capture is a decision
+// — the router's choices, a destination named by hand, words, or abandoning it
+// — and the row opens the page that holds all of them (views/captureDecision).
 
 /** The branch field the picker discloses: which branch in this project the work
  *  goes on, offered from the branches the project already has. Naming one is
@@ -337,15 +354,11 @@ function rerouteMenuHtml(entry, ui = {}) {
 /** One capture row. `ui`: { activeKey, rerouteKey, projects, rerouteBranchProject,
  *  rerouteBranches }. */
 export function captureRowHtml(entry, ui = {}) {
-  const spinning = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
+  const working = entry.captureState === "queued" || entry.captureState === "unrouted" || entry.captureState === "routing";
+  // A question is the router at rest, waiting on the user: a spinner there
+  // says something is happening when nothing is.
+  const spinning = working && !entry.question;
   const status = captureStatusText(entry);
-  const question = entry.question
-    ? `<div class="capture-question">
-        <input type="text" class="capture-answer" data-capture-answer="${esc(entry.captureId)}"
-          placeholder="Answer the router" aria-label="Answer the router's question" autocomplete="off" />
-        <button class="btn mini primary" type="button" data-capture-answer-send="${esc(entry.captureId)}">Send</button>
-      </div>`
-    : "";
   const actions = [];
   if (entry.captureState === "failed") {
     actions.push(`<button class="btn mini" type="button" data-capture-retry="${esc(entry.captureId)}">Retry</button>`);
@@ -366,7 +379,6 @@ export function captureRowHtml(entry, ui = {}) {
         spinning ? '<span class="capture-spinner" aria-hidden="true"></span>' : ""
       }<span>${esc(status)}</span></div>
       ${entry.question ? `<div class="inbox-reason">${esc(entry.question)}</div>` : ""}
-      ${question}
       <span class="warn" data-capture-error hidden></span>
     </div>
     <div class="inbox-actions">${actions.join("")}${

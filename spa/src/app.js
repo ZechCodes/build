@@ -6,6 +6,7 @@ import { renderInbox } from "./views/inbox.js";
 import { renderBranch } from "./views/branchView.js";
 import { renderIssue } from "./views/issueView.js";
 import { renderAccount } from "./views/account.js";
+import { renderCaptureDecision } from "./views/captureDecision.js";
 import { renderResolving } from "./views/resolving.js";
 import { markConsoleTerminal } from "./core/consoleModel.js";
 import { inboxRouteChanged } from "./core/inboxShell.js";
@@ -75,12 +76,14 @@ export function initRouter() {
   });
 }
 
-// Every route is one of five surfaces: the inbox (the landing route), a branch,
-// an issue, an account page, or the holding screen a pre-redesign URL waits on.
+// Every route is one of six surfaces: the inbox (the landing route), a branch,
+// an issue, a capture's decision page, an account page, or the holding screen a
+// pre-redesign URL waits on.
 const VIEWS = {
   inbox: renderInbox,
   branch: renderBranch,
   issue: renderIssue,
+  capture: renderCaptureDecision,
   account: renderAccount,
   resolve: renderResolving,
 };

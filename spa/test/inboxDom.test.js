@@ -312,7 +312,9 @@ describe("captures on the rail", () => {
     expect(location.hash).toBe("#/project/p1/issue/iss-9");
   });
 
-  it("answers the router's question from the row", async () => {
+  // Answering the router is a decision, not a text field wedged into a row:
+  // the row is the conversation entry, and it opens the page that decides.
+  it("opens the decision page for a capture the router is asking about", async () => {
     feed([
       captureFeedRow({
         state: "unrouted",
@@ -323,65 +325,19 @@ describe("captures on the rail", () => {
       }),
     ]);
     const row = captureRowFor("capture-1");
-    row.querySelector("[data-capture-answer]").value = "the relay";
-    row.querySelector("[data-capture-answer-send]").click();
+    expect(row.textContent).toContain("Which project?");
+    expect(row.querySelector("[data-capture-answer]")).toBeNull();
+    row.click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", text: "the relay" });
-    expect(refreshFeed).toHaveBeenCalled();
+    expect(location.hash).toBe("#/capture/capture-1");
+    expect(App.call).not.toHaveBeenCalledWith("capture.answer", expect.anything());
   });
 
-  // The feed repaints the whole list on every tick. Answering the router is
-  // typing into a box that lives in it, and the tick used to take the box.
-  describe("while the router's question is being answered", () => {
-    const asking = () =>
-      captureFeedRow({
-        state: "unrouted",
-        unread: true,
-        unread_count: 1,
-        unread_reason: "router_question",
-        question: { text: "Which project?", asked_at: "t", answer: null },
-      });
-
-    it("keeps the box, the caret and the words through a feed tick", () => {
-      feed([asking()]);
-      const field = captureRowFor("capture-1").querySelector("[data-capture-answer]");
-      field.focus();
-      field.value = "the rel";
-      field.dispatchEvent(new Event("input"));
-      field.setSelectionRange(3, 3);
-
-      feed([asking(), branchRow()]); // a tick that has something new to say
-
-      const now = captureRowFor("capture-1").querySelector("[data-capture-answer]");
-      expect(now, "the answer box was replaced by the feed").toBe(field);
-      expect(now.value).toBe("the rel");
-      expect(document.activeElement).toBe(now);
-      expect(now.selectionStart).toBe(3);
-    });
-
-    it("carries what was typed onto the row a repaint does rebuild", () => {
-      feed([asking()]);
-      captureRowFor("capture-1").querySelector("[data-capture-answer]").value = "the relay";
-      captureRowFor("capture-1").querySelector("[data-capture-answer]").dispatchEvent(new Event("input"));
-
-      // Something the user did elsewhere repaints the list with nothing focused.
-      rowFor("run-1")?.querySelector("[data-menu]")?.click();
-      feed([asking(), branchRow()]);
-
-      expect(captureRowFor("capture-1").querySelector("[data-capture-answer]").value).toBe("the relay");
-    });
-
-    it("catches up with the feed once the caret leaves", () => {
-      feed([asking()]);
-      const field = captureRowFor("capture-1").querySelector("[data-capture-answer]");
-      field.focus();
-      feed([asking(), branchRow()]);
-      expect(rowFor("run-1")).toBeNull(); // held back while typing
-
-      field.blur();
-      feed([asking(), branchRow()]);
-      expect(rowFor("run-1")).toBeTruthy();
-    });
+  it("opens the decision page for a capture the router is still deciding", async () => {
+    feed([captureFeedRow()]);
+    captureRowFor("capture-1").click();
+    await flush();
+    expect(location.hash).toBe("#/capture/capture-1");
   });
 
   it("re-fires the router on a route that gave up", async () => {
@@ -435,6 +391,27 @@ describe("captures on the rail", () => {
       kind: "branch",
       branch: "build/csv-export",
     });
+  });
+
+  // The list is rewritten whole on every feed tick, and naming a branch is
+  // typing into a box that lives in it.
+  it("holds the feed off the branch box while it is being typed into", async () => {
+    feed([routedCapture()]);
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("capture-1").querySelector('[data-reroute-branch-open="p1"]').click();
+    await flush();
+    const field = captureRowFor("capture-1").querySelector("[data-reroute-branch]");
+    field.focus();
+    field.value = "build/csv";
+
+    feed([routedCapture(), branchRow()]); // a tick with something new to say
+    expect(captureRowFor("capture-1").querySelector("[data-reroute-branch]")).toBe(field);
+    expect(rowFor("run-1")).toBeNull(); // held back while typing
+
+    field.blur();
+    feed([routedCapture(), branchRow()]);
+    expect(rowFor("run-1")).toBeTruthy();
   });
 
   it("lets a branch go unnamed, which is the daemon naming it after what was said", async () => {

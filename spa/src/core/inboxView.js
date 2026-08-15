@@ -31,7 +31,6 @@ let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
 const dismissed = new Set(); // entity ids the user just said Done to
 const busy = new Set(); // entity ids with a mutation in flight
-const answerDrafts = new Map(); // capture id → what has been typed into its answer box
 const errors = new Map(); // entity id → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
 
@@ -122,7 +121,7 @@ function wire(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
     row.onclick = (event) => {
       // The row's own controls answer for themselves.
-      if (event.target.closest("[data-done], [data-menu], [data-mute], .capture-question, .inbox-actions")) return;
+      if (event.target.closest("[data-done], [data-menu], [data-mute], .inbox-actions")) return;
       openEntry(entryOf(row.dataset.key));
     };
   });
@@ -159,33 +158,17 @@ function wire(list) {
 
 // ---- capture rows -------------------------------------------------------------
 //
-// The three things a user can do to a route: answer the question that is
-// holding it up, retry one that gave up, and send the capture somewhere else.
-// All three go through the daemon's own capture verbs — a reroute by hand and a
-// route by the router are the same kind of thing afterwards.
+// The two things a row can do to a route: retry one that gave up, and send the
+// capture somewhere else. Both go through the daemon's own capture verbs — a
+// reroute by hand and a route by the router are the same kind of thing
+// afterwards.
+//
+// Answering the router is not one of them. What to do with a capture is a
+// decision with several shapes — the router's own choices, a destination named
+// by hand, words, or abandoning it — and the row opens the page that holds all
+// of them (views/captureDecision.js) rather than hosting the thinnest one.
 
 function wireCaptures(list) {
-  list.querySelectorAll("[data-capture-answer-send]").forEach((control) => {
-    const captureId = control.dataset.captureAnswerSend;
-    // The field is found through the row, never through a selector built out of
-    // an id the daemon minted.
-    const field = control.closest(".capture-entry").querySelector("[data-capture-answer]");
-    control.onclick = (event) => {
-      event.stopPropagation();
-      answerCapture(captureId, field ? field.value : "");
-    };
-    if (field) {
-      // A half-written answer is the user's, so it is kept here rather than in
-      // the row a repaint rebuilds.
-      field.value = answerDrafts.get(captureId) || "";
-      field.oninput = () => answerDrafts.set(captureId, field.value);
-      field.onkeydown = (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        answerCapture(captureId, field.value);
-      };
-    }
-  });
   list.querySelectorAll("[data-capture-retry]").forEach((control) => {
     control.onclick = (event) => {
       event.stopPropagation();
@@ -242,23 +225,6 @@ function wireCaptures(list) {
 function branchFieldValue(control) {
   const field = control.closest(".reroute-branch")?.querySelector("[data-reroute-branch]");
   return field ? field.value.trim() : "";
-}
-
-async function answerCapture(captureId, raw) {
-  const text = String(raw || "").trim();
-  if (!text || busy.has(captureId)) return;
-  busy.add(captureId);
-  captureErrors.delete(captureId);
-  try {
-    await App.call("capture.answer", { capture_id: captureId, text });
-    answerDrafts.delete(captureId); // said and gone
-    await refreshFeed();
-  } catch (error) {
-    captureErrors.set(captureId, messageOf(error));
-  } finally {
-    busy.delete(captureId);
-    draw();
-  }
 }
 
 /** With a destination this routes by hand; with none it re-fires the router,

@@ -151,6 +151,31 @@ describe("the review plug (DOM)", () => {
     plug.unmount();
   });
 
+  // A drag is a comment that has not been said yet: the popover opens on the
+  // pointerup (or after the handles settle), and until then nothing else knows
+  // the reviewer is holding a range over these rows.
+  it("leaves the diff alone while the reviewer is selecting code on it", async () => {
+    let line = "new";
+    const { host, plug } = mountPlug({ fetchDiff: async () => ({ patch: patchOf(line) }), submit: async () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const code = host.querySelector("tr[data-ln] .code");
+    const range = document.createRange();
+    range.selectNodeContents(code);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+
+    line = "moved underneath";
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect(host.contains(code), "the rows the selection points into were replaced").toBe(true);
+    expect(host.textContent).not.toContain("moved underneath");
+
+    // Letting go hands the surface back: the next tick draws what moved.
+    window.getSelection().removeAllRanges();
+    await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    expect(host.textContent).toContain("moved underneath");
+    plug.unmount();
+  });
+
   it("offers no comment affordances on a surface with nowhere to post", async () => {
     const { host, plug } = mountPlug({ fetchDiff: async () => ({ patch: patchOf("new"), commentable: false }) });
     await vi.advanceTimersByTimeAsync(0);

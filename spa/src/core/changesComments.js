@@ -18,7 +18,7 @@ import { commentTrayHtml } from "./changesRender.js";
 import { commentLayerBusy } from "./changesModel.js";
 import { diffThreadMessages } from "./notes.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
-import { watchSelection } from "../selectWatch.js";
+import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 
 /** The <tr> (with a line number) containing a selection/click node. */
@@ -147,8 +147,17 @@ export function createCommentLayer({
 
     count: () => comments.length,
 
-    /** The reviewer is mid-comment: the controller must freeze its poll. */
-    busy: () => commentLayerBusy({ pending: comments.length, popOpen: hasCommentPop(), generalText: generalDraft }),
+    /** The reviewer is mid-comment: the controller must freeze its poll. A
+     *  selection still being dragged over the diff counts — the popover that
+     *  turns it into a comment opens only once it settles, and a rebuild before
+     *  then takes the rows the range points into. */
+    busy: () =>
+      commentLayerBusy({
+        pending: comments.length,
+        popOpen: hasCommentPop(),
+        generalText: generalDraft,
+        selecting: Boolean(selectionInside(host)),
+      }),
 
     /** Redraw the actionbar in place — what the surface calls when its own idle
      *  verbs change (a lifecycle action settled, its catalog loaded) without the

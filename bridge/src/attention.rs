@@ -16,6 +16,14 @@
 //!
 //! **Seen** is versioned against the entity's own state clock, not a bare flag:
 //! having read a run on Monday says nothing about the failure it hit on Tuesday.
+//!
+//! **The anchor** is the inbox's sort key, and it is deliberately not the resume
+//! point above. The rail orders by what the human last touched; the inbox orders
+//! by when each thing was *taken on*, oldest first, so a list read top to bottom
+//! is a list read in the order it arrived. Only one thing moves an anchor: the
+//! user saying something after [`ANCHOR_GAP`] of saying nothing — picking the
+//! work back up. Agents never move it, reading never moves it, and neither does
+//! the work itself.
 
 use std::collections::HashMap;
 
@@ -27,6 +35,12 @@ use time::{Duration, OffsetDateTime};
 /// a weekend, or a full working day away from one thread of work — but not lunch,
 /// a meeting, or the gap between two reviews of the same diff.
 pub const RESUME_GAP: Duration = Duration::hours(8);
+
+/// How long the user must have said nothing about a thing before the next thing
+/// they say counts as picking it up again — and moves its anchor to the bottom
+/// of the inbox. Twelve hours: a night away, or a morning and an afternoon, but
+/// never two messages in one sitting.
+pub const ANCHOR_GAP: Duration = Duration::hours(12);
 
 /// The human's relationship with one run or plan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -63,6 +77,17 @@ pub struct Attention {
     /// no notification.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
+    /// Where this entity sits in the inbox (RFC3339): the moment the user took
+    /// it on. Seeded at creation and moved only by
+    /// [`note_user_message`](Self::note_user_message). `None` = never seeded,
+    /// which reads as the entity's creation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_at: Option<String>,
+    /// When the user last said something about this entity (RFC3339) — what the
+    /// next message's silence is measured against. Seeded to the creation time,
+    /// because creating a thing IS the first thing the user said about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_user_message_at: Option<String>,
 }
 
 fn is_zero(sequence: &u64) -> bool {
@@ -164,6 +189,75 @@ impl Attention {
             // it; unseen is the safe answer, since it only means "look again".
             _ => false,
         }
+    }
+
+    /// Seed the anchor at the entity's creation, which counts as the first
+    /// thing the user said about it.
+    ///
+    /// Idempotent, and it is the boot migration's entry point as much as
+    /// creation's: an anchored record is never re-seeded, so a restart cannot
+    /// throw away where the inbox had put something.
+    pub fn seed_anchor(&mut self, created_at: &str) {
+        if self.anchor_at.is_none() {
+            self.anchor_at = Some(created_at.to_string());
+        }
+        if self.last_user_message_at.is_none() {
+            self.last_user_message_at = Some(created_at.to_string());
+        }
+    }
+
+    /// Take a capture's anchor as this entity's own.
+    ///
+    /// What the user said and the work it became are one thing in the inbox, so
+    /// the work keeps the capture's place in the list instead of arriving at
+    /// the bottom of it as something new. Overwrites: routing follows creation
+    /// by seconds, and the capture's anchor is the older, truer one.
+    pub fn inherit_anchor(&mut self, anchor_at: &str, last_user_message_at: Option<&str>) {
+        self.anchor_at = Some(anchor_at.to_string());
+        self.last_user_message_at = Some(last_user_message_at.unwrap_or(anchor_at).to_string());
+    }
+
+    /// Record that the USER said something about this entity at `now`, and move
+    /// the anchor if that message follows [`ANCHOR_GAP`] of their silence.
+    ///
+    /// Only user messages reach here. An agent talking all night is the work
+    /// happening, and the work happening must never reorder the inbox.
+    ///
+    /// A stamp that arrives out of order (a clock step, a replayed action)
+    /// never rewinds the silence clock, so it cannot manufacture a gap that did
+    /// not happen — the same rule [`interact`](Self::interact) follows.
+    pub fn note_user_message(&mut self, now: &str) {
+        let picked_up_again = match self.last_user_message_at.as_deref().and_then(parse) {
+            Some(previous) => match parse(now) {
+                Some(current) => current - previous >= ANCHOR_GAP,
+                // An unreadable clock is not evidence of a gap.
+                None => false,
+            },
+            // Nothing said before: this message is where the entity's stretch
+            // starts. Only an unseeded record gets here.
+            None => true,
+        };
+        if picked_up_again || self.anchor_at.is_none() {
+            self.anchor_at = Some(now.to_string());
+        }
+        let goes_forward = match (
+            self.last_user_message_at.as_deref().and_then(parse),
+            parse(now),
+        ) {
+            (Some(previous), Some(current)) => current >= previous,
+            _ => true,
+        };
+        if goes_forward {
+            self.last_user_message_at = Some(now.to_string());
+        }
+    }
+
+    /// The inbox's sort key: the anchor, falling back to `created_at` for a
+    /// record written before anchors existed and not yet seeded.
+    pub fn anchor(&self, created_at: &str) -> String {
+        self.anchor_at
+            .clone()
+            .unwrap_or_else(|| created_at.to_string())
     }
 
     /// The rail's sort key: when this stretch of work began, falling back to
@@ -354,6 +448,161 @@ mod tests {
         assert_eq!(wire["muted"], true, "{wire:?}");
         let reloaded: Attention = serde_json::from_value(wire).expect("a muted record loads");
         assert!(reloaded.muted);
+    }
+
+    // ================== The inbox anchor ==================
+
+    const MON_21: &str = "2026-07-27T21:00:00Z";
+    const TUE_08_59: &str = "2026-07-28T08:59:59Z";
+    const WED_09: &str = "2026-07-29T09:00:00Z";
+
+    /// Creation is the first thing the user said, so it is where the entity
+    /// enters the list.
+    #[test]
+    fn creation_seeds_the_anchor() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        assert_eq!(attention.anchor_at.as_deref(), Some(MON_09));
+        assert_eq!(attention.last_user_message_at.as_deref(), Some(MON_09));
+        assert_eq!(attention.anchor(WED_09), MON_09);
+    }
+
+    /// The boot migration seeds every record it finds; a second boot must not
+    /// move anything the first one placed.
+    #[test]
+    fn seeding_an_anchored_record_moves_nothing() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        attention.note_user_message(TUE_09);
+        attention.seed_anchor("2020-01-01T00:00:00Z");
+        assert_eq!(attention.anchor_at.as_deref(), Some(TUE_09));
+        assert_eq!(attention.last_user_message_at.as_deref(), Some(TUE_09));
+    }
+
+    /// A conversation held in one sitting keeps its place: this is the whole
+    /// point of the gap, and the inbox must not reshuffle while you type.
+    #[test]
+    fn talking_to_something_all_day_does_not_move_its_anchor() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        for at in [MON_09_05, MON_17, MON_21] {
+            attention.note_user_message(at);
+        }
+        assert_eq!(attention.anchor_at.as_deref(), Some(MON_09));
+        assert_eq!(attention.last_user_message_at.as_deref(), Some(MON_21));
+    }
+
+    /// Exactly twelve hours is a pickup — the boundary is inclusive, and one
+    /// second under it is not.
+    #[test]
+    fn the_twelve_hour_boundary_is_inclusive() {
+        let mut just_under = Attention::default();
+        just_under.seed_anchor(MON_21);
+        just_under.note_user_message(TUE_08_59); // 11h59m59s
+        assert_eq!(
+            just_under.anchor_at.as_deref(),
+            Some(MON_21),
+            "a second short of the gap is the same stretch of work"
+        );
+
+        let mut exactly = Attention::default();
+        exactly.seed_anchor(MON_09);
+        exactly.note_user_message(MON_21); // exactly 12h
+        assert_eq!(exactly.anchor_at.as_deref(), Some(MON_21));
+    }
+
+    /// The gap is measured from the last thing the user SAID, not from the
+    /// anchor: a chain of messages twelve hours apart moves it every time.
+    #[test]
+    fn the_gap_is_measured_from_the_last_user_message() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        attention.note_user_message(MON_21);
+        assert_eq!(attention.anchor_at.as_deref(), Some(MON_21));
+        attention.note_user_message(TUE_09);
+        assert_eq!(attention.anchor_at.as_deref(), Some(TUE_09));
+    }
+
+    /// Everything the human does that is not saying something — reading,
+    /// approving, opening a doc — leaves the anchor where it is. Only
+    /// `note_user_message` can move it, and only `interact` moves the rail's
+    /// resume point: the two clocks are independent on purpose.
+    #[test]
+    fn interacting_never_moves_the_anchor() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        attention.interact(TUE_09);
+        attention.see(TUE_09);
+        attention.read_through("agent-one", 12);
+        assert_eq!(attention.anchor_at.as_deref(), Some(MON_09));
+        assert_eq!(attention.last_user_message_at.as_deref(), Some(MON_09));
+        assert_eq!(
+            attention.resume_at.as_deref(),
+            Some(TUE_09),
+            "the rail's own clock still moves"
+        );
+    }
+
+    #[test]
+    fn an_out_of_order_message_never_rewinds_the_silence_clock() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        attention.note_user_message(WED_09);
+        attention.note_user_message(MON_17); // a clock step or a replayed post
+        assert_eq!(attention.last_user_message_at.as_deref(), Some(WED_09));
+        assert_eq!(
+            attention.anchor_at.as_deref(),
+            Some(WED_09),
+            "the late-arriving old message must not manufacture a pickup"
+        );
+    }
+
+    /// A record that predates anchors, whose first user message arrives before
+    /// anything seeded it: the message itself starts the stretch rather than
+    /// leaving the entity unanchored.
+    #[test]
+    fn an_unseeded_record_anchors_on_the_first_thing_said_to_it() {
+        let mut attention = Attention::default();
+        attention.note_user_message(TUE_09);
+        assert_eq!(attention.anchor_at.as_deref(), Some(TUE_09));
+    }
+
+    /// What the user said and the work it became are one thing in the list.
+    #[test]
+    fn routing_hands_the_captures_anchor_to_the_work() {
+        let mut work = Attention::default();
+        work.seed_anchor(WED_09); // the issue was minted just now
+        work.inherit_anchor(MON_09, None);
+        assert_eq!(work.anchor_at.as_deref(), Some(MON_09));
+        assert_eq!(work.last_user_message_at.as_deref(), Some(MON_09));
+
+        // The next message is measured against the capture's clock, not the
+        // entity's: an inherited anchor brings the silence with it.
+        work.note_user_message(MON_17);
+        assert_eq!(work.anchor_at.as_deref(), Some(MON_09));
+    }
+
+    /// Anchors are new: every record on disk predates them, must load, and must
+    /// not pay for the fields until something seeds them.
+    #[test]
+    fn a_record_written_before_anchors_existed_loads_unanchored() {
+        let stored = serde_json::json!({ "last_interaction_at": MON_09 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert!(attention.anchor_at.is_none());
+        assert_eq!(attention.anchor(MON_17), MON_17, "it reads as its own age");
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert!(wire.get("anchor_at").is_none(), "{wire:?}");
+        assert!(wire.get("last_user_message_at").is_none(), "{wire:?}");
+    }
+
+    #[test]
+    fn an_anchored_record_round_trips() {
+        let mut attention = Attention::default();
+        attention.seed_anchor(MON_09);
+        attention.note_user_message(TUE_09);
+        let wire = serde_json::to_value(&attention).unwrap();
+        let reloaded: Attention = serde_json::from_value(wire).expect("it loads");
+        assert_eq!(reloaded, attention);
     }
 
     #[test]

@@ -5113,6 +5113,7 @@ impl AppState {
             "entity.mute" => self.entity_mute(params),
             "triage.override" => self.triage_override(params),
             "agent.add" => self.agent_add(params),
+            "agent.remove" => self.agent_remove(params),
             "agent.list" => self.agent_list(params),
             "worktree.diff" => self.worktree_diff(params),
             "stream.events" => self.stream_events(params),
@@ -6919,6 +6920,94 @@ impl AppState {
             "entity_id": entity_id,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref()),
         }))
+    }
+
+    /// `agent.remove` — take an agent back off a branch's rail.
+    ///
+    /// The mirror of [`agent_add`](Self::agent_add), and it validates the same
+    /// way: branches only, because an issue's one agent IS the issue's
+    /// conversation — there is nothing to remove there, only an issue to
+    /// abandon. The branch's FIRST agent is not removable either (see
+    /// [`AgentRoster::remove`](crate::agent::AgentRoster::remove)), which is
+    /// also what keeps a branch from ever being left with no agent: the last
+    /// one standing is always the first.
+    ///
+    /// A removed agent's harness must not outlive it. An agent with no roster
+    /// entry keeps working in the checkout and reports `done` for an identity
+    /// nothing can route to — the same hazard
+    /// [`close_agent_tab`](Self::close_agent_tab) exists for — so its session is
+    /// killed and reaped and everything that could reach it goes too.
+    fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let agent_id = require_str(params, "agent_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(format!(
+                "agent.remove: {entity_id} is an issue, and its one agent is the issue's own \
+                 conversation — abandon the issue instead"
+            ));
+        }
+        if !self.runs.contains_key(&entity_id) {
+            return Err(format!("agent.remove: unknown entity {entity_id}"));
+        }
+        let root = self.entity_worktree_root(&entity_id)?;
+        // A harness being spawned right now cannot be killed: the tab it will
+        // land in does not exist yet, so the reservation is the only handle on
+        // it, and the human can ask again a moment later.
+        if self
+            .agent_spawns_in_flight
+            .contains(&TabKey::agent(&root, &agent_id))
+        {
+            return Err(format!(
+                "agent.remove: {agent_id} is starting a session right now — remove it once the \
+                 session is running"
+            ));
+        }
+        let mut active = self.take_run(&entity_id)?;
+        let removed = match active.agents.remove(&agent_id) {
+            Ok(removed) => removed,
+            Err(refused) => {
+                // Nothing was touched, so the run goes back exactly as it came.
+                self.runs.insert(entity_id, active);
+                return Err(format!("agent.remove: {refused}"));
+            }
+        };
+        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        self.retire_agent(&root, &removed.id);
+        if let Some(attention) = self.attention.get_mut(&entity_id) {
+            // Nothing prunes cursors by agent, so one left behind here would
+            // outlive the daemon it was written in.
+            attention.agent_read_sequences.remove(&removed.id);
+        }
+        self.persist_attention();
+        persisted?;
+        self.touch_attention(&entity_id);
+        Ok(json!({
+            "entity_id": entity_id,
+            "agent_id": removed.id,
+            "agents": self.agent_digests(&entity_id),
+        }))
+    }
+
+    /// Kill, reap and forget ONE agent's session, plus everything else that
+    /// could still reach it: the capability its harness authenticates control
+    /// frames with, the screen a client is waiting on a first spawn for, and
+    /// any turn still queued to be said to it.
+    ///
+    /// The per-agent twin of [`close_agent_tab`](Self::close_agent_tab), which
+    /// takes every agent in a worktree because its owner is going away.
+    fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
+        let key = TabKey::agent(&Self::canonical_root(root), agent_id);
+        if let Some(tab) = self.tabs.remove(&key) {
+            let wire_id = tab.wire_id();
+            tab.session.kill_and_reap();
+            tab.screen.push_closed(&wire_id, "closed");
+        }
+        if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
+            screen.push_closed(&key.tab_id, "closed");
+        }
+        self.mcp_session_tokens.remove(agent_id);
+        self.pending_agent_turns
+            .retain(|turn| turn.agent_id != agent_id);
     }
 
     /// `agent.list` — the entity's agents, in rail order.
@@ -29063,6 +29152,213 @@ mod tests {
         ));
         assert_eq!(bad["ok"], false, "{bad:?}");
         assert_eq!(state.runs[&run_id].agents.len(), 1, "nothing was added");
+    }
+
+    /// The mirror of `agent.add`. An agent the human put on a branch can be
+    /// taken back off it — off the roster, off the board row, out of the
+    /// attention map — and it stays off across a restart.
+    #[test]
+    fn agent_remove_takes_an_added_agent_back_off_the_branch() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let first_agent;
+        let second_agent;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            run_id = adopted_run(&mut state, &repo, dir.path(), "feature-remove-agent");
+            first_agent = state.runs[&run_id].agents.first().id.clone();
+            let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+            assert_eq!(added["ok"], true, "{added:?}");
+            second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+            // Something was said to it and the human read it, so there is both
+            // a conversation and a read cursor to take away with the agent.
+            let posted = state.handle(req(
+                "thread.post",
+                json!({ "entity_id": run_id, "agent_id": second_agent, "body": "only you" }),
+            ));
+            assert_eq!(posted["ok"], true, "{posted:?}");
+            state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+            assert!(
+                state.attention[&run_id]
+                    .agent_read_sequences
+                    .contains_key(&second_agent),
+                "the fixture needs a cursor to remove"
+            );
+
+            let removed = state.handle(req(
+                "agent.remove",
+                json!({ "entity_id": run_id, "agent_id": second_agent }),
+            ));
+            assert_eq!(removed["ok"], true, "{removed:?}");
+            assert_eq!(removed["result"]["agent_id"], second_agent);
+            // The rail repaints from the answer, so it carries what is left.
+            let left = removed["result"]["agents"].as_array().unwrap();
+            assert_eq!(left.len(), 1, "{removed:?}");
+            assert_eq!(left[0]["id"], first_agent);
+            assert_eq!(left[0]["ordinal"], 1);
+
+            let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+            assert_eq!(listed["result"]["agents"].as_array().unwrap().len(), 1);
+            assert!(
+                state.runs[&run_id].agents.by_id(&second_agent).is_none(),
+                "the conversation goes with the agent"
+            );
+            assert!(
+                !state.attention[&run_id]
+                    .agent_read_sequences
+                    .contains_key(&second_agent),
+                "and so does the cursor that tracked it"
+            );
+
+            let board = state.handle(req("board.list", json!({})));
+            let row = board["result"]["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["run_id"] == json!(run_id.clone()))
+                .expect("the branch is on the board")
+                .clone();
+            assert_eq!(row["agents"].as_array().unwrap().len(), 1, "{row:?}");
+        } // daemon dies
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let listed = reloaded.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let agents = listed["result"]["agents"].as_array().unwrap();
+        assert_eq!(agents.len(), 1, "the removal was persisted: {listed:?}");
+        assert_eq!(agents[0]["id"], first_agent);
+    }
+
+    /// `agent.remove` refuses what `agent.add` refuses, plus the one agent no
+    /// entity can be without: its first, which owns the conversation every
+    /// entity-level event speaks to.
+    #[test]
+    fn agent_remove_refuses_an_issue_an_unknown_agent_and_the_first_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-keep-first");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let refused = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": first_agent }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("conversation"),
+            "{refused:?}"
+        );
+        assert_eq!(state.runs[&run_id].agents.len(), 2, "nothing was removed");
+
+        let unknown_agent = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": "agent-NOPE" }),
+        ));
+        assert_eq!(unknown_agent["ok"], false, "{unknown_agent:?}");
+        assert!(
+            unknown_agent["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown_agent:?}"
+        );
+
+        let unknown_entity = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": "run-nope", "agent_id": second_agent }),
+        ));
+        assert_eq!(unknown_entity["ok"], false, "{unknown_entity:?}");
+
+        // An issue's one agent IS the issue's conversation: there is nothing to
+        // remove there, only an issue to abandon.
+        let plan = state.handle(req("plan.create", json!({ "goal": "one agent only" })));
+        let plan_id = plan_id_of(&plan);
+        let issue_agent = state.plans[&plan_id].agents.first().id.clone();
+        let issue = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": plan_id, "agent_id": issue_agent }),
+        ));
+        assert_eq!(issue["ok"], false, "{issue:?}");
+        assert!(
+            issue["error"].as_str().unwrap().contains("issue"),
+            "{issue:?}"
+        );
+        assert_eq!(state.plans[&plan_id].agents.len(), 1);
+
+        // And the last agent standing is always the first one, so a branch can
+        // never be emptied of agents.
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        let last = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": first_agent }),
+        ));
+        assert_eq!(last["ok"], false, "{last:?}");
+        assert_eq!(state.runs[&run_id].agents.len(), 1);
+    }
+
+    /// A removed agent's harness must not outlive it: it would keep working in
+    /// the branch's checkout and report `done` for an agent nothing can route
+    /// to. So the tab goes through the same kill-AND-reap teardown the verbs
+    /// that remove an owner use, and its MCP capability goes with it — while
+    /// the agent beside it, sharing the same checkout, keeps running.
+    #[tokio::test]
+    async fn agent_remove_kills_and_reaps_the_agents_live_session() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-retire");
+        let first_agent = state.lock().unwrap().runs["run-retire"]
+            .agents
+            .first()
+            .id
+            .clone();
+        let added = call(&handler, "agent.add", json!({ "entity_id": "run-retire" }));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        for agent_id in [&first_agent, &second_agent] {
+            let started = call(
+                &handler,
+                "agent.start",
+                json!({ "id": "run-retire", "agent_id": agent_id }),
+            );
+            assert_eq!(started["ok"], true, "{started:?}");
+        }
+        let pid = state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]
+            .session
+            .pid()
+            .unwrap();
+
+        let removed = call(
+            &handler,
+            "agent.remove",
+            json!({ "entity_id": "run-retire", "agent_id": second_agent }),
+        );
+        assert_eq!(removed["ok"], true, "{removed:?}");
+
+        {
+            let s = state.lock().unwrap();
+            assert!(
+                !s.tabs.contains_key(&TabKey::agent(&root, &second_agent)),
+                "the removed agent's PTY is gone"
+            );
+            assert!(
+                s.tabs.contains_key(&TabKey::agent(&root, &first_agent)),
+                "the agent beside it kept running"
+            );
+            assert!(
+                !s.mcp_session_tokens.contains_key(&second_agent),
+                "and its capability with it: {:?}",
+                s.mcp_session_tokens
+            );
+            assert!(s.mcp_session_tokens.contains_key(&first_agent));
+            assert_eq!(s.runs["run-retire"].agents.len(), 1);
+        }
+        assert!(process_reaped(pid), "the harness must be killed AND reaped");
     }
 
     /// Unread is per agent, and the entry's badge is the union: a message

@@ -304,7 +304,7 @@ describe("plan gate confirmation plans (Approve / Implement)", () => {
     expect(approvePlanConfirm()).toEqual({
       title: "Mark this issue ready?",
       actions: [
-        "The planning worktree is removed — the Issue stage plans are already saved",
+        "The planning session ends — the Issue stage plans are already saved",
         "Implementation unlocks for approved stage plans",
       ],
       confirmLabel: "Mark ready",

@@ -6,8 +6,9 @@
 //! go, the harness adapter, the prompt templates) and drives the split's two
 //! entities through their lifecycles:
 //!
-//! - An [`ActivePlan`] (project-scoped) is authored in a disposable `plan/<slug>`
-//!   worktree; its canonical docs live in the store. Its seams: `dispatch_plan`,
+//! - An [`ActivePlan`] (project-scoped) is authored by an agent running in the
+//!   project's PRIMARY checkout, writing into a scratch docs dir outside the
+//!   repo; its canonical docs live in the store. Its seams: `dispatch_plan`,
 //!   `on_plan_done`, the plan-review gates (`approve_plan`, `send_plan_notes`,
 //!   the per-stage `approve_plan_stage` / `send_plan_stage_notes`), and the
 //!   interaction verbs (`message_plan` / `resume_plan` / `abandon_plan`).
@@ -56,7 +57,7 @@ use crate::templates::{self, Templates, Vars, DEFAULT_PLAN_PATH};
 use crate::thread::DocComment;
 use crate::worktree::{
     configured_remote_for_branch, derive_adoption_goal, slugify, ExternalWorktree, Worktree,
-    WorktreeError, WorktreeManager, PLAN_BRANCH_PREFIX,
+    WorktreeError, WorktreeManager,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -298,21 +299,38 @@ pub enum ReportOutcome {
     OutOfPhase(IllegalRunTransition),
 }
 
-/// One plan in flight: its lifecycle state, its disposable planning worktree
-/// (while one is alive), and its warm session. The canonical docs live in the
-/// store — the worktree is throwaway scratch space for the plan agent.
+/// Where an issue's planning agent works.
+///
+/// Planning never gets a worktree: the agent runs in the project's PRIMARY
+/// checkout (it reads the code as it stands on the base branch and writes no
+/// code at all), and the plan documents it produces go to a scratch docs
+/// directory outside the repo, whose path the prompt hands it. `done(plan)`
+/// ingests that directory into the store, which is where the canonical docs
+/// live.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanWorkspace {
+    /// The project's primary checkout — the agent's working directory.
+    pub checkout: PathBuf,
+    /// The scratch directory the plan docs are written into, laid out exactly
+    /// as the store holds them (`.build/plan/…`), outside the repo so planning
+    /// never dirties the primary checkout.
+    pub docs_dir: PathBuf,
+}
+
+/// One plan in flight: its lifecycle state, its planning workspace (while one
+/// is alive), and its warm session. The canonical docs live in the store — the
+/// docs dir is throwaway scratch space for the plan agent.
 pub struct ActivePlan {
     pub plan: Plan,
-    /// The disposable planning worktree (branch `plan/<slug>`), kept warm
-    /// through the notes/revision loop. `None` once torn down (approve /
-    /// abandon) or before a revision re-dispatch re-creates one — the store
-    /// docs are canonical either way.
-    pub worktree: Option<Worktree>,
-    /// The branch planning worktrees are cut from. Kept on the plan (not just
-    /// the worktree) so a revision re-dispatch can re-create a worktree after
-    /// teardown.
+    /// Where the planning agent works: the primary checkout plus its scratch
+    /// docs dir. `None` before the session starts (an inert issue) and once
+    /// the workspace is dropped (approve / abandon) — the store docs are
+    /// canonical either way.
+    pub workspace: Option<PlanWorkspace>,
+    /// The branch the plan is written against — what the primary checkout is
+    /// expected to be on, and what a run cuts its worktree from.
     pub base_branch: String,
-    /// Where the plan doc lives, worktree-relative — convention by default,
+    /// Where the plan doc lives, docs-dir-relative — convention by default,
     /// updated from `done` outputs (and fenced by the ingest).
     pub plan_path: String,
     /// Stage docs: manifest metadata + plan-side review sub-state. Empty for
@@ -336,22 +354,11 @@ pub struct ActivePlan {
 
 impl ActivePlan {
     /// Reattach a plan recovered from the durable store after a daemon
-    /// restart: the store docs are canonical, the PTY session is gone, and the
-    /// disposable worktree may or may not have survived on disk. The caller
-    /// (boot recovery) moves a working state to `Interrupted` itself.
+    /// restart: the store docs are canonical and the PTY session is gone. The
+    /// workspace is not restored — the next dispatch re-derives it (and
+    /// re-materializes the docs) from the store. The caller (boot recovery)
+    /// moves a working state to `Interrupted` itself.
     pub fn reattach(record: &PersistedPlan) -> Self {
-        // A live planning worktree persists all three coordinates; a torn-down
-        // one persists none. Anything partial is treated as torn down — the
-        // store docs are canonical, so nothing is lost.
-        let worktree = match (&record.worktree_name, &record.worktree_path, &record.branch) {
-            (Some(name), Some(path), Some(branch)) => Some(Worktree {
-                name: name.clone(),
-                path: PathBuf::from(path),
-                branch: branch.clone(),
-                base_branch: record.base_branch.clone(),
-            }),
-            _ => None,
-        };
         ActivePlan {
             plan: Plan {
                 id: PlanId::new(record.id.clone()),
@@ -361,7 +368,7 @@ impl ActivePlan {
                 implementation_intent: record.implementation_intent.clone(),
                 implementation_activity: record.implementation_activity.clone(),
             },
-            worktree,
+            workspace: None,
             base_branch: record.base_branch.clone(),
             plan_path: record.plan_path.clone(),
             stages: record.stages.clone(),
@@ -677,6 +684,29 @@ fn append_stage_catalog(
     prompt
 }
 
+/// The scratch docs dir a plan's prompts point its agent at. Empty when the
+/// plan has no workspace — no session is being rendered for it either.
+fn plan_docs_dir_display(active: &ActivePlan) -> String {
+    active
+        .workspace
+        .as_ref()
+        .map(|workspace| workspace.docs_dir.display().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether a directory holds at least one file, at any depth. A scratch docs
+/// dir that holds nothing is one the canonical docs must be restored into.
+fn dir_holds_a_file(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| match entry.file_type() {
+        Ok(kind) if kind.is_dir() => dir_holds_a_file(&entry.path()),
+        Ok(kind) => kind.is_file(),
+        Err(_) => false,
+    })
+}
+
 /// The worktree-relative name of one owner's MCP config. Every agent gets its
 /// own, because the file names the owner the harness reports `done` for.
 pub fn mcp_config_path(owner_id: &str) -> String {
@@ -716,8 +746,10 @@ pub struct Orchestrator {
     repo_path: PathBuf,
     /// Run (and legacy task) worktrees: `build/<slug>` branches.
     worktrees: WorktreeManager,
-    /// Disposable planning worktrees: `plan/<slug>` branches, same root.
-    plan_worktrees: WorktreeManager,
+    /// Where each issue's scratch plan docs are written, one directory per
+    /// issue. Outside the repo: planning writes no files into the checkout it
+    /// runs in.
+    plan_docs_root: PathBuf,
     agent: Agent,
     templates: Templates,
     pty_size: PtySize,
@@ -733,12 +765,11 @@ impl Orchestrator {
         let repo_path = repo_path.into();
         let worktrees_root = worktrees_root.into();
         let worktrees = WorktreeManager::new(repo_path.clone(), worktrees_root.clone());
-        let plan_worktrees = WorktreeManager::new(repo_path.clone(), worktrees_root)
-            .with_branch_prefix(PLAN_BRANCH_PREFIX);
+        let plan_docs_root = worktrees_root.join(".issue-docs");
         Orchestrator {
             repo_path,
             worktrees,
-            plan_worktrees,
+            plan_docs_root,
             agent,
             templates,
             pty_size: PtySize {
@@ -821,7 +852,7 @@ impl Orchestrator {
         agents.post_user(plan.goal.clone(), None, &now);
         ActivePlan {
             plan,
-            worktree: None,
+            workspace: None,
             base_branch: base_branch.to_string(),
             plan_path: DEFAULT_PLAN_PATH.to_string(),
             stages: Vec::new(),
@@ -833,31 +864,51 @@ impl Orchestrator {
         }
     }
 
-    /// Start the planning session for a plan that has none: create the
-    /// disposable planning worktree (branch `plan/<slug>`), scaffold `.build/`
-    /// (the MCP config carries the plan id so `done` reports route back to this
-    /// plan), transition out of `Created`, and render the turn that spawns it.
+    /// Start the planning session for a plan that has none: prepare the
+    /// planning workspace (the primary checkout plus a scratch docs dir),
+    /// scaffold `.build/` there (the MCP config carries the plan id so `done`
+    /// reports route back to this plan), transition out of `Created`, and
+    /// render the turn that spawns it.
     ///
-    /// The worktree is throwaway — the canonical docs land in the store at each
-    /// plan/revise `done` — but it stays warm through the notes/revision loop
-    /// (the scope doc's warm-session property).
+    /// The docs dir is throwaway — the canonical docs land in the store at each
+    /// plan/revise `done` — but the session stays warm through the
+    /// notes/revision loop (the scope doc's warm-session property).
     ///
-    /// Worktree first, state second: a failed create leaves the plan inert and
-    /// re-startable rather than `Drafting` with nothing drafting.
+    /// Workspace first, state second: a failed prepare leaves the plan inert
+    /// and re-startable rather than `Drafting` with nothing drafting.
     pub fn start_plan_drafting(
         &self,
         active: &mut ActivePlan,
     ) -> Result<AgentTurn, OrchestratorError> {
-        let slug = slugify(&active.plan.goal);
-        let worktree = self.plan_worktrees.create(&slug, &active.base_branch)?;
-        self.scaffold_build_dir(&worktree, &active.plan.id.0)?;
+        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
         active.plan.apply(PlanEvent::Dispatch)?;
-        active.worktree = Some(worktree);
+        active.workspace = Some(workspace);
         // Everything the user said before this moment is what the session is
         // being started to answer, so the dispatch reads all of it.
         let _ = active.agents.read_unread(&crate::store::now_rfc3339());
         let prompt = self.render_plan(&self.templates.plan, active, "");
         Ok(AgentTurn::dispatched(prompt, &active.agents, "plan"))
+    }
+
+    /// Where this issue's planning agent works — the primary checkout, always,
+    /// plus the scratch docs dir that belongs to this issue alone.
+    fn plan_workspace(&self, plan_id: &str) -> PlanWorkspace {
+        PlanWorkspace {
+            checkout: self.repo_path.clone(),
+            docs_dir: self.plan_docs_root.join(plan_id),
+        }
+    }
+
+    /// Make that workspace real: the scratch docs dir exists, and the primary
+    /// checkout carries this issue's MCP config so its `done` reports route
+    /// back here.
+    fn prepare_plan_workspace(&self, plan_id: &str) -> Result<PlanWorkspace, OrchestratorError> {
+        let workspace = self.plan_workspace(plan_id);
+        // The stage-doc directory is made up front so the agent only ever has
+        // to write files into a directory that is already there.
+        std::fs::create_dir_all(workspace.docs_dir.join(templates::STAGES_DIR))?;
+        self.write_build_dir(&workspace.checkout, plan_id)?;
+        Ok(workspace)
     }
 
     /// File a plan and start its session in one act — what `plan.create` does
@@ -943,7 +994,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// The transactional half of every plan/revise `done`: copy the worktree
+    /// The transactional half of every plan/revise `done`: copy the scratch
     /// docs into the store, or fail the report with the reason surfaced on the
     /// card. Setting `last_error` here is the one deliberate mutation on the
     /// error path — the plan stays in its working state, but the reviewer must
@@ -954,13 +1005,13 @@ impl Orchestrator {
         store: &Store,
         plan_path: &str,
     ) -> Result<(), OrchestratorError> {
-        let Some(worktree) = &active.worktree else {
-            let reason = "plan docs were not persisted: the planning worktree is gone".to_string();
+        let Some(workspace) = &active.workspace else {
+            let reason = "plan docs were not persisted: the planning workspace is gone".to_string();
             active.last_error = Some(reason.clone());
             return Err(OrchestratorError::Gate(reason));
         };
         if let Err(ingest_error) =
-            store.ingest_plan_docs(&active.plan.id.0, &worktree.path, plan_path)
+            store.ingest_plan_docs(&active.plan.id.0, &workspace.docs_dir, plan_path)
         {
             active.last_error = Some(format!("plan docs were not persisted: {ingest_error}"));
             return Err(OrchestratorError::Store(ingest_error));
@@ -1022,33 +1073,45 @@ impl Orchestrator {
     }
 
     /// Approve the plan: the last human gate. The plan rests at `Approved`
-    /// (the store docs are canonical) and the disposable planning worktree is
-    /// torn down — worktree AND branch. Teardown failure is an error, not a
-    /// shrug: the plan stays at `PlanReview` so a re-approve retries the
-    /// teardown, because a leaked planning worktree would linger as a stray.
+    /// (the store docs are canonical) and the scratch docs dir is dropped.
+    /// Dropping it is best-effort: it holds a copy of what the store already
+    /// has, so a leftover directory is clutter, never a reason to refuse the
+    /// approval the reviewer just gave.
     pub fn approve_plan(&self, active: &mut ActivePlan) -> Result<(), OrchestratorError> {
-        // Pure legality first — nothing is torn down for an illegal approve.
+        // Pure legality first — nothing is dropped for an illegal approve.
         // Stage docs deliberately do NOT gate the coarse approve: per-stage
         // review is progressive (later docs keep getting approved/revised
         // while an earlier stage builds); the dispatch seams re-gate each doc
         // at the moment its build session would spawn.
         plan_transition(&active.plan.state, PlanEvent::Approve)?;
-        if let Some(worktree) = &active.worktree {
-            self.worktrees.remove(worktree, /* keep_branch */ false)?;
-        }
-        active.worktree = None;
+        self.discard_plan_docs_dir(active);
         active.plan.apply(PlanEvent::Approve)?;
         active.last_error = None;
         Ok(())
     }
 
+    /// Drop a plan's scratch docs dir and forget the workspace. Best-effort by
+    /// design — the canonical docs are in the store.
+    fn discard_plan_docs_dir(&self, active: &mut ActivePlan) {
+        if let Some(workspace) = active.workspace.take() {
+            if workspace.docs_dir.exists() {
+                if let Err(cleanup) = std::fs::remove_dir_all(&workspace.docs_dir) {
+                    eprintln!(
+                        "plan {}: removing the scratch docs dir {} failed: {cleanup}",
+                        active.plan.id.0,
+                        workspace.docs_dir.display()
+                    );
+                }
+            }
+        }
+    }
+
     /// Submit a batch of plan notes: re-plan against them and hand the caller
-    /// the turn to deliver. A planning worktree is a worktree, so it hosts one
-    /// agent under the same rule as a run's — the notes reach the process the
-    /// reviewer has been reading, never a replacement. The worktree is kept
-    /// through the notes loop; when it was torn down or vanished (interrupted
-    /// plans), a fresh disposable one is created and the canonical docs are
-    /// re-materialized from the store first.
+    /// the turn to deliver. An issue hosts exactly one agent, so the notes
+    /// reach the process the reviewer has been reading, never a replacement.
+    /// The workspace is kept through the notes loop; when its scratch docs dir
+    /// was dropped or vanished (interrupted plans), it is re-made with the
+    /// canonical docs materialized from the store first.
     pub fn send_plan_notes(
         &self,
         active: &mut ActivePlan,
@@ -1056,49 +1119,33 @@ impl Orchestrator {
         notes: &str,
     ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::SendNotes)?;
-        self.ensure_planning_worktree(active, store)?;
+        self.ensure_plan_workspace(active, store)?;
         active.plan.apply(PlanEvent::SendNotes)?;
         active.last_error = None;
         let prompt = self.render_plan(&self.templates.revise, active, notes);
         Ok(AgentTurn::posted(prompt, &active.agents, notes, "revise"))
     }
 
-    /// Make sure the plan has a live planning worktree, re-creating one (with
-    /// the canonical docs materialized) when it was torn down or vanished from
-    /// disk. A vanished worktree's stale git bookkeeping is pruned best-effort
-    /// so the fresh worktree's name/branch never collide with the carcass.
-    fn ensure_planning_worktree(
+    /// Make sure the plan has a workspace its agent can work in: the primary
+    /// checkout scaffolded, and a scratch docs dir holding the docs as they
+    /// stand. An empty docs dir (a restart, or a workspace dropped at approve)
+    /// is refilled from the canonical store; a plan the store holds no docs
+    /// for yet simply starts from an empty one. A dir the agent is already
+    /// working in is left exactly as it is — re-materializing would overwrite
+    /// the revision in flight.
+    fn ensure_plan_workspace(
         &self,
         active: &mut ActivePlan,
         store: &Store,
     ) -> Result<(), OrchestratorError> {
-        if let Some(worktree) = &active.worktree {
-            if worktree.path.exists() {
-                return Ok(());
+        let workspace = self.prepare_plan_workspace(&active.plan.id.0)?;
+        if !dir_holds_a_file(&workspace.docs_dir) {
+            match store.materialize_plan_docs(&active.plan.id.0, &workspace.docs_dir) {
+                Ok(()) | Err(crate::store::StoreError::NoStoredDocs { .. }) => {}
+                Err(error) => return Err(OrchestratorError::Store(error)),
             }
-            if let Err(cleanup) = self.worktrees.remove(worktree, /* keep_branch */ false) {
-                eprintln!(
-                    "plan {}: pruning the vanished planning worktree {} failed: {cleanup}",
-                    active.plan.id.0, worktree.name
-                );
-            }
-            active.worktree = None;
         }
-        let slug = slugify(&active.plan.goal);
-        let worktree = self.plan_worktrees.create(&slug, &active.base_branch)?;
-        let prepared = self
-            .scaffold_build_dir(&worktree, &active.plan.id.0)
-            .and_then(|()| {
-                store
-                    .materialize_plan_docs(&active.plan.id.0, &worktree.path)
-                    .map_err(OrchestratorError::from)
-            });
-        if let Err(error) = prepared {
-            // Nothing references the half-prepared worktree yet; don't leak it.
-            self.discard_worktree(&worktree);
-            return Err(error);
-        }
-        active.worktree = Some(worktree);
+        active.workspace = Some(workspace);
         Ok(())
     }
 
@@ -1151,7 +1198,7 @@ impl Orchestrator {
                 "no open comments on stage {stage_id}"
             )));
         }
-        self.ensure_planning_worktree(active, store)?;
+        self.ensure_plan_workspace(active, store)?;
         active.plan.apply(PlanEvent::SendNotes)?;
         active.revising_stage_id = Some(stage_id.to_string());
         active.last_error = None;
@@ -1206,7 +1253,7 @@ impl Orchestrator {
         }
         // An interrupted plan lost its worktree; re-create it (docs
         // materialized) before the session can run.
-        self.ensure_planning_worktree(active, store)?;
+        self.ensure_plan_workspace(active, store)?;
         let prompt = self.render_plan(&self.templates.message, active, message);
         if let Some(event) = event {
             active.plan.apply(event)?;
@@ -1233,7 +1280,7 @@ impl Orchestrator {
         store: &Store,
     ) -> Result<AgentTurn, OrchestratorError> {
         plan_transition(&active.plan.state, PlanEvent::Reply)?;
-        self.ensure_planning_worktree(active, store)?;
+        self.ensure_plan_workspace(active, store)?;
         let prompt = match active.revising_stage_id.clone() {
             Some(stage_id) => {
                 let index = active
@@ -1253,22 +1300,13 @@ impl Orchestrator {
         Ok(AgentTurn::dispatched(prompt, &active.agents, "revise"))
     }
 
-    /// Abandon a plan from any non-terminal state: kill the plan agent, mark the
-    /// plan `Abandoned`, and tear down its disposable planning worktree (branch
-    /// included). Teardown is best-effort — a leftover worktree is logged, never
-    /// a reason to fail the abandon; the store docs are canonical and survive
-    /// either way.
+    /// Abandon a plan from any non-terminal state: kill the plan agent, mark
+    /// the plan `Abandoned`, and drop its scratch docs dir. The cleanup is
+    /// best-effort — a leftover directory is logged, never a reason to fail the
+    /// abandon; the store docs are canonical and survive either way.
     pub fn abandon_plan(&self, active: &mut ActivePlan) -> Result<(), OrchestratorError> {
         active.plan.apply(PlanEvent::Abandon)?;
-        if let Some(worktree) = &active.worktree {
-            if let Err(cleanup) = self.worktrees.remove(worktree, /* keep_branch */ false) {
-                eprintln!(
-                    "abandon plan {}: worktree/branch cleanup failed: {cleanup}",
-                    active.plan.id.0
-                );
-            }
-        }
-        active.worktree = None;
+        self.discard_plan_docs_dir(active);
         Ok(())
     }
 
@@ -1295,6 +1333,7 @@ impl Orchestrator {
             &Vars {
                 goal: &active.plan.goal,
                 plan_path: &active.plan_path,
+                docs_dir: &plan_docs_dir_display(active),
                 comments,
                 base_branch: &active.base_branch,
                 stage_id: &doc.id,
@@ -2621,6 +2660,7 @@ impl Orchestrator {
             &Vars {
                 goal: &active.plan.goal,
                 plan_path: &active.plan_path,
+                docs_dir: &plan_docs_dir_display(active),
                 comments,
                 base_branch: &active.base_branch,
                 ..Vars::default()
@@ -2733,6 +2773,50 @@ impl Orchestrator {
 
     /// The scaffold itself, over a bare path — an agent tab may be opened in a
     /// worktree Build has no [`Worktree`] record for yet.
+    /// Whether a path is this project's primary checkout. Compared canonically:
+    /// the same directory reaches this call spelled both ways (a caller's
+    /// canonicalized tab root, and the repo path as configured).
+    fn is_primary_checkout(&self, path: &Path) -> bool {
+        let canonical =
+            |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        canonical(path) == canonical(&self.repo_path)
+    }
+
+    /// Teach this repository — every worktree of it — to ignore Build's own
+    /// machinery, through `.git/info/exclude`: local, never committed, and the
+    /// only ignore file that can hold a rule for the primary checkout without
+    /// putting a file in the human's tree. Idempotent: a rule already there is
+    /// left alone.
+    fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
+        const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
+        let git_dir = self
+            .git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
+            .trim()
+            .to_string();
+        let git_dir = self.repo_path.join(git_dir);
+        let exclude_path = git_dir.join("info").join("exclude");
+        let existing = std::fs::read_to_string(&exclude_path).unwrap_or_default();
+        let missing: Vec<&str> = RULES
+            .into_iter()
+            .filter(|rule| !existing.lines().any(|line| line.trim() == *rule))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(git_dir.join("info"))?;
+        let mut updated = existing;
+        if !updated.is_empty() && !updated.ends_with('\n') {
+            updated.push('\n');
+        }
+        updated.push_str("# Build's machine-local agent plumbing\n");
+        for rule in missing {
+            updated.push_str(rule);
+            updated.push('\n');
+        }
+        std::fs::write(&exclude_path, updated)?;
+        Ok(())
+    }
+
     fn write_build_dir(
         &self,
         worktree_path: &Path,
@@ -2752,7 +2836,18 @@ impl Orchestrator {
         // `attachments/` is held back for the same reason and one more: files
         // the reviewer sent with a message are conversation, not work, so they
         // must not appear as an uncommitted change in the diff being reviewed.
-        std::fs::write(build_dir.join(".gitignore"), "mcp*.json\nattachments/\n")?;
+        //
+        // The primary checkout is the exception: it is the human's own tree and
+        // the one every merge lands in, and an untracked `.build/.gitignore`
+        // there refuses to be overwritten by any branch that carries one —
+        // which is every branch Build materializes docs on. Its rules go in the
+        // repo-local exclude file instead, where they cover the whole repo and
+        // nothing has to be written into the tree to hold them.
+        if self.is_primary_checkout(worktree_path) {
+            self.exclude_build_machinery_repo_locally()?;
+        } else {
+            std::fs::write(build_dir.join(".gitignore"), "mcp*.json\nattachments/\n")?;
+        }
         // Absolute path to this binary so the harness can spawn it regardless of PATH.
         let exe = std::env::current_exe()
             .ok()
@@ -3048,12 +3143,12 @@ mod tests {
             .unwrap_or_else(|| panic!("no comment {comment_id}"))
     }
 
-    /// The path of the plan's live disposable worktree (panics when torn down).
-    fn plan_worktree_path(plan: &ActivePlan) -> PathBuf {
-        plan.worktree
+    /// The plan's live scratch docs dir (panics once the workspace is gone).
+    fn plan_docs_dir(plan: &ActivePlan) -> PathBuf {
+        plan.workspace
             .as_ref()
-            .expect("plan has a live planning worktree")
-            .path
+            .expect("plan has a live planning workspace")
+            .docs_dir
             .clone()
     }
 
@@ -3141,7 +3236,7 @@ mod tests {
         goal: &str,
     ) -> ActivePlan {
         let mut plan = drafting_plan(orch, id, goal);
-        let worktree_path = plan_worktree_path(&plan);
+        let worktree_path = plan_docs_dir(&plan);
         std::fs::write(worktree_path.join(".build/plan.md"), "# Plan v1\n").unwrap();
         orch.on_plan_done(
             &mut plan,
@@ -3182,7 +3277,7 @@ mod tests {
     ) -> ActivePlan {
         let titles = ["First", "Second", "Third"];
         let mut plan = drafting_plan(orch, id, "Add greetings");
-        let plan_dir = plan_worktree_path(&plan).join(".build/plan");
+        let plan_dir = plan_docs_dir(&plan).join(".build/plan");
         std::fs::create_dir_all(&plan_dir).unwrap();
         let mut entries = Vec::new();
         for (position, title) in titles.iter().take(stage_count).enumerate() {
@@ -3260,24 +3355,97 @@ mod tests {
         dispatch_planned_run(orch, store, &plan, id)
     }
 
+    /// Every checkout git knows about for this repo, primary first.
+    fn registered_checkouts(repo: &Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree ").map(str::to_string))
+            .collect()
+    }
+
     #[tokio::test]
-    async fn dispatch_plan_creates_a_disposable_worktree_on_the_plan_branch() {
+    async fn dispatch_plan_runs_on_the_primary_checkout_and_cuts_no_worktree() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
 
         let plan = drafting_plan(&orch, "plan-1", "Add a greeting");
         assert_eq!(plan.plan.state, PlanState::Drafting);
-        let worktree = plan.worktree.as_ref().expect("disposable worktree");
-        assert!(
-            worktree.branch.starts_with("plan/"),
-            "planning branches live in the plan/ namespace: {}",
-            worktree.branch
+        let workspace = plan.workspace.as_ref().expect("a planning workspace");
+        assert_eq!(
+            workspace.checkout, repo,
+            "an issue's planning agent works in the project's primary checkout"
         );
-        assert!(worktree.path.join("README.md").exists());
+        assert_eq!(
+            registered_checkouts(&repo).len(),
+            1,
+            "planning cuts no worktree: {:?}",
+            registered_checkouts(&repo)
+        );
+        assert!(
+            !workspace.docs_dir.starts_with(&repo),
+            "the scratch docs dir lives outside the repo: {}",
+            workspace.docs_dir.display()
+        );
+        assert!(
+            workspace.docs_dir.is_dir(),
+            "the agent has a docs dir to write into: {}",
+            workspace.docs_dir.display()
+        );
 
-        // The scaffolded MCP config routes `done` reports back to THIS plan.
-        let mcp = std::fs::read_to_string(worktree.path.join(mcp_config_path("plan-1"))).unwrap();
+        // The scaffolded MCP config routes `done` reports back to THIS plan,
+        // and it lands in the checkout the agent actually runs in.
+        let mcp = std::fs::read_to_string(repo.join(mcp_config_path("plan-1"))).unwrap();
         assert!(mcp.contains("plan-1"), "{mcp}");
+    }
+
+    /// Planning runs in the human's own checkout, so it must leave no trace
+    /// there: nothing to commit, and — critically — no untracked
+    /// `.build/.gitignore`, which would refuse to be overwritten by the merge
+    /// of any branch that carries one. The rules live in the repo-local
+    /// exclude file instead.
+    #[tokio::test]
+    async fn planning_leaves_the_primary_checkout_clean() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+
+        let _first = drafting_plan(&orch, "plan-1", "Add a greeting");
+
+        assert!(
+            !repo.join(".build/.gitignore").exists(),
+            "an ignore file here would block every later merge"
+        );
+        let exclude_path = repo.join(".git/info/exclude");
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert!(exclude.contains(".build/mcp*.json"), "{exclude}");
+        assert!(exclude.contains(".build/attachments/"), "{exclude}");
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&status.stdout).trim(),
+            "",
+            "planning dirties nothing in the primary checkout"
+        );
+
+        // A second issue writes its own config and repeats no rule.
+        let _second = drafting_plan(&orch, "plan-2", "Add a farewell");
+        let exclude = std::fs::read_to_string(&exclude_path).unwrap();
+        assert_eq!(
+            exclude
+                .lines()
+                .filter(|line| line.trim() == ".build/mcp*.json")
+                .count(),
+            1,
+            "the exclude rules are written once: {exclude}"
+        );
+        assert!(repo.join(mcp_config_path("plan-2")).exists());
     }
 
     #[tokio::test]
@@ -3365,11 +3533,7 @@ mod tests {
         assert_eq!(plan.plan.state, PlanState::IdleUnreported);
 
         // Quiescence never decided anything: the late report still lands.
-        std::fs::write(
-            plan_worktree_path(&plan).join(".build/plan.md"),
-            "# Late plan\n",
-        )
-        .unwrap();
+        std::fs::write(plan_docs_dir(&plan).join(".build/plan.md"), "# Late plan\n").unwrap();
         orch.on_plan_done(
             &mut plan,
             &store,
@@ -3432,7 +3596,7 @@ mod tests {
         orch.send_plan_notes(&mut plan, &store, "restructure")
             .unwrap();
         std::fs::write(
-            plan_worktree_path(&plan).join(".build/plan/03-third.md"),
+            plan_docs_dir(&plan).join(".build/plan/03-third.md"),
             "# Stage: Third\n",
         )
         .unwrap();
@@ -3462,14 +3626,14 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
-        let worktree_path = plan_worktree_path(&plan);
+        let worktree_path = plan_docs_dir(&plan);
 
         let turn = orch
             .send_plan_notes(&mut plan, &store, "tighten step 2")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
         assert_eq!(
-            plan_worktree_path(&plan),
+            plan_docs_dir(&plan),
             worktree_path,
             "the worktree stays warm through the notes loop"
         );
@@ -3501,125 +3665,115 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_plan_notes_recreates_a_vanished_worktree_from_the_store() {
+    async fn send_plan_notes_refills_a_vanished_docs_dir_from_the_store() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
 
-        // The user deleted the planning worktree out from under the plan. The
-        // docs are canonical in the store, so a revision just re-creates one.
-        let old_path = plan_worktree_path(&plan);
-        std::fs::remove_dir_all(&old_path).unwrap();
+        // The scratch docs dir was deleted out from under the plan. The docs
+        // are canonical in the store, so a revision just refills it.
+        let docs_dir = plan_docs_dir(&plan);
+        std::fs::remove_dir_all(&docs_dir).unwrap();
         orch.send_plan_notes(&mut plan, &store, "tighten step 2")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
-        let new_path = plan_worktree_path(&plan);
-        assert!(new_path.exists());
+        assert_eq!(plan_docs_dir(&plan), docs_dir, "the same docs dir");
         assert_eq!(
-            std::fs::read_to_string(new_path.join(".build/plan.md")).unwrap(),
+            std::fs::read_to_string(docs_dir.join(".build/plan.md")).unwrap(),
             "# Plan v1\n",
             "docs re-materialized from the store before the turn is delivered"
         );
     }
 
     #[tokio::test]
-    async fn send_plan_notes_recreates_a_torn_down_worktree_from_the_store() {
+    async fn send_plan_notes_remakes_a_dropped_workspace_from_the_store() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
 
-        // Simulate the interrupted arm where the worktree record is gone
-        // entirely (e.g. reattached after teardown).
-        plan.worktree = None;
+        // Simulate the interrupted arm where the workspace is gone entirely
+        // (a plan reattached after a restart holds none).
+        let docs_dir = plan_docs_dir(&plan);
+        std::fs::remove_dir_all(&docs_dir).unwrap();
+        plan.workspace = None;
         orch.send_plan_notes(&mut plan, &store, "tighten step 2")
             .unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
-        let new_path = plan_worktree_path(&plan);
+        let workspace = plan.workspace.as_ref().expect("a workspace was remade");
+        assert_eq!(workspace.checkout, repo, "still the primary checkout");
         assert_eq!(
-            std::fs::read_to_string(new_path.join(".build/plan.md")).unwrap(),
+            std::fs::read_to_string(workspace.docs_dir.join(".build/plan.md")).unwrap(),
             "# Plan v1\n"
         );
-        // The fresh worktree is fully scaffolded (done reports must route).
-        assert!(new_path.join(mcp_config_path("plan-1")).exists());
+        // The checkout is fully scaffolded (done reports must route).
+        assert!(repo.join(mcp_config_path("plan-1")).exists());
     }
 
+    /// A revision in flight is never overwritten: the docs dir the agent is
+    /// working in is left exactly as the agent left it.
     #[tokio::test]
-    async fn approve_plan_tears_down_the_worktree_and_branch() {
+    async fn send_plan_notes_leaves_a_live_docs_dir_alone() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
-        let worktree = plan.worktree.clone().unwrap();
+
+        let docs_dir = plan_docs_dir(&plan);
+        std::fs::write(docs_dir.join(".build/plan.md"), "# Plan being revised\n").unwrap();
+        orch.send_plan_notes(&mut plan, &store, "tighten step 2")
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(docs_dir.join(".build/plan.md")).unwrap(),
+            "# Plan being revised\n",
+            "the store copy must not clobber the draft in flight"
+        );
+    }
+
+    #[tokio::test]
+    async fn approve_plan_drops_the_scratch_docs_dir() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let store = split_store(&dir);
+        let mut plan = plan_in_review(&orch, &store, "plan-1");
+        let docs_dir = plan_docs_dir(&plan);
 
         orch.approve_plan(&mut plan).unwrap();
         assert_eq!(plan.plan.state, PlanState::Approved);
-        assert_eq!(plan.worktree, None, "the disposable worktree is gone");
-        assert!(!worktree.path.exists());
-        let r = git2::Repository::open(&repo).unwrap();
-        assert!(
-            r.find_branch(&worktree.branch, git2::BranchType::Local)
-                .is_err(),
-            "the plan/ branch is deleted with the worktree"
+        assert_eq!(plan.workspace, None, "the workspace is gone");
+        assert!(!docs_dir.exists(), "the scratch docs are gone with it");
+        assert_eq!(
+            registered_checkouts(&repo).len(),
+            1,
+            "planning never had a worktree to tear down"
         );
-        // The canonical docs survive the teardown.
+        // The canonical docs survive.
         assert_eq!(
             store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
             Some("# Plan v1\n")
         );
     }
 
+    /// The reviewer-facing bug this guards: a planning checkout cleaned up
+    /// outside Build made "Mark issue ready" fail, because removing something
+    /// already absent was read as a failure. Approve only wants the scratch
+    /// docs gone — and they are.
     #[tokio::test]
-    async fn approve_plan_teardown_failure_is_an_error_not_a_shrug() {
-        use std::os::unix::fs::PermissionsExt;
-
+    async fn approve_plan_succeeds_when_the_docs_dir_already_vanished() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
 
-        // A teardown that genuinely CANNOT finish: the worktree is still there
-        // and its parent forbids removing it. (An already-removed worktree is
-        // not this — absence is what removal wanted; see the test below.)
-        let worktree = plan.worktree.clone().unwrap();
-        let parent = worktree.path.parent().expect("a worktree has a parent");
-        let original = std::fs::metadata(parent).unwrap().permissions();
-        std::fs::set_permissions(parent, PermissionsExt::from_mode(0o500)).unwrap();
-
-        let outcome = orch.approve_plan(&mut plan);
-
-        // Restore first, so a failed assertion below cannot leave the tempdir
-        // undeletable for the rest of the suite.
-        std::fs::set_permissions(parent, original).unwrap();
-        outcome.expect_err("teardown failure must surface");
-        assert_eq!(
-            plan.plan.state,
-            PlanState::PlanReview,
-            "the plan stays at its gate so a re-approve retries the teardown"
-        );
-        assert!(plan.worktree.is_some(), "the worktree record is kept");
-    }
-
-    /// The reviewer-facing bug this guards: a planning worktree cleaned up
-    /// outside Build made "Mark issue ready" fail, because tearing down
-    /// something already absent was read as a teardown failure. Approve only
-    /// wants the worktree gone — and it is.
-    #[tokio::test]
-    async fn approve_plan_succeeds_when_the_worktree_already_vanished() {
-        let (dir, repo) = init_repo();
-        let orch = orchestrator(&dir, &repo);
-        let store = split_store(&dir);
-        let mut plan = plan_in_review(&orch, &store, "plan-1");
-
-        // Cleaned up behind the plan's back: directory, bookkeeping and branch.
-        let worktree = plan.worktree.clone().unwrap();
-        orch.worktrees.remove(&worktree, false).unwrap();
+        // Cleaned up behind the plan's back.
+        std::fs::remove_dir_all(plan_docs_dir(&plan)).unwrap();
 
         orch.approve_plan(&mut plan)
-            .expect("an already-gone worktree is the goal, not a failure");
+            .expect("an already-gone docs dir is the goal, not a failure");
         assert_eq!(plan.plan.state, PlanState::Approved);
-        assert!(plan.worktree.is_none(), "the plan lets the carcass go");
+        assert!(plan.workspace.is_none(), "the plan lets the carcass go");
     }
 
     #[tokio::test]
@@ -3666,7 +3820,7 @@ mod tests {
         plan.plan.apply(crate::plan::PlanEvent::SendNotes).unwrap();
         plan.revising_stage_id = Some("first".into());
         std::fs::write(
-            plan_worktree_path(&plan).join(".build/plan/01-first.md"),
+            plan_docs_dir(&plan).join(".build/plan/01-first.md"),
             "# Stage: First (revised)\n",
         )
         .unwrap();
@@ -3752,9 +3906,6 @@ mod tests {
             implementation_activity: crate::plan::ImplementationActivity::WaitingApproval(
                 "second".into(),
             ),
-            worktree_name: Some("add-a-greeting".into()),
-            worktree_path: Some("/tmp/wt/add-a-greeting".into()),
-            branch: Some("plan/add-a-greeting".into()),
             plan_path: ".build/plan.md".into(),
             stages: vec![],
             comments: Vec::new(),
@@ -3773,24 +3924,16 @@ mod tests {
         assert_eq!(active.plan.id.0, "plan-1");
         assert_eq!(active.plan.state, PlanState::Interrupted);
         assert_eq!(active.plan.archived_at, record.archived_at);
-        let worktree = active.worktree.as_ref().unwrap();
-        assert_eq!(worktree.branch, "plan/add-a-greeting");
-        assert_eq!(worktree.base_branch, "main");
+        assert_eq!(
+            active.workspace, None,
+            "a reattached plan holds no workspace: the next dispatch re-derives it"
+        );
         assert_eq!(active.base_branch, "main");
         assert_eq!(
             active.model_choice.model.as_deref(),
             Some("claude-opus-4-8")
         );
         assert_eq!(active.last_error.as_deref(), Some("boom"));
-
-        // A record whose worktree was torn down reattaches without one.
-        let torn_down = PersistedPlan {
-            worktree_name: None,
-            worktree_path: None,
-            branch: None,
-            ..record
-        };
-        assert_eq!(ActivePlan::reattach(&torn_down).worktree, None);
     }
 
     #[test]
@@ -4671,7 +4814,7 @@ mod tests {
         // The agent revises the doc and reports done → back to PlanReview, the
         // stage approval reset, the comment resolved, the store copy updated.
         std::fs::write(
-            plan_worktree_path(&plan).join(".build/plan/01-first.md"),
+            plan_docs_dir(&plan).join(".build/plan/01-first.md"),
             "# Stage: First (revised)\n",
         )
         .unwrap();
@@ -4775,34 +4918,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_plan_redispatches_an_interrupted_plan_recreating_its_worktree() {
+    async fn resume_plan_redispatches_an_interrupted_plan_remaking_its_workspace() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
 
-        // A plan interrupted mid-draft: its store docs survive, its worktree is
-        // gone (simulate the loss by tearing it down after reattach).
+        // A plan interrupted mid-draft: its store docs survive, its scratch
+        // docs dir is gone (what a restart leaves behind).
         let mut plan = plan_in_review(&orch, &store, "plan-1");
         // Move it back to a working phase then interrupt it.
         orch.send_plan_notes(&mut plan, &store, "revise").unwrap();
         plan.plan.apply(crate::plan::PlanEvent::Interrupt).unwrap();
-        // Drop the worktree from disk to prove resume re-creates one.
-        let stale = plan.worktree.take().unwrap();
-        orch.discard_worktree(&stale);
-        assert!(!stale.path.exists());
+        let stale = plan.workspace.take().unwrap();
+        std::fs::remove_dir_all(&stale.docs_dir).unwrap();
 
         let turn = orch.resume_plan(&mut plan, &store).unwrap();
         assert_eq!(plan.plan.state, PlanState::Drafting);
-        let worktree = plan
-            .worktree
+        let workspace = plan
+            .workspace
             .as_ref()
-            .expect("resume re-created a worktree");
+            .expect("resume remade the workspace");
+        assert_eq!(workspace.checkout, repo, "still the primary checkout");
         assert!(
-            worktree.path.join(".build/plan.md").exists(),
+            workspace.docs_dir.join(".build/plan.md").exists(),
             "docs materialized"
         );
-        // The re-plan instruction travels whether the re-created worktree's
-        // agent is the one that was interrupted or a fresh replacement.
+        // The re-plan instruction travels whether the agent is the one that was
+        // interrupted or a fresh replacement.
         let prompt = dispatch_turn_halves(&turn, "revise");
         assert!(
             prompt.contains("Add a greeting"),
@@ -4811,17 +4953,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn abandon_plan_tears_down_the_worktree_and_keeps_the_store_docs() {
+    async fn abandon_plan_drops_the_docs_dir_and_keeps_the_store_docs() {
         let (dir, repo) = init_repo();
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut plan = plan_in_review(&orch, &store, "plan-1");
-        let worktree = plan.worktree.clone().unwrap();
+        let docs_dir = plan_docs_dir(&plan);
 
         orch.abandon_plan(&mut plan).unwrap();
         assert_eq!(plan.plan.state, PlanState::Abandoned);
-        assert_eq!(plan.worktree, None);
-        assert!(!worktree.path.exists(), "the disposable worktree is gone");
+        assert_eq!(plan.workspace, None);
+        assert!(!docs_dir.exists(), "the scratch docs are gone");
         assert_eq!(
             store.read_plan_doc("plan-1", ".build/plan.md").as_deref(),
             Some("# Plan v1\n"),

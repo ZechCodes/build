@@ -4,17 +4,13 @@
 //! a working directory cut from the project's base branch, so parallel tasks on
 //! the same repo never touch each other. On abandon the worktree is removed but
 //! the branch is kept (abandoning stays reversible-ish); merge decides for itself.
-//! Disposable planning worktrees (Plan/Run split) use the same manager with the
-//! `plan/<slug>` branch namespace instead.
+//! Issue planning has no worktree at all: its agent runs on the primary checkout.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
-
-/// The branch-name prefix for disposable planning worktrees: `plan/<slug>`.
-pub const PLAN_BRANCH_PREFIX: &str = "plan";
 
 /// Things that can go wrong managing a worktree.
 #[derive(Debug, thiserror::Error)]
@@ -106,32 +102,17 @@ pub struct NamedBranchCheckout {
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
-    /// Branch namespace for created worktrees (`<prefix>/<slug>`): `build` for
-    /// run worktrees, `plan` for disposable planning worktrees. Removal never
-    /// re-derives the branch (the [`Worktree`] carries it), so one manager can
-    /// tear down another prefix's worktree.
-    branch_prefix: String,
 }
 
 impl WorktreeManager {
     /// `repo_path` is the project git repo; `worktrees_root` is where task
     /// worktrees are materialized (one subdirectory per task slug). Branches
-    /// are cut in the `build/` namespace unless overridden with
-    /// [`with_branch_prefix`](Self::with_branch_prefix).
+    /// are cut in the `build/` namespace.
     pub fn new(repo_path: impl Into<PathBuf>, worktrees_root: impl Into<PathBuf>) -> Self {
         WorktreeManager {
             repo_path: repo_path.into(),
             worktrees_root: worktrees_root.into(),
-            branch_prefix: BRANCH_PREFIX.to_string(),
         }
-    }
-
-    /// Cut branches in a different namespace (`<prefix>/<slug>`). Planning
-    /// worktrees use `plan/` so they never collide with run branches of the
-    /// same slug.
-    pub fn with_branch_prefix(mut self, prefix: impl Into<String>) -> Self {
-        self.branch_prefix = prefix.into();
-        self
     }
 
     /// Create `<prefix>/<slug>` from `base_branch` and add a worktree for it. The
@@ -223,12 +204,12 @@ impl WorktreeManager {
     }
 
     /// The directory a named branch lands in: its segments joined by hyphens,
-    /// minus this manager's own namespace, which every directory here is
-    /// already inside. `build/csv-export` → `csv-export`, `feature/csv-export`
-    /// → `feature-csv-export`, so two namespaces never claim one directory.
+    /// minus Build's own namespace, which every directory here is already
+    /// inside. `build/csv-export` → `csv-export`, `feature/csv-export` →
+    /// `feature-csv-export`, so two namespaces never claim one directory.
     fn directory_name_for(&self, branch: &str) -> String {
         let mut segments: Vec<&str> = branch.split('/').collect();
-        if segments.len() > 1 && segments[0] == self.branch_prefix {
+        if segments.len() > 1 && segments[0] == BRANCH_PREFIX {
             segments.remove(0);
         }
         segments.join("-")
@@ -243,9 +224,9 @@ impl WorktreeManager {
             || self.worktrees_root.join(name).exists()
     }
 
-    /// Build the branch name for a slug in this manager's namespace.
+    /// Build the branch name for a slug in Build's namespace.
     fn branch_name(&self, slug: &str) -> String {
-        format!("{}/{}", self.branch_prefix, slug)
+        format!("{BRANCH_PREFIX}/{slug}")
     }
 
     /// Recreate a Build-owned checkout at its original path and branch. The
@@ -572,7 +553,7 @@ fn strip_trailing_digit_run(segment: &str) -> String {
 
 /// Enumerate every git worktree of `repo_path` that is neither the primary
 /// checkout nor in `excluded_paths` (canonical paths of Build-bound worktrees —
-/// runs and live planning worktrees, which must never surface as adoptable),
+/// runs, which must never surface as adoptable),
 /// with a review summary per worktree. Read-only. A worktree whose summary
 /// cannot be computed (corrupt checkout, no merge base with the base branch)
 /// is skipped with an eprintln! — one broken stray must not fail the scan.
@@ -1058,35 +1039,6 @@ mod tests {
     }
 
     #[test]
-    fn branch_prefix_override_cuts_branches_in_that_namespace() {
-        let (dir, repo) = init_repo();
-        let plan_mgr = WorktreeManager::new(&repo, dir.path().join("worktrees"))
-            .with_branch_prefix(PLAN_BRANCH_PREFIX);
-
-        let plan_wt = plan_mgr.create("fix-typo", "main").unwrap();
-        assert_eq!(plan_wt.branch, "plan/fix-typo");
-        assert!(plan_wt.path.join("README.md").exists());
-        let r = git2::Repository::open(&repo).unwrap();
-        assert!(r
-            .find_branch("plan/fix-typo", git2::BranchType::Local)
-            .is_ok());
-
-        // A build-prefix worktree of the same slug shares the name/dir space,
-        // so it disambiguates instead of colliding with the plan worktree.
-        let build_mgr = manager(&dir, &repo);
-        let build_wt = build_mgr.create("fix-typo", "main").unwrap();
-        assert_eq!(build_wt.name, "fix-typo-2");
-        assert_eq!(build_wt.branch, "build/fix-typo-2");
-
-        // Teardown works across prefixes (remove never re-derives the branch).
-        plan_mgr.remove(&plan_wt, /* keep_branch */ false).unwrap();
-        assert!(!plan_wt.path.exists());
-        assert!(r
-            .find_branch("plan/fix-typo", git2::BranchType::Local)
-            .is_err());
-    }
-
-    #[test]
     fn create_makes_branch_and_working_dir() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
@@ -1568,7 +1520,7 @@ mod vanished_worktree_removal {
 
     #[test]
     fn removing_an_already_vanished_worktree_succeeds() {
-        // The defect this guards: a planning worktree cleaned up outside Build
+        // The defect this guards: a Build worktree cleaned up outside Build
         // (dir, bookkeeping AND branch gone) made remove() fail on git2's
         // baffling "could not find '.git/shallow' to stat" from find_worktree,
         // which blocked the plan approve that only wanted the worktree gone.

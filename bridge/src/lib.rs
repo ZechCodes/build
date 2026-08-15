@@ -6,8 +6,9 @@
 //! each with its own lifecycle, instead of one fused task.
 //!
 //! A [`plan`](crate::plan) is project-scoped; its canonical docs live in the
-//! store. It is authored in a disposable `plan/<slug>` worktree and, once
-//! approved, can be implemented later, never, or repeatedly:
+//! store. Its agent runs in the project's primary checkout, writing docs into a
+//! scratch dir outside the repo, and once approved the plan can be implemented
+//! later, never, or repeatedly:
 //!
 //! ```text
 //! created → drafting → plan_review → approved

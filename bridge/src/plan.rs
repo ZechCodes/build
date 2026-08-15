@@ -1,9 +1,9 @@
 //! The plan model and its lifecycle state machine.
 //!
 //! A plan is *project-scoped*: a goal, canonical stage docs living in the
-//! bridge store, per-stage doc states, and persisted review comments. It is
-//! authored in a disposable planning worktree but never owns one — worktrees
-//! belong to runs (`crate::run`). This module is the pure domain core — no IO,
+//! bridge store, per-stage doc states, and persisted review comments. Its
+//! agent works in the project's primary checkout and owns no worktree —
+//! worktrees belong to runs (`crate::run`). This module is the pure domain core — no IO,
 //! no git, no PTY — so the lifecycle rules are testable in isolation.
 //!
 //! The plan lifecycle (spec: Plan/Run Split):
@@ -20,8 +20,8 @@
 //! `failed` (the agent calls `done` with that status), `idle_unreported` (the
 //! PTY went quiet without any `done`), and `interrupted` (the daemon died
 //! mid-session and recovered the plan from the durable store on boot — or the
-//! planning worktree vanished from disk; a lost worktree never archives a
-//! plan, because the canonical docs live in the store). There is exactly one
+//! scratch docs dir vanished from disk; losing it never archives a plan,
+//! because the canonical docs live in the store). There is exactly one
 //! working phase, so — unlike the fused task machine — no interruption needs
 //! to remember which phase it interrupted.
 //!
@@ -47,7 +47,7 @@ impl PlanId {
 /// Every state a plan can occupy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanState {
-    /// Dispatched, disposable planning worktree being prepared. No session yet.
+    /// Filed, with nothing started. No workspace, no session yet.
     Created,
     /// A plan agent is running in a PTY, writing `.build/plan/` docs.
     Drafting,
@@ -63,7 +63,7 @@ pub enum PlanState {
     /// The PTY went quiet without reporting `done`. An anomaly, explicitly
     /// *not* treated as completion.
     IdleUnreported,
-    /// The daemon died (or the planning worktree vanished) while the agent was
+    /// The daemon died (or the scratch docs dir vanished) while the agent was
     /// drafting. The docs survive in the store; the session did not. The user
     /// decides: re-dispatch, send notes, or abandon.
     Interrupted,
@@ -107,11 +107,11 @@ pub enum PlanEvent {
     Dispatch,
     /// `done(phase=plan, completed)`; docs ingested. Drafting → PlanReview.
     PlanReady,
-    /// The user submits a batch of plan notes. PlanReview → Drafting (revision
-    /// session in a fresh disposable worktree, docs re-materialized first).
+    /// The user submits a batch of plan notes. PlanReview → Drafting (a
+    /// revision turn, with the scratch docs refilled from the store first).
     SendNotes,
-    /// The user approves the plan. PlanReview → Approved (planning worktree
-    /// torn down elsewhere; the store copy is canonical).
+    /// The user approves the plan. PlanReview → Approved (the scratch docs are
+    /// dropped elsewhere; the store copy is canonical).
     Approve,
     /// `done(status=blocked)` while drafting.
     Blocked,
@@ -119,7 +119,7 @@ pub enum PlanEvent {
     Failed,
     /// Quiescence: the PTY went silent without a `done`.
     WentIdle,
-    /// The daemon restarted (or the planning worktree vanished) while the
+    /// The daemon restarted (or the scratch docs dir vanished) while the
     /// agent was drafting. Raised during boot recovery, never by a live agent.
     Interrupt,
     /// The user replies to a blocked/failed/idle card; resume drafting.
@@ -153,8 +153,8 @@ pub fn plan_transition(
     };
 
     match (state, event) {
-        // Dispatch begins work: a disposable planning worktree and a plan
-        // agent session.
+        // Dispatch begins work: a planning workspace and a plan agent session
+        // in the primary checkout.
         (Created, E::Dispatch) => Ok(Drafting),
 
         // Drafting: the agent reports, blocks, fails, or goes quiet.
@@ -188,7 +188,7 @@ pub fn plan_transition(
         (IdleUnreported, E::Blocked) => Ok(Blocked),
         (IdleUnreported, E::Failed) => Ok(Failed),
 
-        // Interrupted: the session (and possibly the disposable worktree) is
+        // Interrupted: the session (and possibly the scratch docs dir) is
         // gone, but the docs survive in the store. A reply re-dispatches
         // drafting; notes route into the revision loop so the user can steer
         // instead of merely restarting.

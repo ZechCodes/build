@@ -791,14 +791,14 @@ impl PendingAgentTurn {
         }
     }
 
-    /// Address a plan's turn to its disposable planning worktree. `None` once
-    /// that worktree is gone (approve/abandon tear it down): a plan with no
-    /// worktree has no agent, and every plan surface renders the empty state
-    /// rather than a tab that cannot exist.
+    /// Address a plan's turn to the primary checkout its planning agent runs
+    /// in. `None` once the workspace is gone (approve/abandon drop it): a plan
+    /// with no workspace has no agent, and every plan surface renders the empty
+    /// state rather than a tab that cannot exist.
     fn for_plan(owner: &str, active: &ActivePlan, turn: AgentTurn) -> Option<Self> {
-        let worktree = active.worktree.as_ref()?;
+        let workspace = active.workspace.as_ref()?;
         Some(PendingAgentTurn {
-            root: AppState::canonical_root(&worktree.path),
+            root: AppState::canonical_root(&workspace.checkout),
             owner: owner.to_string(),
             agent_id: active.agents.first().id.clone(),
             model_choice: active.model_choice.clone(),
@@ -2223,10 +2223,10 @@ impl AppState {
     }
 
     /// Re-attach one persisted plan on boot. The canonical docs live in the
-    /// store, so a vanished planning worktree never abandons or archives a
+    /// store, so a vanished scratch docs dir never abandons or archives a
     /// plan — a plan that was mid-draft simply surfaces `Interrupted` (its
-    /// session died with the daemon); the next revision dispatch re-creates a
-    /// worktree materialized from the store. Recovery never abandons a plan.
+    /// session died with the daemon); the next revision dispatch remakes the
+    /// workspace from the store. Recovery never abandons a plan.
     fn recover_plan(&mut self, record: PersistedPlan) -> Result<(), String> {
         let plan_id = record.id.clone();
         let mut active = ActivePlan::reattach(&record);
@@ -2679,7 +2679,6 @@ impl AppState {
             .clone();
         let updated_at = self.entity_updated_at.get(plan_id).cloned().unwrap_or(now);
         let project_path = self.project_path_for(plan_id);
-        let worktree = active.worktree.as_ref();
         let record = PersistedPlan {
             id: plan_id.to_string(),
             goal: active.plan.goal.clone(),
@@ -2689,9 +2688,6 @@ impl AppState {
             archived_at: active.plan.archived_at.clone(),
             implementation_intent: active.plan.implementation_intent.clone(),
             implementation_activity: active.plan.implementation_activity.clone(),
-            worktree_name: worktree.map(|w| w.name.clone()),
-            worktree_path: worktree.map(|w| w.path.display().to_string()),
-            branch: worktree.map(|w| w.branch.clone()),
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
             // Retired storage: comments are posts on the conversation now. The
@@ -3103,25 +3099,19 @@ impl AppState {
         id
     }
 
-    /// Canonical paths of every Build-bound worktree — every run plus every live
-    /// planning worktree: they are Build's, never external. `fs::canonicalize`
-    /// with the raw path as fallback.
+    /// Canonical paths of every Build-bound worktree — one per run: they are
+    /// Build's, never external. `fs::canonicalize` with the raw path as
+    /// fallback.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
         let canonical = |path: &std::path::Path| {
             std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
         };
-        // Run worktrees are Build's. Disposable *planning* worktrees join the
-        // set too, so a live planning worktree never surfaces as an adoptable
-        // external card while a plan is being authored.
+        // Run worktrees are Build's. Issues own no worktree at all — their
+        // agents run in the primary checkout — so there is nothing to add here
+        // for them.
         self.runs
             .values()
             .map(|active| canonical(&active.worktree.path))
-            .chain(
-                self.plans
-                    .values()
-                    .filter_map(|active| active.worktree.as_ref())
-                    .map(|w| canonical(&w.path)),
-            )
             .collect()
     }
 
@@ -3145,24 +3135,35 @@ impl AppState {
             .count()
     }
 
-    /// The canonical worktree an entity (plan or run) is working in — the key
-    /// its agent is registered under.
+    /// The canonical checkout an entity's agents work in — the key they are
+    /// registered under. A run's is its worktree; an issue's is the project's
+    /// primary checkout, because issue agents never get a worktree.
     ///
-    /// A plan whose disposable planning worktree has been torn down (approved,
-    /// abandoned) has no worktree and therefore no agent; that is a refusal,
-    /// not a blank tab, because there is nothing for an agent to run in.
-    fn entity_worktree_root(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
+    /// An issue whose workspace is gone (approved, abandoned) has no agent;
+    /// that is a refusal, not a blank tab, because there is nothing for an
+    /// agent to run in.
+    fn entity_agent_root(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
         if let Some(plan) = self.plans.get(entity_id) {
             return plan
-                .worktree
+                .workspace
                 .as_ref()
-                .map(|w| Self::canonical_root(&w.path))
-                .ok_or_else(|| "the plan has no worktree, so it has no agent".to_string());
+                .map(|workspace| Self::canonical_root(&workspace.checkout))
+                .ok_or_else(|| "the issue has no session, so it has no agent".to_string());
         }
         if let Some(run) = self.runs.get(entity_id) {
             return Ok(Self::canonical_root(&run.worktree.path));
         }
         Err("unknown id".to_string())
+    }
+
+    /// Whether a queued turn still has a session to reach. An issue that holds
+    /// no workspace has none: its agent ended with the gate that closed it.
+    /// Everything else — runs, routers, recoveries — is deliverable.
+    fn owner_still_has_a_session(&self, owner: &str) -> bool {
+        match self.plans.get(owner) {
+            Some(issue) => issue.workspace.is_some(),
+            None => true,
+        }
     }
 
     /// An entity's agents, whichever kind of entity it is.
@@ -3235,7 +3236,7 @@ impl AppState {
     /// process. An entity with no worktree has no agent and therefore none
     /// running.
     fn entity_agent_is_live(&self, entity_id: &str) -> bool {
-        let Ok(root) = self.entity_worktree_root(entity_id) else {
+        let Ok(root) = self.entity_agent_root(entity_id) else {
             return false;
         };
         let Ok(roster) = self.entity_agents(entity_id) else {
@@ -4157,7 +4158,7 @@ impl AppState {
                 crate::thread::ThreadLink::File { .. } => {
                     let has_scope = self.runs.contains_key(entity_id)
                         || self.plans.get(entity_id).is_some_and(|issue| {
-                            issue.worktree.is_some()
+                            issue.workspace.is_some()
                                 || self.current_issue_implementation(entity_id).is_some()
                         });
                     if !has_scope {
@@ -5354,7 +5355,10 @@ impl AppState {
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
             .filter_map(|(id, a)| {
-                let root = a.worktree.as_ref().map(|w| Self::canonical_root(&w.path))?;
+                let root = a
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| Self::canonical_root(&workspace.checkout))?;
                 idle_check(
                     self.tabs.get(&TabKey::agent(&root, &a.agents.first().id)),
                     self.agent_turn_is_undelivered(id),
@@ -6915,7 +6919,7 @@ impl AppState {
         let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
         persisted?;
         self.touch_attention(&entity_id);
-        let root = self.entity_worktree_root(&entity_id).ok();
+        let root = self.entity_agent_root(&entity_id).ok();
         Ok(json!({
             "entity_id": entity_id,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref()),
@@ -6949,7 +6953,7 @@ impl AppState {
         if !self.runs.contains_key(&entity_id) {
             return Err(format!("agent.remove: unknown entity {entity_id}"));
         }
-        let root = self.entity_worktree_root(&entity_id)?;
+        let root = self.entity_agent_root(&entity_id)?;
         // A harness being spawned right now cannot be killed: the tab it will
         // land in does not exist yet, so the reservation is the only handle on
         // it, and the human can ask again a moment later.
@@ -7010,6 +7014,18 @@ impl AppState {
             .retain(|turn| turn.agent_id != agent_id);
     }
 
+    /// End an issue's agent session, because the gate that just closed ended
+    /// it. An issue agent works in the PRIMARY checkout, which never goes
+    /// away, so nothing else would ever stop it: it would keep working there
+    /// and report `done` for an issue no longer taking reports. Only this
+    /// issue's own agent goes — the checkout's other agents belong to the main
+    /// branch and are none of this verb's business.
+    fn retire_issue_session(&mut self, session: Option<(std::path::PathBuf, String)>) {
+        if let Some((checkout, agent_id)) = session {
+            self.retire_agent(&checkout, &agent_id);
+        }
+    }
+
     /// `agent.list` — the entity's agents, in rail order.
     fn agent_list(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
@@ -7025,7 +7041,7 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        let root = self.entity_worktree_root(entity_id).ok();
+        let root = self.entity_agent_root(entity_id).ok();
         roster
             .iter()
             .map(|agent| self.agent_digest(entity_id, agent, root.as_deref()))
@@ -7120,8 +7136,8 @@ impl AppState {
 
     /// Take a plan out for mutation, having told its conversations which
     /// checkout they are about: an Issue's is the checkout of the
-    /// implementation working it right now, or its own planning worktree when
-    /// nothing is implementing it yet.
+    /// implementation working it right now, or the primary checkout its own
+    /// agent runs in when nothing is implementing it yet.
     fn take_plan(&mut self, plan_id: &str) -> Result<ActivePlan, String> {
         let implementation_checkout = self
             .current_issue_implementation(plan_id)
@@ -7130,12 +7146,8 @@ impl AppState {
             .plans
             .remove(plan_id)
             .ok_or_else(|| "unknown plan_id".to_string())?;
-        let checkout = implementation_checkout.or_else(|| {
-            active
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.path.clone())
-        });
+        let checkout = implementation_checkout
+            .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
         if let Some(checkout) = checkout {
             locate_conversations(&mut active.agents, &checkout);
         }
@@ -7263,8 +7275,8 @@ impl AppState {
         persisted
     }
 
-    /// Queue a plan's turn for its planning worktree's agent. A plan whose
-    /// worktree is gone has no agent to hear it; the turn is dropped rather
+    /// Queue a plan's turn for its agent in the primary checkout. A plan whose
+    /// workspace is gone has no agent to hear it; the turn is dropped rather
     /// than delivered somewhere it does not belong.
     fn queue_plan_turn(&mut self, plan_id: &str, active: &ActivePlan, turn: AgentTurn) {
         if let Some(pending) = PendingAgentTurn::for_plan(plan_id, active, turn) {
@@ -7881,7 +7893,7 @@ impl AppState {
             .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id));
         active.plan.state == PlanState::Created
             && active.plan.archived_at.is_none()
-            && active.worktree.is_none()
+            && active.workspace.is_none()
             && !implemented
             // The goal itself is the one item `create_plan` seeds. Anything past
             // it is somebody having said something to this issue.
@@ -7964,8 +7976,9 @@ impl AppState {
 
     // ---- Plan surface ---------------------------------------------------------
 
-    /// Author a new plan: spin up a disposable planning worktree and a plan
-    /// agent session (the docs land canonically in the store on `done`).
+    /// Author a new plan: open a planning workspace (the primary checkout plus
+    /// a scratch docs dir) and a plan agent session (the docs land canonically
+    /// in the store on `done`).
     ///
     /// `dispatch: false` files the record and starts nothing — an inert issue,
     /// which is what the router and the toolbar's New issue create. The first
@@ -8781,16 +8794,18 @@ impl AppState {
         }))
     }
 
-    /// Approve the plan (the last human gate): the disposable planning worktree
-    /// is torn down; the store docs are canonical.
+    /// Approve the plan (the last human gate): the planning session ends and
+    /// its scratch docs are dropped; the store docs are canonical.
     fn plan_approve(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        let session = issue_session(&active);
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan(&mut active).map_err(err));
         if outcome.is_ok() {
+            self.retire_issue_session(session);
             active.agents.push_event(
                 crate::thread::ThreadEventKind::Approved,
                 Some("Plan approved".to_string()),
@@ -8944,10 +8959,12 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        let session = issue_session(&active);
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_plan(&mut active).map_err(err));
         if outcome.is_ok() {
+            self.retire_issue_session(session);
             active.agents.push_event(
                 crate::thread::ThreadEventKind::Abandoned,
                 Some("Plan abandoned".to_string()),
@@ -9469,7 +9486,7 @@ impl AppState {
             // one. The dispatch reads everything said so far, so the planning
             // agent opens on the goal AND on what the user just added.
             let mut started_planning = Ok(());
-            if active.plan.state == PlanState::Created && active.worktree.is_none() {
+            if active.plan.state == PlanState::Created && active.workspace.is_none() {
                 started_planning = self.start_inert_plan(&entity_id, &mut active);
             } else if let Some((run_id, worktree_path)) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
@@ -9492,8 +9509,8 @@ impl AppState {
                         )
                     })
                     .map(|_| run_id);
-            } else if let Some(worktree) = &active.worktree {
-                nudge_live_agent_tab(&self.tabs, &worktree.path, &agent_id, &entity_id);
+            } else if let Some(workspace) = &active.workspace {
+                nudge_live_agent_tab(&self.tabs, &workspace.checkout, &agent_id, &entity_id);
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             // The message is durable either way: a dispatch that could not start
@@ -9585,8 +9602,8 @@ impl AppState {
     /// and the checkout its agent reads from, when it has one.
     ///
     /// Both, because the two homes answer different questions and neither
-    /// answers the other's. A conversation outlives its checkouts — planning
-    /// worktrees are disposable and implementations get archived — so the
+    /// answers the other's. A conversation outlives its checkouts —
+    /// implementations get archived — so the
     /// durable copy has to sit somewhere Build owns, or a screenshot from last
     /// week renders as a broken image. But a sandboxed harness can only be
     /// relied on to open paths inside its own tree, so the copy the AGENT is
@@ -9600,7 +9617,7 @@ impl AppState {
             let worktree = self
                 .current_issue_implementation_id(entity_id)
                 .and_then(|run_id| self.runs.get(&run_id).map(|run| run.worktree.path.clone()))
-                .or_else(|| active.worktree.as_ref().map(|w| w.path.clone()));
+                .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
             return Ok(AttachmentHomes {
                 worktree: worktree.map(|path| path.join(ATTACHMENTS_DIR)),
                 local,
@@ -12096,26 +12113,26 @@ impl AppState {
     // ---- the scripted QA agent ------------------------------------------------
 
     /// Simulate a plan session: write the two-stage plan docs + manifest into
-    /// the disposable planning worktree and report `done(phase=plan)`, so the
+    /// the issue's scratch docs dir and report `done(phase=plan)`, so the
     /// orchestrator ingests them into the canonical store exactly as a real
     /// harness would over MCP.
     fn qa_simulate_plan(&self, project_id: &str, active: &mut ActivePlan) -> Result<(), String> {
         let previous_stage_ids: Vec<String> =
             active.stages.iter().map(|stage| stage.id.clone()).collect();
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .ok_or("QA plan: no planning worktree")?
-            .path
+            .ok_or("QA plan: no planning workspace")?
+            .docs_dir
             .clone();
         let goal = active.plan.goal.clone();
         write_in_dir(
-            &worktree,
+            &docs_dir,
             ".build/plan/01-first-half.md",
             &format!("# Stage: First half\n\n1. Implement the first half of: {goal}\n"),
         )?;
         write_in_dir(
-            &worktree,
+            &docs_dir,
             ".build/plan/02-second-half.md",
             &format!("# Stage: Second half\n\n1. Implement the second half of: {goal}\n"),
         )?;
@@ -12134,7 +12151,7 @@ impl AppState {
             },
         ];
         let manifest = serde_json::to_string_pretty(&stages).map_err(|e| e.to_string())?;
-        write_in_dir(&worktree, STAGES_MANIFEST_PATH, &manifest)?;
+        write_in_dir(&docs_dir, STAGES_MANIFEST_PATH, &manifest)?;
         let store = self.require_store()?;
         self.orch_for(project_id)?
             .on_plan_done(
@@ -12165,7 +12182,7 @@ impl AppState {
     }
 
     /// Simulate a per-stage plan-revision session: rewrite the stage doc in the
-    /// planning worktree and resolve every open comment on the revised stage.
+    /// scratch docs dir and resolve every open comment on the revised stage.
     fn qa_simulate_plan_stage_revise(
         &self,
         project_id: &str,
@@ -12175,18 +12192,18 @@ impl AppState {
             .revising_stage_id
             .clone()
             .ok_or("QA plan revise: no stage revision in flight")?;
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .ok_or("QA plan revise: no planning worktree")?
-            .path
+            .ok_or("QA plan revise: no planning workspace")?
+            .docs_dir
             .clone();
         let index = active.stage_doc_index(&stage_id)?;
         let stage_path = active.stages[index].path.clone();
-        let mut contents = std::fs::read_to_string(worktree.join(&stage_path))
+        let mut contents = std::fs::read_to_string(docs_dir.join(&stage_path))
             .map_err(|e| format!("QA plan revise: could not read stage doc: {e}"))?;
         contents.push_str("\n(revised)\n");
-        write_in_dir(&worktree, &stage_path, &contents)?;
+        write_in_dir(&docs_dir, &stage_path, &contents)?;
         let resolutions: Vec<CommentResolution> = active
             .open_comments_for(&stage_id)
             .into_iter()
@@ -13633,6 +13650,14 @@ fn parse_message_anchor(
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
 /// durable either way.
+/// Where an issue's one agent is running right now — its checkout and its
+/// agent id — or `None` when the issue has no session. Read BEFORE a verb that
+/// ends the session, since ending it is what clears the workspace.
+fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
+    let workspace = active.workspace.as_ref()?;
+    Some((workspace.checkout.clone(), active.agents.first().id.clone()))
+}
+
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
     root: &std::path::Path,
@@ -14281,7 +14306,7 @@ fn agent_attach(
         .filter(|id| !id.is_empty())
         .map(str::to_string);
     let root = match &entity_id {
-        Some(entity_id) => s.entity_worktree_root(entity_id)?,
+        Some(entity_id) => s.entity_agent_root(entity_id)?,
         None => TermScope::parse(params)?.resolve_root(s)?,
     };
     // Which agent: the one the rail named, or the entity's first — so a
@@ -14381,7 +14406,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             .thread;
         (
             PendingAgentTurn {
-                root: s.entity_worktree_root(&entity_id)?,
+                root: s.entity_agent_root(&entity_id)?,
                 owner: entity_id.clone(),
                 agent_id: agent.id.clone(),
                 model_choice: s.entity_model_choice(&entity_id)?,
@@ -14762,7 +14787,20 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     // the idle sweep and its entity looks agentless.
     let queued = {
         let mut s = state.lock().unwrap();
-        let queued = std::mem::take(&mut s.pending_agent_turns);
+        let taken = std::mem::take(&mut s.pending_agent_turns);
+        // An issue whose session is over (approved, abandoned) holds no
+        // workspace — and its checkout is the project's primary one, which is
+        // emphatically not a place to spawn a replacement for work nobody is
+        // doing. A turn queued before that gate closed is dropped here.
+        let (queued, closed): (Vec<PendingAgentTurn>, Vec<PendingAgentTurn>) = taken
+            .into_iter()
+            .partition(|turn| s.owner_still_has_a_session(&turn.owner));
+        for turn in &closed {
+            eprintln!(
+                "deliver to {}: the entity's session is over; the turn stays on its thread",
+                turn.owner
+            );
+        }
         for turn in &queued {
             *s.agent_turns_in_flight
                 .entry(turn.owner.clone())
@@ -18611,8 +18649,8 @@ mod tests {
         let issue_id = plan_id_of(&res);
         let active = state.plans.get(&issue_id).expect("the record is filed");
         assert!(
-            active.worktree.is_none(),
-            "an inert issue owns no planning worktree"
+            active.workspace.is_none(),
+            "an inert issue has no session and so no workspace"
         );
         assert!(
             state.pending_agent_turns.is_empty(),
@@ -18632,6 +18670,70 @@ mod tests {
                 .iter()
                 .any(|item| item["kind"] == "issue" && item["issue_id"] == json!(issue_id.clone())),
             "{board:?}"
+        );
+    }
+
+    /// Every checkout git knows about for a repo, primary first.
+    fn registered_checkouts(repo: &std::path::Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree ").map(str::to_string))
+            .collect()
+    }
+
+    /// An issue's agent works in the project's primary checkout and nowhere
+    /// else: no worktree is cut for planning, and the docs it writes live in a
+    /// scratch dir outside the repo that the store ingests from.
+    #[test]
+    fn an_issue_agent_runs_on_the_primary_checkout_and_cuts_no_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "Start with the endpoint." }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let primary = std::fs::canonicalize(&repo).unwrap();
+        assert_eq!(
+            registered_checkouts(&repo).len(),
+            1,
+            "planning cut a worktree: {:?}",
+            registered_checkouts(&repo)
+        );
+        let workspace = state.plans[&issue_id]
+            .workspace
+            .as_ref()
+            .expect("the planning session got a workspace");
+        assert_eq!(workspace.checkout, primary);
+        assert!(
+            !workspace.docs_dir.starts_with(&primary),
+            "the scratch docs dir is outside the repo: {}",
+            workspace.docs_dir.display()
+        );
+        // The turn — and therefore the PTY it spawns — is addressed to the
+        // primary checkout.
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "one turn was dispatched"
+        );
+        assert_eq!(state.pending_agent_turns[0].root, primary);
+        assert_eq!(
+            state.entity_agent_root(&issue_id).unwrap(),
+            primary,
+            "every surface that asks where this issue's agent lives says the \
+             primary checkout"
         );
     }
 
@@ -18682,13 +18784,13 @@ mod tests {
         // one — the dispatch this post triggered is the same dispatch.
         assert_eq!(posted["result"]["state"], "plan_review", "{posted:?}");
         let active = state.plans.get(&issue_id).expect("the issue is still here");
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .expect("the planning session got a worktree")
-            .path
+            .expect("the planning session got a workspace")
+            .docs_dir
             .clone();
-        assert!(worktree.is_dir(), "{worktree:?}");
+        assert!(docs_dir.is_dir(), "{docs_dir:?}");
         assert_eq!(
             state.pending_agent_turns.len(),
             1,
@@ -18714,11 +18816,11 @@ mod tests {
         assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(
             state.plans[&issue_id]
-                .worktree
+                .workspace
                 .as_ref()
-                .map(|w| w.path.clone()),
-            Some(worktree),
-            "the same planning worktree"
+                .map(|workspace| workspace.docs_dir.clone()),
+            Some(docs_dir),
+            "the same planning workspace"
         );
         assert_eq!(state.pending_agent_turns.len(), 1, "no second dispatch");
     }
@@ -22159,14 +22261,14 @@ mod tests {
         connected.expect("harnesses can still dial the path");
     }
 
-    /// A planning worktree is a worktree, so every plan verb is a turn
-    /// addressed to it — never to the repo, never to a fresh process — and it
-    /// splits cold/warm exactly as the run verbs do: the reviewer's words are
-    /// already durable on the plan's thread, so a warm agent is only told to
-    /// read them, while a cold one gets the same instruction wrapped in the plan
-    /// context it has no way to reconstruct.
+    /// An issue's agent runs in the primary checkout, so every plan verb is a
+    /// turn addressed there — never to a worktree, never to a fresh process —
+    /// and it splits cold/warm exactly as the run verbs do: the reviewer's
+    /// words are already durable on the plan's thread, so a warm agent is only
+    /// told to read them, while a cold one gets the same instruction wrapped in
+    /// the plan context it has no way to reconstruct.
     #[test]
-    fn plan_verbs_are_turns_addressed_to_the_planning_worktree() {
+    fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let notes_plan = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "notes" }))));
@@ -22179,17 +22281,22 @@ mod tests {
         let planning_root = |state: &AppState, plan_id: &str| {
             AppState::canonical_root(
                 &state.plans[plan_id]
-                    .worktree
+                    .workspace
                     .as_ref()
-                    .expect("a drafting plan has a planning worktree")
-                    .path,
+                    .expect("a drafting issue has a planning workspace")
+                    .checkout,
             )
         };
         let notes_root = planning_root(&state, &notes_plan);
         let stage_root = planning_root(&state, &stage_plan);
-        assert_ne!(
+        assert_eq!(
+            notes_root,
+            std::fs::canonicalize(&repo).unwrap(),
+            "an issue drafts in the project's primary checkout"
+        );
+        assert_eq!(
             notes_root, stage_root,
-            "each plan drafts in its own worktree"
+            "every issue of a project drafts in that one checkout"
         );
         // The scripted agent answers every verb itself and drives the plan back
         // to its gate; from here each plan must stay where its verb puts it.
@@ -22208,11 +22315,11 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("plan notes are a turn for the planning worktree's agent");
+            .expect("plan notes are a turn for the issue's agent");
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(
             queued.root, notes_root,
-            "a plan's turn goes to its planning worktree"
+            "a plan's turn goes to the primary checkout"
         );
         assert_eq!(queued.phase, "revise");
         assert_eq!(
@@ -22241,7 +22348,7 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("a plan message is a turn for the planning worktree's agent");
+            .expect("a plan message is a turn for the issue's agent");
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(queued.root, notes_root);
         assert_eq!(queued.phase, "message");
@@ -22268,7 +22375,7 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("stage notes are a turn for the planning worktree's agent");
+            .expect("stage notes are a turn for the issue's agent");
         assert_eq!(queued.owner, stage_plan);
         assert_eq!(queued.root, stage_root);
         assert_eq!(queued.phase, "revise");
@@ -22290,12 +22397,12 @@ mod tests {
         );
     }
 
-    /// The plan half of "one worktree, one agent": authoring a plan opens the
-    /// planning worktree's agent, and every later plan verb reaches THAT
-    /// process. Same pid, one tab — a plan revision is a turn, not a
+    /// The plan half of "one checkout, one agent": authoring a plan opens the
+    /// issue's agent in the primary checkout, and every later plan verb reaches
+    /// THAT process. Same pid, one tab — a plan revision is a turn, not a
     /// replacement.
     #[tokio::test]
-    async fn every_plan_verb_reaches_the_planning_worktrees_one_agent() {
+    async fn every_plan_verb_reaches_the_issues_one_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
         let plan = call(&handler, "plan.create", json!({ "goal": "one plan agent" }));
@@ -22306,10 +22413,10 @@ mod tests {
             first_agent_key(
                 &AppState::canonical_root(
                     &s.plans[&plan_id]
-                        .worktree
+                        .workspace
                         .as_ref()
-                        .expect("a plan at its gate keeps its planning worktree")
-                        .path,
+                        .expect("a plan at its gate keeps its workspace")
+                        .checkout,
                 ),
                 &plan_id,
             )
@@ -22319,7 +22426,7 @@ mod tests {
             let tab = s
                 .tabs
                 .get(&key)
-                .expect("authoring a plan opens the planning worktree's agent");
+                .expect("authoring a plan opens the primary checkout's agent");
             assert!(
                 tab.live && !tab.session.has_exited(),
                 "the plan's agent is running"
@@ -23341,9 +23448,9 @@ mod tests {
         assert_eq!(empty["ok"], false, "{empty:?}");
     }
 
-    /// A conversation outlives its checkouts — planning worktrees are
-    /// disposable and implementations get archived — so a screenshot sent last
-    /// week must not render as a broken image once its tree is gone.
+    /// A conversation outlives its checkouts — implementations get archived —
+    /// so a screenshot sent last week must not render as a broken image once
+    /// its tree is gone.
     #[test]
     fn an_attachment_outlives_the_worktree_it_was_written_into() {
         let (dir, repo) = init_repo();
@@ -23385,7 +23492,7 @@ mod tests {
     /// exactly when a mock is most useful — and is handed an absolute path,
     /// since there is no tree for a relative one to mean anything against.
     #[test]
-    fn an_entity_without_a_worktree_still_takes_an_attachment() {
+    fn an_entity_without_a_checkout_still_takes_an_attachment() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let plan = state.handle(req(
@@ -23393,9 +23500,9 @@ mod tests {
             json!({ "goal": "attach before dispatch" }),
         ));
         let plan_id = plan_id_of(&plan);
-        // plan.create scaffolds a planning worktree; drop it to stand in for
+        // plan.create gives the issue a workspace; drop it to stand in for
         // every entity whose checkout does not exist yet or no longer does.
-        state.plans.get_mut(&plan_id).unwrap().worktree = None;
+        state.plans.get_mut(&plan_id).unwrap().workspace = None;
 
         let attached = state.handle(req(
             "thread.attach",
@@ -23409,7 +23516,7 @@ mod tests {
         let path = attached["result"]["path"].as_str().unwrap().to_string();
         assert!(
             std::path::Path::new(&path).is_absolute(),
-            "with no worktree to be relative to, the path must be openable as-is: {path}"
+            "with no checkout to be relative to, the path must be openable as-is: {path}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), ONE_PIXEL_PNG);
 
@@ -24241,13 +24348,14 @@ mod tests {
         let (mut plan, _turn) = orch
             .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
             .unwrap();
-        let worktree = plan
-            .worktree
+        let docs_dir = plan
+            .workspace
             .as_ref()
-            .expect("the plan has a planning worktree")
-            .path
+            .expect("the plan has a workspace")
+            .docs_dir
             .clone();
-        std::fs::write(worktree.join(".build/plan.md"), "# Plan\n").unwrap();
+        std::fs::create_dir_all(docs_dir.join(".build")).unwrap();
+        std::fs::write(docs_dir.join(".build/plan.md"), "# Plan\n").unwrap();
         orch.on_plan_done(
             &mut plan,
             store,
@@ -25014,12 +25122,9 @@ mod tests {
     #[test]
     fn working_plan_and_run_surface_interrupted_on_boot() {
         let (dir, repo) = init_repo();
-        let (_a, plan_wt) = init_repo();
         let (_b, run_wt) = init_repo();
         let store = crate::store::Store::new(dir.path().join("store"));
-        store
-            .save_plan(&drafting_plan("plan-1", &repo, &plan_wt))
-            .unwrap();
+        store.save_plan(&drafting_plan("plan-1", &repo)).unwrap();
         store
             .save_run(&building_run("run-1", &repo, &run_wt))
             .unwrap();
@@ -25138,11 +25243,7 @@ mod tests {
         assert!(err.contains("run-bad.json"), "{err}");
     }
 
-    fn drafting_plan(
-        id: &str,
-        repo: &std::path::Path,
-        worktree: &std::path::Path,
-    ) -> PersistedPlan {
+    fn drafting_plan(id: &str, repo: &std::path::Path) -> PersistedPlan {
         PersistedPlan {
             id: id.into(),
             goal: "drafting".into(),
@@ -25152,9 +25253,6 @@ mod tests {
             archived_at: None,
             implementation_intent: crate::plan::ImplementationIntent::None,
             implementation_activity: crate::plan::ImplementationActivity::Idle,
-            worktree_name: Some(id.into()),
-            worktree_path: Some(worktree.display().to_string()),
-            branch: Some(format!("plan/{id}")),
             plan_path: ".build/plan.md".into(),
             stages: Vec::new(),
             comments: Vec::new(),
@@ -26026,9 +26124,9 @@ mod tests {
         );
     }
 
-    /// A plan holding its planning worktree with no agent tab — the plan
-    /// surface's idle Agent tab. The dispatch turn is dropped: this fixture is
-    /// about the plan, not about delivering to it.
+    /// A plan holding its workspace with no agent tab — the plan surface's idle
+    /// Agent tab. The dispatch turn is dropped: this fixture is about the plan,
+    /// not about delivering to it.
     fn insert_plan_without_agent(
         state: &Arc<Mutex<AppState>>,
         repo: &std::path::Path,
@@ -31135,8 +31233,8 @@ mod tests {
 
         assert_eq!(state.plans[&issue_id].plan.state, PlanState::Created);
         assert!(
-            state.plans[&issue_id].worktree.is_none(),
-            "inert: no worktree"
+            state.plans[&issue_id].workspace.is_none(),
+            "inert: no workspace"
         );
         assert!(
             !state
@@ -32118,7 +32216,7 @@ mod tests {
         let issue_id = record["routing"]["target_id"].as_str().unwrap().to_string();
         let issue = &state.plans[&issue_id];
         assert_eq!(issue.plan.state, PlanState::Created);
-        assert!(issue.worktree.is_none(), "inert: no checkout");
+        assert!(issue.workspace.is_none(), "inert: no checkout");
         assert!(
             !state
                 .pending_agent_turns

@@ -16,7 +16,7 @@
 //! and run instead of orphaning the worktrees that survived on disk.
 //!
 //! Plan docs live here as the **source of truth** (spec: Plan/Run Split):
-//! planning worktrees are disposable, so `ingest_plan_docs` (worktree → store)
+//! the scratch docs dir is disposable, so `ingest_plan_docs` (scratch → store)
 //! is fail-fast — a plan never advances with unpersisted docs — and
 //! `materialize_plan_docs` (store → worktree) recreates the docs for run
 //! dispatch and plan-revision sessions.
@@ -165,17 +165,7 @@ pub struct PersistedPlan {
     pub implementation_intent: crate::plan::ImplementationIntent,
     #[serde(default)]
     pub implementation_activity: crate::plan::ImplementationActivity,
-    /// The disposable planning worktree, while one is alive (kept warm through
-    /// the notes/revision loop). `None` once torn down (approve/abandon) or
-    /// before one exists — the store docs are canonical either way.
-    #[serde(default)]
-    pub worktree_name: Option<String>,
-    #[serde(default)]
-    pub worktree_path: Option<String>,
-    /// The planning worktree's branch (`plan/<slug>`), torn down with it.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// Worktree-relative path of the single plan doc (`.build/plan.md`).
+    /// Docs-dir-relative path of the single plan doc (`.build/plan.md`).
     pub plan_path: String,
     /// Stage docs: manifest metadata + plan-side review sub-state. Empty for
     /// single-doc plans.
@@ -1452,17 +1442,6 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         return None;
     }
     let past_planning = legacy_task_progressed_past_planning(task);
-    // While the plan was still being authored, the fused task's worktree *was*
-    // the planning worktree; past planning it belongs to the run.
-    let (worktree_name, worktree_path, branch) = if past_planning {
-        (None, None, None)
-    } else {
-        (
-            Some(task.worktree_name.clone()),
-            Some(task.worktree_path.clone()),
-            Some(task.branch.clone()),
-        )
-    };
     Some(PersistedPlan {
         id: task.id.clone(),
         goal: task.goal.clone(),
@@ -1472,9 +1451,6 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         archived_at: None,
         implementation_intent: crate::plan::ImplementationIntent::None,
         implementation_activity: crate::plan::ImplementationActivity::Idle,
-        worktree_name,
-        worktree_path,
-        branch,
         plan_path: task.plan_path.clone(),
         stages: task.stages.iter().map(stage_doc_from_legacy).collect(),
         comments: task.comments.clone(),
@@ -2182,9 +2158,6 @@ mod tests {
             archived_at: None,
             implementation_intent: crate::plan::ImplementationIntent::None,
             implementation_activity: crate::plan::ImplementationActivity::Idle,
-            worktree_name: Some("plan-greeting".into()),
-            worktree_path: Some("/home/u/.build/worktrees/plan-greeting".into()),
-            branch: Some("plan/greeting".into()),
             plan_path: ".build/plan.md".into(),
             stages: vec![StageDoc {
                 id: "database-schema".into(),
@@ -2354,18 +2327,6 @@ mod tests {
             .save_plan(&plan_record("plan-1", PlanState::Drafting))
             .unwrap();
         assert!(tasks.join("plans/plan-1/record.json").is_file());
-    }
-
-    #[test]
-    fn plan_worktree_fields_persist_as_absent_after_teardown() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path().join("tasks"));
-        let mut rec = plan_record("plan-1", PlanState::Approved);
-        rec.worktree_name = None;
-        rec.worktree_path = None;
-        rec.branch = None;
-        store.save_plan(&rec).unwrap();
-        assert_eq!(store.load_all_plans().unwrap(), vec![rec]);
     }
 
     #[test]
@@ -2932,9 +2893,6 @@ mod tests {
         let plan = &plans[0];
         assert_eq!(plan.id, "task-s");
         assert_eq!(plan.state, PlanState::PlanReview);
-        // Never past planning: the task's worktree was the planning worktree.
-        assert_eq!(plan.worktree_name.as_deref(), Some("add-a-greeting"));
-        assert_eq!(plan.branch.as_deref(), Some("build/add-a-greeting"));
         assert_eq!(plan.plan_path, ".build/plan.md");
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.stages[0].state, StageDocState::Approved);
@@ -2989,10 +2947,6 @@ mod tests {
         assert_eq!(plans.len(), 1);
         let plan = &plans[0];
         assert_eq!(plan.state, PlanState::Approved);
-        assert_eq!(
-            plan.worktree_name, None,
-            "past planning: the worktree belongs to the run"
-        );
         // A dispatched stage's doc was necessarily approved.
         assert_eq!(plan.stages[0].state, StageDocState::Approved);
         assert_eq!(plan.stages[1].state, StageDocState::Approved);

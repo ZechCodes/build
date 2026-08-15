@@ -11274,7 +11274,7 @@ impl AppState {
                 Some(run_id),
                 Some(thread),
                 Some(&active.worktree.path),
-                &sync,
+                sync.head_committed_at.as_deref(),
             ),
             // Finishing archives a worktree and then removes it. The primary
             // checkout is the repository: there is nothing to file away, and
@@ -11330,7 +11330,12 @@ impl AppState {
             // dates itself by its own last commit, which is the only history it
             // has. Same for its last activity, plus whatever its agent painted.
             "anchor": sync.head_committed_at,
-            "last_activity": self.last_activity_of(None, None, Some(&project.repo_path), &sync),
+            "last_activity": self.last_activity_of(
+                None,
+                None,
+                Some(&project.repo_path),
+                sync.head_committed_at.as_deref(),
+            ),
             // The repository is not a worktree to file away.
             "can_finish": false,
             "muted": false,
@@ -11393,7 +11398,7 @@ impl AppState {
                 None,
                 None,
                 Some(std::path::Path::new(&path)),
-                &sync,
+                sync.head_committed_at.as_deref(),
             ),
             "can_finish": crate::branch::branch_can_finish(&sync.sync()),
             "muted": self.is_muted(&worktree_id),
@@ -11446,12 +11451,9 @@ impl AppState {
             "stat": Value::Null,
             "resume_at": self.attention_json(issue_id)["resume_at"],
             "anchor": self.anchor_of(issue_id),
-            "last_activity": self.last_activity_of(
-                Some(issue_id),
-                Some(&active.agents),
-                None,
-                &WorkItemStat::default(),
-            ),
+            // An issue has no checkout and no commits of its own: its
+            // conversation is the whole of its activity.
+            "last_activity": self.last_activity_of(Some(issue_id), Some(&active.agents), None, None),
             "can_finish": self.plan_implementation_complete(issue_id, active),
             "muted": self.is_muted(issue_id),
             "worktree_path": Value::Null,
@@ -12354,7 +12356,7 @@ impl AppState {
         entity_id: Option<&str>,
         conversation: Option<&crate::thread::Thread>,
         checkout: Option<&std::path::Path>,
-        stat: &WorkItemStat,
+        head_committed_at: Option<&str>,
     ) -> Option<String> {
         let files_changed_at = entity_id
             .and_then(|id| self.run_files_changed_at.get(id))
@@ -12363,7 +12365,7 @@ impl AppState {
             .and_then(crate::thread::Thread::last_item_at)
             .map(str::to_string);
         let agent_at = checkout.and_then(|root| self.agent_last_painted_at(root));
-        let head_at = stat.head_committed_at.clone();
+        let head_at = head_committed_at.map(str::to_string);
         [files_changed_at, conversation_at, agent_at, head_at]
             .into_iter()
             .flatten()
@@ -31030,6 +31032,30 @@ mod tests {
             issue_row(&mut state, &issue_id)["anchor"],
             json!(said_at),
             "and the row that replaced the capture's says so"
+        );
+
+        // The other destination: a capture routed straight onto a branch hands
+        // its place to the run that was cut for it.
+        let (branch_capture, _) = captured(&mut state, "the login redirect again");
+        let asked_at = hours_ago(40);
+        state
+            .captures
+            .get_mut(&branch_capture)
+            .expect("the capture is kept")
+            .anchor_at = Some(asked_at.clone());
+        let dispatched = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": branch_capture, "project_id": project_id, "kind": "branch" }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let branch = dispatched["result"]["routing"]["target_id"]
+            .as_str()
+            .expect("the capture became a branch")
+            .to_string();
+        assert_eq!(
+            branch_row(&mut state, &branch)["anchor"],
+            json!(asked_at),
+            "the branch holds the place the capture held"
         );
     }
 

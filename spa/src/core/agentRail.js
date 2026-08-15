@@ -21,8 +21,17 @@ import { App, go } from "../app.js";
 import { whenVisible } from "./visibility.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
-import { agentTitle, providerLabel, railBubbles, railEntity, selectAgentId } from "./agentRailModel.js";
+import {
+  agentTitle,
+  canRemoveAgent,
+  providerLabel,
+  railBubbles,
+  railEntity,
+  removeAgentConfirm,
+  selectAgentId,
+} from "./agentRailModel.js";
 import { createAgentSelection } from "./agentSelection.js";
+import { confirmAction } from "./confirm.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed } from "./taskFeed.js";
@@ -101,17 +110,23 @@ export function stripHtml(bubbles) {
     .join("");
 }
 
-/** Pure: the panel's header — who you are talking to, and the two controls that
- *  are always there (which face of the agent you are looking at, and the way
- *  out). */
-export function panelHeadHtml(who, mode) {
+/** Pure: the panel's header — who you are talking to, the two controls that are
+ *  always there (which face of the agent you are looking at, and the way out),
+ *  and, on an agent that can be taken back off, the `−` that mirrors the strip's
+ *  `+`. */
+export function panelHeadHtml(who, mode, { removable = false } = {}) {
+  const removeTitle = `Remove ${who} from this branch`;
+  const remove = removable
+    ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
+        aria-label="${esc(removeTitle)}">−</button>`
+    : "";
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
     <div class="rail-modes" role="group" aria-label="Conversation or terminal">
       <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
       <button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>
     </div>
-    <button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
+    ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
 }
@@ -260,22 +275,27 @@ export function mountAgentRail(host, context) {
     if (!panel) return;
     const agent = agentOf(selectedId);
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const removable = canRemoveAgent({ agents: entity.agents, agentId: selectedId, kind: entity.kind });
+    // The head is rewritten only when what it SAYS changed: the name, and
+    // whether this agent can be taken back off.
+    const wantedHead = `${who}:${removable ? "removable" : "kept"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = `${mode}:${selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
-      panel.innerHTML = `${panelHeadHtml(who, mode)}<div class="rail-body" id="rail-body"></div>`;
-      panel.dataset.head = who;
+      panel.innerHTML = `${panelHeadHtml(who, mode, { removable })}<div class="rail-body" id="rail-body"></div>`;
+      panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
       if (mode === "tui") mountTui();
-    } else if (panel.dataset.head !== who) {
+    } else if (panel.dataset.head !== wantedHead) {
       // The name changed under the panel (an agent whose provider was picked
-      // after the fact). Nothing else in the head can move on a poll, and
-      // rewriting it every tick would eat a press that landed mid-repaint.
-      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode);
-      panel.dataset.head = who;
+      // after the fact), or the last agent beside this one went away. Nothing
+      // else in the head can move on a poll, and rewriting it every tick would
+      // eat a press that landed mid-repaint.
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode, { removable });
+      panel.dataset.head = wantedHead;
       wireHead(panel);
     }
     if (mode === "chat") paintChat();
@@ -290,6 +310,8 @@ export function mountAgentRail(host, context) {
         paintPanel();
       };
     });
+    const remove = panel.querySelector(".rail-remove");
+    if (remove) remove.onclick = () => removeAgent();
     const collapse = panel.querySelector(".rail-collapse");
     if (collapse) {
       collapse.onclick = () => {
@@ -490,6 +512,37 @@ export function mountAgentRail(host, context) {
     } catch (error) {
       notifyError("Could not add an agent", error.message);
     }
+  };
+
+  /**
+   * Take the open agent back off the branch.
+   *
+   * Destructive twice over — the agent's session is killed and its conversation
+   * goes with it — so it asks first, with the outline of what will happen.
+   *
+   * A daemon that refuses (an older binary with no `agent.remove` at all, or an
+   * agent whose session is mid-spawn) leaves the rail exactly as it was: the
+   * refusal is said the standard way and the same button is still there to try
+   * again with.
+   */
+  const removeAgent = async () => {
+    const agent = agentOf(selectedId);
+    if (!agent || !entity.entityId) return;
+    if (!(await confirmAction(removeAgentConfirm(agent)))) return;
+    try {
+      await App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id });
+    } catch (error) {
+      notifyError("Could not remove the agent", error.message);
+      return;
+    }
+    // Let the choice go rather than naming the agent that just stopped
+    // existing: the next read opens the rail on whichever agent is left, and
+    // tells the surfaces beside it the same.
+    chooseAgent(null);
+    threadCache.reset();
+    threadAgentId = null;
+    await refreshFeed();
+    await refresh();
   };
 
   // ---- TUI ------------------------------------------------------------------

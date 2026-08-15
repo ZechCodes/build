@@ -299,6 +299,8 @@ body.inbox-collapsed #inbox-open { display:block; }
 .rail-mode { border:none; background:none; font:inherit; font-size:11px;
   color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); }
+.rail-remove { flex:none; }
+.rail-remove:hover { background:var(--red-bg); color:var(--red); }
 .rail-collapse { flex:none; }
 .rail-body { min-height:0; overflow-y:auto; padding:10px 12px 14px; }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the

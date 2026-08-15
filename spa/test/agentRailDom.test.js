@@ -77,6 +77,7 @@ beforeEach(() => {
   payload = branchRow();
   markSeen.mockClear();
   mountAgentTab.mockClear();
+  notifyError.mockClear();
   App.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "branch.get") return payload;
@@ -176,6 +177,99 @@ describe("the bubble strip", () => {
     vi.advanceTimersByTime(2000);
     await flush();
     expect(callsTo("branch.get").at(-1).params.agent_id).toBe(undefined);
+  });
+});
+
+describe("taking an agent back off the branch", () => {
+  const twoAgents = () => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  const removeButton = () => panel().querySelector(".rail-remove");
+  const confirmModal = () => document.getElementById("confirm-scrim");
+
+  const openSecondAgent = async () => {
+    payload = twoAgents();
+    await mount();
+    bubbles()[1].click();
+    await flush();
+  };
+
+  it("offers removal on an agent added beside the first, and never on the first", async () => {
+    payload = twoAgents();
+    await mount();
+    // The rail opens on the first agent, which owns the branch's conversation.
+    expect(removeButton()).toBe(null);
+    bubbles()[1].click();
+    await flush();
+    expect(removeButton()).toBeTruthy();
+  });
+
+  it("offers no removal on an issue's one agent", async () => {
+    payload = { issue_id: "plan-1", project_id: "p1", agents: [agent()], thread: { items: [] } };
+    await mount({ kind: "issue", projectId: "p1", issueId: "plan-1" });
+    expect(removeButton()).toBe(null);
+  });
+
+  it("asks before it removes, and does nothing at all when the answer is no", async () => {
+    await openSecondAgent();
+    removeButton().click();
+    await flush();
+    expect(confirmModal()).toBeTruthy();
+    confirmModal().querySelector("[data-confirm-cancel]").click();
+    await flush();
+    expect(callsTo("agent.remove")).toEqual([]);
+  });
+
+  it("removes the agent the panel is open on, and falls back to the one that is left", async () => {
+    await openSecondAgent();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    // The agent is gone from the work item the next read answers with.
+    payload = branchRow();
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("tells which agent it removed to the surfaces beside it, so they stop asking after it", async () => {
+    payload = twoAgents();
+    const selection = createAgentSelection();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", selection });
+    bubbles()[1].click();
+    await flush();
+    expect(selection.get()).toBe("ag-2");
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    payload = branchRow();
+    await flush();
+    expect(selection.get()).toBe("ag-1");
+  });
+
+  // An older bridge binary has no agent.remove at all. The rail must say so the
+  // standard way and stay exactly as it was, not break under the refusal.
+  it("raises the standard error notice when the daemon does not know the method", async () => {
+    await openSecondAgent();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.remove") throw new Error("unknown method: agent.remove");
+      return answering(method, params);
+    });
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "unknown method: agent.remove");
+    // Still open on the agent it failed to remove, still offering to try again.
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(removeButton()).toBeTruthy();
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
 });
 

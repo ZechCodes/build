@@ -130,6 +130,18 @@ describe("the shell's grid", () => {
     expect(narrow).toMatch(/#inbox-rail \{[^}]*position:fixed/);
     expect(narrow).toMatch(/#inbox-scrim/);
   });
+
+  it("overlays the conversation on a phone without covering the toolbar", () => {
+    const narrow = shellCss.match(/@media \(max-width: 760px\) \{[\s\S]*?\n\}/)[0];
+    const panel = narrow.match(/\.rail-panel \{[^}]*\}/)[0];
+    // Laid over the view column, not over the page: the toolbar above it keeps
+    // saying which project and branch the agent is working in, the one fact a
+    // phone cannot afford to lose.
+    expect(panel).toMatch(/position:absolute/);
+    expect(panel).toMatch(/top:calc\(var\(--toolbar-h\) \+ 1px\)/);
+    expect(panel).toMatch(/right:var\(--agent-strip\)/);
+    expect(panel).not.toMatch(/top:0/);
+  });
 });
 
 describe("the inbox rail's docked state", () => {

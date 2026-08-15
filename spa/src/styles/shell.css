@@ -301,8 +301,14 @@ body.inbox-collapsed #inbox-open { display:block; }
 
 @media (max-width: 760px) {
   /* A phone has no room for two columns, so the panel is laid over the work
-     rather than beside it; the strip stays where it is. */
-  .rail-panel { position:fixed; right:var(--agent-strip); top:0; bottom:0; z-index:30;
+     rather than beside it; the strip stays where it is.
+     Over the VIEW COLUMN (#view is the positioned ancestor), starting below the
+     toolbar — the same line the full console stops at, and for the same reason:
+     which project and branch this agent is working in is the one thing a phone
+     cannot afford to cover. Absolute rather than fixed so the banners above the
+     shell push the panel down with the toolbar instead of past it. */
+  .rail-panel { position:absolute; right:var(--agent-strip);
+    top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
     width:min(400px, calc(100vw - 60px)); background:var(--bg);
     box-shadow:-8px 0 24px var(--shadow-soft); }
 }

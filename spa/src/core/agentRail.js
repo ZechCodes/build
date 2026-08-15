@@ -35,6 +35,7 @@ import {
   wireThreadComposer,
   wireThreadLinks,
   wireThreadRevisionLinks,
+  writeThreadKeepingComposer,
 } from "./thread.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
@@ -317,7 +318,7 @@ export function mountAgentRail(host, context) {
     const thread = threadFor();
     const agent = agentOf(selectedId);
     paintThreadKeepingPlace(body, () => {
-      body.innerHTML = threadHtml(thread || { items: [] }, {
+      const html = threadHtml(thread || { items: [] }, {
         agentLabel: providerLabel(agent && agent.provider),
         composer: {
           inputId: COMPOSER_IDS.input,
@@ -327,7 +328,9 @@ export function mountAgentRail(host, context) {
           attachable: true,
         },
       });
-      wireChat(body);
+      // The poll repaints the timeline under a box somebody may be mid-sentence
+      // in, so the box itself is kept — and a kept box is still wired.
+      wireChat(body, writeThreadKeepingComposer(body, html));
     });
     reportRead(body);
   };
@@ -338,7 +341,16 @@ export function mountAgentRail(host, context) {
     return "Send a message to this agent…";
   };
 
-  const wireChat = (body) => {
+  const wireChat = (body, composerIsNew) => {
+    if (composerIsNew) wireComposer(body);
+    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
+    wireThreadRevisionLinks(body, (revisionId) =>
+      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
+    );
+    wireThreadLinks(body, openLink);
+  };
+
+  const wireComposer = (body) => {
     wireThreadComposer(body, {
       ids: COMPOSER_IDS,
       readDraft: () => draftOf().body,
@@ -356,11 +368,6 @@ export function mountAgentRail(host, context) {
       onSubmit: (message, attachments) => send(message, attachments),
       onError: (error) => notifyError("Message failed", error.message),
     });
-    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
-    wireThreadRevisionLinks(body, (revisionId) =>
-      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
-    );
-    wireThreadLinks(body, openLink);
   };
 
   /** A reference in the conversation goes where it points, as far as the two

@@ -376,6 +376,57 @@ export function threadHtml(thread, options = {}) {
   </section>`;
 }
 
+/// The parts of a rendered thread a repaint may overwrite. The composer is
+/// deliberately not among them, and neither is the revision viewer — both are
+/// state the reader put there, and the poll knows nothing about either.
+const REPAINTED_PARTS = [".thread-title", ".thread-items", ".thread-actions"];
+
+/// What makes two composers the same box: the input it writes into, and
+/// whether it takes files. Anything else about it (the placeholder) is moved
+/// onto the live one rather than rebuilt.
+const composerSignature = (composer) => {
+  const input = composer.querySelector("textarea");
+  return `${input ? input.id : ""}:${composer.querySelector(".composer.attachable") ? "files" : "text"}`;
+};
+
+/// Write a freshly rendered thread into `container`, keeping the composer.
+///
+/// Every conversation surface re-renders the whole section on its poll, and
+/// writing that string in replaces the textarea — which takes the words, the
+/// caret and the FOCUS with it. On a touch device the software keyboard opens
+/// and then shuts a tick and a half later, so a message cannot be typed at
+/// all. The timeline is what moved, so the timeline is what gets swapped: the
+/// composer's element is never detached, and everything the browser hangs off
+/// it (focus, selection, the keyboard, the IME's composition) simply stays.
+///
+/// Returns whether the composer is a new element. True means the caller must
+/// wire it; false means the wired one is still there and re-wiring it would
+/// throw away the tray's uploads.
+export function writeThreadKeepingComposer(container, html) {
+  const live = container.querySelector(".review-thread");
+  const liveComposer = live && live.querySelector(".thread-composer");
+  const rendered = container.ownerDocument.createElement("div");
+  rendered.innerHTML = html;
+  const next = rendered.querySelector(".review-thread");
+  const nextComposer = next && next.querySelector(".thread-composer");
+  if (!liveComposer || !nextComposer || composerSignature(liveComposer) !== composerSignature(nextComposer)) {
+    container.innerHTML = html;
+    return true;
+  }
+  live.className = next.className;
+  for (const selector of REPAINTED_PARTS) {
+    const target = live.querySelector(selector);
+    const source = next.querySelector(selector);
+    if (!target || !source) continue;
+    target.className = source.className;
+    target.innerHTML = source.innerHTML;
+  }
+  const liveInput = liveComposer.querySelector("textarea");
+  const nextInput = nextComposer.querySelector("textarea");
+  if (liveInput && nextInput) liveInput.placeholder = nextInput.placeholder;
+  return false;
+}
+
 /** How near the end still counts as reading the end. Absorbs the fractional
  *  scroll heights a zoomed or sub-pixel layout leaves behind. */
 const AT_BOTTOM_SLACK_PX = 32;

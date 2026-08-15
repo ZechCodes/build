@@ -419,7 +419,11 @@ export function writeThreadKeepingComposer(container, html) {
     const source = next.querySelector(selector);
     if (!target || !source) continue;
     target.className = source.className;
-    target.innerHTML = source.innerHTML;
+    // Most ticks resolve the same conversation. Writing it in anyway would
+    // collapse a selection being made in a message and send every inline image
+    // back for a re-fetch, so a part that says what it already said is left
+    // exactly where it is.
+    if (target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
   }
   const liveInput = liveComposer.querySelector("textarea");
   const nextInput = nextComposer.querySelector("textarea");

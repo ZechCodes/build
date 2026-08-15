@@ -116,6 +116,36 @@ describe("writing a repainted thread", () => {
     expect(container.querySelector("#otherinput")).toBeTruthy();
   });
 
+  // A repaint that says the same thing is not a repaint. Rewriting the timeline
+  // anyway collapses a selection the reader was making in a message, and makes
+  // every inline image re-fetch itself.
+  it("leaves a part of the thread alone when it says exactly what it said", () => {
+    const thread = { items: [message("the agent replied")] };
+    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    const items = container.querySelector(".thread-items");
+    const said = items.querySelector(".thread-message");
+
+    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+
+    expect(container.querySelector(".thread-items")).toBe(items);
+    expect(container.querySelector(".thread-message"), "the timeline was rewritten with itself").toBe(said);
+  });
+
+  it("keeps a selection in the timeline through a repaint that changed nothing", () => {
+    const thread = { items: [message("the agent replied")] };
+    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    const body = container.querySelector(".thread-body");
+    const range = document.createRange();
+    range.selectNodeContents(body);
+    window.getSelection().removeAllRanges();
+    window.getSelection().addRange(range);
+
+    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+
+    expect(window.getSelection().toString()).toContain("the agent replied");
+    window.getSelection().removeAllRanges();
+  });
+
   it("writes the whole section for a thread that has no composer at all", () => {
     expect(writeThreadKeepingComposer(container, threadHtml({ items: [] }))).toBe(true);
     expect(container.querySelector(".review-thread")).toBeTruthy();

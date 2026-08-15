@@ -766,6 +766,17 @@ struct PendingAgentTurn {
     phase: &'static str,
 }
 
+/// The live implementation an Issue's conversation actually speaks to: the
+/// Issue owns the words, its implementation owns the checkout and the PTY they
+/// have to reach. Read off the run before the Issue is taken out of the map, so
+/// the agent can be woken — or brought back — without borrowing it again.
+struct ImplementationTarget {
+    run_id: String,
+    worktree_path: std::path::PathBuf,
+    agent_id: String,
+    model_choice: ModelChoice,
+}
+
 impl PendingAgentTurn {
     /// Address a run's turn to the run's worktree. Canonical, because the same
     /// worktree reaches the tab registry under several scope shapes.
@@ -9465,9 +9476,12 @@ impl AppState {
             let implementation_target =
                 self.current_issue_implementation_id(&entity_id)
                     .and_then(|run_id| {
-                        self.runs
-                            .get(&run_id)
-                            .map(|run| (run_id, run.worktree.path.clone()))
+                        self.runs.get(&run_id).map(|run| ImplementationTarget {
+                            run_id,
+                            worktree_path: run.worktree.path.clone(),
+                            agent_id: run.agents.first().id.clone(),
+                            model_choice: run.agents.first().choice.clone(),
+                        })
                     });
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages_with_attachments(
@@ -9488,17 +9502,19 @@ impl AppState {
             let mut started_planning = Ok(());
             if active.plan.state == PlanState::Created && active.workspace.is_none() {
                 started_planning = self.start_inert_plan(&entity_id, &mut active);
-            } else if let Some((run_id, worktree_path)) = implementation_target {
+            } else if let Some(implementation) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
                 // must therefore wake that implementation agent — and the same
                 // reply rule applies to the run it wakes.
-                let implementation_agent = self
-                    .runs
-                    .get(&run_id)
-                    .map(|run| run.agents.first().id.clone())
-                    .unwrap_or_default();
-                nudge_live_agent_tab(&self.tabs, &worktree_path, &implementation_agent, &run_id);
+                let run_id = implementation.run_id;
+                self.tell_the_agent_a_message_is_waiting(
+                    &implementation.worktree_path,
+                    &implementation.agent_id,
+                    &run_id,
+                    implementation.model_choice,
+                    &active.agents.resolve(Some(&agent_id))?.thread,
+                );
                 parked_implementation = self
                     .runs
                     .get(&run_id)
@@ -9510,7 +9526,14 @@ impl AppState {
                     })
                     .map(|_| run_id);
             } else if let Some(workspace) = &active.workspace {
-                nudge_live_agent_tab(&self.tabs, &workspace.checkout, &agent_id, &entity_id);
+                let agent = active.agents.resolve(Some(&agent_id))?;
+                self.tell_the_agent_a_message_is_waiting(
+                    &workspace.checkout,
+                    &agent_id,
+                    &entity_id,
+                    agent.choice.clone(),
+                    &agent.thread,
+                );
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             // The message is durable either way: a dispatch that could not start
@@ -9549,6 +9572,9 @@ impl AppState {
             );
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let worktree_path = active.worktree.path.clone();
+            // Read before the run leaves the map: reviving this agent needs the
+            // provider it runs on, and the run is borrowed from `self`.
+            let agent_choice = active.agents.resolve(Some(&agent_id))?.choice.clone();
             // An implementation's FIRST agent speaks in its Issue's
             // conversation — that is the one every Issue surface renders. An
             // agent the human added to the branch speaks in its own.
@@ -9562,7 +9588,13 @@ impl AppState {
                     messages,
                     attachments,
                 );
-                nudge_live_agent_tab(&self.tabs, &worktree_path, &agent_id, &entity_id);
+                self.tell_the_agent_a_message_is_waiting(
+                    &worktree_path,
+                    &agent_id,
+                    &entity_id,
+                    agent_choice,
+                    &issue.agents,
+                );
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
                 if resume {
@@ -9590,12 +9622,82 @@ impl AppState {
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
             }
-            nudge_live_agent_tab(&self.tabs, &active.worktree.path, &agent_id, &entity_id);
+            let agent = active.agents.resolve(Some(&agent_id))?;
+            self.tell_the_agent_a_message_is_waiting(
+                &active.worktree.path,
+                &agent_id,
+                &entity_id,
+                agent_choice,
+                &agent.thread,
+            );
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
             return Ok(view);
         }
         Err("unknown conversation owner".to_string())
+    }
+
+    /// Tell the agent that owns this conversation a message is waiting for it —
+    /// reviving its harness when nothing is running.
+    ///
+    /// A live tab is nudged where it stands ([`nudge_live_agent_tab`]). A tab
+    /// whose process has ended — or one that was never opened — is not a reason
+    /// for the message to go unheard: the SAME agent starts again, in the SAME
+    /// checkout, through the queue [`deliver_pending_agent_turns`] drains once
+    /// the state lock is free (a spawn blocks for seconds on the harness's
+    /// readiness wait, and every terminal pump needs that lock). Continuation
+    /// comes with it for free: [`ensure_agent_tab`] probes the provider's own
+    /// transcript for the checkout, so a revived claude/codex agent picks the
+    /// session it was in back up rather than opening a blank one.
+    ///
+    /// Before this, a message to an agent whose TUI had exited sat on the
+    /// thread forever — the entity read as idle, the human waited, and nothing
+    /// was listening.
+    fn tell_the_agent_a_message_is_waiting(
+        &mut self,
+        root: &std::path::Path,
+        agent_id: &str,
+        owner: &str,
+        model_choice: ModelChoice,
+        thread: &crate::thread::Thread,
+    ) {
+        let root = Self::canonical_root(root);
+        let key = TabKey::agent(&root, agent_id);
+        if self
+            .tabs
+            .get(&key)
+            .is_some_and(|tab| tab.live && !tab.session.has_exited())
+        {
+            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner);
+            return;
+        }
+        // Two harnesses in one checkout would both report `done` for the same
+        // owner, and the second report is an illegal transition that lands on
+        // the conversation as a bogus failure. A harness already on its way is
+        // the one that reads this message: it opens on the cold prompt, which
+        // tells it to call `read_unread_messages`, and the message is durable
+        // on the thread before it can ask.
+        let already_starting = self.agent_spawns_in_flight.contains(&key)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|queued| queued.root == root && queued.agent_id == agent_id);
+        if already_starting {
+            return;
+        }
+        self.pending_agent_turns.push(PendingAgentTurn {
+            root,
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            model_choice,
+            // Cold and warm exactly as `agent.start` sends them: the words are
+            // already durable on the thread, so the harness is told to read
+            // them — wrapped, when it is a new process, in the catch-up packet
+            // it has no other way to reconstruct.
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            phase: "revive",
+        });
     }
 
     /// Where this entity's attachments live: the bridge's own store, always,
@@ -13635,9 +13737,11 @@ fn parse_message_anchor(
 
 /// Tell the worktree's agent, in place, that unread thread messages await.
 ///
-/// [`deliver`]'s warm branch without the cold half, and deliberately so:
-/// `thread.post` never starts a process. It notifies whatever agent is ALIVE in
-/// that worktree, whatever its entity is parked as.
+/// [`deliver`]'s warm branch without the cold half: it notifies whatever agent
+/// is ALIVE in that worktree, whatever its entity is parked as, and does
+/// nothing at all for one that is not. Deciding between the two — and starting
+/// the agent that is not running — belongs to
+/// [`AppState::tell_the_agent_a_message_is_waiting`], the only caller.
 ///
 /// This was once gated on `building`/`drafting`, from when the agent existed
 /// only while working: any other state meant no process to talk to. A worktree's
@@ -13650,14 +13754,6 @@ fn parse_message_anchor(
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
 /// durable either way.
-/// Where an issue's one agent is running right now — its checkout and its
-/// agent id — or `None` when the issue has no session. Read BEFORE a verb that
-/// ends the session, since ending it is what clears the workspace.
-fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
-    let workspace = active.workspace.as_ref()?;
-    Some((workspace.checkout.clone(), active.agents.first().id.clone()))
-}
-
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
     root: &std::path::Path,
@@ -13678,6 +13774,14 @@ fn nudge_live_agent_tab(
     if let Err(error) = tab.session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
         eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }
+}
+
+/// Where an issue's one agent is running right now — its checkout and its
+/// agent id — or `None` when the issue has no session. Read BEFORE a verb that
+/// ends the session, since ending it is what clears the workspace.
+fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
+    let workspace = active.workspace.as_ref()?;
+    Some((workspace.checkout.clone(), active.agents.first().id.clone()))
 }
 
 /// Open a conversation's session lineage for a newly spawned agent process,
@@ -26058,6 +26162,193 @@ mod tests {
             tab.session.pid(),
             first_pid,
             "restart means a NEW process, not the corpse reported as alive"
+        );
+    }
+
+    /// The failure the human actually hits: an agent's harness exited (the TUI
+    /// self-updated and quit, the process died), the Agent tab still shows the
+    /// last screen it painted, and a message typed into the conversation lands
+    /// on the thread with nothing running to read it. The entity looks idle and
+    /// nobody is listening. A message to an agent that is not running starts it
+    /// again — and takes the message with it.
+    #[tokio::test]
+    async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-revive");
+        let key = first_agent_key(&root, "run-revive");
+        let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let dead_pid = state.lock().unwrap().tabs[&key].session.pid();
+
+        // The harness dies the way a real one does, and the tab is RETAINED so
+        // the human can still read the last screen.
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s.tabs.get_mut(&key).unwrap();
+            tab.session.kill_and_reap();
+            tab.live = false;
+        }
+        // Let the old pump see its own EOF before the revival, so the tab it
+        // closes is the corpse rather than the replacement.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-revive", "body": "are you still on this?" }),
+        );
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        {
+            let s = state.lock().unwrap();
+            let tab = s.tabs.get(&key).expect("the agent came back");
+            assert!(
+                tab.live && !tab.session.has_exited(),
+                "a message to a dead agent brings it back running"
+            );
+            assert_ne!(
+                tab.session.pid(),
+                dead_pid,
+                "revival is a NEW process, not the corpse reported as alive"
+            );
+            assert!(
+                tab.last_delivered_at.is_some(),
+                "and the message that revived it was written into it"
+            );
+        }
+        let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+        assert!(
+            screen.contains("read_unread_messages"),
+            "the revived agent is told to read what was said while it was down: {screen:?}"
+        );
+    }
+
+    /// The guard on revival: an agent whose harness is being started RIGHT NOW
+    /// must not get a second one. Two harnesses in one checkout both report
+    /// `done` for the same owner, and the second report is an illegal
+    /// transition that lands on the conversation as a bogus failure. The spawn
+    /// already in flight is the one that reads this message: it opens on the
+    /// cold prompt, which tells it to call `read_unread_messages`, and the post
+    /// made the message durable before the harness could ask.
+    #[test]
+    fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
+        let root = state.entity_agent_root(&run_id).unwrap();
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        state.pending_agent_turns.clear();
+        state
+            .agent_spawns_in_flight
+            .insert(TabKey::agent(&root, &agent_id));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "one more thing" }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the harness already starting is the one that reads this; {} turns were queued",
+            state.pending_agent_turns.len()
+        );
+
+        // …and with nothing in flight, the same message is what brings the
+        // agent back.
+        state.agent_spawns_in_flight.clear();
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "still there?" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "one revival, addressed to the agent that was spoken to"
+        );
+        let queued = &state.pending_agent_turns[0];
+        assert_eq!(queued.agent_id, agent_id);
+        assert_eq!(queued.root, root);
+        assert_eq!(queued.owner, run_id);
+        assert!(
+            queued.cold.contains("still there?"),
+            "the revived agent opens on what was said to it: {}",
+            queued.cold
+        );
+    }
+
+    /// Revival RESUMES where the provider can. An agent whose checkout holds a
+    /// claude transcript comes back with continuation asked for, so the human's
+    /// message reaches the session it was already in rather than a blank one;
+    /// an agent that has never run has nothing to continue and opens fresh.
+    /// (That decision becomes the harness's own `--continue` /
+    /// `resume --last` argument — see
+    /// `agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id`.)
+    #[tokio::test]
+    async fn a_revived_agent_resumes_its_session_and_one_that_never_ran_does_not() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let resumed_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("resumed"), "run-resumed");
+        let fresh_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
+        // Only the first checkout has a conversation on disk to pick back up.
+        let transcripts = tempfile::tempdir().unwrap();
+        let encoded =
+            transcripts
+                .path()
+                .join(encode_claude_project_dir(&AppState::canonical_root(
+                    &resumed_root,
+                )));
+        std::fs::create_dir_all(&encoded).unwrap();
+        std::fs::write(encoded.join("session.jsonl"), "{}\n").unwrap();
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let projects_dir = transcripts.path().to_path_buf();
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.transcript_probe = Arc::new(move |cwd, provider| {
+                provider == AgentProvider::Claude && claude_transcript_exists(&projects_dir, cwd)
+            });
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        for run_id in ["run-resumed", "run-fresh"] {
+            let posted = call(
+                &handler,
+                "thread.post",
+                json!({ "entity_id": run_id, "body": "pick this up" }),
+            );
+            assert_eq!(posted["ok"], true, "{posted:?}");
+        }
+
+        let built = specs_built.lock().unwrap().clone();
+        let spawned_in = |root: &std::path::Path| {
+            let root = AppState::canonical_root(root);
+            built
+                .iter()
+                .find(|options| options.cwd == root)
+                .unwrap_or_else(|| panic!("the message spawned an agent in {}", root.display()))
+                .clone()
+        };
+        assert!(
+            spawned_in(&resumed_root).continue_session,
+            "a revived agent picks the conversation it was in back up: {built:?}"
+        );
+        assert!(
+            !spawned_in(&fresh_root).continue_session,
+            "an agent that has never run has nothing to continue: {built:?}"
         );
     }
 

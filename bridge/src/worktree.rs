@@ -475,6 +475,11 @@ pub struct ExternalWorktree {
     pub head_subject: String,
     /// Seconds since the HEAD commit's committer time (clamped at 0).
     pub head_age_seconds: u64,
+    /// The HEAD commit's committer time (RFC 3339 UTC). The same fact as
+    /// `head_age_seconds` told as an instant rather than a duration, because
+    /// the inbox sorts and buckets by instants and an age recomputed every poll
+    /// would jitter under the sort. `None` when the stamp cannot be read.
+    pub head_committed_at: Option<String>,
     /// `git status --porcelain` line count — staged + unstaged + untracked.
     pub dirty_files: usize,
     /// Commits ahead of [`comparison_ref`](Self::comparison_ref). Retained for
@@ -495,6 +500,15 @@ pub struct ExternalWorktree {
     /// sitting here unsaved", which is a different question from how far the
     /// branch has travelled (that is `ahead`/`behind`).
     pub uncommitted: crate::diff::DiffStat,
+}
+
+/// A git timestamp (seconds since the epoch) as RFC 3339 UTC — the one
+/// timestamp format every surface of the bridge speaks.
+pub fn rfc3339_from_unix(seconds: i64) -> Option<String> {
+    time::OffsetDateTime::from_unix_timestamp(seconds)
+        .ok()?
+        .format(&time::format_description::well_known::Rfc3339)
+        .ok()
 }
 
 /// The stable external-worktree id for a canonical absolute path.
@@ -744,6 +758,7 @@ fn parse_worktree_block(
         .ok()?;
     let head_subject = commit.summary().unwrap_or("").to_string();
     let head_age_seconds = (now - commit.time().seconds()).max(0) as u64;
+    let head_committed_at = rfc3339_from_unix(commit.time().seconds());
 
     let dirty_files = worktree_status_line_count(&canonical_path)
         .inspect_err(|e| {
@@ -785,6 +800,7 @@ fn parse_worktree_block(
         head_sha,
         head_subject,
         head_age_seconds,
+        head_committed_at,
         dirty_files,
         unpushed: comparison.ahead,
         upstream: comparison.upstream,

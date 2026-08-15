@@ -252,6 +252,18 @@ pub struct Capture {
     pub routing: Option<CaptureRouting>,
     #[serde(default)]
     pub question: Option<CaptureQuestion>,
+    /// Where this capture sits in the inbox: the moment it was said. Every
+    /// entity carries one, and this is the oldest of them all — the issue or
+    /// branch the capture becomes inherits it, so what the user said and the
+    /// work it turned into hold ONE place in the list rather than two.
+    ///
+    /// It never moves. A capture is unfinished business for as long as it takes
+    /// the router to decide, which is seconds; anything that lives long enough
+    /// to be picked back up is the work it became, and that moves its own.
+    /// `None` on a record written before anchors existed — it reads as
+    /// `created_at`, which is what it would have been seeded to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_at: Option<String>,
     /// Destinations this capture was sent to and then moved off. A misroute
     /// whose artifact could not be taken back — a branch an agent already
     /// worked — is kept, and this is what keeps it reachable from the capture
@@ -267,15 +279,23 @@ impl Capture {
         text: impl Into<String>,
         created_at: impl Into<String>,
     ) -> Self {
+        let created_at = created_at.into();
         Capture {
             id: id.into(),
             text: text.into(),
-            created_at: created_at.into(),
+            anchor_at: Some(created_at.clone()),
+            created_at,
             state: CaptureState::Unrouted,
             routing: None,
             question: None,
             rerouted_from: Vec::new(),
         }
+    }
+
+    /// This capture's place in the inbox, for a record from before anchors as
+    /// much as for one seeded at creation.
+    pub fn anchor(&self) -> &str {
+        self.anchor_at.as_deref().unwrap_or(&self.created_at)
     }
 
     /// Whether the router asked something the user has not answered. It is the
@@ -319,6 +339,11 @@ impl Capture {
         let mut recovered = self.clone();
         if recovered.state == CaptureState::Routing {
             recovered.state = CaptureState::Unrouted;
+        }
+        // A capture taken before anchors existed is anchored where it was said,
+        // durably, so the work it becomes can inherit it.
+        if recovered.anchor_at.is_none() {
+            recovered.anchor_at = Some(recovered.created_at.clone());
         }
         recovered
     }
@@ -490,6 +515,39 @@ mod tests {
             options,
             ..CaptureQuestion::new("which project?", "2026-08-13T10:00:01Z")
         })
+    }
+
+    /// The capture's place in the inbox is the moment it was said, and nothing
+    /// the router does to it moves that.
+    #[test]
+    fn a_capture_is_anchored_where_it_was_said() {
+        let said = capture(CaptureState::Unrouted);
+        assert_eq!(said.anchor(), "2026-08-13T10:00:00Z");
+
+        let asked = said.asked(question(None));
+        let answered = asked.answered("the Build one").unwrap();
+        let routed = answered.routed_to(CaptureRouting {
+            project_id: "proj-1".to_string(),
+            kind: CaptureTarget::Issue,
+            target_id: "plan-1".to_string(),
+            routed_at: "2026-08-14T09:00:00Z".to_string(),
+            rationale: None,
+        });
+        assert_eq!(routed.anchor(), "2026-08-13T10:00:00Z");
+    }
+
+    /// Anchors are new; every capture already on disk predates them and reads
+    /// as anchored where it was said.
+    #[test]
+    fn a_capture_written_before_anchors_reads_as_anchored_at_creation() {
+        let stored = serde_json::json!({
+            "id": "capture-old",
+            "text": "ship the thing",
+            "created_at": "2026-08-01T08:00:00Z",
+        });
+        let capture: Capture = serde_json::from_value(stored).expect("an old capture loads");
+        assert!(capture.anchor_at.is_none());
+        assert_eq!(capture.anchor(), "2026-08-01T08:00:00Z");
     }
 
     /// A question with no options is the question this surface started with:

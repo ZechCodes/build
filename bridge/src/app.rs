@@ -920,6 +920,14 @@ struct WorkItemStat {
     ahead: Option<u64>,
     behind: Option<u64>,
     upstream: Option<String>,
+    /// The one ref both counts are measured against: the tracking branch when
+    /// the branch has one, otherwise the project's base branch. It is what
+    /// makes ahead/behind readable — "3 unpushed" and "3 unmerged" are the same
+    /// number against different refs, and Done warns differently about each.
+    comparison_ref: Option<String>,
+    /// When this branch last got a commit (RFC 3339), or `None` when the
+    /// checkout could not be read.
+    head_committed_at: Option<String>,
 }
 
 impl WorkItemStat {
@@ -936,6 +944,8 @@ impl WorkItemStat {
             ahead: stat["ahead"].as_u64(),
             behind: stat["behind"].as_u64(),
             upstream: stat["upstream"].as_str().map(str::to_string),
+            comparison_ref: stat["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: stat["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -952,6 +962,8 @@ impl WorkItemStat {
             ahead: entry["ahead"].as_u64(),
             behind: entry["behind"].as_u64(),
             upstream: entry["upstream"].as_str().map(str::to_string),
+            comparison_ref: entry["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: entry["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -972,6 +984,8 @@ impl WorkItemStat {
             ahead: entry["ahead"].as_u64(),
             behind: entry["behind"].as_u64(),
             upstream: entry["upstream"].as_str().map(str::to_string),
+            comparison_ref: entry["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: entry["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -996,6 +1010,7 @@ impl WorkItemStat {
             "ahead": self.ahead,
             "behind": self.behind,
             "upstream": self.upstream,
+            "comparison_ref": self.comparison_ref,
         })
     }
 }
@@ -1287,16 +1302,22 @@ fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
         let head_ref = repo.head().ok()?;
         let checked_out_branch = head_ref.shorthand().map(str::to_string);
         let head = head_ref.peel_to_commit().ok()?;
+        let head_committed_at = crate::worktree::rfc3339_from_unix(head.time().seconds());
         let comparison = crate::worktree::branch_comparison(
             &repo,
             &head,
             checked_out_branch.as_deref(),
             base_branch,
         );
-        Some((checked_out_branch, comparison))
+        Some((checked_out_branch, comparison, head_committed_at))
     });
-    let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
-    let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
+    let checked_out_branch = git_state
+        .as_ref()
+        .and_then(|(branch, _, _)| branch.as_deref());
+    let comparison = git_state.as_ref().map(|(_, comparison, _)| comparison);
+    let head_committed_at = git_state
+        .as_ref()
+        .and_then(|(_, _, committed_at)| committed_at.as_deref());
     let uncommitted = crate::diff::stat_uncommitted(worktree)
         .map(|stat| {
             json!({
@@ -1317,6 +1338,10 @@ fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
                 "upstream": comparison.and_then(|value| value.upstream.as_deref()),
                 "ahead": comparison.and_then(|value| value.ahead),
                 "behind": comparison.and_then(|value| value.behind),
+                // When this branch last got a commit. The inbox's floor for how
+                // recently the work moved, computed in the cached walk that has
+                // the commit in its hand already.
+                "head_committed_at": head_committed_at,
                 "uncommitted": uncommitted,
             })
         })
@@ -1361,6 +1386,15 @@ fn primary_changes_summary(
         .and_then(|r| r.head().ok())
         .and_then(|h| h.shorthand().map(str::to_string))
         .unwrap_or_else(|| "HEAD".to_string());
+    // When this checkout last got work. A bare checkout has no conversation and
+    // no lifecycle, so its own history is all the inbox has to date it by — and
+    // it is computed HERE, inside the cached walk, never on the poll path.
+    let head_committed_at = repo
+        .as_ref()
+        .ok()
+        .and_then(|repo| repo.head().ok())
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| crate::worktree::rfc3339_from_unix(commit.time().seconds()));
     let (upstream, comparison_ref, ahead, behind) = repo
         .as_ref()
         .ok()
@@ -1374,6 +1408,7 @@ fn primary_changes_summary(
             "comparison_ref": comparison_ref,
             "ahead": ahead,
             "behind": behind,
+            "head_committed_at": head_committed_at,
             "files_changed": stat.files_changed,
             "insertions": stat.insertions,
             "deletions": stat.deletions,
@@ -1873,6 +1908,16 @@ pub struct AppState {
     /// run id → cached `board.list` diffstat, so the poll surface never runs
     /// per-run git work more than once per TTL window.
     run_stat_cache: HashMap<String, (std::time::Instant, Value)>,
+    /// run id → when this run's files were last seen to change (RFC 3339).
+    ///
+    /// The diff cache above IS the watcher: its numbers are recomputed from the
+    /// checkout on a cadence, and two consecutive computes disagreeing means
+    /// work landed on disk. Stamping it there costs one comparison of values
+    /// already in hand — a real per-checkout watcher would cost a file handle
+    /// per worktree and a thread to drain it. Derived, so it is not persisted:
+    /// after a restart a run dates itself by its HEAD commit and its
+    /// conversation until the next change is observed.
+    run_files_changed_at: HashMap<String, String>,
     /// Diff-cache entries with a refresh running right now. Single-flight: a
     /// poll that finds one of these stale serves the value it has and adds no
     /// second worktree scan to the disk. The claim is also the right to publish
@@ -2046,6 +2091,7 @@ impl AppState {
             conversation_attention_sequence: HashMap::new(),
             entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
+            run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
             diff_compute_observer: None,
             #[cfg(test)]
@@ -2217,6 +2263,8 @@ impl AppState {
         // watermarks from it so the restart re-announces nothing, and so the
         // next attention event is news rather than a first observation.
         self.seed_conversation_attention_sequences();
+        // Every entity that predates anchors gets the one it would have had.
+        self.seed_anchors_for_records_without_one();
         // Issue implementation intent is the scheduler's durable source of
         // truth. Reconcile it only after every implementation lineage record
         // has been restored, so an approved waiting stage can resume without
@@ -2805,7 +2853,11 @@ impl AppState {
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
         self.push_attention_notify(&plan_id, news, state_kind);
-        self.plans.insert(plan_id, active);
+        self.plans.insert(plan_id.clone(), active);
+        // After the insert: the attention file is pruned to what exists when it
+        // is written, and an anchor stamped while the record was checked out
+        // would be dropped on the way to disk.
+        self.seed_anchor(&plan_id);
         self.reap_orphaned_terminals();
         (view, persisted)
     }
@@ -2830,7 +2882,9 @@ impl AppState {
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
         self.push_attention_notify(&run_id, news, state_kind);
-        self.runs.insert(run_id, active);
+        self.runs.insert(run_id.clone(), active);
+        // See `finish_plan_mutation`: seeded once the record is back in its map.
+        self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();
         (view, persisted)
     }
@@ -2974,6 +3028,54 @@ impl AppState {
             .map(|thread| (thread.id.clone(), thread.last_sequence()))
             .collect();
         self.conversation_attention_sequence.extend(sequences);
+    }
+
+    /// Boot migration: give every stored entity the inbox anchor it would have
+    /// had, and leave every anchored one exactly where it is.
+    ///
+    /// Seeding at creation alone would file a two-week-old issue you picked
+    /// back up yesterday under two weeks ago, so the seed is walked forward
+    /// through the user messages its conversation already holds — the same rule
+    /// a live message goes through, replayed over the history that predates it.
+    /// The first boot after this ships does the work; every boot after finds
+    /// the anchors it wrote and does nothing.
+    fn seed_anchors_for_records_without_one(&mut self) {
+        let histories: Vec<(String, String, Vec<String>)> = self
+            .plans
+            .iter()
+            .map(|(id, plan)| (id, &plan.agents))
+            .chain(self.runs.iter().map(|(id, run)| (id, &run.agents)))
+            .filter(|(id, _)| {
+                self.attention
+                    .get(id.as_str())
+                    .is_none_or(|attention| attention.anchor_at.is_none())
+            })
+            .map(|(id, roster)| {
+                let mut said_at: Vec<String> = roster
+                    .iter()
+                    .flat_map(|agent| agent.thread.user_message_times())
+                    .map(str::to_string)
+                    .collect();
+                said_at.sort();
+                let created_at = self
+                    .entity_created_at
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(now_rfc3339);
+                (id.clone(), created_at, said_at)
+            })
+            .collect();
+        if histories.is_empty() {
+            return;
+        }
+        for (entity_id, created_at, said_at) in histories {
+            let attention = self.attention.entry(entity_id).or_default();
+            attention.seed_anchor(&created_at);
+            for at in said_at {
+                attention.note_user_message(&at);
+            }
+        }
+        self.persist_attention();
     }
 
     /// What the mutation tail found on the conversation it just wrote: how far
@@ -3565,6 +3667,18 @@ impl AppState {
         let now = std::time::Instant::now();
         match entry {
             DiffCacheEntry::RunStat { run_id, stat } => {
+                // Two computes that disagree are files that changed. Only when
+                // there was something to disagree with: an invalidated entry
+                // recomputes from nothing, and that is a mutation, not a
+                // filesystem event.
+                let changed = self
+                    .run_stat_cache
+                    .get(&run_id)
+                    .is_some_and(|(_, previous)| previous != &stat);
+                if changed {
+                    self.run_files_changed_at
+                        .insert(run_id.clone(), now_rfc3339());
+                }
                 self.run_stat_cache.insert(run_id, (now, stat));
             }
             DiffCacheEntry::ExternalScan {
@@ -6007,6 +6121,7 @@ impl AppState {
                     "head_sha": w.head_sha,
                     "head_subject": w.head_subject,
                     "head_age_seconds": w.head_age_seconds,
+                    "head_committed_at": w.head_committed_at,
                     "dirty_files": w.dirty_files,
                     // Ahead and behind always share one comparison ref. The
                     // working-tree delta is reported separately below.
@@ -7561,6 +7676,14 @@ impl AppState {
             // What the user said is what they last touched: a capture sorts by
             // when it was taken until it becomes work with a life of its own.
             "resume_at": capture.created_at,
+            // The oldest anchor there is, and the one the issue or branch this
+            // becomes will inherit.
+            "anchor": capture.anchor(),
+            "last_activity": capture
+                .question
+                .as_ref()
+                .map(|question| question.asked_at.clone())
+                .unwrap_or_else(|| capture.created_at.clone()),
             // Nothing to archive and nothing to silence: a capture leaves the
             // feed by being routed, not by being dismissed.
             "can_finish": false,
@@ -7923,7 +8046,23 @@ impl AppState {
             .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
         let previous = capture.routing.clone();
         let routed = capture.routed_to(routing);
+        let destination = routed.routing.clone();
         self.save_capture(routed)?;
+        // The work keeps the capture's place in the inbox. Said on Monday and
+        // routed on Tuesday, it is still Monday's business — and it is ONE
+        // entry, so the capture's row leaving and the work's row arriving must
+        // not read as the list gaining something new.
+        if let Some(destination) = destination {
+            let entity_id = match destination.kind {
+                crate::capture::CaptureTarget::Issue => Some(destination.target_id.clone()),
+                crate::capture::CaptureTarget::Branch => {
+                    self.run_on_branch(&destination.project_id, &destination.target_id)
+                }
+            };
+            if let Some(entity_id) = entity_id {
+                self.inherit_capture_anchor(&entity_id, capture_id);
+            }
+        }
         if let Some(previous) = previous {
             self.release_misrouted_artifact(&previous);
         }
@@ -8998,6 +9137,9 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let message = require_str(params, "message")?;
         let project_id = self.project_of(&plan_id)?;
+        // The user's own words, so the anchor gets its chance — before the
+        // record leaves its map (see `note_user_message`).
+        self.note_user_message(&plan_id);
         let mut active = self.take_plan(&plan_id)?;
         active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
@@ -9529,6 +9671,10 @@ impl AppState {
                 active.plan.state,
                 PlanState::Blocked | PlanState::Failed | PlanState::IdleUnreported
             );
+            // The user is saying something, so the inbox anchor gets its one
+            // chance to move. Here, before the record is checked out of its
+            // map — see `note_user_message`.
+            self.note_user_message(&entity_id);
             let implementation_target =
                 self.current_issue_implementation_id(&entity_id)
                     .and_then(|run_id| {
@@ -9631,6 +9777,14 @@ impl AppState {
             // Read before the run leaves the map: reviving this agent needs the
             // provider it runs on, and the run is borrowed from `self`.
             let agent_choice = active.agents.resolve(Some(&agent_id))?.choice.clone();
+            // The branch is what the user is talking to, and — when the message
+            // lands on the issue's conversation, which is where a planned
+            // implementation speaks — the issue heard it too. Both while their
+            // records are still in their maps.
+            self.note_user_message(&entity_id);
+            if let Some(issue_id) = issue_id.clone().filter(|_| addresses_first_agent) {
+                self.note_user_message(&issue_id);
+            }
             // An implementation's FIRST agent speaks in its Issue's
             // conversation — that is the one every Issue surface renders. An
             // agent the human added to the branch speaks in its own.
@@ -10506,6 +10660,8 @@ impl AppState {
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
             self.owning_plan_stage_docs(active)
         };
+        // See `plan_message`: the user is speaking, so the anchor may move.
+        self.note_user_message(&run_id);
         let mut active = self.take_run(&run_id)?;
         active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
@@ -11053,6 +11209,15 @@ impl AppState {
             "agents": self.agent_digests(run_id),
             "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
+            // Where this row sits in the inbox, and how long it has been quiet.
+            // Every row carries both, whatever it was read off.
+            "anchor": self.anchor_of(run_id),
+            "last_activity": self.last_activity_of(
+                Some(run_id),
+                Some(thread),
+                Some(&active.worktree.path),
+                &sync,
+            ),
             // Finishing archives a worktree and then removes it. The primary
             // checkout is the repository: there is nothing to file away, and
             // everything to lose.
@@ -11103,6 +11268,11 @@ impl AppState {
             "agents": Vec::<Value>::new(),
             "stat": sync.to_json(),
             "resume_at": Value::Null,
+            // A checkout with no run behind it has no record to anchor: it
+            // dates itself by its own last commit, which is the only history it
+            // has. Same for its last activity, plus whatever its agent painted.
+            "anchor": sync.head_committed_at,
+            "last_activity": self.last_activity_of(None, None, Some(&project.repo_path), &sync),
             // The repository is not a worktree to file away.
             "can_finish": false,
             "muted": false,
@@ -11154,6 +11324,19 @@ impl AppState {
             "agents": Vec::<Value>::new(),
             "stat": sync.to_json(),
             "resume_at": entry["attention"]["resume_at"],
+            // See the primary row: a bare checkout is dated by its own commits,
+            // unless the user has acted on it here and given it an anchor.
+            "anchor": self
+                .attention
+                .get(&worktree_id)
+                .and_then(|attention| attention.anchor_at.clone())
+                .or_else(|| sync.head_committed_at.clone()),
+            "last_activity": self.last_activity_of(
+                None,
+                None,
+                Some(std::path::Path::new(&path)),
+                &sync,
+            ),
             "can_finish": crate::branch::branch_can_finish(&sync.sync()),
             "muted": self.is_muted(&worktree_id),
             "worktree_path": path,
@@ -11185,6 +11368,10 @@ impl AppState {
         let unread = self.unread_for(issue_id, &active.agents);
         let working_since = self.working_since_for(issue_id, &active.agents);
         let implementation = self.current_issue_implementation(issue_id);
+        // The implementation still in flight, which is narrower than the newest
+        // one: a merged or abandoned branch has stopped speaking for its issue,
+        // and the issue is back in the inbox on its own.
+        let live_implementation = implementation.filter(|run| !run.run.state.is_terminal());
         let row = json!({
             "kind": crate::branch::WorkItemKind::Issue.as_str(),
             "project_id": self.entity_project.get(issue_id).cloned().unwrap_or_default(),
@@ -11200,12 +11387,24 @@ impl AppState {
             "agents": self.agent_digests(issue_id),
             "stat": Value::Null,
             "resume_at": self.attention_json(issue_id)["resume_at"],
+            "anchor": self.anchor_of(issue_id),
+            "last_activity": self.last_activity_of(
+                Some(issue_id),
+                Some(&active.agents),
+                None,
+                &WorkItemStat::default(),
+            ),
             "can_finish": self.plan_implementation_complete(issue_id, active),
             "muted": self.is_muted(issue_id),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
             "issue_id": issue_id,
+            // Whether a branch is implementing this issue RIGHT NOW — the same
+            // fact that hides the issue's row behind that branch's, said out
+            // loud so a surface holding an issue can explain where it went.
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
+            "implementation_active": live_implementation.is_some(),
             "primary": false,
         });
         crate::branch::WorkItemCandidate {
@@ -11979,7 +12178,125 @@ impl AppState {
             "resume_at": attention.sort_key(&created_at),
             "interacted": attention.last_interaction_at.is_some(),
             "seen": attention.has_seen(&state_changed_at),
+            // The inbox's own key, on every surface that renders an entity, so
+            // a detail view and the list it was opened from agree about where
+            // this piece of work sits.
+            "anchor": attention.anchor(&created_at),
         })
+    }
+
+    /// Where this entity sits in the inbox.
+    ///
+    /// The anchor, or — for a record written before anchors that boot has not
+    /// reached — the day it was created, which is what the seed would have
+    /// made it.
+    fn anchor_of(&self, entity_id: &str) -> String {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        match self.attention.get(entity_id) {
+            Some(attention) => attention.anchor(&created_at),
+            None => created_at,
+        }
+    }
+
+    /// Give a newly created entity its place in the inbox. Idempotent, so every
+    /// mutation can call it and only the first one does anything.
+    fn seed_anchor(&mut self, entity_id: &str) {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        let attention = self.attention.entry(entity_id.to_string()).or_default();
+        if attention.anchor_at.is_some() {
+            return;
+        }
+        attention.seed_anchor(&created_at);
+        self.persist_attention();
+    }
+
+    /// The user said something to this entity: move its anchor if they had gone
+    /// quiet for [`crate::attention::ANCHOR_GAP`], and leave it exactly where it
+    /// is otherwise.
+    ///
+    /// Only the user's own words reach here. An agent filling a conversation
+    /// all night is the work happening, and the work happening must never
+    /// reorder the inbox under the person reading it.
+    ///
+    /// Called with the entity still in its map: the attention file is pruned to
+    /// what exists when it is written, so a stamp taken while a record is
+    /// checked out would be dropped on the way to disk.
+    fn note_user_message(&mut self, entity_id: &str) {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        let now = now_rfc3339();
+        let attention = self.attention.entry(entity_id.to_string()).or_default();
+        attention.seed_anchor(&created_at);
+        attention.note_user_message(&now);
+        self.persist_attention();
+    }
+
+    /// Take a capture's anchor onto the work it just became, so the inbox holds
+    /// ONE entry for a thing the user said and not two.
+    fn inherit_capture_anchor(&mut self, entity_id: &str, capture_id: &str) {
+        let Some(capture) = self.captures.get(capture_id) else {
+            return;
+        };
+        let anchor = capture.anchor().to_string();
+        self.attention
+            .entry(entity_id.to_string())
+            .or_default()
+            .inherit_anchor(&anchor, None);
+        self.persist_attention();
+    }
+
+    /// When this work item last did anything, as the Recent section reads it:
+    /// the latest of its files changing, something landing on its conversation,
+    /// and its agent painting. A row is only quiet when all three are.
+    ///
+    /// Every input is already in hand — no clock here starts new git work.
+    fn last_activity_of(
+        &self,
+        entity_id: Option<&str>,
+        conversation: Option<&crate::thread::Thread>,
+        checkout: Option<&std::path::Path>,
+        stat: &WorkItemStat,
+    ) -> Option<String> {
+        let files_changed_at = entity_id
+            .and_then(|id| self.run_files_changed_at.get(id))
+            .cloned();
+        let conversation_at = conversation
+            .and_then(crate::thread::Thread::last_item_at)
+            .map(str::to_string);
+        let agent_at = checkout.and_then(|root| self.agent_last_painted_at(root));
+        let head_at = stat.head_committed_at.clone();
+        [files_changed_at, conversation_at, agent_at, head_at]
+            .into_iter()
+            .flatten()
+            .max()
+    }
+
+    /// When the agent working in this checkout last painted, or `None` when no
+    /// agent has ever run there. Read off the PTY's own idle clock, which is
+    /// the only record of it.
+    fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
+        let root = Self::canonical_root(root);
+        let idle = self
+            .tabs
+            .iter()
+            .filter(|(key, tab)| key.root == root && key.is_agent() && !tab.session.has_exited())
+            .map(|(_, tab)| tab.session.idle_for())
+            .min()?;
+        let painted = time::OffsetDateTime::now_utc() - idle;
+        painted
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok()
     }
 
     fn current_issue_implementation(&self, issue_id: &str) -> Option<&ActiveRun> {
@@ -30420,6 +30737,249 @@ mod tests {
             rows.iter()
                 .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(implemented_id)),
             "a finished implementation stops speaking for its issue: {rows:?}"
+        );
+    }
+
+    /// An RFC 3339 stamp `hours` in the past, for tests that need a gap no
+    /// suite can wait out.
+    fn hours_ago(hours: i64) -> String {
+        (time::OffsetDateTime::now_utc() - time::Duration::hours(hours))
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("UTC formats as RFC 3339")
+    }
+
+    fn issue_row(state: &mut AppState, issue_id: &str) -> Value {
+        work_item_rows(state)
+            .into_iter()
+            .find(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id))
+            .unwrap_or_else(|| panic!("{issue_id} has a row on the feed"))
+    }
+
+    /// The inbox sorts by anchor, oldest first, so every row it can show has to
+    /// carry one — a branch, an issue, and the capture that has not become
+    /// either yet.
+    #[test]
+    fn every_feed_row_carries_the_anchor_it_sorts_by() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+        adopted_run(&mut state, &repo, dir.path(), "feature-anchored");
+        captured(&mut state, "something I said");
+
+        let rows = work_item_rows(&mut state);
+        for row in &rows {
+            assert!(
+                row["anchor"].as_str().is_some(),
+                "every row sorts by an anchor: {row:?}"
+            );
+        }
+        assert!(
+            rows.iter().any(|row| row["kind"] == "issue")
+                && rows.iter().any(|row| row["kind"] == "branch")
+                && rows.iter().any(|row| row["kind"] == "capture"),
+            "all three kinds are on this feed: {rows:?}"
+        );
+
+        // An issue enters the list where it was filed, and the detail surface
+        // agrees with the row.
+        let filed_at = state.entity_created_at[&issue_id].clone();
+        let issue = rows
+            .iter()
+            .find(|row| row["issue_id"] == json!(issue_id.clone()))
+            .expect("the issue is on the feed");
+        assert_eq!(issue["anchor"], json!(filed_at.clone()), "{issue:?}");
+        let detail = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(detail["result"]["attention"]["anchor"], json!(filed_at));
+    }
+
+    /// Half a day of saying nothing and then saying something is picking the
+    /// work back up: it goes to the bottom of the inbox. Saying a second thing
+    /// straight after is the same sitting, and moves nothing.
+    #[test]
+    fn a_message_after_half_a_day_of_silence_moves_the_anchor() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        // Filed yesterday, and nothing said about it since.
+        let filed_at = hours_ago(30);
+        state
+            .entity_created_at
+            .insert(issue_id.clone(), filed_at.clone());
+        let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+        attention.anchor_at = Some(filed_at.clone());
+        attention.last_user_message_at = Some(hours_ago(13));
+        assert_eq!(issue_row(&mut state, &issue_id)["anchor"], json!(filed_at));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "still want this" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let picked_up = state.anchor_of(&issue_id);
+        assert!(
+            picked_up > filed_at,
+            "a message after twelve hours of silence moves it to now: {picked_up} vs {filed_at}"
+        );
+        assert_eq!(
+            issue_row(&mut state, &issue_id)["anchor"],
+            json!(picked_up.clone()),
+            "the row sorts by the anchor that just moved"
+        );
+
+        // The rest of the conversation is one sitting.
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "and this too" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            picked_up,
+            "the inbox must not reshuffle while you type"
+        );
+    }
+
+    /// The rule the whole ordering rests on: agents never move the list. A
+    /// planning session, an implementation and everything said on its
+    /// conversation leave the anchor exactly where the user left it — with the
+    /// silence clock long past the gap, so only a USER message could move it.
+    #[test]
+    fn an_agent_working_all_night_leaves_the_anchor_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id =
+            plan_id_of(&state.handle(req("plan.create", json!({ "goal": "implement me" }))));
+        let anchored_at = hours_ago(30);
+        let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+        attention.anchor_at = Some(anchored_at.clone());
+        attention.last_user_message_at = Some(anchored_at.clone());
+
+        // The QA agent plans it, it is approved, and an implementation starts —
+        // a night of work, all of it the agent's.
+        let said_before = state.plans[&issue_id].agents.items.len();
+        state.handle(req("plan.approve", json!({ "plan_id": issue_id })));
+        let dispatched = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": issue_id, "auto_advance": true }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        assert!(
+            state.plans[&issue_id].agents.items.len() > said_before,
+            "the agent has been talking"
+        );
+
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            anchored_at,
+            "nothing an agent does moves the inbox"
+        );
+    }
+
+    /// What the user said and the work it became are ONE entry in the inbox:
+    /// routing hands the capture's place to the issue it becomes, rather than
+    /// filing the work as something new that arrived just now.
+    #[test]
+    fn routing_a_capture_hands_its_anchor_to_the_work() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        let said_at = hours_ago(20);
+        state
+            .captures
+            .get_mut(&capture_id)
+            .expect("the capture is kept")
+            .anchor_at = Some(said_at.clone());
+        assert_eq!(
+            capture_rows(&mut state)[0]["anchor"],
+            json!(said_at.clone()),
+            "the capture's row sorts by when it was said"
+        );
+
+        let routed = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "issue" }),
+        ));
+        assert_eq!(routed["ok"], true, "{routed:?}");
+        let issue_id = routed["result"]["routing"]["target_id"]
+            .as_str()
+            .expect("the capture became an issue")
+            .to_string();
+
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            said_at,
+            "the work keeps the place the capture held"
+        );
+        assert_eq!(
+            issue_row(&mut state, &issue_id)["anchor"],
+            json!(said_at),
+            "and the row that replaced the capture's says so"
+        );
+    }
+
+    /// Anchors are durable, and every record written before they existed gets
+    /// the one it would have had on the next boot — seeded from when it was
+    /// created, never from when the daemon happened to restart.
+    #[test]
+    fn anchors_survive_a_restart_and_a_record_from_before_them_is_seeded() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let issue_id = plan_id_of(&state.handle(req(
+                "issue.create",
+                json!({ "goal": "add a greeting", "dispatch": false }),
+            )));
+            // A record from before anchors: the attention map has everything
+            // else about it and nothing about where it sits.
+            let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+            attention.anchor_at = None;
+            attention.last_user_message_at = None;
+            attention.interact(&now_rfc3339());
+            state.persist_attention();
+            issue_id
+        };
+
+        let mut booted = qa_state(&repo, dir.path());
+        let created_at = booted.entity_created_at[&issue_id].clone();
+        assert_eq!(
+            booted.anchor_of(&issue_id),
+            created_at,
+            "boot anchors it where it was created, not where the restart was"
+        );
+        assert_eq!(
+            booted.attention[&issue_id].anchor_at.as_deref(),
+            Some(created_at.as_str()),
+            "and writes it down"
+        );
+
+        // Pick it up, restart again: the anchor the user moved is the anchor
+        // the next boot finds.
+        booted
+            .attention
+            .get_mut(&issue_id)
+            .expect("anchored above")
+            .last_user_message_at = Some(hours_ago(13));
+        booted.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "still want this" }),
+        ));
+        let picked_up = booted.anchor_of(&issue_id);
+        assert!(picked_up > created_at, "{picked_up} vs {created_at}");
+        drop(booted);
+
+        let rebooted = qa_state(&repo, dir.path());
+        assert_eq!(
+            rebooted.anchor_of(&issue_id),
+            picked_up,
+            "a restart never re-files what the user picked up"
         );
     }
 

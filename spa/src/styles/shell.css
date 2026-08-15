@@ -136,13 +136,30 @@ body.inbox-collapsed #inbox-open { display:block; }
 .sdot-inactive { background:var(--line); border:1px solid var(--dim); }
 @media (prefers-reduced-motion: reduce) { .sdot-working { animation:none; } }
 
-/* Done and the ⋯ menu: the row's actions, quiet until the row is hovered or
-   the work is finishable. The menu reuses the split button's popover. */
-.inbox-actions { flex:none; position:relative; display:flex; align-items:center; gap:2px;
-  margin-top:1px; }
-.inbox-more { opacity:0; }
-.inbox-entry:hover .inbox-more, .inbox-entry.active .inbox-more, .inbox-more:focus-visible,
-.inbox-actions:has(.inbox-menu:not([hidden])) .inbox-more { opacity:1; }
+/* Done and the ⋯ menu: overlaid on the row's top-right, present only while
+   the row is hovered, focused, active, or holding its menu open — the row's
+   full width belongs to its words, so the facts line never wraps to make
+   room for buttons. The overlay carries the row's own background so the
+   title it covers reads as covered, not collided. The menu reuses the split
+   button's popover. */
+.inbox-entry { position:relative; }
+.inbox-actions { position:absolute; top:4px; right:4px; display:flex;
+  align-items:center; gap:2px; opacity:0; pointer-events:none;
+  background:var(--bg); border-radius:6px; padding-left:6px;
+  box-shadow:-8px 0 8px -6px var(--bg); }
+.inbox-entry:hover .inbox-actions { background:var(--line2);
+  box-shadow:-8px 0 8px -6px var(--line2); }
+.inbox-entry.active .inbox-actions { background:var(--accent-soft);
+  box-shadow:-8px 0 8px -6px var(--accent-soft); }
+.inbox-entry:hover .inbox-actions, .inbox-entry:focus-within .inbox-actions,
+.inbox-entry.active .inbox-actions,
+.inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+/* No hover on touch: the selected row shows its actions, one tap behind. */
+@media (hover:none) {
+  .inbox-entry:hover .inbox-actions { opacity:0; pointer-events:none; }
+  .inbox-entry.active .inbox-actions, .inbox-entry:focus-within .inbox-actions,
+  .inbox-actions:has(.inbox-menu:not([hidden])) { opacity:1; pointer-events:auto; }
+}
 /* The rail's rows are near the top of the viewport, so the menu drops rather
    than rises, and stays on the row's right edge at every width. */
 .inbox-menu { top:calc(100% + 4px); bottom:auto; right:0; left:auto; min-width:200px; }

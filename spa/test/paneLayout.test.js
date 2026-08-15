@@ -559,3 +559,44 @@ describe("the tail of a reading column", () => {
     for (const column of COLUMNS) expect(bar.selector).toContain(column);
   });
 });
+
+describe("the inbox row's actions", () => {
+  // The reviewer's screenshot: Done + ⋯ sat in flow and squeezed the facts
+  // line into a wrap ("74 files · +1633" / "−8871"). The actions overlay the
+  // row's top-right instead, so the row's full width belongs to its words.
+  it("overlay the row instead of costing it width", () => {
+    const actions = rulesFor(".inbox-actions").find(
+      (rule) => declaration(rule.body, "position") === "absolute",
+    );
+    expect(actions).toBeTruthy();
+    expect(declaration(actions.body, "opacity")).toBe("0");
+    expect(declaration(actions.body, "pointer-events")).toBe("none");
+    const anchored = rulesFor(".inbox-entry").some(
+      (rule) => declaration(rule.body, "position") === "relative",
+    );
+    expect(anchored).toBe(true);
+  });
+
+  it("reveal for pointer, keyboard, selection, and the open menu alike", () => {
+    const reveal = cssRules().find(
+      (rule) =>
+        rule.selector.includes(".inbox-entry:hover .inbox-actions") &&
+        declaration(rule.body, "opacity") === "1" &&
+        declaration(rule.body, "pointer-events") === "auto",
+    );
+    expect(reveal).toBeTruthy();
+    expect(reveal.selector).toContain(".inbox-entry:focus-within .inbox-actions");
+    expect(reveal.selector).toContain(".inbox-entry.active .inbox-actions");
+    expect(reveal.selector).toContain(".inbox-actions:has(.inbox-menu:not([hidden]))");
+  });
+
+  it("stay reachable where hover does not exist", () => {
+    const touch = cssRules().find(
+      (rule) =>
+        enclosingAtRule(rule.at) === "@media (hover:none)" &&
+        rule.selector.includes(".inbox-entry.active .inbox-actions") &&
+        declaration(rule.body, "opacity") === "1",
+    );
+    expect(touch).toBeTruthy();
+  });
+});

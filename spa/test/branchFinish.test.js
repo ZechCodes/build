@@ -1,17 +1,11 @@
-// Closing out a branch: which surfaces offer it, what the two behaviors send,
-// and what each confirmation promises. The bridge's `branch.finish` is the only
-// way a branch leaves the board, so the model that decides when to offer it and
-// what to say has to be right before any of it reaches the DOM.
+// Closing out a branch: which surfaces offer it, what it sends, and what the
+// confirmation promises. Done on a branch DELETES it, and the bridge's
+// `branch.finish` is the only way a branch leaves the board, so the model that
+// decides when to offer it and what to say has to be right before any of it
+// reaches the DOM.
 
 import { describe, it, expect } from "vitest";
-import {
-  branchCloseout,
-  branchFinishBlockReason,
-  branchFinishConfirm,
-  branchFinishParams,
-  branchUnlinkConfirm,
-  isUnlinkRefusal,
-} from "../src/core/branchFinish.js";
+import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../src/core/branchFinish.js";
 
 const clean = { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" };
 
@@ -19,11 +13,13 @@ const branchRow = (over = {}) => ({
   kind: "branch",
   project_id: "p1",
   branch: "build/login",
+  state: "review",
   worktree_id: "wt-1",
   run_id: null,
   issue_id: null,
   primary: false,
   can_finish: true,
+  finish: { warnings: [] },
   stat: clean,
   ...over,
 });
@@ -32,20 +28,17 @@ describe("whether a branch can be closed out here", () => {
   it("offers the control on a worktree-backed branch", () => {
     const closeout = branchCloseout(branchRow());
     expect(closeout.shown).toBe(true);
-    expect(closeout.ready).toBe(true);
-    expect(closeout.reason).toBe("");
-    expect(closeout.options.map((option) => option.id)).toEqual(["finish_cleanup", "finish_delete"]);
+    expect(closeout.options.map((option) => option.id)).toEqual(["finish_delete"]);
   });
 
   it("offers the control on a run-backed branch", () => {
-    const closeout = branchCloseout(branchRow({ run_id: "run-1", worktree_id: "wt-1" }));
-    expect(closeout.shown).toBe(true);
+    expect(branchCloseout(branchRow({ run_id: "run-1", worktree_id: "wt-1" })).shown).toBe(true);
   });
 
   // The primary checkout IS the repository: there is nothing to file away and
-  // everything to lose, and the bridge refuses it. Never offer it.
+  // everything to lose. Never offer it.
   it("hides the control on a project's primary checkout", () => {
-    expect(branchCloseout(branchRow({ primary: true, worktree_id: null })).shown).toBe(false);
+    expect(branchCloseout(branchRow({ primary: true, worktree_id: null, can_finish: false })).shown).toBe(false);
     expect(branchCloseout(branchRow({ primary: true, run_id: "run-1" })).shown).toBe(false);
   });
 
@@ -54,104 +47,93 @@ describe("whether a branch can be closed out here", () => {
     expect(branchCloseout(branchRow({ worktree_id: null, run_id: null })).shown).toBe(false);
   });
 
-  // Shown but not ready: the user learns the branch CAN be closed out, and what
-  // stands between them and it.
-  it("shows the control disabled, with the reason, while work is only local", () => {
-    const closeout = branchCloseout(branchRow({ can_finish: false, stat: { ...clean, ahead: 2 } }));
-    expect(closeout.shown).toBe(true);
-    expect(closeout.ready).toBe(false);
-    expect(closeout.reason).toContain("2");
+  // `can_finish` is structural — whether there is anything here to finish — not
+  // a judgement about the state of the work. Uncommitted, unpushed and unmerged
+  // are warnings, and a shown control is always pressable.
+  it("hides the control when the bridge says there is nothing to finish", () => {
+    expect(branchCloseout(branchRow({ can_finish: false })).shown).toBe(false);
   });
 
-  it("names the two options after the branch they act on", () => {
-    const [keep, remove] = branchCloseout(branchRow()).options;
-    expect(keep.description).toContain("build/login");
-    expect(remove.description).toContain("build/login");
-  });
-});
-
-describe("why a branch is not finishable yet", () => {
-  it("asks for a commit first, counting what is uncommitted", () => {
-    const reason = branchFinishBlockReason(branchRow({ stat: { ...clean, uncommitted: { files_changed: 1 } } }));
-    expect(reason).toContain("1 uncommitted file");
-    expect(reason).not.toContain("files");
-  });
-
-  it("asks for an upstream when the branch has none", () => {
-    expect(branchFinishBlockReason(branchRow({ stat: { ...clean, upstream: null } }))).toContain("Push");
-  });
-
-  it("asks for a push, counting the commits only this machine has", () => {
-    expect(branchFinishBlockReason(branchRow({ stat: { ...clean, ahead: 3 } }))).toContain("3 unpushed commits");
-  });
-
-  it("still says something when the row carries no stat at all", () => {
-    expect(branchFinishBlockReason({})).not.toBe("");
+  it("offers exactly one behavior: delete, named after the branch it deletes", () => {
+    const [only] = branchCloseout(branchRow()).options;
+    expect(only.label).toBe("Done");
+    expect(only.description).toContain("build/login");
+    expect(only.danger).toBe(true);
   });
 });
 
-describe("what each option sends", () => {
-  it("keeps the branch on the default option", () => {
-    expect(branchFinishParams("finish_cleanup", { projectId: "p1", branch: "build/login" })).toEqual({
+describe("what Done sends", () => {
+  it("deletes the branch", () => {
+    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" })).toEqual({
       project_id: "p1",
       branch: "build/login",
-      action: "cleanup",
+      action: "delete",
     });
   });
 
-  it("deletes the branch on the second option", () => {
-    expect(branchFinishParams("finish_delete", { projectId: "p1", branch: "build/login" }).action).toBe("delete");
-  });
-
-  // The override the bridge's own refusal names: finish the branch, leave the
-  // issue it implements open.
-  it("carries unlink only when it was asked for", () => {
-    const params = branchFinishParams("finish_cleanup", { projectId: "p1", branch: "b", unlink: true });
-    expect(params.unlink).toBe(true);
-    expect(branchFinishParams("finish_cleanup", { projectId: "p1", branch: "b" }).unlink).toBeUndefined();
-  });
-
   it("refuses an option it has no action for", () => {
-    expect(() => branchFinishParams("merge", { projectId: "p1", branch: "b" })).toThrow(/unknown/);
+    expect(() => branchFinishParams("finish_cleanup", { projectId: "p1", branch: "b" })).toThrow(/unknown/);
+  });
+});
+
+describe("the facts Done speaks about", () => {
+  it("reads them off the row, and names the URL's branch when the read has not answered", () => {
+    const facts = branchFinishFacts(
+      branchRow({
+        issue_id: "issue-1",
+        finish: { warnings: [{ code: "unpushed", message: "build/login has 2 commits that origin/build/login does not" }] },
+      }),
+      "build/fallback",
+    );
+    expect(facts).toEqual({
+      branch: "build/login",
+      issueId: "issue-1",
+      merged: false,
+      warnings: ["build/login has 2 commits that origin/build/login does not"],
+    });
+    expect(branchFinishFacts(null, "build/fallback").branch).toBe("build/fallback");
+    expect(branchFinishFacts(null, "build/fallback").warnings).toEqual([]);
+  });
+
+  it("knows when the work landed", () => {
+    expect(branchFinishFacts(branchRow({ state: "merged" }), "b").merged).toBe(true);
   });
 });
 
 describe("what the confirmation promises", () => {
-  it("outlines keeping the branch", () => {
-    const plan = branchFinishConfirm("finish_cleanup", { branch: "build/login" });
-    expect(plan.actions).toEqual(["Remove the checkout for build/login", "Keep branch build/login"]);
-    expect(plan.danger).toBe(false);
-  });
-
-  it("outlines deleting the branch, as the destructive verb it is", () => {
-    const plan = branchFinishConfirm("finish_delete", { branch: "build/login" });
-    expect(plan.actions).toContain("Delete branch build/login");
+  it("outlines the deletion, as the destructive verb it is", () => {
+    const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
+    expect(plan.actions[0]).toBe("Delete branch build/login");
     expect(plan.danger).toBe(true);
+    expect(plan.confirmLabel).toBe("Delete");
   });
 
-  // Done on a branch that implements an issue archives the issue with it — the
-  // outline says so before the click, not after.
-  it("says the issue goes with it when the branch implements one", () => {
-    const plan = branchFinishConfirm("finish_cleanup", { branch: "build/login", issueId: "issue-1" });
-    expect(plan.actions.some((action) => action.includes("issue"))).toBe(true);
+  it("carries what the bridge says the deletion would cost", () => {
+    const plan = branchFinishConfirm(
+      branchFinishFacts(
+        branchRow({
+          finish: {
+            warnings: [{ code: "uncommitted", message: "build/login has 2 uncommitted files — removing the checkout discards them" }],
+          },
+        }),
+        "build/login",
+      ),
+    );
+    expect(plan.warnings).toEqual(["build/login has 2 uncommitted files — removing the checkout discards them"]);
+  });
+
+  // Deleting an unmerged branch hands its issue back to the inbox; merging
+  // first files the issue away with it. The outline says which, before the click.
+  it("says where the issue it implements ends up", () => {
+    const back = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1" }), "build/login"));
+    expect(back.actions.join(" ")).toContain("Return the issue");
+
+    const archived = branchFinishConfirm(branchFinishFacts(branchRow({ issue_id: "issue-1", state: "merged" }), "build/login"));
+    expect(archived.actions.join(" ")).toContain("Archive the issue");
   });
 
   it("leaves the issue out when the branch implements none", () => {
-    const plan = branchFinishConfirm("finish_cleanup", { branch: "build/login" });
+    const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
     expect(plan.actions.some((action) => action.includes("issue"))).toBe(false);
-  });
-});
-
-describe("the unlink override", () => {
-  it("recognizes the bridge's refusal by the flag it names", () => {
-    expect(isUnlinkRefusal("branch.finish: … pass unlink to finish the branch alone")).toBe(true);
-    expect(isUnlinkRefusal("worktree.finish cleanup requires no uncommitted changes")).toBe(false);
-    expect(isUnlinkRefusal(null)).toBe(false);
-  });
-
-  it("hands the bridge's own words back as the disclosure", () => {
-    const plan = branchUnlinkConfirm("build/login", "pass unlink to finish the branch alone");
-    expect(plan.intro).toBe("pass unlink to finish the branch alone");
-    expect(plan.actions[0]).toContain("build/login");
   });
 });

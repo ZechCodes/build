@@ -1,5 +1,6 @@
-// The inbox rail's entries: the feed, the paint, and the four things a row can
-// do — open, Done, mute, and say why it failed.
+// The inbox rail's entries: the feed, the paint, the four things a row can do —
+// open, Done, mute, and say why it failed — and the one disclosure at the end
+// of the list, Recent.
 //
 // WHICH rows appear and what they say is core/inbox.js; this module is the
 // wiring. Read state is the bridge's now (`entity.seen`), so opening an entry
@@ -10,14 +11,7 @@ import { App } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { confirmAction } from "./confirm.js";
 import { entityIdOf } from "./entityId.js";
-import {
-  activeEntryKey,
-  branchDoneConfirm,
-  inboxEntries,
-  inboxListHtml,
-  issueDoneConfirm,
-  unlinkDisclosure,
-} from "./inbox.js";
+import { activeEntryKey, branchDoneConfirm, inboxEntries, inboxListHtml, issueDoneConfirm } from "./inbox.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -29,6 +23,9 @@ let entries = [];
 let openMenuKey = null;
 let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
+// Whether Recent is open, once the user has said. Null means nobody has, and
+// the partition decides for itself (it opens when the list above it is thin).
+let recentOpen = null;
 const dismissed = new Set(); // entity ids the user just said Done to
 const busy = new Set(); // entity ids with a mutation in flight
 const errors = new Map(); // entity id → the message its row is showing
@@ -78,11 +75,15 @@ function draw() {
   if (!list) return;
   // The captures this client is holding or watching stand beside the daemon's
   // own rows; the daemon's copy wins wherever both name the same capture.
-  entries = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
+  const partition = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
+  // Every row on screen, Recent included: what the route stands on and what a
+  // click resolves to do not care which section a row sits in.
+  entries = [...partition.entries, ...partition.recent];
   const scroll = list.scrollTop;
-  list.innerHTML = inboxListHtml(entries, {
+  list.innerHTML = inboxListHtml(partition, {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
+    recentOpen,
     rerouteKey,
     projects,
     rerouteBranchProject,
@@ -92,6 +93,7 @@ function draw() {
   });
   list.scrollTop = scroll;
   wire(list);
+  wireRecent(list);
   wireCaptures(list);
   paintErrors(list);
 }
@@ -154,6 +156,17 @@ function wire(list) {
       }
     };
   });
+}
+
+/** Recent is one disclosure, and pressing it is the user saying so — from then
+ *  on the section stays as they left it, whatever the list above it does. */
+function wireRecent(list) {
+  const toggle = list.querySelector("[data-recent-toggle]");
+  if (!toggle) return;
+  toggle.onclick = () => {
+    recentOpen = toggle.getAttribute("aria-expanded") !== "true";
+    draw();
+  };
 }
 
 // ---- capture rows -------------------------------------------------------------
@@ -280,18 +293,14 @@ async function toggleMute(entry) {
   }
 }
 
-/** The RPC behind Done. A branch is finishable only once it is committed and
- *  pushed, so the checkout it leaves behind is always clean — `cleanup` is the
- *  only action that fits, and the archive is the branch itself. */
-function finishCall(entry, unlink) {
+/** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
+ *  its records go, which is what Done on a branch means. On an issue it
+ *  archives. Neither is refused for the state of the work — what the
+ *  destruction costs came down with the row and was confirmed through. */
+function finishCall(entry) {
   if (entry.kind === "issue") return App.call("plan.archive", { plan_id: entry.issueId });
-  const params = { project_id: entry.projectId, branch: entry.branch, action: "cleanup" };
-  return App.call("branch.finish", unlink ? { ...params, unlink: true } : params);
+  return App.call("branch.finish", { project_id: entry.projectId, branch: entry.branch, action: "delete" });
 }
-
-/** The refusal that IS the disclosure: the bridge will not archive an issue its
- *  branch has not implemented, and its error names the override. */
-const isUnlinkRefusal = (message) => message.includes("unlink");
 
 async function finishEntry(entry) {
   if (!entry || busy.has(entry.entityId)) return;
@@ -304,28 +313,21 @@ async function finishEntry(entry) {
   errors.delete(entry.entityId);
   draw();
   try {
-    await finish(entry, false);
+    await finish(entry);
   } catch (error) {
-    const message = messageOf(error);
-    if (entry.kind === "branch" && isUnlinkRefusal(message) && (await confirmAction(unlinkDisclosure(entry, message)))) {
-      try {
-        await finish(entry, true);
-      } catch (retry) {
-        restore(entry, messageOf(retry));
-      }
-    } else {
-      restore(entry, message);
-    }
+    restore(entry, messageOf(error));
   } finally {
     busy.delete(entry.entityId);
   }
 }
 
-async function finish(entry, unlink) {
-  await finishCall(entry, unlink);
+async function finish(entry) {
+  await finishCall(entry);
   // Done ends the work, and an ending is an attention event. The user did this
-  // here, so the entry (and the issue it archives with it) is already read.
-  await noteSelfAction(entry.entityId, unlink ? null : entry.issueId);
+  // here, so this entry is already read. The issue an unmerged branch leaves
+  // behind is NOT: it comes back to the inbox asking for somebody, and the
+  // event naming the branch it lost is the whole point of it coming back.
+  await noteSelfAction(entry.entityId);
   await refreshFeed();
 }
 

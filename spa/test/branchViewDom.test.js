@@ -21,11 +21,14 @@ const row = {
   agents: [],
 };
 
-/** A branch.get row whose work is committed and pushed — the state Done asks
- *  for (the bridge decides it and sends `can_finish`). */
+/** A branch.get row with something to finish. `can_finish` is structural — is
+ *  there anything here at all — and `finish.warnings` is what deleting it would
+ *  cost, which the confirmation carries and never refuses over. */
 const finishableRow = (over = {}) => ({
   ...row,
+  state: "review",
   can_finish: true,
+  finish: { warnings: [] },
   primary: false,
   issue_id: null,
   stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
@@ -136,31 +139,50 @@ describe("closing the branch out", () => {
   const doneButton = () => finishHost().querySelector(".btn.primary:not(.caret)");
   const finishCalls = () => App.call.mock.calls.filter(([method]) => method === "branch.finish");
 
-  it("offers Done in the surface bar once the work is committed and pushed", async () => {
-    await mountWith(finishableRow());
+  it("offers Done in the surface bar, always pressable — it is never refused", async () => {
+    await mountWith(finishableRow({ finish: { warnings: [{ code: "uncommitted", message: "build/login has 2 uncommitted files" }] } }));
     expect(doneButton().textContent).toBe("Done");
     expect(doneButton().disabled).toBe(false);
   });
 
-  it("says what is in the way instead of offering a Done that would fail", async () => {
-    await mountWith(
-      finishableRow({ can_finish: false, stat: { uncommitted: { files_changed: 2 }, ahead: 0, upstream: "origin/x" } }),
-    );
-    expect(doneButton().disabled).toBe(true);
-    expect(doneButton().title).toContain("2 uncommitted files");
-  });
-
-  // The primary checkout is the repository: it is never archived away.
+  // The primary checkout is the repository: there is nothing there to delete.
   it("offers nothing on a project's primary checkout", async () => {
     await mountWith(finishableRow({ primary: true, worktree_id: null }));
     expect(finishHost().innerHTML).toBe("");
   });
 
-  it("finishes the branch and keeps it, on the default option", async () => {
+  it("offers nothing when the bridge says there is nothing to finish", async () => {
+    await mountWith(finishableRow({ can_finish: false }));
+    expect(finishHost().innerHTML).toBe("");
+  });
+
+  it("deletes the branch, and says so before it does", async () => {
     await mountWith(finishableRow());
     doneButton().click();
-    await answerConfirm(true);
-    expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "cleanup" });
+    await flush();
+    expect(document.getElementById("confirm-scrim").textContent).toContain("Delete branch build/login");
+    document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
+    await flush();
+    expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
+  });
+
+  it("puts the bridge's warnings in the confirmation, above what it will do", async () => {
+    await mountWith(
+      finishableRow({
+        finish: {
+          warnings: [
+            { code: "unmerged", message: "build/login has never been pushed, and has 3 commits that main does not", count: 3, ref: "main" },
+          ],
+        },
+      }),
+    );
+    doneButton().click();
+    await flush();
+    const scrim = document.getElementById("confirm-scrim");
+    expect(scrim.querySelector(".confirm-warnings").textContent).toContain("3 commits that main does not");
+    expect(scrim.textContent.indexOf("3 commits")).toBeLessThan(scrim.textContent.indexOf("Delete branch"));
+    scrim.querySelector("[data-confirm-cancel]").click();
+    await flush();
   });
 
   it("does nothing at all when the confirmation is cancelled", async () => {
@@ -172,37 +194,9 @@ describe("closing the branch out", () => {
     expect(doneButton().disabled).toBe(false);
   });
 
-  it("deletes the branch too, on the second option", async () => {
-    await mountWith(finishableRow());
-    finishHost().querySelector(".caret").click();
-    finishHost().querySelector('.splitmenu .mi[data-action="finish_delete"]').click();
-    await answerConfirm(true);
-    expect(finishCalls()[0][1].action).toBe("delete");
-  });
-
-  // The bridge refuses to archive an issue its branch has not implemented, and
-  // its error names the override. The refusal IS the disclosure.
-  it("offers the unlink override the refusal names, and retries with it", async () => {
-    let attempts = 0;
-    await mountWith(finishableRow({ issue_id: "issue-1" }), {
-      "branch.finish": (params) => {
-        attempts += 1;
-        if (!params.unlink)
-          throw new Error("branch.finish: Done also archives the issue it implements — pass unlink to finish the branch alone");
-        return { branch: "build/login" };
-      },
-    });
-    doneButton().click();
-    await answerConfirm(true); // the close-out itself
-    await answerConfirm(true); // the unlink disclosure behind the refusal
-    expect(attempts).toBe(2);
-    expect(finishCalls()[1][1].unlink).toBe(true);
-  });
-
   // The row poll runs every 1.6s. Re-rendering the Done control on a tick that
-  // resolved the same close-out threw away whatever the user had open — the
-  // menu appeared and vanished before an item could be reached.
-  describe("while its menu is open", () => {
+  // resolved the same close-out threw away a click already in progress.
+  describe("under the row poll", () => {
     beforeEach(() => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
     });
@@ -214,48 +208,29 @@ describe("closing the branch out", () => {
       await vi.advanceTimersByTimeAsync(2000);
     };
 
-    it("leaves the open menu standing through a poll that reads the same row", async () => {
+    it("leaves the button standing through a poll that reads the same row", async () => {
       await mountWith(finishableRow());
-      finishHost().querySelector(".caret").click();
-      const opened = finishHost().querySelector(".splitmenu");
-      expect(opened.hidden).toBe(false);
-
+      const before = doneButton();
       await pollTick();
-
-      const menuNow = finishHost().querySelector(".splitmenu");
-      expect(menuNow, "the menu element was replaced by the poll").toBe(opened);
-      expect(menuNow.hidden).toBe(false);
+      expect(doneButton(), "the button was rebuilt by the poll").toBe(before);
     });
 
-    it("still runs the item the user reaches for after a poll tick", async () => {
-      await mountWith(finishableRow());
-      finishHost().querySelector(".caret").click();
-      await pollTick();
-      finishHost().querySelector('.splitmenu .mi[data-action="finish_delete"]').click();
+    it("holds the busy button through a poll while the deletion is in flight", async () => {
+      let finish;
+      await mountWith(finishableRow(), {
+        "branch.finish": () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      });
+      doneButton().click();
       await answerConfirm(true);
-      expect(finishCalls()[0][1].action).toBe("delete");
-    });
-
-    // The row itself can change under an open menu (the branch is renamed, the
-    // work stops being finishable). The click in progress wins; the repaint
-    // lands on the next tick, once the menu is shut.
-    it("defers a repaint the changed row wants until the menu is closed", async () => {
-      let current = finishableRow();
-      App.call = vi.fn(async (method) => (method === "branch.get" ? current : {}));
-      await renderBranch();
-      await flush();
-      finishHost().querySelector(".caret").click();
-      const opened = finishHost().querySelector(".splitmenu");
-
-      current = finishableRow({ can_finish: false, stat: { uncommitted: { files_changed: 1 }, ahead: 0, upstream: "o" } });
-      await pollTick();
-      expect(finishHost().querySelector(".splitmenu")).toBe(opened);
-
-      // Closing it hands the surface back: the next read paints the block reason.
-      finishHost().querySelector(".caret").click();
-      await pollTick();
       expect(doneButton().disabled).toBe(true);
-      expect(doneButton().title).toContain("1 uncommitted file");
+
+      await pollTick();
+
+      expect(doneButton().disabled, "a poll re-armed the button mid-flight").toBe(true);
+      finish({ branch: "build/login" });
     });
   });
 

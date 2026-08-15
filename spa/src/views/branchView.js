@@ -38,13 +38,7 @@ import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { refreshFeed } from "../core/taskFeed.js";
-import {
-  branchCloseout,
-  branchFinishConfirm,
-  branchFinishParams,
-  branchUnlinkConfirm,
-  isUnlinkRefusal,
-} from "../core/branchFinish.js";
+import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../core/branchFinish.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -131,11 +125,12 @@ export async function renderBranch() {
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
-   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). A branch
-   *  finished with `unlink` left its issue open, so that entry keeps its own
-   *  cursor — only the branch's is cleared. */
-  const finished = ({ unlink = false } = {}) => {
-    noteSelfAction(entityIdOf(row), unlink ? null : row && row.issue_id);
+   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). An issue
+   *  handed BACK to the inbox keeps its own cursor — it is asking for somebody
+   *  again, and the event naming the branch it lost is the point of it. Only an
+   *  issue that ends with the branch is cleared with it. */
+  const finished = ({ issueEnded = false } = {}) => {
+    noteSelfAction(entityIdOf(row), issueEnded ? row && row.issue_id : null);
     home();
   };
 
@@ -145,39 +140,25 @@ export async function renderBranch() {
   // repaint mid-flight would arm a second branch.finish over the first.
   const finishFlight = createSingleFlight();
 
-  /** One close-out: confirm the exact outline, send it, and leave for the
-   *  inbox. A rejection restores the button (the split button's contract) and
-   *  the notice carries the reason. */
+  /** One close-out: read what the deletion costs off the freshest row, confirm
+   *  the exact outline, send it, and leave for the inbox. A rejection restores
+   *  the button (the split button's contract) and the notice carries the
+   *  reason. */
   const runFinish = async (optionId) => {
-    const name = (row && row.branch) || branch;
-    const issueId = row && row.issue_id;
+    const facts = branchFinishFacts(row, branch);
+    const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
-    if (!(await confirmAction(branchFinishConfirm(optionId, { branch: name, issueId })))) throw new Error("cancelled");
-    const send = (unlink) =>
-      callRpc("branch.finish", branchFinishParams(optionId, { projectId, branch: name, unlink }));
+    if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
     try {
-      await send(false);
+      await callRpc("branch.finish", branchFinishParams(optionId, { projectId, branch: name }));
     } catch (error) {
-      const message = (error && error.message) || String(error);
-      // The bridge refuses to archive an issue its branch has not implemented,
-      // and its error names the override. Asking for it is one step behind that
-      // refusal, in the bridge's own words.
-      if (isUnlinkRefusal(message) && (await confirmAction(branchUnlinkConfirm(name, message)))) {
-        try {
-          await send(true);
-        } catch (retry) {
-          notifyError(`Couldn't finish ${name}`, retry.message);
-          throw retry;
-        }
-        refreshFeed();
-        finished({ unlink: true });
-        return;
-      }
-      notifyError(`Couldn't finish ${name}`, message);
+      notifyError(`Couldn't finish ${name}`, (error && error.message) || String(error));
       throw error;
     }
     refreshFeed();
-    finished();
+    // The issue ends with the branch only when the work landed; otherwise the
+    // bridge hands it back to the inbox.
+    finished({ issueEnded: facts.merged });
   };
 
   // What the Done control was last painted from. The row poll runs every 1.6
@@ -202,13 +183,8 @@ export async function renderBranch() {
       host.innerHTML = "";
       return;
     }
-    // Not finishable yet: the verb still shows — this is where a branch ends —
-    // and says what stands in the way rather than failing when pressed.
-    if (!closeout.ready) {
-      host.innerHTML = `<button class="btn primary" type="button" disabled>Done</button>`;
-      host.querySelector("button").title = closeout.reason;
-      return;
-    }
+    // Always pressable: Done is never refused for the state of the work — what
+    // the deletion would cost is in the confirmation, not in a disabled button.
     mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight });
   };
 
@@ -227,7 +203,8 @@ export async function renderBranch() {
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
           agentSelection,
-          onMerged: () => finished(),
+          // A merge is the work landing: the issue it implements ends with it.
+          onMerged: () => finished({ issueEnded: true }),
         });
       } else {
         reviewPlug = createWorktreeReview({

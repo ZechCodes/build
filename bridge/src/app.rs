@@ -905,8 +905,8 @@ fn worktree_agent_signals(agent_tab: Option<&Tab>) -> (bool, bool) {
 const CHECKOUT_IDLE_STATE: &str = "idle";
 
 /// The +/− block every work-item row carries, in one shape whatever source it
-/// was read off, plus the two facts Done asks about (see
-/// [`crate::branch::branch_can_finish`]).
+/// was read off, plus the facts Done warns about (see
+/// [`crate::branch::branch_finish_warnings`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WorkItemStat {
     /// Everything the branch carries against its base.
@@ -994,7 +994,13 @@ impl WorkItemStat {
             uncommitted_files: self.uncommitted_files,
             ahead: self.ahead,
             upstream: self.upstream.clone(),
+            comparison_ref: self.comparison_ref.clone(),
         }
+    }
+
+    /// What Done on this branch is about to lose, ready for the wire.
+    fn finish_warnings_json(&self, branch: &str) -> Value {
+        crate::branch::warnings_json(&crate::branch::branch_finish_warnings(branch, &self.sync()))
     }
 
     fn to_json(&self) -> Value {
@@ -1044,9 +1050,11 @@ fn seconds_since(started_at: &str) -> Option<u64> {
 enum FinishRequirement {
     /// `run.finish`: the run reached a review gate — completed work.
     CompletedWork,
-    /// `branch.finish`: the branch is committed and pushed, which is exactly
-    /// what the branch row's Done button says (Decisions §Shell and inbox).
-    CommittedAndPushed,
+    /// `branch.finish`: nothing. Done on a branch deletes it, and what that
+    /// costs is reported as warnings on the row (see
+    /// [`crate::branch::branch_finish_warnings`]) for the user to confirm
+    /// through. The bridge does not second-guess a confirmed decision.
+    Unconditional,
 }
 
 /// Everything one `branch.dispatch` brought into existence, so a failure part
@@ -7731,8 +7739,11 @@ impl AppState {
                 .map(|question| question.asked_at.clone())
                 .unwrap_or_else(|| capture.created_at.clone()),
             // Nothing to archive and nothing to silence: a capture leaves the
-            // feed by being routed, not by being dismissed.
+            // feed by being routed, not by being dismissed. Every row still
+            // carries the preflight, so a client can read it without asking
+            // what kind of row it is first.
             "can_finish": false,
+            "finish": { "warnings": [] },
             "muted": false,
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
@@ -9234,22 +9245,20 @@ impl AppState {
         Ok(view)
     }
 
-    /// Archive a completed plan without changing its lifecycle state or
-    /// deleting canonical docs/run history. Repeating the request preserves the
-    /// first archive timestamp.
+    /// `issue.archive` — Done, for an issue: file it away without changing its
+    /// lifecycle state or deleting canonical docs/run history. Repeating the
+    /// request preserves the first archive timestamp.
+    ///
+    /// Never refused for what was or was not built: an issue the user is done
+    /// with is done, and an issue no branch ever implemented says so as a
+    /// warning on the row (`finish.warnings`) for them to confirm through.
     fn plan_archive(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let mut active = self.take_plan(&plan_id)?;
-        let outcome = if active.plan.archived_at.is_some() {
-            Ok(())
-        } else if self.plan_implementation_complete(&plan_id, &active) {
+        if active.plan.archived_at.is_none() {
             active.plan.archived_at = Some(now_rfc3339());
-            Ok(())
-        } else {
-            Err("plan.archive: plan implementation is incomplete".to_string())
-        };
+        }
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
-        outcome?;
         persisted?;
         Ok(view)
     }
@@ -10968,13 +10977,6 @@ impl AppState {
         let run_id = run_id.to_string();
         parse_worktree_finish_action(action_name)?;
         let project_id = self.project_of(&run_id)?;
-        // Before the run is borrowed: the diffstat needs `&mut self`.
-        let sync = match requirement {
-            FinishRequirement::CommittedAndPushed => {
-                Some(WorkItemStat::from_run_stat(&self.run_stat(&run_id)).sync())
-            }
-            FinishRequirement::CompletedWork => None,
-        };
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         // Finishing archives a worktree and then removes it. The primary
         // checkout is the repository itself: there is nothing to file away,
@@ -10995,16 +10997,7 @@ impl AppState {
                     ));
                 }
             }
-            FinishRequirement::CommittedAndPushed => {
-                let sync = sync.expect("computed for this requirement");
-                if !crate::branch::branch_can_finish(&sync) {
-                    return Err(format!(
-                        "branch.finish: {} still carries work that exists only on this machine — \
-                         commit and push it before Done",
-                        active.worktree.branch
-                    ));
-                }
-            }
+            FinishRequirement::Unconditional => {}
         }
         if !active.worktree.path.exists() {
             if active.run.state != RunState::Merged {
@@ -11276,10 +11269,17 @@ impl AppState {
                 Some(&active.worktree.path),
                 sync.head_committed_at.as_deref(),
             ),
-            // Finishing archives a worktree and then removes it. The primary
-            // checkout is the repository: there is nothing to file away, and
-            // everything to lose.
-            "can_finish": !primary && crate::branch::branch_can_finish(&sync.sync()),
+            // Done deletes the branch and its records. It is offered whenever
+            // there is something to delete: the primary checkout is the
+            // repository, so there is nothing to file away and everything to
+            // lose. What the deletion would cost is `finish.warnings`, which
+            // the client confirms through — never a refusal here.
+            "can_finish": !primary,
+            "finish": { "warnings": if primary {
+                json!([])
+            } else {
+                sync.finish_warnings_json(&active.worktree.branch)
+            } },
             "muted": self.is_muted(run_id),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
@@ -11338,6 +11338,7 @@ impl AppState {
             ),
             // The repository is not a worktree to file away.
             "can_finish": false,
+            "finish": { "warnings": [] },
             "muted": false,
             "worktree_path": repo_path,
             "worktree_id": Value::Null,
@@ -11400,7 +11401,10 @@ impl AppState {
                 Some(std::path::Path::new(&path)),
                 sync.head_committed_at.as_deref(),
             ),
-            "can_finish": crate::branch::branch_can_finish(&sync.sync()),
+            "can_finish": true,
+            "finish": { "warnings": sync.finish_warnings_json(
+                branch.as_deref().unwrap_or("this checkout"),
+            ) },
             "muted": self.is_muted(&worktree_id),
             "worktree_path": path,
             "worktree_id": worktree_id.clone(),
@@ -11454,7 +11458,13 @@ impl AppState {
             // An issue has no checkout and no commits of its own: its
             // conversation is the whole of its activity.
             "last_activity": self.last_activity_of(Some(issue_id), Some(&active.agents), None, None),
-            "can_finish": self.plan_implementation_complete(issue_id, active),
+            // Done on an issue archives it, and archiving is never refused.
+            // What it costs — an issue nothing was ever built for — is a
+            // warning the client confirms through.
+            "can_finish": true,
+            "finish": { "warnings": crate::branch::warnings_json(
+                &crate::branch::issue_finish_warnings(implementation.is_some()),
+            ) },
             "muted": self.is_muted(issue_id),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
@@ -11578,14 +11588,27 @@ impl AppState {
 
     /// `branch.finish` — the inbox entry's Done, for a branch.
     ///
-    /// Archives the branch's checkout through the same durable path as
-    /// `worktree.finish`, and, when the branch implements an issue, archives
-    /// the issue with it. `unlink: true` is the deeper control that finishes
-    /// the branch alone.
+    /// Done on a branch DELETES it: the checkout goes through the same durable
+    /// path as `worktree.finish`, the branch goes with it, and the run's
+    /// records and conversation leave the inbox. It is never refused for the
+    /// state of the work — an unpushed commit, an unmerged branch and an
+    /// uncommitted edit are warnings the row carries (`finish.warnings`) and
+    /// the user confirms through. `action` chooses how the checkout is retired
+    /// and defaults to `delete`, which is what Done means.
+    ///
+    /// An issue the branch implements only ends with it when the work landed:
+    /// a merge finishes the issue too, and any other ending hands the issue
+    /// back to the inbox with an event naming the branch it lost.
+    /// `unlink: true` leaves the issue alone either way.
     fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
-        let action_name = require_str(params, "action")?;
+        let action_name = params
+            .get("action")
+            .and_then(Value::as_str)
+            .filter(|action| !action.is_empty())
+            .unwrap_or("delete")
+            .to_string();
         parse_worktree_finish_action(&action_name)?;
         let unlink = params
             .get("unlink")
@@ -11611,6 +11634,7 @@ impl AppState {
                 "run_id": Value::Null,
                 "issue_id": Value::Null,
                 "issue_archived": false,
+                "issue_abandoned": false,
                 "worktree": finished,
             }));
         };
@@ -11618,35 +11642,25 @@ impl AppState {
             .run
             .plan_id
             .as_ref()
-            .map(|id| id.0.clone());
-        // Whether this Done leaves the issue behind, unmerged: unlinking
-        // finishes the branch alone, and a non-merge action publishes nothing
-        // into the base branch. The issue comes back to the inbox, so it has to
-        // be told what happened to the branch that was speaking for it.
-        let orphaned_issue_id = implemented_issue_id.clone().filter(|_| {
-            unlink
-                && !matches!(
-                    parse_worktree_finish_action(&action_name),
-                    Ok(WorktreeFinishAction::Merge)
-                )
-                && self.runs[&run_id].run.state != RunState::Merged
-        });
-        let issue_id = implemented_issue_id.filter(|_| !unlink);
-        // Refuse before the worktree is touched: half of a linked marking is
-        // worse than none, and the way past it is a flag the caller already has.
-        if let Some(issue_id) = &issue_id {
-            let issue = self.plans.get(issue_id).ok_or("unknown issue")?;
-            if issue.plan.archived_at.is_none()
-                && !self.plan_implementation_complete(issue_id, issue)
-            {
-                return Err(format!(
-                    "branch.finish: Done on {branch} also archives the issue it implements, and \
-                     that issue is not implemented yet — pass unlink to finish the branch alone"
-                ));
-            }
-        }
-        let finished =
-            self.finish_run(&run_id, &action_name, FinishRequirement::CommittedAndPushed)?;
+            .map(|id| id.0.clone())
+            // An issue already filed away has nothing left to hear about this.
+            .filter(|issue_id| {
+                self.plans
+                    .get(issue_id)
+                    .is_some_and(|issue| issue.plan.archived_at.is_none())
+            });
+        // Whether the work landed. That is the whole question an issue's fate
+        // turns on: a merge publishes it into the base branch and the issue is
+        // done with the branch; anything else deletes work the issue was
+        // waiting for, so the issue comes back to the inbox and has to be told
+        // what happened to the branch that was speaking for it.
+        let merged = matches!(
+            parse_worktree_finish_action(&action_name),
+            Ok(WorktreeFinishAction::Merge)
+        ) || self.runs[&run_id].run.state == RunState::Merged;
+        let issue_id = implemented_issue_id.clone().filter(|_| !unlink && merged);
+        let orphaned_issue_id = implemented_issue_id.filter(|_| !merged);
+        let finished = self.finish_run(&run_id, &action_name, FinishRequirement::Unconditional)?;
         if let Some(orphaned_issue_id) = &orphaned_issue_id {
             self.note_implementation_abandoned(
                 orphaned_issue_id,
@@ -11667,6 +11681,7 @@ impl AppState {
             "run_id": run_id,
             "issue_id": issue_id,
             "issue_archived": issue_archived,
+            "issue_abandoned": orphaned_issue_id.is_some(),
             "worktree": finished,
         }))
     }
@@ -12506,7 +12521,14 @@ impl AppState {
             "implementation_intent": active.plan.implementation_intent,
             "implementation_activity": active.plan.implementation_activity,
             "implementation_complete": implementation_complete,
-            "can_archive": implementation_complete && active.plan.archived_at.is_none(),
+            // Done on an issue archives it, whatever was or was not built for
+            // it: an issue only stops being archivable once it already is.
+            "can_archive": active.plan.archived_at.is_none(),
+            // …and what archiving would gloss over rides along, so the surface
+            // that offers Done can say it before the user confirms.
+            "finish": { "warnings": crate::branch::warnings_json(
+                &crate::branch::issue_finish_warnings(current_implementation.is_some()),
+            ) },
             "archived_at": active.plan.archived_at,
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
@@ -29222,15 +29244,30 @@ mod tests {
             .is_empty());
     }
 
+    /// Done on an issue files it away whatever was built for it: the bridge
+    /// warns that nothing was, and then does as it is told.
     #[test]
-    fn plan_archive_rejects_incomplete_plans_and_legacy_completion_uses_run_gate() {
+    fn plan_archive_files_an_unimplemented_plan_away_with_a_warning() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let incomplete = state.handle(req("plan.create", json!({ "goal": "not implemented" })));
         let incomplete_id = plan_id_of(&incomplete);
-        let rejected = state.handle(req("plan.archive", json!({ "plan_id": incomplete_id })));
-        assert_eq!(rejected["ok"], false, "{rejected:?}");
-        assert!(rejected["error"].as_str().unwrap().contains("incomplete"));
+        assert_eq!(
+            warning_codes(&incomplete["result"]),
+            vec!["unimplemented"],
+            "{incomplete:?}"
+        );
+        assert_eq!(incomplete["result"]["can_archive"], true, "{incomplete:?}");
+        let archived = state.handle(req("plan.archive", json!({ "plan_id": incomplete_id })));
+        assert_eq!(archived["ok"], true, "{archived:?}");
+        assert!(
+            archived["result"]["archived_at"].is_string(),
+            "{archived:?}"
+        );
+        assert_eq!(
+            archived["result"]["implementation_complete"], false,
+            "archiving it did not make it implemented: {archived:?}"
+        );
 
         let (legacy_plan_id, legacy_run_id) =
             planned_run_in_review(&mut state, "legacy completion");
@@ -29252,7 +29289,14 @@ mod tests {
 
         let incomplete = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
         assert_eq!(incomplete["result"]["implementation_complete"], false);
-        assert_eq!(incomplete["result"]["can_archive"], false);
+        assert_eq!(
+            incomplete["result"]["can_archive"], true,
+            "incomplete is a fact about the work, not a bar on filing it away"
+        );
+        assert!(
+            warning_codes(&incomplete["result"]).is_empty(),
+            "something was built for it, whatever state that work is in: {incomplete:?}"
+        );
     }
 
     #[test]
@@ -29294,7 +29338,7 @@ mod tests {
         assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
         let plan = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
         assert_eq!(plan["result"]["implementation_complete"], false, "{plan:?}");
-        assert_eq!(plan["result"]["can_archive"], false, "{plan:?}");
+        assert_eq!(plan["result"]["can_archive"], true, "{plan:?}");
     }
 
     #[test]
@@ -29630,6 +29674,10 @@ mod tests {
             json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
         ));
         assert_eq!(finished["ok"], true, "{finished:?}");
+        // Deleting the branch left the issue in the inbox; the user marks the
+        // issue done separately, and that is what files it away.
+        let archived_issue = state.handle(req("issue.archive", json!({ "issue_id": issue_id })));
+        assert_eq!(archived_issue["ok"], true, "{archived_issue:?}");
 
         // A second project's bare checkout, finished on its own: no run behind
         // it, so only its archived-worktree record remembers it.
@@ -30720,6 +30768,21 @@ mod tests {
             .unwrap_or_else(|| panic!("{branch} has a row on the feed"))
     }
 
+    /// What Done on this row would warn about, in order.
+    fn warning_codes(row: &Value) -> Vec<String> {
+        row["finish"]["warnings"]
+            .as_array()
+            .unwrap_or_else(|| panic!("every row carries a finish preflight: {row:?}"))
+            .iter()
+            .map(|warning| {
+                warning["code"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a warning is coded: {warning:?}"))
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// A run, a worktree Build never cut, and the primary checkout are three
     /// ways of storing the same kind of thing. The feed shows one row shape for
     /// all of them, keyed by branch, and the primary checkout is the `main`
@@ -30811,7 +30874,10 @@ mod tests {
         assert_eq!(issue["title"], "not started", "{issue:?}");
         assert_eq!(issue["state"], "plan_review", "{issue:?}");
         assert!(issue["branch"].is_null(), "{issue:?}");
-        assert_eq!(issue["can_finish"], false, "{issue:?}");
+        // Done on an issue archives it and is always on offer; that nothing
+        // was ever built for it is the warning it carries.
+        assert_eq!(issue["can_finish"], true, "{issue:?}");
+        assert_eq!(warning_codes(issue), vec!["unimplemented"], "{issue:?}");
 
         let (implemented_id, run_id) = planned_run_in_review(&mut state, "implement me");
         let rows = work_item_rows(&mut state);
@@ -30832,12 +30898,16 @@ mod tests {
             json!(implemented_id.clone()),
             "the branch row carries the issue it implements: {implementation:?}"
         );
-        // The issue's own Done rule is its implementation being complete.
+        // The issue nothing was started for still warns about exactly that.
         let unimplemented = rows
             .iter()
             .find(|row| row["issue_id"] == json!(waiting_id.clone()))
             .expect("the untouched issue still has a row");
-        assert_eq!(unimplemented["can_finish"], false, "{unimplemented:?}");
+        assert_eq!(
+            warning_codes(unimplemented),
+            vec!["unimplemented"],
+            "{unimplemented:?}"
+        );
 
         // Abandoning the implementation hands the issue its own row back.
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -31398,43 +31468,58 @@ mod tests {
         );
     }
 
-    /// Done on a branch means the work exists somewhere other than this
-    /// machine: committed AND pushed. The primary checkout is never
-    /// finishable — it is the repository, not a worktree to file away.
+    /// Done on a branch deletes it, and the row says beforehand what deleting
+    /// it would cost — never that it cannot be done. The primary checkout is
+    /// the one exception: it is the repository, not a worktree to file away,
+    /// so there is nothing there to finish.
     #[test]
-    fn a_branch_offers_done_only_once_it_is_committed_and_pushed() {
+    fn a_branch_always_offers_done_and_says_what_it_would_cost() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         adopted_run(&mut state, &repo, dir.path(), "feature-done");
         let worktree = dir.path().join("feature-done");
 
-        assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "a branch that was never pushed has nowhere else to be"
-        );
+        // The agent's edits are sitting in the tree, and Done removes the tree.
+        let fresh = branch_row(&mut state, "feature-done");
+        assert_eq!(fresh["can_finish"], true, "{fresh:?}");
+        assert_eq!(warning_codes(&fresh), vec!["uncommitted"], "{fresh:?}");
 
+        // Committed, with no remote: the base branch is the only place the
+        // work could survive Done, and it is not there.
         std::fs::write(worktree.join("work.txt"), "one\n").unwrap();
-        git_in_dir(&worktree, &["add", "."]);
+        git_in_dir(&worktree, &["add", "-A"]);
         git_in_dir(&worktree, &["commit", "-m", "work"]);
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        let unmerged = branch_row(&mut state, "feature-done");
+        assert_eq!(unmerged["can_finish"], true, "{unmerged:?}");
+        assert_eq!(warning_codes(&unmerged), vec!["unmerged"], "{unmerged:?}");
         assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            true,
-            "committed and pushed"
+            unmerged["finish"]["warnings"][0]["count"], 1,
+            "{unmerged:?}"
+        );
+        assert_eq!(
+            unmerged["finish"]["warnings"][0]["ref"], "main",
+            "{unmerged:?}"
         );
 
-        std::fs::write(worktree.join("work.txt"), "one\ntwo\n").unwrap();
-        assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "an unsaved edit exists only here"
+        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        let pushed = branch_row(&mut state, "feature-done");
+        assert!(
+            warning_codes(&pushed).is_empty(),
+            "the remote has all of it: {pushed:?}"
         );
+
+        // An unsaved edit exists only here, and Done removes the checkout.
+        std::fs::write(worktree.join("work.txt"), "one\ntwo\n").unwrap();
+        let dirty = branch_row(&mut state, "feature-done");
+        assert_eq!(warning_codes(&dirty), vec!["uncommitted"], "{dirty:?}");
+
+        // Committed, and now the remote is the one behind.
         git_in_dir(&worktree, &["commit", "-am", "more"]);
+        let ahead = branch_row(&mut state, "feature-done");
+        assert_eq!(warning_codes(&ahead), vec!["unpushed"], "{ahead:?}");
         assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "an unpushed commit exists only here"
+            ahead["finish"]["warnings"][0]["ref"], "origin/feature-done",
+            "{ahead:?}"
         );
 
         let main = branch_row(&mut state, "main");
@@ -31442,6 +31527,7 @@ mod tests {
             main["can_finish"], false,
             "the primary checkout is the repository: {main:?}"
         );
+        assert!(warning_codes(&main).is_empty(), "{main:?}");
     }
 
     /// `#/project/<id>/branch/<name>` resolves through one verb, to the run
@@ -31483,97 +31569,126 @@ mod tests {
         assert_eq!(missing["ok"], false, "{missing:?}");
     }
 
-    /// Done on an implementation branch marks the worktree and the issue
-    /// together — that is what "linked" means — and the unlink flag is the
-    /// deeper control that finishes only the branch.
+    /// An issue ends with its branch only when the branch's work landed. A
+    /// merge finishes both; deleting the branch instead hands the issue back
+    /// to the inbox, with its conversation naming the branch it lost.
     #[test]
-    fn branch_finish_archives_the_issue_with_it_unless_unlinked() {
+    fn branch_finish_ends_the_issue_only_when_the_work_was_merged() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
-        let (linked_issue, linked_run) = planned_run_in_review(&mut state, "linked done");
-        let linked_branch = state.runs[&linked_run].worktree.branch.clone();
-        let linked_worktree = state.runs[&linked_run].worktree.path.clone();
-        git_in_dir(&linked_worktree, &["push", "-u", "origin", &linked_branch]);
+        let (merged_issue, merged_run) = planned_run_in_review(&mut state, "merged done");
+        let merged_branch = state.runs[&merged_run].worktree.branch.clone();
         let finished = state.handle(req(
             "branch.finish",
-            json!({ "project_id": project_id, "branch": linked_branch, "action": "delete" }),
+            json!({ "project_id": project_id, "branch": merged_branch, "action": "merge" }),
         ));
         assert_eq!(finished["ok"], true, "{finished:?}");
-        assert_eq!(finished["result"]["issue_id"], linked_issue, "{finished:?}");
+        assert_eq!(finished["result"]["issue_id"], merged_issue, "{finished:?}");
         assert_eq!(finished["result"]["issue_archived"], true, "{finished:?}");
+        assert_eq!(finished["result"]["issue_abandoned"], false, "{finished:?}");
         assert!(
-            state.plans[&linked_issue].plan.archived_at.is_some(),
-            "the issue is archived with its branch"
+            state.plans[&merged_issue].plan.archived_at.is_some(),
+            "the work landed, so the issue is done with it"
         );
 
-        let (kept_issue, kept_run) = planned_run_in_review(&mut state, "unlinked done");
+        // Deleted instead: the issue is waiting for work again, and says so.
+        let (kept_issue, kept_run) = planned_run_in_review(&mut state, "deleted branch");
         let kept_branch = state.runs[&kept_run].worktree.branch.clone();
-        let kept_worktree = state.runs[&kept_run].worktree.path.clone();
-        git_in_dir(&kept_worktree, &["push", "-u", "origin", &kept_branch]);
-        let unlinked = state.handle(req(
+        let deleted = state.handle(req(
             "branch.finish",
-            json!({
-                "project_id": project_id,
-                "branch": kept_branch,
-                "action": "delete",
-                "unlink": true,
-            }),
+            json!({ "project_id": project_id, "branch": kept_branch, "action": "delete" }),
         ));
-        assert_eq!(unlinked["ok"], true, "{unlinked:?}");
-        assert_eq!(unlinked["result"]["issue_archived"], false, "{unlinked:?}");
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert_eq!(deleted["result"]["issue_archived"], false, "{deleted:?}");
+        assert_eq!(deleted["result"]["issue_abandoned"], true, "{deleted:?}");
         assert!(
             state.plans[&kept_issue].plan.archived_at.is_none(),
-            "unlink finishes the branch alone"
+            "nothing was merged, so the issue is not done"
         );
-        // …which puts the issue back in the inbox with its branch gone and
-        // nothing merged, so its conversation says which branch that was.
         let events = issue_events(&mut state, &kept_issue);
         assert!(
             says_the_branch_was_abandoned(&events, &kept_branch),
             "{events:?}"
         );
+        // The issue that was hidden behind that branch is back in the inbox,
+        // and the merged one — done — is not.
+        let rows = work_item_rows(&mut state);
+        assert!(
+            rows.iter()
+                .any(|row| row["issue_id"] == json!(kept_issue.clone())),
+            "the issue is waiting for work again: {rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["issue_id"] == json!(merged_issue.clone())),
+            "nothing marked done is ever shown: {rows:?}"
+        );
+
+        // …and unlink is the control that leaves the issue out of it entirely.
+        let (unlinked_issue, unlinked_run) = planned_run_in_review(&mut state, "unlinked done");
+        let unlinked_branch = state.runs[&unlinked_run].worktree.branch.clone();
+        let unlinked = state.handle(req(
+            "branch.finish",
+            json!({
+                "project_id": project_id,
+                "branch": unlinked_branch,
+                "action": "merge",
+                "unlink": true,
+            }),
+        ));
+        assert_eq!(unlinked["ok"], true, "{unlinked:?}");
+        assert_eq!(unlinked["result"]["issue_archived"], false, "{unlinked:?}");
+        assert!(state.plans[&unlinked_issue].plan.archived_at.is_none());
     }
 
-    /// The branch row's Done button and `branch.finish` enforce the same rule,
-    /// so the button never offers something the verb refuses — and a linked
-    /// issue that is not implemented says so, naming the way past it.
+    /// Done on a branch is the user's decision, not the bridge's. Work that
+    /// exists only on this machine is a warning the row carried all along —
+    /// the verb still deletes the branch, its checkout and its records.
     #[test]
-    fn branch_finish_refuses_unpushed_work_and_an_unfinished_issue() {
+    fn branch_finish_deletes_unpushed_work_it_warned_about() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
-        let (issue_id, run_id) = planned_run_in_review(&mut state, "not pushed");
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "never pushed");
         let branch = state.runs[&run_id].worktree.branch.clone();
         let worktree = state.runs[&run_id].worktree.path.clone();
 
-        let refused = state.handle(req(
-            "branch.finish",
-            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+        // The preflight the confirm dialog reads, before anything is touched.
+        let preflight = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": branch }),
         ));
-        assert_eq!(refused["ok"], false, "{refused:?}");
-        assert!(
-            refused["error"].as_str().unwrap().contains("push"),
-            "{refused:?}"
+        assert_eq!(preflight["ok"], true, "{preflight:?}");
+        assert_eq!(preflight["result"]["can_finish"], true, "{preflight:?}");
+        assert_eq!(
+            warning_codes(&preflight["result"]),
+            vec!["unmerged"],
+            "{preflight:?}"
         );
-        assert!(worktree.exists(), "nothing was finished");
 
-        // Pushed, but the issue it implements is no longer complete: the linked
-        // marking refuses rather than half-archiving.
-        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
-        state.runs.get_mut(&run_id).unwrap().stages.pop();
-        let blocked = state.handle(req(
+        // No action at all: Done means delete.
+        let finished = state.handle(req(
             "branch.finish",
-            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+            json!({ "project_id": project_id, "branch": branch }),
         ));
-        assert_eq!(blocked["ok"], false, "{blocked:?}");
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["worktree"]["action"], "delete");
+        assert!(!worktree.exists(), "the checkout is gone: {finished:?}");
         assert!(
-            blocked["error"].as_str().unwrap().contains("unlink"),
-            "the error names the override: {blocked:?}"
+            !local_branch_exists(&std::fs::canonicalize(&repo).unwrap(), &branch).unwrap(),
+            "the branch is gone with it"
         );
+        assert!(
+            !work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["branch"] == json!(branch.clone())),
+            "and its conversation is out of the inbox"
+        );
+        // The issue it was built for is still waiting for work.
         assert!(state.plans[&issue_id].plan.archived_at.is_none());
-        assert!(worktree.exists(), "nothing was finished");
     }
 
     // ==== branch.dispatch: one call from a sentence to an agent working =======

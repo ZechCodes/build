@@ -1366,6 +1366,11 @@ export function mountGitPane(
           branchMenuOpen ||
           Boolean(branchQuery) ||
           fileMenuPath !== null ||
+          // A split button's menu (Commit, Pull, Push, Stash) is open because
+          // somebody is reaching into it, and the repaint that rebuilds the
+          // toolbar would shut it. It closes itself on any press outside, so
+          // this can never hold the poll for longer than the reach.
+          Boolean(container.querySelector(".splitmenu:not([hidden])")) ||
           Boolean(commentLayer && commentLayer.busy()),
       })
     )

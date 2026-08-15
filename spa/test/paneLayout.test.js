@@ -13,17 +13,28 @@ const stylesSource =
 
 const strippedSource = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
 
-/** Every `selector { declarations }` pair in the sheet. Comments are stripped
+// The work surfaces' own sheet is not concatenated with those two: its rules
+// are the surfaces', not the primitive's, and the tests that read it say so.
+const strippedSurfaces = readFileSync(
+  fileURLToPath(new URL("../src/styles/surfaces.css", import.meta.url)),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** Every `selector { declarations }` pair in a sheet. Comments are stripped
  *  first and at-rule preludes never match (their inner rules do), so a rule
  *  inside a media query is read exactly like a top-level one — `at` says where
- *  it sits, which is how the narrow-viewport block is told from the base. */
-function cssRules() {
-  return [...strippedSource.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)].map((match) => ({
+ *  it sits, which is how the narrow-viewport block is told from the base, and
+ *  `sheet` says which source that position is into. */
+function rulesIn(source) {
+  return [...source.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)].map((match) => ({
     selector: match[1].trim().replace(/\s+/g, " "),
     body: match[2].trim(),
     at: match.index,
+    sheet: source,
   }));
 }
+
+const cssRules = () => rulesIn(strippedSource);
 
 const rulesFor = (selector) => cssRules().filter((rule) => rule.selector === selector);
 
@@ -43,13 +54,13 @@ function declaration(body, property) {
 /** The at-rule prelude a source position sits under, or null at the top level.
  *  Two rules that must agree on a breakpoint are only actually pinned together
  *  when they report the same query. */
-function enclosingAtRule(position) {
+function enclosingAtRuleIn(source, position) {
   let depth = 0;
   let prelude = null;
   for (let i = 0; i < position; i++) {
-    const character = strippedSource[i];
+    const character = source[i];
     if (character === "@" && depth === 0) {
-      prelude = strippedSource.slice(i, strippedSource.indexOf("{", i)).trim().replace(/\s+/g, " ");
+      prelude = source.slice(i, source.indexOf("{", i)).trim().replace(/\s+/g, " ");
     } else if (character === "{") depth += 1;
     else if (character === "}") {
       depth -= 1;
@@ -58,6 +69,10 @@ function enclosingAtRule(position) {
   }
   return prelude;
 }
+
+const enclosingAtRule = (position) => enclosingAtRuleIn(strippedSource, position);
+/** The same question asked of a rule from either sheet. */
+const enclosingAtRuleOf = (rule) => enclosingAtRuleIn(rule.sheet, rule.at);
 
 const NARROW_QUERY = "@media (max-width: 720px)";
 const narrowQueryAt = strippedSource.indexOf(NARROW_QUERY);
@@ -437,9 +452,13 @@ describe("tab layout primitives", () => {
       (rule) => declaration(rule.body, "flex-direction") === "column" && TWO_COLUMN_PANES.includes(rule.selector),
     );
     expect(stacked).toEqual([]);
-    const [drawer] = cssRules().filter((rule) => rule.selector === ".pane-split .pane-list");
+    // The list column is stated at both widths — a rail that meets the frame
+    // above the stacking width, a drawer at or below it — so this is the one
+    // under the query, not merely the first.
+    const [drawer] = cssRules().filter(
+      (rule) => rule.selector === ".pane-split .pane-list" && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
     expect(drawer).toBeTruthy();
-    expect(enclosingAtRule(drawer.at)).toBe(STACK_QUERY);
     expect(declaration(drawer.body, "position")).toBe("absolute");
     expect(declaration(drawer.body, "transform")).toBe("translateX(-100%)");
     expect(declaration(drawer.body, "width")).toBe("var(--pane-drawer)");
@@ -553,15 +572,7 @@ describe("tab layout primitives", () => {
 // leaves a strip of the diff scrolling past underneath it. These rules live in
 // styles/surfaces.css — the columns are the surfaces' own, not the primitive's.
 describe("the tail of a reading column", () => {
-  const surfacesSource = readFileSync(
-    fileURLToPath(new URL("../src/styles/surfaces.css", import.meta.url)),
-    "utf8",
-  ).replace(/\/\*[\s\S]*?\*\//g, "");
-  const surfaceRules = () =>
-    [...surfacesSource.matchAll(/([^{}@;]+)\{([^{}]*)\}/g)].map((match) => ({
-      selector: match[1].trim().replace(/\s+/g, " "),
-      body: match[2].trim(),
-    }));
+  const surfaceRules = () => rulesIn(strippedSurfaces);
   const COLUMNS = [".gitpane .cdetail-host", ".issueview .ivviewer"];
 
   it("pays its scroll-end room on the tail, not on the column", () => {
@@ -615,5 +626,223 @@ describe("the reading page", () => {
     expect(declaration(narrowRule(".projrow .pname").body, "min-width")).toBe("0");
     expect(declaration(narrowRule(".projrow .ppath").body, "overflow-wrap")).toBe("anywhere");
     expect(declaration(narrowRule(".addproj").body, "flex-wrap")).toBe("wrap");
+  });
+});
+
+// ---- the column every surface's first text stands on -------------------------
+// The toolbar names where you are standing, and its project name is the
+// leftmost text in the view column. Everything under it — the tab labels, the
+// panes those tabs open — has to start on that same line, or the surface reads
+// as inset from the bar that names it. --pane-gutter IS that column: each row
+// states the inset it carries itself and pays the difference outside it, so
+// there is one number to move and nothing to keep in step by hand.
+
+/** Top-level pieces of an expression, split on `separator` outside parens. */
+function topLevel(expression, separator) {
+  const pieces = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < expression.length; i += 1) {
+    const character = expression[i];
+    if (character === "(") depth += 1;
+    else if (character === ")") depth -= 1;
+    else if (depth === 0 && expression.startsWith(separator, i)) {
+      pieces.push(expression.slice(start, i));
+      i += separator.length - 1;
+      start = i + 1;
+    }
+  }
+  pieces.push(expression.slice(start));
+  return pieces;
+}
+
+/** Whether the first `(` in an expression is closed by its last character —
+ *  which is what tells `max(a, b)` from `max(a, b) + 2px`. */
+function closesAtEnd(expression) {
+  let depth = 0;
+  for (let i = expression.indexOf("("); i >= 0 && i < expression.length; i += 1) {
+    if (expression[i] === "(") depth += 1;
+    else if (expression[i] === ")") depth -= 1;
+    if (depth === 0) return i === expression.length - 1;
+  }
+  return false;
+}
+
+/** A length as the cascade resolves it: custom properties substituted (through
+ *  as many levels as they nest), then the small arithmetic the insets are
+ *  written with — calc(), max()/min(), and the +, -, * between pixel terms.
+ *  CSS demands spaces around + and -, which is what makes the split safe. */
+function length(value, tokens) {
+  if (!value) return 0;
+  let text = value;
+  for (let pass = 0; pass < 8 && text.includes("var("); pass += 1) {
+    text = text.replace(/var\((--[\w-]+)\)/g, (_, name) => tokens[name] ?? "0");
+  }
+  const resolve = (expression) => {
+    const trimmed = expression.trim();
+    const call = /^(calc|max|min)\(([\s\S]*)\)$/.exec(trimmed);
+    if (call && closesAtEnd(trimmed)) {
+      const parts = topLevel(call[2], ",").map(resolve);
+      if (call[1] === "max") return Math.max(...parts);
+      if (call[1] === "min") return Math.min(...parts);
+      return parts[0];
+    }
+    const added = topLevel(trimmed, " + ");
+    if (added.length > 1) return added.map(resolve).reduce((sum, term) => sum + term);
+    const subtracted = topLevel(trimmed, " - ");
+    if (subtracted.length > 1) return subtracted.map(resolve).reduce((rest, term) => rest - term);
+    const multiplied = topLevel(trimmed, "*");
+    if (multiplied.length > 1) return multiplied.map(resolve).reduce((product, term) => product * term);
+    return Number.parseFloat(trimmed) || 0;
+  };
+  return resolve(text);
+}
+
+/** One side of a box shorthand, expanded the way CSS expands it. Values never
+ *  carry a bare space of their own — every inset here is a token or a calc — so
+ *  whitespace is the separator. */
+const shorthandSide = (shorthand, side) => {
+  const parts = shorthand.trim().split(/\s+/);
+  const [top, right = top, bottom = top, left = right] = parts;
+  return [top, right, bottom, left][side];
+};
+
+/** Both sheets a surface's left edge is written across: the shell's primitives
+ *  and the panes in the shared source above, the work surfaces' own rows (the
+ *  issue rail) in styles/surfaces.css. */
+const everyRule = () => [...cssRules(), ...rulesIn(strippedSurfaces)];
+
+/** The rules for a selector that apply at a viewport, in cascade order. */
+const applicableRules = (selector, viewport) =>
+  everyRule().filter((rule) => {
+    if (rule.selector !== selector) return false;
+    const at = enclosingAtRuleOf(rule);
+    return at === null || (viewport <= 720 && at === NARROW_QUERY);
+  });
+
+/** How far one box moves its content right: the left padding it pays plus the
+ *  margin it bleeds out with (negative for a column that meets the frame). */
+function leftInset(selector, viewport) {
+  const rules = applicableRules(selector, viewport);
+  if (!rules.length) throw new Error(`no rule states ${selector}`);
+  const tokens = tokensAt(viewport);
+  let inset = 0;
+  for (const rule of rules) {
+    for (const [property, side] of [
+      ["padding", 3],
+      ["margin", 3],
+    ]) {
+      const shorthand = declaration(rule.body, property);
+      const explicit = declaration(rule.body, `${property}-left`);
+      if (shorthand) inset += length(shorthandSide(shorthand, side), tokens);
+      if (explicit) inset += length(explicit, tokens);
+    }
+  }
+  return inset;
+}
+
+/** Where a chain of nested boxes puts its text. */
+const textColumn = (chain, viewport) =>
+  chain.reduce((left, selector) => left + leftInset(selector, viewport), 0);
+
+describe("the surface's text column", () => {
+  const FLUSH_BODY = ".surface #tabbody.flush";
+  const LIST_COLUMN = ".pane-split .pane-list";
+
+  // Each row of the surface, as the boxes its text sits inside. The tab body is
+  // where every pane starts: padded for the one column, flush for the split —
+  // and in the flush one the list column bleeds back out to the frame, so the
+  // row itself is what pays the distance. Every row of all three rails is here:
+  // one that is not is one that can drift.
+  const inRail = (row) => [FLUSH_BODY, ".pane-split", LIST_COLUMN, row];
+  const CHAIN = {
+    "the toolbar's project name": [".toolbar", ".tb-sel"],
+    "a tab label": [".surface-bar", ".tabs .t"],
+    "a one-column pane": [".surface #tabbody"],
+    "the Changes rail's branch button": inRail(".crail-branch"),
+    "a section heading in the Changes rail": inRail(".crail .rhead"),
+    "a changeset in the Changes rail": inRail(".crail .rrow"),
+    "a commit in the Changes rail": inRail(".crow"),
+    "the Changes rail's empty section": inRail(".crail .empty"),
+    "the Changes rail's show-more row": inRail(".gitmore"),
+    "the Files tree's crumb": inRail(".fcrumb"),
+    "a file in the Files tree": inRail(".frow"),
+    "the issue rail's head": inRail(".ivhead"),
+    "a stage in the issue rail": inRail(".ivstages .stagerow"),
+    "the issue rail with no stages": inRail(".ivstages .empty"),
+    "the issue rail's assignment control": inRail(".ivassign-head"),
+    "the issue rail's assignment fields": inRail(".ivassign-body"),
+    "the issue rail's lineage": inRail(".ivlineage"),
+  };
+
+  it.each(Object.keys(CHAIN))("stands %s on the gutter, and nowhere else", (row) => {
+    const viewport = 1400;
+    expect(textColumn(CHAIN[row], viewport)).toBe(pixels("var(--pane-gutter)", tokensAt(viewport)));
+  });
+
+  // The phone narrows the gutter through the token; the chains that are not the
+  // drawer's follow it there too. (Below the stacking width the list column is
+  // an overlay positioned against the split's border box, so its rows' own
+  // inset is the whole distance — the test below pins that instead.)
+  it.each(["the toolbar's project name", "a tab label", "a one-column pane"])(
+    "keeps %s on the gutter where the phone narrows it",
+    (row) => {
+      expect(textColumn(CHAIN[row], 390)).toBe(pixels("var(--pane-gutter)", tokensAt(390)));
+    },
+  );
+
+  it("pays each bar's gutter around the inset its own control carries", () => {
+    // A bar cannot simply pay the gutter: its buttons have padding of their own,
+    // and a pill that pays 13px inside a bar that already paid the gutter puts
+    // its label 13px past the column. Each states the difference, from the same
+    // two tokens the control itself is padded from — one number to move.
+    const [toolbar] = rulesFor(".toolbar");
+    expect(shorthandSide(declaration(toolbar.body, "padding"), 3)).toBe("var(--toolbar-gutter)");
+    expect(declaration(rulesFor(".tb-sel")[0].body, "padding")).toMatch(/var\(--tbsel-inset\)/);
+    for (const bar of rulesFor(".surface-bar")) {
+      expect(shorthandSide(declaration(bar.body, "padding"), 3)).toBe("var(--tabbar-gutter)");
+    }
+    expect(declaration(rulesFor(".tabs .t")[0].body, "padding")).toMatch(/var\(--tab-inset\)/);
+    // Both derived gutters are stated once, against the one gutter token.
+    for (const derived of ["--toolbar-gutter", "--tabbar-gutter"]) {
+      expect(stylesSource.match(new RegExp(`${derived}:`, "g")) || []).toHaveLength(1);
+      const [token] = cssRules().filter((rule) => rule.selector === ":root" && rule.body.includes(`${derived}:`));
+      expect(token.body).toMatch(new RegExp(`${derived}:[^;]*var\\(--pane-gutter\\)`));
+    }
+    // …and a pill can never inset past the column it stands on, which is what
+    // would drive the bar's own gutter negative on a phone.
+    for (const viewport of [1400, 390]) {
+      const tokens = tokensAt(viewport);
+      expect(length("var(--tab-inset)", tokens)).toBeLessThanOrEqual(length("var(--pane-gutter)", tokens));
+      expect(length("var(--tabbar-gutter)", tokens)).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("lets the flush pane's list column meet the frame", () => {
+    // The commit rail, the file tree and the issue's stage list are rails, not
+    // cards: their fills and their divider run to the frame's edge the way the
+    // inbox rail's do, so the column bleeds back through the split's gutter and
+    // its rows carry that gutter inside them instead.
+    const [bleed] = applicableRules(LIST_COLUMN, 1400);
+    expect(bleed).toBeTruthy();
+    expect(declaration(bleed.body, "margin-left")).toBe("calc(var(--pane-gutter) * -1)");
+    expect(enclosingAtRule(bleed.at)).toBeNull();
+    // One rule for all three, like the drawer below it — a per-pane copy is how
+    // the rails drifted apart before.
+    for (const token of [".crail-host", ".ftree", ".ivstages"]) {
+      const railRules = cssRules().filter((rule) => (rule.selector.match(/[.#][-\w]+/g) || []).includes(token));
+      expect(railRules.filter((rule) => declaration(rule.body, "margin-left"))).toEqual([]);
+    }
+  });
+
+  it("gives the bleed back where the column is a drawer", () => {
+    // An overlay is positioned against the split's border box, so it already
+    // starts at the frame; the negative margin would drag it off-screen.
+    const [drawer] = cssRules().filter(
+      (rule) => rule.selector === LIST_COLUMN && enclosingAtRule(rule.at) === STACK_QUERY,
+    );
+    expect(drawer).toBeTruthy();
+    expect(declaration(drawer.body, "left")).toBe("0");
+    expect(declaration(drawer.body, "margin-left")).toBe("0");
   });
 });

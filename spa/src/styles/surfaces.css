@@ -146,7 +146,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 @media (max-width: 900px) { .ivviewer { padding-left:0; } }
 
 /* The issue's own head: what it is, where it stands, and its gate. */
-.ivhead { padding:14px 13px 12px; border-bottom:1px solid var(--line); }
+.ivhead { padding:14px 13px 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
 .ivtitle { font-weight:650; font-size:14.5px; color:var(--ink); }
 .ivmeta { display:flex; align-items:center; gap:8px; margin-top:7px; }
 .ivmeta .chip { margin-left:0; }
@@ -162,23 +162,23 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    run-side board wears would put a border inside a bordered column. */
 .ivstages .stagelist { gap:0; }
 .ivstages .stagerow { background:none; border:0; border-top:1px solid var(--line2);
-  border-radius:0; padding:10px 13px; gap:10px; }
+  border-radius:0; padding:10px 13px 10px var(--pane-gutter); gap:10px; }
 .ivstages .stagerow:hover { background:var(--line2); border-color:var(--line2); }
 .ivstages .stagerow.sel { background:var(--accent-soft); }
 .ivstages .stagerow.sel .stagetitle { color:var(--accent); }
 .ivstages .stagerow .stagetitle { font-size:13px; }
-.ivstages .empty { padding:12px 13px; }
+.ivstages .empty { padding:12px 13px 12px var(--pane-gutter); }
 
 /* The assignment control: one line saying what the handoff would be, opening
    onto the targets and the overrides the dispatch carries. */
 .ivassign { border-top:1px solid var(--line); }
 .ivassign-head { display:flex; flex-direction:column; align-items:flex-start; gap:3px;
   width:100%; text-align:left; font:inherit; background:none; border:none; cursor:pointer;
-  padding:11px 13px; }
+  padding:11px 13px 11px var(--pane-gutter); }
 .ivassign-head:hover { background:var(--line2); }
 .ivassign-sum { font-size:12px; color:var(--ink2); }
 .ivassign.open .ivassign-sum { color:var(--accent); }
-.ivassign-body { padding:2px 13px 14px; display:flex; flex-direction:column; gap:9px; }
+.ivassign-body { padding:2px 13px 14px var(--pane-gutter); display:flex; flex-direction:column; gap:9px; }
 .ivfield { display:flex; flex-direction:column; gap:3px; font-size:11.5px; color:var(--dim); }
 .ivfield select, .ivfield input { font:inherit; font-size:13px; color:var(--ink);
   background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px; }
@@ -186,7 +186,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .ivassign-gap { font-size:11.5px; color:var(--amber); display:flex; flex-direction:column; gap:4px; }
 
 /* The implementations an issue has had: its children, each one a branch. */
-.ivlineage { border-top:1px solid var(--line); padding:11px 13px 4px; }
+.ivlineage { border-top:1px solid var(--line); padding:11px 13px 4px var(--pane-gutter); }
 .ivlin-row { display:flex; align-items:center; gap:8px; padding:7px 0; cursor:pointer;
   font-size:12.5px; }
 .ivlin-row:hover .ivlin-branch { color:var(--accent); text-decoration:underline; }

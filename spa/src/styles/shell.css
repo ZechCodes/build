@@ -186,12 +186,17 @@ body.inbox-collapsed #inbox-open { display:block; }
    Where you are standing, said as one sentence: project / branch-or-issue, each
    half opening the list of its own kind. The right side carries the two facts about the
    work that are true wherever you are in it — how long its agent has been at it
-   and what the diff weighs — plus the ⋯ the tab row's right cluster used to be. */
-.toolbar { display:flex; align-items:center; gap:2px; padding:0 10px 0 12px;
+   and what the diff weighs — plus the ⋯ the tab row's right cluster used to be.
+
+   The project name is the surface's text column (styles.css, --pane-gutter):
+   the bar pays the gutter LESS the button's own inset, so the name itself lands
+   on the column the tab labels and the panes below it stand on. */
+.toolbar { display:flex; align-items:center; gap:2px;
+  padding:0 10px 0 var(--toolbar-gutter);
   height:var(--toolbar-h); min-width:0; }
 .tb-sel { display:flex; align-items:center; gap:5px; min-width:0; max-width:42%;
   font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
-  border-radius:6px; padding:4px 6px; cursor:pointer; }
+  border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
 .tb-sel:hover { background:var(--panel2); }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-project .tb-name { font-weight:600; }

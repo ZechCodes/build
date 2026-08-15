@@ -60,4 +60,44 @@ describe("notify DOM layer", () => {
     expect(remaining).toHaveLength(1);
     expect(remaining[0].textContent).toContain("Second failed");
   });
+
+  // The dedupe path is a polling RPC failing over and over. Opening the detail
+  // to read why must not be undone by the next failure a second later.
+  describe("a detail the reader has opened", () => {
+    it("stays open — and stays the same element — while the failure repeats", () => {
+      notifyError("Poll failed", "the bridge said no");
+      const notice = document.querySelector("#notices .notice");
+      notice.querySelector(".notice-expand").click();
+      expect(notice.querySelector(".notice-detail").hidden).toBe(false);
+
+      notifyError("Poll failed", "the bridge said no");
+      notifyError("Poll failed", "the bridge said no");
+
+      const now = document.querySelector("#notices .notice");
+      expect(now, "the notice element was rebuilt under the reader").toBe(notice);
+      expect(now.querySelector(".notice-detail").hidden).toBe(false);
+      expect(now.querySelector(".notice-summary").textContent).toContain("×3");
+    });
+
+    it("stays open when a different failure arrives beside it", () => {
+      notifyError("Poll failed", "the bridge said no");
+      document.querySelector("#notices .notice-expand").click();
+
+      notifyError("Merge failed", "conflict in a.js");
+
+      const [first] = document.querySelectorAll("#notices .notice");
+      expect(first.querySelector(".notice-detail").hidden).toBe(false);
+      expect(first.querySelector(".notice-expand").textContent).toBe("▴");
+    });
+
+    it("shuts again on a second press", () => {
+      notifyError("Poll failed", "the bridge said no");
+      const expand = document.querySelector("#notices .notice-expand");
+      expand.click();
+      expand.click();
+      expect(document.querySelector("#notices .notice-detail").hidden).toBe(true);
+      notifyError("Poll failed", "the bridge said no");
+      expect(document.querySelector("#notices .notice-detail").hidden).toBe(true);
+    });
+  });
 });

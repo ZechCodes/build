@@ -7369,6 +7369,52 @@ impl AppState {
         persisted
     }
 
+    /// Tell an issue that the branch implementing it is gone, and that nothing
+    /// was merged out of it.
+    ///
+    /// The issue is about to come BACK to the inbox — the branch was what had
+    /// been speaking for it — and a row that reappears with no explanation
+    /// reads as the list losing track of its own work. So the conversation
+    /// records what happened, naming the branch, in the one place the user will
+    /// look when they wonder why this is in front of them again.
+    ///
+    /// Attention-class on purpose: the issue needs somebody to decide what
+    /// happens to it next, which is the definition of unread.
+    fn note_implementation_abandoned(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        branch: &str,
+        how: &str,
+    ) {
+        let Ok(mut issue) = self.take_plan(issue_id) else {
+            return;
+        };
+        let worktree_id = self
+            .runs
+            .get(run_id)
+            .map(|run| crate::worktree::external_worktree_id(&run.worktree.path));
+        let mut links = vec![crate::thread::ThreadLink::Implementation {
+            issue_id: issue_id.to_string(),
+            implementation_id: run_id.to_string(),
+        }];
+        if let Some(worktree_id) = worktree_id {
+            links.push(crate::thread::ThreadLink::Worktree { worktree_id });
+        }
+        issue.agents.push_event_with_links(
+            crate::thread::ThreadEventKind::Abandoned,
+            Some(abandoned_branch_summary(branch, how)),
+            None,
+            None,
+            links,
+            now_rfc3339(),
+        );
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        if let Err(error) = persisted {
+            eprintln!("{issue_id}: could not record the abandoned branch {branch}: {error}");
+        }
+    }
+
     /// Canonical conversation owner for a run. Planned runs are implementation
     /// lineage of the Issue and therefore project the Issue thread; planless
     /// adopted runs remain independent worktree entities.
@@ -10687,6 +10733,7 @@ impl AppState {
         let project_id = self.project_of(&run_id)?;
         let mut active = self.take_run(&run_id)?;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let branch = active.worktree.branch.clone();
         // Reconcile publication while the checkout and refs are still
         // inspectable. Every Build-owned removal path must decide completion
         // before deleting the evidence it needs to decide it.
@@ -10725,11 +10772,14 @@ impl AppState {
         result?;
         persisted?;
         if let Some(issue_id) = &issue_id {
+            // Abandoning is deleting the branch with nothing merged out of it,
+            // so the issue this was implementing comes back to the inbox — and
+            // its conversation says which branch it lost and why.
             self.mirror_run_outcome_to_issue(
                 &run_id,
                 issue_id,
                 crate::thread::ThreadEventKind::Abandoned,
-                "Implementation abandoned".to_string(),
+                abandoned_branch_summary(&branch, "abandoned"),
             )?;
         }
         if let Some(issue_id) = issue_id {
@@ -11554,12 +11604,24 @@ impl AppState {
                 "worktree": finished,
             }));
         };
-        let issue_id = self.runs[&run_id]
+        let implemented_issue_id = self.runs[&run_id]
             .run
             .plan_id
             .as_ref()
-            .map(|id| id.0.clone())
-            .filter(|_| !unlink);
+            .map(|id| id.0.clone());
+        // Whether this Done leaves the issue behind, unmerged: unlinking
+        // finishes the branch alone, and a non-merge action publishes nothing
+        // into the base branch. The issue comes back to the inbox, so it has to
+        // be told what happened to the branch that was speaking for it.
+        let orphaned_issue_id = implemented_issue_id.clone().filter(|_| {
+            unlink
+                && !matches!(
+                    parse_worktree_finish_action(&action_name),
+                    Ok(WorktreeFinishAction::Merge)
+                )
+                && self.runs[&run_id].run.state != RunState::Merged
+        });
+        let issue_id = implemented_issue_id.filter(|_| !unlink);
         // Refuse before the worktree is touched: half of a linked marking is
         // worse than none, and the way past it is a flag the caller already has.
         if let Some(issue_id) = &issue_id {
@@ -11575,6 +11637,14 @@ impl AppState {
         }
         let finished =
             self.finish_run(&run_id, &action_name, FinishRequirement::CommittedAndPushed)?;
+        if let Some(orphaned_issue_id) = &orphaned_issue_id {
+            self.note_implementation_abandoned(
+                orphaned_issue_id,
+                &run_id,
+                &branch,
+                "finished off the board",
+            );
+        }
         let issue_archived = match &issue_id {
             Some(issue_id) => {
                 self.plan_archive(&json!({ "plan_id": issue_id }))?;
@@ -12059,6 +12129,7 @@ impl AppState {
                 continue;
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+            let branch = active.worktree.branch.clone();
             let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
@@ -12119,10 +12190,19 @@ impl AppState {
                             );
                         }
                     }
-                    let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                    let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
                     if let Err(e) = persisted {
                         eprintln!("archive {run_id}: issue event persist failed: {e}");
                     }
+                    // The checkout went away under Build with nothing merged,
+                    // so the issue is back in the inbox. Say which branch it
+                    // lost, or its reappearance is unexplained.
+                    self.note_implementation_abandoned(
+                        &issue_id,
+                        &run_id,
+                        &branch,
+                        "deleted outside Build",
+                    );
                 }
             }
         }
@@ -14366,6 +14446,16 @@ fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
 /// Whether one of an implementation's events travels to the Issue that owns
 /// it. Exactly the attention class: what needs the human is news wherever they
 /// are watching from, what merely reports progress belongs to the run.
+/// What an issue's conversation says when the branch implementing it is gone
+/// and nothing was merged out of it. `how` is the way it went: abandoned by the
+/// user, deleted outside Build, finished off the board.
+fn abandoned_branch_summary(branch: &str, how: &str) -> String {
+    format!(
+        "The branch {branch} was {how} without being merged, so this issue is waiting for work \
+         again"
+    )
+}
+
 fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
 }
@@ -31091,6 +31181,82 @@ mod tests {
         assert!(back["implementing_branch"].is_null(), "{back:?}");
     }
 
+    /// Every event on an issue's conversation, as the wire ships them.
+    fn issue_events(state: &mut AppState, issue_id: &str) -> Vec<Value> {
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(issue["ok"], true, "{issue:?}");
+        issue["result"]["thread"]["items"]
+            .as_array()
+            .expect("a conversation")
+            .iter()
+            .filter(|item| item["type"] == "event")
+            .map(|item| item["data"].clone())
+            .collect()
+    }
+
+    fn says_the_branch_was_abandoned(events: &[Value], branch: &str) -> bool {
+        events.iter().any(|event| {
+            event["event"] == "abandoned"
+                && event["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains(branch) && summary.contains("merged"))
+        })
+    }
+
+    /// An issue whose branch is deleted with nothing merged comes back to the
+    /// inbox, and a row that reappears unexplained reads as the list losing
+    /// track of its own work. The conversation names the branch it lost.
+    #[test]
+    fn abandoning_a_branch_tells_its_issue_which_branch_it_lost() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+
+        let events = issue_events(&mut state, &issue_id);
+        assert!(
+            says_the_branch_was_abandoned(&events, &branch),
+            "the issue must say which branch went and that nothing was merged: {events:?}"
+        );
+        let back = issue_row(&mut state, &issue_id);
+        assert_eq!(back["implementation_active"], false, "{back:?}");
+        assert_eq!(
+            back["unread"], true,
+            "an issue that is waiting for work again is asking for someone: {back:?}"
+        );
+    }
+
+    /// Same story with nobody to tell it: the checkout is deleted outside
+    /// Build, the sweep notices on the next poll, and the issue still explains
+    /// itself.
+    #[test]
+    fn a_checkout_deleted_outside_build_still_explains_the_issue_it_returns() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        std::fs::remove_dir_all(&worktree).expect("the user deleted their worktree");
+        // The sweep runs on the poll the inbox already makes.
+        state.handle(req("board.list", json!({})));
+
+        let events = issue_events(&mut state, &issue_id);
+        assert!(
+            says_the_branch_was_abandoned(&events, &branch),
+            "{events:?}"
+        );
+        assert!(
+            work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id)),
+            "and the issue is back in the inbox"
+        );
+    }
+
     /// Done on a branch means the work exists somewhere other than this
     /// machine: committed AND pushed. The primary checkout is never
     /// finishable — it is the repository, not a worktree to file away.
@@ -31219,6 +31385,13 @@ mod tests {
         assert!(
             state.plans[&kept_issue].plan.archived_at.is_none(),
             "unlink finishes the branch alone"
+        );
+        // …which puts the issue back in the inbox with its branch gone and
+        // nothing merged, so its conversation says which branch that was.
+        let events = issue_events(&mut state, &kept_issue);
+        assert!(
+            says_the_branch_was_abandoned(&events, &kept_branch),
+            "{events:?}"
         );
     }
 

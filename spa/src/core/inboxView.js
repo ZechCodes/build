@@ -1,5 +1,6 @@
-// The inbox rail's entries: the feed, the paint, and the four things a row can
-// do — open, Done, mute, and say why it failed.
+// The inbox rail's entries: the feed, the paint, the four things a row can do —
+// open, Done, mute, and say why it failed — and the one disclosure at the end
+// of the list, Recent.
 //
 // WHICH rows appear and what they say is core/inbox.js; this module is the
 // wiring. Read state is the bridge's now (`entity.seen`), so opening an entry
@@ -10,14 +11,7 @@ import { App } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { confirmAction } from "./confirm.js";
 import { entityIdOf } from "./entityId.js";
-import {
-  activeEntryKey,
-  branchDoneConfirm,
-  inboxEntries,
-  inboxListHtml,
-  issueDoneConfirm,
-  unlinkDisclosure,
-} from "./inbox.js";
+import { activeEntryKey, branchDoneConfirm, inboxEntries, inboxListHtml, issueDoneConfirm } from "./inbox.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -29,6 +23,9 @@ let entries = [];
 let openMenuKey = null;
 let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
+// Whether Recent is open, once the user has said. Null means nobody has, and
+// the partition decides for itself (it opens when the list above it is thin).
+let recentOpen = null;
 const dismissed = new Set(); // entity ids the user just said Done to
 const busy = new Set(); // entity ids with a mutation in flight
 const errors = new Map(); // entity id → the message its row is showing
@@ -58,16 +55,35 @@ export function noteSelfAction(...entityIds) {
   return Promise.all([...new Set(entityIds.filter(Boolean))].map((id) => markSeen(id)));
 }
 
+/** A box in the list has the caret. The rows are rewritten whole, so a repaint
+ *  now would replace the box being typed into — taking the words, the caret and,
+ *  on a phone, the keyboard with it. A tick nobody asked for stands down until
+ *  the caret leaves; the user's own actions still repaint. */
+function typingInList() {
+  const active = document.activeElement;
+  return Boolean(active && active.tagName === "INPUT" && active.closest("#inbox-list"));
+}
+
+/** The repaint the feed asks for, which is the one that must wait. */
+function drawFromFeed() {
+  if (typingInList()) return;
+  draw();
+}
+
 function draw() {
   const list = $("#inbox-list");
   if (!list) return;
   // The captures this client is holding or watching stand beside the daemon's
   // own rows; the daemon's copy wins wherever both name the same capture.
-  entries = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
+  const partition = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
+  // Every row on screen, Recent included: what the route stands on and what a
+  // click resolves to do not care which section a row sits in.
+  entries = [...partition.entries, ...partition.recent];
   const scroll = list.scrollTop;
-  list.innerHTML = inboxListHtml(entries, {
+  list.innerHTML = inboxListHtml(partition, {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
+    recentOpen,
     rerouteKey,
     projects,
     rerouteBranchProject,
@@ -77,6 +93,7 @@ function draw() {
   });
   list.scrollTop = scroll;
   wire(list);
+  wireRecent(list);
   wireCaptures(list);
   paintErrors(list);
 }
@@ -106,7 +123,7 @@ function wire(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
     row.onclick = (event) => {
       // The row's own controls answer for themselves.
-      if (event.target.closest("[data-done], [data-menu], [data-mute], .capture-question, .inbox-actions")) return;
+      if (event.target.closest("[data-done], [data-menu], [data-mute], .inbox-actions")) return;
       openEntry(entryOf(row.dataset.key));
     };
   });
@@ -141,31 +158,30 @@ function wire(list) {
   });
 }
 
+/** Recent is one disclosure, and pressing it is the user saying so — from then
+ *  on the section stays as they left it, whatever the list above it does. */
+function wireRecent(list) {
+  const toggle = list.querySelector("[data-recent-toggle]");
+  if (!toggle) return;
+  toggle.onclick = () => {
+    recentOpen = toggle.getAttribute("aria-expanded") !== "true";
+    draw();
+  };
+}
+
 // ---- capture rows -------------------------------------------------------------
 //
-// The three things a user can do to a route: answer the question that is
-// holding it up, retry one that gave up, and send the capture somewhere else.
-// All three go through the daemon's own capture verbs — a reroute by hand and a
-// route by the router are the same kind of thing afterwards.
+// The two things a row can do to a route: retry one that gave up, and send the
+// capture somewhere else. Both go through the daemon's own capture verbs — a
+// reroute by hand and a route by the router are the same kind of thing
+// afterwards.
+//
+// Answering the router is not one of them. What to do with a capture is a
+// decision with several shapes — the router's own choices, a destination named
+// by hand, words, or abandoning it — and the row opens the page that holds all
+// of them (views/captureDecision.js) rather than hosting the thinnest one.
 
 function wireCaptures(list) {
-  list.querySelectorAll("[data-capture-answer-send]").forEach((control) => {
-    const captureId = control.dataset.captureAnswerSend;
-    // The field is found through the row, never through a selector built out of
-    // an id the daemon minted.
-    const field = control.closest(".capture-entry").querySelector("[data-capture-answer]");
-    control.onclick = (event) => {
-      event.stopPropagation();
-      answerCapture(captureId, field ? field.value : "");
-    };
-    if (field) {
-      field.onkeydown = (event) => {
-        if (event.key !== "Enter") return;
-        event.preventDefault();
-        answerCapture(captureId, field.value);
-      };
-    }
-  });
   list.querySelectorAll("[data-capture-retry]").forEach((control) => {
     control.onclick = (event) => {
       event.stopPropagation();
@@ -224,22 +240,6 @@ function branchFieldValue(control) {
   return field ? field.value.trim() : "";
 }
 
-async function answerCapture(captureId, raw) {
-  const text = String(raw || "").trim();
-  if (!text || busy.has(captureId)) return;
-  busy.add(captureId);
-  captureErrors.delete(captureId);
-  try {
-    await App.call("capture.answer", { capture_id: captureId, text });
-    await refreshFeed();
-  } catch (error) {
-    captureErrors.set(captureId, messageOf(error));
-  } finally {
-    busy.delete(captureId);
-    draw();
-  }
-}
-
 /** With a destination this routes by hand; with none it re-fires the router,
  *  which is what the retry on a failed route is. */
 async function rerouteCapture(captureId, destination) {
@@ -293,18 +293,14 @@ async function toggleMute(entry) {
   }
 }
 
-/** The RPC behind Done. A branch is finishable only once it is committed and
- *  pushed, so the checkout it leaves behind is always clean — `cleanup` is the
- *  only action that fits, and the archive is the branch itself. */
-function finishCall(entry, unlink) {
+/** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
+ *  its records go, which is what Done on a branch means. On an issue it
+ *  archives. Neither is refused for the state of the work — what the
+ *  destruction costs came down with the row and was confirmed through. */
+function finishCall(entry) {
   if (entry.kind === "issue") return App.call("plan.archive", { plan_id: entry.issueId });
-  const params = { project_id: entry.projectId, branch: entry.branch, action: "cleanup" };
-  return App.call("branch.finish", unlink ? { ...params, unlink: true } : params);
+  return App.call("branch.finish", { project_id: entry.projectId, branch: entry.branch, action: "delete" });
 }
-
-/** The refusal that IS the disclosure: the bridge will not archive an issue its
- *  branch has not implemented, and its error names the override. */
-const isUnlinkRefusal = (message) => message.includes("unlink");
 
 async function finishEntry(entry) {
   if (!entry || busy.has(entry.entityId)) return;
@@ -317,28 +313,21 @@ async function finishEntry(entry) {
   errors.delete(entry.entityId);
   draw();
   try {
-    await finish(entry, false);
+    await finish(entry);
   } catch (error) {
-    const message = messageOf(error);
-    if (entry.kind === "branch" && isUnlinkRefusal(message) && (await confirmAction(unlinkDisclosure(entry, message)))) {
-      try {
-        await finish(entry, true);
-      } catch (retry) {
-        restore(entry, messageOf(retry));
-      }
-    } else {
-      restore(entry, message);
-    }
+    restore(entry, messageOf(error));
   } finally {
     busy.delete(entry.entityId);
   }
 }
 
-async function finish(entry, unlink) {
-  await finishCall(entry, unlink);
+async function finish(entry) {
+  await finishCall(entry);
   // Done ends the work, and an ending is an attention event. The user did this
-  // here, so the entry (and the issue it archives with it) is already read.
-  await noteSelfAction(entry.entityId, unlink ? null : entry.issueId);
+  // here, so this entry is already read. The issue an unmerged branch leaves
+  // behind is NOT: it comes back to the inbox asking for somebody, and the
+  // event naming the branch it lost is the whole point of it coming back.
+  await noteSelfAction(entry.entityId);
   await refreshFeed();
 }
 
@@ -357,7 +346,7 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
-  subscribePendingCaptures(draw);
+  subscribePendingCaptures(drawFromFeed);
   subscribeFeed((feed) => {
     items = feed.items || [];
     projects = feed.projects || [];
@@ -367,7 +356,7 @@ export function mountInboxList() {
     const live = new Set(items.map(entityIdOf).filter(Boolean));
     for (const entityId of dismissed) if (!live.has(entityId)) dismissed.delete(entityId);
     for (const entityId of errors.keys()) if (!live.has(entityId)) errors.delete(entityId);
-    draw();
+    drawFromFeed();
   });
 }
 

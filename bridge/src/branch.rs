@@ -153,23 +153,168 @@ fn named_project_row(mut row: Value) -> Value {
     row
 }
 
-/// What a branch row's Done button asks of git: nothing left in the tree, and
-/// nothing left to push.
+/// What Done asks git about a branch before it deletes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BranchSync {
     /// Files with uncommitted changes in the checkout.
     pub uncommitted_files: u64,
-    /// Commits the branch holds that its upstream does not. `None` = unknown.
+    /// Commits the branch holds that [`comparison_ref`](Self::comparison_ref)
+    /// does not. `None` = unknown.
     pub ahead: Option<u64>,
     /// The tracking branch, when the branch has one.
     pub upstream: Option<String>,
+    /// The ref `ahead` is counted against: the upstream when there is one,
+    /// otherwise the project's base branch. It is what makes the count
+    /// readable — "3 unpushed" and "3 unmerged" are the same number against
+    /// different refs, and Done says a different thing about each.
+    pub comparison_ref: Option<String>,
 }
 
-/// A branch is finishable once it is committed AND pushed: an unpushed commit
-/// or an unsaved edit is work that only exists on this machine, and Done
-/// archives the entry.
-pub fn branch_can_finish(sync: &BranchSync) -> bool {
-    sync.uncommitted_files == 0 && sync.upstream.is_some() && sync.ahead == Some(0)
+/// One thing the user should know before Done destroys this work item.
+///
+/// A warning is not a refusal. Done deletes a branch and archives an issue on
+/// the user's say-so; the bridge's job is to make what is about to be lost
+/// legible BEFORE the destructive act, and then to do as it is told. Refusals
+/// stay errors — an unknown branch, the primary checkout, a git command that
+/// failed — because there is nothing the user can confirm their way past.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinishWarning {
+    /// Stable machine name, so a client can order or style them.
+    pub code: &'static str,
+    /// The whole warning in one sentence, ready to render.
+    pub message: String,
+    /// What the warning counts — commits, files — when it counts anything.
+    pub count: Option<u64>,
+    /// The ref the count is measured against, when there is one.
+    pub reference: Option<String>,
+}
+
+/// Work in the tree that no commit holds: removing the checkout discards it.
+pub const FINISH_WARNING_UNCOMMITTED: &str = "uncommitted";
+/// The branch tracks a remote, and the remote does not have all of it.
+pub const FINISH_WARNING_UNPUSHED: &str = "unpushed";
+/// The branch tracks nothing, so the base branch is the only place its work
+/// could survive — and it is not all there.
+pub const FINISH_WARNING_UNMERGED: &str = "unmerged";
+/// An issue no branch ever implemented.
+pub const FINISH_WARNING_UNIMPLEMENTED: &str = "unimplemented";
+
+impl FinishWarning {
+    pub fn to_json(&self) -> Value {
+        serde_json::json!({
+            "code": self.code,
+            "message": self.message,
+            "count": self.count,
+            "ref": self.reference,
+        })
+    }
+}
+
+/// Render a set of warnings for the wire.
+pub fn warnings_json(warnings: &[FinishWarning]) -> Value {
+    Value::Array(warnings.iter().map(FinishWarning::to_json).collect())
+}
+
+fn plural(count: u64, singular: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
+}
+
+/// What Done on this branch is about to lose.
+///
+/// Where the work could survive depends on whether anyone else has a copy of
+/// the branch: with an upstream, the remote is that copy and the question is
+/// whether it is current; with none, the base branch is the only place the
+/// commits can outlive the branch, and the question is whether they landed
+/// there. An unknown count answers neither question, so it warns.
+pub fn branch_finish_warnings(branch: &str, sync: &BranchSync) -> Vec<FinishWarning> {
+    let mut warnings = Vec::new();
+    if sync.uncommitted_files > 0 {
+        warnings.push(FinishWarning {
+            code: FINISH_WARNING_UNCOMMITTED,
+            message: format!(
+                "{branch} has {} that no commit holds — removing the checkout discards them",
+                plural(sync.uncommitted_files, "uncommitted file")
+            ),
+            count: Some(sync.uncommitted_files),
+            reference: None,
+        });
+    }
+    if sync.ahead == Some(0) {
+        return warnings;
+    }
+    match &sync.upstream {
+        Some(upstream) => warnings.push(FinishWarning {
+            code: FINISH_WARNING_UNPUSHED,
+            message: match sync.ahead {
+                Some(ahead) => format!(
+                    "{branch} has {} that {upstream} does not",
+                    plural(ahead, "commit")
+                ),
+                None => format!("{branch} could not be compared with {upstream}"),
+            },
+            count: sync.ahead,
+            reference: Some(upstream.clone()),
+        }),
+        None => warnings.push(FinishWarning {
+            code: FINISH_WARNING_UNMERGED,
+            message: match (sync.ahead, sync.comparison_ref.as_deref()) {
+                (Some(ahead), Some(base)) => format!(
+                    "{branch} has never been pushed, and has {} that {base} does not",
+                    plural(ahead, "commit")
+                ),
+                (Some(ahead), None) => format!(
+                    "{branch} has never been pushed, and has {} the base branch does not",
+                    plural(ahead, "commit")
+                ),
+                (None, base) => format!(
+                    "{branch} has never been pushed, and could not be compared with {}",
+                    base.unwrap_or("the base branch")
+                ),
+            },
+            count: sync.ahead,
+            reference: sync.comparison_ref.clone(),
+        }),
+    }
+    warnings
+}
+
+/// What Done on this issue is about to lose: an issue nothing was ever built
+/// for is being filed away on the strength of the conversation alone.
+pub fn issue_finish_warnings(implemented: bool) -> Vec<FinishWarning> {
+    if implemented {
+        return Vec::new();
+    }
+    vec![FinishWarning {
+        code: FINISH_WARNING_UNIMPLEMENTED,
+        message: "No branch has implemented this issue".to_string(),
+        count: None,
+        reference: None,
+    }]
+}
+
+/// Put the feed in the order the inbox reads it: by anchor, oldest first.
+///
+/// Oldest at the top is the whole shape of the list — what you took on longest
+/// ago is what you have been ignoring longest, and a fresh pickup appends to
+/// the bottom rather than shoving everything down. A row with no anchor at all
+/// (a checkout whose history could not be read) sorts last: unknown age is not
+/// evidence of being old.
+///
+/// Stable, so rows that share an anchor keep the order the fold gave them.
+pub fn sort_by_anchor(rows: &mut [Value]) {
+    rows.sort_by(|left, right| {
+        let key = |row: &Value| {
+            row["anchor"]
+                .as_str()
+                .map(str::to_string)
+                .map_or((true, String::new()), |anchor| (false, anchor))
+        };
+        key(left).cmp(&key(right))
+    });
 }
 
 #[cfg(test)]
@@ -338,43 +483,64 @@ mod tests {
         assert_eq!(labels(&folded), vec!["capture", "implementation", "plan-2"]);
     }
 
+    /// Oldest first, so the top of the inbox is what has been waiting longest,
+    /// and a row nobody can date sorts under the ones somebody can.
     #[test]
-    fn a_branch_is_finishable_only_when_it_is_committed_and_pushed() {
+    fn the_feed_reads_oldest_first_with_undatable_rows_last() {
+        let row = |label: &str, anchor: Value| json!({ "from": label, "anchor": anchor });
+        let mut rows = vec![
+            row("undatable", Value::Null),
+            row("yesterday", json!("2026-08-14T09:00:00Z")),
+            row("last-week", json!("2026-08-07T09:00:00Z")),
+            row("also-last-week", json!("2026-08-07T09:00:00Z")),
+        ];
+        sort_by_anchor(&mut rows);
+        assert_eq!(
+            labels(&rows),
+            vec!["last-week", "also-last-week", "yesterday", "undatable"],
+            "ties keep the order the fold gave them"
+        );
+    }
+
+    fn codes(warnings: &[FinishWarning]) -> Vec<&str> {
+        warnings.iter().map(|warning| warning.code).collect()
+    }
+
+    /// A branch with somewhere else to be warns about nothing; the same branch
+    /// with commits its remote does not have warns about exactly those.
+    #[test]
+    fn a_pushed_branch_warns_about_nothing_and_an_unpushed_one_counts_its_commits() {
         let pushed = BranchSync {
             uncommitted_files: 0,
             ahead: Some(0),
             upstream: Some("origin/feature".to_string()),
+            comparison_ref: Some("origin/feature".to_string()),
         };
-        assert!(branch_can_finish(&pushed));
+        assert!(branch_finish_warnings("feature", &pushed).is_empty());
 
+        let unpushed = BranchSync {
+            ahead: Some(2),
+            ..pushed.clone()
+        };
+        let warnings = branch_finish_warnings("feature", &unpushed);
+        assert_eq!(codes(&warnings), vec![FINISH_WARNING_UNPUSHED]);
+        assert_eq!(warnings[0].count, Some(2));
+        assert_eq!(warnings[0].reference.as_deref(), Some("origin/feature"));
         assert!(
-            !branch_can_finish(&BranchSync {
-                uncommitted_files: 1,
-                ..pushed.clone()
-            }),
-            "unsaved edits are work that exists nowhere else"
+            warnings[0].message.contains("2 commits")
+                && warnings[0].message.contains("origin/feature"),
+            "{:?}",
+            warnings[0]
         );
-        assert!(
-            !branch_can_finish(&BranchSync {
-                ahead: Some(2),
-                ..pushed.clone()
-            }),
-            "unpushed commits are work that exists nowhere else"
-        );
-        assert!(
-            !branch_can_finish(&BranchSync {
-                upstream: None,
-                ahead: None,
-                ..pushed.clone()
-            }),
-            "a branch with no upstream has never been pushed"
-        );
-        assert!(
-            !branch_can_finish(&BranchSync {
-                ahead: None,
-                ..pushed
-            }),
-            "an unknown ahead count is not a level branch"
+
+        let unknown = BranchSync {
+            ahead: None,
+            ..pushed
+        };
+        assert_eq!(
+            codes(&branch_finish_warnings("feature", &unknown)),
+            vec![FINISH_WARNING_UNPUSHED],
+            "a count nobody could read is not proof the remote has the work"
         );
     }
 
@@ -391,5 +557,103 @@ mod tests {
         let rows = fold_work_items(vec![unnamed, named]);
         assert_eq!(rows[0]["project"], "proj-1", "{rows:?}");
         assert_eq!(rows[1]["project"], "Build", "{rows:?}");
+    }
+
+    /// With no upstream the base branch is the only place the work can outlive
+    /// the branch, so the warning is about merging, not pushing.
+    #[test]
+    fn a_branch_with_no_upstream_warns_about_what_the_base_branch_lacks() {
+        let unmerged = BranchSync {
+            uncommitted_files: 0,
+            ahead: Some(3),
+            upstream: None,
+            comparison_ref: Some("main".to_string()),
+        };
+        let warnings = branch_finish_warnings("feature", &unmerged);
+        assert_eq!(codes(&warnings), vec![FINISH_WARNING_UNMERGED]);
+        assert_eq!(warnings[0].count, Some(3));
+        assert_eq!(warnings[0].reference.as_deref(), Some("main"));
+        assert!(
+            warnings[0].message.contains("3 commits") && warnings[0].message.contains("main"),
+            "{:?}",
+            warnings[0]
+        );
+
+        assert!(
+            branch_finish_warnings(
+                "feature",
+                &BranchSync {
+                    ahead: Some(0),
+                    ..unmerged.clone()
+                }
+            )
+            .is_empty(),
+            "everything the branch holds is already in the base branch"
+        );
+        assert_eq!(
+            codes(&branch_finish_warnings(
+                "feature",
+                &BranchSync {
+                    ahead: None,
+                    comparison_ref: None,
+                    ..unmerged
+                }
+            )),
+            vec![FINISH_WARNING_UNMERGED],
+            "an unreadable comparison is not evidence the work landed"
+        );
+    }
+
+    /// Uncommitted work is its own warning, and it stacks with the other one:
+    /// two different things are about to be lost.
+    #[test]
+    fn uncommitted_work_warns_alongside_the_branch_comparison() {
+        let warnings = branch_finish_warnings(
+            "feature",
+            &BranchSync {
+                uncommitted_files: 1,
+                ahead: Some(1),
+                upstream: None,
+                comparison_ref: Some("main".to_string()),
+            },
+        );
+        assert_eq!(
+            codes(&warnings),
+            vec![FINISH_WARNING_UNCOMMITTED, FINISH_WARNING_UNMERGED]
+        );
+        assert!(
+            warnings[0].message.contains("1 uncommitted file"),
+            "{:?}",
+            warnings[0]
+        );
+    }
+
+    /// Done on an issue is only ever a warning about provenance: nothing was
+    /// built for it.
+    #[test]
+    fn an_issue_warns_only_when_no_branch_ever_implemented_it() {
+        assert!(issue_finish_warnings(true).is_empty());
+        assert_eq!(
+            codes(&issue_finish_warnings(false)),
+            vec![FINISH_WARNING_UNIMPLEMENTED]
+        );
+    }
+
+    #[test]
+    fn a_warning_ships_its_code_message_count_and_ref() {
+        let warnings = branch_finish_warnings(
+            "feature",
+            &BranchSync {
+                uncommitted_files: 0,
+                ahead: Some(2),
+                upstream: Some("origin/feature".to_string()),
+                comparison_ref: Some("origin/feature".to_string()),
+            },
+        );
+        let wire = warnings_json(&warnings);
+        assert_eq!(wire[0]["code"], "unpushed", "{wire:?}");
+        assert_eq!(wire[0]["count"], 2, "{wire:?}");
+        assert_eq!(wire[0]["ref"], "origin/feature", "{wire:?}");
+        assert!(wire[0]["message"].is_string(), "{wire:?}");
     }
 }

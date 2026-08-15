@@ -75,9 +75,24 @@
    (.pane-split) alike — so moving between tabs never moves the content's edges.
    A pane that states a width of its own is a pane that will drift out of step.
    The narrow-viewport values live in the one media query below, so both layouts
-   narrow together. */
-:root { --content-max:1180px; --pane-gutter:22px; --pane-top:18px; --pane-bottom:40px;
-  --pane-drawer:min(86vw, 300px); }
+   narrow together.
+
+   --pane-gutter is more than a gutter: it is the column every piece of text in
+   the view stands on. The toolbar's project name is the leftmost of them and
+   the one the eye reads the surface against, so the gutter is where that name
+   already sat, and each row below it lands there too. A row whose own control
+   carries an inset — the toolbar's menu button, a tab's pill — cannot simply
+   pay the gutter as well: its bar pays the DIFFERENCE, and the inset finishes
+   the distance. Those two are the derived tokens here, stated against the
+   gutter so there is still one number to move. */
+:root { --content-max:1180px; --pane-gutter:18px; --pane-top:18px; --pane-bottom:40px;
+  --pane-drawer:min(86vw, 300px);
+  --tbsel-inset:6px;  /* the toolbar's menu button, inside its own bar */
+  --tab-inset:13px; /* a tab pill, inside the tab bar */
+  --toolbar-gutter:calc(var(--pane-gutter) - var(--tbsel-inset));
+  /* Never negative: a phone's gutter is narrower than the pill's inset, and
+     there the pill alone is the whole distance. */
+  --tabbar-gutter:max(0px, calc(var(--pane-gutter) - var(--tab-inset))); }
 * { box-sizing:border-box; }
 html, body { overscroll-behavior:none; }
 /* The native controls this client does not restyle — checkboxes, the select
@@ -112,7 +127,14 @@ a { color:inherit; }
   padding:7px 18px; font-size:12.5px; }
 #verbar[hidden] { display:none; }
 #verbar .btn { padding:3px 12px; font-size:12px; color:var(--accent); border-color:currentColor; background:transparent; }
-main { max-width:1180px; margin:0 auto;
+/* The reading page: a capped column, centred in whatever the shell gives it.
+   The cap carries the frame as well as the 1180px, because `margin:0 auto`
+   stops the grid item stretching and sizes it to its own content instead — a
+   page whose widest row wants 640px then rendered 640px wide inside a 390px
+   phone, and everything past the frame was clipped away by the view column
+   with no scrollbar to get it back. min() keeps the centring where there is
+   room and takes the frame where there is not. */
+main { max-width:min(1180px, 100%); margin:0 auto;
   padding:26px calc(22px + env(safe-area-inset-right, 0px))
     calc(80px + env(safe-area-inset-bottom, 0px)) 22px; }
 /* board */
@@ -178,13 +200,26 @@ main#root.surface { max-width:none;
   height:100%;
   display:flex; flex-direction:column; overflow:hidden; }
 /* No rule under it: the selected pill marks the tab row, and the surface shares
-   the page background like every other section. */
-.surface-bar { display:flex; align-items:center; gap:12px; padding:4px 18px;
+   the page background like every other section.
+   The bar pays the gutter LESS the pill's own inset, so a tab's LABEL stands on
+   the text column — under the toolbar's project name, over the pane it opens.
+   The pill's fill (hover only) reaching nearer the frame is the point: the row
+   reads as tabs on the surface rather than as a strip inset from it. */
+.surface-bar { display:flex; align-items:center; gap:12px;
+  padding:4px var(--pane-gutter) 4px var(--tabbar-gutter);
   background:var(--bg); flex:none; }
 /* The row owns the bar's whole width, so its right cluster lands at the far
    right of the surface. */
 .surface-bar .tabrow { flex:1 1 auto; min-width:0; overflow-x:auto; }
 .surface-bar .tabs { margin-bottom:0; }
+/* The bar's one verb — how the work ends — sits at the far right, sized to the
+   row rather than to a pane's actionbar. */
+.surface-verb { flex:none; display:flex; align-items:center; }
+.surface-verb .btn { padding:5px 12px; font-size:12.5px; border-radius:8px; }
+.surface-verb .splitbtn .caret { padding:5px 8px; }
+/* This bar tops the surface, so its menu drops DOWN and hangs off the right
+   edge (the changeset actionbar's opens upward, from the foot of its pane). */
+.surface-verb .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; }
 .cluster-pane .board-head { margin-bottom:14px; }
 /* A single 1fr row hands the mounted pane the leftover height as a definite one,
    which is what an empty state's `height:100%` needs; taller content grows the
@@ -214,6 +249,10 @@ main#root.surface { max-width:none;
    internally at full height, and .pane-split carries the gutters the padded
    body gives the one-column layout. */
 .surface #tabbody.flush { padding:0; overflow:hidden; }
+/* What a surface paints into the flush body before either column exists —
+   "loading…", a branch no checkout carries. The body pays no gutter, so the
+   message states the token itself rather than standing against the frame. */
+.surface #tabbody.flush > .empty { padding:var(--pane-top) var(--pane-gutter); }
 /* ---- the two tab layouts ----
    There are exactly two, and dimensionally they are one: the same width, the
    same centring, the same gutters, so a tab switch moves nothing but what is
@@ -236,6 +275,15 @@ main#root.surface { max-width:none;
 .pane-split { box-sizing:content-box; height:calc(100% - var(--pane-top));
   min-height:0; display:flex; align-items:stretch; position:relative;
   padding:var(--pane-top) var(--pane-gutter) 0; }
+/* The list column is a rail, not a card: the commit list, the file tree and the
+   issue's stages meet the frame the way the inbox rail on the other side of the
+   divider does, so their fills, their hover and their divider run edge to edge
+   instead of floating in a gutter. The column bleeds back through the split's
+   left gutter to get there, and its rows pay that gutter as their own inset —
+   which is what keeps their TEXT on the column the toolbar's project name and
+   the tab labels stand on. The split's own box is untouched: the two layouts
+   still measure the same. */
+.pane-split .pane-list { margin-left:calc(var(--pane-gutter) * -1); }
 /* ---- the two-column layout on a narrow viewport ----
    Below the stacking width the pane keeps both columns, but only one of them
    at a time: the list column (the commit rail, the file tree) leaves the flow
@@ -249,8 +297,11 @@ main#root.surface { max-width:none;
    paints at none of them but this. */
 .pane-scrim, .pane-handle { display:none; }
 @media (max-width: 900px) {
+  /* An overlay is placed against the split's border box, so the drawer already
+     starts at the frame — it gives the bleed back rather than sliding a whole
+     gutter past the edge. */
   .pane-split .pane-list { position:absolute; top:0; bottom:0; left:0; z-index:12;
-    width:var(--pane-drawer); flex:none; background:var(--panel);
+    margin-left:0; width:var(--pane-drawer); flex:none; background:var(--panel);
     transform:translateX(-100%); transition:transform .18s ease; }
   /* The shadow is the open drawer's, not the closed one's: a panel parked off
      the left edge still spills its shadow back over the pane, which reads as a
@@ -283,7 +334,7 @@ main#root.surface { max-width:none;
 /* Pills: no rule under the row, no underline on the active tab — the selected
    pill carries its own soft fill, everything else is bare. */
 .tabs { display:flex; gap:4px; margin-bottom:18px; }
-.tabs .t { padding:6px 13px; font-size:13px; color:var(--ink2); cursor:pointer; border-radius:999px;
+.tabs .t { padding:6px var(--tab-inset); font-size:13px; color:var(--ink2); cursor:pointer; border-radius:999px;
   display:flex; gap:7px; align-items:center; }
 .tabs .t:hover { background:var(--line2); }
 .tabs .t.active { color:var(--accent); font-weight:600; }
@@ -442,13 +493,18 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
 .gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
 .crail { overflow:visible; }
-.crail-branch { position:relative; padding:10px 13px; border-bottom:1px solid var(--line); }
+/* Every row in the rail carries the gutter on its LEFT: the column itself meets
+   the frame (.pane-split .pane-list), so the row is where the surface's text
+   column is paid — the same line the toolbar's project name and the tab labels
+   stand on. The right side keeps the rail's own tighter inset; nothing is
+   aligned against it. */
+.crail-branch { position:relative; padding:10px 13px 10px var(--pane-gutter); border-bottom:1px solid var(--line); }
 .crail-branch .gtbranchbtn { width:100%; display:flex; justify-content:space-between; min-width:0;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .crail .rhead { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
-  text-transform:uppercase; padding:10px 13px 4px; border-top:1px solid var(--line2); }
-.crail .empty { padding:6px 13px 10px; }
-.crail .rrow { display:flex; align-items:baseline; gap:8px; padding:9px 13px; font-size:13px;
+  text-transform:uppercase; padding:10px 13px 4px var(--pane-gutter); border-top:1px solid var(--line2); }
+.crail .empty { padding:6px 13px 10px var(--pane-gutter); }
+.crail .rrow { display:flex; align-items:baseline; gap:8px; padding:9px 13px 9px var(--pane-gutter); font-size:13px;
   cursor:pointer; border-top:1px solid var(--line2); }
 .crail .rrow:first-child { border-top:0; }
 .crail .rrow .rtitle { font-weight:600; }
@@ -456,7 +512,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .crail .rrow:hover { background:var(--line2); }
 .crail .rrow.sel, .crail .crow.sel { background:var(--accent-soft); }
 .crail .rrow.sel .rtitle { color:var(--accent); }
-.crow { display:flex; flex-direction:column; gap:1px; padding:7px 13px; border-top:1px solid var(--line2);
+.crow { display:flex; flex-direction:column; gap:1px; padding:7px 13px 7px var(--pane-gutter); border-top:1px solid var(--line2);
   font-size:12.5px; cursor:pointer; }
 .crow:hover { background:var(--line2); }
 .crow .chash { font-family:var(--mono); font-size:11px; color:var(--dim); }
@@ -469,7 +525,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .cdetail .csub { font-weight:650; font-size:15px; }
 .cdetail .cbody { font-family:var(--mono); font-size:12px; color:var(--ink2); white-space:pre-wrap; margin:8px 0 0; }
 .cdetail .cinfo { font-family:var(--mono); font-size:11.5px; color:var(--dim); margin:8px 0 14px; }
-.gitmore { padding:9px 13px 12px; color:var(--accent); font-size:12px; cursor:pointer; }
+.gitmore { padding:9px 13px 12px var(--pane-gutter); color:var(--accent); font-size:12px; cursor:pointer; }
 .gitmore:hover { text-decoration:underline; }
 .gitmore:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 /* diff folding: capped (default) shows a peek with a fade; collapsed hides the
@@ -672,18 +728,32 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }
   .tabs { overflow-x:auto; -webkit-overflow-scrolling:touch; }
-  .surface-bar { padding:0 10px; gap:8px; }
+  .surface-bar { padding:0 var(--pane-gutter) 0 var(--tabbar-gutter); gap:8px; }
   .surface-bar.project-surface { flex-wrap:wrap; padding-bottom:8px; }
   .project-surface .tabrow { flex:1 1 100%; order:1; }
   .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
   /* Both layouts narrow from here — the token is the only place the phone's
-     gutter is written. */
-  :root { --pane-gutter:12px; --pane-top:12px; }
+     gutter is written. The tab pill narrows with it: a pill that keeps a wider
+     inset than the column it stands on puts its label past that column, and the
+     bar has nothing left to give back. */
+  :root { --pane-gutter:12px; --pane-top:12px; --tab-inset:12px; }
   .plan { padding:16px 14px; }
   .panel { padding:14px 12px; }
   .actionbar { flex-wrap:wrap; gap:8px; }
   .actionbar .right { flex-wrap:wrap; gap:8px; }
   select.mini { max-width:44vw; }
+  /* A project row and a device row are one line of facts about one thing, and
+     that line is longer than a phone. Nowrap made it the widest thing on the
+     Settings page, and the page took its width from it: the right of every
+     panel ended up off the frame. The row wraps here — the name takes a line
+     of its own, the path breaks rather than holding the row open, and the
+     verb stays at the end of whichever line it lands on. */
+  .projrow { flex-wrap:wrap; gap:4px 10px; }
+  .projrow .pname { flex-basis:100%; min-width:0; }
+  .projrow .ppath { min-width:0; overflow-wrap:anywhere; }
+  /* Three buttons that do not fit side by side: better two lines of whole
+     words than three columns of broken ones. */
+  .addproj { flex-wrap:wrap; }
   .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
   .sheet .field-row { flex-direction:column; gap:0 !important; }
   .comment-pop { max-width:calc(100vw - 16px); }
@@ -760,22 +830,33 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    the row's width, centring and gutters, and a narrow tree sidebar (no card
    chrome, a single right divider, its own scroll) sits beside a preview pane
    that fills the rest. All padding lives inside the crumb/rows and the preview
-   head/body — never the gutter again, which the split already paid. Uncapped
-   for the same reason as the commit rail: the basis is the floor, and a cap can
-   only take the tree below it. */
-.ftree { flex:0 0 300px; border-right:1px solid var(--line);
+   head/body — never the gutter again, which the split already paid.
+   Uncapped for the same reason as the commit rail: the basis is the floor, and a
+   cap can only take the tree below it. It does shrink, though — a pane squeezed
+   narrower than both columns (a docked inbox and an open agent panel on a small
+   laptop) has to take the room from somewhere, and taking it from the tree
+   leaves the preview readable, where taking it from the preview leaves the tree
+   listing files there is nowhere to read. */
+.ftree { flex:0 1 300px; border-right:1px solid var(--line);
   overflow-y:auto; padding:6px 0; }
-.fpreview { flex:1; min-width:0; overflow:hidden; display:flex; flex-direction:column; }
+/* The floor is the preview's share of that squeeze, and it is deliberately
+   below what any real two-column pane hands it — it changes nothing until the
+   pane is too narrow for both columns. */
+.fpreview { flex:1; min-width:min(200px, 100%); overflow:hidden; display:flex; flex-direction:column; }
 /* placeholder states (nothing selected / loading / error): no panel box,
    message or throbber centered in the preview area */
 .fpreview.idle { border:none; background:none; align-items:center; justify-content:center; }
-.fpidle { color:var(--dim); font-size:13px; }
+.fpidle { color:var(--dim); font-size:13px; text-align:center; max-width:34ch;
+  padding:0 18px; }
+.fpidle p { margin:0; }
+.fpidle .fpidle-hint { margin-top:5px; font-size:12px; color:var(--dim); opacity:.8; }
+.fpidle.fpidle-error .fpidle-msg { color:var(--red); }
 .throbber { width:22px; height:22px; border-radius:50%; border:2px solid var(--line);
   border-top-color:var(--accent); animation:throb .8s linear infinite; }
 @keyframes throb { to { transform:rotate(360deg); } }
-.fcrumb { font-size:11.5px; color:var(--dim); padding:4px 13px 8px; border-bottom:1px solid var(--line);
+.fcrumb { font-size:11.5px; color:var(--dim); padding:4px 13px 8px var(--pane-gutter); border-bottom:1px solid var(--line);
   margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.frow { display:flex; align-items:center; gap:7px; padding:5px 13px; font-size:13px;
+.frow { display:flex; align-items:center; gap:7px; padding:5px 13px 5px var(--pane-gutter); font-size:13px;
   color:var(--ink2); cursor:pointer; }
 .frow:hover { background:var(--line2); }
 .frow.sel { background:var(--accent-soft); color:var(--accent); }
@@ -901,6 +982,11 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal .sub { color:var(--ink2); font-size:13px; }
 .modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
 .confirm-steps { margin:12px 0; padding-left:20px; font-size:13px; color:var(--ink2); display:flex; flex-direction:column; gap:6px; }
+/* What the verb is about to cost, read before the outline of what it will do:
+   the bridge's own preflight, in amber, never a refusal. */
+.confirm-warnings { margin:12px 0 0; padding:9px 12px 9px 26px; font-size:13px; color:var(--amber);
+  background:var(--amber-bg); border:1px solid color-mix(in srgb, var(--amber) 40%, transparent); border-radius:8px;
+  display:flex; flex-direction:column; gap:6px; }
 
 /* Durable plan/diff conversation — a GitHub-style issue activity timeline. */
 .review-thread { background:transparent; }

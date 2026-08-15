@@ -1637,6 +1637,29 @@ impl Thread {
         None
     }
 
+    /// When the last thing on this conversation was said or happened.
+    ///
+    /// One of the three clocks the inbox's "last activity" is the latest of
+    /// (the others being the checkout's files and the agent's terminal), and
+    /// the cheapest: items are appended in order, so it is the tail.
+    pub fn last_item_at(&self) -> Option<&str> {
+        self.items.last().map(ThreadItem::created_at)
+    }
+
+    /// When the USER said each of the things they have said here, in order.
+    ///
+    /// The boot migration's input: an entity that predates anchors is anchored
+    /// by replaying exactly these through the anchor rule, so its place in the
+    /// inbox is the place it would always have had.
+    pub fn user_message_times(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().filter_map(|item| match item {
+            ThreadItem::Message(message) if message.role == MessageRole::User => {
+                Some(message.created_at.as_str())
+            }
+            _ => None,
+        })
+    }
+
     /// The attention-class items created after `cursor` — the whole of the
     /// unread rule.
     ///
@@ -1975,6 +1998,35 @@ mod attention_class_tests {
         let cursor = thread.last_sequence();
         thread.read_unread("2026-08-13T09:02:00Z");
         assert_eq!(thread.unread_since(cursor), UnreadSummary::default());
+    }
+
+    /// The inbox's two readings of a conversation: when it last did anything,
+    /// and when the user themselves last said something. Events and the agent's
+    /// own words count for the first and never for the second — the anchor rule
+    /// rests on the difference.
+    #[test]
+    fn a_conversation_reports_its_last_item_and_the_users_own_messages() {
+        let mut thread = Thread::new("run-1");
+        assert_eq!(thread.last_item_at(), None);
+        assert_eq!(thread.user_message_times().count(), 0);
+
+        thread.post_user("do the thing", None, "2026-08-13T09:00:00Z");
+        thread.post_agent("on it", None, "2026-08-13T09:01:00Z");
+        thread.post_user("and this too", None, "2026-08-14T22:00:00Z");
+        thread.push_event(
+            ThreadEventKind::Done,
+            Some("finished".to_string()),
+            None,
+            None,
+            "2026-08-14T22:05:00Z",
+        );
+
+        assert_eq!(thread.last_item_at(), Some("2026-08-14T22:05:00Z"));
+        assert_eq!(
+            thread.user_message_times().collect::<Vec<_>>(),
+            vec!["2026-08-13T09:00:00Z", "2026-08-14T22:00:00Z"],
+            "only what the user said, in the order they said it"
+        );
     }
 }
 

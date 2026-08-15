@@ -130,17 +130,25 @@ export function createWorktreeReview({
     hint: "Your comments adopt this worktree as a task and are sent to the coding agent.",
     actionsFrozen: () => acting,
     renderIdleActions: (actions, hintHost) => {
-      if (!meta || !meta.adoptable) {
-        hintHost.textContent = unadoptableHint(meta);
-        actions.innerHTML = "";
-        return true;
-      }
-      hintHost.textContent = "Comment on the diff to request changes, or finish the worktree.";
+      const adoptable = Boolean(meta && meta.adoptable);
+      // The hint speaks on every tick — the comment tray borrows this line while
+      // comments are pending and the bar has to take it back.
+      hintHost.textContent = adoptable
+        ? "Comment on the diff to request changes, or finish the worktree."
+        : unadoptableHint(meta);
+      // The buttons do not. This runs on every 1.6s poll, and rebuilding the bar
+      // would take the merge menu the reviewer just opened — and the button a
+      // press is landing on — with it. What the bar offers turns on one thing,
+      // so a tick that says the same thing leaves the bar alone.
+      const wanted = adoptable ? "finish" : "browse";
+      if (actions.dataset.worktreeActions === wanted) return true;
+      actions.dataset.worktreeActions = wanted;
+      actions.innerHTML = "";
+      if (!adoptable) return true;
       const mergeHost = document.createElement("span");
       const abandon = document.createElement("button"); // quiet — the confirm guards it
       abandon.className = "btn";
       abandon.textContent = "Abandon & delete";
-      actions.innerHTML = "";
       actions.appendChild(mergeHost);
       actions.appendChild(abandon);
       mountSplitButton(mergeHost, { options: WORKTREE_MERGE_OPTIONS, run: runMerge });

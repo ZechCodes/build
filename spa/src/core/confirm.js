@@ -8,17 +8,23 @@ import { esc } from "./text.js";
 const CONFIRM_SCRIM_ID = "confirm-scrim";
 
 /** Pure markup for the confirmation dialog. `actions` are the concrete steps
- *  that will happen on confirm, rendered as an ordered list. All strings
+ *  that will happen on confirm, rendered as an ordered list. `warnings` are what
+ *  the verb is about to cost — the bridge's own preflight — and they are read
+ *  first, because they are the part that changes the answer. All strings
  *  escaped. */
 export function confirmModalHtml({
   title,
   intro = "",
+  warnings = [],
   actions = [],
   confirmLabel = "Confirm",
   cancelLabel = "Cancel",
   danger = false,
 }) {
   const introHtml = intro ? `<div class="sub">${esc(intro)}</div>` : "";
+  const warningsHtml = warnings.length
+    ? `<ul class="confirm-warnings">${warnings.map((warning) => `<li>${esc(warning)}</li>`).join("")}</ul>`
+    : "";
   const stepsHtml = actions.length
     ? `<ol class="confirm-steps">${actions.map((action) => `<li>${esc(action)}</li>`).join("")}</ol>`
     : "";
@@ -27,6 +33,7 @@ export function confirmModalHtml({
     `<div class="modal" role="dialog" aria-modal="true">` +
     `<h3>${esc(title)}</h3>` +
     introHtml +
+    warningsHtml +
     stepsHtml +
     `<div class="row">` +
     `<button class="btn" data-confirm-cancel>${esc(cancelLabel)}</button>` +

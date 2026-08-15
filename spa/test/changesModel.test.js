@@ -173,6 +173,9 @@ describe("commentLayerBusy", () => {
     expect(commentLayerBusy({ pending: 0, popOpen: true, generalText: "", menuOpen: false })).toBe(true);
     expect(commentLayerBusy({ pending: 0, popOpen: false, generalText: "half a thought", menuOpen: false })).toBe(true);
     expect(commentLayerBusy({ pending: 0, popOpen: false, generalText: "", menuOpen: true })).toBe(true);
+    // The earliest state of all: a range still being dragged, before the
+    // popover that would turn it into a comment has opened.
+    expect(commentLayerBusy({ selecting: true })).toBe(true);
   });
 
   it("lets the poll repaint when nothing is pending", () => {

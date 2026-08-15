@@ -17,7 +17,7 @@ import { commentLayerBusy } from "./changesModel.js";
 import { docLineRange } from "./issueModel.js";
 import { buildHeadingPath, slugifyHeading } from "./anchors.js";
 import { showCommentPop, hideCommentPop, hasCommentPop } from "../commentPop.js";
-import { watchSelection } from "../selectWatch.js";
+import { watchSelection, selectionInside } from "../selectWatch.js";
 import { notifyError } from "./notify.js";
 
 /** The rendered heading a marker key names, or null. Keys are heading slugs
@@ -165,8 +165,17 @@ export function createDocCommentLayer({
 
     count: () => comments.length,
 
-    /** The reviewer is mid-comment: the controller must freeze its poll. */
-    busy: () => commentLayerBusy({ pending: comments.length, popOpen: hasCommentPop(), generalText: generalDraft }),
+    /** The reviewer is mid-comment: the controller must freeze its poll. A
+     *  passage still being dragged out counts — the popover that turns it into a
+     *  comment opens only once it settles, and a rebuild before then takes the
+     *  doc the range points into. */
+    busy: () =>
+      commentLayerBusy({
+        pending: comments.length,
+        popOpen: hasCommentPop(),
+        generalText: generalDraft,
+        selecting: Boolean(selectionInside(host)),
+      }),
 
     /** Bind to a freshly-rendered viewer: restore highlights and the general
      *  draft, wire the tray's controls, and watch the doc for selections.

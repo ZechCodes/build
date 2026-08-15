@@ -766,6 +766,17 @@ struct PendingAgentTurn {
     phase: &'static str,
 }
 
+/// The live implementation an Issue's conversation actually speaks to: the
+/// Issue owns the words, its implementation owns the checkout and the PTY they
+/// have to reach. Read off the run before the Issue is taken out of the map, so
+/// the agent can be woken — or brought back — without borrowing it again.
+struct ImplementationTarget {
+    run_id: String,
+    worktree_path: std::path::PathBuf,
+    agent_id: String,
+    model_choice: ModelChoice,
+}
+
 impl PendingAgentTurn {
     /// Address a run's turn to the run's worktree. Canonical, because the same
     /// worktree reaches the tab registry under several scope shapes.
@@ -791,14 +802,14 @@ impl PendingAgentTurn {
         }
     }
 
-    /// Address a plan's turn to its disposable planning worktree. `None` once
-    /// that worktree is gone (approve/abandon tear it down): a plan with no
-    /// worktree has no agent, and every plan surface renders the empty state
-    /// rather than a tab that cannot exist.
+    /// Address a plan's turn to the primary checkout its planning agent runs
+    /// in. `None` once the workspace is gone (approve/abandon drop it): a plan
+    /// with no workspace has no agent, and every plan surface renders the empty
+    /// state rather than a tab that cannot exist.
     fn for_plan(owner: &str, active: &ActivePlan, turn: AgentTurn) -> Option<Self> {
-        let worktree = active.worktree.as_ref()?;
+        let workspace = active.workspace.as_ref()?;
         Some(PendingAgentTurn {
-            root: AppState::canonical_root(&worktree.path),
+            root: AppState::canonical_root(&workspace.checkout),
             owner: owner.to_string(),
             agent_id: active.agents.first().id.clone(),
             model_choice: active.model_choice.clone(),
@@ -894,8 +905,8 @@ fn worktree_agent_signals(agent_tab: Option<&Tab>) -> (bool, bool) {
 const CHECKOUT_IDLE_STATE: &str = "idle";
 
 /// The +/− block every work-item row carries, in one shape whatever source it
-/// was read off, plus the two facts Done asks about (see
-/// [`crate::branch::branch_can_finish`]).
+/// was read off, plus the facts Done warns about (see
+/// [`crate::branch::branch_finish_warnings`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct WorkItemStat {
     /// Everything the branch carries against its base.
@@ -909,6 +920,14 @@ struct WorkItemStat {
     ahead: Option<u64>,
     behind: Option<u64>,
     upstream: Option<String>,
+    /// The one ref both counts are measured against: the tracking branch when
+    /// the branch has one, otherwise the project's base branch. It is what
+    /// makes ahead/behind readable — "3 unpushed" and "3 unmerged" are the same
+    /// number against different refs, and Done warns differently about each.
+    comparison_ref: Option<String>,
+    /// When this branch last got a commit (RFC 3339), or `None` when the
+    /// checkout could not be read.
+    head_committed_at: Option<String>,
 }
 
 impl WorkItemStat {
@@ -925,6 +944,8 @@ impl WorkItemStat {
             ahead: stat["ahead"].as_u64(),
             behind: stat["behind"].as_u64(),
             upstream: stat["upstream"].as_str().map(str::to_string),
+            comparison_ref: stat["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: stat["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -941,6 +962,8 @@ impl WorkItemStat {
             ahead: entry["ahead"].as_u64(),
             behind: entry["behind"].as_u64(),
             upstream: entry["upstream"].as_str().map(str::to_string),
+            comparison_ref: entry["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: entry["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -961,6 +984,8 @@ impl WorkItemStat {
             ahead: entry["ahead"].as_u64(),
             behind: entry["behind"].as_u64(),
             upstream: entry["upstream"].as_str().map(str::to_string),
+            comparison_ref: entry["comparison_ref"].as_str().map(str::to_string),
+            head_committed_at: entry["head_committed_at"].as_str().map(str::to_string),
         }
     }
 
@@ -969,7 +994,13 @@ impl WorkItemStat {
             uncommitted_files: self.uncommitted_files,
             ahead: self.ahead,
             upstream: self.upstream.clone(),
+            comparison_ref: self.comparison_ref.clone(),
         }
+    }
+
+    /// What Done on this branch is about to lose, ready for the wire.
+    fn finish_warnings_json(&self, branch: &str) -> Value {
+        crate::branch::warnings_json(&crate::branch::branch_finish_warnings(branch, &self.sync()))
     }
 
     fn to_json(&self) -> Value {
@@ -985,6 +1016,7 @@ impl WorkItemStat {
             "ahead": self.ahead,
             "behind": self.behind,
             "upstream": self.upstream,
+            "comparison_ref": self.comparison_ref,
         })
     }
 }
@@ -1018,9 +1050,11 @@ fn seconds_since(started_at: &str) -> Option<u64> {
 enum FinishRequirement {
     /// `run.finish`: the run reached a review gate — completed work.
     CompletedWork,
-    /// `branch.finish`: the branch is committed and pushed, which is exactly
-    /// what the branch row's Done button says (Decisions §Shell and inbox).
-    CommittedAndPushed,
+    /// `branch.finish`: nothing. Done on a branch deletes it, and what that
+    /// costs is reported as warnings on the row (see
+    /// [`crate::branch::branch_finish_warnings`]) for the user to confirm
+    /// through. The bridge does not second-guess a confirmed decision.
+    Unconditional,
 }
 
 /// Everything one `branch.dispatch` brought into existence, so a failure part
@@ -1276,16 +1310,22 @@ fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
         let head_ref = repo.head().ok()?;
         let checked_out_branch = head_ref.shorthand().map(str::to_string);
         let head = head_ref.peel_to_commit().ok()?;
+        let head_committed_at = crate::worktree::rfc3339_from_unix(head.time().seconds());
         let comparison = crate::worktree::branch_comparison(
             &repo,
             &head,
             checked_out_branch.as_deref(),
             base_branch,
         );
-        Some((checked_out_branch, comparison))
+        Some((checked_out_branch, comparison, head_committed_at))
     });
-    let checked_out_branch = git_state.as_ref().and_then(|(branch, _)| branch.as_deref());
-    let comparison = git_state.as_ref().map(|(_, comparison)| comparison);
+    let checked_out_branch = git_state
+        .as_ref()
+        .and_then(|(branch, _, _)| branch.as_deref());
+    let comparison = git_state.as_ref().map(|(_, comparison, _)| comparison);
+    let head_committed_at = git_state
+        .as_ref()
+        .and_then(|(_, _, committed_at)| committed_at.as_deref());
     let uncommitted = crate::diff::stat_uncommitted(worktree)
         .map(|stat| {
             json!({
@@ -1306,6 +1346,10 @@ fn run_diffstat(worktree: &std::path::Path, base_branch: &str) -> Value {
                 "upstream": comparison.and_then(|value| value.upstream.as_deref()),
                 "ahead": comparison.and_then(|value| value.ahead),
                 "behind": comparison.and_then(|value| value.behind),
+                // When this branch last got a commit. The inbox's floor for how
+                // recently the work moved, computed in the cached walk that has
+                // the commit in its hand already.
+                "head_committed_at": head_committed_at,
                 "uncommitted": uncommitted,
             })
         })
@@ -1350,6 +1394,15 @@ fn primary_changes_summary(
         .and_then(|r| r.head().ok())
         .and_then(|h| h.shorthand().map(str::to_string))
         .unwrap_or_else(|| "HEAD".to_string());
+    // When this checkout last got work. A bare checkout has no conversation and
+    // no lifecycle, so its own history is all the inbox has to date it by — and
+    // it is computed HERE, inside the cached walk, never on the poll path.
+    let head_committed_at = repo
+        .as_ref()
+        .ok()
+        .and_then(|repo| repo.head().ok())
+        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|commit| crate::worktree::rfc3339_from_unix(commit.time().seconds()));
     let (upstream, comparison_ref, ahead, behind) = repo
         .as_ref()
         .ok()
@@ -1363,6 +1416,7 @@ fn primary_changes_summary(
             "comparison_ref": comparison_ref,
             "ahead": ahead,
             "behind": behind,
+            "head_committed_at": head_committed_at,
             "files_changed": stat.files_changed,
             "insertions": stat.insertions,
             "deletions": stat.deletions,
@@ -1862,6 +1916,16 @@ pub struct AppState {
     /// run id → cached `board.list` diffstat, so the poll surface never runs
     /// per-run git work more than once per TTL window.
     run_stat_cache: HashMap<String, (std::time::Instant, Value)>,
+    /// run id → when this run's files were last seen to change (RFC 3339).
+    ///
+    /// The diff cache above IS the watcher: its numbers are recomputed from the
+    /// checkout on a cadence, and two consecutive computes disagreeing means
+    /// work landed on disk. Stamping it there costs one comparison of values
+    /// already in hand — a real per-checkout watcher would cost a file handle
+    /// per worktree and a thread to drain it. Derived, so it is not persisted:
+    /// after a restart a run dates itself by its HEAD commit and its
+    /// conversation until the next change is observed.
+    run_files_changed_at: HashMap<String, String>,
     /// Diff-cache entries with a refresh running right now. Single-flight: a
     /// poll that finds one of these stale serves the value it has and adds no
     /// second worktree scan to the disk. The claim is also the right to publish
@@ -2035,6 +2099,7 @@ impl AppState {
             conversation_attention_sequence: HashMap::new(),
             entity_last_state: HashMap::new(),
             run_stat_cache: HashMap::new(),
+            run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
             diff_compute_observer: None,
             #[cfg(test)]
@@ -2206,6 +2271,8 @@ impl AppState {
         // watermarks from it so the restart re-announces nothing, and so the
         // next attention event is news rather than a first observation.
         self.seed_conversation_attention_sequences();
+        // Every entity that predates anchors gets the one it would have had.
+        self.seed_anchors_for_records_without_one();
         // Issue implementation intent is the scheduler's durable source of
         // truth. Reconcile it only after every implementation lineage record
         // has been restored, so an approved waiting stage can resume without
@@ -2223,10 +2290,10 @@ impl AppState {
     }
 
     /// Re-attach one persisted plan on boot. The canonical docs live in the
-    /// store, so a vanished planning worktree never abandons or archives a
+    /// store, so a vanished scratch docs dir never abandons or archives a
     /// plan — a plan that was mid-draft simply surfaces `Interrupted` (its
-    /// session died with the daemon); the next revision dispatch re-creates a
-    /// worktree materialized from the store. Recovery never abandons a plan.
+    /// session died with the daemon); the next revision dispatch remakes the
+    /// workspace from the store. Recovery never abandons a plan.
     fn recover_plan(&mut self, record: PersistedPlan) -> Result<(), String> {
         let plan_id = record.id.clone();
         let mut active = ActivePlan::reattach(&record);
@@ -2679,7 +2746,6 @@ impl AppState {
             .clone();
         let updated_at = self.entity_updated_at.get(plan_id).cloned().unwrap_or(now);
         let project_path = self.project_path_for(plan_id);
-        let worktree = active.worktree.as_ref();
         let record = PersistedPlan {
             id: plan_id.to_string(),
             goal: active.plan.goal.clone(),
@@ -2689,9 +2755,6 @@ impl AppState {
             archived_at: active.plan.archived_at.clone(),
             implementation_intent: active.plan.implementation_intent.clone(),
             implementation_activity: active.plan.implementation_activity.clone(),
-            worktree_name: worktree.map(|w| w.name.clone()),
-            worktree_path: worktree.map(|w| w.path.display().to_string()),
-            branch: worktree.map(|w| w.branch.clone()),
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
             // Retired storage: comments are posts on the conversation now. The
@@ -2798,7 +2861,11 @@ impl AppState {
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
         self.push_attention_notify(&plan_id, news, state_kind);
-        self.plans.insert(plan_id, active);
+        self.plans.insert(plan_id.clone(), active);
+        // After the insert: the attention file is pruned to what exists when it
+        // is written, and an anchor stamped while the record was checked out
+        // would be dropped on the way to disk.
+        self.seed_anchor(&plan_id);
         self.reap_orphaned_terminals();
         (view, persisted)
     }
@@ -2823,7 +2890,9 @@ impl AppState {
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
         self.push_attention_notify(&run_id, news, state_kind);
-        self.runs.insert(run_id, active);
+        self.runs.insert(run_id.clone(), active);
+        // See `finish_plan_mutation`: seeded once the record is back in its map.
+        self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();
         (view, persisted)
     }
@@ -2969,6 +3038,54 @@ impl AppState {
         self.conversation_attention_sequence.extend(sequences);
     }
 
+    /// Boot migration: give every stored entity the inbox anchor it would have
+    /// had, and leave every anchored one exactly where it is.
+    ///
+    /// Seeding at creation alone would file a two-week-old issue you picked
+    /// back up yesterday under two weeks ago, so the seed is walked forward
+    /// through the user messages its conversation already holds — the same rule
+    /// a live message goes through, replayed over the history that predates it.
+    /// The first boot after this ships does the work; every boot after finds
+    /// the anchors it wrote and does nothing.
+    fn seed_anchors_for_records_without_one(&mut self) {
+        let histories: Vec<(String, String, Vec<String>)> = self
+            .plans
+            .iter()
+            .map(|(id, plan)| (id, &plan.agents))
+            .chain(self.runs.iter().map(|(id, run)| (id, &run.agents)))
+            .filter(|(id, _)| {
+                self.attention
+                    .get(id.as_str())
+                    .is_none_or(|attention| attention.anchor_at.is_none())
+            })
+            .map(|(id, roster)| {
+                let mut said_at: Vec<String> = roster
+                    .iter()
+                    .flat_map(|agent| agent.thread.user_message_times())
+                    .map(str::to_string)
+                    .collect();
+                said_at.sort();
+                let created_at = self
+                    .entity_created_at
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(now_rfc3339);
+                (id.clone(), created_at, said_at)
+            })
+            .collect();
+        if histories.is_empty() {
+            return;
+        }
+        for (entity_id, created_at, said_at) in histories {
+            let attention = self.attention.entry(entity_id).or_default();
+            attention.seed_anchor(&created_at);
+            for at in said_at {
+                attention.note_user_message(&at);
+            }
+        }
+        self.persist_attention();
+    }
+
     /// What the mutation tail found on the conversation it just wrote: how far
     /// it has got, and the newest attention-class item to land since a tail
     /// last looked.
@@ -3103,25 +3220,19 @@ impl AppState {
         id
     }
 
-    /// Canonical paths of every Build-bound worktree — every run plus every live
-    /// planning worktree: they are Build's, never external. `fs::canonicalize`
-    /// with the raw path as fallback.
+    /// Canonical paths of every Build-bound worktree — one per run: they are
+    /// Build's, never external. `fs::canonicalize` with the raw path as
+    /// fallback.
     fn bound_worktree_paths(&self) -> std::collections::HashSet<std::path::PathBuf> {
         let canonical = |path: &std::path::Path| {
             std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
         };
-        // Run worktrees are Build's. Disposable *planning* worktrees join the
-        // set too, so a live planning worktree never surfaces as an adoptable
-        // external card while a plan is being authored.
+        // Run worktrees are Build's. Issues own no worktree at all — their
+        // agents run in the primary checkout — so there is nothing to add here
+        // for them.
         self.runs
             .values()
             .map(|active| canonical(&active.worktree.path))
-            .chain(
-                self.plans
-                    .values()
-                    .filter_map(|active| active.worktree.as_ref())
-                    .map(|w| canonical(&w.path)),
-            )
             .collect()
     }
 
@@ -3145,24 +3256,35 @@ impl AppState {
             .count()
     }
 
-    /// The canonical worktree an entity (plan or run) is working in — the key
-    /// its agent is registered under.
+    /// The canonical checkout an entity's agents work in — the key they are
+    /// registered under. A run's is its worktree; an issue's is the project's
+    /// primary checkout, because issue agents never get a worktree.
     ///
-    /// A plan whose disposable planning worktree has been torn down (approved,
-    /// abandoned) has no worktree and therefore no agent; that is a refusal,
-    /// not a blank tab, because there is nothing for an agent to run in.
-    fn entity_worktree_root(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
+    /// An issue whose workspace is gone (approved, abandoned) has no agent;
+    /// that is a refusal, not a blank tab, because there is nothing for an
+    /// agent to run in.
+    fn entity_agent_root(&self, entity_id: &str) -> Result<std::path::PathBuf, String> {
         if let Some(plan) = self.plans.get(entity_id) {
             return plan
-                .worktree
+                .workspace
                 .as_ref()
-                .map(|w| Self::canonical_root(&w.path))
-                .ok_or_else(|| "the plan has no worktree, so it has no agent".to_string());
+                .map(|workspace| Self::canonical_root(&workspace.checkout))
+                .ok_or_else(|| "the issue has no session, so it has no agent".to_string());
         }
         if let Some(run) = self.runs.get(entity_id) {
             return Ok(Self::canonical_root(&run.worktree.path));
         }
         Err("unknown id".to_string())
+    }
+
+    /// Whether a queued turn still has a session to reach. An issue that holds
+    /// no workspace has none: its agent ended with the gate that closed it.
+    /// Everything else — runs, routers, recoveries — is deliverable.
+    fn owner_still_has_a_session(&self, owner: &str) -> bool {
+        match self.plans.get(owner) {
+            Some(issue) => issue.workspace.is_some(),
+            None => true,
+        }
     }
 
     /// An entity's agents, whichever kind of entity it is.
@@ -3235,7 +3357,7 @@ impl AppState {
     /// process. An entity with no worktree has no agent and therefore none
     /// running.
     fn entity_agent_is_live(&self, entity_id: &str) -> bool {
-        let Ok(root) = self.entity_worktree_root(entity_id) else {
+        let Ok(root) = self.entity_agent_root(entity_id) else {
             return false;
         };
         let Ok(roster) = self.entity_agents(entity_id) else {
@@ -3553,6 +3675,18 @@ impl AppState {
         let now = std::time::Instant::now();
         match entry {
             DiffCacheEntry::RunStat { run_id, stat } => {
+                // Two computes that disagree are files that changed. Only when
+                // there was something to disagree with: an invalidated entry
+                // recomputes from nothing, and that is a mutation, not a
+                // filesystem event.
+                let changed = self
+                    .run_stat_cache
+                    .get(&run_id)
+                    .is_some_and(|(_, previous)| previous != &stat);
+                if changed {
+                    self.run_files_changed_at
+                        .insert(run_id.clone(), now_rfc3339());
+                }
                 self.run_stat_cache.insert(run_id, (now, stat));
             }
             DiffCacheEntry::ExternalScan {
@@ -4157,7 +4291,7 @@ impl AppState {
                 crate::thread::ThreadLink::File { .. } => {
                     let has_scope = self.runs.contains_key(entity_id)
                         || self.plans.get(entity_id).is_some_and(|issue| {
-                            issue.worktree.is_some()
+                            issue.workspace.is_some()
                                 || self.current_issue_implementation(entity_id).is_some()
                         });
                     if !has_scope {
@@ -5033,6 +5167,7 @@ impl AppState {
             "capture.get" => self.capture_get(params),
             "capture.answer" => self.capture_answer(params),
             "capture.reroute" => self.capture_reroute(params),
+            "capture.cancel" => self.capture_cancel(params),
             "archive.list" => self.archive_list(params),
             "archived.list" => Ok(self.archived_list()),
             // Canonical Issue surface. The existing plan id and plan-store path
@@ -5113,6 +5248,7 @@ impl AppState {
             "entity.mute" => self.entity_mute(params),
             "triage.override" => self.triage_override(params),
             "agent.add" => self.agent_add(params),
+            "agent.remove" => self.agent_remove(params),
             "agent.list" => self.agent_list(params),
             "worktree.diff" => self.worktree_diff(params),
             "stream.events" => self.stream_events(params),
@@ -5353,7 +5489,10 @@ impl AppState {
             .iter()
             .filter(|(_, a)| a.plan.state.is_working())
             .filter_map(|(id, a)| {
-                let root = a.worktree.as_ref().map(|w| Self::canonical_root(&w.path))?;
+                let root = a
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| Self::canonical_root(&workspace.checkout))?;
                 idle_check(
                     self.tabs.get(&TabKey::agent(&root, &a.agents.first().id)),
                     self.agent_turn_is_undelivered(id),
@@ -5990,6 +6129,7 @@ impl AppState {
                     "head_sha": w.head_sha,
                     "head_subject": w.head_subject,
                     "head_age_seconds": w.head_age_seconds,
+                    "head_committed_at": w.head_committed_at,
                     "dirty_files": w.dirty_files,
                     // Ahead and behind always share one comparison ref. The
                     // working-tree delta is reported separately below.
@@ -6914,11 +7054,111 @@ impl AppState {
         let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
         persisted?;
         self.touch_attention(&entity_id);
-        let root = self.entity_worktree_root(&entity_id).ok();
+        let root = self.entity_agent_root(&entity_id).ok();
         Ok(json!({
             "entity_id": entity_id,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref()),
         }))
+    }
+
+    /// `agent.remove` — take an agent back off a branch's rail.
+    ///
+    /// The mirror of [`agent_add`](Self::agent_add), and it validates the same
+    /// way: branches only, because an issue's one agent IS the issue's
+    /// conversation — there is nothing to remove there, only an issue to
+    /// abandon. The branch's FIRST agent is not removable either (see
+    /// [`AgentRoster::remove`](crate::agent::AgentRoster::remove)), which is
+    /// also what keeps a branch from ever being left with no agent: the last
+    /// one standing is always the first.
+    ///
+    /// A removed agent's harness must not outlive it. An agent with no roster
+    /// entry keeps working in the checkout and reports `done` for an identity
+    /// nothing can route to — the same hazard
+    /// [`close_agent_tab`](Self::close_agent_tab) exists for — so its session is
+    /// killed and reaped and everything that could reach it goes too.
+    fn agent_remove(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let agent_id = require_str(params, "agent_id")?;
+        if self.plans.contains_key(&entity_id) {
+            return Err(format!(
+                "agent.remove: {entity_id} is an issue, and its one agent is the issue's own \
+                 conversation — abandon the issue instead"
+            ));
+        }
+        if !self.runs.contains_key(&entity_id) {
+            return Err(format!("agent.remove: unknown entity {entity_id}"));
+        }
+        let root = self.entity_agent_root(&entity_id)?;
+        // A harness being spawned right now cannot be killed: the tab it will
+        // land in does not exist yet, so the reservation is the only handle on
+        // it, and the human can ask again a moment later.
+        if self
+            .agent_spawns_in_flight
+            .contains(&TabKey::agent(&root, &agent_id))
+        {
+            return Err(format!(
+                "agent.remove: {agent_id} is starting a session right now — remove it once the \
+                 session is running"
+            ));
+        }
+        let mut active = self.take_run(&entity_id)?;
+        let removed = match active.agents.remove(&agent_id) {
+            Ok(removed) => removed,
+            Err(refused) => {
+                // Nothing was touched, so the run goes back exactly as it came.
+                self.runs.insert(entity_id, active);
+                return Err(format!("agent.remove: {refused}"));
+            }
+        };
+        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        self.retire_agent(&root, &removed.id);
+        if let Some(attention) = self.attention.get_mut(&entity_id) {
+            // Nothing prunes cursors by agent, so one left behind here would
+            // outlive the daemon it was written in.
+            attention.agent_read_sequences.remove(&removed.id);
+        }
+        self.persist_attention();
+        persisted?;
+        self.touch_attention(&entity_id);
+        Ok(json!({
+            "entity_id": entity_id,
+            "agent_id": removed.id,
+            "agents": self.agent_digests(&entity_id),
+        }))
+    }
+
+    /// Kill, reap and forget ONE agent's session, plus everything else that
+    /// could still reach it: the capability its harness authenticates control
+    /// frames with, the screen a client is waiting on a first spawn for, and
+    /// any turn still queued to be said to it.
+    ///
+    /// The per-agent twin of [`close_agent_tab`](Self::close_agent_tab), which
+    /// takes every agent in a worktree because its owner is going away.
+    fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
+        let key = TabKey::agent(&Self::canonical_root(root), agent_id);
+        if let Some(tab) = self.tabs.remove(&key) {
+            let wire_id = tab.wire_id();
+            tab.session.kill_and_reap();
+            tab.screen.push_closed(&wire_id, "closed");
+        }
+        if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
+            screen.push_closed(&key.tab_id, "closed");
+        }
+        self.mcp_session_tokens.remove(agent_id);
+        self.pending_agent_turns
+            .retain(|turn| turn.agent_id != agent_id);
+    }
+
+    /// End an issue's agent session, because the gate that just closed ended
+    /// it. An issue agent works in the PRIMARY checkout, which never goes
+    /// away, so nothing else would ever stop it: it would keep working there
+    /// and report `done` for an issue no longer taking reports. Only this
+    /// issue's own agent goes — the checkout's other agents belong to the main
+    /// branch and are none of this verb's business.
+    fn retire_issue_session(&mut self, session: Option<(std::path::PathBuf, String)>) {
+        if let Some((checkout, agent_id)) = session {
+            self.retire_agent(&checkout, &agent_id);
+        }
     }
 
     /// `agent.list` — the entity's agents, in rail order.
@@ -6936,7 +7176,7 @@ impl AppState {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
-        let root = self.entity_worktree_root(entity_id).ok();
+        let root = self.entity_agent_root(entity_id).ok();
         roster
             .iter()
             .map(|agent| self.agent_digest(entity_id, agent, root.as_deref()))
@@ -7031,8 +7271,8 @@ impl AppState {
 
     /// Take a plan out for mutation, having told its conversations which
     /// checkout they are about: an Issue's is the checkout of the
-    /// implementation working it right now, or its own planning worktree when
-    /// nothing is implementing it yet.
+    /// implementation working it right now, or the primary checkout its own
+    /// agent runs in when nothing is implementing it yet.
     fn take_plan(&mut self, plan_id: &str) -> Result<ActivePlan, String> {
         let implementation_checkout = self
             .current_issue_implementation(plan_id)
@@ -7041,12 +7281,8 @@ impl AppState {
             .plans
             .remove(plan_id)
             .ok_or_else(|| "unknown plan_id".to_string())?;
-        let checkout = implementation_checkout.or_else(|| {
-            active
-                .worktree
-                .as_ref()
-                .map(|worktree| worktree.path.clone())
-        });
+        let checkout = implementation_checkout
+            .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
         if let Some(checkout) = checkout {
             locate_conversations(&mut active.agents, &checkout);
         }
@@ -7141,6 +7377,52 @@ impl AppState {
         persisted
     }
 
+    /// Tell an issue that the branch implementing it is gone, and that nothing
+    /// was merged out of it.
+    ///
+    /// The issue is about to come BACK to the inbox — the branch was what had
+    /// been speaking for it — and a row that reappears with no explanation
+    /// reads as the list losing track of its own work. So the conversation
+    /// records what happened, naming the branch, in the one place the user will
+    /// look when they wonder why this is in front of them again.
+    ///
+    /// Attention-class on purpose: the issue needs somebody to decide what
+    /// happens to it next, which is the definition of unread.
+    fn note_implementation_abandoned(
+        &mut self,
+        issue_id: &str,
+        run_id: &str,
+        branch: &str,
+        how: &str,
+    ) {
+        let Ok(mut issue) = self.take_plan(issue_id) else {
+            return;
+        };
+        let worktree_id = self
+            .runs
+            .get(run_id)
+            .map(|run| crate::worktree::external_worktree_id(&run.worktree.path));
+        let mut links = vec![crate::thread::ThreadLink::Implementation {
+            issue_id: issue_id.to_string(),
+            implementation_id: run_id.to_string(),
+        }];
+        if let Some(worktree_id) = worktree_id {
+            links.push(crate::thread::ThreadLink::Worktree { worktree_id });
+        }
+        issue.agents.push_event_with_links(
+            crate::thread::ThreadEventKind::Abandoned,
+            Some(abandoned_branch_summary(branch, how)),
+            None,
+            None,
+            links,
+            now_rfc3339(),
+        );
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        if let Err(error) = persisted {
+            eprintln!("{issue_id}: could not record the abandoned branch {branch}: {error}");
+        }
+    }
+
     /// Canonical conversation owner for a run. Planned runs are implementation
     /// lineage of the Issue and therefore project the Issue thread; planless
     /// adopted runs remain independent worktree entities.
@@ -7174,8 +7456,8 @@ impl AppState {
         persisted
     }
 
-    /// Queue a plan's turn for its planning worktree's agent. A plan whose
-    /// worktree is gone has no agent to hear it; the turn is dropped rather
+    /// Queue a plan's turn for its agent in the primary checkout. A plan whose
+    /// workspace is gone has no agent to hear it; the turn is dropped rather
     /// than delivered somewhere it does not belong.
     fn queue_plan_turn(&mut self, plan_id: &str, active: &ActivePlan, turn: AgentTurn) {
         if let Some(pending) = PendingAgentTurn::for_plan(plan_id, active, turn) {
@@ -7262,24 +7544,68 @@ impl AppState {
 
     /// `capture.answer` — the user answers the router's question, and the
     /// router looks at the capture again with the answer in hand.
+    ///
+    /// The answer is either words they typed (`text`) or one of the options the
+    /// router offered (`option_id`, or `option_index` counting from the first
+    /// one offered). A tapped option reaches the router as words too: the label
+    /// the user saw and the destination it stood for.
     fn capture_answer(&mut self, params: &Value) -> Result<Value, String> {
         let capture_id = require_str(params, "capture_id")?;
-        let text = require_str(params, "text")?;
-        let text = text.trim();
-        if text.is_empty() {
-            return Err("capture.answer: text is empty — that answers nothing".to_string());
-        }
-        let answered = self
+        let capture = self
             .captures
             .get(&capture_id)
-            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?
-            .answered(text)?;
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        let answered = match chosen_option_id(capture, params)? {
+            Some(option_id) => capture.answered_with_option(&option_id)?,
+            None => {
+                let text = require_str(params, "text")?;
+                let text = text.trim();
+                if text.is_empty() {
+                    return Err("capture.answer: text is empty — that answers nothing".to_string());
+                }
+                capture.answered(text)?
+            }
+        };
         self.save_capture(answered)?;
         if let Err(error) = self.begin_routing(&capture_id) {
             eprintln!("capture {capture_id}: could not re-fire the router: {error}");
             self.mark_routing_failed(&capture_id);
         }
         self.capture_get(&json!({ "capture_id": capture_id }))
+    }
+
+    /// `capture.cancel` — the user abandons a capture rather than answering it.
+    ///
+    /// The counterpart of every question: a decision surface with no way out
+    /// leaves the user answering a question they have stopped caring about. The
+    /// router working on it is stopped, and the record goes — a capture nobody
+    /// wants routed is not a row anybody should have to look at again.
+    ///
+    /// Only while the capture is still its own presence. Once it became an
+    /// issue or a branch, that work is what there is to cancel, and it is
+    /// cancelled where it lives.
+    fn capture_cancel(&mut self, params: &Value) -> Result<Value, String> {
+        let capture_id = require_str(params, "capture_id")?;
+        let capture = self
+            .captures
+            .get(&capture_id)
+            .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
+        if !capture.is_on_the_feed() {
+            return Err(format!(
+                "capture.cancel: this capture already became {}; cancel that instead",
+                capture
+                    .routing
+                    .as_ref()
+                    .map(|routing| routing.kind.as_str())
+                    .unwrap_or("work")
+            ));
+        }
+        self.abandon_router_session(&capture_id);
+        self.require_store()?
+            .delete_capture(&capture_id)
+            .map_err(|e| e.to_string())?;
+        self.captures.remove(&capture_id);
+        Ok(json!({ "capture_id": capture_id, "cancelled": true }))
     }
 
     /// `capture.reroute` — the user moves a capture the router got wrong.
@@ -7404,9 +7730,20 @@ impl AppState {
             // What the user said is what they last touched: a capture sorts by
             // when it was taken until it becomes work with a life of its own.
             "resume_at": capture.created_at,
+            // The oldest anchor there is, and the one the issue or branch this
+            // becomes will inherit.
+            "anchor": capture.anchor(),
+            "last_activity": capture
+                .question
+                .as_ref()
+                .map(|question| question.asked_at.clone())
+                .unwrap_or_else(|| capture.created_at.clone()),
             // Nothing to archive and nothing to silence: a capture leaves the
-            // feed by being routed, not by being dismissed.
+            // feed by being routed, not by being dismissed. Every row still
+            // carries the preflight, so a client can read it without asking
+            // what kind of row it is first.
             "can_finish": false,
+            "finish": { "warnings": [] },
             "muted": false,
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
@@ -7583,7 +7920,9 @@ impl AppState {
                 &instruction,
                 rationale,
             ),
-            BridgeAction::AskUser { question } => self.router_ask_user(capture_id, &question),
+            BridgeAction::AskUser { question, options } => {
+                self.router_ask_user(capture_id, &question, &options)
+            }
             coding_tool => Err(format!(
                 "{} is a coding agent's tool; this session routes captures",
                 coding_tool.tool_name()
@@ -7702,7 +8041,16 @@ impl AppState {
     /// The router asks the one question that would let it decide. The capture
     /// goes back to unrouted — a question is not a route — and the question is
     /// what the inbox entry says it needs.
-    fn router_ask_user(&mut self, capture_id: &str, question: &str) -> Result<Value, String> {
+    ///
+    /// The router may offer up to three concrete choices beside the question.
+    /// They are a shortcut through the answer, not a narrowing of it: typing an
+    /// answer, and abandoning the capture, are there whatever it offered.
+    fn router_ask_user(
+        &mut self,
+        capture_id: &str,
+        question: &str,
+        options: &[crate::capture::CaptureOptionDraft],
+    ) -> Result<Value, String> {
         let question = question.trim();
         if question.is_empty() {
             return Err("ask_user: the question is empty".to_string());
@@ -7714,13 +8062,13 @@ impl AppState {
         if capture.awaiting_answer() {
             return Err("you have already asked about this capture".to_string());
         }
+        let options = crate::capture::numbered_options(options)?;
         let asked = capture.asked(crate::capture::CaptureQuestion {
-            text: question.to_string(),
-            asked_at: now_rfc3339(),
-            answer: None,
+            options: options.clone(),
+            ..crate::capture::CaptureQuestion::new(question, now_rfc3339())
         });
         self.save_capture(asked)?;
-        Ok(json!({ "capture_id": capture_id, "asked": question }))
+        Ok(json!({ "capture_id": capture_id, "asked": question, "options": options }))
     }
 
     /// Whether a capture is still the router's to decide.
@@ -7755,7 +8103,23 @@ impl AppState {
             .ok_or_else(|| format!("unknown capture_id: {capture_id}"))?;
         let previous = capture.routing.clone();
         let routed = capture.routed_to(routing);
+        let destination = routed.routing.clone();
         self.save_capture(routed)?;
+        // The work keeps the capture's place in the inbox. Said on Monday and
+        // routed on Tuesday, it is still Monday's business — and it is ONE
+        // entry, so the capture's row leaving and the work's row arriving must
+        // not read as the list gaining something new.
+        if let Some(destination) = destination {
+            let entity_id = match destination.kind {
+                crate::capture::CaptureTarget::Issue => Some(destination.target_id.clone()),
+                crate::capture::CaptureTarget::Branch => {
+                    self.run_on_branch(&destination.project_id, &destination.target_id)
+                }
+            };
+            if let Some(entity_id) = entity_id {
+                self.inherit_capture_anchor(&entity_id, capture_id);
+            }
+        }
         if let Some(previous) = previous {
             self.release_misrouted_artifact(&previous);
         }
@@ -7792,7 +8156,7 @@ impl AppState {
             .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id));
         active.plan.state == PlanState::Created
             && active.plan.archived_at.is_none()
-            && active.worktree.is_none()
+            && active.workspace.is_none()
             && !implemented
             // The goal itself is the one item `create_plan` seeds. Anything past
             // it is somebody having said something to this issue.
@@ -7875,8 +8239,9 @@ impl AppState {
 
     // ---- Plan surface ---------------------------------------------------------
 
-    /// Author a new plan: spin up a disposable planning worktree and a plan
-    /// agent session (the docs land canonically in the store on `done`).
+    /// Author a new plan: open a planning workspace (the primary checkout plus
+    /// a scratch docs dir) and a plan agent session (the docs land canonically
+    /// in the store on `done`).
     ///
     /// `dispatch: false` files the record and starts nothing — an inert issue,
     /// which is what the router and the toolbar's New issue create. The first
@@ -8692,16 +9057,18 @@ impl AppState {
         }))
     }
 
-    /// Approve the plan (the last human gate): the disposable planning worktree
-    /// is torn down; the store docs are canonical.
+    /// Approve the plan (the last human gate): the planning session ends and
+    /// its scratch docs are dropped; the store docs are canonical.
     fn plan_approve(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        let session = issue_session(&active);
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.approve_plan(&mut active).map_err(err));
         if outcome.is_ok() {
+            self.retire_issue_session(session);
             active.agents.push_event(
                 crate::thread::ThreadEventKind::Approved,
                 Some("Plan approved".to_string()),
@@ -8827,6 +9194,9 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let message = require_str(params, "message")?;
         let project_id = self.project_of(&plan_id)?;
+        // The user's own words, so the anchor gets its chance — before the
+        // record leaves its map (see `note_user_message`).
+        self.note_user_message(&plan_id);
         let mut active = self.take_plan(&plan_id)?;
         active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
@@ -8855,10 +9225,12 @@ impl AppState {
         let plan_id = require_str(params, "plan_id")?;
         let project_id = self.project_of(&plan_id)?;
         let mut active = self.take_plan(&plan_id)?;
+        let session = issue_session(&active);
         let outcome = self
             .orch_for(&project_id)
             .and_then(|orch| orch.abandon_plan(&mut active).map_err(err));
         if outcome.is_ok() {
+            self.retire_issue_session(session);
             active.agents.push_event(
                 crate::thread::ThreadEventKind::Abandoned,
                 Some("Plan abandoned".to_string()),
@@ -8873,22 +9245,20 @@ impl AppState {
         Ok(view)
     }
 
-    /// Archive a completed plan without changing its lifecycle state or
-    /// deleting canonical docs/run history. Repeating the request preserves the
-    /// first archive timestamp.
+    /// `issue.archive` — Done, for an issue: file it away without changing its
+    /// lifecycle state or deleting canonical docs/run history. Repeating the
+    /// request preserves the first archive timestamp.
+    ///
+    /// Never refused for what was or was not built: an issue the user is done
+    /// with is done, and an issue no branch ever implemented says so as a
+    /// warning on the row (`finish.warnings`) for them to confirm through.
     fn plan_archive(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let mut active = self.take_plan(&plan_id)?;
-        let outcome = if active.plan.archived_at.is_some() {
-            Ok(())
-        } else if self.plan_implementation_complete(&plan_id, &active) {
+        if active.plan.archived_at.is_none() {
             active.plan.archived_at = Some(now_rfc3339());
-            Ok(())
-        } else {
-            Err("plan.archive: plan implementation is incomplete".to_string())
-        };
+        }
         let (view, persisted) = self.finish_plan_mutation(plan_id, active);
-        outcome?;
         persisted?;
         Ok(view)
     }
@@ -9356,12 +9726,19 @@ impl AppState {
                 active.plan.state,
                 PlanState::Blocked | PlanState::Failed | PlanState::IdleUnreported
             );
+            // The user is saying something, so the inbox anchor gets its one
+            // chance to move. Here, before the record is checked out of its
+            // map — see `note_user_message`.
+            self.note_user_message(&entity_id);
             let implementation_target =
                 self.current_issue_implementation_id(&entity_id)
                     .and_then(|run_id| {
-                        self.runs
-                            .get(&run_id)
-                            .map(|run| (run_id, run.worktree.path.clone()))
+                        self.runs.get(&run_id).map(|run| ImplementationTarget {
+                            run_id,
+                            worktree_path: run.worktree.path.clone(),
+                            agent_id: run.agents.first().id.clone(),
+                            model_choice: run.agents.first().choice.clone(),
+                        })
                     });
             let mut active = self.take_plan(&entity_id)?;
             append_user_thread_messages_with_attachments(
@@ -9380,19 +9757,21 @@ impl AppState {
             // one. The dispatch reads everything said so far, so the planning
             // agent opens on the goal AND on what the user just added.
             let mut started_planning = Ok(());
-            if active.plan.state == PlanState::Created && active.worktree.is_none() {
+            if active.plan.state == PlanState::Created && active.workspace.is_none() {
                 started_planning = self.start_inert_plan(&entity_id, &mut active);
-            } else if let Some((run_id, worktree_path)) = implementation_target {
+            } else if let Some(implementation) = implementation_target {
                 // The Issue owns the conversation, but its live implementation
                 // owns the checkout/PTY. Addressing thread.post to the Issue
                 // must therefore wake that implementation agent — and the same
                 // reply rule applies to the run it wakes.
-                let implementation_agent = self
-                    .runs
-                    .get(&run_id)
-                    .map(|run| run.agents.first().id.clone())
-                    .unwrap_or_default();
-                nudge_live_agent_tab(&self.tabs, &worktree_path, &implementation_agent, &run_id);
+                let run_id = implementation.run_id;
+                self.tell_the_agent_a_message_is_waiting(
+                    &implementation.worktree_path,
+                    &implementation.agent_id,
+                    &run_id,
+                    implementation.model_choice,
+                    &active.agents.resolve(Some(&agent_id))?.thread,
+                );
                 parked_implementation = self
                     .runs
                     .get(&run_id)
@@ -9403,8 +9782,15 @@ impl AppState {
                         )
                     })
                     .map(|_| run_id);
-            } else if let Some(worktree) = &active.worktree {
-                nudge_live_agent_tab(&self.tabs, &worktree.path, &agent_id, &entity_id);
+            } else if let Some(workspace) = &active.workspace {
+                let agent = active.agents.resolve(Some(&agent_id))?;
+                self.tell_the_agent_a_message_is_waiting(
+                    &workspace.checkout,
+                    &agent_id,
+                    &entity_id,
+                    agent.choice.clone(),
+                    &agent.thread,
+                );
             }
             let (view, persisted) = self.finish_plan_mutation(entity_id, active);
             // The message is durable either way: a dispatch that could not start
@@ -9443,6 +9829,17 @@ impl AppState {
             );
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let worktree_path = active.worktree.path.clone();
+            // Read before the run leaves the map: reviving this agent needs the
+            // provider it runs on, and the run is borrowed from `self`.
+            let agent_choice = active.agents.resolve(Some(&agent_id))?.choice.clone();
+            // The branch is what the user is talking to, and — when the message
+            // lands on the issue's conversation, which is where a planned
+            // implementation speaks — the issue heard it too. Both while their
+            // records are still in their maps.
+            self.note_user_message(&entity_id);
+            if let Some(issue_id) = issue_id.clone().filter(|_| addresses_first_agent) {
+                self.note_user_message(&issue_id);
+            }
             // An implementation's FIRST agent speaks in its Issue's
             // conversation — that is the one every Issue surface renders. An
             // agent the human added to the branch speaks in its own.
@@ -9456,7 +9853,13 @@ impl AppState {
                     messages,
                     attachments,
                 );
-                nudge_live_agent_tab(&self.tabs, &worktree_path, &agent_id, &entity_id);
+                self.tell_the_agent_a_message_is_waiting(
+                    &worktree_path,
+                    &agent_id,
+                    &entity_id,
+                    agent_choice,
+                    &issue.agents,
+                );
                 let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
                 if resume {
@@ -9484,7 +9887,14 @@ impl AppState {
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
             }
-            nudge_live_agent_tab(&self.tabs, &active.worktree.path, &agent_id, &entity_id);
+            let agent = active.agents.resolve(Some(&agent_id))?;
+            self.tell_the_agent_a_message_is_waiting(
+                &active.worktree.path,
+                &agent_id,
+                &entity_id,
+                agent_choice,
+                &agent.thread,
+            );
             let (view, persisted) = self.finish_run_mutation(entity_id, active);
             persisted?;
             return Ok(view);
@@ -9492,12 +9902,75 @@ impl AppState {
         Err("unknown conversation owner".to_string())
     }
 
+    /// Tell the agent that owns this conversation a message is waiting for it —
+    /// reviving its harness when nothing is running.
+    ///
+    /// A live tab is nudged where it stands ([`nudge_live_agent_tab`]). A tab
+    /// whose process has ended — or one that was never opened — is not a reason
+    /// for the message to go unheard: the SAME agent starts again, in the SAME
+    /// checkout, through the queue [`deliver_pending_agent_turns`] drains once
+    /// the state lock is free (a spawn blocks for seconds on the harness's
+    /// readiness wait, and every terminal pump needs that lock). Continuation
+    /// comes with it for free: [`ensure_agent_tab`] probes the provider's own
+    /// transcript for the checkout, so a revived claude/codex agent picks the
+    /// session it was in back up rather than opening a blank one.
+    ///
+    /// Before this, a message to an agent whose TUI had exited sat on the
+    /// thread forever — the entity read as idle, the human waited, and nothing
+    /// was listening.
+    fn tell_the_agent_a_message_is_waiting(
+        &mut self,
+        root: &std::path::Path,
+        agent_id: &str,
+        owner: &str,
+        model_choice: ModelChoice,
+        thread: &crate::thread::Thread,
+    ) {
+        let root = Self::canonical_root(root);
+        let key = TabKey::agent(&root, agent_id);
+        if self
+            .tabs
+            .get(&key)
+            .is_some_and(|tab| tab.live && !tab.session.has_exited())
+        {
+            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner);
+            return;
+        }
+        // Two harnesses in one checkout would both report `done` for the same
+        // owner, and the second report is an illegal transition that lands on
+        // the conversation as a bogus failure. A harness already on its way is
+        // the one that reads this message: it opens on the cold prompt, which
+        // tells it to call `read_unread_messages`, and the message is durable
+        // on the thread before it can ask.
+        let already_starting = self.agent_spawns_in_flight.contains(&key)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|queued| queued.root == root && queued.agent_id == agent_id);
+        if already_starting {
+            return;
+        }
+        self.pending_agent_turns.push(PendingAgentTurn {
+            root,
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            model_choice,
+            // Cold and warm exactly as `agent.start` sends them: the words are
+            // already durable on the thread, so the harness is told to read
+            // them — wrapped, when it is a new process, in the catch-up packet
+            // it has no other way to reconstruct.
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+            warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
+            phase: "revive",
+        });
+    }
+
     /// Where this entity's attachments live: the bridge's own store, always,
     /// and the checkout its agent reads from, when it has one.
     ///
     /// Both, because the two homes answer different questions and neither
-    /// answers the other's. A conversation outlives its checkouts — planning
-    /// worktrees are disposable and implementations get archived — so the
+    /// answers the other's. A conversation outlives its checkouts —
+    /// implementations get archived — so the
     /// durable copy has to sit somewhere Build owns, or a screenshot from last
     /// week renders as a broken image. But a sandboxed harness can only be
     /// relied on to open paths inside its own tree, so the copy the AGENT is
@@ -9511,7 +9984,7 @@ impl AppState {
             let worktree = self
                 .current_issue_implementation_id(entity_id)
                 .and_then(|run_id| self.runs.get(&run_id).map(|run| run.worktree.path.clone()))
-                .or_else(|| active.worktree.as_ref().map(|w| w.path.clone()));
+                .or_else(|| active.workspace.as_ref().map(|w| w.checkout.clone()));
             return Ok(AttachmentHomes {
                 worktree: worktree.map(|path| path.join(ATTACHMENTS_DIR)),
                 local,
@@ -10226,6 +10699,7 @@ impl AppState {
                 self.entity_updated_at.remove(run_id);
                 self.entity_state_changed_at.remove(run_id);
                 self.entity_last_state.remove(run_id);
+                self.run_files_changed_at.remove(run_id);
                 self.invalidate_run_stat(run_id);
                 self.invalidate_external_scan(project_id);
             }
@@ -10242,6 +10716,8 @@ impl AppState {
             let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
             self.owning_plan_stage_docs(active)
         };
+        // See `plan_message`: the user is speaking, so the anchor may move.
+        self.note_user_message(&run_id);
         let mut active = self.take_run(&run_id)?;
         active.agents.post_user(&message, None, now_rfc3339());
         let outcome = (|| -> Result<(), String> {
@@ -10267,6 +10743,7 @@ impl AppState {
         let project_id = self.project_of(&run_id)?;
         let mut active = self.take_run(&run_id)?;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+        let branch = active.worktree.branch.clone();
         // Reconcile publication while the checkout and refs are still
         // inspectable. Every Build-owned removal path must decide completion
         // before deleting the evidence it needs to decide it.
@@ -10305,11 +10782,14 @@ impl AppState {
         result?;
         persisted?;
         if let Some(issue_id) = &issue_id {
+            // Abandoning is deleting the branch with nothing merged out of it,
+            // so the issue this was implementing comes back to the inbox — and
+            // its conversation says which branch it lost and why.
             self.mirror_run_outcome_to_issue(
                 &run_id,
                 issue_id,
                 crate::thread::ThreadEventKind::Abandoned,
-                "Implementation abandoned".to_string(),
+                abandoned_branch_summary(&branch, "abandoned"),
             )?;
         }
         if let Some(issue_id) = issue_id {
@@ -10408,6 +10888,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.invalidate_run_stat(&run_id);
 
         if worktree.path.exists() {
@@ -10496,13 +10977,6 @@ impl AppState {
         let run_id = run_id.to_string();
         parse_worktree_finish_action(action_name)?;
         let project_id = self.project_of(&run_id)?;
-        // Before the run is borrowed: the diffstat needs `&mut self`.
-        let sync = match requirement {
-            FinishRequirement::CommittedAndPushed => {
-                Some(WorkItemStat::from_run_stat(&self.run_stat(&run_id)).sync())
-            }
-            FinishRequirement::CompletedWork => None,
-        };
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
         // Finishing archives a worktree and then removes it. The primary
         // checkout is the repository itself: there is nothing to file away,
@@ -10523,16 +10997,7 @@ impl AppState {
                     ));
                 }
             }
-            FinishRequirement::CommittedAndPushed => {
-                let sync = sync.expect("computed for this requirement");
-                if !crate::branch::branch_can_finish(&sync) {
-                    return Err(format!(
-                        "branch.finish: {} still carries work that exists only on this machine — \
-                         commit and push it before Done",
-                        active.worktree.branch
-                    ));
-                }
-            }
+            FinishRequirement::Unconditional => {}
         }
         if !active.worktree.path.exists() {
             if active.run.state != RunState::Merged {
@@ -10601,6 +11066,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.reap_orphaned_terminals();
         Ok(archived_worktree)
     }
@@ -10635,6 +11101,7 @@ impl AppState {
         self.entity_updated_at.remove(&run_id);
         self.entity_state_changed_at.remove(&run_id);
         self.entity_last_state.remove(&run_id);
+        self.run_files_changed_at.remove(&run_id);
         self.invalidate_run_stat(&run_id);
         if let Some(pid) = project_id {
             self.invalidate_external_scan(&pid);
@@ -10751,7 +11218,11 @@ impl AppState {
                 .map(|issue_id| self.issue_candidate(issue_id)),
         );
         candidates.extend(self.capture_candidates());
-        crate::branch::fold_work_items(candidates)
+        let mut items = crate::branch::fold_work_items(candidates);
+        // The inbox reads oldest first, and the order it reads in is decided
+        // here rather than by every client that renders it.
+        crate::branch::sort_by_anchor(&mut items);
+        items
     }
 
     /// The branch row for a run: the source that knows the most, because it is
@@ -10789,10 +11260,26 @@ impl AppState {
             "agents": self.agent_digests(run_id),
             "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
-            // Finishing archives a worktree and then removes it. The primary
-            // checkout is the repository: there is nothing to file away, and
-            // everything to lose.
-            "can_finish": !primary && crate::branch::branch_can_finish(&sync.sync()),
+            // Where this row sits in the inbox, and how long it has been quiet.
+            // Every row carries both, whatever it was read off.
+            "anchor": self.anchor_of(run_id),
+            "last_activity": self.last_activity_of(
+                Some(run_id),
+                Some(thread),
+                Some(&active.worktree.path),
+                sync.head_committed_at.as_deref(),
+            ),
+            // Done deletes the branch and its records. It is offered whenever
+            // there is something to delete: the primary checkout is the
+            // repository, so there is nothing to file away and everything to
+            // lose. What the deletion would cost is `finish.warnings`, which
+            // the client confirms through — never a refusal here.
+            "can_finish": !primary,
+            "finish": { "warnings": if primary {
+                json!([])
+            } else {
+                sync.finish_warnings_json(&active.worktree.branch)
+            } },
             "muted": self.is_muted(run_id),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
@@ -10839,8 +11326,19 @@ impl AppState {
             "agents": Vec::<Value>::new(),
             "stat": sync.to_json(),
             "resume_at": Value::Null,
+            // A checkout with no run behind it has no record to anchor: it
+            // dates itself by its own last commit, which is the only history it
+            // has. Same for its last activity, plus whatever its agent painted.
+            "anchor": sync.head_committed_at,
+            "last_activity": self.last_activity_of(
+                None,
+                None,
+                Some(&project.repo_path),
+                sync.head_committed_at.as_deref(),
+            ),
             // The repository is not a worktree to file away.
             "can_finish": false,
+            "finish": { "warnings": [] },
             "muted": false,
             "worktree_path": repo_path,
             "worktree_id": Value::Null,
@@ -10890,7 +11388,23 @@ impl AppState {
             "agents": Vec::<Value>::new(),
             "stat": sync.to_json(),
             "resume_at": entry["attention"]["resume_at"],
-            "can_finish": crate::branch::branch_can_finish(&sync.sync()),
+            // See the primary row: a bare checkout is dated by its own commits,
+            // unless the user has acted on it here and given it an anchor.
+            "anchor": self
+                .attention
+                .get(&worktree_id)
+                .and_then(|attention| attention.anchor_at.clone())
+                .or_else(|| sync.head_committed_at.clone()),
+            "last_activity": self.last_activity_of(
+                None,
+                None,
+                Some(std::path::Path::new(&path)),
+                sync.head_committed_at.as_deref(),
+            ),
+            "can_finish": true,
+            "finish": { "warnings": sync.finish_warnings_json(
+                branch.as_deref().unwrap_or("this checkout"),
+            ) },
             "muted": self.is_muted(&worktree_id),
             "worktree_path": path,
             "worktree_id": worktree_id.clone(),
@@ -10921,6 +11435,10 @@ impl AppState {
         let unread = self.unread_for(issue_id, &active.agents);
         let working_since = self.working_since_for(issue_id, &active.agents);
         let implementation = self.current_issue_implementation(issue_id);
+        // The implementation still in flight, which is narrower than the newest
+        // one: a merged or abandoned branch has stopped speaking for its issue,
+        // and the issue is back in the inbox on its own.
+        let live_implementation = implementation.filter(|run| !run.run.state.is_terminal());
         let row = json!({
             "kind": crate::branch::WorkItemKind::Issue.as_str(),
             "project_id": self.entity_project.get(issue_id).cloned().unwrap_or_default(),
@@ -10936,12 +11454,27 @@ impl AppState {
             "agents": self.agent_digests(issue_id),
             "stat": Value::Null,
             "resume_at": self.attention_json(issue_id)["resume_at"],
-            "can_finish": self.plan_implementation_complete(issue_id, active),
+            "anchor": self.anchor_of(issue_id),
+            // An issue has no checkout and no commits of its own: its
+            // conversation is the whole of its activity.
+            "last_activity": self.last_activity_of(Some(issue_id), Some(&active.agents), None, None),
+            // Done on an issue archives it, and archiving is never refused.
+            // What it costs — an issue nothing was ever built for — is a
+            // warning the client confirms through.
+            "can_finish": true,
+            "finish": { "warnings": crate::branch::warnings_json(
+                &crate::branch::issue_finish_warnings(implementation.is_some()),
+            ) },
             "muted": self.is_muted(issue_id),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
             "issue_id": issue_id,
+            // Whether a branch is implementing this issue RIGHT NOW — the same
+            // fact that hides the issue's row behind that branch's, said out
+            // loud so a surface holding an issue can explain where it went.
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
+            "implementation_active": live_implementation.is_some(),
             "primary": false,
         });
         crate::branch::WorkItemCandidate {
@@ -11055,14 +11588,27 @@ impl AppState {
 
     /// `branch.finish` — the inbox entry's Done, for a branch.
     ///
-    /// Archives the branch's checkout through the same durable path as
-    /// `worktree.finish`, and, when the branch implements an issue, archives
-    /// the issue with it. `unlink: true` is the deeper control that finishes
-    /// the branch alone.
+    /// Done on a branch DELETES it: the checkout goes through the same durable
+    /// path as `worktree.finish`, the branch goes with it, and the run's
+    /// records and conversation leave the inbox. It is never refused for the
+    /// state of the work — an unpushed commit, an unmerged branch and an
+    /// uncommitted edit are warnings the row carries (`finish.warnings`) and
+    /// the user confirms through. `action` chooses how the checkout is retired
+    /// and defaults to `delete`, which is what Done means.
+    ///
+    /// An issue the branch implements only ends with it when the work landed:
+    /// a merge finishes the issue too, and any other ending hands the issue
+    /// back to the inbox with an event naming the branch it lost.
+    /// `unlink: true` leaves the issue alone either way.
     fn branch_finish(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let branch = require_str(params, "branch")?;
-        let action_name = require_str(params, "action")?;
+        let action_name = params
+            .get("action")
+            .and_then(Value::as_str)
+            .filter(|action| !action.is_empty())
+            .unwrap_or("delete")
+            .to_string();
         parse_worktree_finish_action(&action_name)?;
         let unlink = params
             .get("unlink")
@@ -11088,30 +11634,41 @@ impl AppState {
                 "run_id": Value::Null,
                 "issue_id": Value::Null,
                 "issue_archived": false,
+                "issue_abandoned": false,
                 "worktree": finished,
             }));
         };
-        let issue_id = self.runs[&run_id]
+        let implemented_issue_id = self.runs[&run_id]
             .run
             .plan_id
             .as_ref()
             .map(|id| id.0.clone())
-            .filter(|_| !unlink);
-        // Refuse before the worktree is touched: half of a linked marking is
-        // worse than none, and the way past it is a flag the caller already has.
-        if let Some(issue_id) = &issue_id {
-            let issue = self.plans.get(issue_id).ok_or("unknown issue")?;
-            if issue.plan.archived_at.is_none()
-                && !self.plan_implementation_complete(issue_id, issue)
-            {
-                return Err(format!(
-                    "branch.finish: Done on {branch} also archives the issue it implements, and \
-                     that issue is not implemented yet — pass unlink to finish the branch alone"
-                ));
-            }
+            // An issue already filed away has nothing left to hear about this.
+            .filter(|issue_id| {
+                self.plans
+                    .get(issue_id)
+                    .is_some_and(|issue| issue.plan.archived_at.is_none())
+            });
+        // Whether the work landed. That is the whole question an issue's fate
+        // turns on: a merge publishes it into the base branch and the issue is
+        // done with the branch; anything else deletes work the issue was
+        // waiting for, so the issue comes back to the inbox and has to be told
+        // what happened to the branch that was speaking for it.
+        let merged = matches!(
+            parse_worktree_finish_action(&action_name),
+            Ok(WorktreeFinishAction::Merge)
+        ) || self.runs[&run_id].run.state == RunState::Merged;
+        let issue_id = implemented_issue_id.clone().filter(|_| !unlink && merged);
+        let orphaned_issue_id = implemented_issue_id.filter(|_| !merged);
+        let finished = self.finish_run(&run_id, &action_name, FinishRequirement::Unconditional)?;
+        if let Some(orphaned_issue_id) = &orphaned_issue_id {
+            self.note_implementation_abandoned(
+                orphaned_issue_id,
+                &run_id,
+                &branch,
+                "finished off the board",
+            );
         }
-        let finished =
-            self.finish_run(&run_id, &action_name, FinishRequirement::CommittedAndPushed)?;
         let issue_archived = match &issue_id {
             Some(issue_id) => {
                 self.plan_archive(&json!({ "plan_id": issue_id }))?;
@@ -11124,6 +11681,7 @@ impl AppState {
             "run_id": run_id,
             "issue_id": issue_id,
             "issue_archived": issue_archived,
+            "issue_abandoned": orphaned_issue_id.is_some(),
             "worktree": finished,
         }))
     }
@@ -11596,6 +12154,7 @@ impl AppState {
                 continue;
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
+            let branch = active.worktree.branch.clone();
             let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
@@ -11656,10 +12215,19 @@ impl AppState {
                             );
                         }
                     }
-                    let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                    let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
                     if let Err(e) = persisted {
                         eprintln!("archive {run_id}: issue event persist failed: {e}");
                     }
+                    // The checkout went away under Build with nothing merged,
+                    // so the issue is back in the inbox. Say which branch it
+                    // lost, or its reappearance is unexplained.
+                    self.note_implementation_abandoned(
+                        &issue_id,
+                        &run_id,
+                        &branch,
+                        "deleted outside Build",
+                    );
                 }
             }
         }
@@ -11715,7 +12283,125 @@ impl AppState {
             "resume_at": attention.sort_key(&created_at),
             "interacted": attention.last_interaction_at.is_some(),
             "seen": attention.has_seen(&state_changed_at),
+            // The inbox's own key, on every surface that renders an entity, so
+            // a detail view and the list it was opened from agree about where
+            // this piece of work sits.
+            "anchor": attention.anchor(&created_at),
         })
+    }
+
+    /// Where this entity sits in the inbox.
+    ///
+    /// The anchor, or — for a record written before anchors that boot has not
+    /// reached — the day it was created, which is what the seed would have
+    /// made it.
+    fn anchor_of(&self, entity_id: &str) -> String {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        match self.attention.get(entity_id) {
+            Some(attention) => attention.anchor(&created_at),
+            None => created_at,
+        }
+    }
+
+    /// Give a newly created entity its place in the inbox. Idempotent, so every
+    /// mutation can call it and only the first one does anything.
+    fn seed_anchor(&mut self, entity_id: &str) {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        let attention = self.attention.entry(entity_id.to_string()).or_default();
+        if attention.anchor_at.is_some() {
+            return;
+        }
+        attention.seed_anchor(&created_at);
+        self.persist_attention();
+    }
+
+    /// The user said something to this entity: move its anchor if they had gone
+    /// quiet for [`crate::attention::ANCHOR_GAP`], and leave it exactly where it
+    /// is otherwise.
+    ///
+    /// Only the user's own words reach here. An agent filling a conversation
+    /// all night is the work happening, and the work happening must never
+    /// reorder the inbox under the person reading it.
+    ///
+    /// Called with the entity still in its map: the attention file is pruned to
+    /// what exists when it is written, so a stamp taken while a record is
+    /// checked out would be dropped on the way to disk.
+    fn note_user_message(&mut self, entity_id: &str) {
+        let created_at = self
+            .entity_created_at
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_else(now_rfc3339);
+        let now = now_rfc3339();
+        let attention = self.attention.entry(entity_id.to_string()).or_default();
+        attention.seed_anchor(&created_at);
+        attention.note_user_message(&now);
+        self.persist_attention();
+    }
+
+    /// Take a capture's anchor onto the work it just became, so the inbox holds
+    /// ONE entry for a thing the user said and not two.
+    fn inherit_capture_anchor(&mut self, entity_id: &str, capture_id: &str) {
+        let Some(capture) = self.captures.get(capture_id) else {
+            return;
+        };
+        let anchor = capture.anchor().to_string();
+        self.attention
+            .entry(entity_id.to_string())
+            .or_default()
+            .inherit_anchor(&anchor, None);
+        self.persist_attention();
+    }
+
+    /// When this work item last did anything, as the Recent section reads it:
+    /// the latest of its files changing, something landing on its conversation,
+    /// and its agent painting. A row is only quiet when all three are.
+    ///
+    /// Every input is already in hand — no clock here starts new git work.
+    fn last_activity_of(
+        &self,
+        entity_id: Option<&str>,
+        conversation: Option<&crate::thread::Thread>,
+        checkout: Option<&std::path::Path>,
+        head_committed_at: Option<&str>,
+    ) -> Option<String> {
+        let files_changed_at = entity_id
+            .and_then(|id| self.run_files_changed_at.get(id))
+            .cloned();
+        let conversation_at = conversation
+            .and_then(crate::thread::Thread::last_item_at)
+            .map(str::to_string);
+        let agent_at = checkout.and_then(|root| self.agent_last_painted_at(root));
+        let head_at = head_committed_at.map(str::to_string);
+        [files_changed_at, conversation_at, agent_at, head_at]
+            .into_iter()
+            .flatten()
+            .max()
+    }
+
+    /// When the agent working in this checkout last painted, or `None` when no
+    /// agent has ever run there. Read off the PTY's own idle clock, which is
+    /// the only record of it.
+    fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
+        let root = Self::canonical_root(root);
+        let idle = self
+            .tabs
+            .iter()
+            .filter(|(key, tab)| key.root == root && key.is_agent() && !tab.session.has_exited())
+            .map(|(_, tab)| tab.session.idle_for())
+            .min()?;
+        let painted = time::OffsetDateTime::now_utc() - idle;
+        painted
+            .format(&time::format_description::well_known::Rfc3339)
+            .ok()
     }
 
     fn current_issue_implementation(&self, issue_id: &str) -> Option<&ActiveRun> {
@@ -11757,6 +12443,9 @@ impl AppState {
         });
         let implementation_complete = self.plan_implementation_complete(plan_id, active);
         let current_implementation = self.current_issue_implementation(plan_id);
+        // Narrower than the newest implementation: a merged or abandoned branch
+        // has stopped speaking for its issue.
+        let live_implementation = current_implementation.filter(|run| !run.run.state.is_terminal());
         let mut implementation_lineage = self
             .runs
             .values()
@@ -11812,6 +12501,13 @@ impl AppState {
             // that renders an entity, so status stays legible fully collapsed.
             "agents": self.agent_digests(plan_id),
             "active_run_id": active_run_id,
+            // Whether a branch is implementing this issue RIGHT NOW, and which
+            // one. The same fact that hides the issue's row behind that
+            // branch's in the feed, said out loud: an issue that has gone quiet
+            // because something is being built for it must be able to say so
+            // rather than simply vanish.
+            "implementation_active": live_implementation.is_some(),
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
             "current_implementation_id": current_implementation.map(|run| run.run.id.0.clone()),
             "current_implementation": current_implementation.map(|run| json!({
                 "implementation_id": run.run.id.0,
@@ -11825,7 +12521,14 @@ impl AppState {
             "implementation_intent": active.plan.implementation_intent,
             "implementation_activity": active.plan.implementation_activity,
             "implementation_complete": implementation_complete,
-            "can_archive": implementation_complete && active.plan.archived_at.is_none(),
+            // Done on an issue archives it, whatever was or was not built for
+            // it: an issue only stops being archivable once it already is.
+            "can_archive": active.plan.archived_at.is_none(),
+            // …and what archiving would gloss over rides along, so the surface
+            // that offers Done can say it before the user confirms.
+            "finish": { "warnings": crate::branch::warnings_json(
+                &crate::branch::issue_finish_warnings(current_implementation.is_some()),
+            ) },
             "archived_at": active.plan.archived_at,
             // False when the store holds no docs (a migrated plan whose docs
             // were unrecoverable): the client disables doc reads + Implement
@@ -12007,26 +12710,26 @@ impl AppState {
     // ---- the scripted QA agent ------------------------------------------------
 
     /// Simulate a plan session: write the two-stage plan docs + manifest into
-    /// the disposable planning worktree and report `done(phase=plan)`, so the
+    /// the issue's scratch docs dir and report `done(phase=plan)`, so the
     /// orchestrator ingests them into the canonical store exactly as a real
     /// harness would over MCP.
     fn qa_simulate_plan(&self, project_id: &str, active: &mut ActivePlan) -> Result<(), String> {
         let previous_stage_ids: Vec<String> =
             active.stages.iter().map(|stage| stage.id.clone()).collect();
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .ok_or("QA plan: no planning worktree")?
-            .path
+            .ok_or("QA plan: no planning workspace")?
+            .docs_dir
             .clone();
         let goal = active.plan.goal.clone();
         write_in_dir(
-            &worktree,
+            &docs_dir,
             ".build/plan/01-first-half.md",
             &format!("# Stage: First half\n\n1. Implement the first half of: {goal}\n"),
         )?;
         write_in_dir(
-            &worktree,
+            &docs_dir,
             ".build/plan/02-second-half.md",
             &format!("# Stage: Second half\n\n1. Implement the second half of: {goal}\n"),
         )?;
@@ -12045,7 +12748,7 @@ impl AppState {
             },
         ];
         let manifest = serde_json::to_string_pretty(&stages).map_err(|e| e.to_string())?;
-        write_in_dir(&worktree, STAGES_MANIFEST_PATH, &manifest)?;
+        write_in_dir(&docs_dir, STAGES_MANIFEST_PATH, &manifest)?;
         let store = self.require_store()?;
         self.orch_for(project_id)?
             .on_plan_done(
@@ -12076,7 +12779,7 @@ impl AppState {
     }
 
     /// Simulate a per-stage plan-revision session: rewrite the stage doc in the
-    /// planning worktree and resolve every open comment on the revised stage.
+    /// scratch docs dir and resolve every open comment on the revised stage.
     fn qa_simulate_plan_stage_revise(
         &self,
         project_id: &str,
@@ -12086,18 +12789,18 @@ impl AppState {
             .revising_stage_id
             .clone()
             .ok_or("QA plan revise: no stage revision in flight")?;
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .ok_or("QA plan revise: no planning worktree")?
-            .path
+            .ok_or("QA plan revise: no planning workspace")?
+            .docs_dir
             .clone();
         let index = active.stage_doc_index(&stage_id)?;
         let stage_path = active.stages[index].path.clone();
-        let mut contents = std::fs::read_to_string(worktree.join(&stage_path))
+        let mut contents = std::fs::read_to_string(docs_dir.join(&stage_path))
             .map_err(|e| format!("QA plan revise: could not read stage doc: {e}"))?;
         contents.push_str("\n(revised)\n");
-        write_in_dir(&worktree, &stage_path, &contents)?;
+        write_in_dir(&docs_dir, &stage_path, &contents)?;
         let resolutions: Vec<CommentResolution> = active
             .open_comments_for(&stage_id)
             .into_iter()
@@ -12687,6 +13390,34 @@ fn alias_param(params: &Value, canonical: &str, legacy: &str) -> Value {
 /// can never disagree about what the user said.
 fn capture_json(capture: &crate::capture::Capture) -> Value {
     serde_json::to_value(capture).expect("a capture always serializes")
+}
+
+/// Which of the router's options the user tapped, named either by id or by
+/// position — `None` when they typed an answer instead.
+///
+/// An id or an index that names nothing is refused rather than falling through
+/// to the typed answer: a tap that misses is a tap the user thinks landed.
+fn chosen_option_id(
+    capture: &crate::capture::Capture,
+    params: &Value,
+) -> Result<Option<String>, String> {
+    if let Some(option_id) = params
+        .get("option_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|option_id| !option_id.is_empty())
+    {
+        return Ok(Some(option_id.to_string()));
+    }
+    let Some(index) = params.get("option_index").and_then(Value::as_u64) else {
+        return Ok(None);
+    };
+    capture
+        .question
+        .as_ref()
+        .and_then(|question| question.option_at(index as usize))
+        .map(|option| Some(option.id.clone()))
+        .ok_or_else(|| format!("capture.answer: no option was offered at position {index}"))
 }
 
 fn require_str(params: &Value, key: &str) -> Result<String, String> {
@@ -13529,9 +14260,11 @@ fn parse_message_anchor(
 
 /// Tell the worktree's agent, in place, that unread thread messages await.
 ///
-/// [`deliver`]'s warm branch without the cold half, and deliberately so:
-/// `thread.post` never starts a process. It notifies whatever agent is ALIVE in
-/// that worktree, whatever its entity is parked as.
+/// [`deliver`]'s warm branch without the cold half: it notifies whatever agent
+/// is ALIVE in that worktree, whatever its entity is parked as, and does
+/// nothing at all for one that is not. Deciding between the two — and starting
+/// the agent that is not running — belongs to
+/// [`AppState::tell_the_agent_a_message_is_waiting`], the only caller.
 ///
 /// This was once gated on `building`/`drafting`, from when the agent existed
 /// only while working: any other state meant no process to talk to. A worktree's
@@ -13564,6 +14297,14 @@ fn nudge_live_agent_tab(
     if let Err(error) = tab.session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
         eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }
+}
+
+/// Where an issue's one agent is running right now — its checkout and its
+/// agent id — or `None` when the issue has no session. Read BEFORE a verb that
+/// ends the session, since ending it is what clears the workspace.
+fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
+    let workspace = active.workspace.as_ref()?;
+    Some((workspace.checkout.clone(), active.agents.first().id.clone()))
 }
 
 /// Open a conversation's session lineage for a newly spawned agent process,
@@ -13737,6 +14478,16 @@ fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
 /// Whether one of an implementation's events travels to the Issue that owns
 /// it. Exactly the attention class: what needs the human is news wherever they
 /// are watching from, what merely reports progress belongs to the run.
+/// What an issue's conversation says when the branch implementing it is gone
+/// and nothing was merged out of it. `how` is the way it went: abandoned by the
+/// user, deleted outside Build, finished off the board.
+fn abandoned_branch_summary(branch: &str, how: &str) -> String {
+    format!(
+        "The branch {branch} was {how} without being merged, so this issue is waiting for work \
+         again"
+    )
+}
+
 fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
 }
@@ -14192,7 +14943,7 @@ fn agent_attach(
         .filter(|id| !id.is_empty())
         .map(str::to_string);
     let root = match &entity_id {
-        Some(entity_id) => s.entity_worktree_root(entity_id)?,
+        Some(entity_id) => s.entity_agent_root(entity_id)?,
         None => TermScope::parse(params)?.resolve_root(s)?,
     };
     // Which agent: the one the rail named, or the entity's first — so a
@@ -14292,7 +15043,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             .thread;
         (
             PendingAgentTurn {
-                root: s.entity_worktree_root(&entity_id)?,
+                root: s.entity_agent_root(&entity_id)?,
                 owner: entity_id.clone(),
                 agent_id: agent.id.clone(),
                 model_choice: s.entity_model_choice(&entity_id)?,
@@ -14673,7 +15424,20 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     // the idle sweep and its entity looks agentless.
     let queued = {
         let mut s = state.lock().unwrap();
-        let queued = std::mem::take(&mut s.pending_agent_turns);
+        let taken = std::mem::take(&mut s.pending_agent_turns);
+        // An issue whose session is over (approved, abandoned) holds no
+        // workspace — and its checkout is the project's primary one, which is
+        // emphatically not a place to spawn a replacement for work nobody is
+        // doing. A turn queued before that gate closed is dropped here.
+        let (queued, closed): (Vec<PendingAgentTurn>, Vec<PendingAgentTurn>) = taken
+            .into_iter()
+            .partition(|turn| s.owner_still_has_a_session(&turn.owner));
+        for turn in &closed {
+            eprintln!(
+                "deliver to {}: the entity's session is over; the turn stays on its thread",
+                turn.owner
+            );
+        }
         for turn in &queued {
             *s.agent_turns_in_flight
                 .entry(turn.owner.clone())
@@ -18522,8 +19286,8 @@ mod tests {
         let issue_id = plan_id_of(&res);
         let active = state.plans.get(&issue_id).expect("the record is filed");
         assert!(
-            active.worktree.is_none(),
-            "an inert issue owns no planning worktree"
+            active.workspace.is_none(),
+            "an inert issue has no session and so no workspace"
         );
         assert!(
             state.pending_agent_turns.is_empty(),
@@ -18543,6 +19307,70 @@ mod tests {
                 .iter()
                 .any(|item| item["kind"] == "issue" && item["issue_id"] == json!(issue_id.clone())),
             "{board:?}"
+        );
+    }
+
+    /// Every checkout git knows about for a repo, primary first.
+    fn registered_checkouts(repo: &std::path::Path) -> Vec<String> {
+        let out = Command::new("git")
+            .args(["worktree", "list", "--porcelain"])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix("worktree ").map(str::to_string))
+            .collect()
+    }
+
+    /// An issue's agent works in the project's primary checkout and nowhere
+    /// else: no worktree is cut for planning, and the docs it writes live in a
+    /// scratch dir outside the repo that the store ingests from.
+    #[test]
+    fn an_issue_agent_runs_on_the_primary_checkout_and_cuts_no_worktree() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "Start with the endpoint." }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let primary = std::fs::canonicalize(&repo).unwrap();
+        assert_eq!(
+            registered_checkouts(&repo).len(),
+            1,
+            "planning cut a worktree: {:?}",
+            registered_checkouts(&repo)
+        );
+        let workspace = state.plans[&issue_id]
+            .workspace
+            .as_ref()
+            .expect("the planning session got a workspace");
+        assert_eq!(workspace.checkout, primary);
+        assert!(
+            !workspace.docs_dir.starts_with(&primary),
+            "the scratch docs dir is outside the repo: {}",
+            workspace.docs_dir.display()
+        );
+        // The turn — and therefore the PTY it spawns — is addressed to the
+        // primary checkout.
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "one turn was dispatched"
+        );
+        assert_eq!(state.pending_agent_turns[0].root, primary);
+        assert_eq!(
+            state.entity_agent_root(&issue_id).unwrap(),
+            primary,
+            "every surface that asks where this issue's agent lives says the \
+             primary checkout"
         );
     }
 
@@ -18593,13 +19421,13 @@ mod tests {
         // one — the dispatch this post triggered is the same dispatch.
         assert_eq!(posted["result"]["state"], "plan_review", "{posted:?}");
         let active = state.plans.get(&issue_id).expect("the issue is still here");
-        let worktree = active
-            .worktree
+        let docs_dir = active
+            .workspace
             .as_ref()
-            .expect("the planning session got a worktree")
-            .path
+            .expect("the planning session got a workspace")
+            .docs_dir
             .clone();
-        assert!(worktree.is_dir(), "{worktree:?}");
+        assert!(docs_dir.is_dir(), "{docs_dir:?}");
         assert_eq!(
             state.pending_agent_turns.len(),
             1,
@@ -18625,11 +19453,11 @@ mod tests {
         assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(
             state.plans[&issue_id]
-                .worktree
+                .workspace
                 .as_ref()
-                .map(|w| w.path.clone()),
-            Some(worktree),
-            "the same planning worktree"
+                .map(|workspace| workspace.docs_dir.clone()),
+            Some(docs_dir),
+            "the same planning workspace"
         );
         assert_eq!(state.pending_agent_turns.len(), 1, "no second dispatch");
     }
@@ -22070,14 +22898,14 @@ mod tests {
         connected.expect("harnesses can still dial the path");
     }
 
-    /// A planning worktree is a worktree, so every plan verb is a turn
-    /// addressed to it — never to the repo, never to a fresh process — and it
-    /// splits cold/warm exactly as the run verbs do: the reviewer's words are
-    /// already durable on the plan's thread, so a warm agent is only told to
-    /// read them, while a cold one gets the same instruction wrapped in the plan
-    /// context it has no way to reconstruct.
+    /// An issue's agent runs in the primary checkout, so every plan verb is a
+    /// turn addressed there — never to a worktree, never to a fresh process —
+    /// and it splits cold/warm exactly as the run verbs do: the reviewer's
+    /// words are already durable on the plan's thread, so a warm agent is only
+    /// told to read them, while a cold one gets the same instruction wrapped in
+    /// the plan context it has no way to reconstruct.
     #[test]
-    fn plan_verbs_are_turns_addressed_to_the_planning_worktree() {
+    fn plan_verbs_are_turns_addressed_to_the_primary_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let notes_plan = plan_id_of(&state.handle(req("plan.create", json!({ "goal": "notes" }))));
@@ -22090,17 +22918,22 @@ mod tests {
         let planning_root = |state: &AppState, plan_id: &str| {
             AppState::canonical_root(
                 &state.plans[plan_id]
-                    .worktree
+                    .workspace
                     .as_ref()
-                    .expect("a drafting plan has a planning worktree")
-                    .path,
+                    .expect("a drafting issue has a planning workspace")
+                    .checkout,
             )
         };
         let notes_root = planning_root(&state, &notes_plan);
         let stage_root = planning_root(&state, &stage_plan);
-        assert_ne!(
+        assert_eq!(
+            notes_root,
+            std::fs::canonicalize(&repo).unwrap(),
+            "an issue drafts in the project's primary checkout"
+        );
+        assert_eq!(
             notes_root, stage_root,
-            "each plan drafts in its own worktree"
+            "every issue of a project drafts in that one checkout"
         );
         // The scripted agent answers every verb itself and drives the plan back
         // to its gate; from here each plan must stay where its verb puts it.
@@ -22119,11 +22952,11 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("plan notes are a turn for the planning worktree's agent");
+            .expect("plan notes are a turn for the issue's agent");
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(
             queued.root, notes_root,
-            "a plan's turn goes to its planning worktree"
+            "a plan's turn goes to the primary checkout"
         );
         assert_eq!(queued.phase, "revise");
         assert_eq!(
@@ -22152,7 +22985,7 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("a plan message is a turn for the planning worktree's agent");
+            .expect("a plan message is a turn for the issue's agent");
         assert_eq!(queued.owner, notes_plan);
         assert_eq!(queued.root, notes_root);
         assert_eq!(queued.phase, "message");
@@ -22179,7 +23012,7 @@ mod tests {
         let queued = state
             .pending_agent_turns
             .last()
-            .expect("stage notes are a turn for the planning worktree's agent");
+            .expect("stage notes are a turn for the issue's agent");
         assert_eq!(queued.owner, stage_plan);
         assert_eq!(queued.root, stage_root);
         assert_eq!(queued.phase, "revise");
@@ -22201,12 +23034,12 @@ mod tests {
         );
     }
 
-    /// The plan half of "one worktree, one agent": authoring a plan opens the
-    /// planning worktree's agent, and every later plan verb reaches THAT
-    /// process. Same pid, one tab — a plan revision is a turn, not a
+    /// The plan half of "one checkout, one agent": authoring a plan opens the
+    /// issue's agent in the primary checkout, and every later plan verb reaches
+    /// THAT process. Same pid, one tab — a plan revision is a turn, not a
     /// replacement.
     #[tokio::test]
-    async fn every_plan_verb_reaches_the_planning_worktrees_one_agent() {
+    async fn every_plan_verb_reaches_the_issues_one_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
         let plan = call(&handler, "plan.create", json!({ "goal": "one plan agent" }));
@@ -22217,10 +23050,10 @@ mod tests {
             first_agent_key(
                 &AppState::canonical_root(
                     &s.plans[&plan_id]
-                        .worktree
+                        .workspace
                         .as_ref()
-                        .expect("a plan at its gate keeps its planning worktree")
-                        .path,
+                        .expect("a plan at its gate keeps its workspace")
+                        .checkout,
                 ),
                 &plan_id,
             )
@@ -22230,7 +23063,7 @@ mod tests {
             let tab = s
                 .tabs
                 .get(&key)
-                .expect("authoring a plan opens the planning worktree's agent");
+                .expect("authoring a plan opens the primary checkout's agent");
             assert!(
                 tab.live && !tab.session.has_exited(),
                 "the plan's agent is running"
@@ -23252,9 +24085,9 @@ mod tests {
         assert_eq!(empty["ok"], false, "{empty:?}");
     }
 
-    /// A conversation outlives its checkouts — planning worktrees are
-    /// disposable and implementations get archived — so a screenshot sent last
-    /// week must not render as a broken image once its tree is gone.
+    /// A conversation outlives its checkouts — implementations get archived —
+    /// so a screenshot sent last week must not render as a broken image once
+    /// its tree is gone.
     #[test]
     fn an_attachment_outlives_the_worktree_it_was_written_into() {
         let (dir, repo) = init_repo();
@@ -23296,7 +24129,7 @@ mod tests {
     /// exactly when a mock is most useful — and is handed an absolute path,
     /// since there is no tree for a relative one to mean anything against.
     #[test]
-    fn an_entity_without_a_worktree_still_takes_an_attachment() {
+    fn an_entity_without_a_checkout_still_takes_an_attachment() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let plan = state.handle(req(
@@ -23304,9 +24137,9 @@ mod tests {
             json!({ "goal": "attach before dispatch" }),
         ));
         let plan_id = plan_id_of(&plan);
-        // plan.create scaffolds a planning worktree; drop it to stand in for
+        // plan.create gives the issue a workspace; drop it to stand in for
         // every entity whose checkout does not exist yet or no longer does.
-        state.plans.get_mut(&plan_id).unwrap().worktree = None;
+        state.plans.get_mut(&plan_id).unwrap().workspace = None;
 
         let attached = state.handle(req(
             "thread.attach",
@@ -23320,7 +24153,7 @@ mod tests {
         let path = attached["result"]["path"].as_str().unwrap().to_string();
         assert!(
             std::path::Path::new(&path).is_absolute(),
-            "with no worktree to be relative to, the path must be openable as-is: {path}"
+            "with no checkout to be relative to, the path must be openable as-is: {path}"
         );
         assert_eq!(std::fs::read(&path).unwrap(), ONE_PIXEL_PNG);
 
@@ -24152,13 +24985,14 @@ mod tests {
         let (mut plan, _turn) = orch
             .dispatch_plan(PlanId::new(id), "side goal", "main", Default::default())
             .unwrap();
-        let worktree = plan
-            .worktree
+        let docs_dir = plan
+            .workspace
             .as_ref()
-            .expect("the plan has a planning worktree")
-            .path
+            .expect("the plan has a workspace")
+            .docs_dir
             .clone();
-        std::fs::write(worktree.join(".build/plan.md"), "# Plan\n").unwrap();
+        std::fs::create_dir_all(docs_dir.join(".build")).unwrap();
+        std::fs::write(docs_dir.join(".build/plan.md"), "# Plan\n").unwrap();
         orch.on_plan_done(
             &mut plan,
             store,
@@ -24925,12 +25759,9 @@ mod tests {
     #[test]
     fn working_plan_and_run_surface_interrupted_on_boot() {
         let (dir, repo) = init_repo();
-        let (_a, plan_wt) = init_repo();
         let (_b, run_wt) = init_repo();
         let store = crate::store::Store::new(dir.path().join("store"));
-        store
-            .save_plan(&drafting_plan("plan-1", &repo, &plan_wt))
-            .unwrap();
+        store.save_plan(&drafting_plan("plan-1", &repo)).unwrap();
         store
             .save_run(&building_run("run-1", &repo, &run_wt))
             .unwrap();
@@ -25049,11 +25880,7 @@ mod tests {
         assert!(err.contains("run-bad.json"), "{err}");
     }
 
-    fn drafting_plan(
-        id: &str,
-        repo: &std::path::Path,
-        worktree: &std::path::Path,
-    ) -> PersistedPlan {
+    fn drafting_plan(id: &str, repo: &std::path::Path) -> PersistedPlan {
         PersistedPlan {
             id: id.into(),
             goal: "drafting".into(),
@@ -25063,9 +25890,6 @@ mod tests {
             archived_at: None,
             implementation_intent: crate::plan::ImplementationIntent::None,
             implementation_activity: crate::plan::ImplementationActivity::Idle,
-            worktree_name: Some(id.into()),
-            worktree_path: Some(worktree.display().to_string()),
-            branch: Some(format!("plan/{id}")),
             plan_path: ".build/plan.md".into(),
             stages: Vec::new(),
             comments: Vec::new(),
@@ -25874,6 +26698,193 @@ mod tests {
         );
     }
 
+    /// The failure the human actually hits: an agent's harness exited (the TUI
+    /// self-updated and quit, the process died), the Agent tab still shows the
+    /// last screen it painted, and a message typed into the conversation lands
+    /// on the thread with nothing running to read it. The entity looks idle and
+    /// nobody is listening. A message to an agent that is not running starts it
+    /// again — and takes the message with it.
+    #[tokio::test]
+    async fn a_message_to_an_agent_whose_harness_exited_revives_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-revive");
+        let key = first_agent_key(&root, "run-revive");
+        let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let dead_pid = state.lock().unwrap().tabs[&key].session.pid();
+
+        // The harness dies the way a real one does, and the tab is RETAINED so
+        // the human can still read the last screen.
+        {
+            let mut s = state.lock().unwrap();
+            let tab = s.tabs.get_mut(&key).unwrap();
+            tab.session.kill_and_reap();
+            tab.live = false;
+        }
+        // Let the old pump see its own EOF before the revival, so the tab it
+        // closes is the corpse rather than the replacement.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-revive", "body": "are you still on this?" }),
+        );
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        {
+            let s = state.lock().unwrap();
+            let tab = s.tabs.get(&key).expect("the agent came back");
+            assert!(
+                tab.live && !tab.session.has_exited(),
+                "a message to a dead agent brings it back running"
+            );
+            assert_ne!(
+                tab.session.pid(),
+                dead_pid,
+                "revival is a NEW process, not the corpse reported as alive"
+            );
+            assert!(
+                tab.last_delivered_at.is_some(),
+                "and the message that revived it was written into it"
+            );
+        }
+        let screen = wait_for_agent_screen(&state, &root, "read_unread_messages").await;
+        assert!(
+            screen.contains("read_unread_messages"),
+            "the revived agent is told to read what was said while it was down: {screen:?}"
+        );
+    }
+
+    /// The guard on revival: an agent whose harness is being started RIGHT NOW
+    /// must not get a second one. Two harnesses in one checkout both report
+    /// `done` for the same owner, and the second report is an illegal
+    /// transition that lands on the conversation as a bogus failure. The spawn
+    /// already in flight is the one that reads this message: it opens on the
+    /// cold prompt, which tells it to call `read_unread_messages`, and the post
+    /// made the message durable before the harness could ask.
+    #[test]
+    fn a_message_sent_while_the_agent_is_starting_does_not_start_a_second_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
+        let root = state.entity_agent_root(&run_id).unwrap();
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        state.pending_agent_turns.clear();
+        state
+            .agent_spawns_in_flight
+            .insert(TabKey::agent(&root, &agent_id));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "one more thing" }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "the harness already starting is the one that reads this; {} turns were queued",
+            state.pending_agent_turns.len()
+        );
+
+        // …and with nothing in flight, the same message is what brings the
+        // agent back.
+        state.agent_spawns_in_flight.clear();
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "still there?" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            state.pending_agent_turns.len(),
+            1,
+            "one revival, addressed to the agent that was spoken to"
+        );
+        let queued = &state.pending_agent_turns[0];
+        assert_eq!(queued.agent_id, agent_id);
+        assert_eq!(queued.root, root);
+        assert_eq!(queued.owner, run_id);
+        assert!(
+            queued.cold.contains("still there?"),
+            "the revived agent opens on what was said to it: {}",
+            queued.cold
+        );
+    }
+
+    /// Revival RESUMES where the provider can. An agent whose checkout holds a
+    /// claude transcript comes back with continuation asked for, so the human's
+    /// message reaches the session it was already in rather than a blank one;
+    /// an agent that has never run has nothing to continue and opens fresh.
+    /// (That decision becomes the harness's own `--continue` /
+    /// `resume --last` argument — see
+    /// `agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id`.)
+    #[tokio::test]
+    async fn a_revived_agent_resumes_its_session_and_one_that_never_ran_does_not() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let resumed_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("resumed"), "run-resumed");
+        let fresh_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
+        // Only the first checkout has a conversation on disk to pick back up.
+        let transcripts = tempfile::tempdir().unwrap();
+        let encoded =
+            transcripts
+                .path()
+                .join(encode_claude_project_dir(&AppState::canonical_root(
+                    &resumed_root,
+                )));
+        std::fs::create_dir_all(&encoded).unwrap();
+        std::fs::write(encoded.join("session.jsonl"), "{}\n").unwrap();
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let projects_dir = transcripts.path().to_path_buf();
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.transcript_probe = Arc::new(move |cwd, provider| {
+                provider == AgentProvider::Claude && claude_transcript_exists(&projects_dir, cwd)
+            });
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        for run_id in ["run-resumed", "run-fresh"] {
+            let posted = call(
+                &handler,
+                "thread.post",
+                json!({ "entity_id": run_id, "body": "pick this up" }),
+            );
+            assert_eq!(posted["ok"], true, "{posted:?}");
+        }
+
+        let built = specs_built.lock().unwrap().clone();
+        let spawned_in = |root: &std::path::Path| {
+            let root = AppState::canonical_root(root);
+            built
+                .iter()
+                .find(|options| options.cwd == root)
+                .unwrap_or_else(|| panic!("the message spawned an agent in {}", root.display()))
+                .clone()
+        };
+        assert!(
+            spawned_in(&resumed_root).continue_session,
+            "a revived agent picks the conversation it was in back up: {built:?}"
+        );
+        assert!(
+            !spawned_in(&fresh_root).continue_session,
+            "an agent that has never run has nothing to continue: {built:?}"
+        );
+    }
+
     /// Starting an agent by hand must not strand what is already waiting for
     /// it. The reviewer's words are durable on the thread, and the ONLY way an
     /// agent learns of them is being told to call `read_unread_messages` — a
@@ -25937,9 +26948,9 @@ mod tests {
         );
     }
 
-    /// A plan holding its planning worktree with no agent tab — the plan
-    /// surface's idle Agent tab. The dispatch turn is dropped: this fixture is
-    /// about the plan, not about delivering to it.
+    /// A plan holding its workspace with no agent tab — the plan surface's idle
+    /// Agent tab. The dispatch turn is dropped: this fixture is about the plan,
+    /// not about delivering to it.
     fn insert_plan_without_agent(
         state: &Arc<Mutex<AppState>>,
         repo: &std::path::Path,
@@ -28233,15 +29244,30 @@ mod tests {
             .is_empty());
     }
 
+    /// Done on an issue files it away whatever was built for it: the bridge
+    /// warns that nothing was, and then does as it is told.
     #[test]
-    fn plan_archive_rejects_incomplete_plans_and_legacy_completion_uses_run_gate() {
+    fn plan_archive_files_an_unimplemented_plan_away_with_a_warning() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let incomplete = state.handle(req("plan.create", json!({ "goal": "not implemented" })));
         let incomplete_id = plan_id_of(&incomplete);
-        let rejected = state.handle(req("plan.archive", json!({ "plan_id": incomplete_id })));
-        assert_eq!(rejected["ok"], false, "{rejected:?}");
-        assert!(rejected["error"].as_str().unwrap().contains("incomplete"));
+        assert_eq!(
+            warning_codes(&incomplete["result"]),
+            vec!["unimplemented"],
+            "{incomplete:?}"
+        );
+        assert_eq!(incomplete["result"]["can_archive"], true, "{incomplete:?}");
+        let archived = state.handle(req("plan.archive", json!({ "plan_id": incomplete_id })));
+        assert_eq!(archived["ok"], true, "{archived:?}");
+        assert!(
+            archived["result"]["archived_at"].is_string(),
+            "{archived:?}"
+        );
+        assert_eq!(
+            archived["result"]["implementation_complete"], false,
+            "archiving it did not make it implemented: {archived:?}"
+        );
 
         let (legacy_plan_id, legacy_run_id) =
             planned_run_in_review(&mut state, "legacy completion");
@@ -28263,7 +29289,14 @@ mod tests {
 
         let incomplete = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
         assert_eq!(incomplete["result"]["implementation_complete"], false);
-        assert_eq!(incomplete["result"]["can_archive"], false);
+        assert_eq!(
+            incomplete["result"]["can_archive"], true,
+            "incomplete is a fact about the work, not a bar on filing it away"
+        );
+        assert!(
+            warning_codes(&incomplete["result"]).is_empty(),
+            "something was built for it, whatever state that work is in: {incomplete:?}"
+        );
     }
 
     #[test]
@@ -28305,7 +29338,7 @@ mod tests {
         assert_eq!(state.runs[&run_id].run.state, RunState::Archived);
         let plan = state.handle(req("plan.get", json!({ "plan_id": plan_id })));
         assert_eq!(plan["result"]["implementation_complete"], false, "{plan:?}");
-        assert_eq!(plan["result"]["can_archive"], false, "{plan:?}");
+        assert_eq!(plan["result"]["can_archive"], true, "{plan:?}");
     }
 
     #[test]
@@ -28641,6 +29674,10 @@ mod tests {
             json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
         ));
         assert_eq!(finished["ok"], true, "{finished:?}");
+        // Deleting the branch left the issue in the inbox; the user marks the
+        // issue done separately, and that is what files it away.
+        let archived_issue = state.handle(req("issue.archive", json!({ "issue_id": issue_id })));
+        assert_eq!(archived_issue["ok"], true, "{archived_issue:?}");
 
         // A second project's bare checkout, finished on its own: no run behind
         // it, so only its archived-worktree record remembers it.
@@ -29063,6 +30100,213 @@ mod tests {
         ));
         assert_eq!(bad["ok"], false, "{bad:?}");
         assert_eq!(state.runs[&run_id].agents.len(), 1, "nothing was added");
+    }
+
+    /// The mirror of `agent.add`. An agent the human put on a branch can be
+    /// taken back off it — off the roster, off the board row, out of the
+    /// attention map — and it stays off across a restart.
+    #[test]
+    fn agent_remove_takes_an_added_agent_back_off_the_branch() {
+        let (dir, repo) = init_repo();
+        let run_id;
+        let first_agent;
+        let second_agent;
+        {
+            let mut state = qa_state(&repo, dir.path());
+            run_id = adopted_run(&mut state, &repo, dir.path(), "feature-remove-agent");
+            first_agent = state.runs[&run_id].agents.first().id.clone();
+            let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+            assert_eq!(added["ok"], true, "{added:?}");
+            second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+            // Something was said to it and the human read it, so there is both
+            // a conversation and a read cursor to take away with the agent.
+            let posted = state.handle(req(
+                "thread.post",
+                json!({ "entity_id": run_id, "agent_id": second_agent, "body": "only you" }),
+            ));
+            assert_eq!(posted["ok"], true, "{posted:?}");
+            state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+            assert!(
+                state.attention[&run_id]
+                    .agent_read_sequences
+                    .contains_key(&second_agent),
+                "the fixture needs a cursor to remove"
+            );
+
+            let removed = state.handle(req(
+                "agent.remove",
+                json!({ "entity_id": run_id, "agent_id": second_agent }),
+            ));
+            assert_eq!(removed["ok"], true, "{removed:?}");
+            assert_eq!(removed["result"]["agent_id"], second_agent);
+            // The rail repaints from the answer, so it carries what is left.
+            let left = removed["result"]["agents"].as_array().unwrap();
+            assert_eq!(left.len(), 1, "{removed:?}");
+            assert_eq!(left[0]["id"], first_agent);
+            assert_eq!(left[0]["ordinal"], 1);
+
+            let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+            assert_eq!(listed["result"]["agents"].as_array().unwrap().len(), 1);
+            assert!(
+                state.runs[&run_id].agents.by_id(&second_agent).is_none(),
+                "the conversation goes with the agent"
+            );
+            assert!(
+                !state.attention[&run_id]
+                    .agent_read_sequences
+                    .contains_key(&second_agent),
+                "and so does the cursor that tracked it"
+            );
+
+            let board = state.handle(req("board.list", json!({})));
+            let row = board["result"]["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["run_id"] == json!(run_id.clone()))
+                .expect("the branch is on the board")
+                .clone();
+            assert_eq!(row["agents"].as_array().unwrap().len(), 1, "{row:?}");
+        } // daemon dies
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let listed = reloaded.handle(req("agent.list", json!({ "entity_id": run_id })));
+        let agents = listed["result"]["agents"].as_array().unwrap();
+        assert_eq!(agents.len(), 1, "the removal was persisted: {listed:?}");
+        assert_eq!(agents[0]["id"], first_agent);
+    }
+
+    /// `agent.remove` refuses what `agent.add` refuses, plus the one agent no
+    /// entity can be without: its first, which owns the conversation every
+    /// entity-level event speaks to.
+    #[test]
+    fn agent_remove_refuses_an_issue_an_unknown_agent_and_the_first_agent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-keep-first");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let refused = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": first_agent }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"].as_str().unwrap().contains("conversation"),
+            "{refused:?}"
+        );
+        assert_eq!(state.runs[&run_id].agents.len(), 2, "nothing was removed");
+
+        let unknown_agent = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": "agent-NOPE" }),
+        ));
+        assert_eq!(unknown_agent["ok"], false, "{unknown_agent:?}");
+        assert!(
+            unknown_agent["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown agent_id"),
+            "{unknown_agent:?}"
+        );
+
+        let unknown_entity = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": "run-nope", "agent_id": second_agent }),
+        ));
+        assert_eq!(unknown_entity["ok"], false, "{unknown_entity:?}");
+
+        // An issue's one agent IS the issue's conversation: there is nothing to
+        // remove there, only an issue to abandon.
+        let plan = state.handle(req("plan.create", json!({ "goal": "one agent only" })));
+        let plan_id = plan_id_of(&plan);
+        let issue_agent = state.plans[&plan_id].agents.first().id.clone();
+        let issue = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": plan_id, "agent_id": issue_agent }),
+        ));
+        assert_eq!(issue["ok"], false, "{issue:?}");
+        assert!(
+            issue["error"].as_str().unwrap().contains("issue"),
+            "{issue:?}"
+        );
+        assert_eq!(state.plans[&plan_id].agents.len(), 1);
+
+        // And the last agent standing is always the first one, so a branch can
+        // never be emptied of agents.
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        let last = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": first_agent }),
+        ));
+        assert_eq!(last["ok"], false, "{last:?}");
+        assert_eq!(state.runs[&run_id].agents.len(), 1);
+    }
+
+    /// A removed agent's harness must not outlive it: it would keep working in
+    /// the branch's checkout and report `done` for an agent nothing can route
+    /// to. So the tab goes through the same kill-AND-reap teardown the verbs
+    /// that remove an owner use, and its MCP capability goes with it — while
+    /// the agent beside it, sharing the same checkout, keeps running.
+    #[tokio::test]
+    async fn agent_remove_kills_and_reaps_the_agents_live_session() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-retire");
+        let first_agent = state.lock().unwrap().runs["run-retire"]
+            .agents
+            .first()
+            .id
+            .clone();
+        let added = call(&handler, "agent.add", json!({ "entity_id": "run-retire" }));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        for agent_id in [&first_agent, &second_agent] {
+            let started = call(
+                &handler,
+                "agent.start",
+                json!({ "id": "run-retire", "agent_id": agent_id }),
+            );
+            assert_eq!(started["ok"], true, "{started:?}");
+        }
+        let pid = state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]
+            .session
+            .pid()
+            .unwrap();
+
+        let removed = call(
+            &handler,
+            "agent.remove",
+            json!({ "entity_id": "run-retire", "agent_id": second_agent }),
+        );
+        assert_eq!(removed["ok"], true, "{removed:?}");
+
+        {
+            let s = state.lock().unwrap();
+            assert!(
+                !s.tabs.contains_key(&TabKey::agent(&root, &second_agent)),
+                "the removed agent's PTY is gone"
+            );
+            assert!(
+                s.tabs.contains_key(&TabKey::agent(&root, &first_agent)),
+                "the agent beside it kept running"
+            );
+            assert!(
+                !s.mcp_session_tokens.contains_key(&second_agent),
+                "and its capability with it: {:?}",
+                s.mcp_session_tokens
+            );
+            assert!(s.mcp_session_tokens.contains_key(&first_agent));
+            assert_eq!(s.runs["run-retire"].agents.len(), 1);
+        }
+        assert!(process_reaped(pid), "the harness must be killed AND reaped");
     }
 
     /// Unread is per agent, and the entry's badge is the union: a message
@@ -29524,6 +30768,21 @@ mod tests {
             .unwrap_or_else(|| panic!("{branch} has a row on the feed"))
     }
 
+    /// What Done on this row would warn about, in order.
+    fn warning_codes(row: &Value) -> Vec<String> {
+        row["finish"]["warnings"]
+            .as_array()
+            .unwrap_or_else(|| panic!("every row carries a finish preflight: {row:?}"))
+            .iter()
+            .map(|warning| {
+                warning["code"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a warning is coded: {warning:?}"))
+                    .to_string()
+            })
+            .collect()
+    }
+
     /// A run, a worktree Build never cut, and the primary checkout are three
     /// ways of storing the same kind of thing. The feed shows one row shape for
     /// all of them, keyed by branch, and the primary checkout is the `main`
@@ -29615,7 +30874,10 @@ mod tests {
         assert_eq!(issue["title"], "not started", "{issue:?}");
         assert_eq!(issue["state"], "plan_review", "{issue:?}");
         assert!(issue["branch"].is_null(), "{issue:?}");
-        assert_eq!(issue["can_finish"], false, "{issue:?}");
+        // Done on an issue archives it and is always on offer; that nothing
+        // was ever built for it is the warning it carries.
+        assert_eq!(issue["can_finish"], true, "{issue:?}");
+        assert_eq!(warning_codes(issue), vec!["unimplemented"], "{issue:?}");
 
         let (implemented_id, run_id) = planned_run_in_review(&mut state, "implement me");
         let rows = work_item_rows(&mut state);
@@ -29636,12 +30898,16 @@ mod tests {
             json!(implemented_id.clone()),
             "the branch row carries the issue it implements: {implementation:?}"
         );
-        // The issue's own Done rule is its implementation being complete.
+        // The issue nothing was started for still warns about exactly that.
         let unimplemented = rows
             .iter()
             .find(|row| row["issue_id"] == json!(waiting_id.clone()))
             .expect("the untouched issue still has a row");
-        assert_eq!(unimplemented["can_finish"], false, "{unimplemented:?}");
+        assert_eq!(
+            warning_codes(unimplemented),
+            vec!["unimplemented"],
+            "{unimplemented:?}"
+        );
 
         // Abandoning the implementation hands the issue its own row back.
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -29654,43 +30920,606 @@ mod tests {
         );
     }
 
-    /// Done on a branch means the work exists somewhere other than this
-    /// machine: committed AND pushed. The primary checkout is never
-    /// finishable — it is the repository, not a worktree to file away.
+    /// An RFC 3339 stamp `hours` in the past, for tests that need a gap no
+    /// suite can wait out.
+    fn hours_ago(hours: i64) -> String {
+        (time::OffsetDateTime::now_utc() - time::Duration::hours(hours))
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("UTC formats as RFC 3339")
+    }
+
+    fn issue_row(state: &mut AppState, issue_id: &str) -> Value {
+        work_item_rows(state)
+            .into_iter()
+            .find(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id))
+            .unwrap_or_else(|| panic!("{issue_id} has a row on the feed"))
+    }
+
+    /// The inbox sorts by anchor, oldest first, so every row it can show has to
+    /// carry one — a branch, an issue, and the capture that has not become
+    /// either yet.
     #[test]
-    fn a_branch_offers_done_only_once_it_is_committed_and_pushed() {
+    fn every_feed_row_carries_the_anchor_it_sorts_by() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+        adopted_run(&mut state, &repo, dir.path(), "feature-anchored");
+        captured(&mut state, "something I said");
+
+        let rows = work_item_rows(&mut state);
+        for row in &rows {
+            assert!(
+                row["anchor"].as_str().is_some(),
+                "every row sorts by an anchor: {row:?}"
+            );
+        }
+        assert!(
+            rows.iter().any(|row| row["kind"] == "issue")
+                && rows.iter().any(|row| row["kind"] == "branch")
+                && rows.iter().any(|row| row["kind"] == "capture"),
+            "all three kinds are on this feed: {rows:?}"
+        );
+
+        // An issue enters the list where it was filed, and the detail surface
+        // agrees with the row.
+        let filed_at = state.entity_created_at[&issue_id].clone();
+        let issue = rows
+            .iter()
+            .find(|row| row["issue_id"] == json!(issue_id.clone()))
+            .expect("the issue is on the feed");
+        assert_eq!(issue["anchor"], json!(filed_at.clone()), "{issue:?}");
+        let detail = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(detail["result"]["attention"]["anchor"], json!(filed_at));
+    }
+
+    /// Half a day of saying nothing and then saying something is picking the
+    /// work back up: it goes to the bottom of the inbox. Saying a second thing
+    /// straight after is the same sitting, and moves nothing.
+    #[test]
+    fn a_message_after_half_a_day_of_silence_moves_the_anchor() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "add a greeting", "dispatch": false }),
+        )));
+
+        // Filed yesterday, and nothing said about it since.
+        let filed_at = hours_ago(30);
+        state
+            .entity_created_at
+            .insert(issue_id.clone(), filed_at.clone());
+        let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+        attention.anchor_at = Some(filed_at.clone());
+        attention.last_user_message_at = Some(hours_ago(13));
+        assert_eq!(issue_row(&mut state, &issue_id)["anchor"], json!(filed_at));
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "still want this" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let picked_up = state.anchor_of(&issue_id);
+        assert!(
+            picked_up > filed_at,
+            "a message after twelve hours of silence moves it to now: {picked_up} vs {filed_at}"
+        );
+        assert_eq!(
+            issue_row(&mut state, &issue_id)["anchor"],
+            json!(picked_up.clone()),
+            "the row sorts by the anchor that just moved"
+        );
+
+        // The rest of the conversation is one sitting.
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "and this too" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            picked_up,
+            "the inbox must not reshuffle while you type"
+        );
+    }
+
+    /// The rule the whole ordering rests on: agents never move the list. A
+    /// planning session, an implementation and everything said on its
+    /// conversation leave the anchor exactly where the user left it — with the
+    /// silence clock long past the gap, so only a USER message could move it.
+    #[test]
+    fn an_agent_working_all_night_leaves_the_anchor_alone() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id =
+            plan_id_of(&state.handle(req("plan.create", json!({ "goal": "implement me" }))));
+        let anchored_at = hours_ago(30);
+        let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+        attention.anchor_at = Some(anchored_at.clone());
+        attention.last_user_message_at = Some(anchored_at.clone());
+
+        // The QA agent plans it, it is approved, and an implementation starts —
+        // a night of work, all of it the agent's.
+        let said_before = state.plans[&issue_id].agents.items.len();
+        state.handle(req("plan.approve", json!({ "plan_id": issue_id })));
+        let dispatched = state.handle(req(
+            "issue.implement_all",
+            json!({ "issue_id": issue_id, "auto_advance": true }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        assert!(
+            state.plans[&issue_id].agents.items.len() > said_before,
+            "the agent has been talking"
+        );
+
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            anchored_at,
+            "nothing an agent does moves the inbox"
+        );
+    }
+
+    /// What the user said and the work it became are ONE entry in the inbox:
+    /// routing hands the capture's place to the issue it becomes, rather than
+    /// filing the work as something new that arrived just now.
+    #[test]
+    fn routing_a_capture_hands_its_anchor_to_the_work() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+        let said_at = hours_ago(20);
+        state
+            .captures
+            .get_mut(&capture_id)
+            .expect("the capture is kept")
+            .anchor_at = Some(said_at.clone());
+        assert_eq!(
+            capture_rows(&mut state)[0]["anchor"],
+            json!(said_at.clone()),
+            "the capture's row sorts by when it was said"
+        );
+
+        let routed = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "issue" }),
+        ));
+        assert_eq!(routed["ok"], true, "{routed:?}");
+        let issue_id = routed["result"]["routing"]["target_id"]
+            .as_str()
+            .expect("the capture became an issue")
+            .to_string();
+
+        assert_eq!(
+            state.anchor_of(&issue_id),
+            said_at,
+            "the work keeps the place the capture held"
+        );
+        assert_eq!(
+            issue_row(&mut state, &issue_id)["anchor"],
+            json!(said_at),
+            "and the row that replaced the capture's says so"
+        );
+
+        // The other destination: a capture routed straight onto a branch hands
+        // its place to the run that was cut for it.
+        let (branch_capture, _) = captured(&mut state, "the login redirect again");
+        let asked_at = hours_ago(40);
+        state
+            .captures
+            .get_mut(&branch_capture)
+            .expect("the capture is kept")
+            .anchor_at = Some(asked_at.clone());
+        let dispatched = state.handle(req(
+            "capture.reroute",
+            json!({ "capture_id": branch_capture, "project_id": project_id, "kind": "branch" }),
+        ));
+        assert_eq!(dispatched["ok"], true, "{dispatched:?}");
+        let branch = dispatched["result"]["routing"]["target_id"]
+            .as_str()
+            .expect("the capture became a branch")
+            .to_string();
+        assert_eq!(
+            branch_row(&mut state, &branch)["anchor"],
+            json!(asked_at),
+            "the branch holds the place the capture held"
+        );
+    }
+
+    /// Anchors are durable, and every record written before they existed gets
+    /// the one it would have had on the next boot — seeded from when it was
+    /// created, never from when the daemon happened to restart.
+    #[test]
+    fn anchors_survive_a_restart_and_a_record_from_before_them_is_seeded() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let issue_id = plan_id_of(&state.handle(req(
+                "issue.create",
+                json!({ "goal": "add a greeting", "dispatch": false }),
+            )));
+            // A record from before anchors: the attention map has everything
+            // else about it and nothing about where it sits.
+            let attention = state.attention.get_mut(&issue_id).expect("it is anchored");
+            attention.anchor_at = None;
+            attention.last_user_message_at = None;
+            attention.interact(&now_rfc3339());
+            state.persist_attention();
+            issue_id
+        };
+
+        let mut booted = qa_state(&repo, dir.path());
+        let created_at = booted.entity_created_at[&issue_id].clone();
+        assert_eq!(
+            booted.anchor_of(&issue_id),
+            created_at,
+            "boot anchors it where it was created, not where the restart was"
+        );
+        assert_eq!(
+            booted.attention[&issue_id].anchor_at.as_deref(),
+            Some(created_at.as_str()),
+            "and writes it down"
+        );
+
+        // Pick it up, restart again: the anchor the user moved is the anchor
+        // the next boot finds.
+        booted
+            .attention
+            .get_mut(&issue_id)
+            .expect("anchored above")
+            .last_user_message_at = Some(hours_ago(13));
+        booted.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "still want this" }),
+        ));
+        let picked_up = booted.anchor_of(&issue_id);
+        assert!(picked_up > created_at, "{picked_up} vs {created_at}");
+        drop(booted);
+
+        let rebooted = qa_state(&repo, dir.path());
+        assert_eq!(
+            rebooted.anchor_of(&issue_id),
+            picked_up,
+            "a restart never re-files what the user picked up"
+        );
+    }
+
+    /// The branch row's second line: how many files it touched, how far it is
+    /// from where it is published, and what it added and removed. One poll,
+    /// every number the inbox prints — nothing the SPA has to go and ask for.
+    #[test]
+    fn a_branch_row_carries_the_numbers_its_second_line_prints() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        adopted_run(&mut state, &repo, dir.path(), "feature-counted");
+        let worktree = dir.path().join("feature-counted");
+        let before = branch_row(&mut state, "feature-counted")["stat"].clone();
+
+        std::fs::write(worktree.join("one.txt"), "a\nb\n").unwrap();
+        std::fs::write(worktree.join("two.txt"), "c\n").unwrap();
+        git_in_dir(&worktree, &["add", "."]);
+        git_in_dir(&worktree, &["commit", "-m", "two files"]);
+
+        // No upstream yet: ahead/behind are measured against the base branch,
+        // and `upstream: null` is what says so. That distinction is what Done
+        // warns with — unmerged reads differently from unpushed.
+        let unpublished = branch_row(&mut state, "feature-counted");
+        let stat = &unpublished["stat"];
+        let grew = |key: &str| stat[key].as_u64().unwrap() - before[key].as_u64().unwrap();
+        assert_eq!(grew("files_changed"), 2, "{stat:?}");
+        assert_eq!(grew("insertions"), 3, "{stat:?}");
+        assert_eq!(grew("deletions"), 0, "{stat:?}");
+        assert!(stat["upstream"].is_null(), "{stat:?}");
+        assert_eq!(stat["comparison_ref"], "main", "{stat:?}");
+        assert_eq!(stat["ahead"], 1, "{stat:?}");
+        assert_eq!(stat["behind"], 0, "{stat:?}");
+
+        git_in_dir(&worktree, &["push", "-u", "origin", "feature-counted"]);
+        let published = branch_row(&mut state, "feature-counted");
+        let stat = &published["stat"];
+        assert_eq!(stat["upstream"], "origin/feature-counted", "{stat:?}");
+        assert_eq!(stat["comparison_ref"], "origin/feature-counted", "{stat:?}");
+        assert_eq!(
+            stat["ahead"], 0,
+            "unpushed work is what ahead means now: {stat:?}"
+        );
+        assert_eq!(stat["behind"], 0, "{stat:?}");
+
+        // And the row dates itself, so Recent can bucket it.
+        let last_activity = published["last_activity"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a branch row says when it last moved: {published:?}"));
+        assert!(
+            last_activity.as_bytes()[0].is_ascii_digit(),
+            "an RFC 3339 instant: {last_activity}"
+        );
+        assert!(
+            last_activity > hours_ago(1).as_str(),
+            "the commit just landed: {last_activity}"
+        );
+    }
+
+    /// An issue with a branch being built for it drops out of the inbox — so it
+    /// has to be able to say where it went. The branch names it; the issue
+    /// names the branch.
+    #[test]
+    fn an_issue_says_which_branch_is_implementing_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "not started", "dispatch": false }),
+        )));
+
+        let idle = issue_row(&mut state, &issue_id);
+        assert_eq!(idle["implementation_active"], false, "{idle:?}");
+        assert!(idle["implementing_branch"].is_null(), "{idle:?}");
+
+        let (implemented_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let board = state.handle(req("board.list", json!({})));
+        let issue = board["result"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["issue_id"] == json!(implemented_id.clone()))
+            .expect("the issue is still an issue")
+            .clone();
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        assert_eq!(issue["implementation_active"], true, "{issue:?}");
+        assert_eq!(issue["implementing_branch"], json!(branch), "{issue:?}");
+        assert!(
+            !work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(implemented_id)),
+            "and that is exactly why it is not in the inbox itself"
+        );
+
+        // The branch stops implementing it: the issue is its own row again, and
+        // says nothing is being built for it.
+        state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        let back = issue_row(&mut state, &implemented_id);
+        assert_eq!(back["implementation_active"], false, "{back:?}");
+        assert!(back["implementing_branch"].is_null(), "{back:?}");
+    }
+
+    /// Every event on an issue's conversation, as the wire ships them.
+    fn issue_events(state: &mut AppState, issue_id: &str) -> Vec<Value> {
+        let issue = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(issue["ok"], true, "{issue:?}");
+        issue["result"]["thread"]["items"]
+            .as_array()
+            .expect("a conversation")
+            .iter()
+            .filter(|item| item["type"] == "event")
+            .map(|item| item["data"].clone())
+            .collect()
+    }
+
+    fn says_the_branch_was_abandoned(events: &[Value], branch: &str) -> bool {
+        events.iter().any(|event| {
+            event["event"] == "abandoned"
+                && event["summary"]
+                    .as_str()
+                    .is_some_and(|summary| summary.contains(branch) && summary.contains("merged"))
+        })
+    }
+
+    /// An issue whose branch is deleted with nothing merged comes back to the
+    /// inbox, and a row that reappears unexplained reads as the list losing
+    /// track of its own work. The conversation names the branch it lost.
+    #[test]
+    fn abandoning_a_branch_tells_its_issue_which_branch_it_lost() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+
+        let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+
+        let events = issue_events(&mut state, &issue_id);
+        assert!(
+            says_the_branch_was_abandoned(&events, &branch),
+            "the issue must say which branch went and that nothing was merged: {events:?}"
+        );
+        let back = issue_row(&mut state, &issue_id);
+        assert_eq!(back["implementation_active"], false, "{back:?}");
+        assert_eq!(
+            back["unread"], true,
+            "an issue that is waiting for work again is asking for someone: {back:?}"
+        );
+    }
+
+    /// Same story with nobody to tell it: the checkout is deleted outside
+    /// Build, the sweep notices on the next poll, and the issue still explains
+    /// itself.
+    #[test]
+    fn a_checkout_deleted_outside_build_still_explains_the_issue_it_returns() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let worktree = state.runs[&run_id].worktree.path.clone();
+
+        std::fs::remove_dir_all(&worktree).expect("the user deleted their worktree");
+        // The sweep runs on the poll the inbox already makes.
+        state.handle(req("board.list", json!({})));
+
+        let events = issue_events(&mut state, &issue_id);
+        assert!(
+            says_the_branch_was_abandoned(&events, &branch),
+            "{events:?}"
+        );
+        assert!(
+            work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(issue_id)),
+            "and the issue is back in the inbox"
+        );
+    }
+
+    /// The inbox reads oldest first, and the bridge hands it over in that
+    /// order: a fresh pickup appends to the bottom instead of shoving what has
+    /// been waiting longest down the list.
+    #[test]
+    fn the_feed_arrives_oldest_first() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let older = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "filed last week", "dispatch": false }),
+        )));
+        let newer = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "filed yesterday", "dispatch": false }),
+        )));
+        state
+            .attention
+            .get_mut(&older)
+            .expect("anchored at creation")
+            .anchor_at = Some(hours_ago(200));
+        state
+            .attention
+            .get_mut(&newer)
+            .expect("anchored at creation")
+            .anchor_at = Some(hours_ago(20));
+
+        let order: Vec<String> = work_item_rows(&mut state)
+            .iter()
+            .filter_map(|row| row["issue_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(
+            order,
+            vec![older.clone(), newer.clone()],
+            "oldest at the top"
+        );
+
+        // Picking the older one back up sends it to the bottom.
+        state
+            .attention
+            .get_mut(&older)
+            .expect("anchored above")
+            .last_user_message_at = Some(hours_ago(13));
+        state.handle(req(
+            "thread.post",
+            json!({ "entity_id": older, "body": "picking this back up" }),
+        ));
+        let order: Vec<String> = work_item_rows(&mut state)
+            .iter()
+            .filter_map(|row| row["issue_id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(order, vec![newer, older], "a fresh pickup appends");
+    }
+
+    /// The diff cache is the file watcher: two computes that disagree are work
+    /// landing on disk, and that is what dates a branch nobody has committed
+    /// on. A recompute after an invalidation is not a filesystem event — there
+    /// was nothing to disagree with.
+    #[test]
+    fn a_moving_diffstat_is_what_dates_a_branch_between_commits() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = "run-watched".to_string();
+        let stat =
+            |files: u64| json!({ "files_changed": files, "insertions": files, "deletions": 0 });
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(1),
+        });
+        assert!(
+            !state.run_files_changed_at.contains_key(&run_id),
+            "the first compute has nothing to disagree with"
+        );
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(1),
+        });
+        assert!(
+            !state.run_files_changed_at.contains_key(&run_id),
+            "an unchanged tree is not a change"
+        );
+
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(2),
+        });
+        let changed_at = state
+            .run_files_changed_at
+            .get(&run_id)
+            .cloned()
+            .expect("files moved");
+        assert!(changed_at > hours_ago(1), "stamped now: {changed_at}");
+
+        // And it is the run's, so deleting the run takes it with them.
+        state.invalidate_run_stat(&run_id);
+        state.store_diff_entry(DiffCacheEntry::RunStat {
+            run_id: run_id.clone(),
+            stat: stat(9),
+        });
+        assert_eq!(
+            state.run_files_changed_at.get(&run_id),
+            Some(&changed_at),
+            "a recompute after an invalidation had nothing to compare against"
+        );
+    }
+
+    /// Done on a branch deletes it, and the row says beforehand what deleting
+    /// it would cost — never that it cannot be done. The primary checkout is
+    /// the one exception: it is the repository, not a worktree to file away,
+    /// so there is nothing there to finish.
+    #[test]
+    fn a_branch_always_offers_done_and_says_what_it_would_cost() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         adopted_run(&mut state, &repo, dir.path(), "feature-done");
         let worktree = dir.path().join("feature-done");
 
-        assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "a branch that was never pushed has nowhere else to be"
-        );
+        // The agent's edits are sitting in the tree, and Done removes the tree.
+        let fresh = branch_row(&mut state, "feature-done");
+        assert_eq!(fresh["can_finish"], true, "{fresh:?}");
+        assert_eq!(warning_codes(&fresh), vec!["uncommitted"], "{fresh:?}");
 
+        // Committed, with no remote: the base branch is the only place the
+        // work could survive Done, and it is not there.
         std::fs::write(worktree.join("work.txt"), "one\n").unwrap();
-        git_in_dir(&worktree, &["add", "."]);
+        git_in_dir(&worktree, &["add", "-A"]);
         git_in_dir(&worktree, &["commit", "-m", "work"]);
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        let unmerged = branch_row(&mut state, "feature-done");
+        assert_eq!(unmerged["can_finish"], true, "{unmerged:?}");
+        assert_eq!(warning_codes(&unmerged), vec!["unmerged"], "{unmerged:?}");
         assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            true,
-            "committed and pushed"
+            unmerged["finish"]["warnings"][0]["count"], 1,
+            "{unmerged:?}"
+        );
+        assert_eq!(
+            unmerged["finish"]["warnings"][0]["ref"], "main",
+            "{unmerged:?}"
         );
 
-        std::fs::write(worktree.join("work.txt"), "one\ntwo\n").unwrap();
-        assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "an unsaved edit exists only here"
+        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        let pushed = branch_row(&mut state, "feature-done");
+        assert!(
+            warning_codes(&pushed).is_empty(),
+            "the remote has all of it: {pushed:?}"
         );
+
+        // An unsaved edit exists only here, and Done removes the checkout.
+        std::fs::write(worktree.join("work.txt"), "one\ntwo\n").unwrap();
+        let dirty = branch_row(&mut state, "feature-done");
+        assert_eq!(warning_codes(&dirty), vec!["uncommitted"], "{dirty:?}");
+
+        // Committed, and now the remote is the one behind.
         git_in_dir(&worktree, &["commit", "-am", "more"]);
+        let ahead = branch_row(&mut state, "feature-done");
+        assert_eq!(warning_codes(&ahead), vec!["unpushed"], "{ahead:?}");
         assert_eq!(
-            branch_row(&mut state, "feature-done")["can_finish"],
-            false,
-            "an unpushed commit exists only here"
+            ahead["finish"]["warnings"][0]["ref"], "origin/feature-done",
+            "{ahead:?}"
         );
 
         let main = branch_row(&mut state, "main");
@@ -29698,6 +31527,7 @@ mod tests {
             main["can_finish"], false,
             "the primary checkout is the repository: {main:?}"
         );
+        assert!(warning_codes(&main).is_empty(), "{main:?}");
     }
 
     /// `#/project/<id>/branch/<name>` resolves through one verb, to the run
@@ -29739,90 +31569,126 @@ mod tests {
         assert_eq!(missing["ok"], false, "{missing:?}");
     }
 
-    /// Done on an implementation branch marks the worktree and the issue
-    /// together — that is what "linked" means — and the unlink flag is the
-    /// deeper control that finishes only the branch.
+    /// An issue ends with its branch only when the branch's work landed. A
+    /// merge finishes both; deleting the branch instead hands the issue back
+    /// to the inbox, with its conversation naming the branch it lost.
     #[test]
-    fn branch_finish_archives_the_issue_with_it_unless_unlinked() {
+    fn branch_finish_ends_the_issue_only_when_the_work_was_merged() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
 
-        let (linked_issue, linked_run) = planned_run_in_review(&mut state, "linked done");
-        let linked_branch = state.runs[&linked_run].worktree.branch.clone();
-        let linked_worktree = state.runs[&linked_run].worktree.path.clone();
-        git_in_dir(&linked_worktree, &["push", "-u", "origin", &linked_branch]);
+        let (merged_issue, merged_run) = planned_run_in_review(&mut state, "merged done");
+        let merged_branch = state.runs[&merged_run].worktree.branch.clone();
         let finished = state.handle(req(
             "branch.finish",
-            json!({ "project_id": project_id, "branch": linked_branch, "action": "delete" }),
+            json!({ "project_id": project_id, "branch": merged_branch, "action": "merge" }),
         ));
         assert_eq!(finished["ok"], true, "{finished:?}");
-        assert_eq!(finished["result"]["issue_id"], linked_issue, "{finished:?}");
+        assert_eq!(finished["result"]["issue_id"], merged_issue, "{finished:?}");
         assert_eq!(finished["result"]["issue_archived"], true, "{finished:?}");
+        assert_eq!(finished["result"]["issue_abandoned"], false, "{finished:?}");
         assert!(
-            state.plans[&linked_issue].plan.archived_at.is_some(),
-            "the issue is archived with its branch"
+            state.plans[&merged_issue].plan.archived_at.is_some(),
+            "the work landed, so the issue is done with it"
         );
 
-        let (kept_issue, kept_run) = planned_run_in_review(&mut state, "unlinked done");
+        // Deleted instead: the issue is waiting for work again, and says so.
+        let (kept_issue, kept_run) = planned_run_in_review(&mut state, "deleted branch");
         let kept_branch = state.runs[&kept_run].worktree.branch.clone();
-        let kept_worktree = state.runs[&kept_run].worktree.path.clone();
-        git_in_dir(&kept_worktree, &["push", "-u", "origin", &kept_branch]);
+        let deleted = state.handle(req(
+            "branch.finish",
+            json!({ "project_id": project_id, "branch": kept_branch, "action": "delete" }),
+        ));
+        assert_eq!(deleted["ok"], true, "{deleted:?}");
+        assert_eq!(deleted["result"]["issue_archived"], false, "{deleted:?}");
+        assert_eq!(deleted["result"]["issue_abandoned"], true, "{deleted:?}");
+        assert!(
+            state.plans[&kept_issue].plan.archived_at.is_none(),
+            "nothing was merged, so the issue is not done"
+        );
+        let events = issue_events(&mut state, &kept_issue);
+        assert!(
+            says_the_branch_was_abandoned(&events, &kept_branch),
+            "{events:?}"
+        );
+        // The issue that was hidden behind that branch is back in the inbox,
+        // and the merged one — done — is not.
+        let rows = work_item_rows(&mut state);
+        assert!(
+            rows.iter()
+                .any(|row| row["issue_id"] == json!(kept_issue.clone())),
+            "the issue is waiting for work again: {rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row["issue_id"] == json!(merged_issue.clone())),
+            "nothing marked done is ever shown: {rows:?}"
+        );
+
+        // …and unlink is the control that leaves the issue out of it entirely.
+        let (unlinked_issue, unlinked_run) = planned_run_in_review(&mut state, "unlinked done");
+        let unlinked_branch = state.runs[&unlinked_run].worktree.branch.clone();
         let unlinked = state.handle(req(
             "branch.finish",
             json!({
                 "project_id": project_id,
-                "branch": kept_branch,
-                "action": "delete",
+                "branch": unlinked_branch,
+                "action": "merge",
                 "unlink": true,
             }),
         ));
         assert_eq!(unlinked["ok"], true, "{unlinked:?}");
         assert_eq!(unlinked["result"]["issue_archived"], false, "{unlinked:?}");
-        assert!(
-            state.plans[&kept_issue].plan.archived_at.is_none(),
-            "unlink finishes the branch alone"
-        );
+        assert!(state.plans[&unlinked_issue].plan.archived_at.is_none());
     }
 
-    /// The branch row's Done button and `branch.finish` enforce the same rule,
-    /// so the button never offers something the verb refuses — and a linked
-    /// issue that is not implemented says so, naming the way past it.
+    /// Done on a branch is the user's decision, not the bridge's. Work that
+    /// exists only on this machine is a warning the row carried all along —
+    /// the verb still deletes the branch, its checkout and its records.
     #[test]
-    fn branch_finish_refuses_unpushed_work_and_an_unfinished_issue() {
+    fn branch_finish_deletes_unpushed_work_it_warned_about() {
         let (dir, repo, _origin) = init_repo_with_origin();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
-        let (issue_id, run_id) = planned_run_in_review(&mut state, "not pushed");
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "never pushed");
         let branch = state.runs[&run_id].worktree.branch.clone();
         let worktree = state.runs[&run_id].worktree.path.clone();
 
-        let refused = state.handle(req(
-            "branch.finish",
-            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+        // The preflight the confirm dialog reads, before anything is touched.
+        let preflight = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": branch }),
         ));
-        assert_eq!(refused["ok"], false, "{refused:?}");
-        assert!(
-            refused["error"].as_str().unwrap().contains("push"),
-            "{refused:?}"
+        assert_eq!(preflight["ok"], true, "{preflight:?}");
+        assert_eq!(preflight["result"]["can_finish"], true, "{preflight:?}");
+        assert_eq!(
+            warning_codes(&preflight["result"]),
+            vec!["unmerged"],
+            "{preflight:?}"
         );
-        assert!(worktree.exists(), "nothing was finished");
 
-        // Pushed, but the issue it implements is no longer complete: the linked
-        // marking refuses rather than half-archiving.
-        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
-        state.runs.get_mut(&run_id).unwrap().stages.pop();
-        let blocked = state.handle(req(
+        // No action at all: Done means delete.
+        let finished = state.handle(req(
             "branch.finish",
-            json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
+            json!({ "project_id": project_id, "branch": branch }),
         ));
-        assert_eq!(blocked["ok"], false, "{blocked:?}");
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["worktree"]["action"], "delete");
+        assert!(!worktree.exists(), "the checkout is gone: {finished:?}");
         assert!(
-            blocked["error"].as_str().unwrap().contains("unlink"),
-            "the error names the override: {blocked:?}"
+            !local_branch_exists(&std::fs::canonicalize(&repo).unwrap(), &branch).unwrap(),
+            "the branch is gone with it"
         );
+        assert!(
+            !work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["branch"] == json!(branch.clone())),
+            "and its conversation is out of the inbox"
+        );
+        // The issue it was built for is still waiting for work.
         assert!(state.plans[&issue_id].plan.archived_at.is_none());
-        assert!(worktree.exists(), "nothing was finished");
     }
 
     // ==== branch.dispatch: one call from a sentence to an agent working =======
@@ -30640,12 +32506,9 @@ mod tests {
         }
         assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
 
-        state.captures.get_mut(&capture_id).unwrap().question =
-            Some(crate::capture::CaptureQuestion {
-                text: "which project is this?".to_string(),
-                asked_at: now_rfc3339(),
-                answer: None,
-            });
+        state.captures.get_mut(&capture_id).unwrap().question = Some(
+            crate::capture::CaptureQuestion::new("which project is this?", now_rfc3339()),
+        );
         let asking = capture_rows(&mut state).remove(0);
         assert_eq!(asking["unread"], true);
         assert_eq!(asking["unread_reason"], "router_question");
@@ -30685,11 +32548,10 @@ mod tests {
         store.save_capture(&routed).unwrap();
         let mut asking =
             crate::capture::Capture::new("capture-asking", "do the thing", now_rfc3339());
-        asking.question = Some(crate::capture::CaptureQuestion {
-            text: "which project?".to_string(),
-            asked_at: now_rfc3339(),
-            answer: None,
-        });
+        asking.question = Some(crate::capture::CaptureQuestion::new(
+            "which project?",
+            now_rfc3339(),
+        ));
         store.save_capture(&asking).unwrap();
 
         let mut state = qa_state(&repo, dir.path());
@@ -30839,8 +32701,8 @@ mod tests {
 
         assert_eq!(state.plans[&issue_id].plan.state, PlanState::Created);
         assert!(
-            state.plans[&issue_id].worktree.is_none(),
-            "inert: no worktree"
+            state.plans[&issue_id].workspace.is_none(),
+            "inert: no workspace"
         );
         assert!(
             !state
@@ -30917,6 +32779,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -30929,6 +32792,279 @@ mod tests {
         let row = capture_rows(&mut state).remove(0);
         assert_eq!(row["unread"], true);
         assert_eq!(row["unread_reason"], "router_question");
+        assert_eq!(
+            row["question"]["options"],
+            json!([]),
+            "a question with no options is still a question"
+        );
+    }
+
+    /// The two choices a router thought of, offered beside the question — and
+    /// carried to every surface that shows the capture, because a choice the
+    /// client cannot see is a choice nobody can tap.
+    fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
+        state
+            .on_router_mcp_action(
+                capture_id,
+                BridgeAction::AskUser {
+                    question: "which project is this about?".to_string(),
+                    options: vec![
+                        crate::capture::CaptureOptionDraft {
+                            label: "File as an issue on Build".to_string(),
+                            project_id: Some("proj-build".to_string()),
+                            kind: Some(crate::capture::CaptureTarget::Issue),
+                            branch: None,
+                        },
+                        crate::capture::CaptureOptionDraft {
+                            label: "New branch on Do".to_string(),
+                            project_id: Some("proj-do".to_string()),
+                            kind: Some(crate::capture::CaptureTarget::Branch),
+                            branch: None,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+    }
+
+    /// The router's suggestions reach `capture.get`, `capture.list` and the
+    /// feed row, numbered and whole. Anything less and the decision surface has
+    /// a question with no buttons under it.
+    #[test]
+    fn the_options_a_router_offers_reach_every_surface_that_shows_the_capture() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+
+        let expected = json!([
+            {
+                "id": "option-1",
+                "label": "File as an issue on Build",
+                "project_id": "proj-build",
+                "kind": "issue",
+                "branch": Value::Null,
+            },
+            {
+                "id": "option-2",
+                "label": "New branch on Do",
+                "project_id": "proj-do",
+                "kind": "branch",
+                "branch": Value::Null,
+            },
+        ]);
+
+        let record = capture_record(&mut state, &capture_id);
+        assert_eq!(record["question"]["options"], expected);
+        assert_eq!(record["question"]["chosen_option_id"], Value::Null);
+
+        let listed = state.handle(req("capture.list", json!({})));
+        assert_eq!(
+            listed["result"]["captures"][0]["question"]["options"],
+            expected
+        );
+
+        let row = capture_rows(&mut state).remove(0);
+        assert_eq!(row["question"]["options"], expected);
+
+        // And a fresh daemon over the same store still has the offer.
+        let mut rebooted = qa_state(&repo, dir.path());
+        assert_eq!(
+            capture_record(&mut rebooted, &capture_id)["question"]["options"],
+            expected
+        );
+    }
+
+    /// Tapping a choice answers the question in words the router can act on:
+    /// the label the user saw, and the destination it stood for.
+    #[test]
+    fn choosing_an_option_answers_the_router_in_its_own_terms() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+        state.pending_agent_turns.clear();
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "option_id": "option-2" }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        let question = &answered["result"]["question"];
+        assert_eq!(
+            question["answer"],
+            "New branch on Do — route this to project proj-do as a branch"
+        );
+        assert_eq!(question["chosen_option_id"], "option-2");
+        assert_eq!(
+            question["options"].as_array().unwrap().len(),
+            2,
+            "what the user was shown stays on the record"
+        );
+
+        let turn = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.owner == capture_id)
+            .expect("the router is re-fired with the choice in hand");
+        assert!(turn.cold.contains("proj-do"), "{}", turn.cold);
+        assert!(turn.cold.contains("New branch on Do"), "{}", turn.cold);
+    }
+
+    /// A client that tracked positions rather than ids taps the same choice.
+    #[test]
+    fn an_option_can_be_chosen_by_position() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "option_index": 0 }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["question"]["chosen_option_id"], "option-1",
+            "position 0 is the first option offered"
+        );
+    }
+
+    /// The keyboard never goes away: a question that offered choices still
+    /// takes words, and words are not recorded as a tap.
+    #[test]
+    fn free_form_answers_a_question_that_offered_options() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        let answered = state.handle(req(
+            "capture.answer",
+            json!({ "capture_id": capture_id, "text": "neither, it is the relay" }),
+        ));
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["question"]["answer"],
+            "neither, it is the relay"
+        );
+        assert_eq!(
+            answered["result"]["question"]["chosen_option_id"],
+            Value::Null
+        );
+    }
+
+    /// A tap that names nothing is refused rather than quietly read as an
+    /// answer of some other kind: the user believes the tap landed.
+    #[test]
+    fn an_option_nobody_offered_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        state.settle_router_session(&capture_id);
+
+        for chosen in [
+            json!({ "capture_id": capture_id, "option_id": "option-9" }),
+            json!({ "capture_id": capture_id, "option_index": 7 }),
+            json!({ "capture_id": capture_id, "option_id": "option-9", "text": "the relay" }),
+        ] {
+            let missed = state.handle(req("capture.answer", chosen.clone()));
+            assert_eq!(missed["ok"], false, "{chosen}: {missed:?}");
+        }
+        assert_eq!(
+            capture_record(&mut state, &capture_id)["question"]["answer"],
+            Value::Null
+        );
+    }
+
+    /// Four choices is a menu. The router is told so, and the question is not
+    /// asked with three of them and the fourth quietly dropped.
+    #[test]
+    fn a_router_offering_more_than_three_options_is_refused_the_question() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+
+        let too_many = state.on_router_mcp_action(
+            &capture_id,
+            BridgeAction::AskUser {
+                question: "which project is this about?".to_string(),
+                options: (1..=4)
+                    .map(|n| crate::capture::CaptureOptionDraft {
+                        label: format!("project {n}"),
+                        ..crate::capture::CaptureOptionDraft::default()
+                    })
+                    .collect(),
+            },
+        );
+        assert!(too_many.is_err(), "{too_many:?}");
+        assert_eq!(
+            capture_record(&mut state, &capture_id)["question"],
+            Value::Null,
+            "a question Build refused is a question nobody was asked"
+        );
+    }
+
+    /// The way out of a decision. A capture nobody wants routed stops the
+    /// router, leaves the feed, and takes its record with it.
+    #[test]
+    fn cancelling_a_capture_ends_the_routing_and_removes_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "make the thing faster");
+        asked_with_two_options(&mut state, &capture_id);
+        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+
+        let cancelled = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(cancelled["ok"], true, "{cancelled:?}");
+        assert_eq!(cancelled["result"]["cancelled"], true);
+
+        assert!(!state.router_sessions.contains_key(&capture_id));
+        assert!(!scratch.exists(), "the router's scratch goes with it");
+        assert_eq!(capture_rows(&mut state), Vec::<Value>::new());
+        assert_eq!(
+            state.handle(req("capture.list", json!({})))["result"]["captures"],
+            json!([])
+        );
+        assert_eq!(
+            Store::new(dir.path().join("store"))
+                .load_all_captures()
+                .unwrap(),
+            Vec::new(),
+            "and a reboot does not bring it back"
+        );
+
+        let again = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(again["ok"], false, "{again:?}");
+    }
+
+    /// Once a capture became work, that work is what there is to cancel. A
+    /// cancel here would drop the record that says where it went and leave the
+    /// issue behind it unexplained.
+    #[test]
+    fn a_capture_that_became_work_is_not_cancelled_from_here() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (capture_id, _) = captured(&mut state, "ship it");
+        let project_id = state.projects[0].id.clone();
+        state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id,
+                    goal: "ship it".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+
+        let refused = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(state.captures.contains_key(&capture_id));
     }
 
     /// The answer comes back and the router looks again — with the answer in
@@ -30943,6 +33079,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -31003,6 +33140,7 @@ mod tests {
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project?".to_string(),
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -31822,7 +33960,7 @@ mod tests {
         let issue_id = record["routing"]["target_id"].as_str().unwrap().to_string();
         let issue = &state.plans[&issue_id];
         assert_eq!(issue.plan.state, PlanState::Created);
-        assert!(issue.worktree.is_none(), "inert: no checkout");
+        assert!(issue.workspace.is_none(), "inert: no checkout");
         assert!(
             !state
                 .pending_agent_turns

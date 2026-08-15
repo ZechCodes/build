@@ -16,7 +16,7 @@
 //! and run instead of orphaning the worktrees that survived on disk.
 //!
 //! Plan docs live here as the **source of truth** (spec: Plan/Run Split):
-//! planning worktrees are disposable, so `ingest_plan_docs` (worktree → store)
+//! the scratch docs dir is disposable, so `ingest_plan_docs` (scratch → store)
 //! is fail-fast — a plan never advances with unpersisted docs — and
 //! `materialize_plan_docs` (store → worktree) recreates the docs for run
 //! dispatch and plan-revision sessions.
@@ -165,17 +165,7 @@ pub struct PersistedPlan {
     pub implementation_intent: crate::plan::ImplementationIntent,
     #[serde(default)]
     pub implementation_activity: crate::plan::ImplementationActivity,
-    /// The disposable planning worktree, while one is alive (kept warm through
-    /// the notes/revision loop). `None` once torn down (approve/abandon) or
-    /// before one exists — the store docs are canonical either way.
-    #[serde(default)]
-    pub worktree_name: Option<String>,
-    #[serde(default)]
-    pub worktree_path: Option<String>,
-    /// The planning worktree's branch (`plan/<slug>`), torn down with it.
-    #[serde(default)]
-    pub branch: Option<String>,
-    /// Worktree-relative path of the single plan doc (`.build/plan.md`).
+    /// Docs-dir-relative path of the single plan doc (`.build/plan.md`).
     pub plan_path: String,
     /// Stage docs: manifest metadata + plan-side review sub-state. Empty for
     /// single-doc plans.
@@ -771,6 +761,15 @@ impl Store {
     pub fn save_capture(&self, record: &crate::capture::Capture) -> Result<(), StoreError> {
         let json = serde_json::to_string_pretty(record).expect("a capture always serializes");
         write_record_atomically(&self.capture_path(&record.id), &json)
+    }
+
+    /// Forget one capture, and the half-written copy of it a crashed save may
+    /// have left. Only ever called for a capture the user abandoned: nothing
+    /// else in Build deletes what they said.
+    pub fn delete_capture(&self, capture_id: &str) -> Result<(), StoreError> {
+        let path = self.capture_path(capture_id);
+        remove_file_if_present(&path)?;
+        remove_file_if_present(&path.with_extension("json.tmp"))
     }
 
     /// Load every capture, oldest first. Same discipline as the other loaders:
@@ -1452,17 +1451,6 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         return None;
     }
     let past_planning = legacy_task_progressed_past_planning(task);
-    // While the plan was still being authored, the fused task's worktree *was*
-    // the planning worktree; past planning it belongs to the run.
-    let (worktree_name, worktree_path, branch) = if past_planning {
-        (None, None, None)
-    } else {
-        (
-            Some(task.worktree_name.clone()),
-            Some(task.worktree_path.clone()),
-            Some(task.branch.clone()),
-        )
-    };
     Some(PersistedPlan {
         id: task.id.clone(),
         goal: task.goal.clone(),
@@ -1472,9 +1460,6 @@ fn plan_record_from_legacy(task: &PersistedTask) -> Option<PersistedPlan> {
         archived_at: None,
         implementation_intent: crate::plan::ImplementationIntent::None,
         implementation_activity: crate::plan::ImplementationActivity::Idle,
-        worktree_name,
-        worktree_path,
-        branch,
         plan_path: task.plan_path.clone(),
         stages: task.stages.iter().map(stage_doc_from_legacy).collect(),
         comments: task.comments.clone(),
@@ -1725,6 +1710,41 @@ mod tests {
             .map(|capture| capture.id)
             .collect();
         assert_eq!(ids, vec!["capture-a", "capture-b", "capture-c"]);
+    }
+
+    /// A capture the user abandoned is gone, and gone across a reboot: the one
+    /// deletion this store does, and it happens only when they asked for it.
+    #[test]
+    fn a_cancelled_capture_is_forgotten_and_stays_forgotten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks"));
+        store
+            .save_capture(&Capture::new(
+                "capture-1",
+                "ship it",
+                "2026-08-13T10:00:00Z",
+            ))
+            .unwrap();
+        store
+            .save_capture(&Capture::new(
+                "capture-2",
+                "and this",
+                "2026-08-13T10:00:01Z",
+            ))
+            .unwrap();
+
+        store.delete_capture("capture-1").unwrap();
+        let ids: Vec<String> = store
+            .load_all_captures()
+            .unwrap()
+            .into_iter()
+            .map(|capture| capture.id)
+            .collect();
+        assert_eq!(ids, vec!["capture-2"], "only the one asked for");
+
+        store
+            .delete_capture("capture-1")
+            .expect("forgetting what is already forgotten is not an error");
     }
 
     /// No captures dir means no captures — a first boot is not an error.
@@ -2182,9 +2202,6 @@ mod tests {
             archived_at: None,
             implementation_intent: crate::plan::ImplementationIntent::None,
             implementation_activity: crate::plan::ImplementationActivity::Idle,
-            worktree_name: Some("plan-greeting".into()),
-            worktree_path: Some("/home/u/.build/worktrees/plan-greeting".into()),
-            branch: Some("plan/greeting".into()),
             plan_path: ".build/plan.md".into(),
             stages: vec![StageDoc {
                 id: "database-schema".into(),
@@ -2354,18 +2371,6 @@ mod tests {
             .save_plan(&plan_record("plan-1", PlanState::Drafting))
             .unwrap();
         assert!(tasks.join("plans/plan-1/record.json").is_file());
-    }
-
-    #[test]
-    fn plan_worktree_fields_persist_as_absent_after_teardown() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Store::new(dir.path().join("tasks"));
-        let mut rec = plan_record("plan-1", PlanState::Approved);
-        rec.worktree_name = None;
-        rec.worktree_path = None;
-        rec.branch = None;
-        store.save_plan(&rec).unwrap();
-        assert_eq!(store.load_all_plans().unwrap(), vec![rec]);
     }
 
     #[test]
@@ -2932,9 +2937,6 @@ mod tests {
         let plan = &plans[0];
         assert_eq!(plan.id, "task-s");
         assert_eq!(plan.state, PlanState::PlanReview);
-        // Never past planning: the task's worktree was the planning worktree.
-        assert_eq!(plan.worktree_name.as_deref(), Some("add-a-greeting"));
-        assert_eq!(plan.branch.as_deref(), Some("build/add-a-greeting"));
         assert_eq!(plan.plan_path, ".build/plan.md");
         assert_eq!(plan.stages.len(), 2);
         assert_eq!(plan.stages[0].state, StageDocState::Approved);
@@ -2989,10 +2991,6 @@ mod tests {
         assert_eq!(plans.len(), 1);
         let plan = &plans[0];
         assert_eq!(plan.state, PlanState::Approved);
-        assert_eq!(
-            plan.worktree_name, None,
-            "past planning: the worktree belongs to the run"
-        );
         // A dispatched stage's doc was necessarily approved.
         assert_eq!(plan.stages[0].state, StageDocState::Approved);
         assert_eq!(plan.stages[1].state, StageDocState::Approved);

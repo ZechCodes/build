@@ -2,11 +2,12 @@
 // and what the work you are standing in is doing.
 //
 // Left: the project name, then the branch or issue name. They are two words of
-// one sentence and they open ONE menu — every project, every branch and issue
-// inside the scoped project, and the two creates at its foot. Picking a project
-// re-scopes the menu (there is no project page any more; branches and issues are
-// the only navigation targets); picking work goes there; picking a create asks
-// for the one thing it needs and opens what it made.
+// one sentence and each opens the menu of its own kind — the project name lists
+// projects, the branch-or-issue name lists that project's branches and issues,
+// with the two creates at its foot. Picking a project re-scopes and hands you
+// straight to its work list (there is no project page any more; branches and
+// issues are the only navigation targets); picking work goes there; picking a
+// create asks for the one thing it needs and opens what it made.
 //
 // Right: the working-time ticker and the diffstat off the same feed row the
 // inbox reads, and the ⋯ that carries what used to be the tab row's right
@@ -23,7 +24,7 @@ import { notifyError } from "./notify.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
-import { branchNamePreview, toolbarIdentity, toolbarMenuModel, toolbarStatus } from "./toolbarModel.js";
+import { branchNamePreview, projectMenuModel, toolbarIdentity, toolbarStatus, workMenuModel } from "./toolbarModel.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
@@ -137,7 +138,7 @@ function paint() {
   if (open && !(open.create && open.create.busy)) paintMenu();
 }
 
-// ---- the one menu behind both selectors -------------------------------------
+// ---- the menu each selector opens -------------------------------------------
 
 function menuShell(anchor, className) {
   const element = document.createElement("div");
@@ -179,15 +180,30 @@ function closeMenu() {
 }
 
 function openJumpMenu(anchor) {
-  open = { ...menuShell(anchor, "tbmenu"), select: anchor.dataset.select, mode: "jump", query: "", create: null };
+  open = {
+    ...menuShell(anchor, "tbmenu"),
+    select: anchor.dataset.select,
+    mode: "jump",
+    list: anchor.dataset.select === "project" ? "projects" : "work",
+    query: "",
+    create: null,
+  };
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
   if (filter) filter.focus();
 }
 
-/** The list both selectors open, and the two creates at its foot. Repainted in
- *  place as the query changes and as the feed moves, so a menu left open does
- *  not go stale. */
+/** Move the open menu to the other list. The query goes with the list it was
+ *  typed against — the two lists hold different kinds of name. */
+function showList(list) {
+  open.list = list;
+  open.query = "";
+  paintMenu();
+  open.element.querySelector(".tb-filter").focus();
+}
+
+/** Whichever list the open menu is showing. Repainted in place as the query
+ *  changes and as the feed moves, so a menu left open does not go stale. */
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
   if (open.create) {
@@ -199,41 +215,7 @@ function paintMenu() {
   // the end mid-word is worse than a stale list.
   const typing = open.element.querySelector(".tb-filter");
   const caret = typing && document.activeElement === typing ? typing.selectionStart : null;
-  const projectId = scopeProjectId();
-  const model = toolbarMenuModel({ items: feed.items, projects: projectsOf(), projectId, query: open.query });
-  const projectRows = model.projects
-    .map(
-      (project) =>
-        `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.id)}" type="button" role="menuitem">
-           <span class="mt">${esc(project.name)}</span></button>`,
-    )
-    .join("");
-  const workRows = model.work.length
-    ? model.work
-        .map(
-          (entry) =>
-            `<button class="mi" data-work="${esc(entry.key)}" type="button" role="menuitem">
-               <span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>
-               <span class="md">${esc(entry.detail)}</span></button>`,
-        )
-        .join("")
-    : `<div class="tb-none dim">Nothing here yet.</div>`;
-  const scopedName = projectNameOf(projectId) || "This project";
-  open.element.innerHTML = `
-    <input class="tb-filter" type="text" placeholder="Jump to a project, branch or issue" value="${esc(open.query)}"
-      aria-label="Filter projects and work" autocomplete="off" />
-    <div class="tbmenu-list">
-      <div class="tb-group">Projects</div>
-      ${projectRows}
-      <div class="tb-group">${esc(scopedName)}</div>
-      ${workRows}
-    </div>
-    <div class="tbmenu-foot">
-      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
-        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
-      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
-        <span class="md">Nothing runs until your first message</span></button>
-    </div>`;
+  open.element.innerHTML = open.list === "projects" ? projectListHtml() : workListHtml();
   const filter = open.element.querySelector(".tb-filter");
   if (caret !== null) {
     filter.focus();
@@ -245,21 +227,19 @@ function paintMenu() {
   };
   open.element.querySelectorAll("[data-project]").forEach((row) => {
     row.onclick = () => {
+      // There is no project page to go to: picking a project scopes the toolbar
+      // and hands you its work, which is what you came for.
       rememberScope(row.dataset.project);
-      open.query = "";
-      paintMenu();
-      open.element.querySelector(".tb-filter").focus();
-
+      showList("work");
     };
   });
+  const back = open.element.querySelector("[data-projects]");
+  if (back) back.onclick = () => showList("projects");
   open.element.querySelectorAll("[data-work]").forEach((row) => {
     row.onclick = () => {
-      const entry = toolbarMenuModel({
-        items: feed.items,
-        projects: projectsOf(),
-        projectId: scopeProjectId(),
-        query: open.query,
-      }).work.find((candidate) => candidate.key === row.dataset.work);
+      const entry = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query }).find(
+        (candidate) => candidate.key === row.dataset.work,
+      );
       closeMenu();
       if (entry) go(entry.route);
     };
@@ -279,6 +259,70 @@ function paintMenu() {
       paintMenu();
     };
   });
+}
+
+/** The counter a menu row wears: what is waiting inside it, and nothing at all
+ *  when nothing is. Same badge the inbox rows use. */
+function unreadBadgeHtml(count, what) {
+  if (!count) return "";
+  return `<span class="badge" title="${count} unread in ${esc(what)}">${count}</span>`;
+}
+
+/** The project half's list: which project, and how much is waiting in it. */
+function projectListHtml() {
+  const projects = projectMenuModel({
+    projects: projectsOf(),
+    items: feed.items,
+    projectId: scopeProjectId(),
+    query: open.query,
+  });
+  const rows = projects.length
+    ? projects
+        .map(
+          (project) =>
+            `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.id)}" type="button" role="menuitem">
+               <span class="mi-line"><span class="mt">${esc(project.name)}</span>${unreadBadgeHtml(project.unreadCount, project.name)}</span></button>`,
+        )
+        .join("")
+    : `<div class="tb-none dim">No project by that name.</div>`;
+  return `
+    <input class="tb-filter" type="text" placeholder="Jump to a project" value="${esc(open.query)}"
+      aria-label="Filter projects" autocomplete="off" />
+    <div class="tbmenu-list">${rows}</div>`;
+}
+
+/** The item half's list: the scoped project's branches and issues, the two
+ *  creates at its foot, and the way back to the projects. */
+function workListHtml() {
+  const scopedName = projectNameOf(scopeProjectId()) || "This project";
+  const work = workMenuModel({ items: feed.items, projectId: scopeProjectId(), query: open.query });
+  const rows = work.length
+    ? work
+        .map(
+          (entry) =>
+            `<button class="mi" data-work="${esc(entry.key)}" type="button" role="menuitem">
+               <span class="mi-line"><span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>${unreadBadgeHtml(
+                 entry.unreadCount,
+                 entry.label,
+               )}</span>
+               <span class="md">${esc(entry.detail)}</span></button>`,
+        )
+        .join("")
+    : `<div class="tb-none dim">Nothing here yet.</div>`;
+  return `
+    <input class="tb-filter" type="text" placeholder="Jump to a branch or issue" value="${esc(open.query)}"
+      aria-label="Filter branches and issues" autocomplete="off" />
+    <div class="tb-group tb-scope">
+      <span>${esc(scopedName)}</span>
+      <button class="tb-scope-switch" data-projects type="button">Projects</button>
+    </div>
+    <div class="tbmenu-list">${rows}</div>
+    <div class="tbmenu-foot">
+      <button class="mi" data-create="branch" type="button" role="menuitem"><span class="mt">New branch…</span>
+        <span class="md">A checkout of its own, in ${esc(scopedName)}</span></button>
+      <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
+        <span class="md">Nothing runs until your first message</span></button>
+    </div>`;
 }
 
 // ---- the two creates --------------------------------------------------------

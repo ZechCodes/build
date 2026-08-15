@@ -1,10 +1,13 @@
 // The branch work item's surface: two tabs, Changes and Files, and nothing
 // else — the conversation is the agent rail and the terminals are the console.
 //
-// The row is just tabs now. Which branch this is, which project it lives in,
-// how long its agent has been working and what the diff weighs are the
+// The row is tabs and one verb. Which branch this is, which project it lives
+// in, how long its agent has been working and what the diff weighs are the
 // toolbar's (core/toolbar.js), one row above; the surface below states only
-// what is inside it.
+// what is inside it. The verb at the far right of the row is how the branch
+// ends: Done, the same `branch.finish` the inbox row's Done sends, where a
+// reader standing IN the branch can find it (core/branchFinish.js decides when
+// it is offered and what it promises).
 //
 // The surface resolves what stands under the branch with `branch.get`: a run,
 // a bare worktree, or the primary checkout. That resolution names the git
@@ -31,6 +34,11 @@ import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
 import { noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
+import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
+import { confirmAction } from "../core/confirm.js";
+import { notifyError } from "../core/notify.js";
+import { refreshFeed } from "../core/taskFeed.js";
+import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../core/branchFinish.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -73,8 +81,9 @@ export async function renderBranch() {
   root.innerHTML = `
     <div class="surface-bar">
       <div class="tabrow" id="branch-tabs"></div>
+      <div class="surface-verb" id="branch-finish"></div>
     </div>
-    <div id="tabbody"><div class="empty">loading…</div></div>`;
+    <div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   $("#branch-tabs").innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
   $("#branch-tabs")
     .querySelectorAll("[data-tab]")
@@ -116,10 +125,67 @@ export async function renderBranch() {
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:
    *  Merged/Abandoned are attention-class, so the entry's cursor is cleared on
-   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). */
-  const finished = () => {
-    noteSelfAction(entityIdOf(row), row && row.issue_id);
+   *  the way out (the Stage B rule; core/inboxView.js noteSelfAction). An issue
+   *  handed BACK to the inbox keeps its own cursor — it is asking for somebody
+   *  again, and the event naming the branch it lost is the point of it. Only an
+   *  issue that ends with the branch is cleared with it. */
+  const finished = ({ issueEnded = false } = {}) => {
+    noteSelfAction(entityIdOf(row), issueEnded ? row && row.issue_id : null);
     home();
+  };
+
+  // ---- the way the branch ends ------------------------------------------------
+  //
+  // ONE latch for the surface's Done: the row poll repaints this control, and a
+  // repaint mid-flight would arm a second branch.finish over the first.
+  const finishFlight = createSingleFlight();
+
+  /** One close-out: read what the deletion costs off the freshest row, confirm
+   *  the exact outline, send it, and leave for the inbox. A rejection restores
+   *  the button (the split button's contract) and the notice carries the
+   *  reason. */
+  const runFinish = async (optionId) => {
+    const facts = branchFinishFacts(row, branch);
+    const name = facts.branch;
+    // A cancel throws BEFORE any RPC: the button restores and no notice appears.
+    if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
+    try {
+      await callRpc("branch.finish", branchFinishParams(optionId, { projectId, branch: name }));
+    } catch (error) {
+      notifyError(`Couldn't finish ${name}`, (error && error.message) || String(error));
+      throw error;
+    }
+    refreshFeed();
+    // The issue ends with the branch only when the work landed; otherwise the
+    // bridge hands it back to the inbox.
+    finished({ issueEnded: facts.merged });
+  };
+
+  // What the Done control was last painted from. The row poll runs every 1.6
+  // seconds and almost every tick resolves the same close-out; rewriting the
+  // host on each one destroyed whatever was open inside it, so the menu
+  // vanished before the user could reach an item.
+  let paintedFinish = null;
+
+  /** Paint the row's Done off the freshest branch.get row. Frozen while a
+   *  close-out is in flight, so no poll can remount an enabled button over a
+   *  pending branch.finish, and while its menu is open — a click in progress
+   *  outranks a repaint, which lands on a later tick once the menu is shut. */
+  const paintFinish = () => {
+    const host = $("#branch-finish");
+    if (!host || finishFlight.active()) return;
+    if (host.querySelector(".splitmenu:not([hidden])")) return;
+    const closeout = branchCloseout(row);
+    const signature = JSON.stringify(closeout);
+    if (signature === paintedFinish) return;
+    paintedFinish = signature;
+    if (!closeout.shown) {
+      host.innerHTML = "";
+      return;
+    }
+    // Always pressable: Done is never refused for the state of the work — what
+    // the deletion would cost is in the confirmation, not in a disabled button.
+    mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight });
   };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
@@ -137,7 +203,8 @@ export async function renderBranch() {
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
           agentSelection,
-          onMerged: () => finished(),
+          // A merge is the work landing: the issue it implements ends with it.
+          onMerged: () => finished({ issueEnded: true }),
         });
       } else {
         reviewPlug = createWorktreeReview({
@@ -206,8 +273,10 @@ export async function renderBranch() {
       payload = await callRpc("branch.get", { project_id: projectId, branch, ...agentSelection.scope() });
     } catch {
       // The branch stopped resolving: merged away, renamed, or the worktree is
-      // gone. A row we already painted stays; a first read that fails says so.
-      if (!disposed && !row) {
+      // gone. A row we already painted stays; a first read that fails says so —
+      // once. Every tick after says the same thing, and repainting would rebuild
+      // the one way out the empty state offers.
+      if (!disposed && !row && mountedKey !== "gone") {
         const host = $("#tabbody");
         if (host)
           host.innerHTML = `<div class="empty gone">No checkout in this project carries <span class="mono">${esc(branch)}</span>.<div><button class="btn" id="branchback">Back to inbox</button></div></div>`;
@@ -221,6 +290,7 @@ export async function renderBranch() {
     row = payload;
     if (force) mountedKey = null;
     mountBody();
+    paintFinish();
   };
 
   App.viewDispose = () => {

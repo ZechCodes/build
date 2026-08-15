@@ -68,6 +68,38 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
   return bubbles;
 }
 
+/**
+ * Whether this agent can be taken back off the work item — the mirror of the
+ * `+` bubble, and it answers the same two questions the daemon does.
+ *
+ * Branches only: an issue's one agent IS the issue's conversation, so there is
+ * nothing to remove there, only an issue to abandon. And never the branch's
+ * FIRST agent, which owns the branch's conversation — that is also what keeps a
+ * branch from ever being left with no agent at all.
+ */
+export function canRemoveAgent({ agents = [], agentId = null, kind = "branch" } = {}) {
+  if (kind !== "branch" || !agentId || agents.length < 2) return false;
+  if (agents[0].id === agentId) return false;
+  return agents.some((agent) => agent.id === agentId);
+}
+
+/** The confirmation plan for `agent.remove` — the outline core/confirm.js asks
+ *  with. Removal kills the agent's session and takes its conversation with it,
+ *  so it says both, and says what it does NOT touch. */
+export function removeAgentConfirm(agent) {
+  const who = agentTitle(agent);
+  return {
+    title: `Remove ${who} from this branch?`,
+    actions: [
+      "End the agent's session, if one is running",
+      `Remove ${who} and its conversation from the branch`,
+      "Leave the branch and its files untouched",
+    ],
+    confirmLabel: "Remove agent",
+    danger: true,
+  };
+}
+
 /** The conversation that is open: the one the human chose while it still
  *  exists, else the first — the rail is never open on nothing. */
 export function selectAgentId(agents = [], wanted = null) {

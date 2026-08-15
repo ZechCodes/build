@@ -3,7 +3,7 @@
 //! The bridge ships defaults; a project overrides any of them by dropping files
 //! in `.build/templates/`. The `done`-tool instructions live in the templates
 //! (harness-agnostic, user-overridable, zero special cases). Variables: `{goal}`,
-//! `{plan_path}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
+//! `{plan_path}`, `{docs_dir}`, `{comments}`, `{base_branch}`, `{stage_id}`, `{stage_title}`,
 //! `{stage_path}`, `{stage_summary}`, `{next_stage_path}`, `{stage_start_sha}`,
 //! `{findings}`, `{prior_notes}`, `{capture_text}`, `{user_answer}`.
 
@@ -22,6 +22,13 @@ You are in PLAN mode. The goal is:
 
 {goal}
 
+You are running in the project's primary checkout, on {base_branch}. Read
+whatever you need there, but change nothing in it — planning writes no code, and
+that checkout is the human's own. Every document you write goes under Build's
+scratch docs directory for this issue:
+
+{docs_dir}
+
 Settle the conversation before you plan. First answer, with `post_thread_message`,
 every question the reviewer has asked — in the goal above and in any unread
 message. Then ask your own: if anything you would have to guess at would change
@@ -33,14 +40,17 @@ under an \"Assumptions\" heading, and keep planning; answers arrive on the threa
 or as plan-review notes, and the revision loop absorbs any correction. Then plan:
 
 Break the work into sequential stages and write one self-contained markdown plan
-document per stage under `.build/plan/`, named `NN-<stage-id>.md` (`01-`, `02-`, …).
-Also write the manifest `.build/plan/stages.json`: a JSON array, in execution
-order, of {\"id\", \"title\", \"path\", \"summary\"} — `id` is a stable kebab-case slug
-that must never change once written. Use as few stages as the goal honestly needs
-(one is fine for small goals); each stage must leave the codebase working, and a
-cold agent with no memory of this conversation must be able to execute any single
-stage document from scratch given only the previous stages' commits. Plan only —
-do not implement anything. Write nothing outside `.build/`.
+document per stage under `{docs_dir}/.build/plan/`, named `NN-<stage-id>.md`
+(`01-`, `02-`, …). Also write the manifest `{docs_dir}/.build/plan/stages.json`:
+a JSON array, in execution order, of {\"id\", \"title\", \"path\", \"summary\"} — `id` is
+a stable kebab-case slug that must never change once written, and `path` is the
+document's path relative to the docs directory (`.build/plan/NN-<stage-id>.md`),
+which is how Build stores it and how the implementation agent will find it. Use
+as few stages as the goal honestly needs (one is fine for small goals); each
+stage must leave the codebase working, and a cold agent with no memory of this
+conversation must be able to execute any single stage document from scratch
+given only the previous stages' commits. Plan only — do not implement anything.
+Write nothing outside the docs directory.
 
 When the plan is ready, call the `done` tool with phase=\"plan\", status=\"completed\",
 outputs.plan_path=\".build/plan/stages.json\", outputs.stages set to the exact
@@ -102,24 +112,31 @@ approach did not work, and use one concise sentence to say what is needed to
 proceed.";
 
 const REVISE: &str = "\
-The reviewer left notes on the plan at {plan_path}:
+The reviewer left notes on the plan at {plan_path}, under Build's scratch docs
+directory for this issue:
+
+{docs_dir}
 
 {comments}
 
-Revise the plan to address every note. Keep writing only inside `.build/`. When done,
+Revise the plan to address every note. Keep writing only inside that docs
+directory — the primary checkout you are running in stays untouched. When done,
 call the `done` tool with phase=\"plan\", status=\"completed\", outputs.plan_path=\"{plan_path}\",
 and one concise sentence in summary stating what was revised.";
 
 const REVISE_STAGE: &str = "\
 The reviewer left comments on the plan document for stage \"{stage_title}\" at
-{stage_path}:
+{stage_path}, under Build's scratch docs directory for this issue:
+
+{docs_dir}
 
 {comments}
 
 Revise that stage document to address every comment. You may also update this
 stage's \"title\" and \"summary\" fields in `.build/plan/stages.json`, but do not
 add, remove, reorder, or re-id stages, and do not touch other stages' documents.
-Keep writing only inside `.build/`. When done, call the `done` tool with
+Keep writing only inside that docs directory — the primary checkout you are
+running in stays untouched. When done, call the `done` tool with
 phase=\"revise\", status=\"completed\", outputs.comment_resolutions set to one
 {\"comment_id\", \"response\"} entry per [c-N] comment above saying how you addressed
 it, and one concise sentence in summary stating what was revised.";
@@ -270,7 +287,10 @@ The decision rule, in order:
    so a wrong guess costs them a diff to unpick. When in doubt, file the issue.
 3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
    time is the friction this surface exists to remove; a best-guess issue is
-   almost always the better answer.
+   almost always the better answer. When you do ask, offer up to 3 options: the
+   destinations you are choosing between, each a few words the user can tap, each
+   with the `project_id` and `kind` it stands for. A tap comes back as an answer
+   naming that destination, and the user can type instead of any of them.
 
 Call exactly one of `create_issue`, `dispatch_branch` or `ask_user`, then call
 `done` with phase=\"route\", status=\"completed\" and one concise sentence saying
@@ -364,6 +384,10 @@ problem you cannot work around.";
 pub struct Vars<'a> {
     pub goal: &'a str,
     pub plan_path: &'a str,
+    /// Absolute path of an issue's scratch docs dir — where its planning agent
+    /// writes plan documents, since it runs in the primary checkout and must
+    /// not write there. Empty for every run-side template.
+    pub docs_dir: &'a str,
     pub comments: &'a str,
     pub base_branch: &'a str,
     pub stage_id: &'a str,
@@ -399,6 +423,7 @@ pub fn render(template: &str, vars: &Vars) -> String {
     template
         .replace("{goal}", vars.goal)
         .replace("{plan_path}", vars.plan_path)
+        .replace("{docs_dir}", vars.docs_dir)
         .replace("{comments}", vars.comments)
         .replace("{base_branch}", vars.base_branch)
         .replace("{stage_id}", vars.stage_id)
@@ -770,6 +795,7 @@ mod tests {
             &Vars {
                 goal: "add a greeting",
                 plan_path: DEFAULT_PLAN_PATH,
+                docs_dir: "/tmp/build/issue-docs/plan-1",
                 comments: "",
                 base_branch: "main",
                 ..Vars::default()
@@ -777,7 +803,38 @@ mod tests {
         );
         assert!(!out.contains("{goal}"));
         assert!(!out.contains("{plan_path}"));
+        assert!(!out.contains("{docs_dir}"));
         assert!(out.contains("add a greeting"));
+    }
+
+    /// An issue's agent runs in the primary checkout, so every plan-side
+    /// template has to say where its documents go instead — and say that the
+    /// checkout itself is not to be written to.
+    #[test]
+    fn the_plan_templates_send_every_document_to_the_scratch_docs_dir() {
+        let t = Templates::default();
+        for template in [&t.plan, &t.revise, &t.revise_stage] {
+            let rendered = collapse_whitespace(&render(
+                template,
+                &Vars {
+                    goal: "add a greeting",
+                    plan_path: DEFAULT_PLAN_PATH,
+                    docs_dir: "/scratch/issue-docs/plan-1",
+                    stage_path: ".build/plan/01-first.md",
+                    comments: "",
+                    base_branch: "main",
+                    ..Vars::default()
+                },
+            ));
+            assert!(
+                rendered.contains("/scratch/issue-docs/plan-1"),
+                "the agent is told where its docs go: {rendered}"
+            );
+            assert!(
+                rendered.contains("docs directory"),
+                "the agent is told to write nowhere else: {rendered}"
+            );
+        }
     }
 
     /// The decision rule is the router's whole contract, so the template has to
@@ -828,9 +885,12 @@ mod tests {
             "Otherwise call `create_issue` on the project the capture most likely belongs to.",
             "An issue is inert — a record, no worktree, no agent — so a wrong guess costs the user one tap.",
             "A branch dispatch starts an agent that changes code, so a wrong guess costs them a diff to unpick.",
-            // Rule 3: the one case a question beats a guess.
+            // Rule 3: the one case a question beats a guess, and the shape of
+            // the offer that goes with it.
             "Call `ask_user` ONLY when even the project is ambiguous.",
             "a best-guess issue is almost always the better answer.",
+            "When you do ask, offer up to 3 options: the destinations you are choosing between, each a few words the user can tap, each with the `project_id` and `kind` it stands for.",
+            "the user can type instead of any of them.",
         ] {
             assert!(
                 router.contains(rule),

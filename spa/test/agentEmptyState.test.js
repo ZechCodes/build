@@ -159,6 +159,30 @@ describe("a worktree whose agent has never run", () => {
     expect(labelOf(lead(el))).toBe("Starting…");
   });
 
+  // The overlay re-renders on every state the socket reports, and a flapping
+  // session can report one while a press is still in flight. The card the human
+  // is watching must not be swapped for a fresh, idle one.
+  it("keeps the pressed card busy through a state report that lands mid-start", async () => {
+    let release;
+    const onStart = vi.fn(() => new Promise((resolve) => (release = resolve)));
+    const el = host();
+    mountAgentTab(el, { id: "run-1" }, { onStart });
+    await tick();
+
+    card(el, "codex").click();
+    await tick();
+    expect(cardLabel(el, "codex")).toBe("Starting…");
+
+    paneSpy.lastOpts.onExit("agent_session_ended"); // the old session dies under the press
+
+    expect(cardLabel(el, "codex")).toBe("Starting…");
+    expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
+
+    release();
+    await tick();
+    expect(overlay(el).hidden).toBe(true);
+  });
+
   it("keeps the offer standing when the start fails, and says why", async () => {
     const onStart = vi.fn(async () => {
       throw new Error("no worktree to adopt");

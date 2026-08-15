@@ -325,11 +325,24 @@ pub enum BridgeAction {
         instruction: String,
         rationale: Option<String>,
     },
-    /// Ask the user the one question that unblocks a routing decision. Router
-    /// only.
+    /// Ask the user the one question that unblocks a routing decision, with up
+    /// to three concrete choices offered beside it. Router only.
     AskUser {
         question: String,
+        options: Vec<crate::capture::CaptureOptionDraft>,
     },
+}
+
+/// The choices an `ask_user` call offered beside its question. Absent reads as
+/// none — a question with no options is the question this surface started with.
+/// Whether the offer is a legal one is Build's to say, not this parser's.
+fn ask_options(arguments: &Value) -> Result<Vec<crate::capture::CaptureOptionDraft>, String> {
+    match arguments.get("options") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(options) => {
+            serde_json::from_value(options.clone()).map_err(|error| format!("options: {error}"))
+        }
+    }
 }
 
 /// How many conversation items `read_conversation` returns when the router does
@@ -499,10 +512,27 @@ impl DoneServer {
             }
         }, {
             "name": "ask_user",
-            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so a best-guess inert issue is nearly always better. The question reaches them as the capture's own inbox entry.",
+            "description": "Ask the user the ONE question that would let you decide, and stop. Reserved for a capture whose project is ambiguous — asking is the friction capture exists to remove, so a best-guess inert issue is nearly always better. The question reaches them as the capture's own inbox entry. Offer up to 3 options when you can name the destinations you are choosing between: each is one tap for the user, and the answer comes back naming the one they picked. They can always type an answer instead, so options are a shortcut and never the whole answer.",
             "inputSchema": {
                 "type": "object",
-                "properties": { "question": { "type": "string" } },
+                "properties": {
+                    "question": { "type": "string" },
+                    "options": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "description": "Up to 3 concrete choices, in the order the user should see them. Omit entirely when the question has no obvious candidate answers.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "label": { "type": "string", "description": "What the user taps, in a few words: the destination, not the question again. e.g. \"File as an issue on Build\"." },
+                                "project_id": { "type": "string", "description": "The project this choice routes to, from list_projects." },
+                                "kind": { "type": "string", "enum": ["issue", "branch"], "description": "What this choice would create: an inert issue, or a branch with an agent on it." },
+                                "branch": { "type": "string", "description": "The existing branch this choice continues, spelled exactly as it is. Naming one makes the choice a branch." }
+                            },
+                            "required": ["label"]
+                        }
+                    }
+                },
                 "required": ["question"]
             }
         }, {
@@ -930,7 +960,12 @@ impl DoneServer {
                     rationale: text("rationale"),
                 })
             }),
-            "ask_user" => required("question").map(|question| BridgeAction::AskUser { question }),
+            "ask_user" => required("question").and_then(|question| {
+                Ok(BridgeAction::AskUser {
+                    question,
+                    options: ask_options(&arguments)?,
+                })
+            }),
             "done" => {
                 return match serde_json::from_value::<DoneArgs>(arguments)
                     .map_err(|error| format!("invalid done arguments: {error}"))
@@ -1886,8 +1921,107 @@ mod tests {
         ));
         assert!(matches!(
             call("ask_user", r#"{"question":"which project?"}"#).action,
-            Some(BridgeAction::AskUser { ref question }) if question == "which project?"
+            Some(BridgeAction::AskUser { ref question, ref options })
+                if question == "which project?" && options.is_empty()
         ));
+    }
+
+    /// The options a router offers beside its question reach the daemon whole:
+    /// what the user taps, and where that tap would send the capture.
+    #[test]
+    fn ask_user_carries_the_options_the_router_offered() {
+        let handled = router().handle_message(
+            r#"{"jsonrpc":"2.0","id":53,"method":"tools/call","params":{"name":"ask_user","arguments":{
+                "question":"which project?",
+                "options":[
+                    {"label":"File as an issue on Build","project_id":"proj-1","kind":"issue"},
+                    {"label":"New branch on Do","project_id":"proj-2","kind":"branch","branch":"do/login"}
+                ]}}}"#,
+        );
+        let Some(BridgeAction::AskUser { question, options }) = handled.action else {
+            panic!("expected an ask action: {:?}", handled.reply);
+        };
+        assert_eq!(question, "which project?");
+        assert_eq!(
+            options,
+            vec![
+                crate::capture::CaptureOptionDraft {
+                    label: "File as an issue on Build".to_string(),
+                    project_id: Some("proj-1".to_string()),
+                    kind: Some(crate::capture::CaptureTarget::Issue),
+                    branch: None,
+                },
+                crate::capture::CaptureOptionDraft {
+                    label: "New branch on Do".to_string(),
+                    project_id: Some("proj-2".to_string()),
+                    kind: Some(crate::capture::CaptureTarget::Branch),
+                    branch: Some("do/login".to_string()),
+                },
+            ]
+        );
+    }
+
+    /// An offer the parser cannot read is a tool error the router can fix,
+    /// never a question that reaches the user with a choice missing off it.
+    #[test]
+    fn an_option_the_parser_cannot_read_is_a_tool_error() {
+        for arguments in [
+            r#"{"question":"which?","options":[{"kind":"issue"}]}"#,
+            r#"{"question":"which?","options":[{"label":"go","kind":"pull_request"}]}"#,
+            r#"{"question":"which?","options":"the first one"}"#,
+        ] {
+            let handled = router().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":54,"method":"tools/call","params":{{"name":"ask_user","arguments":{arguments}}}}}"#
+            ));
+            let reply = parse(&handled.reply.unwrap());
+            assert_eq!(reply["result"]["isError"], true, "{arguments}");
+            assert!(handled.action.is_none(), "{arguments}");
+        }
+    }
+
+    /// The one shape that means "no options": a question with none offered is
+    /// the question this surface started with.
+    #[test]
+    fn a_question_with_no_options_asks_the_same_way_it_always_did() {
+        for arguments in [
+            r#"{"question":"which?"}"#,
+            r#"{"question":"which?","options":[]}"#,
+            r#"{"question":"which?","options":null}"#,
+        ] {
+            let handled = router().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":55,"method":"tools/call","params":{{"name":"ask_user","arguments":{arguments}}}}}"#
+            ));
+            assert!(
+                matches!(handled.action, Some(BridgeAction::AskUser { ref options, .. }) if options.is_empty()),
+                "{arguments}"
+            );
+        }
+    }
+
+    /// The tool the router reads has to say the offer is bounded and optional,
+    /// or a router with four good ideas will send all four.
+    #[test]
+    fn the_ask_tool_states_the_shape_of_the_offer() {
+        let tools = DoneServer::router_tools();
+        let ask = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "ask_user")
+            .expect("the router can ask");
+        let options = &ask["inputSchema"]["properties"]["options"];
+        assert_eq!(options["type"], "array");
+        assert_eq!(options["maxItems"], crate::capture::MAX_CAPTURE_OPTIONS);
+        assert_eq!(options["items"]["required"], json!(["label"]));
+        assert_eq!(
+            options["items"]["properties"]["kind"]["enum"],
+            json!(["issue", "branch"])
+        );
+        assert_eq!(
+            ask["inputSchema"]["required"],
+            json!(["question"]),
+            "a question with no options is still a question"
+        );
     }
 
     #[test]
@@ -1968,6 +2102,7 @@ mod tests {
             (
                 BridgeAction::AskUser {
                     question: "which?".to_string(),
+                    options: Vec::new(),
                 },
                 "ask_user",
                 McpSurface::Router,

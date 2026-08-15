@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The view-area toolbar's wiring: the sentence it prints, the one menu both
-// halves open, the two creates behind it, and the status on its right.
+// The view-area toolbar's wiring: the sentence it prints, the menu each half
+// opens, the two creates behind the work half, and the status on its right.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -113,45 +113,63 @@ describe("the sentence the toolbar prints", () => {
   });
 });
 
-describe("the one menu both halves open", () => {
-  it("lists every project and the work inside the scoped one, with both creates", () => {
+describe("the two menus, one per half", () => {
+  it("lists projects and only projects on the project half", () => {
     const popup = openJump("project");
     expect([...popup.querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
+    expect(popup.querySelectorAll("[data-work]").length).toBe(0);
+    expect(popup.querySelectorAll("[data-create]").length).toBe(0);
+  });
+
+  it("lists the scoped project's work and only its work on the item half, with both creates", () => {
+    const popup = openJump("item");
     expect([...popup.querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
       "Add a health endpoint",
       "build/login",
     ]);
+    expect(popup.querySelectorAll("[data-project]").length).toBe(0);
     expect([...popup.querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
   });
 
-  it("is the same menu from the item half", () => {
-    const popup = openJump("item");
-    expect(popup.querySelectorAll("[data-project]").length).toBe(2);
-    expect(popup.querySelectorAll("[data-work]").length).toBe(2);
-  });
+  it("filters each menu against its own list", () => {
+    const projectFilter = openJump("project").querySelector(".tb-filter");
+    projectFilter.value = "masc";
+    projectFilter.dispatchEvent(new Event("input"));
+    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["mascot"]);
 
-  it("filters both halves with one query", () => {
-    const popup = openJump("project");
-    const filter = popup.querySelector(".tb-filter");
-    filter.value = "login";
-    filter.dispatchEvent(new Event("input"));
+    const workFilter = openJump("item").querySelector(".tb-filter");
+    workFilter.value = "login";
+    workFilter.dispatchEvent(new Event("input"));
     expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/login"]);
-    expect(menu().querySelectorAll("[data-project]").length).toBe(0);
   });
 
-  it("re-scopes the work half to the project you pick, without leaving the page", () => {
+  it("hands a picked project to its work list, without leaving the page", () => {
     const popup = openJump("project");
     popup.querySelector('[data-project="p2"]').click();
     expect(menu()).toBeTruthy();
+    expect(menu().querySelectorAll("[data-project]").length).toBe(0);
     expect(menu().querySelectorAll("[data-work]").length).toBe(0);
     expect(menu().textContent).toContain("Nothing here yet.");
     expect(location.hash).not.toContain("p2/branch");
   });
 
+  it("goes back to the projects from the work list", () => {
+    openJump("item").querySelector("[data-projects]").click();
+    expect([...menu().querySelectorAll("[data-project]")].map((row) => row.textContent.trim())).toEqual(["relaydb", "mascot"]);
+  });
+
   it("goes to the work you pick", () => {
-    openJump("project").querySelector('[data-work="issue:plan-1"]').click();
+    openJump("item").querySelector('[data-work="issue:plan-1"]').click();
     expect(menu()).toBeNull();
     expect(location.hash).toBe("#/project/p1/issue/plan-1");
+  });
+
+  it("reaches the creates from the project half too, through the project you pick", () => {
+    App.route = { name: "inbox" };
+    toolbarRouteChanged();
+    const popup = openJump("project");
+    popup.querySelector('[data-project="p1"]').click();
+    expect([...menu().querySelectorAll("[data-create]")].map((row) => row.dataset.create)).toEqual(["branch", "issue"]);
   });
 
   it("shuts on Escape", () => {
@@ -171,7 +189,7 @@ describe("the one menu both halves open", () => {
 
 describe("creating from the menu", () => {
   it("cuts a branch and opens it, echoing the branch the daemon will name", async () => {
-    openJump("project").querySelector('[data-create="branch"]').click();
+    openJump("item").querySelector('[data-create="branch"]').click();
     const input = menu().querySelector("#tb-create-input");
     input.value = "Mascot Model Spike!";
     input.dispatchEvent(new Event("input"));
@@ -184,7 +202,7 @@ describe("creating from the menu", () => {
   });
 
   it("files an issue that starts nothing, and opens it", async () => {
-    openJump("project").querySelector('[data-create="issue"]').click();
+    openJump("item").querySelector('[data-create="issue"]').click();
     const input = menu().querySelector("#tb-create-input");
     input.value = "Add a /health endpoint";
     input.dispatchEvent(new Event("input"));
@@ -207,7 +225,7 @@ describe("creating from the menu", () => {
         { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus", supports_effort: true }], efforts: ["low"] },
       ],
     };
-    openJump("project").querySelector('[data-create="issue"]').click();
+    openJump("item").querySelector('[data-create="issue"]').click();
     const input = menu().querySelector("#tb-create-input");
     input.value = "Add a /health endpoint";
     input.dispatchEvent(new Event("input"));
@@ -227,7 +245,7 @@ describe("creating from the menu", () => {
   });
 
   it("asks no harness question of a branch create, which starts no agent to answer for", () => {
-    openJump("project").querySelector('[data-create="branch"]').click();
+    openJump("item").querySelector('[data-create="branch"]').click();
     expect(menu().querySelector("[data-agent-choice-toggle]")).toBeNull();
   });
 
@@ -235,7 +253,7 @@ describe("creating from the menu", () => {
     App.call = vi.fn(async () => {
       throw new Error("a worktree named that already exists");
     });
-    openJump("project").querySelector('[data-create="branch"]').click();
+    openJump("item").querySelector('[data-create="branch"]').click();
     const input = menu().querySelector("#tb-create-input");
     input.value = "scratch";
     input.dispatchEvent(new Event("input"));
@@ -246,11 +264,53 @@ describe("creating from the menu", () => {
   });
 
   it("refuses an empty answer instead of creating something unnamed", async () => {
-    openJump("project").querySelector('[data-create="issue"]').click();
+    openJump("item").querySelector('[data-create="issue"]').click();
     menu().querySelector("[data-create-go]").click();
     await flush();
     expect(App.call).not.toHaveBeenCalledWith("issue.create", expect.anything());
     expect(menu().querySelector(".tb-create-error").textContent).toContain("Describe the issue");
+  });
+});
+
+describe("the unread counters on the two menus", () => {
+  const quiet = feed;
+  const badges = (selector) => [...menu().querySelectorAll(selector)].map((row) => (row.querySelector(".badge") || {}).textContent || "");
+
+  beforeEach(async () => {
+    feed = {
+      ...quiet,
+      items: [
+        { ...quiet.items[0], unread: true, unread_count: 2 },
+        { ...quiet.items[1], unread: true, unread_count: 3 },
+        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "", unread: true, unread_count: 4, resume_at: ago(10) },
+      ],
+    };
+    await refreshFeed();
+  });
+
+  afterAll(() => {
+    feed = quiet;
+  });
+
+  it("counts each project by the unread of the work inside it", () => {
+    openJump("project");
+    expect(badges("[data-project]")).toEqual(["5", "4"]);
+  });
+
+  it("counts each branch and issue by its own unread, and leaves a read one bare", async () => {
+    feed = { ...feed, items: [{ ...feed.items[0], unread: false, unread_count: 0 }, feed.items[1], feed.items[2]] };
+    await refreshFeed();
+    openJump("item");
+    expect(badges("[data-work]")).toEqual(["3", ""]);
+  });
+
+  it("wears no counter anywhere once everything has been read", async () => {
+    feed = quiet;
+    await refreshFeed();
+    openJump("project");
+    expect(badges("[data-project]")).toEqual(["", ""]);
+    openJump("item");
+    expect(badges("[data-work]")).toEqual(["", ""]);
   });
 });
 

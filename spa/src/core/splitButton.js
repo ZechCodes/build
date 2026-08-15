@@ -42,6 +42,12 @@ export function createSingleFlight() {
   };
 }
 
+/** What each container was last mounted from. A poll-driven caller remounts the
+ *  same button over and over, and the markup is what says whether that remount
+ *  would change anything at all. Keyed weakly: a container that goes away takes
+ *  its entry with it. */
+const mountedMarkup = new WeakMap();
+
 /** Render into `container` and wire behavior. `run(optionId)` is awaited; while
  *  in flight the primary button and caret are disabled, the menu stays closed,
  *  and further invokes are ignored (single flight — no concurrent destructive
@@ -52,16 +58,49 @@ export function createSingleFlight() {
  *  button while an action can be pending (poll-driven repaints) pass a shared
  *  `flight` latch so a remount can never re-arm a fresh one mid-flight. */
 export function mountSplitButton(container, { options, run, flight = createSingleFlight() }) {
-  container.innerHTML = splitButtonMarkup(options);
+  const markup = splitButtonMarkup(options);
+  // A repaint that would change nothing must not close the menu the user just
+  // opened, nor swap a busy button for a fresh one: a click in progress
+  // outranks a poll tick, which lands again once the menu is shut. Options that
+  // actually moved still rebuild — what the button offers has changed.
+  const held = container.querySelector(".splitmenu:not([hidden])") || (flight.active() && container.querySelector(".splitbtn"));
+  if (held && mountedMarkup.get(container) === markup) return;
+  container.innerHTML = markup;
+  mountedMarkup.set(container, markup);
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
   const primary = container.querySelector(".btn.primary:not(.caret)");
   const caret = container.querySelector(".caret");
   const menu = container.querySelector(".splitmenu");
 
+  // The open menu's outside-press watch. It is armed in the same event cycle as
+  // the click that opens the menu — deferring it to a macrotask loses the race
+  // against a real pointer, whose press can land before the timer runs, so the
+  // menu shuts the instant it appears. Arming it immediately is safe because a
+  // press anywhere inside the split button (the caret that toggles it, the item
+  // being reached for) is not outside.
+  let stopWatchingOutsidePress = null;
+  const closeMenu = () => {
+    if (menu) menu.hidden = true;
+    if (stopWatchingOutsidePress) stopWatchingOutsidePress();
+  };
+  const openMenu = () => {
+    menu.hidden = false;
+    if (stopWatchingOutsidePress) return;
+    const onOutsidePress = (event) => {
+      if (container.querySelector(".splitbtn")?.contains(event.target)) return;
+      closeMenu();
+    };
+    document.addEventListener("pointerdown", onOutsidePress);
+    stopWatchingOutsidePress = () => {
+      document.removeEventListener("pointerdown", onOutsidePress);
+      stopWatchingOutsidePress = null;
+    };
+  };
+
   const invoke = async (optionId) => {
     if (!flight.begin()) return;
     const option = byId[optionId];
-    if (menu) menu.hidden = true;
+    closeMenu();
     primary.disabled = true;
     if (caret) caret.disabled = true;
     const restoreLabel = primary.textContent;
@@ -86,21 +125,13 @@ export function mountSplitButton(container, { options, run, flight = createSingl
     caret.onclick = (event) => {
       event.stopPropagation();
       if (caret.disabled) return;
-      menu.hidden = !menu.hidden;
-      if (!menu.hidden) {
-        const close = (ev) => {
-          if (!container.querySelector(".splitbtn")?.contains(ev.target)) {
-            menu.hidden = true;
-            document.removeEventListener("pointerdown", close);
-          }
-        };
-        setTimeout(() => document.addEventListener("pointerdown", close), 0);
-      }
+      if (menu.hidden) openMenu();
+      else closeMenu();
     };
     menu.querySelectorAll(".mi").forEach(
       (mi) =>
         (mi.onclick = () => {
-          menu.hidden = true;
+          closeMenu();
           invoke(mi.dataset.action);
         }),
     );

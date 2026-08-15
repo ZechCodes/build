@@ -49,6 +49,9 @@ const SUCCESS_AUTO_DISMISS_MS = 4000;
 
 let notices = [];
 const successTimers = new Map();
+// The notices whose detail the reader has opened. Kept beside the list, because
+// the failures that repeat are exactly the ones somebody opens to read.
+const expandedNotices = new Set();
 
 function noticesContainer() {
   let container = document.getElementById("notices");
@@ -66,26 +69,59 @@ function dismissById(id) {
     clearTimeout(timer);
     successTimers.delete(id);
   }
+  expandedNotices.delete(id);
   notices = dismissNotice(notices, id);
   repaintNotices();
 }
 
+/** Show the notice's detail as open or shut, following what the reader chose. */
+function applyDisclosure(noticeEl, id) {
+  const detail = noticeEl.querySelector(".notice-detail");
+  const expand = noticeEl.querySelector(".notice-expand");
+  if (!detail || !expand) return;
+  const open = expandedNotices.has(id);
+  detail.hidden = !open;
+  expand.textContent = open ? "▴" : "▾";
+  expand.setAttribute("aria-label", open ? "Hide details" : "Show details");
+}
+
+function wireNotice(noticeEl) {
+  const id = Number(noticeEl.dataset.notice);
+  noticeEl.querySelector(".notice-x").onclick = () => dismissById(id);
+  const expand = noticeEl.querySelector(".notice-expand");
+  if (expand)
+    expand.onclick = () => {
+      if (expandedNotices.has(id)) expandedNotices.delete(id);
+      else expandedNotices.add(id);
+      applyDisclosure(noticeEl, id);
+    };
+  applyDisclosure(noticeEl, id);
+}
+
+/** The same notices in the same order: nothing was added or dismissed, so the
+ *  only thing that can have moved is a repeat's count. */
+const sameNoticesOnScreen = (container) => {
+  const painted = [...container.querySelectorAll(".notice")];
+  return painted.length === notices.length && painted.every((element, index) => Number(element.dataset.notice) === notices[index].id);
+};
+
 function repaintNotices() {
   const container = noticesContainer();
+  // A failure repeating is the case this stack is built for, and it is also the
+  // case a reader is most likely to have opened. The count is written into the
+  // notice that is already there, so the detail they are reading — and any text
+  // they are selecting in it — is never taken away.
+  if (sameNoticesOnScreen(container)) {
+    container.querySelectorAll(".notice").forEach((noticeEl, index) => {
+      const notice = notices[index];
+      const summary = noticeEl.querySelector(".notice-summary");
+      const text = notice.count > 1 ? `${notice.summary} ×${notice.count}` : notice.summary;
+      if (summary.textContent !== text) summary.textContent = text;
+    });
+    return;
+  }
   container.innerHTML = notices.map(noticeHtml).join("");
-  container.querySelectorAll(".notice").forEach((noticeEl) => {
-    const id = Number(noticeEl.dataset.notice);
-    noticeEl.querySelector(".notice-x").onclick = () => dismissById(id);
-    const expand = noticeEl.querySelector(".notice-expand");
-    if (expand) {
-      expand.onclick = () => {
-        const detail = noticeEl.querySelector(".notice-detail");
-        detail.hidden = !detail.hidden;
-        expand.textContent = detail.hidden ? "▾" : "▴";
-        expand.setAttribute("aria-label", detail.hidden ? "Show details" : "Hide details");
-      };
-    }
-  });
+  container.querySelectorAll(".notice").forEach(wireNotice);
 }
 
 /** Show a persistent error notice (collapsed summary, expandable detail);
@@ -112,6 +148,7 @@ export function notifySuccess(summary) {
 export function dismissAllNotices() {
   successTimers.forEach((timer) => clearTimeout(timer));
   successTimers.clear();
+  expandedNotices.clear();
   notices = [];
   const container = document.getElementById("notices");
   if (container) container.innerHTML = "";

@@ -5,7 +5,7 @@
 // posting anchored comments to the agent.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mountGitPane } from "../src/core/gitPane.js";
+import { mountGitPane, taskAgentCommitOptions } from "../src/core/gitPane.js";
 
 const patchFor = (path, line) =>
   `diff --git a/${path} b/${path}\nindex 1111111..2222222 100644\n--- a/${path}\n+++ b/${path}\n@@ -1,2 +1,2 @@\n-old\n+${line}\n`;
@@ -267,6 +267,45 @@ describe("the poll freeze holds a review in progress", () => {
       await settle();
       expect(container.querySelector(".pcomment").textContent).toContain("hold this thought");
       expect(container.textContent).not.toContain("the agent moved on");
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("the poll freeze holds an open menu", () => {
+  // The pane's own menus (the branch list, a file's ⋯) already hold the poll
+  // off. A split button's menu is the same kind of thing: it is open because
+  // somebody is reaching into it.
+  it("leaves the commit menu open while the tree moves underneath", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let served = dirtyStatus();
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const callRpc = vi.fn(async (method) => {
+        if (method === "git.status") return served;
+        if (method === "git.log") return log();
+        return {};
+      });
+      const pane = mountGitPane(container, {
+        scope: { run_id: "run-1" },
+        callRpc,
+        agentCommitOptions: taskAgentCommitOptions("building", "ship it"),
+      });
+      await settle();
+
+      await click(container.querySelector(".gitcommit-actions .caret"));
+      const menu = container.querySelector(".gitcommit-actions .splitmenu");
+      expect(menu.hidden).toBe(false);
+
+      served = dirtyStatus({ head: "e".repeat(40) });
+      await vi.advanceTimersByTimeAsync(2000);
+      await settle();
+
+      expect(container.querySelector(".gitcommit-actions .splitmenu"), "the poll replaced the menu").toBe(menu);
+      expect(menu.hidden).toBe(false);
       pane.dispose();
     } finally {
       vi.useRealTimers();

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-// The inbox rail's wiring: one list painted from the feed's items[], opening an
-// entry, Done (with the linked-issue disclosure behind its refusal), and mute.
+// The inbox rail's wiring: one list painted from the feed's items[], in the
+// anchor's order; opening an entry; Done, which deletes a branch behind the
+// bridge's own warnings; mute; and the Recent disclosure at the end.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -46,6 +47,9 @@ async function answerConfirm(ok) {
   await flush();
 }
 
+const now = () => new Date().toISOString();
+const hoursAgo = (hours) => new Date(Date.now() - hours * 3600 * 1000).toISOString();
+
 const branchRow = (over = {}) => ({
   kind: "branch",
   project_id: "p1",
@@ -60,8 +64,11 @@ const branchRow = (over = {}) => ({
   working_time: null,
   agents: [],
   stat: { files_changed: 2, insertions: 8, deletions: 1, uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
-  resume_at: new Date().toISOString(),
+  anchor: hoursAgo(3),
+  last_activity: now(),
+  resume_at: now(),
   can_finish: true,
+  finish: { warnings: [] },
   muted: false,
   worktree_path: "/wt/login",
   worktree_id: "wt-1",
@@ -85,13 +92,18 @@ const issueRow = (over = {}) => ({
   working_time: { since: new Date().toISOString(), seconds: 30 },
   agents: [],
   stat: null,
-  resume_at: new Date().toISOString(),
-  can_finish: false,
+  anchor: hoursAgo(1),
+  last_activity: now(),
+  resume_at: now(),
+  can_finish: true,
+  finish: { warnings: [] },
   muted: false,
   worktree_path: null,
   worktree_id: null,
   run_id: null,
   issue_id: "iss-1",
+  implementing_branch: null,
+  implementation_active: false,
   primary: false,
   ...over,
 });
@@ -122,16 +134,42 @@ afterEach(() => {
 });
 
 describe("the inbox rail", () => {
-  it("paints one list across projects, with each row's state, context and reason", () => {
+  it("paints one list across projects, oldest anchor first, two lines to a row", () => {
     expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "iss-1"]);
     const branch = rowFor("run-1");
     expect(branch.querySelector(".sdot").className).toContain("sdot-unread");
-    expect(branch.textContent).toContain("relaydb");
-    expect(branch.textContent).toContain("build/login");
-    expect(branch.textContent).toContain("The agent finished — review the work");
+    expect(branch.querySelector(".inbox-name").textContent).toContain("build/login");
+    expect(branch.querySelector(".inbox-facts").textContent).toBe("2 files · +8 −1");
+    // The project and why it needs you are on the row itself, not on a line.
+    expect(branch.title).toContain("relaydb");
+    expect(branch.title).toContain("The agent finished — review the work");
     expect(rowFor("iss-1").querySelector(".sdot").className).toContain("sdot-working");
+    expect(rowFor("iss-1").querySelector(".inbox-facts").textContent).toBe("Getting started");
     // No project blocks, no worktree fold — the rail's list is only entries.
     expect(document.querySelectorAll("#inbox-list .sproj, #inbox-list .swt-line").length).toBe(0);
+  });
+
+  it("puts what was picked up most recently at the bottom, not the top", () => {
+    feed([
+      branchRow({ branch: "build/fresh", run_id: "run-fresh", anchor: now() }),
+      branchRow({ anchor: hoursAgo(9) }),
+      issueRow({ anchor: hoursAgo(5) }),
+    ]);
+    expect(rows().map((row) => row.dataset.entity)).toEqual(["run-1", "iss-1", "run-fresh"]);
+  });
+
+  // One piece of work, one row: the branch is where the work is, and the issue
+  // comes straight back when that branch is deleted without merging.
+  it("hides an issue a branch is implementing, and shows it again when the branch goes", () => {
+    feed([issueRow({ implementing_branch: "build/cache", implementation_active: true })]);
+    expect(rowFor("iss-1")).toBeNull();
+    feed([issueRow({ implementing_branch: "build/cache", implementation_active: false })]);
+    expect(rowFor("iss-1")).toBeTruthy();
+  });
+
+  it("never paints work that is over", () => {
+    feed([branchRow({ state: "merged" }), issueRow({ state: "archived" })]);
+    expect(rows()).toEqual([]);
   });
 
   it("opens an entry to its work item and tells the bridge it was read", async () => {
@@ -163,17 +201,49 @@ describe("the inbox rail", () => {
     expect(rowFor("iss-1").className).not.toContain("active");
   });
 
-  it("finishes a branch on Done, dismisses its row at once, and reads the entry", async () => {
+  it("deletes a branch on Done, dismisses its row at once, and reads the entry", async () => {
     rowFor("run-1").querySelector("[data-done]").click();
     await answerConfirm(true);
     expect(App.call).toHaveBeenCalledWith("branch.finish", {
       project_id: "p1",
       branch: "build/login",
-      action: "cleanup",
+      action: "delete",
     });
     expect(rowFor("run-1")).toBeNull(); // gone before the daemon catches up
     expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
     expect(refreshFeed).toHaveBeenCalled();
+  });
+
+  // Done is never refused — the bridge says what the deletion would cost and
+  // the confirmation is where the user reads it.
+  it("puts the bridge's warning in the confirmation before it deletes anything", async () => {
+    feed([
+      branchRow({
+        finish: {
+          warnings: [
+            { code: "unmerged", message: "build/login has never been pushed, and has 4 commits that main does not", count: 4, ref: "main" },
+          ],
+        },
+      }),
+    ]);
+    rowFor("run-1").querySelector("[data-done]").click();
+    await flush();
+    const scrim = document.getElementById("confirm-scrim");
+    expect(scrim.querySelector(".confirm-warnings").textContent).toContain("4 commits that main does not");
+    expect(scrim.textContent).toContain("Delete branch build/login");
+    scrim.querySelector("[data-confirm-cancel]").click();
+    await flush();
+    expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
+  });
+
+  // An issue whose branch was deleted unmerged comes back asking for somebody:
+  // clearing its cursor here would swallow the event that says what happened.
+  it("reads only the branch it deleted, never the issue it hands back", async () => {
+    feed([branchRow({ issue_id: "iss-9" })]);
+    rowFor("run-1").querySelector("[data-done]").click();
+    await answerConfirm(true);
+    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1" });
+    expect(App.call).not.toHaveBeenCalledWith("entity.seen", { entity_id: "iss-9" });
   });
 
   it("keeps the row when the confirmation is declined", async () => {
@@ -181,26 +251,6 @@ describe("the inbox rail", () => {
     await answerConfirm(false);
     expect(App.call).not.toHaveBeenCalledWith("branch.finish", expect.anything());
     expect(rowFor("run-1")).toBeTruthy();
-  });
-
-  it("discloses the unlink override when the linked issue refuses, then finishes alone", async () => {
-    feed([branchRow({ issue_id: "iss-9" })]);
-    App.call = vi.fn(async (method, params) => {
-      if (method === "branch.finish" && !params.unlink) {
-        throw new Error("branch.finish: Done also archives the issue it implements — pass unlink to finish the branch alone");
-      }
-      return { ok: true };
-    });
-    rowFor("run-1").querySelector("[data-done]").click();
-    await answerConfirm(true); // Done
-    await answerConfirm(true); // the disclosure
-    expect(App.call).toHaveBeenCalledWith("branch.finish", {
-      project_id: "p1",
-      branch: "build/login",
-      action: "cleanup",
-      unlink: true,
-    });
-    expect(rowFor("run-1")).toBeNull();
   });
 
   it("restores the row and says why when Done fails", async () => {
@@ -217,10 +267,20 @@ describe("the inbox rail", () => {
     expect(error.textContent).toBe("worktree is dirty");
   });
 
-  it("archives an issue through the plan verb", async () => {
-    feed([issueRow({ can_finish: true, working: false })]);
+  it("archives an issue through the plan verb, warning when nothing ever implemented it", async () => {
+    feed([
+      issueRow({
+        working: false,
+        finish: { warnings: [{ code: "unimplemented", message: "No branch has implemented this issue" }] },
+      }),
+    ]);
     rowFor("iss-1").querySelector("[data-done]").click();
-    await answerConfirm(true);
+    await flush();
+    expect(document.getElementById("confirm-scrim").querySelector(".confirm-warnings").textContent).toContain(
+      "No branch has implemented this issue",
+    );
+    document.getElementById("confirm-scrim").querySelector("[data-confirm-ok]").click();
+    await flush();
     expect(App.call).toHaveBeenCalledWith("plan.archive", { plan_id: "iss-1" });
   });
 
@@ -232,6 +292,40 @@ describe("the inbox rail", () => {
     rowFor("run-1").querySelector("[data-mute]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
+  });
+
+  it("keeps Recent open across a repaint once the user has opened it", async () => {
+    // Five live rows, so Recent does not open itself.
+    const live = Array.from({ length: 5 }, (_, index) =>
+      branchRow({ branch: `build/live-${index}`, run_id: `run-live-${index}`, anchor: hoursAgo(index + 1) }),
+    );
+    const quiet = branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) });
+    feed([...live, quiet]);
+    const toggle = () => document.querySelector("[data-recent-toggle]");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(rowFor("run-old")).toBeNull();
+
+    toggle().click();
+    await flush();
+    expect(rowFor("run-old")).toBeTruthy();
+
+    feed([...live, quiet]); // a feed tick must not shut what the user opened
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(rowFor("run-old")).toBeTruthy();
+  });
+
+  it("opens Recent by itself when there is almost nothing above it", () => {
+    feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    expect(document.querySelector("[data-recent-toggle]").getAttribute("aria-expanded")).toBe("true");
+    expect(rowFor("run-old")).toBeTruthy();
+  });
+
+  it("opens a Recent row like any other", async () => {
+    feed([branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    rowFor("run-old").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-old" });
+    expect(location.hash).toBe("#/project/p1/branch/build%2Fold/changes");
   });
 
   it("offers to unmute a muted entry, and never navigates from the menu", async () => {
@@ -312,7 +406,9 @@ describe("captures on the rail", () => {
     expect(location.hash).toBe("#/project/p1/issue/iss-9");
   });
 
-  it("answers the router's question from the row", async () => {
+  // Answering the router is a decision, not a text field wedged into a row:
+  // the row is the conversation entry, and it opens the page that decides.
+  it("opens the decision page for a capture the router is asking about", async () => {
     feed([
       captureFeedRow({
         state: "unrouted",
@@ -323,11 +419,19 @@ describe("captures on the rail", () => {
       }),
     ]);
     const row = captureRowFor("capture-1");
-    row.querySelector("[data-capture-answer]").value = "the relay";
-    row.querySelector("[data-capture-answer-send]").click();
+    expect(row.textContent).toContain("Which project?");
+    expect(row.querySelector("[data-capture-answer]")).toBeNull();
+    row.click();
     await flush();
-    expect(App.call).toHaveBeenCalledWith("capture.answer", { capture_id: "capture-1", text: "the relay" });
-    expect(refreshFeed).toHaveBeenCalled();
+    expect(location.hash).toBe("#/capture/capture-1");
+    expect(App.call).not.toHaveBeenCalledWith("capture.answer", expect.anything());
+  });
+
+  it("opens the decision page for a capture the router is still deciding", async () => {
+    feed([captureFeedRow()]);
+    captureRowFor("capture-1").click();
+    await flush();
+    expect(location.hash).toBe("#/capture/capture-1");
   });
 
   it("re-fires the router on a route that gave up", async () => {
@@ -381,6 +485,27 @@ describe("captures on the rail", () => {
       kind: "branch",
       branch: "build/csv-export",
     });
+  });
+
+  // The list is rewritten whole on every feed tick, and naming a branch is
+  // typing into a box that lives in it.
+  it("holds the feed off the branch box while it is being typed into", async () => {
+    feed([routedCapture()]);
+    captureRowFor("capture-1").querySelector("[data-capture-reroute]").click();
+    await flush();
+    captureRowFor("capture-1").querySelector('[data-reroute-branch-open="p1"]').click();
+    await flush();
+    const field = captureRowFor("capture-1").querySelector("[data-reroute-branch]");
+    field.focus();
+    field.value = "build/csv";
+
+    feed([routedCapture(), branchRow()]); // a tick with something new to say
+    expect(captureRowFor("capture-1").querySelector("[data-reroute-branch]")).toBe(field);
+    expect(rowFor("run-1")).toBeNull(); // held back while typing
+
+    field.blur();
+    feed([routedCapture(), branchRow()]);
+    expect(rowFor("run-1")).toBeTruthy();
   });
 
   it("lets a branch go unnamed, which is the daemon naming it after what was said", async () => {

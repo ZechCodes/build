@@ -21,8 +21,17 @@ import { App, go } from "../app.js";
 import { whenVisible } from "./visibility.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
-import { agentTitle, providerLabel, railBubbles, railEntity, selectAgentId } from "./agentRailModel.js";
+import {
+  agentTitle,
+  canRemoveAgent,
+  providerLabel,
+  railBubbles,
+  railEntity,
+  removeAgentConfirm,
+  selectAgentId,
+} from "./agentRailModel.js";
 import { createAgentSelection } from "./agentSelection.js";
+import { confirmAction } from "./confirm.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed } from "./taskFeed.js";
@@ -35,6 +44,7 @@ import {
   wireThreadComposer,
   wireThreadLinks,
   wireThreadRevisionLinks,
+  writeThreadKeepingComposer,
 } from "./thread.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
@@ -100,17 +110,23 @@ export function stripHtml(bubbles) {
     .join("");
 }
 
-/** Pure: the panel's header — who you are talking to, and the two controls that
- *  are always there (which face of the agent you are looking at, and the way
- *  out). */
-export function panelHeadHtml(who, mode) {
+/** Pure: the panel's header — who you are talking to, the two controls that are
+ *  always there (which face of the agent you are looking at, and the way out),
+ *  and, on an agent that can be taken back off, the `−` that mirrors the strip's
+ *  `+`. */
+export function panelHeadHtml(who, mode, { removable = false } = {}) {
+  const removeTitle = `Remove ${who} from this branch`;
+  const remove = removable
+    ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
+        aria-label="${esc(removeTitle)}">−</button>`
+    : "";
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
     <div class="rail-modes" role="group" aria-label="Conversation or terminal">
       <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
       <button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>
     </div>
-    <button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
+    ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
 }
@@ -143,6 +159,7 @@ export function mountAgentRail(host, context) {
   let threadAgentId = null; // whose conversation the cache holds
   let adopting = null;
   let sending = false; // a first message is adopting/starting — do not repaint over it
+  let paintedStrip = null; // the markup the bubble strip currently stands on
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -228,19 +245,29 @@ export function mountAgentRail(host, context) {
 
   /// Paint the strip, and put the panel in or take it out.
   ///
-  /// The strip is rewritten every tick — it is a handful of buttons and its
-  /// whole job is to be current. The PANEL element is not: it is where a live
-  /// PTY hangs, and a poll that replaced it would tear a terminal down and
-  /// re-attach it every second and a half. So the panel is created when the
-  /// human opens it, removed when they shut it, and otherwise left alone.
+  /// The strip is rewritten whenever what it SAYS changes — and only then.
+  /// Nearly every tick resolves the same agents, and rewriting the buttons
+  /// under a press swaps the element the pointer went down on for an identical
+  /// one, which swallows the press. The PANEL element is never rewritten by a
+  /// poll at all: it is where a live PTY hangs, and replacing it would tear a
+  /// terminal down and re-attach it every second and a half. So the panel is
+  /// created when the human opens it, removed when they shut it, and otherwise
+  /// left alone.
   const paint = () => {
     if (disposed) return;
-    if (!host.querySelector(".rail-strip")) host.innerHTML = `<div class="rail-strip"></div>`;
+    if (!host.querySelector(".rail-strip")) {
+      host.innerHTML = `<div class="rail-strip"></div>`;
+      paintedStrip = null;
+    }
     const strip = host.querySelector(".rail-strip");
-    strip.innerHTML = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
-    strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
-      bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
-    });
+    const wantedStrip = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
+    if (paintedStrip !== wantedStrip) {
+      strip.innerHTML = wantedStrip;
+      paintedStrip = wantedStrip;
+      strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
+        bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
+      });
+    }
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");
@@ -259,22 +286,27 @@ export function mountAgentRail(host, context) {
     if (!panel) return;
     const agent = agentOf(selectedId);
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
+    const removable = canRemoveAgent({ agents: entity.agents, agentId: selectedId, kind: entity.kind });
+    // The head is rewritten only when what it SAYS changed: the name, and
+    // whether this agent can be taken back off.
+    const wantedHead = `${who}:${removable ? "removable" : "kept"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
     const wantedBody = `${mode}:${selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
-      panel.innerHTML = `${panelHeadHtml(who, mode)}<div class="rail-body" id="rail-body"></div>`;
-      panel.dataset.head = who;
+      panel.innerHTML = `${panelHeadHtml(who, mode, { removable })}<div class="rail-body" id="rail-body"></div>`;
+      panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
       if (mode === "tui") mountTui();
-    } else if (panel.dataset.head !== who) {
+    } else if (panel.dataset.head !== wantedHead) {
       // The name changed under the panel (an agent whose provider was picked
-      // after the fact). Nothing else in the head can move on a poll, and
-      // rewriting it every tick would eat a press that landed mid-repaint.
-      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode);
-      panel.dataset.head = who;
+      // after the fact), or the last agent beside this one went away. Nothing
+      // else in the head can move on a poll, and rewriting it every tick would
+      // eat a press that landed mid-repaint.
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode, { removable });
+      panel.dataset.head = wantedHead;
       wireHead(panel);
     }
     if (mode === "chat") paintChat();
@@ -289,6 +321,8 @@ export function mountAgentRail(host, context) {
         paintPanel();
       };
     });
+    const remove = panel.querySelector(".rail-remove");
+    if (remove) remove.onclick = () => removeAgent();
     const collapse = panel.querySelector(".rail-collapse");
     if (collapse) {
       collapse.onclick = () => {
@@ -317,7 +351,7 @@ export function mountAgentRail(host, context) {
     const thread = threadFor();
     const agent = agentOf(selectedId);
     paintThreadKeepingPlace(body, () => {
-      body.innerHTML = threadHtml(thread || { items: [] }, {
+      const html = threadHtml(thread || { items: [] }, {
         agentLabel: providerLabel(agent && agent.provider),
         composer: {
           inputId: COMPOSER_IDS.input,
@@ -327,7 +361,9 @@ export function mountAgentRail(host, context) {
           attachable: true,
         },
       });
-      wireChat(body);
+      // The poll repaints the timeline under a box somebody may be mid-sentence
+      // in, so the box itself is kept — and a kept box is still wired.
+      wireChat(body, writeThreadKeepingComposer(body, html));
     });
     reportRead(body);
   };
@@ -338,7 +374,16 @@ export function mountAgentRail(host, context) {
     return "Send a message to this agent…";
   };
 
-  const wireChat = (body) => {
+  const wireChat = (body, composerIsNew) => {
+    if (composerIsNew) wireComposer(body);
+    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
+    wireThreadRevisionLinks(body, (revisionId) =>
+      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
+    );
+    wireThreadLinks(body, openLink);
+  };
+
+  const wireComposer = (body) => {
     wireThreadComposer(body, {
       ids: COMPOSER_IDS,
       readDraft: () => draftOf().body,
@@ -356,11 +401,6 @@ export function mountAgentRail(host, context) {
       onSubmit: (message, attachments) => send(message, attachments),
       onError: (error) => notifyError("Message failed", error.message),
     });
-    wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
-    wireThreadRevisionLinks(body, (revisionId) =>
-      App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
-    );
-    wireThreadLinks(body, openLink);
   };
 
   /** A reference in the conversation goes where it points, as far as the two
@@ -483,6 +523,37 @@ export function mountAgentRail(host, context) {
     } catch (error) {
       notifyError("Could not add an agent", error.message);
     }
+  };
+
+  /**
+   * Take the open agent back off the branch.
+   *
+   * Destructive twice over — the agent's session is killed and its conversation
+   * goes with it — so it asks first, with the outline of what will happen.
+   *
+   * A daemon that refuses (an older binary with no `agent.remove` at all, or an
+   * agent whose session is mid-spawn) leaves the rail exactly as it was: the
+   * refusal is said the standard way and the same button is still there to try
+   * again with.
+   */
+  const removeAgent = async () => {
+    const agent = agentOf(selectedId);
+    if (!agent || !entity.entityId) return;
+    if (!(await confirmAction(removeAgentConfirm(agent)))) return;
+    try {
+      await App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id });
+    } catch (error) {
+      notifyError("Could not remove the agent", error.message);
+      return;
+    }
+    // Let the choice go rather than naming the agent that just stopped
+    // existing: the next read opens the rail on whichever agent is left, and
+    // tells the surfaces beside it the same.
+    chooseAgent(null);
+    threadCache.reset();
+    threadAgentId = null;
+    await refreshFeed();
+    await refresh();
   };
 
   // ---- TUI ------------------------------------------------------------------

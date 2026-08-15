@@ -244,6 +244,35 @@ impl AgentRoster {
             .push(Agent::new(new_agent_id(), owner_id, choice, ordinal, now));
         self.agents.last().expect("just pushed")
     }
+
+    /// Take an agent off the entity, handing back the record that was removed
+    /// (its conversation included, for the caller to do the last rites on).
+    ///
+    /// The FIRST agent is never removable. It owns the conversation this roster
+    /// dereferences to — the one every entity-level event speaks to — so
+    /// removing it would silently re-home that conversation onto an agent that
+    /// never heard a word of it. It is also what makes the non-empty invariant
+    /// hold without a second rule: the last agent left is always the first.
+    ///
+    /// The ordinals of the agents beside it are left alone. An ordinal is the
+    /// rail's label for an agent, not its position, and a label that shifted
+    /// when a neighbour went away would rename a conversation the human is in
+    /// the middle of reading.
+    pub fn remove(&mut self, agent_id: &str) -> Result<Agent, String> {
+        let index = self
+            .agents
+            .iter()
+            .position(|agent| agent.id == agent_id)
+            .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
+        if index == 0 {
+            return Err(format!(
+                "{agent_id} is the first agent of {} and owns its conversation, so it cannot be \
+                 removed — remove the agents added beside it instead",
+                self.agents[0].owner_id
+            ));
+        }
+        Ok(self.agents.remove(index))
+    }
 }
 
 /// A fresh, time-ordered agent id. Two agents minted in the same millisecond
@@ -435,6 +464,57 @@ mod roster_tests {
         );
         assert_eq!(again, roster, "a second migration is a no-op");
         assert_eq!(again.len(), 1);
+    }
+
+    /// Removing an agent takes it off the rail and leaves every other label
+    /// exactly where it was — the ordinal is a name, not a position.
+    #[test]
+    fn remove_takes_one_agent_off_without_renumbering_the_others() {
+        let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        let first = roster.first().id.clone();
+        let second = roster.add("run-1", codex(), NOW).id.clone();
+        let third = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+
+        let removed = roster
+            .remove(&second)
+            .expect("the second agent is removable");
+        assert_eq!(removed.id, second);
+        assert_eq!(removed.ordinal, 2);
+        assert_eq!(roster.len(), 2);
+        assert!(roster.by_id(&second).is_none());
+        assert_eq!(roster.first().id, first);
+        assert_eq!(roster.by_id(&third).expect("still here").ordinal, 3);
+
+        // The next agent continues past the highest ordinal ever handed out
+        // here, so the freed label is never reused.
+        assert_eq!(roster.add("run-1", ModelChoice::default(), NOW).ordinal, 4);
+    }
+
+    /// The first agent owns the entity's conversation, so it is not removable —
+    /// and because the last agent left is always the first, that is also what
+    /// keeps a roster from ever being emptied.
+    #[test]
+    fn the_first_agent_is_not_removable_and_neither_is_the_only_one() {
+        let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        let only = roster.first().id.clone();
+        let refused = roster.remove(&only).unwrap_err();
+        assert!(refused.contains("conversation"), "{refused}");
+        assert_eq!(roster.len(), 1);
+
+        roster.add("run-1", codex(), NOW);
+        assert!(roster.remove(&only).is_err(), "still the first agent");
+        assert_eq!(roster.len(), 2);
+    }
+
+    #[test]
+    fn removing_an_agent_that_is_not_on_the_roster_is_an_error() {
+        let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        roster.add("run-1", codex(), NOW);
+        assert!(roster
+            .remove("agent-NOPE")
+            .unwrap_err()
+            .contains("unknown agent_id"));
+        assert_eq!(roster.len(), 2);
     }
 
     #[test]

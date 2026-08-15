@@ -2,10 +2,12 @@ import { describe, it, expect } from "vitest";
 import {
   agentTitle,
   bubbleTip,
+  canRemoveAgent,
   completionReportSections,
   providerLabel,
   railBubbles,
   railEntity,
+  removeAgentConfirm,
   selectAgentId,
 } from "../src/core/agentRailModel.js";
 
@@ -76,6 +78,39 @@ describe("which conversation is open", () => {
     expect(selectAgentId(agents, "gone")).toBe("ag-1");
     expect(selectAgentId(agents, null)).toBe("ag-1");
     expect(selectAgentId([], "ag-1")).toBe(null);
+  });
+});
+
+describe("which agent can be taken back off", () => {
+  const agents = [agent(), agent({ id: "ag-2", ordinal: 2 }), agent({ id: "ag-3", ordinal: 3 })];
+
+  it("offers removal for an agent added beside the first, and never for the first", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "branch" })).toBe(true);
+    expect(canRemoveAgent({ agents, agentId: "ag-3", kind: "branch" })).toBe(true);
+    expect(canRemoveAgent({ agents, agentId: "ag-1", kind: "branch" })).toBe(false);
+  });
+
+  it("offers nothing on an issue, whose one agent is the issue's own conversation", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "issue" })).toBe(false);
+  });
+
+  it("offers nothing for an agent that is not on this work item, or none at all", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-gone", kind: "branch" })).toBe(false);
+    expect(canRemoveAgent({ agents, agentId: null, kind: "branch" })).toBe(false);
+    expect(canRemoveAgent({ agents: [], agentId: "ag-1", kind: "branch" })).toBe(false);
+    expect(canRemoveAgent()).toBe(false);
+  });
+
+  it("outlines what removal actually does before it is confirmed", () => {
+    const plan = removeAgentConfirm(agent({ id: "ag-2", ordinal: 2, provider: "codex" }));
+    expect(plan.title).toBe("Remove Codex 2 from this branch?");
+    expect(plan.actions).toEqual([
+      "End the agent's session, if one is running",
+      "Remove Codex 2 and its conversation from the branch",
+      "Leave the branch and its files untouched",
+    ]);
+    expect(plan.confirmLabel).toBe("Remove agent");
+    expect(plan.danger).toBe(true);
   });
 });
 

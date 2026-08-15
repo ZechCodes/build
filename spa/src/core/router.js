@@ -3,6 +3,7 @@
 //   #/inbox                                     — the landing surface
 //   #/project/<projectId>/branch/<name>/<tab>   — tab is changes | files
 //   #/project/<projectId>/issue/<issueId>[/stage/<stageId>]
+//   #/capture/<captureId>                       — what to do with a capture
 //   #/account[/<page>]                          — page is settings | devices | archive
 //
 // Every URL the pre-redesign client could mint still opens the nearest of
@@ -124,6 +125,10 @@ export function routeFromHash(hash) {
       return { name: "account", page: ACCOUNT_PAGES.has(parts[1]) ? parts[1] : "settings" };
     case "settings":
       return { name: "account", page: "settings" };
+    case "capture":
+      // A capture belongs to no project until something routes it, so the
+      // decision page is named by the capture and nothing else.
+      return parts[1] ? { name: "capture", id: parts[1] } : inbox();
     case "task":
       if (!parts[1]) return inbox();
       return resolveRoute("run", { id: parts[1], tabSegment: parts[2] });
@@ -172,6 +177,7 @@ export function hashFromRoute(route) {
     const base = `#/project/${encode(route.projectId)}/issue/${encode(route.id)}`;
     return route.stage ? `${base}/stage/${encode(route.stage)}` : base;
   }
+  if (route.name === "capture" && route.id) return `#/capture/${encode(route.id)}`;
   if (route.name === "account") return `#/account/${ACCOUNT_PAGES.has(route.page) ? route.page : "settings"}`;
   return "#/inbox";
 }

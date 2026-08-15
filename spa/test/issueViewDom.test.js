@@ -197,6 +197,35 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  // A drag is a comment that has not been said yet: the popover opens only once
+  // the handles settle, so until then nothing but the selection itself knows the
+  // reader is holding a passage of this doc.
+  it("leaves the doc alone while a passage is being selected on it", async () => {
+    const stages = [stage()];
+    const { host, view } = await mount({ stages, pollMs: 10 });
+    const heading = host.querySelector("#stagedoc h1");
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      anchorNode: heading.firstChild,
+      focusNode: heading.firstChild,
+      toString: () => "Wire",
+      isCollapsed: false,
+      rangeCount: 1,
+      removeAllRanges: () => {},
+      getRangeAt: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }),
+    });
+
+    stages[0].title = "Rewired underneath";
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(host.contains(heading), "the doc the selection points into was replaced").toBe(true);
+    expect(host.textContent).not.toContain("Rewired underneath");
+
+    // Letting go hands the surface back: the next pass draws what moved.
+    vi.restoreAllMocks();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(host.textContent).toContain("Rewired underneath");
+    view.dispose();
+  });
+
   it("hangs the comments already on the doc in its margin, and withdraws one by its message id", async () => {
     const commented = stage({
       open_comments: 1,

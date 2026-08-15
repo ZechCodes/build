@@ -103,7 +103,12 @@ export function commentsSupported(scope) {
 }
 
 /** The reviewer is mid-comment — the poll must not rebuild the diff under them
- *  (it would drop anchors, the open popover, and typed text). */
-export function commentLayerBusy({ pending = 0, popOpen = false, generalText = "", menuOpen = false } = {}) {
-  return Boolean(pending > 0 || popOpen || String(generalText).trim() || menuOpen);
+ *  (it would drop anchors, the open popover, and typed text).
+ *
+ *  `selecting` is the earliest of these states and the only one the reviewer has
+ *  not finished stating: the drag is still under way, and the popover that would
+ *  make it a comment opens only once it settles. A rebuild in that window
+ *  cancels the selection with nothing to show for it. */
+export function commentLayerBusy({ pending = 0, popOpen = false, generalText = "", menuOpen = false, selecting = false } = {}) {
+  return Boolean(pending > 0 || popOpen || String(generalText).trim() || menuOpen || selecting);
 }

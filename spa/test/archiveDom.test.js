@@ -99,6 +99,37 @@ describe("the account archive page", () => {
     expect(location.hash).toBe("#/account/settings");
   });
 
+  // The archive is history: the 15s poll almost always reads exactly what is
+  // already on the page. Rebuilding it anyway drops a selection someone is
+  // copying a path out of, and the focus they reached a card with.
+  it("leaves the page alone on a tick that reads the same archive", async () => {
+    vi.useFakeTimers();
+    await renderAccount();
+    await vi.advanceTimersByTimeAsync(0);
+    rows()[1].click(); // a record open under it
+    const row = rows()[1];
+    const record = document.querySelector(".archive-record");
+
+    await vi.advanceTimersByTimeAsync(15000 + 10);
+
+    expect(rows()[1], "the rows were rebuilt by a tick that changed nothing").toBe(row);
+    expect(document.querySelector(".archive-record")).toBe(record);
+    vi.useRealTimers();
+  });
+
+  it("redraws as soon as the archive itself moves", async () => {
+    vi.useFakeTimers();
+    await renderAccount();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(rows()).toHaveLength(2);
+    items.pop();
+
+    await vi.advanceTimersByTimeAsync(15000 + 10);
+
+    expect(rows()).toHaveLength(1);
+    vi.useRealTimers();
+  });
+
   it("says so when the device cannot answer, and keeps what it has", async () => {
     App.call = vi.fn(async () => {
       throw new Error("offline");

@@ -112,7 +112,14 @@ a { color:inherit; }
   padding:7px 18px; font-size:12.5px; }
 #verbar[hidden] { display:none; }
 #verbar .btn { padding:3px 12px; font-size:12px; color:var(--accent); border-color:currentColor; background:transparent; }
-main { max-width:1180px; margin:0 auto;
+/* The reading page: a capped column, centred in whatever the shell gives it.
+   The cap carries the frame as well as the 1180px, because `margin:0 auto`
+   stops the grid item stretching and sizes it to its own content instead — a
+   page whose widest row wants 640px then rendered 640px wide inside a 390px
+   phone, and everything past the frame was clipped away by the view column
+   with no scrollbar to get it back. min() keeps the centring where there is
+   room and takes the frame where there is not. */
+main { max-width:min(1180px, 100%); margin:0 auto;
   padding:26px calc(22px + env(safe-area-inset-right, 0px))
     calc(80px + env(safe-area-inset-bottom, 0px)) 22px; }
 /* board */
@@ -696,6 +703,18 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .actionbar { flex-wrap:wrap; gap:8px; }
   .actionbar .right { flex-wrap:wrap; gap:8px; }
   select.mini { max-width:44vw; }
+  /* A project row and a device row are one line of facts about one thing, and
+     that line is longer than a phone. Nowrap made it the widest thing on the
+     Settings page, and the page took its width from it: the right of every
+     panel ended up off the frame. The row wraps here — the name takes a line
+     of its own, the path breaks rather than holding the row open, and the
+     verb stays at the end of whichever line it lands on. */
+  .projrow { flex-wrap:wrap; gap:4px 10px; }
+  .projrow .pname { flex-basis:100%; min-width:0; }
+  .projrow .ppath { min-width:0; overflow-wrap:anywhere; }
+  /* Three buttons that do not fit side by side: better two lines of whole
+     words than three columns of broken ones. */
+  .addproj { flex-wrap:wrap; }
   .sheet { width:94vw; padding:16px 14px calc(16px + env(safe-area-inset-bottom, 0px)); max-height:88vh; overflow-y:auto; }
   .sheet .field-row { flex-direction:column; gap:0 !important; }
   .comment-pop { max-width:calc(100vw - 16px); }

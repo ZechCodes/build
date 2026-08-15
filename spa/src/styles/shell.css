@@ -159,6 +159,16 @@ body.inbox-collapsed #inbox-open { display:block; }
 #view {
   grid-column:2; /* the 1fr track, with or without the rail beside it */
   display:grid;
+  /* One track, and a definite one. Without it the column is implicit and
+     `auto` — which sizes to the widest child's MAX-content, and that child is
+     the toolbar: the 42% cap on each name is a percentage of a width the
+     intrinsic pass has not decided yet, so it counts for nothing and the row
+     asks for the project and the work item written out in full. On a phone
+     that is far more than the viewport, so the view body rendered wider than
+     the frame and the agent rail sat past its right edge — clipped by the
+     overflow below, with no way to reach it. In landscape the same row fits,
+     which is why the rail came back when the phone was turned. */
+  grid-template-columns:minmax(0, 1fr);
   grid-template-rows:auto minmax(0, 1fr) auto;
   min-width:0; min-height:0; overflow:hidden; position:relative;
 }

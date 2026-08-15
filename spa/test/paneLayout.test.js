@@ -586,3 +586,34 @@ describe("the tail of a reading column", () => {
     for (const column of COLUMNS) expect(bar.selector).toContain(column);
   });
 });
+
+// The reading page (Settings, Archive, the gate) is not a surface: it is a
+// centred column with a cap. On a phone the cap is never the binding constraint
+// — the frame is — and a page that sizes to its own content instead of to the
+// frame has its right-hand side clipped away by the view column's overflow,
+// with no scrollbar to get it back.
+describe("the reading page", () => {
+  const narrowRule = (selector) =>
+    rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === NARROW_QUERY);
+
+  it("never grows past the column it is given, and still centres inside it", () => {
+    const [page] = rulesFor("main");
+    expect(page).toBeTruthy();
+    // Auto margins size a grid item to its content, so the cap has to carry the
+    // frame too: min() keeps the centring on a wide screen and the fit on a
+    // narrow one.
+    expect(declaration(page.body, "max-width")).toBe("min(1180px, 100%)");
+    expect(declaration(page.body, "margin")).toBe("0 auto");
+  });
+
+  it("wraps the settings rows on a phone rather than holding the page open", () => {
+    const row = narrowRule(".projrow");
+    expect(row).toBeTruthy();
+    expect(declaration(row.body, "flex-wrap")).toBe("wrap");
+    // The name takes the first line; the path gives ground instead of pinning
+    // the row to its own length.
+    expect(declaration(narrowRule(".projrow .pname").body, "min-width")).toBe("0");
+    expect(declaration(narrowRule(".projrow .ppath").body, "overflow-wrap")).toBe("anywhere");
+    expect(declaration(narrowRule(".addproj").body, "flex-wrap")).toBe("wrap");
+  });
+});

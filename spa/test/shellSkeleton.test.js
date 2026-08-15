@@ -114,6 +114,16 @@ describe("the shell's grid", () => {
     expect(shellCss).toMatch(/#view \{[^}]*grid-column:2/);
   });
 
+  it("gives the view column one definite track, so the rail cannot be pushed off the frame", () => {
+    // #view is a grid with named rows and, without this, an implicit `auto`
+    // column — which sizes to the widest child's max-content. The toolbar is
+    // that child (its 42% cap on each name is not a constraint an intrinsic
+    // sizing pass can honour), so on a phone the whole view body rendered
+    // wider than the viewport and the agent rail sat past the right edge,
+    // clipped by #view's own overflow with no way to reach it.
+    expect(shellCss).toMatch(/#view \{[^}]*grid-template-columns:minmax\(0, 1fr\)/);
+  });
+
   it("gives the gate the whole frame, keeping only the compose box", () => {
     const hidden = shellCss.match(/body\.gated[^{]*\{[^}]*display:none[^}]*\}/g).join("\n");
     for (const region of ["#inbox-open", "#toolbar", "#agent-rail", "#console-region", "#inbox-list", ".inbox-foot"]) {

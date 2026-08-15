@@ -131,8 +131,26 @@ pub fn fold_work_items(candidates: Vec<WorkItemCandidate>) -> Vec<Value> {
                     .as_deref()
                     .is_some_and(|issue_id| spoken_for.contains(issue_id))
         })
-        .map(|(_, candidate)| candidate.row.clone())
+        .map(|(_, candidate)| named_project_row(candidate.row.clone()))
         .collect()
+}
+
+/// Every row leaves the fold saying which project it belongs to: a row whose
+/// builder could not resolve a display name falls back to the project id
+/// rather than shipping "" — the inbox lists every project's work in one
+/// list, so a row with no project reads as belonging to nothing.
+fn named_project_row(mut row: Value) -> Value {
+    let unnamed = row["project"]
+        .as_str()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty();
+    if unnamed {
+        if let Some(project_id) = row["project_id"].as_str().filter(|id| !id.is_empty()) {
+            row["project"] = Value::String(project_id.to_string());
+        }
+    }
+    row
 }
 
 /// What a branch row's Done button asks of git: nothing left in the tree, and
@@ -358,5 +376,20 @@ mod tests {
             }),
             "an unknown ahead count is not a level branch"
         );
+    }
+
+    #[test]
+    fn a_row_that_could_not_name_its_project_says_the_id_instead_of_nothing() {
+        let mut unnamed =
+            branch_candidate("proj-1", "main", BranchSource::PrimaryCheckout, "primary");
+        unnamed.row["project"] = json!("");
+        unnamed.row["project_id"] = json!("proj-1");
+        let mut named =
+            branch_candidate("proj-2", "main", BranchSource::PrimaryCheckout, "primary-2");
+        named.row["project"] = json!("Build");
+        named.row["project_id"] = json!("proj-2");
+        let rows = fold_work_items(vec![unnamed, named]);
+        assert_eq!(rows[0]["project"], "proj-1", "{rows:?}");
+        assert_eq!(rows[1]["project"], "Build", "{rows:?}");
     }
 }

@@ -153,7 +153,7 @@ function toEntry(item, nowMs) {
     entityId: entityIdOf(item),
     kind: item.kind,
     projectId: item.project_id,
-    project: item.project || "",
+    project: item.project || item.project_id || "",
     branch: item.branch || null,
     issueId: item.issue_id || null,
     title: item.title || item.branch || "(untitled)",
@@ -249,12 +249,18 @@ function menuHtml(entry, open) {
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   const badge = entry.state === "unread" && entry.unreadCount > 1 ? `<span class="badge">${entry.unreadCount}</span>` : "";
+  // The branch mark repeats nothing: a row titled by its branch name is
+  // already saying it, so the where-line is left to the project — the one
+  // fact a single cross-project list cannot go without.
   const mark =
     entry.kind === "issue"
       ? '<span class="inbox-mark">Issue</span>'
       : entry.branch
-        ? `<span class="inbox-mark mono">${esc(entry.branch)}</span>`
+        ? entry.branch === entry.title
+          ? ""
+          : `<span class="inbox-mark mono">${esc(entry.branch)}</span>`
         : '<span class="inbox-mark">detached</span>';
+  const projectTag = `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
   const done = entry.canFinish
     ? `<button class="btn mini" data-done="${esc(entry.key)}" type="button" aria-label="Done with ${esc(entry.title)}">Done</button>`
     : "";
@@ -273,7 +279,7 @@ export function inboxRowHtml(entry, ui = {}) {
     <span class="sdot sdot-${entry.state}" title="${entry.state}"></span>
     <div class="inbox-body">
       <div class="inbox-line"><span class="stitle">${esc(entry.title)}</span>${badge}</div>
-      <div class="inbox-line inbox-where"><span class="inbox-tag">${esc(entry.project)}</span>${mark}${
+      <div class="inbox-line inbox-where">${projectTag}${mark}${
         entry.muted ? '<span class="inbox-mark">muted</span>' : ""
       }</div>
       ${entry.reason ? `<div class="inbox-reason">${esc(entry.reason)}</div>` : ""}

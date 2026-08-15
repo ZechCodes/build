@@ -413,3 +413,32 @@ describe("capture rows", () => {
     expect(html).not.toContain("<script>");
   });
 });
+
+describe("the project on every row", () => {
+  // The reviewer's screenshot: rows titled "main" from different projects,
+  // indistinguishable. One cross-project list cannot go without the project.
+  it("falls back to the project id when the bridge sends no name", () => {
+    const [entry] = inboxEntries({ items: [branch({ project: "" })], nowMs: NOW });
+    expect(entry.project).toBe("p1");
+  });
+
+  it("says so out loud when there is no project at all", () => {
+    const [entry] = inboxEntries({ items: [branch({ project: "", project_id: "" })], nowMs: NOW });
+    expect(inboxRowHtml(entry, {})).toContain("unknown project");
+  });
+
+  it("does not repeat a title that is already the branch name", () => {
+    const [entry] = inboxEntries({ items: [branch({ title: "", branch: "main", primary: true })], nowMs: NOW });
+    expect(entry.title).toBe("main");
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain('class="inbox-tag"');
+    expect(html).not.toContain('inbox-mark mono');
+  });
+
+  it("keeps the branch mark when the title says something else", () => {
+    const [entry] = inboxEntries({ items: [branch()], nowMs: NOW });
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("relaydb");
+    expect(html).toContain('inbox-mark mono');
+  });
+});

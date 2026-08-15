@@ -32,7 +32,7 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
 
 const { App } = await import("../src/app.js");
-const { threadHtml, writeThreadKeepingComposer } = await import("../src/core/thread.js");
+const { threadHtml, writeThreadInPlace } = await import("../src/core/thread.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 
 const RAIL_COMPOSER = {
@@ -54,18 +54,18 @@ describe("writing a repainted thread", () => {
   });
 
   it("says the composer is new on the paint that creates it", () => {
-    expect(writeThreadKeepingComposer(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }))).toBe(true);
+    expect(writeThreadInPlace(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }))).toBe(true);
     expect(container.querySelector("#railinput")).toBeTruthy();
   });
 
   it("keeps the very same input element, its words, its caret and its focus", () => {
-    writeThreadKeepingComposer(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
     const input = container.querySelector("#railinput");
     input.focus();
     input.value = "half a thought";
     input.setSelectionRange(4, 9);
 
-    const composerIsNew = writeThreadKeepingComposer(
+    const composerIsNew = writeThreadInPlace(
       container,
       threadHtml({ items: [message("the agent replied")] }, { composer: RAIL_COMPOSER }),
     );
@@ -78,10 +78,10 @@ describe("writing a repainted thread", () => {
   });
 
   it("still swaps the timeline the repaint was for", () => {
-    writeThreadKeepingComposer(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
     expect(container.querySelector(".thread-empty")).toBeTruthy();
 
-    writeThreadKeepingComposer(
+    writeThreadInPlace(
       container,
       threadHtml({ items: [message("the agent replied")] }, { composer: RAIL_COMPOSER }),
     );
@@ -93,10 +93,10 @@ describe("writing a repainted thread", () => {
   });
 
   it("moves the placeholder onto the box that is already there", () => {
-    writeThreadKeepingComposer(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
     const input = container.querySelector("#railinput");
 
-    writeThreadKeepingComposer(
+    writeThreadInPlace(
       container,
       threadHtml({ items: [] }, { composer: { ...RAIL_COMPOSER, placeholder: "Send a message to start an agent here…" } }),
     );
@@ -106,8 +106,8 @@ describe("writing a repainted thread", () => {
   });
 
   it("writes the whole section when it is a different composer", () => {
-    writeThreadKeepingComposer(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
-    const composerIsNew = writeThreadKeepingComposer(
+    writeThreadInPlace(container, threadHtml({ items: [] }, { composer: RAIL_COMPOSER }));
+    const composerIsNew = writeThreadInPlace(
       container,
       threadHtml({ items: [] }, { composer: { ...RAIL_COMPOSER, inputId: "otherinput" } }),
     );
@@ -121,11 +121,11 @@ describe("writing a repainted thread", () => {
   // every inline image re-fetch itself.
   it("leaves a part of the thread alone when it says exactly what it said", () => {
     const thread = { items: [message("the agent replied")] };
-    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
     const items = container.querySelector(".thread-items");
     const said = items.querySelector(".thread-message");
 
-    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
 
     expect(container.querySelector(".thread-items")).toBe(items);
     expect(container.querySelector(".thread-message"), "the timeline was rewritten with itself").toBe(said);
@@ -133,21 +133,21 @@ describe("writing a repainted thread", () => {
 
   it("keeps a selection in the timeline through a repaint that changed nothing", () => {
     const thread = { items: [message("the agent replied")] };
-    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
     const body = container.querySelector(".thread-body");
     const range = document.createRange();
     range.selectNodeContents(body);
     window.getSelection().removeAllRanges();
     window.getSelection().addRange(range);
 
-    writeThreadKeepingComposer(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
+    writeThreadInPlace(container, threadHtml(thread, { composer: RAIL_COMPOSER }));
 
     expect(window.getSelection().toString()).toContain("the agent replied");
     window.getSelection().removeAllRanges();
   });
 
   it("writes the whole section for a thread that has no composer at all", () => {
-    expect(writeThreadKeepingComposer(container, threadHtml({ items: [] }))).toBe(true);
+    expect(writeThreadInPlace(container, threadHtml({ items: [] }))).toBe(true);
     expect(container.querySelector(".review-thread")).toBeTruthy();
   });
 });

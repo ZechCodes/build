@@ -317,13 +317,17 @@ export function mountComposerAttachments(root, {
   };
 }
 
-/// Grow the box to the text in it, up to a ceiling, then let it scroll. A
-/// one-line reply should not sit in a five-line well, and a paragraph should
-/// not be read through a slot.
-export function autoGrow(input, { maxPx = 320 } = {}) {
+/// Grow the box to the text in it. A one-line reply should not sit in a
+/// five-line well, and a paragraph should not be read through a slot.
+///
+/// The CEILING is the stylesheet's — `max-height` on the textarea — so each
+/// surface caps its own box: a full-width page can afford a taller one than the
+/// agent rail, where a growing box is taking its room from the conversation it
+/// is a reply to. Past the ceiling the box scrolls its own text.
+export function autoGrow(input) {
   const fit = () => {
     input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, maxPx)}px`;
+    input.style.height = `${input.scrollHeight}px`;
   };
   input.addEventListener("input", fit);
   fit();

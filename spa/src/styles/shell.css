@@ -363,11 +363,16 @@ body.inbox-collapsed #inbox-open { display:block; }
   50% { opacity:.15; transform:scale(1.08); } }
 @media (prefers-reduced-motion: reduce) { .rail-bubble.working::after { animation:none; } }
 
-/* The panel: one conversation, or the same agent's screen. */
+/* The panel: one conversation, or the same agent's screen.
+   A column of three — who you are talking to, what was said, and the box you
+   answer in — of which only the middle scrolls. That is what pins the composer
+   to the bottom edge: the thread runs under it rather than carrying it along,
+   and a box grown by what is being typed takes its room from the thread above
+   instead of pushing itself off the panel. */
 .rail-panel { flex:none; width:min(400px, calc(100vw - 120px));
-  display:grid; grid-template-rows:auto minmax(0, 1fr); min-height:0;
+  display:flex; flex-direction:column; min-height:0;
   border-right:1px solid var(--line); }
-.rail-head { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px;
+.rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px;
   height:38px; border-bottom:1px solid var(--line); }
 .rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; font-size:12.5px; font-weight:600; }
@@ -379,9 +384,11 @@ body.inbox-collapsed #inbox-open { display:block; }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
 .rail-collapse { flex:none; }
-.rail-body { min-height:0; overflow-y:auto; padding:10px 12px 14px; }
+.rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 12px 14px; }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
-   terminal is its own viewport, and the pane sizes it to this box. */
+   terminal is its own viewport, and the pane sizes it to this box. The
+   composer is gone in TUI mode, so this row is the whole column below the
+   head. */
 .rail-body-tui { overflow:hidden; padding:0; }
 .rail-body-tui .agentwrap, .rail-body-tui .termpane { height:100%; }
 /* Inside the rail the conversation is a column, not a page: the avatar gutter
@@ -389,7 +396,19 @@ body.inbox-collapsed #inbox-open { display:block; }
    has already said whose conversation this is. */
 .rail-body .review-thread { padding:0; }
 .rail-body .thread-title { display:none; }
-.rail-body .thread-composer, .rail-body .thread-revision-view { margin-left:0; }
+.rail-body .thread-revision-view { margin-left:0; }
+
+/* The pinned box. Out of the scroll entirely, so its bottom edge is the
+   panel's. */
+.rail-composer { flex:none; padding:8px 12px 10px; border-top:1px solid var(--line);
+  background:var(--bg); }
+.rail-composer .thread-composer { margin-left:0; }
+/* Growing upward has to stop somewhere, or a pasted paragraph would swallow
+   the conversation it is a reply to. Past this the box scrolls its own text.
+   The panel is the height of the view column, so 40vh is about 40% of it.
+   Specific enough to beat the shared box's own ceiling whichever order the two
+   stylesheets land in. */
+.rail-composer .composer textarea { max-height:40vh; }
 
 @media (max-width: 760px) {
   /* A phone has no room for two columns, so the panel is laid over the work

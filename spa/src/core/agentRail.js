@@ -32,6 +32,7 @@ import {
 } from "./agentRailModel.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { confirmAction } from "./confirm.js";
+import { composerHtml } from "./composer.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed } from "./taskFeed.js";
@@ -44,7 +45,7 @@ import {
   wireThreadComposer,
   wireThreadLinks,
   wireThreadRevisionLinks,
-  writeThreadKeepingComposer,
+  writeThreadInPlace,
 } from "./thread.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
@@ -295,11 +296,14 @@ export function mountAgentRail(host, context) {
     const wantedBody = `${mode}:${selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
-      panel.innerHTML = `${panelHeadHtml(who, mode, { removable })}<div class="rail-body" id="rail-body"></div>`;
+      panel.innerHTML = `${panelHeadHtml(who, mode, { removable })}
+        <div class="rail-body" id="rail-body"></div>
+        ${mode === "chat" ? composerRowHtml() : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
       if (mode === "tui") mountTui();
+      else wireComposer(panel);
     } else if (panel.dataset.head !== wantedHead) {
       // The name changed under the panel (an agent whose provider was picked
       // after the fact), or the last agent beside this one went away. Nothing
@@ -351,20 +355,15 @@ export function mountAgentRail(host, context) {
     const thread = threadFor();
     const agent = agentOf(selectedId);
     paintThreadKeepingPlace(body, () => {
+      // No composer in here: the box is pinned below this scroller, so what the
+      // poll repaints is the timeline and only the timeline.
       const html = threadHtml(thread || { items: [] }, {
         agentLabel: providerLabel(agent && agent.provider),
-        composer: {
-          inputId: COMPOSER_IDS.input,
-          sendId: COMPOSER_IDS.send,
-          hintId: COMPOSER_IDS.hint,
-          placeholder: composerPlaceholder(),
-          attachable: true,
-        },
       });
-      // The poll repaints the timeline under a box somebody may be mid-sentence
-      // in, so the box itself is kept — and a kept box is still wired.
-      wireChat(body, writeThreadKeepingComposer(body, html));
+      writeThreadInPlace(body, html);
+      wireTimeline(body);
     });
+    syncComposerPlaceholder();
     reportRead(body);
   };
 
@@ -374,8 +373,29 @@ export function mountAgentRail(host, context) {
     return "Send a message to this agent…";
   };
 
-  const wireChat = (body, composerIsNew) => {
-    if (composerIsNew) wireComposer(body);
+  /// The box you write in, pinned below the conversation instead of sitting at
+  /// the end of it. It is a SIBLING of the scroller, so reading back through a
+  /// long thread never takes the box off screen, and the growth of a box being
+  /// typed into comes out of the thread above rather than pushing its own
+  /// bottom edge past the panel.
+  const composerRowHtml = () =>
+    `<div class="rail-composer" id="rail-composer">${composerHtml({
+      inputId: COMPOSER_IDS.input,
+      sendId: COMPOSER_IDS.send,
+      hintId: COMPOSER_IDS.hint,
+      placeholder: composerPlaceholder(),
+      attachable: true,
+    })}</div>`;
+
+  /// The placeholder is the only thing on the composer a poll can change — a
+  /// checkout Build owned nothing in a second ago now has an agent to talk to.
+  /// The element itself is never rebuilt, so the words are moved onto it.
+  const syncComposerPlaceholder = () => {
+    const input = host.querySelector(`#${COMPOSER_IDS.input}`);
+    if (input) input.placeholder = composerPlaceholder();
+  };
+
+  const wireTimeline = (body) => {
     wireThreadAttachments(body, (path) => App.call("thread.attachment", { entity_id: entity.entityId, path }));
     wireThreadRevisionLinks(body, (revisionId) =>
       App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
@@ -383,8 +403,11 @@ export function mountAgentRail(host, context) {
     wireThreadLinks(body, openLink);
   };
 
-  const wireComposer = (body) => {
-    wireThreadComposer(body, {
+  /// Wire the pinned box. `panel` rather than the composer row itself, so a file
+  /// dropped anywhere on the conversation lands in the tray — the gesture aims
+  /// at the agent, not at a 40px strip.
+  const wireComposer = (panel) => {
+    wireThreadComposer(panel, {
       ids: COMPOSER_IDS,
       readDraft: () => draftOf().body,
       writeDraft: (value) => writeDraft({ body: value }),

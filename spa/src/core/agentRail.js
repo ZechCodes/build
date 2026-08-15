@@ -159,6 +159,7 @@ export function mountAgentRail(host, context) {
   let threadAgentId = null; // whose conversation the cache holds
   let adopting = null;
   let sending = false; // a first message is adopting/starting — do not repaint over it
+  let paintedStrip = null; // the markup the bubble strip currently stands on
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -244,19 +245,29 @@ export function mountAgentRail(host, context) {
 
   /// Paint the strip, and put the panel in or take it out.
   ///
-  /// The strip is rewritten every tick — it is a handful of buttons and its
-  /// whole job is to be current. The PANEL element is not: it is where a live
-  /// PTY hangs, and a poll that replaced it would tear a terminal down and
-  /// re-attach it every second and a half. So the panel is created when the
-  /// human opens it, removed when they shut it, and otherwise left alone.
+  /// The strip is rewritten whenever what it SAYS changes — and only then.
+  /// Nearly every tick resolves the same agents, and rewriting the buttons
+  /// under a press swaps the element the pointer went down on for an identical
+  /// one, which swallows the press. The PANEL element is never rewritten by a
+  /// poll at all: it is where a live PTY hangs, and replacing it would tear a
+  /// terminal down and re-attach it every second and a half. So the panel is
+  /// created when the human opens it, removed when they shut it, and otherwise
+  /// left alone.
   const paint = () => {
     if (disposed) return;
-    if (!host.querySelector(".rail-strip")) host.innerHTML = `<div class="rail-strip"></div>`;
+    if (!host.querySelector(".rail-strip")) {
+      host.innerHTML = `<div class="rail-strip"></div>`;
+      paintedStrip = null;
+    }
     const strip = host.querySelector(".rail-strip");
-    strip.innerHTML = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
-    strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
-      bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
-    });
+    const wantedStrip = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
+    if (paintedStrip !== wantedStrip) {
+      strip.innerHTML = wantedStrip;
+      paintedStrip = wantedStrip;
+      strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
+        bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
+      });
+    }
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");

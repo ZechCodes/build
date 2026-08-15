@@ -195,6 +195,11 @@ export function mountAgentTab(
   // reading, so its overlay is laid OVER that screen instead of standing in a
   // blank pane.
   let exited = false;
+  // A start the human pressed is in flight. The socket can report a state
+  // change while it runs (a session flapping out from under the press), and
+  // re-rendering then would replace the card saying "Starting…" with an idle
+  // one — the press would look like it never happened.
+  let starting = false;
   const show = (state, reason) => {
     if (state === "live") {
       shade.hidden = true;
@@ -209,8 +214,10 @@ export function mountAgentTab(
     message.textContent = reason || (exited ? "" : idleLabel);
     message.hidden = !message.textContent;
     // Re-rendering IS the reset: every label and disabled flag comes back with
-    // the fresh markup, so a failed start needs no cleanup of its own.
-    if (onStart) renderChoices();
+    // the fresh markup, so a failed start needs no cleanup of its own. The one
+    // moment it must not is while a start is in flight — the offer is standing
+    // there in its busy state on purpose, and it resets when the start settles.
+    if (onStart && !starting) renderChoices();
   };
 
   // One start path for all three controls. `busy` is what the pressed one says
@@ -219,8 +226,10 @@ export function mountAgentTab(
   const startAgent = async (provider, busy) => {
     for (const card of allCards()) card.disabled = true;
     busy();
+    starting = true;
     try {
       await onStart(provider);
+      starting = false;
       // The agent is up. Its first frame would clear this anyway (the pane is
       // already attached to the screen it is born onto), but not waiting for a
       // round trip is what makes the press feel like it did something.
@@ -228,6 +237,7 @@ export function mountAgentTab(
     } catch (e) {
       // Standing offer, plus the reason — a start that failed silently would
       // leave the human pressing a control that never explains itself.
+      starting = false;
       show(exited ? "exited" : "idle", (e && e.message) || "could not start the agent");
     }
   };

@@ -118,6 +118,34 @@ describe("the bubble strip", () => {
     expect(bubbles().length).toBe(3);
   });
 
+  // The rail reads the row every 1.6s and nearly every read says the same
+  // thing. A rewrite then swaps the button a press is landing on for an
+  // identical one, and the press is swallowed.
+  it("leaves the bubbles alone on a tick that reads the same agents", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    const before = bubbles();
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    const after = bubbles();
+    expect(after).toHaveLength(before.length);
+    expect(after.every((bubble, index) => bubble === before[index])).toBe(true);
+  });
+
+  it("repaints the strip the moment a bubble has something new to say", async () => {
+    await mount();
+    const before = bubbles()[0];
+    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0]).not.toBe(before);
+    expect(bubbles()[0].querySelector(".rail-badge").textContent).toBe("3");
+  });
+
   it("shows a single ghost where no agent has been born yet", async () => {
     payload = branchRow({ run_id: null, run: null, agents: [] });
     await mount();

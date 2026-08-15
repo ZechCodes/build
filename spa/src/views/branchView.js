@@ -296,8 +296,10 @@ export async function renderBranch() {
       payload = await callRpc("branch.get", { project_id: projectId, branch, ...agentSelection.scope() });
     } catch {
       // The branch stopped resolving: merged away, renamed, or the worktree is
-      // gone. A row we already painted stays; a first read that fails says so.
-      if (!disposed && !row) {
+      // gone. A row we already painted stays; a first read that fails says so —
+      // once. Every tick after says the same thing, and repainting would rebuild
+      // the one way out the empty state offers.
+      if (!disposed && !row && mountedKey !== "gone") {
         const host = $("#tabbody");
         if (host)
           host.innerHTML = `<div class="empty gone">No checkout in this project carries <span class="mono">${esc(branch)}</span>.<div><button class="btn" id="branchback">Back to inbox</button></div></div>`;

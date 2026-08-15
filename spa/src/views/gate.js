@@ -139,7 +139,7 @@ function renderOnboarding() {
 function paintWaiting(devices) {
   const list = $("#waitlist");
   if (!list) return;
-  list.innerHTML = devices
+  const html = devices
     .map(
       (d) => `
     <div class="projrow"><span class="pname">${esc(d.name)}</span>
@@ -147,6 +147,9 @@ function paintWaiting(devices) {
       <span class="dim" style="font-size:11.5px"><span class="dot" style="background:${d.status === "online" ? "var(--green)" : "var(--dim)"}"></span> ${esc(d.status)}</span></div>`,
     )
     .join("");
+  // This runs every three seconds while the page waits for a device. Until one
+  // of them says something new, the list is left exactly as it is.
+  if (list.innerHTML !== html) list.innerHTML = html;
 }
 
 function renderWaiting(devices) {

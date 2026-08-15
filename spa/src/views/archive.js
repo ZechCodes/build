@@ -22,10 +22,17 @@ export function renderArchive() {
   let rows = [];
   let openKey = null;
   let painted = false;
+  let paintedFrom = null; // what the page currently stands on
 
   const draw = () => {
     const host = $("#archive-list");
     if (!host) return;
+    // The archive is history, and the poll reads the same history over and over.
+    // A rebuild would drop a selection someone is copying a path out of and the
+    // focus they reached a card with, so an unchanged read leaves the page.
+    const source = JSON.stringify([rows, openKey]);
+    if (painted && source === paintedFrom) return;
+    paintedFrom = source;
     host.innerHTML = archiveListHtml(rows, { openKey });
     host.querySelectorAll(".archive-row").forEach((card) => {
       const toggle = () => {

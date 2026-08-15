@@ -90,6 +90,24 @@ describe("the branch surface", () => {
     // A disposed view must not claim the poll slot the next view now owns.
     expect(App.poll).toBeNull();
   });
+
+  // The branch never resolved: every tick fails the same way, and the empty
+  // state is all there is. Repainting it would rebuild the one control on it.
+  it("states a branch it cannot find once, and leaves the way out standing", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    App.call = vi.fn(async () => {
+      throw new Error("unknown branch");
+    });
+    await renderBranch();
+    await vi.advanceTimersByTimeAsync(0);
+    const back = document.querySelector("#branchback");
+    expect(back).toBeTruthy();
+
+    await vi.advanceTimersByTimeAsync(4000); // two more failing reads
+
+    expect(document.querySelector("#branchback"), "the empty state was rebuilt").toBe(back);
+    vi.useRealTimers();
+  });
 });
 
 // The way a branch ends. Before this control the only Done was on the inbox

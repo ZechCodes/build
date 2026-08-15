@@ -272,6 +272,48 @@ describe("creating from the menu", () => {
   });
 });
 
+describe("the unread counters on the two menus", () => {
+  const quiet = feed;
+  const badges = (selector) => [...menu().querySelectorAll(selector)].map((row) => (row.querySelector(".badge") || {}).textContent || "");
+
+  beforeEach(async () => {
+    feed = {
+      ...quiet,
+      items: [
+        { ...quiet.items[0], unread: true, unread_count: 2 },
+        { ...quiet.items[1], unread: true, unread_count: 3 },
+        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "", unread: true, unread_count: 4, resume_at: ago(10) },
+      ],
+    };
+    await refreshFeed();
+  });
+
+  afterAll(() => {
+    feed = quiet;
+  });
+
+  it("counts each project by the unread of the work inside it", () => {
+    openJump("project");
+    expect(badges("[data-project]")).toEqual(["5", "4"]);
+  });
+
+  it("counts each branch and issue by its own unread, and leaves a read one bare", async () => {
+    feed = { ...feed, items: [{ ...feed.items[0], unread: false, unread_count: 0 }, feed.items[1], feed.items[2]] };
+    await refreshFeed();
+    openJump("item");
+    expect(badges("[data-work]")).toEqual(["3", ""]);
+  });
+
+  it("wears no counter anywhere once everything has been read", async () => {
+    feed = quiet;
+    await refreshFeed();
+    openJump("project");
+    expect(badges("[data-project]")).toEqual(["", ""]);
+    openJump("item");
+    expect(badges("[data-work]")).toEqual(["", ""]);
+  });
+});
+
 describe("the ⋯", () => {
   it("carries what the tab row's right cluster used to", () => {
     bar().querySelector('[data-select="more"]').click();

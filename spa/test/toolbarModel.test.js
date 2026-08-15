@@ -125,7 +125,64 @@ describe("the project selector's menu", () => {
   });
 
   it("falls back to the id for a project with no name", () => {
-    expect(projectMenuModel({ projects: [{ id: "p9" }], projectId: "p9" })).toEqual([{ id: "p9", name: "p9", current: true }]);
+    expect(projectMenuModel({ projects: [{ id: "p9" }], projectId: "p9" })).toEqual([
+      { id: "p9", name: "p9", current: true, unreadCount: 0 },
+    ]);
+  });
+});
+
+describe("the unread each menu counts", () => {
+  const captureRow = (over = {}) => ({
+    kind: "capture",
+    project_id: "p1",
+    project: "relaydb",
+    capture_id: "c1",
+    title: "Said on the phone",
+    state: "unrouted",
+    unread: true,
+    unread_count: 1,
+    resume_at: ago(5),
+    ...over,
+  });
+
+  it("counts a project as the sum of its own work's unread", () => {
+    const items = [
+      branchRow({ unread: true, unread_count: 2 }),
+      issueRow({ unread: true, unread_count: 3 }),
+      branchRow({ project_id: "p2", branch: "build/spike", unread: true, unread_count: 4 }),
+    ];
+    expect(projectMenuModel({ projects, items, projectId: "p1" }).map((project) => [project.name, project.unreadCount])).toEqual([
+      ["relaydb", 5],
+      ["mascot", 4],
+    ]);
+  });
+
+  it("counts nothing for a project whose work has all been read", () => {
+    expect(projectMenuModel({ projects, items: [branchRow(), issueRow()], projectId: "p1" }).map((project) => project.unreadCount)).toEqual([
+      0, 0,
+    ]);
+    expect(projectMenuModel({ projects, projectId: "p1" }).map((project) => project.unreadCount)).toEqual([0, 0]);
+  });
+
+  it("counts an unread row the bridge sent no count for as one", () => {
+    const items = [branchRow({ unread: true, unread_count: 0 }), issueRow({ unread: true })];
+    expect(projectMenuModel({ projects, items, projectId: "p1" })[0].unreadCount).toBe(2);
+  });
+
+  it("counts a capture waiting on its project, which is where it will land", () => {
+    expect(projectMenuModel({ projects, items: [captureRow()], projectId: "p1" })[0].unreadCount).toBe(1);
+    // A capture the router has not placed yet belongs to no project, so it is
+    // counted against none of them.
+    expect(projectMenuModel({ projects, items: [captureRow({ project_id: "" })], projectId: "p1" })[0].unreadCount).toBe(0);
+  });
+
+  it("carries each branch's and issue's own count on the work menu", () => {
+    const items = [branchRow({ unread: true, unread_count: 2 }), issueRow({ unread: true, unread_count: 3 }), branchRow({ branch: "build/quiet" })];
+    expect(workMenuModel({ items, projectId: "p1" }).map((entry) => [entry.label, entry.unreadCount])).toEqual([
+      ["Add a health endpoint", 3],
+      ["build/login", 2],
+      ["build/quiet", 0],
+    ]);
   });
 });
 

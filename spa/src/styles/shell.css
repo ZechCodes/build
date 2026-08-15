@@ -207,6 +207,11 @@ body.inbox-collapsed #inbox-open { display:block; }
 .tbmenu .mi .md { font-size:11px; color:var(--dim); overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }
 .tbmenu .mi.current .mt { font-weight:600; }
+/* The name and its unread counter share a line; the name is what gives way when
+   the row runs out of width. */
+.tbmenu .mi-line { display:flex; align-items:center; gap:6px; min-width:0; }
+.tbmenu .mi-line .mt { flex:1 1 auto; min-width:0; }
+.tbmenu .mi-line .badge { flex:none; }
 .tbmenu-list { flex:1 1 auto; min-height:0; overflow-y:auto; }
 .tb-filter { flex:none; width:100%; margin-bottom:4px; padding:6px 8px;
   font:inherit; font-size:12.5px; color:var(--ink);

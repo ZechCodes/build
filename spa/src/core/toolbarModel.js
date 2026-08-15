@@ -67,6 +67,14 @@ const ms = (iso) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+/** What one feed row is owed on the badge. The bridge sends the flag and the
+ *  count off the same fact, so a row flagged with no count still weighs one. */
+function unreadOf(item) {
+  const count = Number(item && item.unread_count) || 0;
+  if (count > 0) return count;
+  return item && item.unread ? 1 : 0;
+}
+
 /** One feed row as the menu lists it. `key` names it in the DOM; `route` is
  *  where picking it goes. */
 function toEntry(item) {
@@ -76,7 +84,7 @@ function toEntry(item) {
     kind: item.kind,
     label: isIssue ? item.title || "(untitled issue)" : item.branch || "(detached)",
     detail: isIssue ? "Issue" : item.title || "",
-    unread: !!item.unread,
+    unreadCount: unreadOf(item),
     working: !!item.working,
     route: isIssue
       ? { name: "issue", projectId: item.project_id, id: item.issue_id }
@@ -87,12 +95,17 @@ function toEntry(item) {
 
 /** The project selector's menu: the projects the device knows, the scoped one
  *  marked, filtered by name (subsequence matching, core/fuzzy.js). Projects
- *  only — a branch is not an answer to "which project". */
-export function projectMenuModel({ projects = [], projectId = null, query = "" } = {}) {
+ *  only — a branch is not an answer to "which project".
+ *
+ *  A project's counter is the unread of everything inside it — the work rows
+ *  and the captures waiting to be routed there — because the project itself
+ *  holds no conversation of its own to be unread in. */
+export function projectMenuModel({ projects = [], items = [], projectId = null, query = "" } = {}) {
   const entries = projects.map((project) => ({
     id: project.id,
     name: project.name || project.id,
     current: project.id === projectId,
+    unreadCount: items.reduce((total, item) => total + (item.project_id === project.id ? unreadOf(item) : 0), 0),
   }));
   return fuzzyRank(entries, query, (entry) => entry.name);
 }

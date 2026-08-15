@@ -261,15 +261,27 @@ function paintMenu() {
   });
 }
 
-/** The project half's list: which project, and nothing else. */
+/** The counter a menu row wears: what is waiting inside it, and nothing at all
+ *  when nothing is. Same badge the inbox rows use. */
+function unreadBadgeHtml(count, what) {
+  if (!count) return "";
+  return `<span class="badge" title="${count} unread in ${esc(what)}">${count}</span>`;
+}
+
+/** The project half's list: which project, and how much is waiting in it. */
 function projectListHtml() {
-  const projects = projectMenuModel({ projects: projectsOf(), projectId: scopeProjectId(), query: open.query });
+  const projects = projectMenuModel({
+    projects: projectsOf(),
+    items: feed.items,
+    projectId: scopeProjectId(),
+    query: open.query,
+  });
   const rows = projects.length
     ? projects
         .map(
           (project) =>
             `<button class="mi${project.current ? " current" : ""}" data-project="${esc(project.id)}" type="button" role="menuitem">
-               <span class="mt">${esc(project.name)}</span></button>`,
+               <span class="mi-line"><span class="mt">${esc(project.name)}</span>${unreadBadgeHtml(project.unreadCount, project.name)}</span></button>`,
         )
         .join("")
     : `<div class="tb-none dim">No project by that name.</div>`;
@@ -289,7 +301,10 @@ function workListHtml() {
         .map(
           (entry) =>
             `<button class="mi" data-work="${esc(entry.key)}" type="button" role="menuitem">
-               <span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>
+               <span class="mi-line"><span class="mt${entry.kind === "branch" ? " mono" : ""}">${esc(entry.label)}</span>${unreadBadgeHtml(
+                 entry.unreadCount,
+                 entry.label,
+               )}</span>
                <span class="md">${esc(entry.detail)}</span></button>`,
         )
         .join("")

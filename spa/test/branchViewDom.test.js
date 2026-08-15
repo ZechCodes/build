@@ -21,6 +21,17 @@ const row = {
   agents: [],
 };
 
+/** A branch.get row whose work is committed and pushed — the state Done asks
+ *  for (the bridge decides it and sends `can_finish`). */
+const finishableRow = (over = {}) => ({
+  ...row,
+  can_finish: true,
+  primary: false,
+  issue_id: null,
+  stat: { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" },
+  ...over,
+});
+
 let App;
 let renderBranch;
 
@@ -78,5 +89,109 @@ describe("the branch surface", () => {
     await flush();
     // A disposed view must not claim the poll slot the next view now owns.
     expect(App.poll).toBeNull();
+  });
+});
+
+// The way a branch ends. Before this control the only Done was on the inbox
+// row, so a branch you were standing in could not be closed out from inside it.
+describe("closing the branch out", () => {
+  /** Answer the confirmation modal every close-out opens. */
+  const answerConfirm = async (ok) => {
+    await flush();
+    const scrim = document.getElementById("confirm-scrim");
+    expect(scrim, "a confirmation was expected").toBeTruthy();
+    scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
+    await flush();
+  };
+
+  const mountWith = async (branchRow, answers = {}) => {
+    App.call = vi.fn(async (method, params) => {
+      if (method === "branch.get") return branchRow;
+      if (answers[method]) return answers[method](params);
+      return {};
+    });
+    await renderBranch();
+    await flush();
+  };
+
+  const finishHost = () => document.querySelector("#branch-finish");
+  const doneButton = () => finishHost().querySelector(".btn.primary:not(.caret)");
+  const finishCalls = () => App.call.mock.calls.filter(([method]) => method === "branch.finish");
+
+  it("offers Done in the surface bar once the work is committed and pushed", async () => {
+    await mountWith(finishableRow());
+    expect(doneButton().textContent).toBe("Done");
+    expect(doneButton().disabled).toBe(false);
+  });
+
+  it("says what is in the way instead of offering a Done that would fail", async () => {
+    await mountWith(
+      finishableRow({ can_finish: false, stat: { uncommitted: { files_changed: 2 }, ahead: 0, upstream: "origin/x" } }),
+    );
+    expect(doneButton().disabled).toBe(true);
+    expect(doneButton().title).toContain("2 uncommitted files");
+  });
+
+  // The primary checkout is the repository: it is never archived away.
+  it("offers nothing on a project's primary checkout", async () => {
+    await mountWith(finishableRow({ primary: true, worktree_id: null }));
+    expect(finishHost().innerHTML).toBe("");
+  });
+
+  it("finishes the branch and keeps it, on the default option", async () => {
+    await mountWith(finishableRow());
+    doneButton().click();
+    await answerConfirm(true);
+    expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "cleanup" });
+  });
+
+  it("does nothing at all when the confirmation is cancelled", async () => {
+    await mountWith(finishableRow());
+    doneButton().click();
+    await answerConfirm(false);
+    expect(finishCalls()).toHaveLength(0);
+    // The button comes back: a cancel is not an ending.
+    expect(doneButton().disabled).toBe(false);
+  });
+
+  it("deletes the branch too, on the second option", async () => {
+    await mountWith(finishableRow());
+    finishHost().querySelector(".caret").click();
+    finishHost().querySelector('.splitmenu .mi[data-action="finish_delete"]').click();
+    await answerConfirm(true);
+    expect(finishCalls()[0][1].action).toBe("delete");
+  });
+
+  // The bridge refuses to archive an issue its branch has not implemented, and
+  // its error names the override. The refusal IS the disclosure.
+  it("offers the unlink override the refusal names, and retries with it", async () => {
+    let attempts = 0;
+    await mountWith(finishableRow({ issue_id: "issue-1" }), {
+      "branch.finish": (params) => {
+        attempts += 1;
+        if (!params.unlink)
+          throw new Error("branch.finish: Done also archives the issue it implements — pass unlink to finish the branch alone");
+        return { branch: "build/login" };
+      },
+    });
+    doneButton().click();
+    await answerConfirm(true); // the close-out itself
+    await answerConfirm(true); // the unlink disclosure behind the refusal
+    expect(attempts).toBe(2);
+    expect(finishCalls()[1][1].unlink).toBe(true);
+  });
+
+  it("reports a failed close-out as a notice and restores the button", async () => {
+    await mountWith(finishableRow(), {
+      "branch.finish": () => {
+        throw new Error("worktree.finish cleanup requires no uncommitted changes");
+      },
+    });
+    doneButton().click();
+    await answerConfirm(true);
+    const notice = document.querySelector("#notices .notice.error");
+    expect(notice).toBeTruthy();
+    expect(notice.textContent).toContain("build/login");
+    expect(doneButton().disabled).toBe(false);
   });
 });

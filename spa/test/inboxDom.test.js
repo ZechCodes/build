@@ -330,6 +330,60 @@ describe("captures on the rail", () => {
     expect(refreshFeed).toHaveBeenCalled();
   });
 
+  // The feed repaints the whole list on every tick. Answering the router is
+  // typing into a box that lives in it, and the tick used to take the box.
+  describe("while the router's question is being answered", () => {
+    const asking = () =>
+      captureFeedRow({
+        state: "unrouted",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "router_question",
+        question: { text: "Which project?", asked_at: "t", answer: null },
+      });
+
+    it("keeps the box, the caret and the words through a feed tick", () => {
+      feed([asking()]);
+      const field = captureRowFor("capture-1").querySelector("[data-capture-answer]");
+      field.focus();
+      field.value = "the rel";
+      field.dispatchEvent(new Event("input"));
+      field.setSelectionRange(3, 3);
+
+      feed([asking(), branchRow()]); // a tick that has something new to say
+
+      const now = captureRowFor("capture-1").querySelector("[data-capture-answer]");
+      expect(now, "the answer box was replaced by the feed").toBe(field);
+      expect(now.value).toBe("the rel");
+      expect(document.activeElement).toBe(now);
+      expect(now.selectionStart).toBe(3);
+    });
+
+    it("carries what was typed onto the row a repaint does rebuild", () => {
+      feed([asking()]);
+      captureRowFor("capture-1").querySelector("[data-capture-answer]").value = "the relay";
+      captureRowFor("capture-1").querySelector("[data-capture-answer]").dispatchEvent(new Event("input"));
+
+      // Something the user did elsewhere repaints the list with nothing focused.
+      rowFor("run-1")?.querySelector("[data-menu]")?.click();
+      feed([asking(), branchRow()]);
+
+      expect(captureRowFor("capture-1").querySelector("[data-capture-answer]").value).toBe("the relay");
+    });
+
+    it("catches up with the feed once the caret leaves", () => {
+      feed([asking()]);
+      const field = captureRowFor("capture-1").querySelector("[data-capture-answer]");
+      field.focus();
+      feed([asking(), branchRow()]);
+      expect(rowFor("run-1")).toBeNull(); // held back while typing
+
+      field.blur();
+      feed([asking(), branchRow()]);
+      expect(rowFor("run-1")).toBeTruthy();
+    });
+  });
+
   it("re-fires the router on a route that gave up", async () => {
     feed([captureFeedRow({ state: "failed", unread: true, unread_count: 1, unread_reason: "routing_failed" })]);
     captureRowFor("capture-1").querySelector("[data-capture-retry]").click();

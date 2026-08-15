@@ -37,6 +37,26 @@ describe("confirmModalHtml", () => {
     expect(html.match(/<li>/g)).toHaveLength(3);
   });
 
+  // What a destructive verb is about to cost — the bridge's own `finish.warnings`
+  // — is read BEFORE the outline of what will happen, because it is the part
+  // that changes the answer.
+  it("renders the warnings above the steps, and nothing when there are none", () => {
+    const html = confirmModalHtml({
+      title: "t",
+      warnings: ["build/login has 3 commits that origin/build/login does not"],
+      actions: ["Delete branch build/login"],
+    });
+    expect(html).toContain('<ul class="confirm-warnings">');
+    expect(html).toContain("3 commits");
+    expect(html.indexOf("confirm-warnings")).toBeLessThan(html.indexOf("confirm-steps"));
+    expect(confirmModalHtml({ title: "t", warnings: [] })).not.toContain("confirm-warnings");
+    expect(confirmModalHtml({ title: "t" })).not.toContain("confirm-warnings");
+  });
+
+  it("escapes what the warnings say", () => {
+    expect(confirmModalHtml({ title: "t", warnings: ["<script>alert(1)</script>"] })).not.toContain("<script>");
+  });
+
   it("omits the ordered list when actions is empty", () => {
     expect(confirmModalHtml({ title: "t" })).not.toContain("<ol");
     expect(confirmModalHtml({ title: "t", actions: [] })).not.toContain("<ol");

@@ -12338,6 +12338,9 @@ impl AppState {
         });
         let implementation_complete = self.plan_implementation_complete(plan_id, active);
         let current_implementation = self.current_issue_implementation(plan_id);
+        // Narrower than the newest implementation: a merged or abandoned branch
+        // has stopped speaking for its issue.
+        let live_implementation = current_implementation.filter(|run| !run.run.state.is_terminal());
         let mut implementation_lineage = self
             .runs
             .values()
@@ -12393,6 +12396,13 @@ impl AppState {
             // that renders an entity, so status stays legible fully collapsed.
             "agents": self.agent_digests(plan_id),
             "active_run_id": active_run_id,
+            // Whether a branch is implementing this issue RIGHT NOW, and which
+            // one. The same fact that hides the issue's row behind that
+            // branch's in the feed, said out loud: an issue that has gone quiet
+            // because something is being built for it must be able to say so
+            // rather than simply vanish.
+            "implementation_active": live_implementation.is_some(),
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
             "current_implementation_id": current_implementation.map(|run| run.run.id.0.clone()),
             "current_implementation": current_implementation.map(|run| json!({
                 "implementation_id": run.run.id.0,
@@ -30981,6 +30991,104 @@ mod tests {
             picked_up,
             "a restart never re-files what the user picked up"
         );
+    }
+
+    /// The branch row's second line: how many files it touched, how far it is
+    /// from where it is published, and what it added and removed. One poll,
+    /// every number the inbox prints — nothing the SPA has to go and ask for.
+    #[test]
+    fn a_branch_row_carries_the_numbers_its_second_line_prints() {
+        let (dir, repo, _origin) = init_repo_with_origin();
+        let mut state = qa_state(&repo, dir.path());
+        adopted_run(&mut state, &repo, dir.path(), "feature-counted");
+        let worktree = dir.path().join("feature-counted");
+        let before = branch_row(&mut state, "feature-counted")["stat"].clone();
+
+        std::fs::write(worktree.join("one.txt"), "a\nb\n").unwrap();
+        std::fs::write(worktree.join("two.txt"), "c\n").unwrap();
+        git_in_dir(&worktree, &["add", "."]);
+        git_in_dir(&worktree, &["commit", "-m", "two files"]);
+
+        // No upstream yet: ahead/behind are measured against the base branch,
+        // and `upstream: null` is what says so. That distinction is what Done
+        // warns with — unmerged reads differently from unpushed.
+        let unpublished = branch_row(&mut state, "feature-counted");
+        let stat = &unpublished["stat"];
+        let grew = |key: &str| stat[key].as_u64().unwrap() - before[key].as_u64().unwrap();
+        assert_eq!(grew("files_changed"), 2, "{stat:?}");
+        assert_eq!(grew("insertions"), 3, "{stat:?}");
+        assert_eq!(grew("deletions"), 0, "{stat:?}");
+        assert!(stat["upstream"].is_null(), "{stat:?}");
+        assert_eq!(stat["comparison_ref"], "main", "{stat:?}");
+        assert_eq!(stat["ahead"], 1, "{stat:?}");
+        assert_eq!(stat["behind"], 0, "{stat:?}");
+
+        git_in_dir(&worktree, &["push", "-u", "origin", "feature-counted"]);
+        let published = branch_row(&mut state, "feature-counted");
+        let stat = &published["stat"];
+        assert_eq!(stat["upstream"], "origin/feature-counted", "{stat:?}");
+        assert_eq!(stat["comparison_ref"], "origin/feature-counted", "{stat:?}");
+        assert_eq!(
+            stat["ahead"], 0,
+            "unpushed work is what ahead means now: {stat:?}"
+        );
+        assert_eq!(stat["behind"], 0, "{stat:?}");
+
+        // And the row dates itself, so Recent can bucket it.
+        let last_activity = published["last_activity"]
+            .as_str()
+            .unwrap_or_else(|| panic!("a branch row says when it last moved: {published:?}"));
+        assert!(
+            last_activity.as_bytes()[0].is_ascii_digit(),
+            "an RFC 3339 instant: {last_activity}"
+        );
+        assert!(
+            last_activity > hours_ago(1).as_str(),
+            "the commit just landed: {last_activity}"
+        );
+    }
+
+    /// An issue with a branch being built for it drops out of the inbox — so it
+    /// has to be able to say where it went. The branch names it; the issue
+    /// names the branch.
+    #[test]
+    fn an_issue_says_which_branch_is_implementing_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": "not started", "dispatch": false }),
+        )));
+
+        let idle = issue_row(&mut state, &issue_id);
+        assert_eq!(idle["implementation_active"], false, "{idle:?}");
+        assert!(idle["implementing_branch"].is_null(), "{idle:?}");
+
+        let (implemented_id, run_id) = planned_run_in_review(&mut state, "implement me");
+        let board = state.handle(req("board.list", json!({})));
+        let issue = board["result"]["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|issue| issue["issue_id"] == json!(implemented_id.clone()))
+            .expect("the issue is still an issue")
+            .clone();
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        assert_eq!(issue["implementation_active"], true, "{issue:?}");
+        assert_eq!(issue["implementing_branch"], json!(branch), "{issue:?}");
+        assert!(
+            !work_item_rows(&mut state)
+                .iter()
+                .any(|row| row["kind"] == "issue" && row["issue_id"] == json!(implemented_id)),
+            "and that is exactly why it is not in the inbox itself"
+        );
+
+        // The branch stops implementing it: the issue is its own row again, and
+        // says nothing is being built for it.
+        state.handle(req("run.abandon", json!({ "run_id": run_id })));
+        let back = issue_row(&mut state, &implemented_id);
+        assert_eq!(back["implementation_active"], false, "{back:?}");
+        assert!(back["implementing_branch"].is_null(), "{back:?}");
     }
 
     /// Done on a branch means the work exists somewhere other than this

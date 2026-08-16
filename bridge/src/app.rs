@@ -904,6 +904,24 @@ fn worktree_agent_signals(agent_tab: Option<&Tab>) -> (bool, bool) {
 /// exists on that branch, and no run owns its lifecycle.
 const CHECKOUT_IDLE_STATE: &str = "idle";
 
+/// One inbox row that no entity stands behind: a project's primary checkout, or
+/// a branch checked out somewhere Build never cut.
+///
+/// It has no entity id, so it is identified by what it is, and no conversation,
+/// so the line a dismissal draws is the commit it is sitting on.
+struct EntitylessRow {
+    /// Where the dismissal is written in the attention map.
+    key: String,
+    /// The commit the row is on, as the feed reads it. `None` when its history
+    /// cannot be read at all.
+    head: Option<String>,
+    project_id: String,
+    /// The branch the row shows, or `None` for a detached checkout.
+    branch: Option<String>,
+    /// Whether this is the project's own checkout — the repository itself.
+    primary: bool,
+}
+
 /// The +/− block every work-item row carries, in one shape whatever source it
 /// was read off, plus the facts Done warns about (see
 /// [`crate::branch::branch_finish_warnings`]).
@@ -1449,14 +1467,19 @@ fn primary_changes_summary(
         .and_then(|r| r.head().ok())
         .and_then(|h| h.shorthand().map(str::to_string))
         .unwrap_or_else(|| "HEAD".to_string());
-    // When this checkout last got work. A bare checkout has no conversation and
-    // no lifecycle, so its own history is all the inbox has to date it by — and
-    // it is computed HERE, inside the cached walk, never on the poll path.
-    let head_committed_at = repo
+    // What this checkout's history looks like right now. A bare checkout has no
+    // conversation and no lifecycle, so its own commits are all the inbox has —
+    // to date it by (`head_committed_at`), and to tell whether it has said
+    // anything since the human cleared its row (`head_sha`). Both are computed
+    // HERE, inside the cached walk, never on the poll path.
+    let head_commit = repo
         .as_ref()
         .ok()
         .and_then(|repo| repo.head().ok())
-        .and_then(|head| head.peel_to_commit().ok())
+        .and_then(|head| head.peel_to_commit().ok());
+    let head_sha = head_commit.as_ref().map(|commit| commit.id().to_string());
+    let head_committed_at = head_commit
+        .as_ref()
         .and_then(|commit| crate::worktree::rfc3339_from_unix(commit.time().seconds()));
     let (upstream, comparison_ref, ahead, behind) = repo
         .as_ref()
@@ -1471,6 +1494,7 @@ fn primary_changes_summary(
             "comparison_ref": comparison_ref,
             "ahead": ahead,
             "behind": behind,
+            "head_sha": head_sha,
             "head_committed_at": head_committed_at,
             "files_changed": stat.files_changed,
             "insertions": stat.insertions,
@@ -5239,10 +5263,31 @@ impl AppState {
             .chain(self.plans.keys())
             .cloned()
             .chain(self.attention_worktree_ids())
+            .chain(self.live_row_keys())
             .collect();
         if let Err(e) = store.save_attention(&self.attention, &live) {
             eprintln!("attention: {e}");
         }
+    }
+
+    /// Keys worth keeping for the rows no entity stands behind: the ones whose
+    /// project is still registered.
+    ///
+    /// That is the whole liveness test. The branch such a row names may be
+    /// checked out anywhere, or nowhere yet, so pruning its dismissal against a
+    /// checkout would lose it every time the user moved one — and a branch that
+    /// becomes a run has its record dropped at adoption
+    /// ([`forget_row_dismissals`](Self::forget_row_dismissals)) rather than
+    /// waiting to be pruned.
+    fn live_row_keys(&self) -> Vec<String> {
+        self.attention
+            .keys()
+            .filter(|key| {
+                crate::attention::RowKey::parse(key)
+                    .is_some_and(|row| self.projects.iter().any(|p| p.id == row.project_id()))
+            })
+            .cloned()
+            .collect()
     }
 
     /// Worktree ids worth keeping attention for: every one the scan can still
@@ -7111,10 +7156,21 @@ impl AppState {
     }
 
     /// `entity.dismiss` — the human clearing one row out of the inbox until the
-    /// work speaks again.
+    /// work speaks again. Every row can be cleared, including the ones nothing
+    /// stands behind.
     ///
-    /// It draws a line at the end of the entity's conversation, and the row
-    /// stays out of the list while nothing attention-class arrives past it.
+    /// A row with an entity behind it is named by that entity's id, and the
+    /// line is drawn at the end of its conversation: the row stays out of the
+    /// list while nothing attention-class arrives past it.
+    ///
+    /// A row with no entity — a project's primary checkout, a branch checked
+    /// out somewhere Build never cut — is named by what it IS:
+    /// `{ project_id, branch }`, or `{ project_id, primary: true }` for the
+    /// checkout that is the repository. It has no conversation, so its line is
+    /// drawn in the only language it speaks: the commit it is sitting on. It
+    /// comes back when its HEAD moves, or when adoption turns it into an entity
+    /// that speaks for itself.
+    ///
     /// There is no un-dismiss verb because there is nothing to undo: the next
     /// thing the work says brings the row back by itself, which is the whole
     /// feature.
@@ -7124,12 +7180,28 @@ impl AppState {
     /// read cursor (what was waiting is still waiting), no mute (silencing is
     /// mute's job), and no push.
     fn entity_dismiss(&mut self, params: &Value) -> Result<Value, String> {
+        if params.get("entity_id").is_none() {
+            let row = self.dismissable_row(params)?;
+            self.clear_row(&row);
+            return Ok(json!({
+                "project_id": row.project_id,
+                "branch": row.branch,
+                "primary": row.primary,
+                "dismissed": true,
+            }));
+        }
         let entity_id = require_str(params, "entity_id")?;
         if !self.entity_takes_attention(&entity_id) {
             return Err(format!("entity.dismiss: unknown entity {entity_id}"));
         }
-        // A checkout Build never cut has no conversation to fall quiet: it
-        // keeps the line at 0, which reads as never dismissed.
+        // A checkout Build never cut carries an id but no conversation: it is
+        // one of the entity-less rows above wearing the id the feed ships, and
+        // it is cleared as that row so both ways of naming it land in one
+        // place.
+        if let Some(row) = self.checkout_row(&entity_id) {
+            self.clear_row(&row);
+            return Ok(json!({ "entity_id": entity_id, "dismissed": true }));
+        }
         let dismissed_through = self
             .entity_conversation(&entity_id)
             .map(crate::thread::Thread::last_sequence)
@@ -7140,6 +7212,187 @@ impl AppState {
             .dismiss_through(dismissed_through);
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "dismissed": true }))
+    }
+
+    /// Write one entity-less row's dismissal: cleared at the commit it is
+    /// sitting on, which is what brings it back.
+    fn clear_row(&mut self, row: &EntitylessRow) {
+        self.attention
+            .entry(row.key.clone())
+            .or_default()
+            .dismiss_at_head(row.head.as_deref());
+        self.persist_attention();
+    }
+
+    /// The entity-less row `{ project_id, branch | primary }` names.
+    ///
+    /// A branch is resolved against the feed's own sources, so a name that is
+    /// not a row anyone can clear is refused rather than written as a
+    /// dismissal nothing will ever read.
+    fn dismissable_row(&mut self, params: &Value) -> Result<EntitylessRow, String> {
+        let project_id = params
+            .get("project_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                "entity.dismiss: name a row — an entity_id, or a project_id with a branch or \
+                 primary: true"
+                    .to_string()
+            })?;
+        if !self.projects.iter().any(|p| p.id == project_id) {
+            return Err(format!("entity.dismiss: unknown project {project_id}"));
+        }
+        if params
+            .get("primary")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            return Ok(self.primary_row(&project_id));
+        }
+        let branch = params
+            .get("branch")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!(
+                    "entity.dismiss: {project_id} is a project, not a row — name a branch, or \
+                     primary: true for its checkout"
+                )
+            })?;
+        if let Some(run_id) = self.unarchived_run_on_branch(&project_id, &branch) {
+            return Err(format!(
+                "entity.dismiss: {branch} is run {run_id} — clear it by entity_id, so the line \
+                 is drawn in its conversation"
+            ));
+        }
+        let checkout = self
+            .external_worktrees(&project_id, false)?
+            .into_iter()
+            .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()));
+        if let Some(checkout) = checkout {
+            return Ok(EntitylessRow {
+                key: crate::attention::branch_row_key(&project_id, &branch),
+                head: Some(checkout.head_sha),
+                project_id,
+                branch: Some(branch),
+                primary: false,
+            });
+        }
+        // The one row left that a branch name can mean: the project's own
+        // checkout, named the way it appears on the feed rather than by the
+        // `primary` flag beside it.
+        let primary = self.primary_row(&project_id);
+        if primary.branch.as_deref() == Some(branch.as_str()) {
+            return Ok(primary);
+        }
+        Err(format!(
+            "entity.dismiss: {project_id} has no row for {branch}"
+        ))
+    }
+
+    /// A project's primary-checkout row, read off the same summary the feed
+    /// builds that row from — the row and its dismissal have to agree about
+    /// which commit the checkout is on.
+    fn primary_row(&self, project_id: &str) -> EntitylessRow {
+        let summary = self.primary_row_summary(project_id);
+        EntitylessRow {
+            key: crate::attention::primary_row_key(project_id),
+            head: summary
+                .as_ref()
+                .and_then(|entry| entry["head_sha"].as_str())
+                .map(str::to_string),
+            project_id: project_id.to_string(),
+            branch: summary
+                .as_ref()
+                .and_then(|entry| entry["branch"].as_str())
+                .map(str::to_string),
+            primary: true,
+        }
+    }
+
+    /// The primary-changes summary the feed last served for a project, computed
+    /// on the spot when the poll has never run.
+    fn primary_row_summary(&self, project_id: &str) -> Option<Value> {
+        let project = self.projects.iter().find(|p| p.id == project_id)?;
+        match &project.primary_summary {
+            Some((_, summary)) => Some(summary.clone()),
+            None => primary_changes_summary(project_id, &project.repo_path, &project.base_branch),
+        }
+    }
+
+    /// The entity-less row an external worktree's id names, or `None` when the
+    /// id is a run's or an issue's. A checkout on a branch IS that branch's
+    /// row; one with no branch is only ever itself.
+    fn checkout_row(&mut self, worktree_id: &str) -> Option<EntitylessRow> {
+        let project_ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
+        for project_id in project_ids {
+            // A project whose scan failed contributes nothing and stops
+            // nothing: the id may still belong to the next one.
+            let Ok(worktrees) = self.external_worktrees(&project_id, false) else {
+                continue;
+            };
+            let Some(checkout) = worktrees
+                .into_iter()
+                .find(|worktree| worktree.id == worktree_id)
+            else {
+                continue;
+            };
+            return Some(EntitylessRow {
+                key: match &checkout.branch {
+                    Some(branch) => crate::attention::branch_row_key(&project_id, branch),
+                    None => worktree_id.to_string(),
+                },
+                head: Some(checkout.head_sha),
+                project_id,
+                branch: checkout.branch,
+                primary: false,
+            });
+        }
+        None
+    }
+
+    /// The run whose ROW holds a branch in this project, if one does — where
+    /// that row's dismissal belongs, because a run's line is drawn in its
+    /// conversation.
+    ///
+    /// Wider than [`run_on_branch`](Self::run_on_branch): a merged or abandoned
+    /// run keeps its row until it is archived, and a row on the feed is a row
+    /// the human can clear.
+    fn unarchived_run_on_branch(&self, project_id: &str, branch: &str) -> Option<String> {
+        self.runs
+            .iter()
+            .find(|(run_id, active)| {
+                active.run.state != RunState::Archived
+                    && active.worktree.branch == branch
+                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
+            })
+            .map(|(run_id, _)| run_id.clone())
+    }
+
+    /// Forget what was cleared against the entity-less rows a checkout has just
+    /// stopped being. These records hold a dismissal and nothing else, so
+    /// dropping the record IS forgetting the dismissal.
+    fn forget_row_dismissals(&mut self, project_id: &str, branch: Option<&str>, primary: bool) {
+        let keys: Vec<String> = branch
+            .map(|branch| crate::attention::branch_row_key(project_id, branch))
+            .into_iter()
+            .chain(primary.then(|| crate::attention::primary_row_key(project_id)))
+            .collect();
+        let forgot = keys
+            .iter()
+            .filter(|key| self.attention.remove(*key).is_some())
+            .count();
+        if forgot > 0 {
+            self.persist_attention();
+        }
+    }
+
+    /// Whether an entity-less row has been cleared out of the inbox: the human
+    /// dismissed it, and it is still sitting on the commit they left it on.
+    fn row_is_dismissed(&self, key: &str, head: Option<&str>) -> bool {
+        self.attention
+            .get(key)
+            .is_some_and(|attention| attention.is_dismissed_at_head(head))
     }
 
     /// `triage.override` — the reviewer disagreed with how a hunk was
@@ -11339,6 +11592,11 @@ impl AppState {
             .map_err(err)?;
         self.entity_project
             .insert(run_id.clone(), project_id.clone());
+        // The row this checkout showed as belongs to a run from here on, and a
+        // run is cleared through its conversation: whatever was dismissed
+        // against the entity-less row is spent, and must not come back with the
+        // bare row if the run is ever released.
+        self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
         self.invalidate_external_scan(&project_id);
         let (view, persisted) = self.finish_run_mutation(run_id, active);
         persisted?;
@@ -11780,9 +12038,13 @@ impl AppState {
             "can_finish": false,
             "finish": { "warnings": [] },
             "muted": false,
-            // The repository has no conversation to fall quiet, and the row is
-            // the project itself: there is nothing here to clear away.
-            "dismissed": false,
+            // Cleared out of the inbox until the project has something new to
+            // say. The repository holds no conversation to fall quiet, so the
+            // line is drawn at the commit the checkout was cleared on.
+            "dismissed": self.row_is_dismissed(
+                &crate::attention::primary_row_key(&project_id),
+                entry["head_sha"].as_str(),
+            ),
             "worktree_path": repo_path,
             "worktree_id": Value::Null,
             "run_id": Value::Null,
@@ -11849,9 +12111,16 @@ impl AppState {
                 branch.as_deref().unwrap_or("this checkout"),
             ) },
             "muted": self.is_muted(&worktree_id),
-            // A checkout has no conversation, so it has nothing to fall quiet
-            // until: everything it says, it says through git.
-            "dismissed": false,
+            // A checkout has no conversation, so everything it says it says
+            // through git: it stays cleared until it gets a commit, or until
+            // adoption turns it into a run that speaks for itself.
+            "dismissed": self.row_is_dismissed(
+                &match &branch {
+                    Some(branch) => crate::attention::branch_row_key(&project_id, branch),
+                    None => worktree_id.clone(),
+                },
+                entry["head_sha"].as_str(),
+            ),
             "worktree_path": path,
             "worktree_id": worktree_id.clone(),
             "run_id": Value::Null,
@@ -30764,6 +31033,228 @@ mod tests {
         assert_eq!(
             entry["dismissed"], false,
             "a refused call changes nothing: {entry:?}"
+        );
+    }
+
+    // ---- dismiss: the rows no entity stands behind --------------------------
+
+    /// One commit in a checkout, which is how a row with no conversation says
+    /// something new.
+    fn commit_in(checkout: &std::path::Path, message: &str) {
+        std::fs::write(checkout.join("worked.txt"), message).unwrap();
+        git_in_dir(checkout, &["add", "."]);
+        git_in_dir(checkout, &["commit", "-m", message]);
+    }
+
+    /// A branch checked out where Build never cut it has no run, no issue and
+    /// no conversation — and the human must still be able to clear its row.
+    /// It goes on what the row IS, and comes back when the branch does
+    /// something.
+    #[test]
+    fn clearing_a_bare_branch_row_holds_until_the_branch_commits() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let checkout = add_external_worktree(&repo, dir.path(), "loose", "loose");
+
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["run_id"], Value::Null, "nothing stands behind it");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+
+        let cleared = state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id, "branch": "loose" }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["dismissed"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["project_id"], project_id, "{cleared:?}");
+        assert_eq!(cleared["result"]["branch"], "loose", "{cleared:?}");
+        assert_eq!(cleared["result"]["primary"], false, "{cleared:?}");
+
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // A commit is the branch speaking, and the row is back with nobody
+        // having to un-dismiss it.
+        commit_in(&checkout, "new work");
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// The same row named the way the client already has it — by the worktree
+    /// id the feed ships — lands on the same dismissal, because it is the same
+    /// row.
+    #[test]
+    fn clearing_a_bare_checkout_by_its_worktree_id_clears_the_same_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "loose", "loose");
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("loose"))
+            .expect("the external worktree is discoverable")
+            .id;
+
+        let cleared = state.handle(req(
+            "entity.dismiss",
+            json!({ "entity_id": worktree_id.clone() }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["entity_id"], worktree_id, "{cleared:?}");
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+    }
+
+    /// A row cleared away must still be cleared after a restart, whether or not
+    /// anything stands behind it.
+    #[test]
+    fn a_bare_row_dismissal_survives_a_restart() {
+        let (dir, repo) = init_repo();
+        add_external_worktree(&repo, dir.path(), "loose", "loose");
+        {
+            let mut state = qa_state(&repo, dir.path());
+            let project_id = state.projects[0].id.clone();
+            let cleared = state.handle(req(
+                "entity.dismiss",
+                json!({ "project_id": project_id.clone(), "branch": "loose" }),
+            ));
+            assert_eq!(cleared["ok"], true, "{cleared:?}");
+            let cleared = state.handle(req(
+                "entity.dismiss",
+                json!({ "project_id": project_id, "primary": true }),
+            ));
+            assert_eq!(cleared["ok"], true, "{cleared:?}");
+        }
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let row = branch_row(&mut reloaded, "loose");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+        let row = branch_row(&mut reloaded, "main");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+    }
+
+    /// Adoption gives the branch a run, and a run is something new to say: the
+    /// row comes back as the entity it has become, and is cleared from then on
+    /// the way every entity is — through its conversation.
+    #[test]
+    fn adopting_a_cleared_bare_branch_brings_its_row_back() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "loose", "loose");
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("loose"))
+            .expect("the external worktree is discoverable")
+            .id;
+        state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id.clone(), "branch": "loose" }),
+        ));
+        assert_eq!(branch_row(&mut state, "loose")["dismissed"], true);
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["run_id"], run_id_of(&adopted), "{row:?}");
+        assert_eq!(
+            row["dismissed"], false,
+            "the branch became a run, which is news: {row:?}"
+        );
+
+        // …and the row does not fall back into a dismissal it left behind: the
+        // run's arrival ended that one, whatever happens to the run afterwards.
+        let released = state.handle(req("run.release", json!({ "run_id": run_id_of(&adopted) })));
+        assert_eq!(released["ok"], true, "{released:?}");
+        let row = branch_row(&mut state, "loose");
+        assert_eq!(row["run_id"], Value::Null, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// The primary checkout is the project's own row: it has no entity, no
+    /// conversation and nothing to file away, and it is cleared until the
+    /// project has something new to say.
+    #[test]
+    fn clearing_the_primary_row_holds_until_the_project_commits() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let row = branch_row(&mut state, "main");
+        assert_eq!(row["primary"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+
+        let cleared = state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id, "primary": true }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["primary"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["dismissed"], true, "{cleared:?}");
+        let row = branch_row(&mut state, "main");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        commit_in(&repo, "landed");
+        let row = branch_row(&mut state, "main");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// Clearing one row clears one row. Two projects on the same branch name
+    /// are two rows, and the branch row and the primary row are two more.
+    #[test]
+    fn a_row_dismissal_names_exactly_one_row() {
+        let (dir, repo) = init_repo();
+        let other = init_repo_named(dir.path(), "other");
+        let mut state = qa_state(&repo, dir.path());
+        let added = state.handle(req(
+            "project.add",
+            json!({ "path": other.to_str().unwrap() }),
+        ));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let project_id = state.projects[0].id.clone();
+
+        state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": project_id.clone(), "primary": true }),
+        ));
+        let rows = work_item_rows(&mut state);
+        let cleared: Vec<&Value> = rows
+            .iter()
+            .filter(|row| row["dismissed"] == json!(true))
+            .collect();
+        assert_eq!(cleared.len(), 1, "{rows:?}");
+        assert_eq!(cleared[0]["project_id"], project_id, "{rows:?}");
+    }
+
+    #[test]
+    fn a_row_dismissal_refuses_what_it_cannot_clear() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let unknown = state.handle(req(
+            "entity.dismiss",
+            json!({ "project_id": "proj-nowhere", "primary": true }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+
+        // A project named with neither a branch nor the primary checkout names
+        // no row: the project itself is where work lives, not a row.
+        let unsaid = state.handle(req("entity.dismiss", json!({ "project_id": project_id })));
+        assert_eq!(unsaid["ok"], false, "{unsaid:?}");
+
+        let row = branch_row(&mut state, "main");
+        assert_eq!(
+            row["dismissed"], false,
+            "a refused call changes nothing: {row:?}"
         );
     }
 

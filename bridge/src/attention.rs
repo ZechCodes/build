@@ -42,6 +42,69 @@ pub const RESUME_GAP: Duration = Duration::hours(8);
 /// never two messages in one sitting.
 pub const ANCHOR_GAP: Duration = Duration::hours(12);
 
+/// What every attention key for a row with no entity behind it starts with.
+/// Nothing else in the map can collide with it: entity ids are minted with
+/// their own prefixes (`run-`, `plan-`, `wt-`).
+const ROW_KEY_PREFIX: &str = "row:";
+
+/// The attention key for a branch row that no entity stands behind — a branch
+/// checked out somewhere Build never cut, which has no run and no id of its
+/// own to be cleared by.
+///
+/// Keyed on what the row IS: its project and its branch. That outlives the
+/// checkout the row was read off, and it is the same identity the feed folds
+/// on, so a dismissal written here is about the row the human was looking at
+/// rather than about a path that happened to hold it.
+pub fn branch_row_key(project_id: &str, branch: &str) -> String {
+    format!("{ROW_KEY_PREFIX}{project_id}:branch:{branch}")
+}
+
+/// The attention key for a project's primary-checkout row.
+///
+/// The project IS the row, so it is keyed on nothing narrower: the checkout
+/// moving to another branch is the project doing something new, not a
+/// different row appearing.
+pub fn primary_row_key(project_id: &str) -> String {
+    format!("{ROW_KEY_PREFIX}{project_id}:primary")
+}
+
+/// What a row key names, read back off the key — which is all the pruner has
+/// to decide whether the row it belongs to can still exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowKey<'a> {
+    Branch {
+        project_id: &'a str,
+        branch: &'a str,
+    },
+    Primary {
+        project_id: &'a str,
+    },
+}
+
+impl<'a> RowKey<'a> {
+    /// The row a key names, or `None` for a key that names an entity instead.
+    ///
+    /// Neither a project id (`proj-N`) nor a git branch name can hold a `:`, so
+    /// the first one after the prefix ends the project and the second ends the
+    /// shape.
+    pub fn parse(key: &'a str) -> Option<Self> {
+        let (project_id, rest) = key.strip_prefix(ROW_KEY_PREFIX)?.split_once(':')?;
+        match rest.split_once(':') {
+            Some(("branch", branch)) if !branch.is_empty() => {
+                Some(RowKey::Branch { project_id, branch })
+            }
+            None if rest == "primary" => Some(RowKey::Primary { project_id }),
+            _ => None,
+        }
+    }
+
+    pub fn project_id(&self) -> &'a str {
+        match self {
+            RowKey::Branch { project_id, .. } | RowKey::Primary { project_id } => project_id,
+        }
+    }
+}
+
 /// The human's relationship with one run or plan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attention {
@@ -84,6 +147,14 @@ pub struct Attention {
     /// dismissed, which is every record written before dismissal existed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub dismissed_through: u64,
+    /// The commit a row with no conversation was sitting on when the human
+    /// cleared it. A bare checkout and a project's primary checkout hold no
+    /// conversation to draw a line in, so their line is drawn in git instead:
+    /// the row stays out of the inbox until its HEAD moves. `None` = never
+    /// cleared this way; `Some("")` = cleared while its history could not be
+    /// read at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_at_head: Option<String>,
     /// Where this entity sits in the inbox (RFC3339): the moment the user took
     /// it on. Seeded at creation and moved only by
     /// [`note_user_message`](Self::note_user_message). `None` = never seeded,
@@ -278,6 +349,23 @@ impl Attention {
     /// through the beginning of time".
     pub fn is_dismissed(&self, latest_attention_sequence: u64) -> bool {
         self.dismissed_through > 0 && self.dismissed_through >= latest_attention_sequence
+    }
+
+    /// Take a row with no conversation out of the inbox until its history moves
+    /// past `head` — the commit it is sitting on at this moment.
+    ///
+    /// A row whose HEAD cannot be read is still cleared: an empty line is a
+    /// line, and the first commit anyone can read brings the row back.
+    pub fn dismiss_at_head(&mut self, head: Option<&str>) {
+        self.dismissed_at_head = Some(head.unwrap_or_default().to_string());
+    }
+
+    /// Whether that row is still cleared: the human dismissed it, and it is
+    /// sitting on the commit they left it on. A new commit brings it back on
+    /// its own — the same rule [`is_dismissed`](Self::is_dismissed) applies to
+    /// a conversation, said in the only language a bare checkout speaks.
+    pub fn is_dismissed_at_head(&self, head: Option<&str>) -> bool {
+        self.dismissed_at_head.as_deref() == Some(head.unwrap_or_default())
     }
 
     /// The inbox's sort key: the anchor, falling back to `created_at` for a
@@ -564,6 +652,113 @@ mod tests {
         let reloaded: Attention =
             serde_json::from_value(wire).expect("a dismissed record loads back");
         assert_eq!(reloaded, cleared);
+    }
+
+    // ================== Dismissing a row with no conversation ==================
+
+    /// The same feature for a row that has no conversation to draw a line in:
+    /// it is cleared at the commit it was sitting on, and the next commit
+    /// brings it back with nobody having to un-dismiss it.
+    #[test]
+    fn a_row_with_no_conversation_stays_cleared_until_its_head_moves() {
+        let mut attention = Attention::default();
+        assert!(
+            !attention.is_dismissed_at_head(Some("abc123")),
+            "nobody cleared it"
+        );
+
+        attention.dismiss_at_head(Some("abc123"));
+        assert!(attention.is_dismissed_at_head(Some("abc123")));
+        assert!(
+            !attention.is_dismissed_at_head(Some("def456")),
+            "a commit past the line brings the row back"
+        );
+
+        attention.dismiss_at_head(Some("def456"));
+        assert!(attention.is_dismissed_at_head(Some("def456")));
+    }
+
+    /// A checkout whose history cannot be read is still a row the human can
+    /// clear — and the first commit anyone can read is news, so it comes back.
+    #[test]
+    fn a_row_cleared_with_no_readable_head_comes_back_when_one_appears() {
+        let mut attention = Attention::default();
+        attention.dismiss_at_head(None);
+        assert!(attention.is_dismissed_at_head(None));
+        assert!(!attention.is_dismissed_at_head(Some("abc123")));
+    }
+
+    /// The two lines are drawn in different places and neither reads as the
+    /// other: an entity's conversation cannot clear a checkout, and a commit
+    /// cannot clear a run.
+    #[test]
+    fn the_conversation_line_and_the_commit_line_are_independent() {
+        let mut cleared_row = Attention::default();
+        cleared_row.dismiss_at_head(Some("abc123"));
+        assert!(!cleared_row.is_dismissed(0), "no conversation was cleared");
+
+        let mut cleared_entity = Attention::default();
+        cleared_entity.dismiss_through(4);
+        assert!(
+            !cleared_entity.is_dismissed_at_head(Some("abc123")),
+            "no row was cleared"
+        );
+    }
+
+    /// Clearing a row is new: every record on disk predates it, must load, and
+    /// a row nobody cleared must not pay for the field.
+    #[test]
+    fn a_record_written_before_row_dismissal_existed_reads_as_never_cleared() {
+        let stored = serde_json::json!({ "last_interaction_at": MON_09 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert!(attention.dismissed_at_head.is_none());
+        assert!(!attention.is_dismissed_at_head(Some("abc123")));
+        assert!(
+            !attention.is_dismissed_at_head(None),
+            "never cleared is not cleared at nothing"
+        );
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert!(wire.get("dismissed_at_head").is_none(), "{wire:?}");
+
+        let mut cleared = attention;
+        cleared.dismiss_at_head(Some("abc123"));
+        let wire = serde_json::to_value(&cleared).unwrap();
+        assert_eq!(wire["dismissed_at_head"], "abc123", "{wire:?}");
+        let reloaded: Attention = serde_json::from_value(wire).expect("a cleared row loads back");
+        assert_eq!(reloaded, cleared);
+    }
+
+    /// Row keys name a row rather than an entity, and every one reads back as
+    /// the row it names — which is how the pruner knows what to keep.
+    #[test]
+    fn a_row_key_reads_back_as_the_row_it_names() {
+        assert_eq!(
+            RowKey::parse(&branch_row_key("proj-1", "feature/thing")),
+            Some(RowKey::Branch {
+                project_id: "proj-1",
+                branch: "feature/thing",
+            })
+        );
+        assert_eq!(
+            RowKey::parse(&primary_row_key("proj-2")),
+            Some(RowKey::Primary {
+                project_id: "proj-2"
+            })
+        );
+        assert_ne!(
+            branch_row_key("proj-1", "main"),
+            primary_row_key("proj-1"),
+            "a branch called main is not the primary checkout row"
+        );
+        assert_eq!(
+            RowKey::parse(&branch_row_key("proj-1", "main"))
+                .expect("a branch key")
+                .project_id(),
+            "proj-1"
+        );
+        for entity_id in ["run-1", "plan-1", "wt-abc123", "proj-1", "row:proj-1"] {
+            assert_eq!(RowKey::parse(entity_id), None, "{entity_id}");
+        }
     }
 
     // ================== The inbox anchor ==================

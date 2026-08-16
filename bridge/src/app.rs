@@ -5455,14 +5455,34 @@ impl AppState {
             .cloned()
             .collect();
         let mut reaped = Vec::new();
+        let mut killed_agents: Vec<(String, String)> = Vec::new();
         for key in vanished {
             let Some(tab) = self.tabs.remove(&key) else {
                 continue;
             };
             let wire_id = tab.wire_id();
+            if let TabRole::Agent {
+                owner, agent_id, ..
+            } = &tab.role
+            {
+                killed_agents.push((owner.clone(), agent_id.clone()));
+            }
             tab.session.kill_and_reap();
             tab.screen.push_closed(&wire_id, "reaped");
             reaped.push(wire_id);
+        }
+        // The kill above is one the pump can never report: the tab left the
+        // registry before the process died, so the pump's EOF finds no tab and
+        // records nothing. This is the one teardown where the OWNER may stay on
+        // the board (a worktree deleted by hand out from under a live run) — so
+        // the session lineage and any turn the dead agent was holding close
+        // here, or the row reads as working forever. Owners that left the board
+        // in the same mutation (delete, merge-prune) make this a quiet no-op,
+        // and abandon already closed its own. The loop runs after every removal
+        // above so the nested reap inside `finish_run_mutation` finds nothing
+        // left to take.
+        for (owner, agent_id) in killed_agents {
+            self.record_agent_session_end(&owner, &agent_id);
         }
         // The screens waiting for a first spawn go the same way: a worktree
         // that is gone will never host the agent their clients are watching
@@ -17376,6 +17396,71 @@ mod tests {
             interruption_in(&s.runs["run-handback"].agents).is_none(),
             "a handed-back turn is not interrupted: {:?}",
             s.runs["run-handback"].agents.items
+        );
+    }
+
+    /// A worktree deleted out-of-band (`rm -rf` by hand — nothing went through
+    /// a Build verb) takes its agent tab through `reap_orphaned_terminals`,
+    /// which removes the tab from the registry BEFORE killing the process. The
+    /// pump's EOF handler looks the tab up and finds nothing, so the reaper is
+    /// the only place left that knows this session ended — and the run stays on
+    /// the board. If it forgot to close the turn, the row would read working
+    /// forever: the exact bug the pump path already fixes, through a different
+    /// exit.
+    ///
+    /// The run is Merged — a run kept with `cleanup=keep`, its directory later
+    /// deleted by hand while a follow-up question had its agent mid-turn. That
+    /// is the shape where nothing else ever cleans up: `board.list`'s archive
+    /// sweep skips terminal runs, so this row is on the board for good, and the
+    /// reaper's close is the only one it will ever get.
+    #[tokio::test]
+    async fn the_reaper_closes_the_turn_of_an_agent_whose_worktree_vanished() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (tab_key, wire_id) =
+            insert_live_run(&state, &repo, dir.path().join("side"), "run-vanished");
+        state
+            .lock()
+            .unwrap()
+            .runs
+            .get_mut("run-vanished")
+            .unwrap()
+            .run
+            .state = RunState::Merged;
+        open_a_turn(&state, "run-vanished");
+        assert_eq!(
+            feed_row_for_run(&handler, "run-vanished")["working"],
+            json!(true),
+            "a turn in flight is the row working"
+        );
+
+        std::fs::remove_dir_all(&tab_key.root).expect("the user rm -rfs the checkout");
+        let reaped = state.lock().unwrap().reap_orphaned_terminals();
+        assert!(
+            reaped.contains(&wire_id),
+            "the reaper closes the vanished worktree's tab: {reaped:?}"
+        );
+
+        let row = feed_row_for_run(&handler, "run-vanished");
+        assert_eq!(
+            row["working"],
+            json!(false),
+            "the run stays on the board and its row leaves working: {row:?}"
+        );
+        assert_eq!(
+            row["unread_reason"], "interrupted",
+            "the row says why the work stopped: {row:?}"
+        );
+        let s = state.lock().unwrap();
+        let thread = &s.runs["run-vanished"].agents;
+        assert_eq!(thread.working_since(), None, "the turn is closed");
+        let interruption = interruption_in(thread).expect("the conversation records the death");
+        assert!(
+            interruption
+                .summary
+                .as_deref()
+                .is_some_and(|said| said.contains("without reporting")),
+            "the entry says the session ended without reporting: {interruption:?}"
         );
     }
 

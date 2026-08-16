@@ -364,6 +364,18 @@ describe("a row the user cleared", () => {
     expect(html).not.toContain('data-done="');
   });
 
+  // Done destroys an entity: a branch's records, an issue's plans. A row that
+  // names none has nothing to destroy and no id to say it with, so the feed
+  // calling it finishable is not enough to put a Done on it.
+  it("puts no Done on a row that names no entity, whatever the feed says", () => {
+    const [entry] = listed([
+      branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: true }),
+    ]);
+    expect(entry.canFinish).toBe(false);
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
+    expect(html).not.toContain("data-done=");
+  });
+
   it("is offered on a bare checkout row, which the bridge clears by its worktree id", () => {
     const [entry] = listed([branch({ run_id: null, issue_id: null, worktree_id: "wt-9" })]);
     const html = inboxRowHtml(entry, { openMenuKey: "wt-9" });

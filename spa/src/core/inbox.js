@@ -230,13 +230,14 @@ function toCaptureEntry(item) {
 function toEntry(item) {
   if (item.kind === "capture") return toCaptureEntry(item);
   const state = entryState(item);
+  const entityId = entityIdOf(item);
   // Line one is what the thing is CALLED: a branch by its branch name, an issue
   // by its own words. The goal a branch was cut for is a longer story, and it
   // is on the row's title where a second look finds it.
   const name = item.kind === "issue" ? item.title || "(untitled)" : item.branch || item.title || "(detached)";
   return {
     key: entryKeyOf(item),
-    entityId: entityIdOf(item),
+    entityId,
     kind: item.kind,
     projectId: item.project_id,
     project: item.project || item.project_id || "",
@@ -252,7 +253,11 @@ function toEntry(item) {
     // happened since". It is not mute and not Done: the row is simply absent
     // until an attention event later than the dismissal brings it back.
     dismissed: !!item.dismissed,
-    canFinish: !!item.can_finish,
+    // Done destroys an entity — a branch's records, an issue's plans — and it
+    // is spoken in that entity's name. A row that names none has nothing to
+    // finish and no way to say it, so it is never offered Done however
+    // finishable the feed calls it. Clear is the whole of such a row's menu.
+    canFinish: !!item.can_finish && !!entityId,
     // Whether the work landed. It is the whole question an implemented issue's
     // fate turns on when its branch is deleted.
     merged: item.state === "merged",

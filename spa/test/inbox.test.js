@@ -200,7 +200,7 @@ describe("what the inbox lists", () => {
   });
 
   it("leaves out what the user just said Done to", () => {
-    const entries = inboxEntries({ items: [branch(), issue()], nowMs: NOW, dismissed: new Set(["run-1"]) }).entries;
+    const entries = inboxEntries({ items: [branch(), issue()], nowMs: NOW, hiddenEntityIds: new Set(["run-1"]) }).entries;
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
   });
 
@@ -291,6 +291,53 @@ describe("the Recent section", () => {
 
   it("says so when there is nothing waiting at all", () => {
     expect(inboxListHtml(inboxEntries({ items: [], nowMs: NOW }), {})).toContain("Nothing needs you");
+  });
+});
+
+// ---- cleared from the inbox ----------------------------------------------------
+// A row the user cleared is GONE, not demoted: Recent is where a quiet row goes,
+// and a cleared one is in neither list until something new needs the user. It is
+// nothing like mute, which keeps the row and stops it asking.
+
+describe("a row the user cleared", () => {
+  it("is in neither the list nor Recent", () => {
+    const { entries, recent } = inboxEntries({ items: [branch({ dismissed: true }), issue()], nowMs: NOW });
+    expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
+    expect(recent).toEqual([]);
+  });
+
+  it("is not demoted to Recent by having gone quiet either", () => {
+    const cleared = branch({
+      branch: "build/old",
+      run_id: "run-old",
+      anchor: ago(200),
+      last_activity: ago(30),
+      dismissed: true,
+    });
+    const { entries, recent } = inboxEntries({ items: [issue(), cleared], nowMs: NOW });
+    expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
+    expect(recent).toEqual([]);
+  });
+
+  it("keeps a row the bridge has not cleared, and carries what it said", () => {
+    const [entry] = listed([branch({ unread: true, unread_count: 2, unread_reason: "done", dismissed: false })]);
+    expect(entry.entityId).toBe("run-1");
+    expect(entry.dismissed).toBe(false);
+  });
+
+  it("keeps a muted row — muting silences a row, clearing removes it", () => {
+    const entries = listed([branch({ muted: true })]);
+    expect(entries.map((entry) => entry.entityId)).toEqual(["run-1"]);
+    expect(entries[0].muted).toBe(true);
+  });
+
+  it("is offered above Mute in the row's own menu, in the words of what it does", () => {
+    const [entry] = listed([branch()]);
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
+    expect(html).toContain('data-dismiss="run-1"');
+    expect(html).toContain("Clear from inbox");
+    expect(html).toContain("Hides it until something new needs you");
+    expect(html.indexOf("Clear from inbox")).toBeLessThan(html.indexOf(">Mute<"));
   });
 });
 

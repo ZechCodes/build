@@ -435,6 +435,31 @@ describe("captures on the rail", () => {
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
   });
 
+  // The daemon keeps an unread row visible (unread beats dismissed), so the
+  // tap reads it through first — without that, Clear would bounce back on the
+  // next poll on exactly the rows people most want to clear.
+  it("reads an unread row through before clearing it", async () => {
+    feed([branchRow({ unread: true, unread_count: 1, unread_reason: "agent_message" })]);
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+    const calls = App.call.mock.calls.map(([method]) => method);
+    expect(calls.indexOf("entity.seen")).toBeGreaterThan(-1);
+    expect(calls.indexOf("entity.seen")).toBeLessThan(calls.indexOf("entity.dismiss"));
+  });
+
+  // A bare checkout has no conversation, so "until something new needs you"
+  // could never end — Clear is not offered where it cannot mean itself.
+  it("offers no Clear on a checkout row with nothing that can speak", async () => {
+    feed([branchRow({ run_id: null, issue_id: null, worktree_id: "wt-9", entity_id: undefined })]);
+    const row = document.querySelector('[data-key]');
+    row.querySelector("[data-menu]").click();
+    await flush();
+    expect(row.querySelector("[data-dismiss]")).toBeNull();
+    expect(row.querySelector("[data-mute]")).toBeTruthy();
+  });
+
   // A capture leaves the inbox by being routed, so there is nothing to clear —
   // and no entity to clear it on.
   it("offers no way to clear a capture", () => {

@@ -320,6 +320,13 @@ async function dismissEntry(entry) {
   errors.delete(entry.entityId);
   draw();
   try {
+    // Clearing an unread row IS reading it: the daemon's rule keeps an unread
+    // row visible (unread beats dismissed), so the tap reads it through first
+    // — otherwise the row would bounce back on the next poll and Clear would
+    // look broken on exactly the rows people most want to clear.
+    if (entry.state === "unread") {
+      await App.call("entity.seen", { entity_id: entry.entityId });
+    }
     await App.call("entity.dismiss", { entity_id: entry.entityId });
     await refreshFeed();
   } catch (error) {

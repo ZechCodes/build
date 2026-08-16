@@ -240,6 +240,10 @@ function toEntry(item) {
     // Whether the work landed. It is the whole question an implemented issue's
     // fate turns on when its branch is deleted.
     merged: item.state === "merged",
+    // Whether anything can ever speak on this row: a bare checkout (external
+    // worktree, primary) has no conversation, so "until something new needs
+    // you" can never end — Clear is not offered where it cannot mean itself.
+    hasConversation: !!(item.run_id || item.issue_id),
     warnings: warningsOf(item),
     primary: !!item.primary,
     facts: entryFactsText(item),
@@ -326,7 +330,11 @@ export function activeEntryKey(route, entries) {
 function menuHtml(entry, open) {
   if (!entry.entityId) return "";
   const items = [
-    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
+    ...(entry.hasConversation
+      ? [
+          `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
+        ]
+      : []),
     `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
       entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
     }</span></div>`,

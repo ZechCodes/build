@@ -151,21 +151,23 @@ function shellWidth(viewport) {
  *  body, .pane-split inside the flush one. */
 function layouts(viewport) {
   const tokens = tokensAt(viewport);
-  const shared = cssRules().find((rule) => /\.pane-col\b/.test(rule.selector) && /max-width/.test(rule.body));
   const bodyGutter = sidePadding(declaration(rulesFor(".surface #tabbody")[0].body, "padding"), tokens);
   const [split] = rulesFor(".pane-split");
   const frame = shellWidth(viewport);
+  // No shared width rule any more: a work surface fills the column it is given
+  // (flush against the agent rail), so each layout's span is its frame minus
+  // its own gutters.
   return {
     col: contentSpan({
       available: frame - bodyGutter * 2,
       offset: bodyGutter,
-      rule: shared.body,
+      rule: "",
       tokens,
     }),
     split: contentSpan({
       available: frame, // .flush pads nothing; the split states its own gutters
       offset: 0,
-      rule: `${shared.body};${split.body}`,
+      rule: split.body,
       tokens,
     }),
   };
@@ -181,27 +183,16 @@ const targetsPrimitive = (selector) =>
     .some((part) => /\.pane-(col|split)\b/.test(part.trim().split(/\s+/).at(-1)));
 
 describe("tab layout primitives", () => {
-  it("declares the content width once, as a :root token", () => {
-    expect(stylesSource.match(/--content-max:/g) || []).toHaveLength(1);
-    const token = cssRules().find((rule) => rule.selector === ":root" && rule.body.includes("--content-max"));
-    expect(token).toBeTruthy();
-    expect(token.body).toMatch(/--content-max:\s*1180px/);
-  });
-
-  it("sizes both layouts from one shared width rule", () => {
-    const widthRules = cssRules().filter(
-      (rule) => targetsPrimitive(rule.selector) && /\bmax-width\s*:/.test(rule.body),
-    );
-    expect(widthRules).toHaveLength(1);
-    const [shared] = widthRules;
-    expect(shared.selector.split(",").map((part) => part.trim()).sort()).toEqual([".pane-col", ".pane-split"]);
-    expect(shared.body).toMatch(/max-width:\s*var\(--content-max\)/);
-    expect(shared.body).toMatch(/margin:\s*0 auto/);
-    // Neither layout states a width: a block box already fills what it is
-    // given, and a stated 100% would fight the gutters the split adds outside
-    // its cap.
+  it("caps and centres neither layout — a work surface fills its column", () => {
+    // The reviewer's gap: a centred cap left a dead strip between the diff and
+    // the conversation panel on any window wider than the cap. Work surfaces
+    // fill what the shell gives them and sit flush against the agent rail;
+    // only reading pages (main:not(.surface)) centre inside a cap.
+    expect(stylesSource).not.toMatch(/--content-max/);
     for (const rule of cssRules().filter((rule) => targetsPrimitive(rule.selector))) {
+      expect(declaration(rule.body, "max-width")).toBeNull();
       expect(declaration(rule.body, "width")).toBeNull();
+      expect(declaration(rule.body, "margin")).toBeNull();
     }
   });
 
@@ -394,7 +385,7 @@ describe("tab layout primitives", () => {
     );
     const basis = pixels(declaration(rail.body, "flex").split(/\s+/)[2], tokens);
     const gutter = sidePadding(declaration(rulesFor(".pane-split")[0].body, "padding"), tokens);
-    const pane = Math.min(shellWidth(viewport) - gutter * 2, pixels("var(--content-max)", tokens));
+    const pane = shellWidth(viewport) - gutter * 2;
     const cap = declaration(rail.body, "max-width");
     if (!cap) return basis;
     const against = cap.endsWith("%") ? pane : cap.endsWith("vw") ? viewport : 100;

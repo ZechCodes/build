@@ -85,7 +85,7 @@
    pay the gutter as well: its bar pays the DIFFERENCE, and the inset finishes
    the distance. Those two are the derived tokens here, stated against the
    gutter so there is still one number to move. */
-:root { --content-max:1180px; --pane-gutter:18px; --pane-top:18px; --pane-bottom:40px;
+:root { --pane-gutter:18px; --pane-top:18px; --pane-bottom:40px;
   --pane-drawer:min(86vw, 300px);
   --tbsel-inset:6px;  /* the toolbar's menu button, inside its own bar */
   --tab-inset:13px; /* a tab pill, inside the tab bar */
@@ -255,18 +255,19 @@ main#root.surface { max-width:none;
 .surface #tabbody.flush > .empty { padding:var(--pane-top) var(--pane-gutter); }
 /* ---- the two tab layouts ----
    There are exactly two, and dimensionally they are one: the same width, the
-   same centring, the same gutters, so a tab switch moves nothing but what is
-   inside. .pane-col is a single column in the padded body; .pane-split is two
-   columns in the flush one, each owning its own scroll.
+   same gutters, so a tab switch moves nothing but what is inside. .pane-col
+   is a single column in the padded body; .pane-split is two columns in the
+   flush one, each owning its own scroll.
+   Neither is capped or centred: a work surface fills the column the shell
+   gives it and sits flush against the agent rail — a centring cap left a dead
+   strip between the diff and the conversation on any window wider than the
+   cap (the reviewer's gap), and a diff is a tool, not prose. Reading pages
+   (main:not(.surface)) keep their own centred cap.
    (.bare is not one of them — a terminal is deliberately full-bleed.) */
-.pane-col, .pane-split { max-width:var(--content-max); margin:0 auto; }
 /* The flush body has no padding of its own, so the split states the shared
-   gutters itself. content-box is the whole reason the two layouts measure the
-   same: --content-max has to cap the content, and the gutter has to fall
-   outside the cap, exactly as the padded body does it for the one column. Under
-   the sheet's border-box default the split's gutters would eat into the cap
-   instead, and every viewport wider than the cap would render it narrower than
-   the column and pushed further in.
+   gutters itself. content-box keeps the two layouts measuring the same: the
+   gutter falls outside the content box, exactly as the padded body does it
+   for the one column.
    No bottom gutter: its columns scroll to the frame's edge, and a gap under a
    live scroller is dead space rather than rhythm — the one-column layout's
    bottom padding is scroll-end room inside its own scroller. The height sheds

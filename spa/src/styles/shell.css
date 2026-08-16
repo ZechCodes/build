@@ -335,12 +335,24 @@ body.inbox-collapsed #inbox-open { display:block; }
 
 /* ---- agent rail (right edge of the view body) ----
    The strip is always there and the panel expands to its left, so the rail is
-   laid out right-to-left: panel first in the DOM, strip pinned at the edge. */
-#agent-rail { display:flex; min-height:0; border-left:1px solid var(--line);
-  background:var(--bg); }
+   laid out right-to-left: panel first in the DOM, strip pinned at the edge.
+
+   The seam is one border, and each divide is stated by the surface that BEGINS
+   at it: the panel draws the line between the work and the conversation, the
+   strip draws the line at its own leading edge — which is that same seam
+   whenever the panel is shut. The wrapper draws nothing. It used to carry the
+   seam itself while the panel carried a second rule on its far side, and the
+   two collided wherever an overlay's trailing edge landed on the strip (the
+   phone's panel, the full console): one divide painted twice, with a strip of
+   page beside it rather than the two surfaces touching.
+
+   The strip's border is INSIDE its stated width — the sheet is border-box — so
+   --agent-strip is the single number the strip, the phone's panel and the full
+   console all stop on, and the seam runs unbroken behind all three. */
+#agent-rail { display:flex; min-height:0; background:var(--bg); }
 .rail-strip { flex:none; width:var(--agent-strip); display:flex;
   flex-direction:column; align-items:center; gap:8px; padding:10px 0;
-  overflow-y:auto; }
+  border-left:1px solid var(--line); overflow-y:auto; }
 /* A bubble is the agent: the ordinal it answers to, its unread count, and a
    pulse while it is working — the whole state of an agent, legible with the
    panel shut. */
@@ -371,7 +383,7 @@ body.inbox-collapsed #inbox-open { display:block; }
    instead of pushing itself off the panel. */
 .rail-panel { flex:none; width:min(400px, calc(100vw - 120px));
   display:flex; flex-direction:column; min-height:0;
-  border-right:1px solid var(--line); }
+  border-left:1px solid var(--line); }
 .rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px;
   height:38px; border-bottom:1px solid var(--line); }
 .rail-who { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;

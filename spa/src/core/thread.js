@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
+import { patchElement } from "./domPatch.js";
 import { completionReportSections } from "./agentRailModel.js";
 import {
   autoGrow,
@@ -216,6 +217,30 @@ function linksHtml(links) {
     .join("")}</div>`;
 }
 
+/// Attachment bytes already fetched, keyed by path — and `null` for a path the
+/// bridge would not give up.
+///
+/// Safe to hold forever within a session: an attachment is content-addressed
+/// and immutable, so a path always means the same bytes. Worth holding, because
+/// the surfaces re-render the whole timeline on every poll and a conversation
+/// full of screenshots would otherwise re-fetch all of them every second and a
+/// half. Bounded so a long session cannot grow without limit.
+///
+/// The renderer reads the failures, so a picture that will not come says the
+/// same thing on every render. The bytes stay out of the markup — a screenshot
+/// is megabytes, and re-serialising it into the timeline string 37 times a
+/// minute would cost more than it saves. The picture on the page keeps them:
+/// `patchElement` leaves a loaded `<img>` its `src`.
+const attachmentDataUrls = new Map();
+const ATTACHMENT_CACHE_MAX = 40;
+
+function rememberAttachment(path, dataUrl) {
+  if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
+    attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
+  }
+  attachmentDataUrls.set(path, dataUrl);
+}
+
 /// The files a message came with.
 ///
 /// An image is shown, not linked: the reason to attach a screenshot is that
@@ -224,7 +249,9 @@ function linksHtml(links) {
 /// downloads, since the browser has nothing useful to do with a tarball.
 ///
 /// `src` is left empty here and filled by [`wireThreadAttachments`] — the
-/// timeline is a string, and the bytes are a round trip away.
+/// timeline is a string, and the bytes are a round trip away. A picture already
+/// asked for and refused is drawn as refused, so that a repaint of the same
+/// conversation is the same markup down to the class.
 function attachmentsHtml(attachments) {
   if (!attachments || !attachments.length) return "";
   return `<div class="thread-attachments">${attachments
@@ -232,7 +259,8 @@ function attachmentsHtml(attachments) {
       const path = esc(attachment.path || "");
       const name = esc(attachment.name || attachment.path || "file");
       if (isImageAttachment(attachment.mime)) {
-        return `<figure class="thread-attachment-figure">
+        const refused = attachmentDataUrls.get(attachment.path) === null ? " unavailable" : "";
+        return `<figure class="thread-attachment-figure${refused}">
           <img class="thread-attachment-image" data-attachment-path="${path}" alt="${name}">
           <figcaption>${name}</figcaption>
         </figure>`;
@@ -413,27 +441,53 @@ export function writeThreadKeepingComposer(container, html) {
     container.innerHTML = html;
     return true;
   }
-  live.className = next.className;
+  if (live.className !== next.className) live.className = next.className;
   for (const selector of REPAINTED_PARTS) {
     const target = live.querySelector(selector);
     const source = next.querySelector(selector);
     if (!target || !source) continue;
-    target.className = source.className;
-    // Most ticks resolve the same conversation. Writing it in anyway would
-    // collapse a selection being made in a message and send every inline image
-    // back for a re-fetch, so a part that says what it already said is left
-    // exactly where it is.
-    if (target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
+    // Most ticks resolve the same conversation, and the ones that do not
+    // usually change a single message — the newest, while an agent writes it.
+    // Writing the whole part in would collapse a selection being made in a
+    // message, send every inline image back for a re-fetch, and leave the
+    // browser's scroll anchoring with nothing to hold on to under a reader who
+    // is mid-scroll. So the two are walked together and only the words that
+    // actually changed are written; a part that says what it already said is
+    // left untouched down to the last attribute.
+    patchElement(target, source);
   }
   const liveInput = liveComposer.querySelector("textarea");
   const nextInput = nextComposer.querySelector("textarea");
-  if (liveInput && nextInput) liveInput.placeholder = nextInput.placeholder;
+  if (liveInput && nextInput && liveInput.placeholder !== nextInput.placeholder) {
+    liveInput.placeholder = nextInput.placeholder;
+  }
   return false;
 }
 
 /** How near the end still counts as reading the end. Absorbs the fractional
  *  scroll heights a zoomed or sub-pixel layout leaves behind. */
 const AT_BOTTOM_SLACK_PX = 32;
+
+/// Run `paint` and report whether it moved anything under `scroller`.
+///
+/// Asking the DOM is the only honest answer: the paint belongs to the caller,
+/// and a poll's repaint that resolved the same conversation writes nothing at
+/// all. Observing it costs one observer per tick and tells the difference
+/// between a repaint and a tick that merely happened.
+function paintAndSayWhetherAnythingMoved(scroller, paint) {
+  if (typeof MutationObserver !== "function") {
+    paint();
+    return true;
+  }
+  const observer = new MutationObserver(() => {});
+  observer.observe(scroller, { childList: true, subtree: true, attributes: true, characterData: true });
+  try {
+    paint();
+    return observer.takeRecords().length > 0;
+  } finally {
+    observer.disconnect();
+  }
+}
 
 /// Paint a conversation with the reader's place kept.
 ///
@@ -447,6 +501,12 @@ const AT_BOTTOM_SLACK_PX = 32;
 /// `scroller` is the element that scrolls (the surfaces' `#tabbody`), which is
 /// not always the element `paint` writes into — the issue surface paints a
 /// wrapper inside it. With no scroller this is `paint()` and nothing else.
+///
+/// A tick whose paint wrote nothing is not a repaint, and the scroller is not
+/// touched for it — not even to write back the number it already holds. That
+/// assignment is not free: on iOS it cancels the momentum of a flick in
+/// progress and drops the reader back where the tick found them, which at a
+/// poll every 1.6 seconds is a thread that cannot be scrolled down at all.
 export function paintThreadKeepingPlace(scroller, paint) {
   if (!scroller) {
     paint();
@@ -458,7 +518,8 @@ export function paintThreadKeepingPlace(scroller, paint) {
   const previousScrollTop = scroller.scrollTop;
   const wasAtBottom =
     scroller.scrollHeight - scroller.clientHeight - previousScrollTop <= AT_BOTTOM_SLACK_PX;
-  paint();
+  const changed = paintAndSayWhetherAnythingMoved(scroller, paint);
+  if (!opening && !changed) return;
   if (!opening && !wasAtBottom) {
     scroller.scrollTop = previousScrollTop;
     return;
@@ -496,23 +557,6 @@ export function wireThreadRevisionLinks(root, loadRevision) {
   });
 }
 
-/// Attachment bytes already fetched, keyed by path.
-///
-/// Safe to hold forever within a session: an attachment is content-addressed
-/// and immutable, so a path always means the same bytes. Worth holding, because
-/// the surfaces re-render the whole timeline on every poll and a conversation
-/// full of screenshots would otherwise re-fetch all of them every second and a
-/// half. Bounded so a long session cannot grow without limit.
-const attachmentDataUrls = new Map();
-const ATTACHMENT_CACHE_MAX = 40;
-
-function rememberAttachment(path, dataUrl) {
-  if (attachmentDataUrls.size >= ATTACHMENT_CACHE_MAX) {
-    attachmentDataUrls.delete(attachmentDataUrls.keys().next().value);
-  }
-  attachmentDataUrls.set(path, dataUrl);
-}
-
 /// Fill the images a rendered timeline is waiting on, and make the file chips
 /// download what they name.
 ///
@@ -521,7 +565,8 @@ function rememberAttachment(path, dataUrl) {
 export function wireThreadAttachments(root, load) {
   if (!root) return;
   const dataUrlFor = async (path) => {
-    if (attachmentDataUrls.has(path)) return attachmentDataUrls.get(path);
+    const held = attachmentDataUrls.get(path);
+    if (held) return held;
     const attachment = await load(path);
     const dataUrl = `data:${attachment.mime || "application/octet-stream"};base64,${attachment.content_b64 || ""}`;
     rememberAttachment(path, dataUrl);
@@ -530,14 +575,19 @@ export function wireThreadAttachments(root, load) {
 
   root.querySelectorAll("img.thread-attachment-image").forEach((image) => {
     const path = image.dataset.attachmentPath;
-    if (!path || image.getAttribute("src")) return;
+    // A picture already showing, and one already asked for and refused, are
+    // both settled: asking again on every poll would be a request a second and
+    // a half for bytes the reader is not going to get.
+    if (!path || image.getAttribute("src") || attachmentDataUrls.get(path) === null) return;
     dataUrlFor(path).then(
       (dataUrl) => {
         image.setAttribute("src", dataUrl);
       },
       () => {
         // A picture that will not load says so where the picture would be,
-        // rather than leaving a silent gap in the conversation.
+        // rather than leaving a silent gap in the conversation — remembered as
+        // well as shown, so the next render draws the same unavailable figure.
+        rememberAttachment(path, null);
         image.closest(".thread-attachment-figure")?.classList.add("unavailable");
       },
     );

@@ -1,0 +1,104 @@
+// @vitest-environment jsdom
+// Writing only the disagreements.
+//
+// The conversation re-renders on a poll; the patch is what stands between that
+// render and the reader's page. Two trees that already agree must come out of
+// it byte for byte the same nodes, and a tree that changed one word must lose
+// only that word.
+
+import { describe, expect, it } from "vitest";
+import { patchElement } from "../src/core/domPatch.js";
+
+const tree = (html) => {
+  const host = document.createElement("div");
+  host.innerHTML = html;
+  return host;
+};
+
+/** Everything the patch moved. */
+function mutationsOf(live, next) {
+  const observer = new MutationObserver(() => {});
+  observer.observe(live, { childList: true, subtree: true, attributes: true, characterData: true });
+  try {
+    patchElement(live, next);
+    return observer.takeRecords();
+  } finally {
+    observer.disconnect();
+  }
+}
+
+describe("patching a live tree to say what a rendered one says", () => {
+  it("touches nothing when the two already agree", () => {
+    const markup = `<p class="a">said <em>this</em></p><p>and that</p>`;
+    const live = tree(markup);
+    expect(mutationsOf(live, tree(markup))).toEqual([]);
+  });
+
+  it("rewrites a word without replacing the element holding it", () => {
+    const live = tree(`<p class="a">half</p>`);
+    const paragraph = live.querySelector("p");
+
+    const records = mutationsOf(live, tree(`<p class="a">half a thought</p>`));
+
+    expect(live.querySelector("p")).toBe(paragraph);
+    expect(paragraph.textContent).toBe("half a thought");
+    expect(records.map((record) => record.type)).toEqual(["characterData"]);
+  });
+
+  it("moves an attribute without disturbing the children", () => {
+    const live = tree(`<div class="one"><span>kept</span></div>`);
+    const kept = live.querySelector("span");
+
+    patchElement(live, tree(`<div class="two"><span>kept</span></div>`));
+
+    expect(live.querySelector("div").className).toBe("two");
+    expect(live.querySelector("span")).toBe(kept);
+  });
+
+  it("drops an attribute the render no longer carries", () => {
+    const live = tree(`<div class="one" hidden></div>`);
+    patchElement(live, tree(`<div class="one"></div>`));
+    expect(live.querySelector("div").hasAttribute("hidden")).toBe(false);
+  });
+
+  it("replaces a node the render made a different kind of thing", () => {
+    const live = tree(`<p>a</p>`);
+    patchElement(live, tree(`<section>a</section>`));
+    expect(live.innerHTML).toBe(`<section>a</section>`);
+  });
+
+  it("appends what is new and removes what is gone", () => {
+    const live = tree(`<p>one</p><p>two</p>`);
+    const first = live.querySelector("p");
+
+    patchElement(live, tree(`<p>one</p><p>two</p><p>three</p>`));
+    expect([...live.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["one", "two", "three"]);
+    expect(live.querySelector("p")).toBe(first);
+
+    patchElement(live, tree(`<p>one</p>`));
+    expect([...live.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["one"]);
+  });
+
+  // The render leaves `src` out for bytes it does not hold. That is a statement
+  // about the renderer, not about the picture, so a picture already showing
+  // keeps showing — and re-fetching a screenshot every 1.6 seconds, at zero
+  // height until it lands, is exactly what dragged the reader's scroll.
+  it("keeps the bytes an image already holds", () => {
+    const live = tree(`<img data-attachment-path="a.png" src="data:image/png;base64,AA" alt="a">`);
+    const picture = live.querySelector("img");
+
+    const records = mutationsOf(live, tree(`<img data-attachment-path="a.png" alt="a">`));
+
+    expect(live.querySelector("img")).toBe(picture);
+    expect(picture.getAttribute("src")).toBe("data:image/png;base64,AA");
+    expect(records).toEqual([]);
+  });
+
+  it("does not show one attachment's bytes for another's", () => {
+    const live = tree(`<img data-attachment-path="a.png" src="data:image/png;base64,AA" alt="a">`);
+    patchElement(live, tree(`<img data-attachment-path="b.png" alt="b">`));
+    const picture = live.querySelector("img");
+    expect(picture.getAttribute("data-attachment-path")).toBe("b.png");
+    expect(picture.hasAttribute("src")).toBe(false);
+  });
+});

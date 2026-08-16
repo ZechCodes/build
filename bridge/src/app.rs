@@ -5312,6 +5312,8 @@ impl AppState {
                 self.apply_finish(*epilogue, *finished)
             }
             DeferredOutcome::Git { git, result } => self.apply_git(&git, result),
+            // A read writes nothing back: its answer is the whole result.
+            DeferredOutcome::Read(result) => result,
         };
         if let Ok(result) = &applied {
             self.stamp_interaction_for(method, params, result);
@@ -6461,37 +6463,19 @@ impl AppState {
     /// mechanical.
     fn project_diff(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let project = self
+        let repo_path = self
             .projects
             .iter()
             .find(|p| p.id == project_id)
+            .map(|project| project.repo_path.clone())
             .ok_or_else(|| "unknown project_id".to_string())?;
-        let repo_path = project.repo_path.clone();
-        let repo = git2::Repository::open(&repo_path).ok();
-        let branch = repo
-            .as_ref()
-            .and_then(|r| r.head().ok())
-            .and_then(|h| h.shorthand().map(str::to_string))
-            .unwrap_or_else(|| "HEAD".to_string());
-        let diff = crate::diff::diff_against_head(&repo_path).map_err(|e| e.to_string())?;
-        let files: Vec<Value> = diff
-            .files()
-            .iter()
-            .map(|f| json!({ "path": f.path, "status": format!("{:?}", f.status) }))
-            .collect();
-        let stat = diff.stat();
-        Ok(json!({
-            "project_id": project_id,
-            "branch": branch,
-            "path": repo_path.display().to_string(),
-            "stat": {
-                "files_changed": stat.files_changed,
-                "insertions": stat.insertions,
-                "deletions": stat.deletions,
+        Ok(self.defer_read(
+            ReadSubject::Project {
+                project_id,
+                repo_path,
             },
-            "files": files,
-            "patch": diff.patch(),
-        }))
+            None,
+        ))
     }
 
     /// Resolve the shared `git.*` scope: the project's primary checkout
@@ -6599,6 +6583,19 @@ impl AppState {
             params,
             invalidates,
         ))
+    }
+
+    /// Hand a resolved diff to the drain, which renders it with the mutex
+    /// released. The `Value` returned is the placeholder
+    /// [`AppState::deferred_work`] documents.
+    fn defer_read(&mut self, subject: ReadSubject, issue_id: Option<String>) -> Value {
+        self.deferred_work = Some(DeferredWork::Read(Box::new(DeferredRead {
+            subject,
+            issue_id,
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        })));
+        Value::Null
     }
 
     fn defer_git_work(
@@ -7511,34 +7508,14 @@ impl AppState {
         let project_id = require_str(params, "project_id")?;
         let worktree_id = require_str(params, "worktree_id")?;
         let external = self.resolve_external_worktree(&project_id, &worktree_id)?;
-        let base = self.base_for(&project_id)?;
-        let diff = crate::diff::diff_against_merge_base(&external.path, &base)
-            .map_err(|e| e.to_string())?;
-        let files: Vec<Value> = diff
-            .files()
-            .iter()
-            .map(|f| json!({ "path": f.path, "status": format!("{:?}", f.status) }))
-            .collect();
-        let stat = diff.stat();
-        let adoptable = external.branch.as_deref().is_some_and(|b| b != base);
-        Ok(json!({
-            "worktree_id": external.id,
-            "branch": external.branch,
-            // The branch this diff is anchored on, so the surface can name it
-            // instead of saying "the base branch".
-            "base_branch": base,
-            "head_subject": external.head_subject,
-            "dirty_files": external.dirty_files,
-            "path": external.path.display().to_string(),
-            "adoptable": adoptable,
-            "stat": {
-                "files_changed": stat.files_changed,
-                "insertions": stat.insertions,
-                "deletions": stat.deletions,
+        let base_branch = self.base_for(&project_id)?;
+        Ok(self.defer_read(
+            ReadSubject::Worktree {
+                external: Box::new(external),
+                base_branch,
             },
-            "files": files,
-            "patch": diff.patch(),
-        }))
+            None,
+        ))
     }
 
     // ---- Store accessor + take/finish plumbing --------------------------------
@@ -9290,7 +9267,7 @@ impl AppState {
         self.issue_view_full(&issue_id)
     }
 
-    fn issue_stage_diff(&self, params: &Value) -> Result<Value, String> {
+    fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
         let issue_id = require_str(params, "issue_id")?;
         let stage_id = require_str(params, "stage_id")?;
         // Resolve the lineage that actually owns this immutable boundary, not
@@ -9325,12 +9302,7 @@ impl AppState {
             .as_object_mut()
             .ok_or("issue params must be an object")?
             .insert("run_id".to_string(), json!(run_id));
-        let mut result = self.run_stage_diff(&run_params)?;
-        result
-            .as_object_mut()
-            .expect("run stage diff returns an object")
-            .insert("issue_id".to_string(), json!(issue_id));
-        Ok(result)
+        self.plan_run_stage_diff(&run_params, Some(issue_id))
     }
 
     fn issue_run_action(&mut self, params: &Value, action: &str) -> Result<Value, String> {
@@ -9349,13 +9321,7 @@ impl AppState {
         object.remove("agent_id");
         match action {
             "fix" => self.run_stage_fix(&run_params)?,
-            "diff" => {
-                let mut diff = self.run_diff(&run_params)?;
-                diff.as_object_mut()
-                    .expect("run.diff returns an object")
-                    .insert("issue_id".to_string(), json!(issue_id));
-                return Ok(diff);
-            }
+            "diff" => return self.plan_run_diff(&run_params, Some(issue_id)),
             "request_changes" => self.run_request_changes(&run_params)?,
             "git_action" => self.run_git_action(&run_params)?,
             _ => unreachable!("known issue run action"),
@@ -10562,17 +10528,36 @@ impl AppState {
     }
 
     fn run_diff(&mut self, params: &Value) -> Result<Value, String> {
+        self.plan_run_diff(params, None)
+    }
+
+    /// `run.diff`, with the issue that asked for it when an issue surface did.
+    fn plan_run_diff(&mut self, params: &Value, issue_id: Option<String>) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
-        let project_id = self.project_of(&run_id)?;
+        self.project_of(&run_id)?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let diff = self.orch_for(&project_id)?.run_diff(active).map_err(err)?;
-        Ok(diff_json(&diff))
+        let subject = ReadSubject::Run {
+            worktree_path: active.worktree.path.clone(),
+            base_sha: active.base_sha.clone(),
+            base_branch: active.worktree.base_branch.clone(),
+        };
+        Ok(self.defer_read(subject, issue_id))
     }
 
     /// Immutable stage review surface. Unlike `run.diff`, this never reads the
     /// working directory or current HEAD: it resolves only the two object ids
     /// persisted when the stage was dispatched and successfully validated.
-    fn run_stage_diff(&self, params: &Value) -> Result<Value, String> {
+    fn run_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
+        self.plan_run_stage_diff(params, None)
+    }
+
+    /// `run.stage_diff`, with the issue that asked for it when an issue
+    /// surface did.
+    fn plan_run_stage_diff(
+        &mut self,
+        params: &Value,
+        issue_id: Option<String>,
+    ) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
@@ -10580,9 +10565,9 @@ impl AppState {
             .stage_progress(&stage_id)
             .ok_or_else(|| format!("unknown stage_id: {stage_id}"))?;
         let (Some(start_sha), Some(completion_sha)) =
-            (&progress.start_sha, &progress.completion_sha)
+            (progress.start_sha.clone(), progress.completion_sha.clone())
         else {
-            return Ok(json!({
+            let mut unavailable = json!({
                 "run_id": run_id,
                 "stage_id": stage_id,
                 "status": "unavailable",
@@ -10593,23 +10578,29 @@ impl AppState {
                 },
                 "start_sha": progress.start_sha,
                 "completion_sha": progress.completion_sha,
-            }));
+            });
+            if let Some(issue_id) = issue_id {
+                unavailable
+                    .as_object_mut()
+                    .expect("built as an object")
+                    .insert("issue_id".to_string(), json!(issue_id));
+            }
+            return Ok(unavailable);
         };
-        let object_database = if active.worktree.path.exists() {
-            active.worktree.path.clone()
+        let worktree_path = active.worktree.path.clone();
+        let object_database = if worktree_path.exists() {
+            worktree_path
         } else {
             std::path::PathBuf::from(self.project_path_for(&run_id))
         };
-        let diff = crate::diff::diff_between_commits(&object_database, start_sha, completion_sha)
-            .map_err(|error| format!("stage diff unavailable: {error}"))?;
-        let mut value = diff_json(&diff);
-        let object = value.as_object_mut().expect("diff_json returns an object");
-        object.insert("run_id".to_string(), json!(run_id));
-        object.insert("stage_id".to_string(), json!(stage_id));
-        object.insert("status".to_string(), json!("available"));
-        object.insert("start_sha".to_string(), json!(start_sha));
-        object.insert("completion_sha".to_string(), json!(completion_sha));
-        Ok(value)
+        let subject = ReadSubject::Stage {
+            run_id,
+            stage_id,
+            object_database,
+            start_sha,
+            completion_sha,
+        };
+        Ok(self.defer_read(subject, issue_id))
     }
 
     /// Send diff comments to the coding agent — from `review` or `building`.
@@ -14285,6 +14276,8 @@ enum DeferredWork {
     },
     /// One `git.*` verb against one resolved checkout.
     Git(Box<DeferredGit>),
+    /// One diff to render for a review surface.
+    Read(Box<DeferredRead>),
 }
 
 /// What the lock-free phase brought back, for the app mutex to write down.
@@ -14297,6 +14290,7 @@ enum DeferredOutcome {
         git: Box<DeferredGit>,
         result: Result<Value, String>,
     },
+    Read(Result<Value, String>),
 }
 
 impl DeferredWork {
@@ -14315,8 +14309,177 @@ impl DeferredWork {
                 let result = git.run();
                 DeferredOutcome::Git { git, result }
             }
+            Self::Read(read) => {
+                #[cfg(test)]
+                if let Some(gate) = &read.gate {
+                    gate.arrive();
+                }
+                DeferredOutcome::Read(read.run())
+            }
         }
     }
+}
+
+/// A read whose git work needs nothing the app mutex holds: the lock resolves
+/// its inputs — paths, refs, ids — and the drain renders the answer from them
+/// alone.
+///
+/// Rendering a patch reads every changed blob, so a review surface asking for
+/// one is seconds of libgit2 on a large checkout. Nothing is written back
+/// afterwards, so there is no staleness to check: the answer describes the tree
+/// as it was read, which is what was asked for.
+struct DeferredRead {
+    subject: ReadSubject,
+    /// The issue that asked, when the read came in through an issue surface —
+    /// stamped onto the answer, as the issue verbs did before the split.
+    issue_id: Option<String>,
+    #[cfg(test)]
+    gate: Option<OffLockGate>,
+}
+
+/// Which diff a deferred read renders.
+enum ReadSubject {
+    /// `project.diff` — a primary checkout's uncommitted work.
+    Project {
+        project_id: String,
+        repo_path: std::path::PathBuf,
+    },
+    /// `worktree.diff` — one external checkout against its base branch.
+    Worktree {
+        external: Box<ExternalWorktree>,
+        base_branch: String,
+    },
+    /// `run.diff` — one run against its baseline: the sha it started from, or
+    /// its merge base with the base branch when it has none.
+    Run {
+        worktree_path: std::path::PathBuf,
+        base_sha: Option<String>,
+        base_branch: String,
+    },
+    /// `run.stage_diff` — one immutable stage boundary, sha to sha.
+    Stage {
+        run_id: String,
+        stage_id: String,
+        /// Where the two commits can still be read: the checkout while it
+        /// exists, the project's repository once it does not.
+        object_database: std::path::PathBuf,
+        start_sha: String,
+        completion_sha: String,
+    },
+}
+
+impl DeferredRead {
+    fn run(&self) -> Result<Value, String> {
+        let mut rendered = self.subject.render()?;
+        if let (Some(issue_id), Some(object)) = (&self.issue_id, rendered.as_object_mut()) {
+            object.insert("issue_id".to_string(), json!(issue_id));
+        }
+        Ok(rendered)
+    }
+}
+
+impl ReadSubject {
+    fn render(&self) -> Result<Value, String> {
+        match self {
+            Self::Project {
+                project_id,
+                repo_path,
+            } => {
+                let branch = git2::Repository::open(repo_path)
+                    .ok()
+                    .and_then(|repo| {
+                        repo.head()
+                            .ok()
+                            .and_then(|head| head.shorthand().map(str::to_string))
+                    })
+                    .unwrap_or_else(|| "HEAD".to_string());
+                let diff =
+                    crate::diff::diff_against_head(repo_path).map_err(|error| error.to_string())?;
+                let stat = diff.stat();
+                Ok(json!({
+                    "project_id": project_id,
+                    "branch": branch,
+                    "path": repo_path.display().to_string(),
+                    "stat": {
+                        "files_changed": stat.files_changed,
+                        "insertions": stat.insertions,
+                        "deletions": stat.deletions,
+                    },
+                    "files": diff_file_rows(&diff),
+                    "patch": diff.patch(),
+                }))
+            }
+            Self::Worktree {
+                external,
+                base_branch,
+            } => {
+                let diff = crate::diff::diff_against_merge_base(&external.path, base_branch)
+                    .map_err(|error| error.to_string())?;
+                let stat = diff.stat();
+                let adoptable = external
+                    .branch
+                    .as_deref()
+                    .is_some_and(|branch| branch != base_branch);
+                Ok(json!({
+                    "worktree_id": external.id,
+                    "branch": external.branch,
+                    // The branch this diff is anchored on, so the surface can
+                    // name it instead of saying "the base branch".
+                    "base_branch": base_branch,
+                    "head_subject": external.head_subject,
+                    "dirty_files": external.dirty_files,
+                    "path": external.path.display().to_string(),
+                    "adoptable": adoptable,
+                    "stat": {
+                        "files_changed": stat.files_changed,
+                        "insertions": stat.insertions,
+                        "deletions": stat.deletions,
+                    },
+                    "files": diff_file_rows(&diff),
+                    "patch": diff.patch(),
+                }))
+            }
+            Self::Run {
+                worktree_path,
+                base_sha,
+                base_branch,
+            } => {
+                let diff = match base_sha {
+                    Some(sha) => crate::diff::diff_against_base(worktree_path, sha),
+                    None => crate::diff::diff_against_merge_base(worktree_path, base_branch),
+                }
+                .map_err(|error| error.to_string())?;
+                Ok(diff_json(&diff))
+            }
+            Self::Stage {
+                run_id,
+                stage_id,
+                object_database,
+                start_sha,
+                completion_sha,
+            } => {
+                let diff =
+                    crate::diff::diff_between_commits(object_database, start_sha, completion_sha)
+                        .map_err(|error| format!("stage diff unavailable: {error}"))?;
+                let mut value = diff_json(&diff);
+                let object = value.as_object_mut().expect("diff_json returns an object");
+                object.insert("run_id".to_string(), json!(run_id));
+                object.insert("stage_id".to_string(), json!(stage_id));
+                object.insert("status".to_string(), json!("available"));
+                object.insert("start_sha".to_string(), json!(start_sha));
+                object.insert("completion_sha".to_string(), json!(completion_sha));
+                Ok(value)
+            }
+        }
+    }
+}
+
+/// The per-file rows a diff surface lists beside its patch.
+fn diff_file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Value> {
+    diff.files()
+        .iter()
+        .map(|file| json!({ "path": file.path, "status": format!("{:?}", file.status) }))
+        .collect()
 }
 
 /// One `git.*` verb: the checkout the app mutex resolved for it, the git call
@@ -31226,6 +31389,38 @@ mod tests {
             .expect("the read answers once its git work is done");
         assert_eq!(status["ok"], true, "{status:?}");
         assert_eq!(status["result"]["branch"], "main", "{status:?}");
+    }
+
+    /// Review is the product, and rendering a patch reads every changed blob.
+    /// It runs off the lock too.
+    #[test]
+    fn a_diff_render_runs_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        std::fs::write(repo.join("changed.txt"), "work\n").unwrap();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let diff = frame_on_a_thread(
+            &state,
+            "s-diff",
+            "project.diff",
+            json!({ "project_id": project_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the diff render is holding the app mutex"
+        );
+
+        gate_handle.release();
+        let diff = diff
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the diff answers once it is rendered");
+        assert_eq!(diff["ok"], true, "{diff:?}");
+        assert_eq!(diff["result"]["stat"]["files_changed"], 1, "{diff:?}");
     }
 
     /// Staleness: what the git work computed describes a checkout that is no

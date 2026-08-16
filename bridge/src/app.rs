@@ -1186,6 +1186,61 @@ enum DiffCacheEntry {
 /// runs. `None` in production — nothing outside tests ever sets it.
 type DiffComputeObserver = Arc<dyn Fn(&DiffCacheKey) + Send + Sync>;
 
+/// Tests only: a gate the deferred git work trips as its lock-free phase
+/// starts, and waits on until the test lets it go. It is how a test holds a
+/// finish inside its `git worktree remove` and proves the app mutex is free
+/// while it sits there. `None` in production — nothing outside tests sets it.
+#[cfg(test)]
+#[derive(Clone)]
+struct OffLockGate {
+    arrived: std::sync::mpsc::Sender<()>,
+    /// One permit per arrival. Shared because the job clones the gate.
+    permits: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+}
+
+/// The test's end of an [`OffLockGate`].
+#[cfg(test)]
+struct OffLockGateHandle {
+    arrivals: std::sync::mpsc::Receiver<()>,
+    permits: std::sync::mpsc::Sender<()>,
+}
+
+#[cfg(test)]
+impl OffLockGate {
+    fn new() -> (OffLockGate, OffLockGateHandle) {
+        let (arrived, arrivals) = std::sync::mpsc::channel();
+        let (permits, waiting) = std::sync::mpsc::channel();
+        (
+            OffLockGate {
+                arrived,
+                permits: Arc::new(Mutex::new(waiting)),
+            },
+            OffLockGateHandle { arrivals, permits },
+        )
+    }
+
+    /// Announce that the lock-free phase has begun, then wait to be let go.
+    fn arrive(&self) {
+        let _ = self.arrived.send(());
+        let _ = self.permits.lock().unwrap().recv();
+    }
+}
+
+#[cfg(test)]
+impl OffLockGateHandle {
+    /// Block until the work has reached its lock-free phase.
+    fn wait_for_arrival(&self) {
+        self.arrivals
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the deferred work reached its lock-free phase");
+    }
+
+    /// Let one waiting (or one future) arrival through.
+    fn release(&self) {
+        self.permits.send(()).expect("the gate is still open");
+    }
+}
+
 /// Which diff-cache entries a verb is about to read.
 enum DiffCacheScope {
     /// Everything the feed shows: every live run's diffstat, and every
@@ -1935,6 +1990,28 @@ pub struct AppState {
     diff_refreshes_in_flight: std::collections::HashSet<DiffCacheKey>,
     /// Test seam: see [`DiffComputeObserver`]. `None` in production.
     diff_compute_observer: Option<DiffComputeObserver>,
+    /// Test seam: see [`OffLockGate`]. `None` in production.
+    #[cfg(test)]
+    off_lock_gate: Option<OffLockGate>,
+    /// The git work a verb handed to the drain, to run with this mutex
+    /// released. Set by exactly one verb per dispatch and taken by the drain
+    /// in the same breath, so the `Ok` the verb returned meanwhile is a
+    /// placeholder no client ever sees.
+    ///
+    /// DELIBERATE, and the same split as [`AppState::pending_agent_turns`]:
+    /// under the lock a finish DECIDES (validates, claims the checkout,
+    /// snapshots the paths), and the drain — [`dispatch_frame`], or
+    /// [`AppState::dispatch`] itself where there is no `Arc` to release
+    /// through — DOES the git with the lock free. A `git worktree remove` of a
+    /// six-gigabyte checkout takes minutes; every other frame, every terminal
+    /// pump and the relay's own read loop need this mutex while it runs.
+    deferred_finish: Option<DeferredFinish>,
+    /// Checkouts whose finish is running right now with the mutex released.
+    /// A finish is the one verb whose git work outlives its lock hold, so the
+    /// checkout it acts on is claimed here for the duration: a second finish
+    /// of the same checkout refuses cleanly instead of racing the first one's
+    /// branch delete and worktree removal.
+    finishing_worktrees: std::collections::HashSet<String>,
     /// Tests only: read every diff cache as aged out, so a stale-poll test does
     /// not have to sleep out a ten-second TTL.
     #[cfg(test)]
@@ -2102,6 +2179,10 @@ impl AppState {
             run_files_changed_at: HashMap::new(),
             diff_refreshes_in_flight: std::collections::HashSet::new(),
             diff_compute_observer: None,
+            #[cfg(test)]
+            off_lock_gate: None,
+            deferred_finish: None,
+            finishing_worktrees: std::collections::HashSet::new(),
             #[cfg(test)]
             force_stale_diff_caches: false,
             #[cfg(test)]
@@ -3604,11 +3685,20 @@ impl AppState {
             DiffCacheScope::Run(run_id) => {
                 self.stale_run_stat_work(run_id, true).into_iter().collect()
             }
-            DiffCacheScope::Branch { project_id, branch } => self
-                .run_on_branch(project_id, branch)
-                .and_then(|run_id| self.stale_run_stat_work(&run_id, true))
-                .into_iter()
-                .collect(),
+            // A branch verb reads whichever of the two stores the branch: the
+            // run's diffstat when a run has it, and the project's checkout scan
+            // — which is how a branch with no run behind it is found at all.
+            // Both are refreshed here so neither is paid for under the lock.
+            DiffCacheScope::Branch { project_id, branch } => {
+                let mut work: Vec<DiffCacheWork> = self
+                    .run_on_branch(project_id, branch)
+                    .and_then(|run_id| self.stale_run_stat_work(&run_id, true))
+                    .into_iter()
+                    .collect();
+                let project_id = project_id.clone();
+                work.extend(self.stale_external_scan_work(&project_id));
+                work
+            }
         }
     }
 
@@ -5164,17 +5254,64 @@ impl AppState {
             .collect()
     }
 
-    /// Route a verb, then record it if it counts as the human touching
-    /// something. Wrapped here rather than in `handle` because the relay calls
-    /// `dispatch` directly — `handle` is a test convenience, so stamping there
-    /// would have worked in every test and in no real session.
+    /// Route a verb, record it if it counts as the human touching something,
+    /// and run the deferred git work inline — the synchronous entry
+    /// point ([`AppState::handle`] and the unit tests), which owns the state
+    /// directly and has no mutex to release. Everything running is
+    /// [`dispatch_frame`], which runs the same work with the lock free.
+    #[cfg(test)]
     fn dispatch(&mut self, method: &str, params: &Value) -> Result<Value, String> {
+        let (outcome, deferred) = self.dispatch_deferring(method, params);
+        // No `Arc` to release the mutex through — the synchronous entry point.
+        // The git work runs right here, exactly as it did before the split;
+        // [`dispatch_frame`] is the caller that runs it with the lock free.
+        match deferred {
+            Some(deferred) => {
+                let (epilogue, finished) = deferred.run();
+                self.apply_finish_for(method, params, epilogue, finished)
+            }
+            None => outcome,
+        }
+    }
+
+    /// Dispatch without draining: a verb that handed its git work to
+    /// [`AppState::deferred_finish`] hands it back out HERE, to a caller that
+    /// can release the app mutex before running it. The `Ok` returned
+    /// alongside a deferral is the placeholder that field documents.
+    fn dispatch_deferring(
+        &mut self,
+        method: &str,
+        params: &Value,
+    ) -> (Result<Value, String>, Option<DeferredFinish>) {
         let outcome = self.route(method, params);
-        if let Ok(result) = &outcome {
-            // Only a verb that SUCCEEDED counts: a rejected action never happened.
+        match self.deferred_finish.take() {
+            // Nothing is settled until the git work returns, so the stamp waits
+            // for `apply_finish_for` too.
+            Some(deferred) => (outcome, Some(deferred)),
+            None => {
+                if let Ok(result) = &outcome {
+                    // Only a verb that SUCCEEDED counts: a rejected action never happened.
+                    self.stamp_interaction_for(method, params, result);
+                }
+                (outcome, None)
+            }
+        }
+    }
+
+    /// Write back a deferred finish and stamp the verb that deferred it — the
+    /// second half of [`AppState::dispatch_deferring`].
+    fn apply_finish_for(
+        &mut self,
+        method: &str,
+        params: &Value,
+        epilogue: FinishEpilogue,
+        finished: WorktreeFinishOutcome,
+    ) -> Result<Value, String> {
+        let applied = self.apply_finish(epilogue, finished);
+        if let Ok(result) = &applied {
             self.stamp_interaction_for(method, params, result);
         }
-        outcome
+        applied
     }
 
     fn route(&mut self, method: &str, params: &Value) -> Result<Value, String> {
@@ -6683,10 +6820,27 @@ impl AppState {
         }))
     }
 
-    /// Finish an external worktree selected only by server-resolved ids. The
-    /// forced scan is both stale-id protection and the execution-time status
-    /// recheck; client paths are ignored and never become an authority.
+    /// Finish an external worktree selected only by server-resolved ids.
+    ///
+    /// Two halves. HERE, under the app mutex: resolve the project, settle the
+    /// idempotent replays out of memory, and claim the checkout. Then
+    /// [`WorktreeFinishJob::run`] with the mutex released: the forced rescan
+    /// (which is both stale-id protection and the execution-time status
+    /// recheck), the checkpoint, and the destructive git. Client paths are
+    /// ignored and never become an authority in either half.
     fn worktree_finish(&mut self, params: &Value) -> Result<Value, String> {
+        match self.plan_worktree_finish(params)? {
+            PlannedFinish::Settled(value) => Ok(value),
+            PlannedFinish::Deferred(job) => {
+                let epilogue = job.epilogue(FinishKind::Worktree);
+                Ok(self.defer_finish(job, epilogue))
+            }
+        }
+    }
+
+    /// The lock-held half of every finish verb: what the app mutex decides
+    /// before any disk is touched.
+    fn plan_worktree_finish(&mut self, params: &Value) -> Result<PlannedFinish, String> {
         let project_id = require_str(params, "project_id")?;
         let worktree_id = require_str(params, "worktree_id")?;
         let action = parse_worktree_finish_action(&require_str(params, "action")?)?;
@@ -6701,6 +6855,7 @@ impl AppState {
         self.require_store()?;
         // A completed record makes the mutation idempotent. A pending record is
         // the crash/failure-safe resume point and uses only the same server ids.
+        let mut resume = None;
         if let Some(record) = self.archived_worktrees.get(&worktree_id).cloned() {
             if record.project_path == canonical_project_path {
                 if record.action != action {
@@ -6710,168 +6865,77 @@ impl AppState {
                     ));
                 }
                 if record.status == WorktreeFinishStatus::Archived {
-                    return Ok(archived_worktree_json(&record));
+                    return Ok(PlannedFinish::Settled(archived_worktree_json(&record)));
                 }
-                return self.resume_worktree_finish(
-                    &project_id,
-                    &project_path,
-                    &base_branch,
-                    record,
-                );
+                resume = Some(record);
             }
         }
 
-        let external = self
-            .external_worktrees(&project_id, true)?
-            .into_iter()
-            .find(|worktree| worktree.id == worktree_id)
-            .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?;
-
-        ensure_worktree_finish_eligible(&external, action, &base_branch)?;
-        let dirty_metadata = external.clone();
-        if matches!(
-            action,
-            WorktreeFinishAction::Push | WorktreeFinishAction::Merge
-        ) && external.dirty_files > 0
-        {
-            checkpoint_worktree(&external.path, action)?;
+        // The claim is the last thing taken and the first thing the epilogue
+        // gives back: past this point the checkout belongs to this finish until
+        // its git work returns.
+        let store = self.require_store()?.clone();
+        let excluded = self.bound_worktree_paths();
+        if !self.finishing_worktrees.insert(worktree_id.clone()) {
+            return Err(format!(
+                "worktree {worktree_id} is already finishing — wait for that to complete"
+            ));
         }
-        let head_sha = git_stdout(&external.path, &["rev-parse", "HEAD"])?
-            .trim()
-            .to_string();
-
-        let record = PersistedArchivedWorktree {
-            status: WorktreeFinishStatus::Pending,
-            project_path: canonical_project_path,
-            worktree_id: external.id,
-            worktree_name: external.name,
-            worktree_path: external.path.display().to_string(),
-            branch: external.branch,
-            head_sha,
-            upstream: dirty_metadata.upstream,
-            unpushed: dirty_metadata.unpushed,
-            dirty_files: dirty_metadata.dirty_files,
-            uncommitted_files: dirty_metadata.uncommitted.files_changed,
-            uncommitted_insertions: dirty_metadata.uncommitted.insertions,
-            uncommitted_deletions: dirty_metadata.uncommitted.deletions,
+        Ok(PlannedFinish::Deferred(Box::new(WorktreeFinishJob {
+            project_id,
+            project_path,
+            base_branch,
+            worktree_id,
             action,
-            archived_at: None,
-        };
-        self.store
-            .as_ref()
-            .expect("store required before destructive git mutation")
-            .save_archived_worktree(&record)
-            .map_err(|error| format!("worktree finish intent store: {error}"))?;
-        self.archived_worktrees
-            .insert(record.worktree_id.clone(), record.clone());
-        self.resume_worktree_finish(&project_id, &project_path, &base_branch, record)
+            excluded,
+            resume,
+            store,
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        })))
     }
 
-    fn resume_worktree_finish(
+    /// Hand a claimed finish to the drain. The `Ok` returned here is the
+    /// placeholder [`AppState::deferred_finish`] documents: whichever drain
+    /// runs the job replaces it with what [`AppState::apply_finish`] answers.
+    fn defer_finish(&mut self, job: Box<WorktreeFinishJob>, epilogue: FinishEpilogue) -> Value {
+        self.deferred_finish = Some(DeferredFinish { job, epilogue });
+        Value::Null
+    }
+
+    /// Write back what the lock-free git work found: release the claim, take
+    /// the scan it paid for and the record it left, and then run whatever
+    /// bookkeeping the verb that deferred it still owes.
+    fn apply_finish(
         &mut self,
-        project_id: &str,
-        project_path: &std::path::Path,
-        base_branch: &str,
-        mut record: PersistedArchivedWorktree,
+        epilogue: FinishEpilogue,
+        outcome: WorktreeFinishOutcome,
     ) -> Result<Value, String> {
-        let worktree_path = validate_finish_record_path(&record, project_path)?;
-
-        match record.action {
-            WorktreeFinishAction::Cleanup => {
-                if worktree_path.exists() {
-                    remove_registered_worktree(project_path, &worktree_path, false)?;
-                }
-            }
-            WorktreeFinishAction::Push => {
-                if worktree_path.exists() {
-                    crate::gitgui::push(&worktree_path, false)?;
-                    remove_registered_worktree(project_path, &worktree_path, false)?;
-                }
-            }
-            WorktreeFinishAction::Merge => {
-                let branch_exists = record
-                    .branch
-                    .as_deref()
-                    .map(|branch| local_branch_exists(project_path, branch))
-                    .transpose()?
-                    .unwrap_or(false);
-                if !worktree_path.exists() && branch_exists {
-                    return Err(
-                        "worktree.finish merge lost its worktree before branch deletion"
-                            .to_string(),
-                    );
-                }
-                if worktree_path.exists() {
-                    let deleted_branch =
-                        if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
-                            merge_external_branch(project_path, branch, base_branch)?;
-                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                            true
-                        } else {
-                            false
-                        };
-                    if let Err(remove_error) =
-                        remove_registered_worktree(project_path, &worktree_path, true)
-                    {
-                        restore_finish_branch_after_removal_failure(
-                            project_path,
-                            &record,
-                            deleted_branch,
-                            &remove_error,
-                        )?;
-                        return Err(remove_error);
-                    }
-                }
-            }
-            WorktreeFinishAction::Delete => {
-                let branch_exists = record
-                    .branch
-                    .as_deref()
-                    .map(|branch| local_branch_exists(project_path, branch))
-                    .transpose()?
-                    .unwrap_or(false);
-                if !worktree_path.exists() && branch_exists {
-                    return Err(
-                        "worktree.finish delete lost its worktree before branch deletion"
-                            .to_string(),
-                    );
-                }
-                if worktree_path.exists() {
-                    let deleted_branch =
-                        if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
-                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                            true
-                        } else {
-                            false
-                        };
-                    if let Err(remove_error) =
-                        remove_registered_worktree(project_path, &worktree_path, true)
-                    {
-                        restore_finish_branch_after_removal_failure(
-                            project_path,
-                            &record,
-                            deleted_branch,
-                            &remove_error,
-                        )?;
-                        return Err(remove_error);
-                    }
-                }
-            }
+        self.finishing_worktrees.remove(&epilogue.worktree_id);
+        // The scan the preflight paid for, whichever way the preflight went.
+        // `store_diff_entry` drops it if the project has since gone.
+        if let Some(worktrees) = outcome.scan {
+            self.store_diff_entry(DiffCacheEntry::ExternalScan {
+                project_id: epilogue.project_id.clone(),
+                worktrees,
+            });
         }
-
-        record.status = WorktreeFinishStatus::Archived;
-        record.archived_at = Some(now_rfc3339());
-        self.store
-            .as_ref()
-            .expect("store required before destructive git mutation")
-            .save_archived_worktree(&record)
-            .map_err(|error| format!("worktree archive store: {error}"))?;
-        self.archived_worktrees
-            .insert(record.worktree_id.clone(), record.clone());
-        self.reap_orphaned_terminals();
-        self.invalidate_external_scan(project_id);
-        self.persist_attention();
-        Ok(archived_worktree_json(&record))
+        // Memory mirrors the store: Archived after a completed finish, Pending
+        // after a failed destructive step (which is the resume point).
+        if let Some(record) = outcome.record {
+            self.archived_worktrees
+                .insert(record.worktree_id.clone(), record);
+        }
+        let archived = outcome.result.inspect(|_| {
+            self.reap_orphaned_terminals();
+            self.invalidate_external_scan(&epilogue.project_id);
+            self.persist_attention();
+        });
+        match epilogue.kind {
+            FinishKind::Worktree => archived,
+            FinishKind::Run(run) => self.apply_run_finish(run, archived),
+            FinishKind::Branch(branch) => self.apply_branch_finish(branch, archived),
+        }
     }
 
     fn recover_completed_worktree_finishes(&mut self) {
@@ -11188,17 +11252,26 @@ impl AppState {
     fn run_finish(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let action_name = require_str(params, "action")?;
-        self.finish_run(&run_id, &action_name, FinishRequirement::CompletedWork)
+        match self.plan_finish_run(&run_id, &action_name, FinishRequirement::CompletedWork)? {
+            PlannedRunFinish::Settled(value) => Ok(value),
+            PlannedRunFinish::Replay { archived, run } => self.apply_run_finish(run, Ok(archived)),
+            PlannedRunFinish::Deferred { job, run } => {
+                let epilogue = job.epilogue(FinishKind::Run(run));
+                Ok(self.defer_finish(job, epilogue))
+            }
+        }
     }
 
-    /// The shared Done path: check what this caller requires of the run, then
-    /// archive its worktree through `worktree.finish` and retire the run.
-    fn finish_run(
+    /// The shared Done path: check what this caller requires of the run, take
+    /// it off the board, and hand its checkout to the finish drain. The run is
+    /// held out of the active map only while the finish runs; a failure that
+    /// left the checkout standing puts it back for retry.
+    fn plan_finish_run(
         &mut self,
         run_id: &str,
         action_name: &str,
         requirement: FinishRequirement,
-    ) -> Result<Value, String> {
+    ) -> Result<PlannedRunFinish, String> {
         let run_id = run_id.to_string();
         parse_worktree_finish_action(action_name)?;
         let project_id = self.project_of(&run_id)?;
@@ -11235,21 +11308,60 @@ impl AppState {
                 .map_err(|error| error.to_string())?;
             let (_, persisted) = self.finish_run_mutation(run_id, active);
             persisted?;
-            return Ok(json!({ "archived": true }));
+            return Ok(PlannedRunFinish::Settled(json!({ "archived": true })));
         }
 
         let root = Self::canonical_root(&active.worktree.path);
         let worktree_id = crate::worktree::external_worktree_id(&root);
-        let mut active = self.runs.remove(&run_id).expect("checked above");
+        let active = self.runs.remove(&run_id).expect("checked above");
         self.invalidate_run_stat(&run_id);
         self.close_agent_tab(&root);
         self.invalidate_external_scan(&project_id);
-
-        let archived_worktree = match self.worktree_finish(&json!({
+        let epilogue = RunFinishEpilogue {
+            run_id,
+            project_id: project_id.clone(),
+            active: Box::new(active),
+            root,
+        };
+        // The run comes off the board FIRST: a checkout a run still owns is
+        // excluded from the scan that has to find it, and a run whose checkout
+        // is being deleted must answer no verbs meanwhile. A refused plan puts
+        // it straight back.
+        let planned = match self.plan_worktree_finish(&json!({
             "project_id": project_id,
             "worktree_id": worktree_id,
             "action": action_name,
         })) {
+            Ok(planned) => planned,
+            Err(error) => {
+                let restored = self.apply_run_finish(epilogue, Err(error));
+                return Err(restored.expect_err("a refused finish answers with its refusal"));
+            }
+        };
+        Ok(match planned {
+            PlannedFinish::Settled(archived) => PlannedRunFinish::Replay {
+                archived,
+                run: epilogue,
+            },
+            PlannedFinish::Deferred(job) => PlannedRunFinish::Deferred { job, run: epilogue },
+        })
+    }
+
+    /// Retire the run whose checkout has just been finished — or put it back
+    /// when the finish failed with the checkout still standing.
+    fn apply_run_finish(
+        &mut self,
+        run: RunFinishEpilogue,
+        archived: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let RunFinishEpilogue {
+            run_id,
+            project_id,
+            active,
+            root,
+        } = run;
+        let mut active = *active;
+        let archived_worktree = match archived {
             Ok(archived) => archived,
             Err(error) => {
                 if root.exists() {
@@ -11872,26 +11984,39 @@ impl AppState {
         let Some(run_id) = self.run_on_branch(&project_id, &branch) else {
             // No run behind the branch: it is a bare checkout, and the durable
             // archive path is the same one `run.finish` delegates to.
+            //
+            // The scan `warm_diff_caches` refreshed for this frame with the
+            // mutex free is what maps the branch to a checkout id. Resolving it
+            // is not the authority for what gets deleted — the job rescans and
+            // re-resolves the id itself — so a stale hit fails closed there
+            // rather than costing every other frame a scan under this lock.
             let worktree = self
-                .external_worktrees(&project_id, true)?
+                .external_worktrees(&project_id, false)?
                 .into_iter()
                 .find(|worktree| worktree.branch.as_deref() == Some(branch.as_str()))
                 .ok_or_else(|| {
                     format!("branch.finish: no branch {branch} is checked out in this project")
                 })?;
-            let finished = self.worktree_finish(&json!({
+            let planned = self.plan_worktree_finish(&json!({
                 "project_id": project_id,
                 "worktree_id": worktree.id,
                 "action": action_name,
             }))?;
-            return Ok(json!({
-                "branch": branch,
-                "run_id": Value::Null,
-                "issue_id": Value::Null,
-                "issue_archived": false,
-                "issue_abandoned": false,
-                "worktree": finished,
-            }));
+            let epilogue = BranchFinishEpilogue {
+                branch,
+                run: None,
+                issue_id: None,
+                orphaned_issue_id: None,
+            };
+            return Ok(match planned {
+                PlannedFinish::Settled(archived) => {
+                    self.apply_branch_finish(epilogue, Ok(archived))?
+                }
+                PlannedFinish::Deferred(job) => {
+                    let epilogue = job.epilogue(FinishKind::Branch(epilogue));
+                    self.defer_finish(job, epilogue)
+                }
+            });
         };
         let implemented_issue_id = self.runs[&run_id]
             .run
@@ -11915,11 +12040,53 @@ impl AppState {
         ) || self.runs[&run_id].run.state == RunState::Merged;
         let issue_id = implemented_issue_id.clone().filter(|_| !unlink && merged);
         let orphaned_issue_id = implemented_issue_id.filter(|_| !merged);
-        let finished = self.finish_run(&run_id, &action_name, FinishRequirement::Unconditional)?;
-        if let Some(orphaned_issue_id) = &orphaned_issue_id {
+        let planned =
+            self.plan_finish_run(&run_id, &action_name, FinishRequirement::Unconditional)?;
+        let epilogue = |run| BranchFinishEpilogue {
+            branch,
+            run,
+            issue_id,
+            orphaned_issue_id,
+        };
+        match planned {
+            // The checkout was already gone: there is no branch left to finish
+            // and no issue news to file, only the run's own retirement.
+            PlannedRunFinish::Settled(archived) => {
+                self.apply_branch_finish(epilogue(None), Ok(archived))
+            }
+            PlannedRunFinish::Replay { archived, run } => {
+                self.apply_branch_finish(epilogue(Some(run)), Ok(archived))
+            }
+            PlannedRunFinish::Deferred { job, run } => {
+                let epilogue = job.epilogue(FinishKind::Branch(epilogue(Some(run))));
+                Ok(self.defer_finish(job, epilogue))
+            }
+        }
+    }
+
+    /// Settle the issue behind a finished branch, once the branch is actually
+    /// gone: a merge files the issue away with it, anything else hands the
+    /// issue back to the inbox with an event naming the branch it lost.
+    fn apply_branch_finish(
+        &mut self,
+        epilogue: BranchFinishEpilogue,
+        archived: Result<Value, String>,
+    ) -> Result<Value, String> {
+        let BranchFinishEpilogue {
+            branch,
+            run,
+            issue_id,
+            orphaned_issue_id,
+        } = epilogue;
+        let run_id = run.as_ref().map(|run| run.run_id.clone());
+        let finished = match run {
+            Some(run) => self.apply_run_finish(run, archived)?,
+            None => archived?,
+        };
+        if let (Some(orphaned_issue_id), Some(run_id)) = (&orphaned_issue_id, &run_id) {
             self.note_implementation_abandoned(
                 orphaned_issue_id,
-                &run_id,
+                run_id,
                 &branch,
                 "finished off the board",
             );
@@ -13941,6 +14108,314 @@ fn err(e: OrchestratorError) -> String {
     e.to_string()
 }
 
+/// What the lock-held half of a finish decided.
+enum PlannedFinish {
+    /// Answered out of memory alone — an idempotent replay of a finish that
+    /// already completed. No disk, no claim, nothing to defer.
+    Settled(Value),
+    /// The checkout is claimed and its git work is ready to run with the mutex
+    /// released.
+    Deferred(Box<WorktreeFinishJob>),
+}
+
+/// What the lock-held half of a run's Done decided. The run is already off the
+/// board in every variant but a refusal.
+enum PlannedRunFinish {
+    /// The checkout was already gone, so the run was retired from memory alone.
+    Settled(Value),
+    /// The checkout's finish already completed (an idempotent replay): only the
+    /// run's own retirement is left.
+    Replay {
+        archived: Value,
+        run: RunFinishEpilogue,
+    },
+    Deferred {
+        job: Box<WorktreeFinishJob>,
+        run: RunFinishEpilogue,
+    },
+}
+
+/// One finish's git work, lifted out from under the app mutex: the forced
+/// rescan, the eligibility recheck, the checkpoint, the durable intent record,
+/// and the destructive steps (merge, branch delete, worktree removal). Seconds
+/// to minutes on a large checkout, and none of it touching [`AppState`].
+struct WorktreeFinishJob {
+    project_id: String,
+    project_path: std::path::PathBuf,
+    base_branch: String,
+    worktree_id: String,
+    action: WorktreeFinishAction,
+    /// Checkouts a run already owns, excluded from the scan exactly as
+    /// [`AppState::external_worktrees`] excludes them.
+    excluded: std::collections::HashSet<std::path::PathBuf>,
+    /// A pending record found in memory: resume it rather than preflight again.
+    resume: Option<PersistedArchivedWorktree>,
+    store: Store,
+    #[cfg(test)]
+    gate: Option<OffLockGate>,
+}
+
+/// What the lock-free git work brought back for the app mutex to write down.
+struct WorktreeFinishOutcome {
+    /// The fresh external scan the preflight paid for, for the cache that would
+    /// otherwise pay for it again on the next poll.
+    scan: Option<Vec<ExternalWorktree>>,
+    /// The archive record as it now stands on disk: Archived after a completed
+    /// finish, Pending after a failed destructive step. `None` when nothing was
+    /// ever written.
+    record: Option<PersistedArchivedWorktree>,
+    result: Result<Value, String>,
+}
+
+/// A claimed finish and the bookkeeping still owed once its git work returns.
+struct DeferredFinish {
+    job: Box<WorktreeFinishJob>,
+    epilogue: FinishEpilogue,
+}
+
+impl DeferredFinish {
+    /// The lock-free phase. Consumes the job so nothing can run it twice.
+    fn run(self) -> (FinishEpilogue, WorktreeFinishOutcome) {
+        let outcome = self.job.run();
+        (self.epilogue, outcome)
+    }
+}
+
+/// What [`AppState::apply_finish`] has to settle after the git work: always the
+/// claim and the project's caches, plus whatever the verb that deferred it owes
+/// on top.
+struct FinishEpilogue {
+    /// The claim taken in the plan phase, released here.
+    worktree_id: String,
+    project_id: String,
+    kind: FinishKind,
+}
+
+/// Which verb deferred the finish, and what it still owes.
+enum FinishKind {
+    /// `worktree.finish` — the archive record is the whole answer.
+    Worktree,
+    /// `run.finish` — retire the run behind the checkout.
+    Run(RunFinishEpilogue),
+    /// `branch.finish` — retire the run (if any) and settle the issue the
+    /// branch was implementing.
+    Branch(BranchFinishEpilogue),
+}
+
+/// The run taken off the board while its checkout is being finished, so it can
+/// be retired on success or put back on failure.
+struct RunFinishEpilogue {
+    run_id: String,
+    project_id: String,
+    /// The run record itself, held here rather than in `runs` — a run whose
+    /// checkout is being deleted must not answer verbs meanwhile.
+    active: Box<ActiveRun>,
+    /// The canonical checkout root, consulted to tell a failure that left the
+    /// worktree standing (retryable) from one that did not.
+    root: std::path::PathBuf,
+}
+
+/// The issue bookkeeping `branch.finish` owes once the branch is gone.
+struct BranchFinishEpilogue {
+    branch: String,
+    /// `None` for a bare checkout: there was no run behind the branch.
+    run: Option<RunFinishEpilogue>,
+    /// The issue this branch implemented and landed — archived on success.
+    issue_id: Option<String>,
+    /// The issue whose implementation this finish threw away — told so, and
+    /// left in the inbox.
+    orphaned_issue_id: Option<String>,
+}
+
+impl WorktreeFinishJob {
+    /// The epilogue for this job, addressed to the verb that owns it.
+    fn epilogue(&self, kind: FinishKind) -> FinishEpilogue {
+        FinishEpilogue {
+            worktree_id: self.worktree_id.clone(),
+            project_id: self.project_id.clone(),
+            kind,
+        }
+    }
+
+    /// Every step of a finish that touches a disk, with the app mutex released.
+    fn run(mut self) -> WorktreeFinishOutcome {
+        #[cfg(test)]
+        if let Some(gate) = self.gate.take() {
+            gate.arrive();
+        }
+        let (mut record, scan) = match self.resume.take() {
+            Some(record) => (record, None),
+            None => {
+                let scanned = match crate::worktree::discover_external_worktrees(
+                    &self.project_path,
+                    &self.base_branch,
+                    &self.excluded,
+                ) {
+                    Ok(scanned) => scanned,
+                    Err(error) => {
+                        return WorktreeFinishOutcome {
+                            scan: None,
+                            record: None,
+                            result: Err(error.to_string()),
+                        }
+                    }
+                };
+                match self.preflight(&scanned) {
+                    Ok(record) => (record, Some(scanned)),
+                    // The scan is worth keeping even when the preflight refuses.
+                    Err(error) => {
+                        return WorktreeFinishOutcome {
+                            scan: Some(scanned),
+                            record: None,
+                            result: Err(error),
+                        }
+                    }
+                }
+            }
+        };
+
+        // The durable intent, before anything destructive: a finish that dies
+        // between here and the end resumes from this record.
+        if let Err(error) = self.store.save_archived_worktree(&record) {
+            return WorktreeFinishOutcome {
+                scan,
+                record: None,
+                result: Err(format!("worktree finish intent store: {error}")),
+            };
+        }
+        if let Err(error) = run_finish_git_steps(&self.project_path, &self.base_branch, &record) {
+            return WorktreeFinishOutcome {
+                scan,
+                record: Some(record),
+                result: Err(error),
+            };
+        }
+
+        let pending = record.clone();
+        record.status = WorktreeFinishStatus::Archived;
+        record.archived_at = Some(now_rfc3339());
+        match self.store.save_archived_worktree(&record) {
+            Ok(()) => WorktreeFinishOutcome {
+                scan,
+                result: Ok(archived_worktree_json(&record)),
+                record: Some(record),
+            },
+            // The git is done but the archive is not recorded: the record stays
+            // Pending, and the recovery sweep finishes it.
+            Err(error) => WorktreeFinishOutcome {
+                scan,
+                record: Some(pending),
+                result: Err(format!("worktree archive store: {error}")),
+            },
+        }
+    }
+
+    /// Resolve the requested checkout against a scan taken just now, recheck
+    /// that it may be finished, checkpoint what the action would otherwise
+    /// throw away, and describe it for the archive.
+    fn preflight(&self, scanned: &[ExternalWorktree]) -> Result<PersistedArchivedWorktree, String> {
+        let external = scanned
+            .iter()
+            .find(|worktree| worktree.id == self.worktree_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown worktree_id: {}", self.worktree_id))?;
+
+        ensure_worktree_finish_eligible(&external, self.action, &self.base_branch)?;
+        let dirty_metadata = external.clone();
+        if matches!(
+            self.action,
+            WorktreeFinishAction::Push | WorktreeFinishAction::Merge
+        ) && external.dirty_files > 0
+        {
+            checkpoint_worktree(&external.path, self.action)?;
+        }
+        let head_sha = git_stdout(&external.path, &["rev-parse", "HEAD"])?
+            .trim()
+            .to_string();
+
+        Ok(PersistedArchivedWorktree {
+            status: WorktreeFinishStatus::Pending,
+            project_path: self.project_path.display().to_string(),
+            worktree_id: external.id,
+            worktree_name: external.name,
+            worktree_path: external.path.display().to_string(),
+            branch: external.branch,
+            head_sha,
+            upstream: dirty_metadata.upstream,
+            unpushed: dirty_metadata.unpushed,
+            dirty_files: dirty_metadata.dirty_files,
+            uncommitted_files: dirty_metadata.uncommitted.files_changed,
+            uncommitted_insertions: dirty_metadata.uncommitted.insertions,
+            uncommitted_deletions: dirty_metadata.uncommitted.deletions,
+            action: self.action,
+            archived_at: None,
+        })
+    }
+}
+
+/// The destructive half of a finish: push or merge what the action promised to
+/// keep, delete the branch, and remove the checkout. The record is the only
+/// authority for what is acted on — a client path never reaches here.
+fn run_finish_git_steps(
+    project_path: &std::path::Path,
+    base_branch: &str,
+    record: &PersistedArchivedWorktree,
+) -> Result<(), String> {
+    let worktree_path = validate_finish_record_path(record, project_path)?;
+    match record.action {
+        WorktreeFinishAction::Cleanup => {
+            if worktree_path.exists() {
+                remove_registered_worktree(project_path, &worktree_path, false)?;
+            }
+        }
+        WorktreeFinishAction::Push => {
+            if worktree_path.exists() {
+                crate::gitgui::push(&worktree_path, false)?;
+                remove_registered_worktree(project_path, &worktree_path, false)?;
+            }
+        }
+        WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
+            let merging = record.action == WorktreeFinishAction::Merge;
+            let verb = if merging { "merge" } else { "delete" };
+            let branch_exists = record
+                .branch
+                .as_deref()
+                .map(|branch| local_branch_exists(project_path, branch))
+                .transpose()?
+                .unwrap_or(false);
+            if !worktree_path.exists() && branch_exists {
+                return Err(format!(
+                    "worktree.finish {verb} lost its worktree before branch deletion"
+                ));
+            }
+            if worktree_path.exists() {
+                let deleted_branch =
+                    if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
+                        if merging {
+                            merge_external_branch(project_path, branch, base_branch)?;
+                        }
+                        delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+                        true
+                    } else {
+                        false
+                    };
+                if let Err(remove_error) =
+                    remove_registered_worktree(project_path, &worktree_path, true)
+                {
+                    restore_finish_branch_after_removal_failure(
+                        project_path,
+                        record,
+                        deleted_branch,
+                        &remove_error,
+                    )?;
+                    return Err(remove_error);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn parse_worktree_finish_action(action: &str) -> Result<WorktreeFinishAction, String> {
     match action {
         "cleanup" => Ok(WorktreeFinishAction::Cleanup),
@@ -15044,10 +15519,13 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
             // date here, with the lock free. After it, the verb only reads
             // memory: no frame ever holds the app mutex through a worktree diff.
             warm_diff_caches(state, &method, &params);
-            let dispatched = {
+            // A verb whose git work outlives its lock hold (a finish) hands
+            // that work back rather than doing it here; the drain below runs it
+            // with the mutex released. See `AppState::deferred_finish`.
+            let (dispatched, deferred) = {
                 let mut app = state.lock().unwrap();
                 let queued_before = app.pending_agent_turns.len();
-                let result = app.dispatch(&method, &params);
+                let (result, deferred) = app.dispatch_deferring(&method, &params);
                 if result.is_err() {
                     // A turn is not deliverable until the mutation that queued
                     // it is durable. Drop only this request's turns on failure;
@@ -15055,7 +15533,25 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
                     // failed request never committed.
                     app.pending_agent_turns.truncate(queued_before);
                 }
-                result
+                (result, deferred)
+            };
+            let dispatched = match deferred {
+                Some(deferred) => {
+                    // THE POINT OF ALL THIS: seconds to minutes of git — a
+                    // preflight scan, a merge, a `git worktree remove` of a
+                    // six-gigabyte checkout — with every other frame, every
+                    // terminal pump and the relay's own read loop free to make
+                    // progress meanwhile.
+                    let (epilogue, finished) = deferred.run();
+                    let mut app = state.lock().unwrap();
+                    let queued_before = app.pending_agent_turns.len();
+                    let applied = app.apply_finish_for(&method, &params, epilogue, finished);
+                    if applied.is_err() {
+                        app.pending_agent_turns.truncate(queued_before);
+                    }
+                    applied
+                }
+                None => dispatched,
             };
             // A verb speaks to a worktree's agent by queuing a turn: it runs
             // under the state lock and `deliver` needs that lock free (a cold
@@ -30438,6 +30934,136 @@ mod tests {
         ));
         assert_eq!(primary["ok"], false, "{primary:?}");
         assert!(repo.join("README.md").exists());
+    }
+
+    /// A daemon behind the shared `Arc` with one bare checkout to finish, and
+    /// the gate that holds that finish inside its git phase.
+    fn daemon_with_a_checkout_to_finish(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+        name: &str,
+    ) -> (
+        Arc<Mutex<AppState>>,
+        String,
+        String,
+        PathBuf,
+        OffLockGateHandle,
+    ) {
+        let mut app = qa_state(repo, dir);
+        let project_id = app.projects[0].id.clone();
+        let path = add_external_worktree(repo, dir, name, name);
+        let worktree_id = external_id(&mut app, &project_id, Some(name));
+        let (gate, handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        (app.shared(), project_id, worktree_id, path, handle)
+    }
+
+    /// One frame over the shared state, on its own thread — the caller keeps
+    /// the receiver so a frame that never comes back is an assertion, not a
+    /// hung test run.
+    fn frame_on_a_thread(
+        state: &Arc<Mutex<AppState>>,
+        session_id: &'static str,
+        method: &'static str,
+        params: Value,
+    ) -> std::sync::mpsc::Receiver<Value> {
+        let (answered, answers) = std::sync::mpsc::channel();
+        let state = Arc::clone(state);
+        std::thread::spawn(move || {
+            let response = dispatch_frame(
+                &state,
+                SessionSender::detached(session_id),
+                req(method, params),
+            );
+            let _ = answered.send(response);
+        });
+        answers
+    }
+
+    /// The convoy this whole split exists to prevent: a finish's git work —
+    /// seconds of `git worktree remove` on a big checkout — must not hold the
+    /// app mutex, or every other frame queues behind one deletion.
+    #[test]
+    fn a_finish_runs_its_git_work_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let (state, project_id, worktree_id, path, gate) =
+            daemon_with_a_checkout_to_finish(&repo, dir.path(), "slow");
+
+        let finished = frame_on_a_thread(
+            &state,
+            "s-finish",
+            "worktree.finish",
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" }),
+        );
+        gate.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the finish is holding the app mutex through its git work"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while the finish runs");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+
+        gate.release();
+        let finished = finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the finish answers once its git work is done");
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert_eq!(finished["result"]["action"], "cleanup");
+        assert!(!path.exists(), "the checkout was removed");
+    }
+
+    /// The claim the off-lock split needs: while one finish is off deleting a
+    /// checkout, a second one for the same checkout refuses instead of racing
+    /// its `git worktree remove` — and the claim is released, so a retry after
+    /// it completes is the ordinary idempotent replay.
+    #[test]
+    fn a_second_finish_of_a_checkout_already_finishing_refuses() {
+        let (dir, repo) = init_repo();
+        let (state, project_id, worktree_id, path, gate) =
+            daemon_with_a_checkout_to_finish(&repo, dir.path(), "contended");
+        let params =
+            json!({ "project_id": project_id, "worktree_id": worktree_id, "action": "cleanup" });
+
+        let finished = frame_on_a_thread(&state, "s-first", "worktree.finish", params.clone());
+        gate.wait_for_arrival();
+
+        let refused = dispatch_frame(
+            &state,
+            SessionSender::detached("s-second"),
+            req("worktree.finish", params.clone()),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .expect("the refusal says why")
+                .contains("already finishing"),
+            "{refused:?}"
+        );
+        assert!(path.exists(), "the refused finish removed nothing");
+
+        gate.release();
+        let finished = finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first finish completes");
+        assert_eq!(finished["ok"], true, "{finished:?}");
+
+        // A permit left waiting, so a replay that somehow reached the git phase
+        // would answer rather than hang the run.
+        gate.release();
+        let replayed = dispatch_frame(
+            &state,
+            SessionSender::detached("s-third"),
+            req("worktree.finish", params),
+        );
+        assert_eq!(
+            replayed["ok"], true,
+            "the claim was released, so a replay is idempotent: {replayed:?}"
+        );
     }
 
     #[test]

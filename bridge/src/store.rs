@@ -399,6 +399,9 @@ pub struct PersistedArchivedWorktree {
 /// The bridge's JSON record store: plans (record + canonical docs per dir),
 /// runs (one file each), and — until the final cutover stage — legacy fused
 /// tasks. All writes are atomic and fsync'd.
+/// Cloneable on purpose: it is a directory and nothing else, so the lock-free
+/// half of a mutation can carry its own handle rather than borrow the daemon's.
+#[derive(Clone)]
 pub struct Store {
     dir: PathBuf,
 }

@@ -45,7 +45,7 @@ import {
   wireThreadComposer,
   wireThreadLinks,
   wireThreadRevisionLinks,
-  writeThreadInPlace,
+  writeThreadKeepingComposer,
 } from "./thread.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
@@ -161,6 +161,7 @@ export function mountAgentRail(host, context) {
   let adopting = null;
   let sending = false; // a first message is adopting/starting — do not repaint over it
   let paintedStrip = null; // the markup the bubble strip currently stands on
+  let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -237,7 +238,27 @@ export function mountAgentRail(host, context) {
     // the cache the switch just cleared would show one agent's words under
     // another's name. Drop it; the next tick asks about the right one.
     if (asked !== selectedId) return;
-    entity = railEntity(payload, context.kind);
+    const answered = railEntity(payload, context.kind);
+    // A branch is read off whichever source knows most about it, and the only
+    // source that knows about agents is the run behind it. A tick that cannot
+    // resolve the run answers off the bare checkout instead — no run, no
+    // conversation, no agents — and the next tick has all three back. Believing
+    // the first of those closes the conversation that is open: the strip drops
+    // to a ghost, the head renames itself, and the panel is rebuilt around a
+    // NEW textarea, which takes the words, the caret and, on a phone, the
+    // keyboard with them. At a poll every 1.6 seconds that is a message that
+    // cannot be typed at all.
+    //
+    // So an answer that loses the agents has to say it twice. A run that is
+    // really gone (finished, abandoned) keeps saying it and the rail falls back
+    // to the ghost as it always did, one tick later; a hiccup says it once and
+    // is dropped.
+    if (!answered.agents.length && entity.agents.length && !agentlessOnce) {
+      agentlessOnce = true;
+      return;
+    }
+    agentlessOnce = false;
+    entity = answered;
     chooseAgent(selectAgentId(entity.agents, selectedId));
     if (!sending) paint();
   };
@@ -360,7 +381,7 @@ export function mountAgentRail(host, context) {
       const html = threadHtml(thread || { items: [] }, {
         agentLabel: providerLabel(agent && agent.provider),
       });
-      writeThreadInPlace(body, html);
+      writeThreadKeepingComposer(body, html);
       wireTimeline(body);
     });
     syncComposerPlaceholder();

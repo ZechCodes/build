@@ -396,7 +396,14 @@ body.inbox-collapsed #inbox-open { display:block; }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
 .rail-collapse { flex:none; }
-.rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:10px 12px 14px; }
+/* flex:1 — the scroller takes what the pinned composer below leaves it.
+   overflow-anchor:none — the conversation grows at the bottom, so a browser
+   that adjusts scrollTop to keep whatever it anchored on still is correcting
+   for the one thing the reader expects to move. The repaint already writes
+   nothing on a tick that says nothing; this is the belt beside it. (Chrome and
+   Android honour it; Safari ignores the property and loses nothing.) */
+.rail-body { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-anchor:none;
+  padding:10px 12px 14px; }
 /* The PTY takes the whole panel: no padding, no scrolling of its own — the
    terminal is its own viewport, and the pane sizes it to this box. The
    composer is gone in TUI mode, so this row is the whole column below the

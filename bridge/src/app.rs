@@ -5303,6 +5303,7 @@ impl AppState {
             "worktree.finish" => self.worktree_finish(params),
             "entity.seen" => self.entity_seen(params),
             "entity.mute" => self.entity_mute(params),
+            "entity.dismiss" => self.entity_dismiss(params),
             "triage.override" => self.triage_override(params),
             "agent.add" => self.agent_add(params),
             "agent.remove" => self.agent_remove(params),
@@ -6919,6 +6920,38 @@ impl AppState {
         Ok(json!({ "entity_id": entity_id, "muted": muted }))
     }
 
+    /// `entity.dismiss` — the human clearing one row out of the inbox until the
+    /// work speaks again.
+    ///
+    /// It draws a line at the end of the entity's conversation, and the row
+    /// stays out of the list while nothing attention-class arrives past it.
+    /// There is no un-dismiss verb because there is nothing to undo: the next
+    /// thing the work says brings the row back by itself, which is the whole
+    /// feature.
+    ///
+    /// Clearing something out of the way is not picking it up, so this is not
+    /// an interaction: it moves no anchor and no resume point. It touches no
+    /// read cursor (what was waiting is still waiting), no mute (silencing is
+    /// mute's job), and no push.
+    fn entity_dismiss(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        if !self.entity_takes_attention(&entity_id) {
+            return Err(format!("entity.dismiss: unknown entity {entity_id}"));
+        }
+        // A checkout Build never cut has no conversation to fall quiet: it
+        // keeps the line at 0, which reads as never dismissed.
+        let dismissed_through = self
+            .entity_conversation(&entity_id)
+            .map(crate::thread::Thread::last_sequence)
+            .unwrap_or(0);
+        self.attention
+            .entry(entity_id.clone())
+            .or_default()
+            .dismiss_through(dismissed_through);
+        self.persist_attention();
+        Ok(json!({ "entity_id": entity_id, "dismissed": true }))
+    }
+
     /// `triage.override` — the reviewer disagreed with how a hunk was
     /// classified, and says so once, in the three places it has to land.
     ///
@@ -7802,6 +7835,7 @@ impl AppState {
             "can_finish": false,
             "finish": { "warnings": [] },
             "muted": false,
+            "dismissed": false,
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": Value::Null,
@@ -11351,6 +11385,9 @@ impl AppState {
                 sync.finish_warnings_json(&active.worktree.branch)
             } },
             "muted": self.is_muted(run_id),
+            // Cleared out of the inbox until the work speaks again. The client
+            // hides the row on it; nothing here changes because of it.
+            "dismissed": self.is_dismissed(run_id, thread, &unread),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
@@ -11410,6 +11447,9 @@ impl AppState {
             "can_finish": false,
             "finish": { "warnings": [] },
             "muted": false,
+            // The repository has no conversation to fall quiet, and the row is
+            // the project itself: there is nothing here to clear away.
+            "dismissed": false,
             "worktree_path": repo_path,
             "worktree_id": Value::Null,
             "run_id": Value::Null,
@@ -11476,6 +11516,9 @@ impl AppState {
                 branch.as_deref().unwrap_or("this checkout"),
             ) },
             "muted": self.is_muted(&worktree_id),
+            // A checkout has no conversation, so it has nothing to fall quiet
+            // until: everything it says, it says through git.
+            "dismissed": false,
             "worktree_path": path,
             "worktree_id": worktree_id.clone(),
             "run_id": Value::Null,
@@ -11536,6 +11579,8 @@ impl AppState {
                 &crate::branch::issue_finish_warnings(implementation.is_some()),
             ) },
             "muted": self.is_muted(issue_id),
+            // See the branch row: dismissed until its conversation asks again.
+            "dismissed": self.is_dismissed(issue_id, &active.agents, &unread),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
@@ -11580,6 +11625,25 @@ impl AppState {
         self.attention
             .get(entity_id)
             .is_some_and(|attention| attention.muted)
+    }
+
+    /// Whether this row has been cleared out of the inbox: the human dismissed
+    /// it, and its conversation has not needed them since.
+    ///
+    /// Unread beats dismissed. News the human has not read is news, however
+    /// quiet they told the row to be — and it is the same fact that revives a
+    /// dismissed row the moment an agent hands its turn back.
+    fn is_dismissed(
+        &self,
+        entity_id: &str,
+        thread: &crate::thread::Thread,
+        unread: &crate::thread::UnreadSummary,
+    ) -> bool {
+        !unread.is_unread()
+            && self
+                .attention
+                .get(entity_id)
+                .is_some_and(|attention| attention.is_dismissed(thread.last_attention_sequence()))
     }
 
     /// When this work item's oldest turn still in flight started — how long the
@@ -12552,6 +12616,7 @@ impl AppState {
             "unread_reason": unread.reason,
             // See `run_view`.
             "muted": self.is_muted(plan_id),
+            "dismissed": self.is_dismissed(plan_id, &active.agents, &unread),
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -12676,6 +12741,9 @@ impl AppState {
             // Told the entry to stop asking. The badge above is already zeroed
             // by it; this is what the inbox renders the control from.
             "muted": self.is_muted(run_id),
+            // Cleared out of the inbox until the conversation asks again. Mute
+            // silences a row that stays; this one is not in the list at all.
+            "dismissed": self.is_dismissed(run_id, self.conversation_thread_for_run(active), &unread),
             "attention": self.attention_json(run_id),
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
@@ -29481,6 +29549,197 @@ mod tests {
         assert_eq!(unsaid["ok"], false, "{unsaid:?}");
         let entry = board_entry(&mut state, &run_id);
         assert_eq!(entry["muted"], false, "a refused call changes nothing");
+    }
+
+    // ---- dismiss: a row cleared until the work speaks again -----------------
+
+    /// The whole feature: a row the human clears leaves the inbox, stays gone
+    /// while the work only reports progress, and comes back by itself the
+    /// moment the agent asks for something. Nothing un-dismisses it, because
+    /// nothing has to.
+    #[test]
+    fn dismissing_a_row_clears_it_until_the_work_speaks_again() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "clear me");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], false, "{row:?}");
+        assert_eq!(
+            row["dismissed"], false,
+            "a row nobody cleared is on the list"
+        );
+
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert_eq!(cleared["result"]["entity_id"], run_id, "{cleared:?}");
+        assert_eq!(cleared["result"]["dismissed"], true, "{cleared:?}");
+
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+        // The entry the detail surfaces read says the same, and dismissing said
+        // nothing about anything else: the row is live, loud, and unarchived.
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["dismissed"], true, "{entry:?}");
+        assert_eq!(entry["muted"], false, "{entry:?}");
+        assert_eq!(entry["unread"], false, "{entry:?}");
+        assert_eq!(entry["state"], "review", "{entry:?}");
+
+        // The work carrying on quietly leaves it cleared — that is the point of
+        // measuring the line against attention, not against the last item.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.push_event(
+                crate::thread::ThreadEventKind::Committed,
+                None,
+                None,
+                None,
+                now_rfc3339(),
+            );
+            thread.post_agent_progress("still going", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(
+            row["dismissed"], true,
+            "progress is not the work asking: {row:?}"
+        );
+
+        // The agent handing its turn back is, and the row is in the list again
+        // with nobody having to un-dismiss it.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("done — take a look", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert_eq!(row["unread"], true, "{row:?}");
+
+        // Reading what it said is not clearing it away again: the row stays
+        // until the human says so a second time.
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], false, "{row:?}");
+        assert_eq!(
+            row["dismissed"], false,
+            "reading is not dismissing: {row:?}"
+        );
+    }
+
+    /// News the human has not read keeps the row on the list, whatever they
+    /// told the inbox. Dismissing is not a read cursor and must not act like
+    /// one.
+    #[test]
+    fn unread_beats_dismissed() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "still asking");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert_eq!(
+            row["unread_reason"], "agent_message",
+            "the question is still waiting, and still says so: {row:?}"
+        );
+    }
+
+    /// Two different things the human can do to one row, and neither is the
+    /// other: mute silences a row that stays, dismiss takes a row out that
+    /// still shouts when it comes back.
+    #[test]
+    fn mute_and_dismiss_are_independent() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "quiet and gone");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+
+        state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": true }),
+        ));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["muted"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "muting does not clear a row away");
+
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["muted"], true, "dismissing does not unsilence: {row:?}");
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // Unmuting shows exactly what was waiting — and what was waiting is
+        // news, so the row is back in the list with it.
+        state.handle(req(
+            "entity.mute",
+            json!({ "entity_id": run_id, "muted": false }),
+        ));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["muted"], false, "{row:?}");
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// A row cleared away must still be cleared after a restart: one that came
+    /// back with the daemon would make the inbox unusable by morning.
+    #[test]
+    fn a_dismissal_survives_a_restart() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let plan = state.handle(req("plan.create", json!({ "goal": "cleared issue" })));
+            let issue_id = plan_id_of(&plan);
+            push_to_issue_conversation(&mut state, &issue_id, |thread| {
+                thread.post_agent("a question", None, now_rfc3339());
+            });
+            state.handle(req("entity.seen", json!({ "entity_id": issue_id })));
+            let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": issue_id })));
+            assert_eq!(cleared["ok"], true, "{cleared:?}");
+            let row = work_item_row_for(&mut state, &issue_id);
+            assert_eq!(row["dismissed"], true, "{row:?}");
+            issue_id
+        };
+
+        let mut reloaded = qa_state(&repo, dir.path());
+        let entry = board_entry(&mut reloaded, &issue_id);
+        assert_eq!(entry["dismissed"], true, "{entry:?}");
+        let row = work_item_row_for(&mut reloaded, &issue_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+    }
+
+    #[test]
+    fn entity_dismiss_refuses_what_it_cannot_clear() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_, run_id) = planned_run_in_review(&mut state, "bad dismiss");
+
+        let unknown = state.handle(req("entity.dismiss", json!({ "entity_id": "run-nowhere" })));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+
+        // A real id that names no entry in the inbox: a project is where the
+        // work lives, not a row that can be cleared out of the way.
+        let project_id = state.projects[0].id.clone();
+        let not_an_entry = state.handle(req("entity.dismiss", json!({ "entity_id": project_id })));
+        assert_eq!(not_an_entry["ok"], false, "{not_an_entry:?}");
+
+        let unsaid = state.handle(req("entity.dismiss", json!({})));
+        assert_eq!(unsaid["ok"], false, "{unsaid:?}");
+
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(
+            entry["dismissed"], false,
+            "a refused call changes nothing: {entry:?}"
+        );
     }
 
     /// A planned run and its Issue share one conversation. One piece of news on

@@ -77,6 +77,13 @@ pub struct Attention {
     /// no notification.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
+    /// How far into this entity's conversation the human has told the inbox to
+    /// stop showing the row. It stays out of the list until something
+    /// attention-class arrives past this line — which is why there is no
+    /// un-dismiss: the work speaking again is what brings it back. 0 = never
+    /// dismissed, which is every record written before dismissal existed.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dismissed_through: u64,
     /// Where this entity sits in the inbox (RFC3339): the moment the user took
     /// it on. Seeded at creation and moved only by
     /// [`note_user_message`](Self::note_user_message). `None` = never seeded,
@@ -250,6 +257,27 @@ impl Attention {
         if goes_forward {
             self.last_user_message_at = Some(now.to_string());
         }
+    }
+
+    /// Take this row out of the inbox until its conversation gets past
+    /// `last_sequence` — the whole of what dismissing does.
+    ///
+    /// Never rewinds, for the same reason the read cursor does not: a second
+    /// tab dismissing with the sequence it loaded with would otherwise put back
+    /// a row the human had already cleared past.
+    pub fn dismiss_through(&mut self, last_sequence: u64) {
+        self.dismissed_through = self.dismissed_through.max(last_sequence);
+    }
+
+    /// Whether the row is still cleared: the human dismissed it and nothing has
+    /// needed them since. `latest_attention_sequence` is 0 for a conversation
+    /// that has never asked for anything.
+    ///
+    /// A record that was never dismissed says no, whatever its conversation
+    /// holds — 0 means "never dismissed" and must not read as "dismissed
+    /// through the beginning of time".
+    pub fn is_dismissed(&self, latest_attention_sequence: u64) -> bool {
+        self.dismissed_through > 0 && self.dismissed_through >= latest_attention_sequence
     }
 
     /// The inbox's sort key: the anchor, falling back to `created_at` for a
@@ -448,6 +476,94 @@ mod tests {
         assert_eq!(wire["muted"], true, "{wire:?}");
         let reloaded: Attention = serde_json::from_value(wire).expect("a muted record loads");
         assert!(reloaded.muted);
+    }
+
+    // ================== Dismissal ==================
+
+    /// The feature in one test: a dismissed row is gone until the work speaks
+    /// past the line it was dismissed at, and then it is back on its own.
+    #[test]
+    fn a_dismissed_row_comes_back_when_the_conversation_passes_the_line() {
+        let mut attention = Attention::default();
+        assert!(!attention.is_dismissed(7), "nobody dismissed it");
+
+        attention.dismiss_through(7);
+        assert!(attention.is_dismissed(7), "nothing has arrived since");
+        assert!(
+            !attention.is_dismissed(8),
+            "an attention item past the line brings the row back"
+        );
+
+        attention.dismiss_through(8);
+        assert!(
+            attention.is_dismissed(8),
+            "dismissed again, past the new one"
+        );
+    }
+
+    /// A conversation that has never needed the human has no attention item to
+    /// measure against, and a dismissal there still hides the row.
+    #[test]
+    fn dismissing_a_conversation_that_never_asked_for_anything_hides_it() {
+        let mut attention = Attention::default();
+        attention.dismiss_through(4);
+        assert!(attention.is_dismissed(0));
+    }
+
+    /// A stale dismissal — a second tab acting on the sequence it loaded with —
+    /// must not put back a row the human already cleared past.
+    #[test]
+    fn dismissing_never_rewinds_the_line() {
+        let mut attention = Attention::default();
+        attention.dismiss_through(12);
+        attention.dismiss_through(5);
+        assert_eq!(attention.dismissed_through, 12);
+    }
+
+    /// Mute and dismiss are two different things the human can do to one row:
+    /// neither implies the other, and neither is a read cursor.
+    #[test]
+    fn dismissing_says_nothing_about_mute_or_what_has_been_read() {
+        let mut attention = Attention::default();
+        attention.read_through("agent-one", 4);
+        attention.dismiss_through(9);
+        assert!(!attention.muted, "dismissing does not silence");
+        assert_eq!(
+            attention.cursor_for("agent-one"),
+            4,
+            "nor mark anything read"
+        );
+
+        let silenced = Attention {
+            muted: true,
+            ..Default::default()
+        };
+        assert!(
+            !silenced.is_dismissed(0),
+            "muting does not take the row out of the list"
+        );
+    }
+
+    /// Dismissal is new: every record on disk predates it, must load, and a row
+    /// nobody cleared must not pay for the field.
+    #[test]
+    fn a_record_written_before_dismissal_existed_reads_as_never_dismissed() {
+        let stored = serde_json::json!({ "last_interaction_at": MON_09 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert_eq!(attention.dismissed_through, 0);
+        assert!(!attention.is_dismissed(0));
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert!(wire.get("dismissed_through").is_none(), "{wire:?}");
+
+        let cleared = Attention {
+            dismissed_through: 9,
+            ..attention
+        };
+        let wire = serde_json::to_value(&cleared).unwrap();
+        assert_eq!(wire["dismissed_through"], 9, "{wire:?}");
+        let reloaded: Attention =
+            serde_json::from_value(wire).expect("a dismissed record loads back");
+        assert_eq!(reloaded, cleared);
     }
 
     // ================== The inbox anchor ==================

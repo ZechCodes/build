@@ -1681,6 +1681,22 @@ impl Thread {
         summary
     }
 
+    /// The creation sequence of the newest item here that needed the human, or
+    /// 0 when nothing ever has — the line a dismissal is measured against.
+    ///
+    /// Creation sequence, for the same reason [`unread_since`](Self::unread_since)
+    /// reads it: marking a message seen bumps its `updated_sequence` and that is
+    /// not the conversation speaking again. A status-only stretch after a
+    /// dismissal leaves the row cleared, however long it runs.
+    pub fn last_attention_sequence(&self) -> u64 {
+        self.items
+            .iter()
+            .rev()
+            .find(|item| item.attention_reason().is_some())
+            .map(ThreadItem::sequence)
+            .unwrap_or(0)
+    }
+
     /// The items this query names, newest first, bounded by its limit.
     ///
     /// The point of the tool this serves: a session that lost its context asks
@@ -1986,6 +2002,56 @@ mod attention_class_tests {
             thread.unread_since(thread.last_sequence()),
             UnreadSummary::default()
         );
+    }
+
+    /// The line a dismissal is measured against: where the conversation last
+    /// needed the human, and nowhere else. Progress the agent reports after
+    /// that must not move it, or a dismissed row would come back for work
+    /// happening quietly.
+    #[test]
+    fn the_attention_line_is_the_newest_item_that_needed_the_human() {
+        let mut thread = Thread::new("run-1");
+        assert_eq!(
+            thread.last_attention_sequence(),
+            0,
+            "nothing has ever asked"
+        );
+
+        thread.push_event(
+            ThreadEventKind::RunStarted,
+            None,
+            None,
+            None,
+            "2026-08-13T09:00:00Z",
+        );
+        assert_eq!(thread.last_attention_sequence(), 0, "status is not asking");
+
+        thread.post_agent("here is the answer", None, "2026-08-13T09:01:00Z");
+        let asked_at = thread.last_sequence();
+        assert_eq!(thread.last_attention_sequence(), asked_at);
+
+        thread.push_event(
+            ThreadEventKind::Committed,
+            None,
+            None,
+            None,
+            "2026-08-13T09:02:00Z",
+        );
+        thread.post_user("carry on", None, "2026-08-13T09:03:00Z");
+        assert_eq!(
+            thread.last_attention_sequence(),
+            asked_at,
+            "work happening and the human talking are not the work asking"
+        );
+
+        thread.push_event(
+            ThreadEventKind::Blocked,
+            None,
+            None,
+            None,
+            "2026-08-13T09:04:00Z",
+        );
+        assert_eq!(thread.last_attention_sequence(), thread.last_sequence());
     }
 
     /// A message marked seen bumps its `updated_sequence`; that is bookkeeping

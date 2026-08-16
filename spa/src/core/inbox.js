@@ -193,6 +193,8 @@ function toCaptureEntry(item) {
     routedTo: routing ? { project: item.project || item.project_id, kind: routing.kind } : null,
     unreadCount: item.unread_count || 0,
     muted: false,
+    // A capture leaves the inbox by being routed, so it is never cleared.
+    dismissed: false,
     canFinish: false,
     merged: false,
     warnings: [],
@@ -230,6 +232,10 @@ function toEntry(item) {
     reason: state === "unread" ? unreadReasonText(item.unread_reason, item.kind) : "",
     unreadCount: item.unread_count || 0,
     muted: !!item.muted,
+    // The bridge's own word for "the user cleared this and nothing new has
+    // happened since". It is not mute and not Done: the row is simply absent
+    // until an attention event later than the dismissal brings it back.
+    dismissed: !!item.dismissed,
     canFinish: !!item.can_finish,
     // Whether the work landed. It is the whole question an implemented issue's
     // fate turns on when its branch is deleted.
@@ -268,14 +274,20 @@ function byAnchor(left, right) {
  * old, and `autoOpen` is whether the section should be open with nobody having
  * said either way.
  *
- * `dismissed` holds the entity ids the user just said Done to, so a stale feed
- * paint cannot put a deleted row back on screen.
+ * A row the user cleared (`dismissed`) is in neither list — that is what
+ * clearing means, and it is the whole difference from Recent, where a row that
+ * has only gone quiet still sits.
+ *
+ * `hiddenEntityIds` holds the entity ids a verb from this client just removed —
+ * Done, or a clear the daemon has not confirmed yet — so a stale feed paint
+ * cannot put the row back on screen.
  */
-export function inboxEntries({ items = [], nowMs = Date.now(), dismissed = new Set() } = {}) {
+export function inboxEntries({ items = [], nowMs = Date.now(), hiddenEntityIds = new Set() } = {}) {
   const rows = items
     .filter(isListed)
     .map(toEntry)
-    .filter((entry) => entry.entityId === null || !dismissed.has(entry.entityId))
+    .filter((entry) => !entry.dismissed)
+    .filter((entry) => entry.entityId === null || !hiddenEntityIds.has(entry.entityId))
     .sort(byAnchor);
   const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
   const entries = rows.filter((entry) => !quiet(entry));
@@ -303,13 +315,18 @@ export function activeEntryKey(route, entries) {
   return match ? match.key : null;
 }
 
-/** The row's own menu: mute, and Done, one step behind the row itself. Reuses
- *  the split button's menu markup. A row with no entity behind it (a project's
- *  primary checkout) has neither verb, so it has no menu — an empty ⋯ is a lie
- *  about what is one step behind it. */
+/** The row's own menu: clear, mute, and Done, one step behind the row itself.
+ *  Reuses the split button's menu markup. A row with no entity behind it (a
+ *  project's primary checkout) has none of those verbs, so it has no menu — an
+ *  empty ⋯ is a lie about what is one step behind it.
+ *
+ *  Clear leads, because it is the one verb that costs nothing: the row leaves
+ *  and comes back the moment something new needs the user. Mute keeps the row
+ *  and takes its voice; Done destroys. */
 function menuHtml(entry, open) {
   if (!entry.entityId) return "";
   const items = [
+    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
     `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
       entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
     }</span></div>`,

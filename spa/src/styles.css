@@ -328,8 +328,15 @@ main#root.surface { max-width:none;
 }
 /* task view */
 .back { color:var(--ink2); font-size:13px; cursor:pointer; display:inline-flex; gap:6px; align-items:center; margin-bottom:12px; }
+/* Destructive comes in two forms and they never mix. A secondary button says it
+   in red on the panel; a PRIMARY one — the confirmation's own Delete — is a
+   filled red button, and its text stays --accent-ink like every other filled
+   button. Red text over an accent fill is the collision that made the branch
+   surface's Done read green-with-red-words. */
 .btn.danger { border-color:var(--red); color:var(--red); }
 .btn.danger:hover { background:var(--red-bg); }
+.btn.primary.danger { background:var(--red); border-color:var(--red); color:var(--accent-ink); }
+.btn.primary.danger:hover { background:var(--red); filter:brightness(1.06); }
 .card .cerr { margin-top:8px; color:var(--red); font-size:12px; word-break:break-word; }
 /* Pills: no rule under the row, no underline on the active tab — the selected
    pill carries its own soft fill, everything else is bare. */
@@ -549,8 +556,12 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .changedonly { margin-left:12px; font-size:11.5px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }
 /* github-style split action button */
 .splitbtn { position:relative; display:inline-flex; }
-.splitbtn .btn.primary { border-top-right-radius:0; border-bottom-right-radius:0; }
-.splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid color-mix(in srgb, var(--accent-ink) 30%, transparent); padding:8px 9px; }
+.splitbtn .btn:not(.caret) { border-top-right-radius:0; border-bottom-right-radius:0; }
+/* The seam between the two halves: drawn in the filled button's own ink on a
+   primary, in the shared line color on a mini (where the fill is the panel). */
+.splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid var(--line); padding:8px 9px; }
+.splitbtn .btn.primary.caret { border-left-color:color-mix(in srgb, var(--accent-ink) 30%, transparent); }
+.splitbtn .btn.mini.caret { padding:4px 8px; }
 /* The tab row's `+` menu (terminal / claude / codex). Positioned in JS from the
    `+`'s box and mounted on <body>: the tab row scrolls horizontally, so a child
    popup would be clipped by its own container. Item styling matches .splitmenu. */
@@ -569,6 +580,9 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .splitmenu .mi:hover { background:var(--accent-soft); }
 .splitmenu .mi .mt { color:var(--ink); font-weight:550; }
 .splitmenu .mi .md { color:var(--dim); font-size:11px; }
+/* A destructive option (force push) is named in red where it is READ — in the
+   list, next to the ones it is being chosen over — never on the button chrome. */
+.splitmenu .mi.danger .mt { color:var(--red); }
 tr.add td { background:var(--green-bg); } tr.add td.code { color:var(--add-ink); }
 tr.del td { background:var(--red-bg); } tr.del td.code { color:var(--del-ink); }
 tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
@@ -608,15 +622,12 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
 .gtpull, .gtpush, .gtstash { display:inline-flex; }
-.gittoolbar .btn, .gittoolbar .btn.primary { min-height:30px; padding:5px 10px; border-color:var(--line);
-  border-radius:7px; background:var(--panel); color:var(--ink2); box-shadow:0 1px 1px var(--shadow-soft); }
-.gittoolbar .btn:hover:not(:disabled), .gittoolbar .btn.primary:hover:not(:disabled) {
-  color:var(--ink); border-color:var(--line3); background:var(--line2); filter:none; }
-.gittoolbar .splitbtn .caret { padding-left:8px; padding-right:8px; border-left-color:var(--line); }
-.gittoolbar .splitbtn .btn.primary:not(.caret) { font-weight:600; }
-.gtpull .btn.primary:not(.caret)::before { content:"↓"; margin-right:6px; }
-.gtpush .btn.primary:not(.caret)::before { content:"↑"; margin-right:6px; }
-.gtstash .btn.primary:not(.caret)::before { content:"↧"; margin-right:6px; }
+/* The bar's verbs are the app's mini button, mounted as such (gitPane's
+   TOOLBAR_BUTTON_VARIANT) — the bar states no metrics, palette or shadow of its
+   own. All it adds is the direction each verb moves the work. */
+.gtpull .btn:not(.caret)::before { content:"↓"; margin-right:6px; }
+.gtpush .btn:not(.caret)::before { content:"↑"; margin-right:6px; }
+.gtstash .btn:not(.caret)::before { content:"↧"; margin-right:6px; }
 /* Fixed to the viewport, placed from the branch button in JS: this menu lives
    inside the commit rail, which scrolls, and an absolutely-positioned one was
    clipped on both sides — taking its shadow with it, which is what made an open

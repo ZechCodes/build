@@ -847,6 +847,112 @@ describe("the surface's text column", () => {
   });
 });
 
+// ---- the seam between the view column and the agent rail ---------------------
+// The reviewer's screenshot: the work area's right edge and the conversation
+// panel were fenced apart — two hairlines with a strip of page between them.
+// They are two halves of one frame and have to touch across ONE border. The
+// wrapper (#agent-rail) drew the seam while the panel drew a second rule on its
+// other side, and where those two met — the phone's overlay, whose right edge
+// lands on the strip — the divide was painted twice on one pixel. Each divide
+// is stated once now, by the surface that begins at it.
+describe("the view column's seam with the agent rail", () => {
+  const PHONE_QUERY = "@media (max-width: 760px)";
+  const SIDE_BORDERS = ["border", "border-left", "border-right"];
+
+  /** The rule for a selector outside every media query — the one that holds at
+   *  any width, which is where a seam has to be stated. */
+  const baseRule = (selector) => rulesFor(selector).find((rule) => enclosingAtRule(rule.at) === null);
+
+  /** Every vertical border a rule draws, as `property:value`. */
+  const sideBorders = (rule) =>
+    SIDE_BORDERS.map((property) => [property, declaration(rule.body, property)])
+      .filter(([, value]) => value)
+      .map(([property, value]) => `${property}:${value}`);
+
+  it("puts the two columns side by side with nothing between them", () => {
+    const body = baseRule("#view-body");
+    expect(body).toBeTruthy();
+    expect(declaration(body.body, "grid-template-columns")).toBe("minmax(0, 1fr) auto");
+    // A gutter between the tracks would be a strip of page the seam's border
+    // could not cover — the columns meet, and the border is the whole divide.
+    for (const rule of rulesFor("#view-body")) {
+      for (const spacing of ["gap", "column-gap", "grid-column-gap", "grid-gap"]) {
+        expect(declaration(rule.body, spacing)).toBeNull();
+      }
+    }
+  });
+
+  it("leaves the view column's trailing edge bare", () => {
+    // The surface draws no rule and pays no gutter where the rail begins: the
+    // frame's own inset (a phone's rounded corner) is all it states on that
+    // side, and the rail's border is the divide.
+    const surface = baseRule("main#root.surface");
+    expect(surface).toBeTruthy();
+    expect(declaration(surface.body, "margin")).toBe("0");
+    expect(sideBorders(surface)).toEqual([]);
+    expect(declaration(surface.body, "padding")).toBe(
+      "0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) 0",
+    );
+  });
+
+  it("gives each divide one border, stated by the surface that begins at it", () => {
+    // #agent-rail is the wrapper, not a surface. A border on it PLUS a border
+    // on the panel inside it is the doubled seam: two rules for one divide,
+    // which drift apart the moment either surface moves.
+    expect(sideBorders(baseRule("#agent-rail"))).toEqual([]);
+    expect(sideBorders(baseRule(".rail-panel"))).toEqual(["border-left:1px solid var(--line)"]);
+    expect(sideBorders(baseRule(".rail-strip"))).toEqual(["border-left:1px solid var(--line)"]);
+    // Two surfaces, two leading edges, two borders — and no rule anywhere in
+    // the rail draws a trailing one for another surface's edge to land on.
+    const trailing = ["#agent-rail", ".rail-panel", ".rail-strip"].flatMap((selector) =>
+      rulesFor(selector).map((rule) => declaration(rule.body, "border-right")).filter(Boolean),
+    );
+    expect(trailing).toEqual([]);
+  });
+
+  it("keeps the panel flush against that border", () => {
+    // Nothing between the border and the conversation: the panel's rows carry
+    // their own insets, and a margin here would reopen the strip of page the
+    // seam is supposed to have closed.
+    const panel = baseRule(".rail-panel");
+    for (const property of ["margin", "margin-left", "margin-right", "padding", "padding-left"]) {
+      expect(declaration(panel.body, property)).toBeNull();
+    }
+  });
+
+  it("holds the seam where the phone lays the panel over the view", () => {
+    const overlay = rulesFor(".rail-panel").find((rule) => enclosingAtRule(rule.at) === PHONE_QUERY);
+    expect(overlay).toBeTruthy();
+    // The overlay's leading edge is the same border the docked panel states, and
+    // its trailing edge stops ON the strip's — so the panel covers the work
+    // beside it without painting a second line over the strip's own.
+    expect(sideBorders(overlay)).toEqual([]);
+    expect(declaration(overlay.body, "right")).toBe("var(--agent-strip)");
+  });
+
+  it("stops the full console on the same line, so the seam runs unbroken", () => {
+    // The console at full is an overlay over the view column. It clears the
+    // strip by the strip's own width, which is where the strip's border is —
+    // one pixel further and the overlay would paint out the divide it stops at.
+    const full = cssRules().find((rule) => rule.selector === '#console-region[data-size="full"]');
+    expect(full).toBeTruthy();
+    expect(declaration(full.body, "right")).toBe("var(--agent-strip)");
+    for (const size of ["collapsed", "half", "full"]) {
+      const rule = cssRules().find((r) => r.selector === `#console-region[data-size="${size}"]`);
+      if (rule) expect(sideBorders(rule)).toEqual([]);
+    }
+  });
+
+  it("measures the strip, its border and everything that stops at it from one token", () => {
+    // The strip's border is INSIDE its stated width (the sheet is border-box),
+    // so --agent-strip is the one number the console overlay, the phone's panel
+    // and the strip itself all land on.
+    expect(stylesSource.match(/--agent-strip:/g) || []).toHaveLength(1);
+    expect(declaration(baseRule(".rail-strip").body, "width")).toBe("var(--agent-strip)");
+    expect(cssRules().find((rule) => rule.selector === "*" && declaration(rule.body, "box-sizing"))).toBeTruthy();
+  });
+});
+
 describe("the inbox row's actions", () => {
   // The reviewer's screenshot: Done + ⋯ sat in flow and squeezed the facts
   // line into a wrap ("74 files · +1633" / "−8871"). The actions overlay the

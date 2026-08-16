@@ -96,8 +96,9 @@ describe("actionSettleReenables", () => {
 describe("settleReenableSelectors", () => {
   it("covers every toolbar verb", () => {
     const selectors = settleReenableSelectors();
-    for (const sel of [".gtfetch", ".gtbranchbtn", ".gtsync .btn.primary", ".gtstash .btn.primary"])
-      expect(selectors).toContain(sel);
+    // The bar's verbs are mini buttons now, so the selectors reach every .btn
+    // under the sync/stash hosts rather than a primary that is no longer there.
+    for (const sel of [".gtfetch", ".gtbranchbtn", ".gtsync .btn", ".gtstash .btn"]) expect(selectors).toContain(sel);
   });
 
   it("also re-enables the commit primary — a toolbar action's repaint disables it, so its settle must revive it (S1)", () => {

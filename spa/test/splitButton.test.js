@@ -33,9 +33,34 @@ describe("splitButtonMarkup", () => {
     expect(html).not.toContain("splitmenu");
   });
 
-  it("adds the danger class to the primary when options[0].danger", () => {
+  it("marks a danger option's MENU item, and never the button chrome", () => {
+    // A primary painted with the destructive palette is two color systems on
+    // one control — accent fill under red text. The cost is said in the
+    // confirmation the button opens; the menu names which option carries it.
+    const html = splitButtonMarkup([
+      { id: "push", label: "Push", description: "push to the upstream", busyLabel: "…" },
+      { id: "force_push", menuLabel: "Force push", description: "overwrite remote history", busyLabel: "…", danger: true },
+    ]);
+    expect(html).not.toContain("btn primary danger");
+    expect(html).toContain('class="mi danger" data-action="force_push"');
+    expect(html).toContain('class="mi" data-action="push"');
+  });
+
+  it("keeps a lone danger option's button plain — no menu to mark, nothing on the chrome", () => {
     const html = splitButtonMarkup([{ id: "x", label: "Delete", description: "d", busyLabel: "…", danger: true }]);
-    expect(html).toContain('class="btn primary danger"');
+    expect(html).toContain('<button class="btn primary" data-action="x">Delete</button>');
+    expect(html).not.toContain("danger");
+  });
+
+  it("paints the toolbar variant in the shared mini button, caret included", () => {
+    const html = splitButtonMarkup([MERGE, KEEP], { variant: "mini" });
+    expect(html).toMatch(/<button class="btn mini"[^>]*data-action="merge_prune"[^>]*>Merge<\/button>/);
+    expect(html).toContain('class="btn mini caret"');
+    expect(html).not.toContain("primary");
+  });
+
+  it("refuses a variant that is not part of the vocabulary", () => {
+    expect(() => splitButtonMarkup([MERGE], { variant: "chunky" })).toThrow(/unknown split button variant: chunky/);
   });
 
   it("escapes labels, menuLabels, and descriptions", () => {

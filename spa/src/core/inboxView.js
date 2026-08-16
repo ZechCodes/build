@@ -26,7 +26,10 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-const dismissed = new Set(); // entity ids the user just said Done to
+// Entity ids a verb from this client just took off the list — Done, or a clear
+// the daemon has not confirmed yet. The feed's own truth takes over as soon as
+// it arrives.
+const locallyHidden = new Set();
 const busy = new Set(); // entity ids with a mutation in flight
 const errors = new Map(); // entity id → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
@@ -75,7 +78,11 @@ function draw() {
   if (!list) return;
   // The captures this client is holding or watching stand beside the daemon's
   // own rows; the daemon's copy wins wherever both name the same capture.
-  const partition = inboxEntries({ items: mergeCaptureRows(items, pendingCaptureRows()), nowMs: Date.now(), dismissed });
+  const partition = inboxEntries({
+    items: mergeCaptureRows(items, pendingCaptureRows()),
+    nowMs: Date.now(),
+    hiddenEntityIds: locallyHidden,
+  });
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
   entries = [...partition.entries, ...partition.recent];
@@ -123,7 +130,7 @@ function wire(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
     row.onclick = (event) => {
       // The row's own controls answer for themselves.
-      if (event.target.closest("[data-done], [data-menu], [data-mute], .inbox-actions")) return;
+      if (event.target.closest("[data-done], [data-menu], [data-mute], [data-dismiss], .inbox-actions")) return;
       openEntry(entryOf(row.dataset.key));
     };
   });
@@ -138,6 +145,12 @@ function wire(list) {
     control.onclick = (event) => {
       event.stopPropagation();
       toggleMute(entryOf(control.dataset.mute));
+    };
+  });
+  list.querySelectorAll("[data-dismiss]").forEach((control) => {
+    control.onclick = (event) => {
+      event.stopPropagation();
+      dismissEntry(entryOf(control.dataset.dismiss));
     };
   });
   list.querySelectorAll("[data-menu]").forEach((control) => {
@@ -293,6 +306,31 @@ async function toggleMute(entry) {
   }
 }
 
+/** Clear the row off the inbox until something new needs the user. Nothing is
+ *  destroyed, nothing is silenced: the daemon remembers how far the entry's
+ *  conversation had got, and the next attention event past that brings the row
+ *  back by itself — so there is no un-clear verb to offer.
+ *
+ *  The row leaves on the tap and comes back if the daemon refuses. */
+async function dismissEntry(entry) {
+  if (!entry || !entry.entityId || busy.has(entry.entityId)) return;
+  busy.add(entry.entityId);
+  openMenuKey = null;
+  locallyHidden.add(entry.entityId);
+  errors.delete(entry.entityId);
+  draw();
+  try {
+    await App.call("entity.dismiss", { entity_id: entry.entityId });
+    await refreshFeed();
+  } catch (error) {
+    locallyHidden.delete(entry.entityId);
+    errors.set(entry.entityId, messageOf(error));
+  } finally {
+    busy.delete(entry.entityId);
+    draw();
+  }
+}
+
 /** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
  *  its records go, which is what Done on a branch means. On an issue it
  *  archives. Neither is refused for the state of the work — what the
@@ -309,7 +347,7 @@ async function finishEntry(entry) {
   busy.add(entry.entityId);
   // Confirmation is the decisive moment: the row goes now, and the git work
   // (and the feed catching up) carries on behind it.
-  dismissed.add(entry.entityId);
+  locallyHidden.add(entry.entityId);
   errors.delete(entry.entityId);
   draw();
   try {
@@ -332,7 +370,7 @@ async function finish(entry) {
 }
 
 function restore(entry, message) {
-  dismissed.delete(entry.entityId);
+  locallyHidden.delete(entry.entityId);
   errors.set(entry.entityId, message);
   draw();
 }
@@ -350,11 +388,19 @@ export function mountInboxList() {
   subscribeFeed((feed) => {
     items = feed.items || [];
     projects = feed.projects || [];
-    // A stale poll while git cleanup runs keeps the dismissed row hidden. Once
-    // a feed no longer carries it, the daemon has caught up and the suppression
-    // (and any error it left) can be forgotten.
-    const live = new Set(items.map(entityIdOf).filter(Boolean));
-    for (const entityId of dismissed) if (!live.has(entityId)) dismissed.delete(entityId);
+    // A stale poll while git cleanup runs keeps a row this client removed
+    // hidden. The daemon has caught up once the row is gone from the feed (Done)
+    // or the feed itself calls it cleared (dismiss) — and from then on the
+    // feed's `dismissed` alone decides, so a new event can revive the row.
+    const live = new Map();
+    for (const row of items) {
+      const entityId = entityIdOf(row);
+      if (entityId) live.set(entityId, row);
+    }
+    for (const entityId of locallyHidden) {
+      const row = live.get(entityId);
+      if (!row || row.dismissed) locallyHidden.delete(entityId);
+    }
     for (const entityId of errors.keys()) if (!live.has(entityId)) errors.delete(entityId);
     drawFromFeed();
   });

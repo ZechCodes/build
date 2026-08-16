@@ -328,6 +328,54 @@ describe("the inbox rail", () => {
     expect(location.hash).toBe("#/project/p1/branch/build%2Fold/changes");
   });
 
+  // Clearing a row is not muting it: a muted row stays and stops asking, a
+  // cleared one is off the inbox until something new needs the user. The bridge
+  // owns that truth (`dismissed` on the row); the tap only gets there first.
+  it("clears an entry from its own menu, and the row leaves before the daemon answers", async () => {
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "entity.dismiss") return { ok: true };
+      feedItems = [branchRow({ dismissed: true }), issueRow()];
+      return { entity_id: params.entity_id, dismissed: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    expect(rowFor("run-1")).toBeNull();
+
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "run-1" });
+    expect(refreshFeed).toHaveBeenCalled();
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBeTruthy();
+    expect(location.hash).toBe("");
+  });
+
+  it("brings the row back and says why when clearing fails", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.dismiss") throw new Error("the relay is offline");
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+    const row = rowFor("run-1");
+    expect(row).toBeTruthy();
+    const error = row.querySelector("[data-done-error]");
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe("the relay is offline");
+  });
+
+  // Gone until it speaks again: the row comes back by itself the moment the
+  // bridge stops calling it cleared.
+  it("paints no row the bridge calls cleared, and paints it again when it speaks", () => {
+    feed([branchRow({ dismissed: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBeTruthy();
+    feed([branchRow({ dismissed: false, unread: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeTruthy();
+  });
+
   it("offers to unmute a muted entry, and never navigates from the menu", async () => {
     feed([branchRow({ muted: true, unread: false })]);
     rowFor("run-1").querySelector("[data-menu]").click();
@@ -385,6 +433,15 @@ describe("captures on the rail", () => {
     row.click();
     await flush();
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+  });
+
+  // A capture leaves the inbox by being routed, so there is nothing to clear —
+  // and no entity to clear it on.
+  it("offers no way to clear a capture", () => {
+    feed([captureFeedRow()]);
+    const row = captureRowFor("capture-1");
+    expect(row.querySelector("[data-dismiss]")).toBeNull();
+    expect(row.querySelector("[data-menu]")).toBeNull();
   });
 
   it("opens a routed capture where it was routed", async () => {

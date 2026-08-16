@@ -389,27 +389,41 @@ const composerSignature = (composer) => {
   return `${input ? input.id : ""}:${composer.querySelector(".composer.attachable") ? "files" : "text"}`;
 };
 
-/// Write a freshly rendered thread into `container`, keeping the composer.
+/// Whether the live composer can stay: the same box on both sides, or no box on
+/// either — a surface that pins its composer OUTSIDE the thread (the agent
+/// rail) renders none here, and two renders that both carry none agree.
+const composerSurvives = (live, next) => {
+  const liveComposer = live.querySelector(".thread-composer");
+  const nextComposer = next.querySelector(".thread-composer");
+  if (!liveComposer || !nextComposer) return !liveComposer && !nextComposer;
+  return composerSignature(liveComposer) === composerSignature(nextComposer);
+};
+
+/// Write a freshly rendered thread into `container`, keeping what is live.
 ///
 /// Every conversation surface re-renders the whole section on its poll, and
-/// writing that string in replaces the textarea — which takes the words, the
-/// caret and the FOCUS with it. On a touch device the software keyboard opens
-/// and then shuts a tick and a half later, so a message cannot be typed at
-/// all. The timeline is what moved, so the timeline is what gets swapped: the
-/// composer's element is never detached, and everything the browser hangs off
-/// it (focus, selection, the keyboard, the IME's composition) simply stays.
+/// writing that string in replaces every element under it. Two things cannot
+/// survive that. A composer inside the container loses the words, the caret and
+/// the FOCUS — on a touch device the software keyboard opens and then shuts a
+/// tick and a half later, so a message cannot be typed at all. And a timeline
+/// that says exactly what it said a tick ago collapses any selection being made
+/// in it and sends every inline image back for a re-fetch.
 ///
-/// Returns whether the composer is a new element. True means the caller must
-/// wire it; false means the wired one is still there and re-wiring it would
+/// So only the parts that actually changed are written, and a composer the
+/// render carries is matched against the live one rather than replaced:
+/// everything the browser hangs off it (focus, selection, the keyboard, the
+/// IME's composition) simply stays.
+///
+/// Returns whether the container was rewritten wholesale. True means the caller
+/// must wire everything in it again, including any composer this render
+/// created; false means the wired one is still there and re-wiring it would
 /// throw away the tray's uploads.
-export function writeThreadKeepingComposer(container, html) {
+export function writeThreadInPlace(container, html) {
   const live = container.querySelector(".review-thread");
-  const liveComposer = live && live.querySelector(".thread-composer");
   const rendered = container.ownerDocument.createElement("div");
   rendered.innerHTML = html;
   const next = rendered.querySelector(".review-thread");
-  const nextComposer = next && next.querySelector(".thread-composer");
-  if (!liveComposer || !nextComposer || composerSignature(liveComposer) !== composerSignature(nextComposer)) {
+  if (!live || !next || !composerSurvives(live, next)) {
     container.innerHTML = html;
     return true;
   }
@@ -425,8 +439,8 @@ export function writeThreadKeepingComposer(container, html) {
     // exactly where it is.
     if (target.innerHTML !== source.innerHTML) target.innerHTML = source.innerHTML;
   }
-  const liveInput = liveComposer.querySelector("textarea");
-  const nextInput = nextComposer.querySelector("textarea");
+  const liveInput = live.querySelector(".thread-composer textarea");
+  const nextInput = next.querySelector(".thread-composer textarea");
   if (liveInput && nextInput) liveInput.placeholder = nextInput.placeholder;
   return false;
 }

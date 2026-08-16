@@ -5,21 +5,35 @@
 
 import { esc } from "./text.js";
 
+/** The app's button vocabulary a split button can be painted in: the accent
+ *  primary (the default — a surface's decisive verb) or the mini secondary the
+ *  dense toolbars use. Nothing else: a split button is a button, and it reads
+ *  like every other one. */
+const VARIANT_BUTTON_CLASS = {
+  primary: "btn primary",
+  mini: "btn mini",
+};
+
 /** Pure markup for a GitHub-style split button. options[0] is the default.
  *  option: { id, label, menuLabel?, description, busyLabel, danger? }
- *  With one option: a plain button, no caret, no menu. All strings escaped. */
-export function splitButtonMarkup(options) {
+ *  With one option: a plain button, no caret, no menu. All strings escaped.
+ *
+ *  `danger` marks the option's MENU item, never the button chrome: a
+ *  destructive verb says what it costs in the confirmation it opens, and a
+ *  primary button painted half-accent half-red reads as neither. */
+export function splitButtonMarkup(options, { variant = "primary" } = {}) {
+  const buttonClass = VARIANT_BUTTON_CLASS[variant];
+  if (!buttonClass) throw new Error(`unknown split button variant: ${variant}`);
   const primary = options[0];
-  const dangerClass = primary.danger ? " danger" : "";
-  const primaryButton = `<button class="btn primary${dangerClass}" data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
+  const primaryButton = `<button class="${buttonClass}" data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
   if (options.length === 1) return `<div class="splitbtn">${primaryButton}</div>`;
   const items = options
     .map(
       (o) =>
-        `<div class="mi" data-action="${esc(o.id)}"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
+        `<div class="mi${o.danger ? " danger" : ""}" data-action="${esc(o.id)}"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
     )
     .join("");
-  return `<div class="splitbtn">${primaryButton}<button class="btn primary${dangerClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${items}</div></div>`;
+  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${items}</div></div>`;
 }
 
 /** Pure single-flight latch: begin() arms and returns true, or returns false
@@ -56,9 +70,10 @@ const mountedMarkup = new WeakMap();
  *  toggles the menu; a pointerdown outside closes it; a menu item runs its
  *  option through the same primary button. Callers whose surface remounts the
  *  button while an action can be pending (poll-driven repaints) pass a shared
- *  `flight` latch so a remount can never re-arm a fresh one mid-flight. */
-export function mountSplitButton(container, { options, run, flight = createSingleFlight() }) {
-  const markup = splitButtonMarkup(options);
+ *  `flight` latch so a remount can never re-arm a fresh one mid-flight.
+ *  `variant` picks the button vocabulary — "primary" (default) or "mini". */
+export function mountSplitButton(container, { options, run, variant = "primary", flight = createSingleFlight() }) {
+  const markup = splitButtonMarkup(options, { variant });
   // A repaint that would change nothing must not close the menu the user just
   // opened, nor swap a busy button for a fresh one: a click in progress
   // outranks a poll tick, which lands again once the menu is shut. Options that
@@ -68,7 +83,7 @@ export function mountSplitButton(container, { options, run, flight = createSingl
   container.innerHTML = markup;
   mountedMarkup.set(container, markup);
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
-  const primary = container.querySelector(".btn.primary:not(.caret)");
+  const primary = container.querySelector(".btn:not(.caret)");
   const caret = container.querySelector(".caret");
   const menu = container.querySelector(".splitmenu");
 

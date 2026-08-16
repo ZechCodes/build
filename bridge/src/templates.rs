@@ -282,9 +282,10 @@ The decision rule, in order:
    worktree, or unambiguously continues work already in flight on one. Read that
    branch's conversation with `read_conversation` before you believe it does.
 2. Otherwise call `create_issue` on the project the capture most likely belongs
-   to. An issue is inert — a record, no worktree, no agent — so a wrong guess
-   costs the user one tap. A branch dispatch starts an agent that changes code,
-   so a wrong guess costs them a diff to unpick. When in doubt, file the issue.
+   to. An issue starts a planning agent that reads and drafts and changes no
+   code, so a wrong guess costs the user one tap. A branch dispatch starts an
+   agent that changes code, so a wrong guess costs them a diff to unpick. When
+   in doubt, file the issue.
 3. Call `ask_user` ONLY when even the project is ambiguous. A question at capture
    time is the friction this surface exists to remove; a best-guess issue is
    almost always the better answer. When you do ask, offer up to 3 options: the
@@ -860,7 +861,8 @@ mod tests {
             "a question is reserved for an ambiguous project: {router}"
         );
         assert!(
-            router.contains("An issue is inert") && router.contains("starts an agent that changes"),
+            router.contains("An issue starts a planning agent")
+                && router.contains("starts an agent that changes code"),
             "the template must say why the cheap side is the default: {router}"
         );
     }
@@ -883,7 +885,7 @@ mod tests {
             "Read that branch's conversation with `read_conversation` before you believe it does.",
             // Rule 2: the default, and the asymmetry that makes it the default.
             "Otherwise call `create_issue` on the project the capture most likely belongs to.",
-            "An issue is inert — a record, no worktree, no agent — so a wrong guess costs the user one tap.",
+            "An issue starts a planning agent that reads and drafts and changes no code, so a wrong guess costs the user one tap.",
             "A branch dispatch starts an agent that changes code, so a wrong guess costs them a diff to unpick.",
             // Rule 3: the one case a question beats a guess, and the shape of
             // the offer that goes with it.

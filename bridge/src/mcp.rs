@@ -487,7 +487,7 @@ impl DoneServer {
             }
         }, {
             "name": "create_issue",
-            "description": "File an inert issue on a project: a record with the capture as its goal, no worktree and no agent until the user opens it. This is the default destination — a wrong guess costs the user one tap, and they can reroute it.",
+            "description": "File an issue on a project: the capture becomes its goal and a planning agent starts on the primary checkout to work out how it should be done. No branch, no worktree, no code touched. This is the default destination — a wrong guess costs the user one tap, and rerouting takes the issue and its agent back.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

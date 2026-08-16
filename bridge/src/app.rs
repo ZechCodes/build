@@ -8085,8 +8085,14 @@ impl AppState {
         }))
     }
 
-    /// The default destination: an inert issue on the best-guess project — a
-    /// record, no worktree, no agent, until the user opens it.
+    /// The default destination: an issue on the best-guess project, with its
+    /// planning agent started — no branch, no worktree, no code touched.
+    ///
+    /// The issue is filed inert and the route recorded first, so a capture the
+    /// record could not be written for never gets an agent. Then the session
+    /// starts, because what the user said IS a sent message: `create_plan`
+    /// seeds it onto the issue's conversation as one, and a sent message with
+    /// nobody listening is the whole bug this closes.
     fn route_to_issue(
         &mut self,
         capture_id: &str,
@@ -8113,7 +8119,72 @@ impl AppState {
                 rationale,
             },
         )?;
-        Ok(json!({ "issue_id": issue_id, "project_id": project_id, "dispatched": false }))
+        let planning = self.start_routed_issue_agent(&issue_id);
+        Ok(json!({
+            "issue_id": issue_id,
+            "project_id": project_id,
+            // No branch was cut: that is what a router means by dispatched.
+            "dispatched": false,
+            // An agent IS reading the capture, on the primary checkout.
+            "planning": planning,
+        }))
+    }
+
+    /// Start the planning session for an issue a capture was just routed to,
+    /// and say whether one is now running for it.
+    ///
+    /// The same machinery the first `thread.post` to an inert issue uses
+    /// ([`start_inert_plan`]), for the same reason: the words are on the
+    /// conversation and somebody has to read them. The agent works in the
+    /// primary checkout — issues plan on main, they do not own a worktree.
+    ///
+    /// Never fatal to the route. The capture is already recorded as routed and
+    /// the issue already holds the text, so a session that could not start
+    /// leaves an inert, re-startable issue rather than losing the destination —
+    /// exactly what `thread.post` leaves behind when a dispatch fails.
+    ///
+    /// [`start_inert_plan`]: AppState::start_inert_plan
+    fn start_routed_issue_agent(&mut self, issue_id: &str) -> bool {
+        let Some(active) = self.plans.get(issue_id) else {
+            eprintln!("route: {issue_id} vanished before its agent could start");
+            return false;
+        };
+        // Already has a session: this is a first turn, not a nudge, and a
+        // second harness in the same checkout would report `done` twice.
+        if active.workspace.is_some() {
+            return true;
+        }
+        let agent_id = active.agents.first().id.clone();
+        let Ok(checkout) = self.primary_checkout_of(issue_id) else {
+            eprintln!("route: {issue_id} belongs to no project with a checkout");
+            return false;
+        };
+        let root = Self::canonical_root(&checkout);
+        let key = TabKey::agent(&root, &agent_id);
+        let already_starting = self.agent_spawns_in_flight.contains(&key)
+            || self
+                .pending_agent_turns
+                .iter()
+                .any(|queued| queued.root == root && queued.agent_id == agent_id);
+        if already_starting {
+            return true;
+        }
+        let mut active = match self.take_plan(issue_id) {
+            Ok(active) => active,
+            Err(error) => {
+                eprintln!("route: could not open {issue_id} to start it: {error}");
+                return false;
+            }
+        };
+        let started = self.start_inert_plan(issue_id, &mut active);
+        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), active);
+        if let Err(error) = &started {
+            eprintln!("route: {issue_id} could not start planning: {error}");
+        }
+        if let Err(error) = persisted {
+            eprintln!("route: could not record {issue_id}: {error}");
+        }
+        started.is_ok()
     }
 
     /// The confident destination: an agent on a branch, working. One call, and
@@ -8199,10 +8270,12 @@ impl AppState {
 
     /// Record where a capture went, and settle what it was routed to before.
     ///
-    /// An inert issue nobody has touched is archived — it was never anything
-    /// but a guess, and leaving it would put a second row on the feed for one
-    /// piece of work. Anything else is kept and stays reachable through the
-    /// capture's own record, because work already done is nobody's to discard.
+    /// An issue no human has touched is archived and its planning agent stopped
+    /// — it was never anything but a guess, and leaving it would put a second
+    /// row on the feed for one piece of work and a session on the primary
+    /// checkout planning something nobody will read. Anything else is kept and
+    /// stays reachable through the capture's own record, because work already
+    /// done is nobody's to discard.
     fn record_routing(
         &mut self,
         capture_id: &str,
@@ -8238,16 +8311,22 @@ impl AppState {
     }
 
     /// Take back what a misroute created, when there is anything to take back.
+    ///
+    /// The route made the issue and started its planning agent, so a reroute
+    /// takes back both — in that order, because an agent left running in the
+    /// primary checkout would keep planning an archived issue and report `done`
+    /// for it. What the route did not make, it does not touch.
     fn release_misrouted_artifact(&mut self, routing: &crate::capture::CaptureRouting) {
         if routing.kind != crate::capture::CaptureTarget::Issue {
             return;
         }
-        if !self.issue_is_untouched_and_inert(&routing.target_id) {
+        if !self.issue_is_the_routes_alone(&routing.target_id) {
             return;
         }
         let Ok(mut active) = self.take_plan(&routing.target_id) else {
             return;
         };
+        self.retire_issue_session(issue_session(&active));
         active.plan.archived_at = Some(now_rfc3339());
         let (_, persisted) = self.finish_plan_mutation(routing.target_id.clone(), active);
         if let Err(error) = persisted {
@@ -8255,9 +8334,18 @@ impl AppState {
         }
     }
 
-    /// Whether an issue is still exactly what the router filed: a record with
-    /// its goal on it, no checkout, no implementation, and nothing said to it.
-    fn issue_is_untouched_and_inert(&self, issue_id: &str) -> bool {
+    /// Whether an issue is still nothing but what the route made of it: the
+    /// goal the capture became, whatever its own planning agent has since
+    /// written, and no human anywhere in it.
+    ///
+    /// Not "inert" any more — routing starts the planning agent, so an issue
+    /// the router filed a minute ago already has a session, a state past
+    /// `Created`, and stage docs its agent drafted. None of that is a claim on
+    /// the issue. A human's word is: a message they posted, a comment they left
+    /// on a stage, a plan they approved, a branch that implements it, a second
+    /// agent they added. Any one of those and the issue is theirs, kept, and
+    /// reachable from the capture rather than archived out from under them.
+    fn issue_is_the_routes_alone(&self, issue_id: &str) -> bool {
         let Some(active) = self.plans.get(issue_id) else {
             return false;
         };
@@ -8265,14 +8353,27 @@ impl AppState {
             .runs
             .values()
             .any(|run| run.run.plan_id.as_ref().map(|id| id.0.as_str()) == Some(issue_id));
-        active.plan.state == PlanState::Created
-            && active.plan.archived_at.is_none()
-            && active.workspace.is_none()
+        // The goal itself is the one message `create_plan` seeds, and it is the
+        // capture. A second is somebody having spoken to this issue.
+        let said_by_a_human = active
+            .agents
+            .first()
+            .thread
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(item, crate::thread::ThreadItem::Message(message)
+                    if message.role == crate::thread::MessageRole::User)
+            })
+            .count();
+        !matches!(
+            active.plan.state,
+            PlanState::Approved | PlanState::Abandoned
+        ) && active.plan.archived_at.is_none()
             && !implemented
-            // The goal itself is the one item `create_plan` seeds. Anything past
-            // it is somebody having said something to this issue.
             && active.agents.len() == 1
-            && active.agents.first().thread.items.len() <= 1
+            && said_by_a_human <= 1
+            && active.agents.doc_comments().is_empty()
     }
 
     /// A router reported. Whatever it said, the session is over — and a capture
@@ -33358,10 +33459,12 @@ mod tests {
         );
     }
 
-    /// The default destination. `create_issue` files a record and starts
-    /// nothing, and the capture's record says where it went and why.
+    /// The default destination. `create_issue` files the issue AND starts its
+    /// planning agent: the capture text arrives on the issue's conversation as
+    /// a message the user sent, and a sent message nobody hears is the bug this
+    /// closes. The capture's record still says where it went and why.
     #[test]
-    fn create_issue_files_an_inert_issue_and_writes_the_route_through() {
+    fn routing_a_capture_to_an_issue_starts_its_planning_agent_on_the_primary_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
@@ -33379,17 +33482,37 @@ mod tests {
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
 
-        assert_eq!(state.plans[&issue_id].plan.state, PlanState::Created);
-        assert!(
-            state.plans[&issue_id].workspace.is_none(),
-            "inert: no workspace"
+        assert_eq!(filed["planning"], true, "{filed:?}");
+        assert_ne!(
+            state.plans[&issue_id].plan.state,
+            PlanState::Created,
+            "the routed issue is being planned, not sitting inert"
         );
+        assert_eq!(
+            AppState::canonical_root(
+                &state.plans[&issue_id]
+                    .workspace
+                    .as_ref()
+                    .expect("the planning agent has a workspace")
+                    .checkout
+            ),
+            AppState::canonical_root(&repo),
+            "an issue's agent works in the primary checkout"
+        );
+
+        let turns: Vec<&PendingAgentTurn> = state
+            .pending_agent_turns
+            .iter()
+            .filter(|turn| turn.owner == issue_id)
+            .collect();
+        assert_eq!(turns.len(), 1, "exactly one first turn: {}", turns.len());
+        assert_eq!(turns[0].root, AppState::canonical_root(&repo));
+        assert_eq!(turns[0].agent_id, state.plans[&issue_id].agents.first().id);
+        assert_eq!(turns[0].phase, "plan");
         assert!(
-            !state
-                .pending_agent_turns
-                .iter()
-                .any(|turn| turn.owner == issue_id),
-            "inert: no agent until the user opens it"
+            turns[0].cold.contains("fix the login redirect"),
+            "the turn carries what the user said: {}",
+            turns[0].cold
         );
 
         let record = capture_record(&mut state, &capture_id);
@@ -33407,6 +33530,61 @@ mod tests {
             on_disk[0].routing.as_ref().unwrap().target_id,
             issue_id,
             "the route survives the daemon that made it"
+        );
+    }
+
+    /// One route, one agent. A turn already queued for this issue's agent — or
+    /// a spawn already on its way to a harness — is the session that reads the
+    /// capture; a second would report `done` for the same issue twice.
+    #[test]
+    fn a_routed_issue_whose_agent_is_already_coming_is_not_started_twice() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut state, "fix the login redirect");
+
+        let filed = state
+            .on_router_mcp_action(
+                &capture_id,
+                BridgeAction::CreateIssue {
+                    project_id: project_id.clone(),
+                    goal: "fix the login redirect".to_string(),
+                    rationale: None,
+                },
+            )
+            .unwrap();
+        let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+        let agent_id = state.plans[&issue_id].agents.first().id.clone();
+        let key = TabKey::agent(&AppState::canonical_root(&repo), &agent_id);
+
+        // The turn from the route is still queued.
+        state.start_routed_issue_agent(&issue_id);
+        assert_eq!(
+            state
+                .pending_agent_turns
+                .iter()
+                .filter(|turn| turn.owner == issue_id)
+                .count(),
+            1,
+            "the turn already queued is the one that reads the capture"
+        );
+
+        // The queue drained and the spawn is in flight.
+        state.pending_agent_turns.clear();
+        state.agent_spawns_in_flight.insert(key.clone());
+        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "a harness already coming up is the one that reads the capture"
+        );
+
+        // And once nothing is coming, the issue that already has its session
+        // is still not restarted: starting is a first turn, not a nudge.
+        state.agent_spawns_in_flight.remove(&key);
+        state.start_routed_issue_agent(&issue_id);
+        assert!(
+            state.pending_agent_turns.is_empty(),
+            "an issue with a planning session already open is not dispatched again"
         );
     }
 
@@ -33437,6 +33615,16 @@ mod tests {
             state.pending_agent_turns.len(),
             1,
             "a dispatch is an agent already working"
+        );
+        assert_eq!(
+            state.pending_agent_turns[0].owner,
+            dispatched["run_id"].as_str().unwrap(),
+            "the only turn is the dispatch's own"
+        );
+        assert!(
+            state.plans.is_empty(),
+            "a branch route files no issue, so routing adds no planning turn to what \
+             the dispatch already queued"
         );
 
         let record = capture_record(&mut state, &capture_id);
@@ -33927,11 +34115,13 @@ mod tests {
         assert!(state.router_sessions.contains_key(&starting));
     }
 
-    /// The user moves a misroute. The untouched inert issue the router guessed
-    /// at is archived — it was only ever a guess, and two rows for one piece of
-    /// work is a lie.
+    /// The user moves a misroute off an issue whose planning agent the route
+    /// itself started. The route made the issue AND the session, so the reroute
+    /// takes both back: the agent is retired and the issue archived. Leaving it
+    /// would put a second row on the feed for one piece of work — and, worse,
+    /// leave a planning agent working an issue nobody is going to read.
     #[test]
-    fn rerouting_off_an_untouched_issue_archives_it() {
+    fn rerouting_off_an_issue_only_its_own_agent_touched_stops_the_agent_and_archives_it() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
@@ -33947,6 +34137,14 @@ mod tests {
             )
             .unwrap();
         let guessed = filed["issue_id"].as_str().unwrap().to_string();
+        let agent_id = state.plans[&guessed].agents.first().id.clone();
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.owner == guessed),
+            "the route started the planning agent"
+        );
 
         let rerouted = state.handle(req(
             "capture.reroute",
@@ -33961,7 +34159,20 @@ mod tests {
         );
         assert!(
             state.plans[&guessed].plan.archived_at.is_some(),
-            "an untouched guess is taken back"
+            "a guess only Build's own agent touched is taken back"
+        );
+        assert!(
+            !state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.agent_id == agent_id),
+            "the planning agent goes with the issue it was planning"
+        );
+        assert!(
+            !state
+                .tabs
+                .contains_key(&TabKey::agent(&AppState::canonical_root(&repo), &agent_id)),
+            "and its session in the primary checkout is closed"
         );
     }
 
@@ -33986,6 +34197,7 @@ mod tests {
             )
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
+        let agent_id = state.plans[&issue_id].agents.first().id.clone();
         // The user opened it and said something: no longer a guess nobody read.
         let spoken_to = state.handle(req(
             "thread.post",
@@ -34001,6 +34213,13 @@ mod tests {
         assert!(
             state.plans[&issue_id].plan.archived_at.is_none(),
             "an issue with something said to it is nobody's to archive"
+        );
+        assert!(
+            state
+                .pending_agent_turns
+                .iter()
+                .any(|turn| turn.agent_id == agent_id),
+            "and its agent is nobody's to stop either"
         );
         assert_eq!(
             rerouted["result"]["rerouted_from"][0]["target_id"],
@@ -34613,10 +34832,11 @@ mod tests {
     }
 
     /// Rule 2, the default. Nothing in flight is doing this, so it becomes an
-    /// inert issue on the best-guess project: a record, no checkout, no agent,
-    /// and one tap from being somewhere else.
+    /// issue on the best-guess project with its planning agent reading the
+    /// capture: no branch, no worktree, nothing cut, and one tap from being
+    /// somewhere else.
     #[test]
-    fn a_vague_idea_becomes_an_inert_issue_on_the_best_guess_project() {
+    fn a_vague_idea_becomes_a_planned_issue_on_the_best_guess_project() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
@@ -34639,14 +34859,25 @@ mod tests {
 
         let issue_id = record["routing"]["target_id"].as_str().unwrap().to_string();
         let issue = &state.plans[&issue_id];
-        assert_eq!(issue.plan.state, PlanState::Created);
-        assert!(issue.workspace.is_none(), "inert: no checkout");
-        assert!(
-            !state
+        assert_eq!(
+            AppState::canonical_root(
+                &issue
+                    .workspace
+                    .as_ref()
+                    .expect("a planning session")
+                    .checkout
+            ),
+            AppState::canonical_root(&repo),
+            "an issue plans on main, in the primary checkout"
+        );
+        assert_eq!(
+            state
                 .pending_agent_turns
                 .iter()
-                .any(|turn| turn.owner == issue_id),
-            "inert: no agent until the user opens it"
+                .filter(|turn| turn.owner == issue_id)
+                .count(),
+            1,
+            "the capture is a sent message, and one agent is reading it"
         );
         assert_eq!(state.runs.len(), runs_before, "nothing was cut for it");
         assert_eq!(

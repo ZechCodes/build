@@ -1999,13 +1999,14 @@ pub struct AppState {
     /// placeholder no client ever sees.
     ///
     /// DELIBERATE, and the same split as [`AppState::pending_agent_turns`]:
-    /// under the lock a finish DECIDES (validates, claims the checkout,
+    /// under the lock a verb DECIDES (validates, claims the checkout,
     /// snapshots the paths), and the drain — [`dispatch_frame`], or
     /// [`AppState::dispatch`] itself where there is no `Arc` to release
     /// through — DOES the git with the lock free. A `git worktree remove` of a
-    /// six-gigabyte checkout takes minutes; every other frame, every terminal
-    /// pump and the relay's own read loop need this mutex while it runs.
-    deferred_finish: Option<DeferredFinish>,
+    /// six-gigabyte checkout takes minutes and a `git status` there takes
+    /// seconds; every other frame, every terminal pump and the relay's own
+    /// read loop need this mutex while they run.
+    deferred_work: Option<DeferredWork>,
     /// Checkouts whose finish is running right now with the mutex released.
     /// A finish is the one verb whose git work outlives its lock hold, so the
     /// checkout it acts on is claimed here for the duration: a second finish
@@ -2181,7 +2182,7 @@ impl AppState {
             diff_compute_observer: None,
             #[cfg(test)]
             off_lock_gate: None,
-            deferred_finish: None,
+            deferred_work: None,
             finishing_worktrees: std::collections::HashSet::new(),
             #[cfg(test)]
             force_stale_diff_caches: false,
@@ -5267,26 +5268,26 @@ impl AppState {
         // [`dispatch_frame`] is the caller that runs it with the lock free.
         match deferred {
             Some(deferred) => {
-                let (epilogue, finished) = deferred.run();
-                self.apply_finish_for(method, params, epilogue, finished)
+                let done = deferred.run();
+                self.apply_deferred(method, params, done)
             }
             None => outcome,
         }
     }
 
     /// Dispatch without draining: a verb that handed its git work to
-    /// [`AppState::deferred_finish`] hands it back out HERE, to a caller that
+    /// [`AppState::deferred_work`] hands it back out HERE, to a caller that
     /// can release the app mutex before running it. The `Ok` returned
     /// alongside a deferral is the placeholder that field documents.
     fn dispatch_deferring(
         &mut self,
         method: &str,
         params: &Value,
-    ) -> (Result<Value, String>, Option<DeferredFinish>) {
+    ) -> (Result<Value, String>, Option<DeferredWork>) {
         let outcome = self.route(method, params);
-        match self.deferred_finish.take() {
+        match self.deferred_work.take() {
             // Nothing is settled until the git work returns, so the stamp waits
-            // for `apply_finish_for` too.
+            // for `apply_deferred` too.
             Some(deferred) => (outcome, Some(deferred)),
             None => {
                 if let Ok(result) = &outcome {
@@ -5298,16 +5299,20 @@ impl AppState {
         }
     }
 
-    /// Write back a deferred finish and stamp the verb that deferred it — the
-    /// second half of [`AppState::dispatch_deferring`].
-    fn apply_finish_for(
+    /// Write back what the lock-free git work found, and stamp the verb that
+    /// deferred it — the second half of [`AppState::dispatch_deferring`].
+    fn apply_deferred(
         &mut self,
         method: &str,
         params: &Value,
-        epilogue: FinishEpilogue,
-        finished: WorktreeFinishOutcome,
+        done: DeferredOutcome,
     ) -> Result<Value, String> {
-        let applied = self.apply_finish(epilogue, finished);
+        let applied = match done {
+            DeferredOutcome::Finish { epilogue, finished } => {
+                self.apply_finish(*epilogue, *finished)
+            }
+            DeferredOutcome::Git { git, result } => self.apply_git(&git, result),
+        };
         if let Ok(result) = &applied {
             self.stamp_interaction_for(method, params, result);
         }
@@ -6559,50 +6564,158 @@ impl AppState {
         }
     }
 
+    /// Resolve a `git.*` verb's checkout under the lock and hand the git call
+    /// itself to the drain, which makes it with the mutex released.
+    ///
+    /// `invalidates` says a successful call leaves the board's cached
+    /// summaries describing a tree that has since changed.
+    fn defer_git(
+        &mut self,
+        params: &Value,
+        invalidates: bool,
+        work: fn(&GitScope, &Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let scope = self.resolve_git_scope(params)?;
+        Ok(self.defer_git_work(
+            GitTarget::Checkout(scope),
+            GitWork::Checkout(work),
+            params,
+            invalidates,
+        ))
+    }
+
+    /// [`AppState::defer_git`] for the verbs that address the repository's
+    /// branches rather than one checkout's working tree.
+    fn defer_branch_git(
+        &mut self,
+        params: &Value,
+        invalidates: bool,
+        work: fn(&BranchScope, &Value) -> Result<Value, String>,
+    ) -> Result<Value, String> {
+        let scope = self.resolve_branch_scope(params)?;
+        Ok(self.defer_git_work(
+            GitTarget::Branch(scope),
+            GitWork::Branch(work),
+            params,
+            invalidates,
+        ))
+    }
+
+    fn defer_git_work(
+        &mut self,
+        scope: GitTarget,
+        work: GitWork,
+        params: &Value,
+        invalidates: bool,
+    ) -> Value {
+        self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
+            scope,
+            params: params.clone(),
+            work,
+            invalidates,
+            #[cfg(test)]
+            gate: self.off_lock_gate.clone(),
+        })));
+        Value::Null
+    }
+
+    /// Write back a git verb that ran with the mutex released: drop the cached
+    /// summaries its mutation made stale.
+    ///
+    /// STALENESS: the checkout may have left the board while the git ran (its
+    /// run released, finished, or deleted). The answer still stands — it
+    /// describes what the tree did — but the cache write is dropped rather
+    /// than stamping an entity that is gone back into the daemon's maps.
+    fn apply_git(
+        &mut self,
+        git: &DeferredGit,
+        result: Result<Value, String>,
+    ) -> Result<Value, String> {
+        if !git.invalidates || result.is_err() {
+            return result;
+        }
+        match &git.scope {
+            GitTarget::Checkout(scope) => {
+                if self.git_scope_is_current(scope) {
+                    self.invalidate_git_scope_caches(scope);
+                }
+            }
+            GitTarget::Branch(scope) => {
+                if self.projects.iter().any(|p| p.id == scope.project_id) {
+                    // A branch switch swaps the whole tree, so whichever
+                    // summary described it is stale.
+                    if scope.external_worktree {
+                        self.invalidate_external_scan(&scope.project_id);
+                    } else {
+                        self.invalidate_primary_summary(&scope.project_id);
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Whether the entity a git scope spoke for is still on the board.
+    fn git_scope_is_current(&self, scope: &GitScope) -> bool {
+        if let Some(run) = &scope.run {
+            return self.runs.contains_key(&run.run_id);
+        }
+        let project_id = scope
+            .project_id
+            .as_deref()
+            .or(scope.worktree.as_ref().map(|w| w.project_id.as_str()));
+        project_id.is_some_and(|project_id| self.projects.iter().any(|p| p.id == project_id))
+    }
+
     /// `git.log` — one page of commit history for the scoped checkout. Task
     /// scope additionally marks each commit as ahead of (unreachable from)
     /// the base branch.
     fn git_log(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let limit = params
-            .get("limit")
-            .and_then(Value::as_u64)
-            .unwrap_or(30)
-            .clamp(1, 200) as usize;
-        let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
-        crate::gitgui::log_page(&scope.repo_path, scope.mark_ahead_of(), limit, skip)
+        self.defer_git(params, false, |scope, params| {
+            let limit = params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(30)
+                .clamp(1, 200) as usize;
+            let skip = params.get("skip").and_then(Value::as_u64).unwrap_or(0) as usize;
+            crate::gitgui::log_page(&scope.repo_path, scope.mark_ahead_of(), limit, skip)
+        })
     }
 
     /// `git.show` — one commit's metadata, stat, and capped patch. The hash
     /// param is a strict object-id prefix, never a general revspec.
     fn git_show(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let hash = require_str(params, "hash")?;
-        crate::gitgui::show_commit(&scope.repo_path, &hash)
+        self.defer_git(params, false, |scope, params| {
+            let hash = require_str(params, "hash")?;
+            crate::gitgui::show_commit(&scope.repo_path, &hash)
+        })
     }
 
     /// `git.status` — branch/head plus per-file staging tri-state and the
     /// uncommitted patch for the scoped checkout.
     fn git_status(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, false, |scope, _| {
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.stage` — stage the given repo-relative paths, answering with the
     /// fresh status payload so the UI repaints without waiting for a poll.
     fn git_stage(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let paths = require_path_list(params)?;
-        crate::gitgui::stage_paths(&scope.repo_path, &paths)?;
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, false, |scope, params| {
+            let paths = require_path_list(params)?;
+            crate::gitgui::stage_paths(&scope.repo_path, &paths)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.unstage` — the inverse of `git.stage`, same response shape.
     fn git_unstage(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let paths = require_path_list(params)?;
-        crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, false, |scope, params| {
+            let paths = require_path_list(params)?;
+            crate::gitgui::unstage_paths(&scope.repo_path, &paths)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.commit` — commit exactly what is staged with the user's message.
@@ -6611,17 +6724,17 @@ impl AppState {
     /// task record itself is untouched (no lifecycle transition — a commit
     /// never advances a task past any gate).
     fn git_commit(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let message = require_str(params, "message")?;
-        let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
-        self.invalidate_git_scope_caches(&scope);
-        let status = crate::gitgui::status_payload(&scope.repo_path)?;
-        Ok(json!({
-            "hash": commit["hash"],
-            "short": commit["short"],
-            "subject": commit["subject"],
-            "status": status,
-        }))
+        self.defer_git(params, true, |scope, params| {
+            let message = require_str(params, "message")?;
+            let commit = crate::gitgui::commit_staged(&scope.repo_path, &message)?;
+            let status = crate::gitgui::status_payload(&scope.repo_path)?;
+            Ok(json!({
+                "hash": commit["hash"],
+                "short": commit["short"],
+                "subject": commit["subject"],
+                "status": status,
+            }))
+        })
     }
 
     /// Drop the cached board summaries a scoped git mutation just invalidated —
@@ -6675,107 +6788,103 @@ impl AppState {
 
     /// `git.fetch` — `git fetch --prune`, then the fresh status payload.
     fn git_fetch(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        crate::gitgui::fetch(&scope.repo_path)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, _| {
+            crate::gitgui::fetch(&scope.repo_path)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.pull` — integrate the upstream in the requested mode (ff/merge/
     /// rebase), then the fresh status payload. Git's own errors pass through.
     fn git_pull(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let mode = params.get("mode").and_then(Value::as_str).unwrap_or("ff");
-        crate::gitgui::pull(&scope.repo_path, mode)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, params| {
+            let mode = params.get("mode").and_then(Value::as_str).unwrap_or("ff");
+            crate::gitgui::pull(&scope.repo_path, mode)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.push` — push the current branch (setting the upstream on first
     /// push), then the fresh status payload. `force` uses `--force-with-lease`.
     fn git_push(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let force = params
-            .get("force")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        crate::gitgui::push(&scope.repo_path, force)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, params| {
+            let force = params
+                .get("force")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::gitgui::push(&scope.repo_path, force)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.branches` — the local branch list of the scoped checkout (the same
     /// list either way: branches are the repository's, not one checkout's).
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_branch_scope(params)?;
-        crate::gitgui::branch_list(&scope.repo_path)
+        self.defer_branch_git(params, false, |scope, _| {
+            crate::gitgui::branch_list(&scope.repo_path)
+        })
     }
 
     /// `git.checkout` — switch the scoped checkout to (or create) a branch,
     /// then the fresh status payload.
     fn git_checkout(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_branch_scope(params)?;
-        let branch = require_str(params, "branch")?;
-        let create = params
-            .get("create")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        crate::gitgui::checkout(&scope.repo_path, &branch, create)?;
-        // A branch switch swaps the whole tree, so whichever summary described
-        // it is stale.
-        if scope.external_worktree {
-            self.invalidate_external_scan(&scope.project_id);
-        } else {
-            self.invalidate_primary_summary(&scope.project_id);
-        }
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_branch_git(params, true, |scope, params| {
+            let branch = require_str(params, "branch")?;
+            let create = params
+                .get("create")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::gitgui::checkout(&scope.repo_path, &branch, create)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.branch_delete` — delete a local branch, then the fresh branch list.
     fn git_branch_delete(&mut self, params: &Value) -> Result<Value, String> {
-        let repo_path = self.resolve_branch_scope(params)?.repo_path;
-        let branch = require_str(params, "branch")?;
-        let force = params
-            .get("force")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        crate::gitgui::branch_delete(&repo_path, &branch, force)?;
-        crate::gitgui::branch_list(&repo_path)
+        self.defer_branch_git(params, false, |scope, params| {
+            let branch = require_str(params, "branch")?;
+            let force = params
+                .get("force")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            crate::gitgui::branch_delete(&scope.repo_path, &branch, force)?;
+            crate::gitgui::branch_list(&scope.repo_path)
+        })
     }
 
     /// `git.stash` — `git stash push -u`, then the fresh status payload.
     fn git_stash(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        crate::gitgui::stash_push(&scope.repo_path)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, _| {
+            crate::gitgui::stash_push(&scope.repo_path)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.stash_pop` — `git stash pop`, then the fresh status payload.
     fn git_stash_pop(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        crate::gitgui::stash_pop(&scope.repo_path)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, _| {
+            crate::gitgui::stash_pop(&scope.repo_path)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.discard` (**destructive**) — revert the given paths to HEAD
     /// (untracked ones are deleted), then the fresh status payload.
     fn git_discard(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        let paths = require_path_list(params)?;
-        crate::gitgui::discard_paths(&scope.repo_path, &paths)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, params| {
+            let paths = require_path_list(params)?;
+            crate::gitgui::discard_paths(&scope.repo_path, &paths)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// `git.merge_abort` — abort whatever operation is in progress (merge,
     /// rebase, cherry-pick, revert, or bisect), then the fresh status payload.
     fn git_merge_abort(&mut self, params: &Value) -> Result<Value, String> {
-        let scope = self.resolve_git_scope(params)?;
-        crate::gitgui::merge_abort(&scope.repo_path)?;
-        self.invalidate_git_scope_caches(&scope);
-        crate::gitgui::status_payload(&scope.repo_path)
+        self.defer_git(params, true, |scope, _| {
+            crate::gitgui::merge_abort(&scope.repo_path)?;
+            crate::gitgui::status_payload(&scope.repo_path)
+        })
     }
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
@@ -6896,10 +7005,10 @@ impl AppState {
     }
 
     /// Hand a claimed finish to the drain. The `Ok` returned here is the
-    /// placeholder [`AppState::deferred_finish`] documents: whichever drain
-    /// runs the job replaces it with what [`AppState::apply_finish`] answers.
+    /// placeholder [`AppState::deferred_work`] documents: whichever drain runs
+    /// the job replaces it with what [`AppState::apply_finish`] answers.
     fn defer_finish(&mut self, job: Box<WorktreeFinishJob>, epilogue: FinishEpilogue) -> Value {
-        self.deferred_finish = Some(DeferredFinish { job, epilogue });
+        self.deferred_work = Some(DeferredWork::Finish { job, epilogue });
         Value::Null
     }
 
@@ -14167,17 +14276,88 @@ struct WorktreeFinishOutcome {
     result: Result<Value, String>,
 }
 
-/// A claimed finish and the bookkeeping still owed once its git work returns.
-struct DeferredFinish {
-    job: Box<WorktreeFinishJob>,
-    epilogue: FinishEpilogue,
+/// Work a verb handed to the drain, to run with the app mutex released.
+enum DeferredWork {
+    /// A claimed finish and the bookkeeping still owed once its git returns.
+    Finish {
+        job: Box<WorktreeFinishJob>,
+        epilogue: FinishEpilogue,
+    },
+    /// One `git.*` verb against one resolved checkout.
+    Git(Box<DeferredGit>),
 }
 
-impl DeferredFinish {
-    /// The lock-free phase. Consumes the job so nothing can run it twice.
-    fn run(self) -> (FinishEpilogue, WorktreeFinishOutcome) {
-        let outcome = self.job.run();
-        (self.epilogue, outcome)
+/// What the lock-free phase brought back, for the app mutex to write down.
+enum DeferredOutcome {
+    Finish {
+        epilogue: Box<FinishEpilogue>,
+        finished: Box<WorktreeFinishOutcome>,
+    },
+    Git {
+        git: Box<DeferredGit>,
+        result: Result<Value, String>,
+    },
+}
+
+impl DeferredWork {
+    /// The lock-free phase. Consumes the work so nothing can run it twice.
+    fn run(self) -> DeferredOutcome {
+        match self {
+            Self::Finish { job, epilogue } => DeferredOutcome::Finish {
+                epilogue: Box::new(epilogue),
+                finished: Box::new(job.run()),
+            },
+            Self::Git(git) => {
+                #[cfg(test)]
+                if let Some(gate) = &git.gate {
+                    gate.arrive();
+                }
+                let result = git.run();
+                DeferredOutcome::Git { git, result }
+            }
+        }
+    }
+}
+
+/// One `git.*` verb: the checkout the app mutex resolved for it, the git call
+/// to make there with the mutex released, and whether its answer invalidates
+/// the summaries the board reads.
+///
+/// A `git status` walks the whole worktree and a `git fetch` waits on a
+/// network; the review surfaces poll both. Neither may hold the daemon still.
+struct DeferredGit {
+    scope: GitTarget,
+    params: Value,
+    work: GitWork,
+    /// Whether a successful call made the scope's cached summaries stale.
+    invalidates: bool,
+    #[cfg(test)]
+    gate: Option<OffLockGate>,
+}
+
+/// Which resolution a git verb asked for: the checkout's own scope, or the
+/// repository-wide branch scope.
+enum GitTarget {
+    Checkout(GitScope),
+    Branch(BranchScope),
+}
+
+/// The git call itself, as a plain function of the checkout and the request —
+/// it holds no state, so it cannot reach the daemon while it runs.
+enum GitWork {
+    Checkout(fn(&GitScope, &Value) -> Result<Value, String>),
+    Branch(fn(&BranchScope, &Value) -> Result<Value, String>),
+}
+
+impl DeferredGit {
+    fn run(&self) -> Result<Value, String> {
+        match (&self.scope, &self.work) {
+            (GitTarget::Checkout(scope), GitWork::Checkout(work)) => work(scope, &self.params),
+            (GitTarget::Branch(scope), GitWork::Branch(work)) => work(scope, &self.params),
+            // Unreachable by construction: `defer_git` and `defer_branch_git`
+            // are the only ways to build one, and each pairs its own halves.
+            _ => Err("git scope and git work disagree".to_string()),
+        }
     }
 }
 
@@ -15519,9 +15699,9 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
             // date here, with the lock free. After it, the verb only reads
             // memory: no frame ever holds the app mutex through a worktree diff.
             warm_diff_caches(state, &method, &params);
-            // A verb whose git work outlives its lock hold (a finish) hands
-            // that work back rather than doing it here; the drain below runs it
-            // with the mutex released. See `AppState::deferred_finish`.
+            // A verb whose git work must not run under the lock hands that
+            // work back rather than doing it here; the drain below runs it with
+            // the mutex released. See `AppState::deferred_work`.
             let (dispatched, deferred) = {
                 let mut app = state.lock().unwrap();
                 let queued_before = app.pending_agent_turns.len();
@@ -15538,14 +15718,14 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
             let dispatched = match deferred {
                 Some(deferred) => {
                     // THE POINT OF ALL THIS: seconds to minutes of git — a
-                    // preflight scan, a merge, a `git worktree remove` of a
-                    // six-gigabyte checkout — with every other frame, every
+                    // status walk, a fetch, a merge, a `git worktree remove` of
+                    // a six-gigabyte checkout — with every other frame, every
                     // terminal pump and the relay's own read loop free to make
                     // progress meanwhile.
-                    let (epilogue, finished) = deferred.run();
+                    let done = deferred.run();
                     let mut app = state.lock().unwrap();
                     let queued_before = app.pending_agent_turns.len();
-                    let applied = app.apply_finish_for(&method, &params, epilogue, finished);
+                    let applied = app.apply_deferred(&method, &params, done);
                     if applied.is_err() {
                         app.pending_agent_turns.truncate(queued_before);
                     }
@@ -31014,6 +31194,91 @@ mod tests {
         assert_eq!(finished["ok"], true, "{finished:?}");
         assert_eq!(finished["result"]["action"], "cleanup");
         assert!(!path.exists(), "the checkout was removed");
+    }
+
+    /// A git read is the other thing that costs seconds on a big checkout —
+    /// `git status` walks the whole tree — and the review surfaces poll it. It
+    /// runs off the lock for the same reason a finish does.
+    #[test]
+    fn a_git_read_runs_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let status = frame_on_a_thread(
+            &state,
+            "s-status",
+            "git.status",
+            json!({ "project_id": project_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the git read is holding the app mutex"
+        );
+
+        gate_handle.release();
+        let status = status
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the read answers once its git work is done");
+        assert_eq!(status["ok"], true, "{status:?}");
+        assert_eq!(status["result"]["branch"], "main", "{status:?}");
+    }
+
+    /// Staleness: what the git work computed describes a checkout that is no
+    /// longer on the board, so its cache write is dropped rather than
+    /// resurrecting the entity it was about.
+    #[test]
+    fn a_git_mutation_whose_run_vanished_mid_work_drops_its_cache_write() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "vanishing");
+        let worktree = app.runs[&run_id].worktree.path.clone();
+        std::fs::write(worktree.join("staged.txt"), "work\n").unwrap();
+        let state = app.shared();
+
+        let staged = dispatch_frame(
+            &state,
+            SessionSender::detached("s-stage"),
+            req(
+                "git.stage",
+                json!({ "run_id": run_id, "paths": ["staged.txt"] }),
+            ),
+        );
+        assert_eq!(staged["ok"], true, "{staged:?}");
+
+        // The gate goes on only now: the commit is the call to catch in flight.
+        let (gate, gate_handle) = OffLockGate::new();
+        state.lock().unwrap().off_lock_gate = Some(gate);
+        let committed = frame_on_a_thread(
+            &state,
+            "s-commit",
+            "git.commit",
+            json!({ "run_id": run_id, "message": "work" }),
+        );
+        gate_handle.wait_for_arrival();
+        // The run leaves the board while the commit is still running.
+        let released = dispatch_frame(
+            &state,
+            SessionSender::detached("s-release"),
+            req("run.release", json!({ "run_id": run_id })),
+        );
+        assert_eq!(released["ok"], true, "{released:?}");
+
+        gate_handle.release();
+        let committed = committed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the commit answers");
+        assert_eq!(committed["ok"], true, "{committed:?}");
+
+        let app = state.lock().unwrap();
+        assert!(
+            !app.entity_updated_at.contains_key(&run_id),
+            "the commit stamped a run that had already left the board"
+        );
     }
 
     /// The claim the off-lock split needs: while one finish is off deleting a

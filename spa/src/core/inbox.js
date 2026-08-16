@@ -114,13 +114,29 @@ const ms = (iso) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
-/** What names a row in the DOM. Usually the entity id — but a project's primary
- *  checkout is the repository, which takes no attention and has no entity, and
- *  it is still a row you open. */
-const keyOf = (item) => {
+/** What names a row in the DOM — the one name every row has. Usually the
+ *  entity id; a project's primary checkout is the repository, which takes no
+ *  attention and has no entity, and it is still a row you open and clear.
+ *  Exported so the wiring can match a feed row to the keys it is holding. */
+export const entryKeyOf = (item) => {
   if (item.kind === "capture") return `capture:${item.capture_id}`;
   return entityIdOf(item) || (item.kind === "issue" ? `issue:${item.project_id}` : `branch:${item.project_id}:${item.branch}`);
 };
+
+/**
+ * How `entity.dismiss` names the row being cleared. An entity by its id — the
+ * bridge draws the line at the end of its conversation. A row with no entity
+ * by what it IS: the project's own checkout (`primary: true`), or a branch in
+ * the project — the bridge clears those at the commit they sit on, and a new
+ * commit brings them back. Null for a row nothing can name, which is not a
+ * row the feed produces.
+ */
+export function dismissParamsOf(entry) {
+  if (entry.entityId) return { entity_id: entry.entityId };
+  if (entry.primary && entry.projectId) return { project_id: entry.projectId, primary: true };
+  if (entry.projectId && entry.branch) return { project_id: entry.projectId, branch: entry.branch };
+  return null;
+}
 
 /**
  * Line two: what this row weighs. Files touched, how it stands against the ref
@@ -175,7 +191,7 @@ function toCaptureEntry(item) {
   const question = item.question && !item.question.answer ? item.question.text : "";
   const routing = item.routing || null;
   return {
-    key: keyOf(item),
+    key: entryKeyOf(item),
     entityId: null,
     kind: "capture",
     captureId: item.capture_id,
@@ -219,7 +235,7 @@ function toEntry(item) {
   // is on the row's title where a second look finds it.
   const name = item.kind === "issue" ? item.title || "(untitled)" : item.branch || item.title || "(detached)";
   return {
-    key: keyOf(item),
+    key: entryKeyOf(item),
     entityId: entityIdOf(item),
     kind: item.kind,
     projectId: item.project_id,
@@ -240,10 +256,6 @@ function toEntry(item) {
     // Whether the work landed. It is the whole question an implemented issue's
     // fate turns on when its branch is deleted.
     merged: item.state === "merged",
-    // Whether anything can ever speak on this row: a bare checkout (external
-    // worktree, primary) has no conversation, so "until something new needs
-    // you" can never end — Clear is not offered where it cannot mean itself.
-    hasConversation: !!(item.run_id || item.issue_id),
     warnings: warningsOf(item),
     primary: !!item.primary,
     facts: entryFactsText(item),
@@ -282,16 +294,17 @@ function byAnchor(left, right) {
  * clearing means, and it is the whole difference from Recent, where a row that
  * has only gone quiet still sits.
  *
- * `hiddenEntityIds` holds the entity ids a verb from this client just removed —
- * Done, or a clear the daemon has not confirmed yet — so a stale feed paint
- * cannot put the row back on screen.
+ * `hiddenKeys` holds the row keys a verb from this client just removed — Done,
+ * or a clear the daemon has not confirmed yet — so a stale feed paint cannot
+ * put the row back on screen. Keys, not entity ids: every row has a key, and
+ * the rows no entity stands behind can be cleared like any other.
  */
-export function inboxEntries({ items = [], nowMs = Date.now(), hiddenEntityIds = new Set() } = {}) {
+export function inboxEntries({ items = [], nowMs = Date.now(), hiddenKeys = new Set() } = {}) {
   const rows = items
     .filter(isListed)
     .map(toEntry)
     .filter((entry) => !entry.dismissed)
-    .filter((entry) => entry.entityId === null || !hiddenEntityIds.has(entry.entityId))
+    .filter((entry) => !hiddenKeys.has(entry.key))
     .sort(byAnchor);
   const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
   const entries = rows.filter((entry) => !quiet(entry));
@@ -320,25 +333,28 @@ export function activeEntryKey(route, entries) {
 }
 
 /** The row's own menu: clear, mute, and Done, one step behind the row itself.
- *  Reuses the split button's menu markup. A row with no entity behind it (a
- *  project's primary checkout) has none of those verbs, so it has no menu — an
- *  empty ⋯ is a lie about what is one step behind it.
+ *  Reuses the split button's menu markup.
  *
- *  Clear leads, because it is the one verb that costs nothing: the row leaves
- *  and comes back the moment something new needs the user. Mute keeps the row
- *  and takes its voice; Done destroys. */
+ *  Clear leads, and every row has it, because it is the one verb that costs
+ *  nothing: the row leaves and comes back the moment something new needs the
+ *  user. On a row with a conversation "something new" is the next attention
+ *  event; on one with none (a bare checkout, the primary) the bridge clears it
+ *  at the commit it sits on, and a new commit brings it back.
+ *
+ *  Mute keeps the row and takes its voice, so it needs an entity with a voice
+ *  to take; Done destroys, and is offered only where there is something to
+ *  finish. A row with neither still has its menu — Clear is what it is for. */
 function menuHtml(entry, open) {
-  if (!entry.entityId) return "";
   const items = [
-    ...(entry.hasConversation
-      ? [
-          `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
-        ]
-      : []),
-    `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
-      entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
-    }</span></div>`,
+    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
   ];
+  if (entry.entityId) {
+    items.push(
+      `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
+        entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
+      }</span></div>`,
+    );
+  }
   if (entry.canFinish) {
     items.push(
       `<div class="mi" data-done="${esc(entry.key)}"><span class="mt">Done</span><span class="md">${

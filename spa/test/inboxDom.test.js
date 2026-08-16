@@ -449,15 +449,55 @@ describe("captures on the rail", () => {
     expect(calls.indexOf("entity.seen")).toBeLessThan(calls.indexOf("entity.dismiss"));
   });
 
-  // A bare checkout has no conversation, so "until something new needs you"
-  // could never end — Clear is not offered where it cannot mean itself.
-  it("offers no Clear on a checkout row with nothing that can speak", async () => {
-    feed([branchRow({ run_id: null, issue_id: null, worktree_id: "wt-9", entity_id: undefined })]);
-    const row = document.querySelector('[data-key]');
+  // A bare checkout holds no conversation, so the bridge clears it at the
+  // commit it sits on — and a new commit brings it back. The row is named by
+  // the worktree id it already carries.
+  it("clears a bare checkout row by its worktree id", async () => {
+    feed([branchRow({ run_id: null, issue_id: null, worktree_id: "wt-9", unread: false })]);
+    const row = rowFor("wt-9");
     row.querySelector("[data-menu]").click();
     await flush();
-    expect(row.querySelector("[data-dismiss]")).toBeNull();
     expect(row.querySelector("[data-mute]")).toBeTruthy();
+    rowFor("wt-9").querySelector("[data-dismiss]").click();
+    expect(rowFor("wt-9")).toBeNull(); // gone before the daemon answers
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { entity_id: "wt-9" });
+  });
+
+  // The primary checkout names no entity at all, so the clear names the row by
+  // what it IS: the project's own checkout. Nothing destructive is offered
+  // beside it — there is no voice to mute and nothing to finish.
+  it("clears the primary row by naming the project's checkout", async () => {
+    feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
+    const row = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    row.querySelector("[data-menu]").click();
+    await flush();
+    const open = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    expect(open.querySelector("[data-mute]")).toBeNull();
+    expect(open.querySelector("[data-done]")).toBeNull();
+    open.querySelector("[data-dismiss]").click();
+    expect(document.querySelector('.inbox-entry[data-key="branch:p1:main"]')).toBeNull();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("entity.dismiss", { project_id: "p1", primary: true });
+    expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
+    expect(refreshFeed).toHaveBeenCalled();
+  });
+
+  it("brings the primary row back and says why when its clear fails", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.dismiss") throw new Error("unknown project p1");
+      return { ok: true };
+    });
+    feed([branchRow({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, unread: false })]);
+    document.querySelector('.inbox-entry[data-key="branch:p1:main"]').querySelector("[data-menu]").click();
+    await flush();
+    document.querySelector('.inbox-entry[data-key="branch:p1:main"]').querySelector("[data-dismiss]").click();
+    await flush();
+    const row = document.querySelector('.inbox-entry[data-key="branch:p1:main"]');
+    expect(row).toBeTruthy();
+    const error = row.querySelector("[data-done-error]");
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe("unknown project p1");
   });
 
   // A capture leaves the inbox by being routed, so there is nothing to clear —

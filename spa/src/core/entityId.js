@@ -7,8 +7,11 @@
 // else picks a field.
 
 /**
- * The entity id behind a board.list row, or null when the row names none
- * (a project's primary checkout is the repository, which takes no attention).
+ * The entity id behind a board.list row, or null when the row names none —
+ * a project's primary checkout is the repository, which holds no conversation
+ * and no read cursor. Null does not mean the row has no verbs: clearing an
+ * entity-less row names it by what it is instead (project + branch, or
+ * primary), which core/inbox.js dismissParamsOf derives.
  *
  * An issue row is its issue even when it carries a run id: the issue returns to
  * the feed only once its implementation is terminal, and it still names that

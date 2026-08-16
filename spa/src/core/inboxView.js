@@ -10,8 +10,15 @@ import { $ } from "../dom.js";
 import { App } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { confirmAction } from "./confirm.js";
-import { entityIdOf } from "./entityId.js";
-import { activeEntryKey, branchDoneConfirm, inboxEntries, inboxListHtml, issueDoneConfirm } from "./inbox.js";
+import {
+  activeEntryKey,
+  branchDoneConfirm,
+  dismissParamsOf,
+  entryKeyOf,
+  inboxEntries,
+  inboxListHtml,
+  issueDoneConfirm,
+} from "./inbox.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -26,12 +33,13 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-// Entity ids a verb from this client just took off the list — Done, or a clear
+// Row keys a verb from this client just took off the list — Done, or a clear
 // the daemon has not confirmed yet. The feed's own truth takes over as soon as
-// it arrives.
+// it arrives. Keys, not entity ids: every row has a key, and the rows no
+// entity stands behind (the primary checkout) can be cleared like any other.
 const locallyHidden = new Set();
-const busy = new Set(); // entity ids with a mutation in flight
-const errors = new Map(); // entity id → the message its row is showing
+const busy = new Set(); // row keys with a mutation in flight
+const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
@@ -81,7 +89,7 @@ function draw() {
   const partition = inboxEntries({
     items: mergeCaptureRows(items, pendingCaptureRows()),
     nowMs: Date.now(),
-    hiddenEntityIds: locallyHidden,
+    hiddenKeys: locallyHidden,
   });
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
@@ -105,12 +113,12 @@ function draw() {
   paintErrors(list);
 }
 
-/** An entity id is whatever the daemon minted (a worktree's is derived from a
- *  path), so rows are matched by reading their id back, never by building a
+/** A row key is whatever the daemon minted (a worktree's is derived from a
+ *  path), so rows are matched by reading their key back, never by building a
  *  selector out of it. */
 function paintErrors(list) {
   list.querySelectorAll(".inbox-entry").forEach((row) => {
-    const message = errors.get(row.dataset.entity) || captureErrors.get(row.dataset.capture);
+    const message = errors.get(row.dataset.key) || captureErrors.get(row.dataset.capture);
     const slot = message && row.querySelector("[data-done-error], [data-capture-error]");
     if (!slot) return;
     slot.textContent = message;
@@ -291,49 +299,53 @@ function openEntry(entry) {
 }
 
 async function toggleMute(entry) {
-  if (!entry || busy.has(entry.entityId)) return;
-  busy.add(entry.entityId);
+  if (!entry || busy.has(entry.key)) return;
+  busy.add(entry.key);
   openMenuKey = null;
-  errors.delete(entry.entityId);
+  errors.delete(entry.key);
   try {
     await App.call("entity.mute", { entity_id: entry.entityId, muted: !entry.muted });
     await refreshFeed();
   } catch (error) {
-    errors.set(entry.entityId, messageOf(error));
+    errors.set(entry.key, messageOf(error));
   } finally {
-    busy.delete(entry.entityId);
+    busy.delete(entry.key);
     draw();
   }
 }
 
 /** Clear the row off the inbox until something new needs the user. Nothing is
- *  destroyed, nothing is silenced: the daemon remembers how far the entry's
- *  conversation had got, and the next attention event past that brings the row
- *  back by itself — so there is no un-clear verb to offer.
+ *  destroyed, nothing is silenced: for a row with a conversation the daemon
+ *  remembers how far it had got, and the next attention event past that brings
+ *  the row back by itself; a row with none (a bare checkout, the primary) is
+ *  cleared at the commit it sits on, and a new commit brings it back — so
+ *  there is no un-clear verb to offer. The dismiss names the row the way
+ *  dismissParamsOf says: an entity by its id, an entity-less row by what it is.
  *
  *  The row leaves on the tap and comes back if the daemon refuses. */
 async function dismissEntry(entry) {
-  if (!entry || !entry.entityId || busy.has(entry.entityId)) return;
-  busy.add(entry.entityId);
+  const params = entry && dismissParamsOf(entry);
+  if (!params || busy.has(entry.key)) return;
+  busy.add(entry.key);
   openMenuKey = null;
-  locallyHidden.add(entry.entityId);
-  errors.delete(entry.entityId);
+  locallyHidden.add(entry.key);
+  errors.delete(entry.key);
   draw();
   try {
     // Clearing an unread row IS reading it: the daemon's rule keeps an unread
     // row visible (unread beats dismissed), so the tap reads it through first
     // — otherwise the row would bounce back on the next poll and Clear would
     // look broken on exactly the rows people most want to clear.
-    if (entry.state === "unread") {
+    if (entry.state === "unread" && entry.entityId) {
       await App.call("entity.seen", { entity_id: entry.entityId });
     }
-    await App.call("entity.dismiss", { entity_id: entry.entityId });
+    await App.call("entity.dismiss", params);
     await refreshFeed();
   } catch (error) {
-    locallyHidden.delete(entry.entityId);
-    errors.set(entry.entityId, messageOf(error));
+    locallyHidden.delete(entry.key);
+    errors.set(entry.key, messageOf(error));
   } finally {
-    busy.delete(entry.entityId);
+    busy.delete(entry.key);
     draw();
   }
 }
@@ -348,21 +360,21 @@ function finishCall(entry) {
 }
 
 async function finishEntry(entry) {
-  if (!entry || busy.has(entry.entityId)) return;
+  if (!entry || busy.has(entry.key)) return;
   const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(entry);
   if (!(await confirmAction(confirmation))) return;
-  busy.add(entry.entityId);
+  busy.add(entry.key);
   // Confirmation is the decisive moment: the row goes now, and the git work
   // (and the feed catching up) carries on behind it.
-  locallyHidden.add(entry.entityId);
-  errors.delete(entry.entityId);
+  locallyHidden.add(entry.key);
+  errors.delete(entry.key);
   draw();
   try {
     await finish(entry);
   } catch (error) {
     restore(entry, messageOf(error));
   } finally {
-    busy.delete(entry.entityId);
+    busy.delete(entry.key);
   }
 }
 
@@ -377,8 +389,8 @@ async function finish(entry) {
 }
 
 function restore(entry, message) {
-  locallyHidden.delete(entry.entityId);
-  errors.set(entry.entityId, message);
+  locallyHidden.delete(entry.key);
+  errors.set(entry.key, message);
   draw();
 }
 
@@ -400,15 +412,12 @@ export function mountInboxList() {
     // or the feed itself calls it cleared (dismiss) — and from then on the
     // feed's `dismissed` alone decides, so a new event can revive the row.
     const live = new Map();
-    for (const row of items) {
-      const entityId = entityIdOf(row);
-      if (entityId) live.set(entityId, row);
+    for (const row of items) live.set(entryKeyOf(row), row);
+    for (const key of locallyHidden) {
+      const row = live.get(key);
+      if (!row || row.dismissed) locallyHidden.delete(key);
     }
-    for (const entityId of locallyHidden) {
-      const row = live.get(entityId);
-      if (!row || row.dismissed) locallyHidden.delete(entityId);
-    }
-    for (const entityId of errors.keys()) if (!live.has(entityId)) errors.delete(entityId);
+    for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
     drawFromFeed();
   });
 }

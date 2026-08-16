@@ -7,6 +7,7 @@ import {
   RECENT_AUTO_OPEN_BELOW,
   activeEntryKey,
   branchDoneConfirm,
+  dismissParamsOf,
   entryFactsText,
   entryRoute,
   entryState,
@@ -200,8 +201,16 @@ describe("what the inbox lists", () => {
   });
 
   it("leaves out what the user just said Done to", () => {
-    const entries = inboxEntries({ items: [branch(), issue()], nowMs: NOW, hiddenEntityIds: new Set(["run-1"]) }).entries;
+    const entries = inboxEntries({ items: [branch(), issue()], nowMs: NOW, hiddenKeys: new Set(["run-1"]) }).entries;
     expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
+  });
+
+  // A row that names no entity is hidden by its key — the one name every row
+  // has — so a clear this client just sent holds it off the screen too.
+  it("leaves out a hidden row that names no entity", () => {
+    const primary = branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false });
+    const entries = inboxEntries({ items: [primary, issue()], nowMs: NOW, hiddenKeys: new Set(["branch:p1:main"]) }).entries;
+    expect(entries.map((entry) => entry.key)).toEqual(["iss-1"]);
   });
 
   it("carries a project's primary checkout — it is the project's own row", () => {
@@ -211,14 +220,14 @@ describe("what the inbox lists", () => {
     expect(entries.length).toBe(1);
     expect(entries[0].branch).toBe("main");
     // The repository takes no attention, so the row names no entity — and it
-    // still has a key to be opened by, and no verbs it cannot perform.
+    // still has a key to be opened by, and its own menu to be cleared from.
     expect(entries[0].entityId).toBeNull();
     expect(entries[0].key).toBe("branch:p1:main");
     expect(entries[0].route).toEqual({ name: "branch", projectId: "p1", branch: "main", tab: "changes" });
     const html = inboxRowHtml(entries[0], {});
     expect(html).toContain('data-key="branch:p1:main"');
     expect(html).not.toContain("data-entity");
-    expect(html).not.toContain("data-menu");
+    expect(html).toContain("data-menu");
   });
 
   it("routes an issue to its own surface", () => {
@@ -338,6 +347,45 @@ describe("a row the user cleared", () => {
     expect(html).toContain("Clear from inbox");
     expect(html).toContain("Hides it until something new needs you");
     expect(html.indexOf("Clear from inbox")).toBeLessThan(html.indexOf(">Mute<"));
+  });
+
+  // Every row can be cleared, including the ones no entity stands behind — the
+  // bridge clears those at the commit they sit on, and a new commit brings them
+  // back. Nothing destructive stands beside Clear on such a row: mute needs a
+  // voice to take, Done needs something to finish, and the row has neither.
+  it("is offered on the primary row, with nothing destructive beside it", () => {
+    const [entry] = listed([
+      branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false }),
+    ]);
+    const html = inboxRowHtml(entry, { openMenuKey: "branch:p1:main" });
+    expect(html).toContain('data-dismiss="branch:p1:main"');
+    expect(html).toContain("Clear from inbox");
+    expect(html).not.toContain('data-mute="');
+    expect(html).not.toContain('data-done="');
+  });
+
+  it("is offered on a bare checkout row, which the bridge clears by its worktree id", () => {
+    const [entry] = listed([branch({ run_id: null, issue_id: null, worktree_id: "wt-9" })]);
+    const html = inboxRowHtml(entry, { openMenuKey: "wt-9" });
+    expect(html).toContain('data-dismiss="wt-9"');
+    expect(html).toContain('data-mute="wt-9"');
+  });
+
+  // What the clear says on the wire: an entity by its id; a row with none by
+  // what it IS — the project's checkout (primary), or a branch in the project.
+  it("names the row being cleared the way the bridge expects", () => {
+    const [run] = listed([branch()]);
+    expect(dismissParamsOf(run)).toEqual({ entity_id: "run-1" });
+    const [primary] = listed([
+      branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false }),
+    ]);
+    expect(dismissParamsOf(primary)).toEqual({ project_id: "p1", primary: true });
+    const [bare] = listed([branch({ run_id: null, issue_id: null, worktree_id: null })]);
+    expect(dismissParamsOf(bare)).toEqual({ project_id: "p1", branch: "build/login" });
+  });
+
+  it("has no name for a row that is neither an entity nor a project's branch", () => {
+    expect(dismissParamsOf({ entityId: null, projectId: "", branch: null, primary: false })).toBeNull();
   });
 });
 

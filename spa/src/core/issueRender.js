@@ -120,8 +120,10 @@ export function assignmentHtml({ assignment, open = false, catalog = {}, worktre
     </div></div>`;
 }
 
-/** The left column: what this issue is, its gate, its stages, the assignment
- *  control, and its implementations. */
+/** The left column: where the issue stands, its gate, its stages, the assignment
+ *  control, and its implementations. The issue's own message is not here — it is
+ *  the first thing the conversation beside this column says, and saying it twice
+ *  is what made the surface busy. */
 export function stageListHtml({
   issue,
   stagesData,
@@ -157,7 +159,6 @@ export function stageListHtml({
     .filter(Boolean)
     .join("");
   return `<div class="ivhead">
-      <div class="ivtitle">${esc(issue.goal || "")}</div>
       <div class="ivmeta"><span class="chip ${planChipClass(issue.state)}">${esc(PLAN_STATE_LABEL[issue.state] || issue.state || "")}</span>
         <span class="ivproject">${esc(issue.project || "")}${issue.base_branch ? ` · ${esc(issue.base_branch)}` : ""}</span></div>
       <div class="ivgate">${gate}</div>

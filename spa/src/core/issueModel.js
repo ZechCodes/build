@@ -243,7 +243,6 @@ export function implementParams(issueId, assignment, { models = [], stageId = nu
 export function issueViewKey({ issue, stagesData, selectedStageId, docState, doc }) {
   return JSON.stringify([
     issue.state,
-    issue.goal,
     issue.active_run_id || null,
     issue.docs_available,
     issue.implementation_activity || null,

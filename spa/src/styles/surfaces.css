@@ -145,10 +145,10 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
   padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
 @media (max-width: 900px) { .ivviewer { padding-left:0; } }
 
-/* The issue's own head: what it is, where it stands, and its gate. */
-.ivhead { padding:14px 13px 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.ivtitle { font-weight:650; font-size:14.5px; color:var(--ink); }
-.ivmeta { display:flex; align-items:center; gap:8px; margin-top:7px; }
+/* The issue's own head: where it stands and its gate. What the issue asks for
+   is the conversation's first message, so the head never repeats it. */
+.ivhead { padding:12px 13px 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.ivmeta { display:flex; align-items:center; gap:8px; }
 .ivmeta .chip { margin-left:0; }
 .ivproject { font-size:11.5px; color:var(--dim); min-width:0; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap; }

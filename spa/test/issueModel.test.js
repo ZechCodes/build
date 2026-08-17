@@ -305,4 +305,12 @@ describe("issueViewKey", () => {
       issueViewKey({ issue, stagesData: { stages: [{ id: "a", state: "approved" }] }, selectedStageId: "a", docState: "ready", doc: "x" }),
     ).not.toBe(base);
   });
+
+  // The rail stopped drawing the goal, so a goal the agent rewrote is not a
+  // reason to replace the columns under the reviewer.
+  it("holds still when only the issue's goal moves", () => {
+    expect(
+      issueViewKey({ issue: { ...issue, goal: "rewritten" }, stagesData, selectedStageId: "a", docState: "ready", doc: "x" }),
+    ).toBe(issueViewKey({ issue, stagesData, selectedStageId: "a", docState: "ready", doc: "x" }));
+  });
 });

@@ -49,7 +49,7 @@ describe("stageRowHtml", () => {
 });
 
 describe("stageListHtml", () => {
-  it("names the issue, its state, and its stages", () => {
+  it("states where the issue stands, where it lives, and lists its stages", () => {
     const html = stageListHtml({
       issue: issue(),
       stagesData: stagesData([stage(), stage({ id: "s2", title: "Render" })]),
@@ -57,9 +57,25 @@ describe("stageListHtml", () => {
       assignment,
       catalog,
     });
-    expect(html).toContain("Rebuild the issue view");
+    expect(html).toContain("READY TO REVIEW");
+    expect(html).toContain("Build");
+    expect(html).toContain("main");
     expect(html).toContain('id="stagelist"');
     expect(html).toContain('data-stage="s2"');
+  });
+
+  // The issue's goal is its first message, and the conversation beside this rail
+  // already carries it — repeating it above the stages is the same text twice.
+  it("leaves the issue's message to the conversation", () => {
+    const html = stageListHtml({
+      issue: issue(),
+      stagesData: stagesData([stage()]),
+      selectedStageId: "s1",
+      assignment,
+      catalog,
+    });
+    expect(html).not.toContain("Rebuild the issue view");
+    expect(html).not.toContain("ivtitle");
   });
 
   it("offers approve-all only while every stage is still planned", () => {

@@ -6,6 +6,13 @@
 // answers for that item with one payload (branch.get / issue.get) carrying its
 // agents and its conversation. Everything here reads that payload; core/
 // agentRail.js renders and wires it.
+//
+// The pinned status line above the composer reads a second source: the same
+// shared feed row (board.list) the inbox and the toolbar's jump menu read,
+// matched to this work item by core/toolbarModel.js's `toolbarIdentity`. That
+// row is where "is an agent working, for how long, and how does the branch
+// stand against upstream" actually live — the per-agent payload only carries
+// a working boolean, with no stamp to clock it by.
 
 import { entityIdOf } from "./entityId.js";
 import { unreadReasonText } from "./inbox.js";
@@ -105,6 +112,65 @@ export function removeAgentConfirm(agent) {
 export function selectAgentId(agents = [], wanted = null) {
   if (wanted && agents.some((agent) => agent.id === wanted)) return wanted;
   return agents.length ? agents[0].id : null;
+}
+
+// ---- the pinned status line -------------------------------------------------
+
+/** How long the turn in flight has been running, from the stamp when it parses
+ *  (so a line left on screen ticks) and from the bridge's own count when it
+ *  does not. null when nothing is working. */
+export function workingSeconds(workingTime, nowMs) {
+  if (!workingTime) return null;
+  const started = Date.parse(workingTime.since || "");
+  if (Number.isFinite(started)) return (nowMs - started) / 1000;
+  return Number.isFinite(workingTime.seconds) ? workingTime.seconds : null;
+}
+
+/** The diffstat as the status line says it: additions and deletions, nothing
+ *  else. A row that predates the object shape sends the string ready-made. */
+export function statText(stat) {
+  if (!stat) return "";
+  if (typeof stat === "string") return stat;
+  const insertions = stat.insertions || 0;
+  const deletions = stat.deletions || 0;
+  if (!insertions && !deletions) return "";
+  return `+${insertions} −${deletions}`;
+}
+
+/** How far the branch stands from its upstream, in the inbox's own glyphs —
+ *  "" when there is nothing to report, so an even branch (or an issue, which
+ *  has no upstream) says nothing. */
+export function aheadBehindText(stat) {
+  if (!stat) return "";
+  const parts = [];
+  if (stat.ahead) parts.push(`↑${stat.ahead}`);
+  if (stat.behind) parts.push(`↓${stat.behind}`);
+  return parts.join(" ");
+}
+
+/** The elapsed-time clock the pinned line ticks: seconds alone under a
+ *  minute, minutes and seconds under an hour, hours and minutes beyond —
+ *  never days, which a line this narrow has no room to read. */
+export function workingClock(seconds) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+  const hours = Math.floor(s / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+/** The pinned line above the composer: whether the work item has a turn in
+ *  flight right now (and for how long), how far it stands from upstream, and
+ *  its diffstat — each "" when the row does not know it, so a work item with
+ *  nothing to report pins nothing at all. */
+export function railWorkStatus(row, nowMs = Date.now()) {
+  const working = workingSeconds(row && row.working_time, nowMs);
+  return {
+    working: working === null ? "" : workingClock(working),
+    sync: aheadBehindText(row && row.stat),
+    stat: statText(row && row.stat),
+  };
 }
 
 /**

@@ -1,15 +1,23 @@
 import { describe, it, expect } from "vitest";
 import {
   agentTitle,
+  aheadBehindText,
   bubbleTip,
   canRemoveAgent,
   completionReportSections,
   providerLabel,
   railBubbles,
   railEntity,
+  railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  statText,
+  workingClock,
+  workingSeconds,
 } from "../src/core/agentRailModel.js";
+
+const NOW = Date.parse("2026-08-13T12:00:00Z");
+const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 
 const agent = (over = {}) => ({
   id: "ag-1",
@@ -166,6 +174,43 @@ describe("what the rail is the rail of", () => {
 
   it("has nothing to say about a payload that never arrived", () => {
     expect(railEntity(null, "branch")).toMatchObject({ entityId: null, agents: [], thread: null });
+  });
+});
+
+describe("the pinned status line above the composer", () => {
+  it("tickers the working time off the stamp, and falls back to the count", () => {
+    expect(workingSeconds({ since: ago(120), seconds: 5 }, NOW)).toBe(120);
+    expect(workingSeconds({ since: "not a time", seconds: 5 }, NOW)).toBe(5);
+    expect(workingSeconds(null, NOW)).toBeNull();
+  });
+
+  it("clocks seconds alone, minutes and seconds, then hours and minutes — never days", () => {
+    expect(workingClock(42)).toBe("42s");
+    expect(workingClock(60)).toBe("1m 00s");
+    expect(workingClock(750)).toBe("12m 30s");
+    expect(workingClock(3600)).toBe("1h 00m");
+    expect(workingClock(90000)).toBe("25h 00m");
+  });
+
+  it("says the additions and deletions, and nothing when there are none", () => {
+    expect(statText({ insertions: 42, deletions: 7 })).toBe("+42 −7");
+    expect(statText({ insertions: 0, deletions: 0, files_changed: 0 })).toBe("");
+    expect(statText("+4 −1")).toBe("+4 −1");
+    expect(statText(null)).toBe("");
+  });
+
+  it("says how far the branch stands from upstream, only for the counts that are nonzero", () => {
+    expect(aheadBehindText({ ahead: 2, behind: 1 })).toBe("↑2 ↓1");
+    expect(aheadBehindText({ ahead: 2, behind: 0 })).toBe("↑2");
+    expect(aheadBehindText({ ahead: 0, behind: 0 })).toBe("");
+    expect(aheadBehindText(null)).toBe("");
+  });
+
+  it("reads all three off the row, each blank when the row does not know it", () => {
+    const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
+    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", sync: "↑2", stat: "+42 −7" });
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", sync: "", stat: "" });
+    expect(railWorkStatus(null, NOW)).toEqual({ working: "", sync: "", stat: "" });
   });
 });
 

@@ -9,9 +9,11 @@
 // issues are the only navigation targets); picking work goes there; picking a
 // create asks for the one thing it needs and opens what it made.
 //
-// Right: the working-time ticker and the diffstat off the same feed row the
-// inbox reads, and the ⋯ that carries what used to be the tab row's right
-// cluster — the archive and the project's settings.
+// Right: the ⋯ that carries what used to be the tab row's right cluster — the
+// archive and the project's settings. The working-time ticker and the
+// diffstat used to sit beside it; they pin above the agent rail's composer
+// now instead (core/agentRail.js) — a fact about the work item, read beside
+// the conversation about it rather than in a bar that outlives every view.
 //
 // The toolbar outlives views (it is the shell's row, not a view's), so it mounts
 // once and repaints from the feed and the route.
@@ -24,7 +26,7 @@ import { notifyError } from "./notify.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
-import { branchNamePreview, projectMenuModel, toolbarIdentity, toolbarStatus, workMenuModel } from "./toolbarModel.js";
+import { branchNamePreview, projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { patchList } from "./patchList.js";
 import "../styles/shell.css";
 
@@ -36,7 +38,6 @@ const CHOICE_PREFIX = "tb-choice";
 let feed = { items: [], projects: [] };
 let scopedProjectId = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
-let ticker = null;
 let mounted = false;
 
 const projectsOf = () => feed.projects || [];
@@ -80,28 +81,13 @@ export function toolbarHtml({ project, kind, label }) {
     </button>
     ${itemSelector}
     <div class="tb-right">
-      <span class="tb-status" id="tb-status"></span>
       <button class="iconbtn tb-more" data-select="more" type="button" title="More" aria-label="More actions" aria-haspopup="menu">⋯</button>
     </div>
   </div>`;
 }
 
-/** Pure: the right side's two facts, each one only when it is known. */
-export function statusHtml(row, nowMs = Date.now()) {
-  const { working, stat } = toolbarStatus(row, nowMs);
-  return (
-    (working ? `<span class="tb-working">${esc(working)}</span>` : "") +
-    (stat ? `<span class="tb-stat mono">${esc(stat)}</span>` : "")
-  );
-}
-
 function identity() {
   return toolbarIdentity(App.route, feed);
-}
-
-function paintStatus() {
-  const slot = $("#tb-status");
-  if (slot) slot.innerHTML = statusHtml(identity().row);
 }
 
 /** Repaint the bar. `entering` says the paint follows a navigation (a route the
@@ -141,7 +127,6 @@ function paint({ entering = false } = {}) {
       else openJumpMenu(control);
     };
   });
-  paintStatus();
   // A create form is a question in flight: the feed may move under it, and its
   // answer is not repainted away.
   if (open && !(open.create && open.create.busy)) paintMenu();
@@ -552,8 +537,6 @@ export function initToolbar() {
     feed = { items: next.items || [], projects: next.projects || [] };
     paint();
   });
-  // The working time is a clock, not a poll: it ticks between feeds.
-  ticker = setInterval(paintStatus, 1000);
   paint({ entering: true });
 }
 
@@ -567,7 +550,5 @@ export function toolbarRouteChanged() {
 
 /** Teardown, for tests and for a gate that tears the session down. */
 export function stopToolbar() {
-  if (ticker) clearInterval(ticker);
-  ticker = null;
   closeMenu();
 }

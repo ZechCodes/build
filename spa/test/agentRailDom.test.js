@@ -10,8 +10,17 @@ import { resolve } from "node:path";
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
 const refreshFeed = vi.fn(async () => {});
+// A Set, matching the real module (core/taskFeed.js) — more than one
+// subscriber at once is the normal case there, not an edge case to special-
+// case away.
+const feedSubscribers = new Set();
+let feedSnapshot = { items: [], projects: [] };
 vi.mock("../src/core/taskFeed.js", () => ({
-  subscribeFeed: () => () => {},
+  subscribeFeed: (fn) => {
+    feedSubscribers.add(fn);
+    fn(feedSnapshot);
+    return () => feedSubscribers.delete(fn);
+  },
   startFeed: () => {},
   stopFeed: () => {},
   refreshFeed: (...args) => refreshFeed(...args),
@@ -62,6 +71,13 @@ const railHost = () => document.getElementById("agent-rail");
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const panel = () => railHost().querySelector(".rail-panel");
 const callsTo = (method) => calls.filter((call) => call.method === method);
+const railStatus = () => railHost().querySelector("#rail-status");
+
+const pushFeed = async (snapshot) => {
+  feedSnapshot = snapshot;
+  feedSubscribers.forEach((fn) => fn(snapshot));
+  await flush();
+};
 
 const mount = async (context = { kind: "branch", projectId: "p1", branch: "build/login" }) => {
   rail = mountAgentRail(railHost(), context);
@@ -75,6 +91,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
+  feedSubscribers.clear();
+  feedSnapshot = { items: [], projects: [] };
   markSeen.mockClear();
   mountAgentTab.mockClear();
   notifyError.mockClear();
@@ -340,6 +358,62 @@ describe("the conversation panel", () => {
   it("says nothing about reading a conversation with nothing waiting", async () => {
     await mount();
     expect(markSeen).not.toHaveBeenCalled();
+  });
+});
+
+describe("the pinned status line above the composer", () => {
+  it("pins nothing when the feed row has nothing to report", async () => {
+    await mount();
+    expect(railStatus().hidden).toBe(true);
+    expect(railStatus().textContent).toBe("");
+  });
+
+  it("pulses and clocks the turn while the branch is working", async () => {
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 750000).toISOString(), seconds: 750 }, stat: null,
+      }],
+      projects: [],
+    });
+    await mount();
+    expect(railStatus().hidden).toBe(false);
+    expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
+    expect(railStatus().textContent).toContain("Working 12m 30s");
+  });
+
+  it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: false, working_time: null, stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
+      }],
+      projects: [],
+    });
+    await mount();
+    expect(railStatus().querySelector(".sdot-working")).toBeNull();
+    expect(railStatus().textContent).toContain("+4 −1");
+    expect(railStatus().textContent).toContain("↑2");
+    expect(railStatus().textContent).not.toContain("↓");
+  });
+
+  it("ticks the elapsed time between feed reads", async () => {
+    // The ticker's Date.now() has to move with the fake clock for this one, so
+    // this test fakes Date too — the others read `since` off the real clock at
+    // mount and never advance timers far enough to notice the difference.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"] });
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
+      }],
+      projects: [],
+    });
+    await mount();
+    expect(railStatus().textContent).toContain("Working 5s");
+    vi.advanceTimersByTime(3000);
+    await flush();
+    expect(railStatus().textContent).toContain("Working 8s");
   });
 });
 

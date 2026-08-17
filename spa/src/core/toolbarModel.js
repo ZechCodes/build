@@ -9,47 +9,6 @@
 
 import { fuzzyRank } from "./fuzzy.js";
 
-/** Bare duration, the vocabulary the inbox facts already speak: "<1m", "12m",
- *  "3h", "2d". */
-export function humanDuration(seconds) {
-  const s = Math.max(0, Math.floor(seconds || 0));
-  if (s < 60) return "<1m";
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
-}
-
-/** How long the turn in flight has been running, from the stamp when it parses
- *  (so a toolbar left on screen ticks) and from the bridge's own count when it
- *  does not. null when nothing is working. */
-export function workingSeconds(workingTime, nowMs) {
-  if (!workingTime) return null;
-  const started = Date.parse(workingTime.since || "");
-  if (Number.isFinite(started)) return (nowMs - started) / 1000;
-  return Number.isFinite(workingTime.seconds) ? workingTime.seconds : null;
-}
-
-/** The diffstat as the toolbar says it: additions and deletions, nothing else.
- *  A row that predates the object shape sends the string ready-made. */
-export function statText(stat) {
-  if (!stat) return "";
-  if (typeof stat === "string") return stat;
-  const insertions = stat.insertions || 0;
-  const deletions = stat.deletions || 0;
-  if (!insertions && !deletions) return "";
-  return `+${insertions} −${deletions}`;
-}
-
-/** The toolbar's right side: the working-time ticker and the diffstat, each ""
- *  when the row does not know it. */
-export function toolbarStatus(row, nowMs = Date.now()) {
-  const working = workingSeconds(row && row.working_time, nowMs);
-  return {
-    working: working === null ? "" : `working ${humanDuration(working)}`,
-    stat: statText(row && row.stat),
-  };
-}
-
 /** The branch the daemon will cut for a typed name, mirrored for the preview
  *  only — the daemon is still the one that decides. */
 export function branchNamePreview(name) {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The view-area toolbar's wiring: the sentence it prints, the menu each half
-// opens, the two creates behind the work half, and the status on its right.
+// opens, the two creates behind the work half, and the ⋯ on its right.
 
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -44,13 +44,19 @@ let feed = {
     { id: "p2", name: "mascot" },
   ],
 };
-let subscriber = null;
-const refreshFeed = vi.fn(async () => subscriber && subscriber(feed));
+// A Set, matching the real module (core/taskFeed.js): this file's own
+// navigation can land the router on a route it has already rendered (the
+// hash unchanged), which calls render() straight through rather than via a
+// hashchange listener this test never wires up — and that can mount the
+// agent rail, which subscribes to the feed too. A single-slot stub would let
+// that second subscriber silently steal the toolbar's own.
+const subscribers = new Set();
+const refreshFeed = vi.fn(async () => subscribers.forEach((fn) => fn(feed)));
 vi.mock("../src/core/taskFeed.js", () => ({
   subscribeFeed: (fn) => {
-    subscriber = fn;
+    subscribers.add(fn);
     fn(feed);
-    return () => {};
+    return () => subscribers.delete(fn);
   },
   startFeed: () => {},
   stopFeed: () => {},
@@ -91,18 +97,15 @@ beforeEach(() => {
 afterAll(() => stopToolbar());
 
 describe("the sentence the toolbar prints", () => {
-  it("names the project, then the branch, and reports what the work is doing", () => {
+  it("names the project, then the branch — the working time and diffstat pin above the agent rail's composer instead", () => {
     expect(names()).toEqual(["relaydb", "build/login"]);
-    const status = document.getElementById("tb-status").textContent;
-    expect(status).toContain("working 12m");
-    expect(status).toContain("+42 −7");
+    expect(document.getElementById("tb-status")).toBeNull();
   });
 
-  it("names an issue by its title, with no diffstat to report", () => {
+  it("names an issue by its title", () => {
     App.route = { name: "issue", projectId: "p1", id: "plan-1" };
     toolbarRouteChanged();
     expect(names()).toEqual(["relaydb", "Add a health endpoint"]);
-    expect(document.getElementById("tb-status").textContent.trim()).toBe("");
   });
 
   it("keeps the project selector on a route that is no work item", () => {

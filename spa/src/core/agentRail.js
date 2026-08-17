@@ -27,6 +27,7 @@ import {
   providerLabel,
   railBubbles,
   railEntity,
+  railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
 } from "./agentRailModel.js";
@@ -35,7 +36,8 @@ import { confirmAction } from "./confirm.js";
 import { composerHtml } from "./composer.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
-import { refreshFeed } from "./taskFeed.js";
+import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
   createThreadCache,
@@ -111,6 +113,20 @@ export function stripHtml(bubbles) {
     .join("");
 }
 
+/** Pure: the line pinned above the composer — a pulsing dot and how long the
+ *  work item's turn has been running while one is in flight, how far it
+ *  stands from upstream, and its diffstat. "" when the status has nothing to
+ *  report, which the caller reads as "pin nothing." */
+export function railStatusHtml(status) {
+  if (!status.working && !status.sync && !status.stat) return "";
+  const working = status.working
+    ? `<span class="sdot sdot-working"></span><span class="rail-status-working">Working ${esc(status.working)}</span>`
+    : "";
+  const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
+  const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
+  return working + sync + stat;
+}
+
 /** Pure: the panel's header — who you are talking to, the two controls that are
  *  always there (which face of the agent you are looking at, and the way out),
  *  and, on an agent that can be taken back off, the `−` that mirrors the strip's
@@ -162,6 +178,8 @@ export function mountAgentRail(host, context) {
   let sending = false; // a first message is adopting/starting — do not repaint over it
   let paintedStrip = null; // the markup the bubble strip currently stands on
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
+  let feedRow = null; // this work item's row off the shared feed, for the pinned status line
+  let statusTicker = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -193,6 +211,29 @@ export function mountAgentRail(host, context) {
     }
     return adopting;
   };
+
+  // ---- the pinned status line ------------------------------------------------
+
+  /// The route the shared feed's rows are keyed by — the same identity
+  /// core/toolbarModel.js's `toolbarIdentity` reads for the toolbar's own
+  /// jump menu, matched here to find this work item's row.
+  const feedRoute = () =>
+    context.kind === "issue"
+      ? { name: "issue", projectId: context.projectId, id: context.issueId }
+      : { name: "branch", projectId: context.projectId, branch: context.branch };
+
+  const paintRailStatus = () => {
+    const slot = host.querySelector("#rail-status");
+    if (!slot) return;
+    const html = railStatusHtml(railWorkStatus(feedRow, Date.now()));
+    slot.innerHTML = html;
+    slot.hidden = !html;
+  };
+
+  const unsubscribeFeed = subscribeFeed((feed) => {
+    feedRow = toolbarIdentity(feedRoute(), { items: feed.items || [], projects: feed.projects || [] }).row;
+    paintRailStatus();
+  });
 
   // ---- reading the work item ------------------------------------------------
 
@@ -334,7 +375,10 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
-    if (mode === "chat") paintChat();
+    if (mode === "chat") {
+      paintChat();
+      paintRailStatus();
+    }
   };
 
   const wireHead = (panel) => {
@@ -400,13 +444,15 @@ export function mountAgentRail(host, context) {
   /// typed into comes out of the thread above rather than pushing its own
   /// bottom edge past the panel.
   const composerRowHtml = () =>
-    `<div class="rail-composer" id="rail-composer">${composerHtml({
-      inputId: COMPOSER_IDS.input,
-      sendId: COMPOSER_IDS.send,
-      hintId: COMPOSER_IDS.hint,
-      placeholder: composerPlaceholder(),
-      attachable: true,
-    })}</div>`;
+    `<div class="rail-composer" id="rail-composer">
+      <div class="rail-status" id="rail-status" hidden></div>
+      ${composerHtml({
+        inputId: COMPOSER_IDS.input,
+        sendId: COMPOSER_IDS.send,
+        hintId: COMPOSER_IDS.hint,
+        placeholder: composerPlaceholder(),
+        attachable: true,
+      })}</div>`;
 
   /// The placeholder is the only thing on the composer a poll can change — a
   /// checkout Build owned nothing in a second ago now has an agent to talk to.
@@ -656,12 +702,18 @@ export function mountAgentRail(host, context) {
     intervalMs: RAIL_POLL_MS,
     entity: () => [entity.entityId, entity.worktreeId],
   });
+  // The elapsed-time clock ticks between feed reads, same as the toolbar's
+  // used to.
+  statusTicker = setInterval(paintRailStatus, 1000);
 
   return {
     dispose() {
       disposed = true;
       if (poll) poll.dispose();
       poll = null;
+      clearInterval(statusTicker);
+      statusTicker = null;
+      unsubscribeFeed();
       disposeTui();
       host.innerHTML = "";
     },

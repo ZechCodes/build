@@ -4,13 +4,9 @@
 import { describe, it, expect } from "vitest";
 import {
   branchNamePreview,
-  humanDuration,
   projectMenuModel,
-  statText,
   toolbarIdentity,
-  toolbarStatus,
   workMenuModel,
-  workingSeconds,
 } from "../src/core/toolbarModel.js";
 
 const NOW = Date.parse("2026-08-13T12:00:00Z");
@@ -52,31 +48,6 @@ const projects = [
   { id: "p1", name: "relaydb" },
   { id: "p2", name: "mascot" },
 ];
-
-describe("what the toolbar's right side reports", () => {
-  it("tickers the working time off the stamp, and falls back to the count", () => {
-    expect(workingSeconds({ since: ago(120), seconds: 5 }, NOW)).toBe(120);
-    expect(workingSeconds({ since: "not a time", seconds: 5 }, NOW)).toBe(5);
-    expect(workingSeconds(null, NOW)).toBeNull();
-    expect(humanDuration(30)).toBe("<1m");
-    expect(humanDuration(750)).toBe("12m");
-    expect(humanDuration(7200)).toBe("2h");
-    expect(humanDuration(180000)).toBe("2d");
-  });
-
-  it("says the additions and deletions, and nothing when there are none", () => {
-    expect(statText({ insertions: 42, deletions: 7 })).toBe("+42 −7");
-    expect(statText({ insertions: 0, deletions: 0, files_changed: 0 })).toBe("");
-    expect(statText("+4 −1")).toBe("+4 −1");
-    expect(statText(null)).toBe("");
-  });
-
-  it("reads both halves off the row", () => {
-    expect(toolbarStatus(branchRow(), NOW)).toEqual({ working: "working 12m", stat: "+42 −7" });
-    expect(toolbarStatus(issueRow(), NOW)).toEqual({ working: "", stat: "" });
-    expect(toolbarStatus(null, NOW)).toEqual({ working: "", stat: "" });
-  });
-});
 
 describe("what the toolbar says you are standing in", () => {
   const feed = { items: [branchRow(), issueRow()], projects };

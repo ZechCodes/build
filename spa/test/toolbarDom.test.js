@@ -187,6 +187,51 @@ describe("the two menus, one per half", () => {
   });
 });
 
+// An open menu is reconciled row by row, not rewritten: a feed tick that says
+// what the last one said touches nothing, and one that changes a single row
+// touches only that row — so the box being typed into, and the caret in it,
+// outlive every poll under the menu.
+describe("the jump menu's paint", () => {
+  /** Everything the DOM under `target` did while `act` ran. */
+  const churn = async (target, act) => {
+    const seen = [];
+    const observer = new MutationObserver((records) => seen.push(...records));
+    observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+    await act();
+    seen.push(...observer.takeRecords());
+    observer.disconnect();
+    return seen;
+  };
+
+  const quiet = feed;
+  afterAll(() => {
+    feed = quiet;
+  });
+
+  it("touches nothing when the feed repeats what it already said", async () => {
+    const popup = openJump("item");
+    expect(await churn(popup, () => refreshFeed())).toEqual([]);
+  });
+
+  it("redraws only the row that changed, and never the box being typed into", async () => {
+    const popup = openJump("item");
+    const filter = popup.querySelector(".tb-filter");
+    const rows = [...popup.querySelectorAll("[data-work]")];
+    const moved = { ...quiet.items[0], unread_count: 3 };
+    const records = await churn(popup, () => {
+      feed = { ...quiet, items: [quiet.items[1], moved] };
+      return refreshFeed();
+    });
+    const branchRow = popup.querySelector('[data-work="branch:p1:build/login"]');
+    expect(popup.querySelector(".tb-filter")).toBe(filter); // never replaced
+    expect([...popup.querySelectorAll("[data-work]")]).toEqual(rows);
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((record) => branchRow.contains(record.target))).toBe(true);
+    feed = quiet;
+    await refreshFeed();
+  });
+});
+
 describe("the project you pick, against a feed that keeps ticking", () => {
   const quiet = feed;
 

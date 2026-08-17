@@ -65,6 +65,25 @@ export function stageApprovable(stage) {
 }
 
 /**
+ * Where the open stage sits among the issue's stages, and which stages are
+ * either side of it: { index, total, previous, next }. `index` is 0-based, or
+ * -1 when nothing is open (or the open stage is no longer in the manifest);
+ * either neighbour is null at that end of the list. Order is board order, which
+ * is the order the stages are built in.
+ */
+export function stageNeighbors(stages, selectedStageId) {
+  const list = stages || [];
+  const index = list.findIndex((stage) => stage && stage.id === selectedStageId);
+  if (index < 0) return { index: -1, total: list.length, previous: null, next: null };
+  return {
+    index,
+    total: list.length,
+    previous: index > 0 ? list[index - 1] : null,
+    next: index < list.length - 1 ? list[index + 1] : null,
+  };
+}
+
+/**
  * Where a selected passage sits in the stage doc's SOURCE, 1-based and
  * inclusive, or null when the passage cannot be found there.
  *

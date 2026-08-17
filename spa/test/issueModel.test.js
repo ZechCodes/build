@@ -5,6 +5,7 @@ import {
   stageStateChipClass,
   plannedStageIds,
   stageApprovable,
+  stageNeighbors,
   docLineRange,
   docMarkerGroups,
   lineageRoute,
@@ -79,6 +80,32 @@ describe("plannedStageIds / stageApprovable", () => {
   it("offers approve only on a stage still planned", () => {
     expect(stageApprovable(stages[0])).toBe(true);
     expect(stageApprovable(stages[1])).toBe(false);
+  });
+});
+
+describe("stageNeighbors", () => {
+  const stages = [stage({ id: "a" }), stage({ id: "b" }), stage({ id: "c" })];
+
+  it("names the stages either side of the open one, in board order", () => {
+    expect(stageNeighbors(stages, "b")).toEqual({ index: 1, total: 3, previous: stages[0], next: stages[2] });
+  });
+
+  it("runs out at both ends", () => {
+    expect(stageNeighbors(stages, "a").previous).toBeNull();
+    expect(stageNeighbors(stages, "a").next).toBe(stages[1]);
+    expect(stageNeighbors(stages, "c").next).toBeNull();
+    expect(stageNeighbors([stage({ id: "only" })], "only")).toEqual({
+      index: 0,
+      total: 1,
+      previous: null,
+      next: null,
+    });
+  });
+
+  it("has no neighbours to offer when nothing is open, or the open stage is gone", () => {
+    expect(stageNeighbors(stages, null)).toEqual({ index: -1, total: 3, previous: null, next: null });
+    expect(stageNeighbors(stages, "gone")).toEqual({ index: -1, total: 3, previous: null, next: null });
+    expect(stageNeighbors([], "a")).toEqual({ index: -1, total: 0, previous: null, next: null });
   });
 });
 

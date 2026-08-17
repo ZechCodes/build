@@ -147,6 +147,66 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  // The stages rail is a drawer on a phone, so stepping to the next stage
+  // through it costs a menu trip for the commonest move in a review. The steps
+  // live on the doc pane's own bar instead, and they are the same selection the
+  // rail makes.
+  it("walks the stages in order from the doc pane, and the rail follows", async () => {
+    const opened = [];
+    const stages = [stage(), stage({ id: "s2", title: "Render" }), stage({ id: "s3", title: "Ship" })];
+    const { host, view, calls } = await mount({ stages, onSelectStage: (id) => opened.push(id) });
+    expect(host.querySelector(".stagenav-pos").textContent).toBe("1 / 3");
+
+    host.querySelector('[data-stage-step="next"]').click();
+    await flush();
+    expect(host.querySelector(".ivviewer .ivstagetitle").textContent).toBe("Render");
+    expect(host.querySelector(".stagenav-pos").textContent).toBe("2 / 3");
+    // One selection, both columns: the rail marks the stage the steps opened.
+    const selected = host.querySelectorAll(".stagerow.sel");
+    expect(selected).toHaveLength(1);
+    expect(selected[0].dataset.stage).toBe("s2");
+    expect(calls.some(([method, params]) => method === "issue.stage_doc" && params.stage_id === "s2")).toBe(true);
+
+    host.querySelector('[data-stage-step="next"]').click();
+    await flush();
+    expect(host.querySelector(".stagenav-pos").textContent).toBe("3 / 3");
+
+    host.querySelector('[data-stage-step="prev"]').click();
+    await flush();
+    expect(host.querySelector(".stagenav-pos").textContent).toBe("2 / 3");
+    // The host's URL rode along with every step, and never doubled back.
+    expect(opened).toEqual(["s1", "s2", "s3", "s2"]);
+    view.dispose();
+  });
+
+  it("runs out of steps at both ends of the issue", async () => {
+    const stages = [stage(), stage({ id: "s2", title: "Render" })];
+    const { host, view } = await mount({ stages });
+    expect(host.querySelector('[data-stage-step="prev"]').disabled).toBe(true);
+    expect(host.querySelector('[data-stage-step="next"]').disabled).toBe(false);
+    host.querySelector('[data-stage-step="next"]').click();
+    await flush();
+    expect(host.querySelector('[data-stage-step="prev"]').disabled).toBe(false);
+    expect(host.querySelector('[data-stage-step="next"]').disabled).toBe(true);
+    view.dispose();
+  });
+
+  it("offers no steps on an issue with a single stage", async () => {
+    const { host, view } = await mount();
+    expect(host.querySelector(".stagenav")).toBeNull();
+    view.dispose();
+  });
+
+  it("leaves the steps alone across a poll pass that changed nothing", async () => {
+    const stages = [stage(), stage({ id: "s2", title: "Render" })];
+    const { host, view } = await mount({ stages, pollMs: 5 });
+    const next = host.querySelector('[data-stage-step="next"]');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flush();
+    expect(host.contains(next), "an idempotent pass replaced the step the reader is aiming at").toBe(true);
+    view.dispose();
+  });
+
   it("approves every planned stage from the list, one call per stage", async () => {
     const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
     host.querySelector("#approveall").click();

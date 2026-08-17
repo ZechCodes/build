@@ -18,6 +18,7 @@ import {
   stageStateToken,
   stageStateChipClass,
   plannedStageIds,
+  stageNeighbors,
   assignmentSummary,
   WORKTREE_TARGETS,
   AGENT_TARGETS,
@@ -214,9 +215,31 @@ export function docMarkerParts(group) {
   };
 }
 
+/** Stepping to the stage either side of the open one, without going through the
+ *  rail — which is a drawer on a phone, so reading the next stage cost a menu
+ *  trip for the commonest move in a review. Each step carries the stage it would
+ *  open, so the selection it makes is the one the rail makes; a step with
+ *  nowhere to go is offered and disabled rather than removed, because a control
+ *  that comes and goes is a control the reader has to look for. A stage with no
+ *  siblings has nothing to walk, and renders no bar at all. */
+export function stageNavHtml({ stages = [], selectedStageId = null } = {}) {
+  const { index, total, previous, next } = stageNeighbors(stages, selectedStageId);
+  if (index < 0 || total < 2) return "";
+  const step = (which, label, neighbour) =>
+    `<button class="btn mini stagenav-step" type="button" data-stage-step="${which}"` +
+    (neighbour ? ` data-stage="${esc(neighbour.id)}" title="${esc(neighbour.title || "")}"` : " disabled") +
+    ` aria-label="${which === "prev" ? "Previous" : "Next"} stage">${label}</button>`;
+  return `<div class="stagenav" role="group" aria-label="Stage navigation">
+      ${step("prev", "‹ Prev", previous)}
+      <span class="stagenav-pos">${index + 1} / ${total}</span>
+      ${step("next", "Next ›", next)}
+    </div>`;
+}
+
 /** The right column: the open stage's doc, its state, the comments on it, and
- *  its own actions. Nothing open is a line saying what to do, never a blank. */
-export function stageViewerHtml({ stage, docHtml = "", paneState = "loading", comments = [] }) {
+ *  its own actions. Nothing open is a line saying what to do, never a blank.
+ *  `stages` is the whole manifest — the bar at the foot walks it. */
+export function stageViewerHtml({ stage, stages = [], docHtml = "", paneState = "loading", comments = [] }) {
   if (!stage) return `<div class="empty ivplaceholder">Pick a stage to read its plan.</div>`;
   const token = stageStateToken(stage);
   const ordered = [...comments].sort((a, b) => (a.state === b.state ? 0 : a.state === "open" ? -1 : 1));
@@ -230,5 +253,5 @@ export function stageViewerHtml({ stage, docHtml = "", paneState = "loading", co
     <div class="plan${paneState === "ready" ? " markdown" : ""}" id="stagedoc">${docHtml}</div>
     <div class="stagecomments">${ordered.map(docCommentCardHtml).join("")}</div>
     <div class="ivstagefeedback"></div>
-    <div class="actionbar"><span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
+    <div class="actionbar">${stageNavHtml({ stages, selectedStageId: stage.id })}<span class="hint" id="stagehint"></span><div class="right" id="stageactions"></div></div>`;
 }

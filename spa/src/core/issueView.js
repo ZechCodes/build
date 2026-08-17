@@ -235,6 +235,7 @@ export function mountIssueView(
     const state = paneState();
     viewerHost.innerHTML = stageViewerHtml({
       stage,
+      stages: stages(),
       paneState: state,
       docHtml: docHtmlFor(state),
       comments: (stage && stage.comments) || [],
@@ -244,6 +245,7 @@ export function mountIssueView(
       if (feedback) feedback.innerHTML = commentLayer.trayHtml();
       mountDocMarkers(viewerHost, stage);
       commentLayer.attach(viewerHost, { annotatable: docAnnotatable(stage, state) });
+      wireStageNav(viewerHost);
       wireStageActions(viewerHost, stage);
     }
   };
@@ -448,6 +450,16 @@ export function mountIssueView(
   };
 
   // ---- the right column's wiring -------------------------------------------
+
+  /** The doc pane's own way through the issue: each step opens the stage it
+   *  carries, which is the same selection a rail row makes — so the rail marks
+   *  it, the host's URL follows it, and the drawer never has to be opened to
+   *  read the next stage. */
+  const wireStageNav = (viewerHost) => {
+    viewerHost.querySelectorAll(".stagenav-step[data-stage]").forEach((step) => {
+      step.onclick = () => selectStage(step.dataset.stage);
+    });
+  };
 
   /** The open stage's own actions: approve its plan while it is still planned,
    *  send its open comments back for a revision, implement just this stage, send

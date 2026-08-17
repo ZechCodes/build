@@ -8,6 +8,7 @@ import {
   assignmentHtml,
   assignmentPanelHtml,
   stageViewerHtml,
+  stageNavHtml,
   docCommentCardHtml,
   docMarkerParts,
 } from "../src/core/issueRender.js";
@@ -195,6 +196,17 @@ describe("stageViewerHtml", () => {
     expect(DOCS_UNAVAILABLE).toMatch(/unavailable/i);
   });
 
+  it("puts the stage steps on the viewer's own sticky bar, where a phone can reach them", () => {
+    const html = stageViewerHtml({
+      stage: stage({ id: "s2" }),
+      stages: [stage({ id: "s1" }), stage({ id: "s2" })],
+      docHtml: "<p>x</p>",
+      paneState: "ready",
+    });
+    expect(html).toMatch(/<div class="actionbar">\s*<div class="stagenav"/);
+    expect(html).toContain('data-stage-step="prev"');
+  });
+
   it("shows the comments already on the doc, newest state first", () => {
     const html = stageViewerHtml({
       stage: stage(),
@@ -206,6 +218,41 @@ describe("stageViewerHtml", () => {
       ],
     });
     expect(html.indexOf("message-1")).toBeLessThan(html.indexOf("message-2"));
+  });
+});
+
+describe("stageNavHtml", () => {
+  const stages = [stage({ id: "a", title: "Wire" }), stage({ id: "b", title: "Render" }), stage({ id: "c", title: "Ship" })];
+
+  it("steps to either neighbour, and says where in the issue the reader is", () => {
+    const html = stageNavHtml({ stages, selectedStageId: "b" });
+    expect(html).toContain('data-stage-step="prev"');
+    expect(html).toContain('data-stage="a"');
+    expect(html).toContain('data-stage-step="next"');
+    expect(html).toContain('data-stage="c"');
+    expect(html).toContain("2 / 3");
+    expect(html).not.toContain("disabled");
+  });
+
+  it("names the stage each step would open", () => {
+    const html = stageNavHtml({ stages, selectedStageId: "b" });
+    expect(html).toContain('title="Wire"');
+    expect(html).toContain('title="Ship"');
+  });
+
+  it("runs out at the ends rather than wrapping", () => {
+    const first = stageNavHtml({ stages, selectedStageId: "a" });
+    expect(first).toMatch(/data-stage-step="prev"[^>]*disabled/);
+    expect(first).not.toMatch(/data-stage-step="next"[^>]*disabled/);
+    const last = stageNavHtml({ stages, selectedStageId: "c" });
+    expect(last).toMatch(/data-stage-step="next"[^>]*disabled/);
+    expect(last).not.toMatch(/data-stage-step="prev"[^>]*disabled/);
+  });
+
+  it("offers nothing where there is nowhere to walk", () => {
+    expect(stageNavHtml({ stages: [stage({ id: "a" })], selectedStageId: "a" })).toBe("");
+    expect(stageNavHtml({ stages, selectedStageId: null })).toBe("");
+    expect(stageNavHtml({})).toBe("");
   });
 });
 

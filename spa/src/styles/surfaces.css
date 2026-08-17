@@ -219,6 +219,16 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .ivstagehead .chip { margin-left:0; }
 .ivplaceholder { color:var(--dim); font-size:13px; padding:var(--pane-top) 0 0; }
 
+/* Walking the issue from the doc itself. The stages are a rail on a desktop and
+   a drawer on a phone, so stepping to the next one cost a menu trip for the
+   commonest move in a review. The steps ride the viewer's own sticky bar, which
+   is in reach at the foot of a long doc at every width — and the bar already
+   wraps under 720px, so on a phone the steps take the line and the stage's verb
+   keeps its own. */
+.ivviewer .actionbar .stagenav { flex:none; display:flex; align-items:center; gap:8px; }
+.stagenav-pos { font-size:11.5px; color:var(--dim); font-variant-numeric:tabular-nums;
+  white-space:nowrap; }
+
 /* A doc comment hangs in the margin of the passage it names: the marker rides
    the heading it anchors to, so what has been said about a section is visible
    from the section rather than only from a list under the doc. */

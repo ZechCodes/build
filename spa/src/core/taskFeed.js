@@ -4,10 +4,10 @@
 // `runs` separately.
 
 import { App } from "../app.js";
-import { whenVisible } from "./visibility.js";
+import { watchChanges } from "./changeEvents.js";
 
 const subscribers = new Set();
-let timer = null;
+let watcher = null;
 let last = null;
 
 /** Subscribe to feed snapshots ({items, plans, runs, externalWorktrees,
@@ -66,15 +66,19 @@ const onVisibilityChange = () => {
 export function startFeed(intervalMs = 2000) {
   stopFeed();
   tick();
-  timer = setInterval(whenVisible(tick), intervalMs);
+  // The feed is the board, so `board.changed` is its event and this interval is
+  // the safety poll behind it. It owns its own visible-again catch-up above —
+  // which reads whether or not anything was pushed — so the registry leaves
+  // that alone rather than reading twice.
+  watcher = watchChanges({ refresh: tick, intervalMs, catchUpOnVisible: false });
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", onVisibilityChange);
   }
 }
 
 export function stopFeed() {
-  if (timer) clearInterval(timer);
-  timer = null;
+  if (watcher) watcher.dispose();
+  watcher = null;
   if (typeof document !== "undefined") {
     document.removeEventListener("visibilitychange", onVisibilityChange);
   }

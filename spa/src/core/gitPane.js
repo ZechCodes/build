@@ -21,7 +21,7 @@ import {
   AGENT_COMMIT_MESSAGE,
 } from "./gitRender.js";
 import {
-  changesRailHtml,
+  changesRailEntries,
   uncommittedHeaderHtml,
   commitHeaderHtml,
   commitBoxHtml,
@@ -46,6 +46,8 @@ import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { whenVisible } from "./visibility.js";
+import { patchList } from "./patchList.js";
+import { el } from "../dom.js";
 
 export const GIT_PANE_POLL_MS = 1600;
 
@@ -684,7 +686,7 @@ export function mountGitPane(
       commits: [...(lastLog.commits || []), ...extraCommits],
       more: pagedMore ?? lastLog.more,
     };
-    container.querySelector(".crail-host").innerHTML = changesRailHtml({
+    paintRail({
       review: review ? { base: review.getBase() } : null,
       status: lastStatus,
       log: mergedLog,
@@ -720,6 +722,19 @@ export function mountGitPane(
     // wrapper re-enables them once the RPC settles.
     if (toolbarControlsDisabled(inFlightActions)) disableToolbarControls();
     wireBranchMenu();
+  };
+
+  /// The rail, reconciled row by row rather than rewritten.
+  ///
+  /// Every row it holds has a name — "uncommitted", a commit's sha, the labels
+  /// and affordances between them — so a poll that added one commit inserts one
+  /// row, and the rest of the rail, its scroll and the branch menu open over it
+  /// are exactly where they were. Nothing in the rail is wired to a row: the
+  /// surface's one click handler reads which row was pressed off the DOM.
+  const paintRail = (parts) => {
+    const host = container.querySelector(".crail-host");
+    const rail = host.querySelector(".crail") || host.appendChild(el('<div class="crail"></div>'));
+    patchList(rail, changesRailEntries(parts), { keyOf: (entry) => entry.key, render: (entry) => entry.html });
   };
 
   /** The branch menu's input + placement. Typing re-renders the menu (the filter

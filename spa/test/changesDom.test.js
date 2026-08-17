@@ -120,6 +120,85 @@ describe("the Changes rail", () => {
   });
 });
 
+// The rail is reconciled row by row, not rewritten: a pass that moved only the
+// diff leaves every rail row where it stood, and a commit that lands inserts one
+// row without touching the rows already there.
+describe("the rail's paint", () => {
+  /** Everything the DOM under `target` did while `act` ran. */
+  const churn = async (target, act) => {
+    const seen = [];
+    const observer = new MutationObserver((records) => seen.push(...records));
+    observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+    await act();
+    seen.push(...observer.takeRecords());
+    observer.disconnect();
+    return seen;
+  };
+
+  /** Mount over a channel whose status and log the test can move underneath it. */
+  const mountLive = async (served) => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const callRpc = vi.fn(async (method) => {
+      if (method === "git.status") return served.status;
+      if (method === "git.log") return served.log;
+      if (method === "git.show") return show();
+      return {};
+    });
+    const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
+    await settle();
+    return { container, pane };
+  };
+
+  it("leaves every rail row alone when the pass moved only the diff", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const served = { status: dirtyStatus(), log: log() };
+      const { container, pane } = await mountLive(served);
+      const rail = container.querySelector(".crail");
+      const rows = [...rail.children];
+      const records = await churn(rail, async () => {
+        served.status = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
+        await vi.advanceTimersByTimeAsync(2000);
+        await settle();
+      });
+      expect(container.textContent).toContain("the agent moved on"); // the pane did repaint
+      expect(records).toEqual([]);
+      expect([...rail.children]).toEqual(rows);
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("inserts the commit that landed without touching the rows already there", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const served = { status: dirtyStatus(), log: log() };
+      const { container, pane } = await mountLive(served);
+      const rail = container.querySelector(".crail");
+      const uncommitted = rail.querySelector('.rrow[data-sel="uncommitted"]');
+      const earlier = rail.querySelector(`.crow[data-hash="${"a".repeat(40)}"]`);
+      const landed = { hash: "b".repeat(40), short: "bbbbbbb", subject: "just landed", author: "Zech", email: "z@x", time: 2 };
+      const records = await churn(rail, async () => {
+        served.log = { ...log(), commits: [landed, ...log().commits] };
+        await vi.advanceTimersByTimeAsync(2000);
+        await settle();
+      });
+      const fresh = rail.querySelector(`.crow[data-hash="${"b".repeat(40)}"]`);
+      expect(fresh.textContent).toContain("just landed");
+      expect(rail.querySelector('.rrow[data-sel="uncommitted"]')).toBe(uncommitted);
+      expect(rail.querySelector(`.crow[data-hash="${"a".repeat(40)}"]`)).toBe(earlier);
+      // The one row that arrived is the only thing the rail did.
+      expect(records.map((record) => record.type)).toEqual(["childList"]);
+      expect([...records[0].addedNodes]).toEqual([fresh]);
+      pane.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("one renderer for every changeset", () => {
   it("stacks the uncommitted files as full diffs with a ✎ per file — and no stage checkbox", async () => {
     const { container, pane } = await mount();

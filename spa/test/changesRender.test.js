@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  changesRailHtml,
+  changesRailEntries,
   commitRowHtml,
   uncommittedHeaderHtml,
   commitHeaderHtml,
@@ -41,9 +41,11 @@ const log = (overrides = {}) => ({
 });
 
 const rail = (overrides = {}) =>
-  changesRailHtml({ status: status(), log: log(), selected: "uncommitted", nowSeconds: NOW, ...overrides });
+  changesRailEntries({ status: status(), log: log(), selected: "uncommitted", nowSeconds: NOW, ...overrides })
+    .map((entry) => entry.html)
+    .join("");
 
-describe("changesRailHtml", () => {
+describe("changesRailEntries", () => {
   it("puts Uncommitted at the top, above the commit list", () => {
     const html = rail();
     expect(html.indexOf('data-sel="uncommitted"')).toBeGreaterThan(-1);

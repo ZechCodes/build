@@ -38,11 +38,17 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
     <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }
 
-/** The Changes rail: branch control, Uncommitted (top, with its +/− counts),
- *  the commit list with its paging affordance, and — for a surface that has one
- *  — the review aggregate under the list. `selected` is "uncommitted" |
- *  "review" | a commit hash | null (a clean branch, sitting on the list). */
-export function changesRailHtml({
+/// The Changes rail, row by row: branch control, Uncommitted (top, with its +/−
+/// counts), the "Commits" head and the commit list under it with its paging
+/// affordance, and — for a surface that has one — the review aggregate at the
+/// bottom. `selected` is "uncommitted" | "review" | a commit hash | null (a
+/// clean branch, sitting on the list).
+///
+/// Every row, label and affordance is an entry with a name of its own, so the
+/// rail is reconciled by name rather than rewritten: a commit that is still
+/// there is still the same element after a poll, and the labels between the
+/// rows keep their places without being anything special.
+export function changesRailEntries({
   status,
   log,
   selected,
@@ -53,23 +59,23 @@ export function changesRailHtml({
   const rrow = (sel, title, sub) =>
     `<div class="${["rrow", selected === sel ? "sel" : ""].filter(Boolean).join(" ")}" data-sel="${sel}">
       <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
-  const totals = uncommittedTotals(status);
-  const uncommittedRow = rrow(
-    "uncommitted",
-    "Uncommitted",
-    hasUncommittedChanges(status) ? plusMinusHtml(totals) : "clean",
-  );
-  const commits = ((log && log.commits) || [])
-    .map((c) => commitRowHtml(c, { selected: selected === c.hash, nowSeconds }))
-    .join("");
-  const reviewRow = review ? rrow("review", "All changes", `vs ${esc(review.base || "main")}`) : "";
-  return `<div class="crail">
-    ${branchControlHtml ? `<div class="crail-branch">${branchControlHtml}</div>` : ""}
-    ${uncommittedRow}
-    <div class="rhead">Commits</div>
-    ${commits || '<div class="empty">No commits yet.</div>'}
-    ${log && log.more ? '<div class="gitmore" role="button" tabindex="0">Load older commits…</div>' : ""}
-    ${reviewRow}</div>`;
+  const commits = (log && log.commits) || [];
+  const entries = [];
+  if (branchControlHtml) entries.push({ key: "branch", html: `<div class="crail-branch">${branchControlHtml}</div>` });
+  entries.push({
+    key: "uncommitted",
+    html: rrow("uncommitted", "Uncommitted", hasUncommittedChanges(status) ? plusMinusHtml(uncommittedTotals(status)) : "clean"),
+  });
+  entries.push({ key: "commits-head", html: '<div class="rhead">Commits</div>' });
+  for (const commit of commits) {
+    entries.push({ key: commit.hash, html: commitRowHtml(commit, { selected: selected === commit.hash, nowSeconds }) });
+  }
+  if (!commits.length) entries.push({ key: "no-commits", html: '<div class="empty">No commits yet.</div>' });
+  if (log && log.more) {
+    entries.push({ key: "more", html: '<div class="gitmore" role="button" tabindex="0">Load older commits…</div>' });
+  }
+  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
+  return entries;
 }
 
 /** The uncommitted changeset's header: what this is, its counts, and the

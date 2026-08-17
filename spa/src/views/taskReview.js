@@ -88,6 +88,8 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
 
   const plug = createReviewPlug({
     isOffline,
+    // The diff is this run's, so the run's own change events are what stale it.
+    entity: taskId,
     fetchDiff: async () => {
       if (!getTask()) return null;
       const diff = await callRpc("run.diff", { run_id: taskId });

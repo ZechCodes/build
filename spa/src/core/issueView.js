@@ -53,6 +53,7 @@ import {
 import { createDocCommentLayer, headingForKey } from "./issueDocComments.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
+import { watchChanges } from "./changeEvents.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -780,15 +781,25 @@ export function mountIssueView(
   const refresh = () => load(true);
 
   load();
-  const timer = setInterval(() => load(), pollMs);
+  // The issue is the entity: its own plan/stage/thread mutations are what stale
+  // this surface. `pausesWhileHidden: false` keeps the events on exactly the
+  // footing this poll has always had — it is the one detail surface that reads
+  // while the tab is away, and a push must not do less than the tick it stood
+  // down.
+  const watcher = watchChanges({
+    refresh: () => load(),
+    intervalMs: pollMs,
+    entity: issueId,
+    pausesWhileHidden: false,
+  });
 
   return {
     // The surface's own poll, handed back so a host that follows the app's
-    // App.poll convention can hold it too. dispose() clears it either way.
-    poll: timer,
+    // App.poll convention can hold it too. dispose() ends it either way.
+    poll: watcher,
     dispose() {
       disposed = true;
-      clearInterval(timer);
+      watcher.dispose();
       if (assignmentOverlay) assignmentOverlay.close();
       commentLayer.dispose();
       if (drawer) {

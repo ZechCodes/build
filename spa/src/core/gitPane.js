@@ -45,7 +45,7 @@ import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
-import { whenVisible } from "./visibility.js";
+import { watchChanges } from "./changeEvents.js";
 import { patchList } from "./patchList.js";
 import { el } from "../dom.js";
 
@@ -1431,12 +1431,20 @@ export function mountGitPane(
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
   poll();
-  const timer = setInterval(whenVisible(poll), GIT_PANE_POLL_MS);
+  // The pane reads one checkout, so it refetches when that checkout's entity
+  // moves — the git watcher stales a run the instant files land in it. A
+  // project's own checkout is not an entity the bridge names, and its state
+  // moves with the feed, so that scope watches the board instead.
+  const watcher = watchChanges({
+    refresh: poll,
+    intervalMs: GIT_PANE_POLL_MS,
+    entity: scope.run_id || scope.worktree_id || null,
+  });
 
   return {
     dispose() {
       disposed = true;
-      clearInterval(timer);
+      watcher.dispose();
       document.removeEventListener("pointerdown", onOutsidePointerDown);
       if (reviewMounted) {
         review.unmount(); // stop the plug's poll; the view may remount it later

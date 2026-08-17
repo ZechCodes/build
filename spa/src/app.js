@@ -19,7 +19,7 @@ export const App = {
   call: null, // RPC into the live E2EE session (session.call)
   session: null, // { call, deviceId, close }
   route: { name: "inbox" },
-  poll: null,
+  poll: null, // the current view's change watcher (core/changeEvents.js)
   viewDispose: null, // the current view's teardown (terminal panes, observers)
   offline: false,
   offlineSince: null, // ms timestamp stamped by goOffline(), cleared on restore
@@ -90,7 +90,7 @@ const VIEWS = {
 
 export function render() {
   if (App.poll) {
-    clearInterval(App.poll);
+    App.poll.dispose();
     App.poll = null;
   }
   // Tear down the outgoing view's client-side resources (terminal panes, their

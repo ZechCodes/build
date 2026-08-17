@@ -18,7 +18,7 @@
 // comes off that payload's agents[].
 
 import { App, go } from "../app.js";
-import { whenVisible } from "./visibility.js";
+import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
@@ -648,12 +648,19 @@ export function mountAgentRail(host, context) {
 
   paint();
   refresh();
-  poll = setInterval(whenVisible(refresh), RAIL_POLL_MS);
+  // Read at delivery, not here: the rail learns which entity it is standing on
+  // from its first answer, and a branch that has to be adopted has no entity id
+  // at all until something mutates it.
+  poll = watchChanges({
+    refresh,
+    intervalMs: RAIL_POLL_MS,
+    entity: () => [entity.entityId, entity.worktreeId],
+  });
 
   return {
     dispose() {
       disposed = true;
-      if (poll) clearInterval(poll);
+      if (poll) poll.dispose();
       poll = null;
       disposeTui();
       host.innerHTML = "";

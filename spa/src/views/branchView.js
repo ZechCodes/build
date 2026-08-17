@@ -22,7 +22,7 @@
 import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App, go } from "../app.js";
-import { whenVisible } from "../core/visibility.js";
+import { watchChanges } from "../core/changeEvents.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsole } from "../core/console.js";
 import { mountAgentRail } from "../core/agentRail.js";
@@ -293,8 +293,13 @@ export async function renderBranch() {
     paintFinish();
   };
 
+  let watcher = null;
   App.viewDispose = () => {
     disposed = true;
+    // The view ends its own read rather than trusting the shell to clear the
+    // slot it put it in.
+    if (watcher) watcher.dispose();
+    watcher = null;
     if (pane) pane.dispose();
     pane = null;
     rail.dispose();
@@ -306,5 +311,13 @@ export async function renderBranch() {
   // to whatever is mounted now. Claiming it here would orphan an interval that
   // reads a dead branch forever — the leaked-poller slowdown.
   if (disposed) return;
-  App.poll = setInterval(whenVisible(refresh), ROW_POLL_MS);
+  // The run behind the branch is the entity whose events say this row moved;
+  // until the first read names one (an unadopted checkout has none), the safety
+  // poll is what carries the surface.
+  watcher = watchChanges({
+    refresh,
+    intervalMs: ROW_POLL_MS,
+    entity: () => [row && row.run_id, row && row.worktree_id],
+  });
+  App.poll = watcher;
 }

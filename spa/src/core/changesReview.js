@@ -22,6 +22,7 @@ import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
+import { watchChanges } from "./changeEvents.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -77,9 +78,13 @@ export function createReviewPlug({
   statusHtml = () => "",
   isOffline = () => false,
   pollMs = REVIEW_POLL_MS,
+  // What the diff belongs to — the run or the worktree — so a bridge that
+  // pushes can say when it moved instead of being asked every 1.6 seconds. A
+  // surface that names none keeps the safety poll and nothing else.
+  entity = null,
 }) {
   let host = null;
-  let timer = null;
+  let watcher = null;
   let diffKey = null;
   let renderedFiles = []; // the freshest parsed diff — what a stamp is taken from
   let renderedPatch = ""; // the patch those files came from — where hunk ids live
@@ -299,12 +304,19 @@ export function createReviewPlug({
       diffKey = null; // a fresh host always needs a first paint
       host.innerHTML = '<div class="empty">loading…</div>';
       paint();
-      timer = setInterval(paint, pollMs);
+      // `pausesWhileHidden: false`: this paint has never been visibility-gated,
+      // and an event must not do less than the tick it replaced.
+      watcher = watchChanges({
+        refresh: paint,
+        intervalMs: pollMs,
+        entity,
+        pausesWhileHidden: false,
+      });
     },
 
     unmount() {
-      if (timer) clearInterval(timer);
-      timer = null;
+      if (watcher) watcher.dispose();
+      watcher = null;
       if (commentLayer) commentLayer.dispose();
       if (overrides) overrides.dispose();
       if (host) {

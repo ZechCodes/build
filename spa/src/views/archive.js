@@ -7,7 +7,7 @@
 
 import { $ } from "../dom.js";
 import { App } from "../app.js";
-import { whenVisible } from "../core/visibility.js";
+import { watchChanges } from "../core/changeEvents.js";
 import { archiveListHtml, archiveRows } from "../core/archive.js";
 
 const POLL_MS = 15000;
@@ -69,11 +69,17 @@ export function renderArchive() {
     draw();
   };
 
+  let watcher = null;
   App.viewDispose = () => {
     disposed = true;
+    if (watcher) watcher.dispose();
+    watcher = null;
   };
   // The read is not awaited: the page (and the account nav above it) must be on
   // screen even when the device is unreachable and the read never lands.
   load();
-  App.poll = setInterval(whenVisible(load), POLL_MS);
+  // Archiving is a lifecycle move, which is feed state: the board's own event
+  // is what says this list changed.
+  watcher = watchChanges({ refresh: load, intervalMs: POLL_MS });
+  App.poll = watcher;
 }

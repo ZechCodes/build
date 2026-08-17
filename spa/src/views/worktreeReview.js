@@ -95,6 +95,9 @@ export function createWorktreeReview({
 
   const plug = createReviewPlug({
     isOffline,
+    // Until this worktree is adopted it is its own entity; once it is, the run
+    // it became is the one the bridge names.
+    entity: () => adopting.adoptedRunId() || worktreeId,
     fetchDiff: async () => {
       if (acting) return null;
       // Adopted already? The worktree lives on as a task now — never poll it

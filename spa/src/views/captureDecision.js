@@ -6,7 +6,7 @@
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { whenVisible } from "../core/visibility.js";
+import { watchChanges } from "../core/changeEvents.js";
 import { mountCaptureDecision } from "../core/captureDecisionView.js";
 import "../styles/shell.css";
 
@@ -26,6 +26,12 @@ export function renderCaptureDecision() {
   // Not awaited: the page must be on screen even when the device is unreachable
   // and the read never lands.
   surface.load();
-  App.poll = setInterval(whenVisible(surface.load), POLL_MS);
-  App.viewDispose = () => surface.dispose();
+  // A capture IS a feed row, and every step of the route it takes is noted on
+  // the board — so the board's event is this page's event.
+  const watcher = watchChanges({ refresh: surface.load, intervalMs: POLL_MS });
+  App.poll = watcher;
+  App.viewDispose = () => {
+    watcher.dispose();
+    surface.dispose();
+  };
 }

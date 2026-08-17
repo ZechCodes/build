@@ -133,7 +133,12 @@ export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }
 /** The left column: where the issue stands, its gate, its stages, the assignment
  *  control, and its implementations. The issue's own message is not here — it is
  *  the first thing the conversation beside this column says, and saying it twice
- *  is what made the surface busy. */
+ *  is what made the surface busy.
+ *
+ *  `blockReason` is why the dispatch cannot run yet, which the button wears
+ *  rather than a later hand reaching in to disable it; `deletable` is whether
+ *  the issue can still be deleted. Both are decisions (core/taskActions.js), so
+ *  they arrive already made. */
 export function stageListHtml({
   issue,
   stagesData,
@@ -141,6 +146,8 @@ export function stageListHtml({
   assignment,
   assignmentOpen = false,
   worktrees = [],
+  blockReason = "",
+  deletable = false,
 }) {
   const stages = (stagesData && stagesData.stages) || [];
   const rows = stages
@@ -159,10 +166,13 @@ export function stageListHtml({
     : activityKind === "blocked" ? "Implement All · blocked"
     : "Implement All";
   const gate = [
+    deletable ? `<button class="btn danger mini" id="issuedelete">Delete</button>` : "",
     issue.state === "plan_review" ? `<button class="btn mini" id="approveissue">Mark issue ready</button>` : "",
     allPlanned ? `<button class="btn mini" id="approveall">Approve all stage plans</button>` : "",
     ready && stages.length
-      ? `<button class="btn primary mini" id="implementall"${waiting || running ? " disabled" : ""}>${esc(implementLabel)}</button>`
+      ? `<button class="btn primary mini" id="implementall"${waiting || running || blockReason ? " disabled" : ""}${
+          blockReason ? ` title="${esc(blockReason)}"` : ""
+        }>${esc(implementLabel)}</button>`
       : "",
   ]
     .filter(Boolean)

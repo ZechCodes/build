@@ -207,6 +207,71 @@ describe("the issue view", () => {
     view.dispose();
   });
 
+  // The rail is reconciled by stage id, not rewritten: a pass that had nothing
+  // to say about the stages leaves every row where it stood, and a pass that
+  // changed one stage touches only that stage's row.
+  describe("the rail's paint", () => {
+    /** Everything the DOM under `target` did while `act` ran. */
+    const churn = async (target, act) => {
+      const seen = [];
+      const observer = new MutationObserver((records) => seen.push(...records));
+      observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+      await act();
+      seen.push(...observer.takeRecords());
+      observer.disconnect();
+      return seen;
+    };
+
+    const poll = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      await flush();
+    };
+
+    it("leaves every stage row alone when the pass changed only the issue", async () => {
+      const stages = [stage(), stage({ id: "s2", title: "Render" })];
+      const issue = issuePayload({ stages: [{ id: "s1", state: "planned" }, { id: "s2", state: "planned" }] });
+      const { host, view } = await mount({ issue, stages, pollMs: 5 });
+      const rows = [...host.querySelectorAll(".stagerow")];
+      const records = await churn(host.querySelector("#stagelist"), async () => {
+        issue.state = "approved";
+        await poll();
+      });
+      expect(host.querySelector(".ivhead").textContent).toContain("APPROVED"); // the head did move
+      expect(records).toEqual([]);
+      expect([...host.querySelectorAll(".stagerow")]).toEqual(rows);
+      view.dispose();
+    });
+
+    it("redraws only the stage that changed", async () => {
+      const stages = [stage(), stage({ id: "s2", title: "Render" })];
+      const { host, view } = await mount({ stages, pollMs: 5 });
+      const first = host.querySelector('.stagerow[data-stage="s1"]');
+      const second = host.querySelector('.stagerow[data-stage="s2"]');
+      const records = await churn(host.querySelector("#stagelist"), async () => {
+        stages[1].title = "Render, twice";
+        await poll();
+      });
+      expect(host.querySelector('.stagerow[data-stage="s1"]')).toBe(first);
+      expect(host.querySelector('.stagerow[data-stage="s2"]')).toBe(second);
+      expect(second.textContent).toContain("Render, twice");
+      expect(records.length).toBeGreaterThan(0);
+      expect(records.every((record) => second.contains(record.target))).toBe(true);
+      view.dispose();
+    });
+
+    it("moves the mark on a selection without rebuilding a row", async () => {
+      const stages = [stage(), stage({ id: "s2", title: "Render" })];
+      const { host, view } = await mount({ stages });
+      const rows = [...host.querySelectorAll(".stagerow")];
+      rows[1].click();
+      await flush();
+      expect([...host.querySelectorAll(".stagerow")]).toEqual(rows);
+      expect(rows[0].classList.contains("sel")).toBe(false);
+      expect(rows[1].classList.contains("sel")).toBe(true);
+      view.dispose();
+    });
+  });
+
   it("approves every planned stage from the list, one call per stage", async () => {
     const { host, view, calls } = await mount({ stages: [stage(), stage({ id: "s2" })] });
     host.querySelector("#approveall").click();

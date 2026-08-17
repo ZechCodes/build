@@ -396,12 +396,13 @@ describe("the inbox rail", () => {
 describe("the inbox rail's paint", () => {
   /** Everything the DOM under `target` did while `act` ran. */
   const churn = (target, act) => {
-    const observer = new MutationObserver(() => {});
+    const seen = [];
+    const observer = new MutationObserver((records) => seen.push(...records));
     observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
     act();
-    const records = observer.takeRecords();
+    seen.push(...observer.takeRecords());
     observer.disconnect();
-    return records;
+    return seen;
   };
 
   const list = () => document.getElementById("inbox-list");

@@ -12,6 +12,7 @@
 // pieces live in issueModel.js (decisions) and issueRender.js (markup); this
 // file is the wiring.
 
+import { el } from "../dom.js";
 import { esc } from "./text.js";
 import { openAssignmentOverlay } from "./assignmentOverlay.js";
 import { createAgentSelection } from "./agentSelection.js";
@@ -35,6 +36,7 @@ import {
   docErrorPaneHtml,
   docMarkerParts,
   stageListHtml,
+  stageRowHtml,
   stageViewerHtml,
 } from "./issueRender.js";
 import {
@@ -49,6 +51,8 @@ import {
   worktreeChoices,
 } from "./issueModel.js";
 import { createDocCommentLayer, headingForKey } from "./issueDocComments.js";
+import { patchElement } from "./domPatch.js";
+import { patchList } from "./patchList.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -214,14 +218,7 @@ export function mountIssueView(
     if (disposed || gone || !issue) return;
     if (!container.querySelector(".ivsplit")) paintSkeleton();
     const listHost = container.querySelector(".ivstages");
-    listHost.innerHTML = stageListHtml({
-      issue,
-      stagesData,
-      selectedStageId,
-      assignment,
-      assignmentOpen: Boolean(assignmentOverlay),
-      worktrees: worktrees(),
-    });
+    paintStageColumn(listHost);
     wireStageList(listHost);
     // The overlay is painted from the same held values, so a pass that changed
     // them reaches it too. Its own paint is a no-op when they did not.
@@ -248,6 +245,68 @@ export function mountIssueView(
       wireStageNav(viewerHost);
       wireStageActions(viewerHost, stage);
     }
+  };
+
+  /// The left column, kept rather than rewritten.
+  ///
+  /// Its regions never trade places — head, stages, assignment, lineage — and
+  /// only the lineage comes and goes, at the end, so each is patched where it
+  /// stands. The stage rows are keyed by stage id, so picking a stage redraws
+  /// the two rows that changed and leaves the column, its scroll and the
+  /// assignment control exactly where they were.
+  const paintStageColumn = (listHost) => {
+    const next = el(
+      `<aside>${stageListHtml({
+        issue,
+        stagesData,
+        selectedStageId,
+        assignment,
+        assignmentOpen: Boolean(assignmentOverlay),
+        worktrees: worktrees(),
+        blockReason: implementBlockReason(issue) || "",
+        deletable: planDeletable(issue.state),
+      })}</aside>`,
+    );
+    keepRegion(listHost, ".ivhead", next);
+    paintStageRows(listHost, next);
+    keepRegion(listHost, ".ivassign", next);
+    keepRegion(listHost, ".ivlineage", next);
+  };
+
+  /** Make the column's copy of `selector` say what a freshly rendered column
+   *  says, putting it there when it is new and taking it away when it is gone. */
+  const keepRegion = (listHost, selector, next) => {
+    const source = next.querySelector(selector);
+    const live = listHost.querySelector(selector);
+    if (!source) {
+      live?.remove();
+      return;
+    }
+    if (live) patchElement(live, source);
+    else listHost.append(source);
+  };
+
+  /** The stage rows, matched by stage id. The "no stages yet" line is chrome
+   *  rather than a row, so it is placed and taken away by hand — a row is put
+   *  after the last row, and nothing else may be sitting down there. */
+  const paintStageRows = (listHost, next) => {
+    const source = next.querySelector("#stagelist");
+    const emptyLine = source.querySelector(".empty");
+    let host = listHost.querySelector("#stagelist");
+    if (!host) {
+      host = source;
+      host.replaceChildren();
+      listHost.append(host);
+    }
+    const standing = host.querySelector(".empty");
+    if (emptyLine && !standing) host.append(emptyLine);
+    if (!emptyLine && standing) standing.remove();
+    const list = stages();
+    const ordinals = new Map(list.map((stage, index) => [stage.id, index]));
+    patchList(host, list, {
+      keyOf: (stage) => stage.id,
+      render: (stage) => stageRowHtml(stage, { index: ordinals.get(stage.id), selected: stage.id === selectedStageId }),
+    });
   };
 
   /** An issue with no stage manifest still has a plan: render it in the viewer
@@ -314,16 +373,10 @@ export function mountIssueView(
 
   // ---- the left column's wiring --------------------------------------------
 
+  // A stage row and a lineage row outlive the paints, and a row that has just
+  // arrived has never been wired — so neither is wired at all: the surface's
+  // one click handler reads which row was pressed off the DOM.
   const wireStageList = (listHost) => {
-    listHost.querySelectorAll(".stagerow[data-stage]").forEach((row) => {
-      row.onclick = () => selectStage(row.dataset.stage);
-    });
-    listHost.querySelectorAll(".ivlin-row[data-run]").forEach((row) => {
-      row.onclick = () => {
-        const route = lineageRoute({ run_id: row.dataset.run, branch: row.dataset.branch }, currentProjectId());
-        if (route) navigate(route);
-      };
-    });
     bindAction(listHost.querySelector("#approveissue"), "approving…", async () => {
       if (!(await confirmAction(approvePlanConfirm()))) throw new Error("cancelled");
       await guarded(() => callRpc("issue.approve", { issue_id: issueId }));
@@ -337,38 +390,30 @@ export function mountIssueView(
       });
       await refresh();
     });
+    // The dispatch wears its own block reason, so a disabled one is disabled
+    // because the render said so — there is nothing left to bind.
     const implementAll = listHost.querySelector("#implementall");
     if (implementAll && !implementAll.disabled) {
-      const blocked = implementBlockReason(issue);
-      if (blocked) {
-        implementAll.disabled = true;
-        implementAll.title = blocked;
-      } else {
-        bindAction(implementAll, "starting…", async () => {
-          const target = worktrees().find((choice) => choice.id === assignment.worktreeId);
-          const branch = assignment.worktree === "existing" && target ? target.label : null;
-          if (
-            !(await confirmAction(
-              implementConfirm({ base: assignment.base || issue.base_branch || "the base branch", branch }),
-            ))
-          )
-            throw new Error("cancelled");
-          const result = await guarded(() =>
-            callRpc("issue.implement_all", implementParams(issueId, assignment, { models: providerModels() })),
-          );
-          afterDispatch(result);
-        });
-      }
+      bindAction(implementAll, "starting…", async () => {
+        const target = worktrees().find((choice) => choice.id === assignment.worktreeId);
+        const branch = assignment.worktree === "existing" && target ? target.label : null;
+        if (
+          !(await confirmAction(
+            implementConfirm({ base: assignment.base || issue.base_branch || "the base branch", branch }),
+          ))
+        )
+          throw new Error("cancelled");
+        const result = await guarded(() =>
+          callRpc("issue.implement_all", implementParams(issueId, assignment, { models: providerModels() })),
+        );
+        afterDispatch(result);
+      });
     }
     wireAssignment(listHost);
     wireRemoval(listHost);
   };
 
   const wireRemoval = (listHost) => {
-    if (!planDeletable(issue.state)) return;
-    const gate = listHost.querySelector(".ivgate");
-    if (!gate) return;
-    gate.insertAdjacentHTML("afterbegin", '<button class="btn danger mini" id="issuedelete">Delete</button>');
     bindAction(listHost.querySelector("#issuedelete"), "deleting…", async () => {
       if (!(await confirmAction(deletePlanConfirm()))) throw new Error("cancelled");
       await guarded(() => callRpc("issue.delete", { issue_id: issueId }));
@@ -579,6 +624,16 @@ export function mountIssueView(
     if (remove) {
       withdrawComment(remove.dataset.del);
       return;
+    }
+    const stageRow = event.target.closest(".stagerow[data-stage]");
+    if (stageRow) {
+      selectStage(stageRow.dataset.stage);
+      return;
+    }
+    const lineageRow = event.target.closest(".ivlin-row[data-run]");
+    if (lineageRow) {
+      const route = lineageRoute({ run_id: lineageRow.dataset.run, branch: lineageRow.dataset.branch }, currentProjectId());
+      if (route) navigate(route);
     }
   };
 

@@ -761,8 +761,10 @@ describe("the surface's text column", () => {
     "the issue rail's head": inRail(".ivhead"),
     "a stage in the issue rail": inRail(".ivstages .stagerow"),
     "the issue rail with no stages": inRail(".ivstages .empty"),
+    // The assignment's fields are not a row of the rail at all — they are the
+    // overlay that row opens, and an overlay stands on the frame, not the
+    // column.
     "the issue rail's assignment control": inRail(".ivassign-head"),
-    "the issue rail's assignment fields": inRail(".ivassign-body"),
     "the issue rail's lineage": inRail(".ivlineage"),
   };
 

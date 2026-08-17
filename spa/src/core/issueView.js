@@ -13,6 +13,7 @@
 // file is the wiring.
 
 import { esc } from "./text.js";
+import { openAssignmentOverlay } from "./assignmentOverlay.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { docCommentAnchor } from "./notes.js";
 import { renderMarkdown } from "./markdown.js";
@@ -128,7 +129,7 @@ export function mountIssueView(
   let selectedStageId = initialStageId;
   let selectionSeeded = false;
   let assignment = defaultAssignment(null);
-  let assignmentOpen = false;
+  let assignmentOverlay = null;
   let renderedKey = null;
   let actionsInFlight = 0;
   let threadCursor = 0;
@@ -180,13 +181,10 @@ export function mountIssueView(
     },
   });
 
-  /** The user is filling in the assignment control: a repaint would replace the
-   *  field under their cursor, so the poll waits. */
-  const assignmentBusy = () => {
-    if (!assignmentOpen) return false;
-    const focused = document.activeElement;
-    return Boolean(focused && container.contains(focused) && focused.closest(".ivassign"));
-  };
+  /** The user is filling in the assignment overlay, so the poll waits: the panel
+   *  is painted from what this view holds, and a pass that lands mid-choice is a
+   *  pass that repaints under their cursor. */
+  const assignmentBusy = () => Boolean(assignmentOverlay && assignmentOverlay.busy());
 
   const guarded = async (work) => {
     actionsInFlight += 1;
@@ -221,11 +219,13 @@ export function mountIssueView(
       stagesData,
       selectedStageId,
       assignment,
-      assignmentOpen,
-      catalog,
+      assignmentOpen: Boolean(assignmentOverlay),
       worktrees: worktrees(),
     });
     wireStageList(listHost);
+    // The overlay is painted from the same held values, so a pass that changed
+    // them reaches it too. Its own paint is a no-op when they did not.
+    if (assignmentOverlay) assignmentOverlay.update();
     const viewerHost = container.querySelector(".ivviewer");
     if (!stages().length) {
       renderSingleDoc(viewerHost);
@@ -381,37 +381,38 @@ export function mountIssueView(
     return (entry && entry.models) || [];
   };
 
-  /** The assignment control: a summary that opens onto the two targets and the
-   *  overrides. Every field writes straight into the held assignment, so a poll
-   *  repaint restores exactly what was chosen. */
+  /** The rail's assignment line: one row saying what the handoff would be, which
+   *  opens the overlay holding the fields. The overlay is painted from the same
+   *  held assignment the dispatch reads, so a poll repaint of the rail — or of
+   *  the overlay — restores exactly what was chosen. */
   const wireAssignment = (listHost) => {
     const toggle = listHost.querySelector("#assigntoggle");
-    if (toggle)
-      toggle.onclick = () => {
-        assignmentOpen = !assignmentOpen;
-        if (assignmentOpen && !catalog.providers) loadCatalogOnce();
-        if (assignmentOpen) loadWorkItemsOnce();
+    if (toggle) toggle.onclick = () => (assignmentOverlay ? assignmentOverlay.close() : openAssignment());
+  };
+
+  const openAssignment = () => {
+    if (assignmentOverlay) return;
+    // Both are re-read every time the overlay opens: a branch that appeared, or
+    // was taken by another issue, must be offered — or stop being.
+    if (!catalog.providers) loadCatalogOnce();
+    loadWorkItemsOnce();
+    assignmentOverlay = openAssignmentOverlay({
+      // The rail repaints on the poll, so the button this is anchored to is a
+      // different node by the next tick: it is looked up, never held.
+      getAnchor: () => container.querySelector("#assigntoggle"),
+      getAssignment: () => assignment,
+      setAssignment: (next) => {
+        assignment = next;
         render();
-      };
-    const field = (id, key) => {
-      const element = listHost.querySelector(id);
-      if (!element) return;
-      element.onchange = () => {
-        assignment = { ...assignment, [key]: element.value };
+      },
+      getCatalog: () => catalog,
+      getWorktrees: () => worktrees(),
+      onClose: () => {
+        assignmentOverlay = null;
         render();
-      };
-      if (element.tagName === "INPUT")
-        element.oninput = () => {
-          assignment = { ...assignment, [key]: element.value };
-        };
-    };
-    field("#assignworktree", "worktree");
-    field("#assignworktreeid", "worktreeId");
-    field("#assignagent", "agent");
-    field("#assignbase", "base");
-    field("#assignprovider", "provider");
-    field("#assignmodel", "model");
-    field("#assigneffort", "effort");
+      },
+    });
+    render();
   };
 
   let catalogLoading = false;
@@ -423,7 +424,9 @@ export function mountIssueView(
     } catch {
       catalog = {};
     }
-    if (!disposed) render();
+    if (disposed) return;
+    if (assignmentOverlay) assignmentOverlay.update();
+    render();
   };
 
   /** The feed's work items, for the branch picker. Re-read every time the
@@ -439,7 +442,9 @@ export function mountIssueView(
       workItems = [];
     }
     workItemsLoading = false;
-    if (!disposed) render();
+    if (disposed) return;
+    if (assignmentOverlay) assignmentOverlay.update();
+    render();
   };
 
   // ---- the right column's wiring -------------------------------------------
@@ -595,6 +600,7 @@ export function mountIssueView(
    *  (nothing repaints over it, nothing else is fetched) with a way back. */
   const renderGone = () => {
     gone = true;
+    if (assignmentOverlay) assignmentOverlay.close();
     if (drawer) {
       drawer.dispose();
       drawer = null;
@@ -716,6 +722,7 @@ export function mountIssueView(
     dispose() {
       disposed = true;
       clearInterval(timer);
+      if (assignmentOverlay) assignmentOverlay.close();
       commentLayer.dispose();
       if (drawer) {
         drawer.dispose();

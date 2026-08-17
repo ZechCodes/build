@@ -253,7 +253,7 @@ describe("the issue view", () => {
     });
     host.querySelector("#assigntoggle").click();
     await flush();
-    const base = host.querySelector("#assignbase");
+    const base = document.querySelector(".assign-pop #assignbase");
     base.value = "release";
     base.dispatchEvent(new Event("input"));
     host.querySelector("#implementall").click();
@@ -271,11 +271,62 @@ describe("the issue view", () => {
     const { host, view } = await mount();
     host.querySelector("#assigntoggle").click();
     await flush();
-    const worktree = host.querySelector("#assignworktree");
+    const panel = document.querySelector(".assign-pop");
+    const worktree = panel.querySelector("#assignworktree");
     expect([...worktree.options].map((option) => option.value)).toEqual(["new", "existing"]);
     expect(worktree.querySelector('option[value="existing"]').disabled).toBe(false);
-    expect(host.querySelector("#assignagent").querySelector('option[value="existing"]').disabled).toBe(true);
-    expect(host.querySelector(".ivassign-gap").textContent).toMatch(/fresh agent/i);
+    expect(panel.querySelector("#assignagent").querySelector('option[value="existing"]').disabled).toBe(true);
+    expect(panel.querySelector(".ivassign-gap").textContent).toMatch(/fresh agent/i);
+    view.dispose();
+  });
+
+  it("keeps the assignment out of the rail: a control that opens it, never the fields", async () => {
+    const { host, view } = await mount();
+    const rail = host.querySelector(".ivstages");
+    const rowsBefore = rail.querySelectorAll(".ivassign > *").length;
+    host.querySelector("#assigntoggle").click();
+    await flush();
+    // Open, and the rail says so — but the rail has not grown by a single node.
+    expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("true");
+    expect(rail.querySelectorAll(".ivassign > *")).toHaveLength(rowsBefore);
+    expect(rail.querySelector("select")).toBeNull();
+    expect(rail.querySelector("#assignbase")).toBeNull();
+    expect(document.querySelector(".assign-pop #assignbase")).toBeTruthy();
+    view.dispose();
+  });
+
+  it("shuts the overlay on Done, and says so back in the rail", async () => {
+    const { host, view } = await mount();
+    host.querySelector("#assigntoggle").click();
+    await flush();
+    document.querySelector(".assign-pop [data-assign-close]").click();
+    await flush();
+    expect(document.querySelector(".assign-pop")).toBeNull();
+    expect(host.querySelector("#assigntoggle").getAttribute("aria-expanded")).toBe("false");
+    view.dispose();
+  });
+
+  it("takes the overlay with it when the surface goes away", async () => {
+    const { host, view } = await mount();
+    host.querySelector("#assigntoggle").click();
+    await flush();
+    expect(document.querySelector(".assign-pop")).toBeTruthy();
+    view.dispose();
+    expect(document.querySelector(".assign-pop")).toBeNull();
+  });
+
+  it("holds a choice made in the overlay across a poll pass", async () => {
+    const { host, view } = await mount({ pollMs: 5 });
+    host.querySelector("#assigntoggle").click();
+    await flush();
+    const worktree = document.querySelector(".assign-pop #assignworktree");
+    worktree.value = "existing";
+    worktree.dispatchEvent(new Event("change"));
+    await flush();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await flush();
+    expect(document.querySelector(".assign-pop #assignworktree").value).toBe("existing");
+    expect(host.querySelector(".ivassign-sum").textContent).toMatch(/existing worktree/i);
     view.dispose();
   });
 
@@ -291,11 +342,11 @@ describe("the issue view", () => {
     });
     host.querySelector("#assigntoggle").click();
     await flush();
-    const target = host.querySelector("#assignworktree");
+    const target = document.querySelector(".assign-pop #assignworktree");
     target.value = "existing";
     target.dispatchEvent(new Event("change"));
     await flush();
-    const branch = host.querySelector("#assignworktreeid");
+    const branch = document.querySelector(".assign-pop #assignworktreeid");
     // The primary checkout is the repository, not a worktree to hand over.
     expect([...branch.options].map((option) => option.value)).toEqual(["", "wt-1"]);
     branch.value = "wt-1";

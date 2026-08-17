@@ -6,6 +6,7 @@ import {
   stageListHtml,
   lineageHtml,
   assignmentHtml,
+  assignmentPanelHtml,
   stageViewerHtml,
   docCommentCardHtml,
   docMarkerParts,
@@ -55,7 +56,6 @@ describe("stageListHtml", () => {
       stagesData: stagesData([stage(), stage({ id: "s2", title: "Render" })]),
       selectedStageId: "s1",
       assignment,
-      catalog,
     });
     expect(html).toContain("READY TO REVIEW");
     expect(html).toContain("Build");
@@ -72,38 +72,35 @@ describe("stageListHtml", () => {
       stagesData: stagesData([stage()]),
       selectedStageId: "s1",
       assignment,
-      catalog,
     });
     expect(html).not.toContain("Rebuild the issue view");
     expect(html).not.toContain("ivtitle");
   });
 
   it("offers approve-all only while every stage is still planned", () => {
-    const planned = stageListHtml({ issue: issue(), stagesData: stagesData([stage(), stage({ id: "s2" })]), assignment, catalog });
+    const planned = stageListHtml({ issue: issue(), stagesData: stagesData([stage(), stage({ id: "s2" })]), assignment });
     expect(planned).toContain('id="approveall"');
     const mixed = stageListHtml({
       issue: issue(),
       stagesData: stagesData([stage(), stage({ id: "s2", state: "approved" })]),
       assignment,
-      catalog,
     });
     expect(mixed).not.toContain('id="approveall"');
   });
 
   it("offers the issue gate at plan_review and the dispatch once the issue is ready", () => {
-    const review = stageListHtml({ issue: issue({ state: "plan_review" }), stagesData: stagesData([stage()]), assignment, catalog });
+    const review = stageListHtml({ issue: issue({ state: "plan_review" }), stagesData: stagesData([stage()]), assignment });
     expect(review).toContain('id="approveissue"');
     const ready = stageListHtml({
       issue: issue({ state: "approved", stages: [{ id: "s1", state: "approved" }] }),
       stagesData: stagesData([stage({ state: "approved" })]),
       assignment,
-      catalog,
     });
     expect(ready).toContain('id="implementall"');
   });
 
   it("says so rather than showing an empty list when there are no stages yet", () => {
-    const html = stageListHtml({ issue: issue({ state: "drafting" }), stagesData: stagesData([]), assignment, catalog });
+    const html = stageListHtml({ issue: issue({ state: "drafting" }), stagesData: stagesData([]), assignment });
     expect(html).toContain("No stages yet");
   });
 });
@@ -126,29 +123,44 @@ describe("lineageHtml", () => {
 });
 
 describe("assignmentHtml", () => {
-  it("collapses to one line naming the handoff", () => {
-    const html = assignmentHtml({ assignment, open: false, catalog });
+  it("says the handoff in one line and nothing else", () => {
+    const html = assignmentHtml({ assignment, open: false });
     expect(html).toContain("New worktree · New agent · claude");
     expect(html).not.toContain("<select");
   });
 
+  it("stays that one line while the overlay it opens is open", () => {
+    // The rail is a list of stages: the fields live in the overlay, so the row
+    // only ever marks itself as the thing standing open.
+    const html = assignmentHtml({ assignment, open: true });
+    expect(html).not.toContain("<select");
+    expect(html).not.toContain("<input");
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-haspopup="dialog"');
+  });
+});
+
+describe("assignmentPanelHtml", () => {
   it("opens onto both targets, offering an existing agent only to say why it cannot be used", () => {
-    const html = assignmentHtml({ assignment, open: true, catalog });
+    const html = assignmentPanelHtml({ assignment, catalog });
     expect(html).toContain('value="existing"');
     expect(html).toContain("disabled");
     expect(html).toMatch(/fresh agent/i);
   });
 
+  it("offers a way out that is not a choice", () => {
+    expect(assignmentPanelHtml({ assignment, catalog })).toContain("data-assign-close");
+  });
+
   it("carries the base-branch and model choice the dispatch would use", () => {
-    const html = assignmentHtml({ assignment: { ...assignment, base: "release" }, open: true, catalog });
+    const html = assignmentPanelHtml({ assignment: { ...assignment, base: "release" }, catalog });
     expect(html).toContain('value="release"');
     expect(html).toContain("Claude Code");
   });
 
   it("swaps the base branch for a branch picker once an existing checkout is the target", () => {
-    const html = assignmentHtml({
+    const html = assignmentPanelHtml({
       assignment: { ...assignment, worktree: "existing", worktreeId: "wt-1" },
-      open: true,
       catalog,
       worktrees: [
         { id: "wt-1", label: "feature-x" },

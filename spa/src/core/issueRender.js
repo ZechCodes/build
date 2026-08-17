@@ -73,18 +73,26 @@ export function lineageHtml(lineage) {
   return `<div class="ivlineage"><div class="ivsec">Implementations</div>${rows}</div>`;
 }
 
-/** The worktree/agent assignment control: collapsed to the one line that says
- *  what the handoff would be, opening onto the two targets and the overrides the
+/** The assignment control as it stands in the rail: one line saying what the
+ *  handoff would be, and nothing else. Pressing it opens the overlay that holds
+ *  the fields — the rail is a list of stages, and a form unfolding inside it is
+ *  what pushed the stages off the column. Open or shut, this stays one row. */
+export function assignmentHtml({ assignment, open = false, worktrees = [] }) {
+  return `<div class="ivassign${open ? " open" : ""}">
+    <button class="ivassign-head" id="assigntoggle" aria-haspopup="dialog" aria-expanded="${open ? "true" : "false"}">
+      <span class="ivassign-text"><span class="ivsec">Assignment</span><span class="ivassign-sum">${esc(assignmentSummary(assignment, worktrees))}</span></span>
+      <span class="ivassign-caret" aria-hidden="true">▾</span>
+    </button></div>`;
+}
+
+/** What the assignment overlay holds: the two targets and the overrides the
  *  dispatch carries.
  *
  *  Targeting an existing checkout swaps the base-branch field for the branch
  *  picker — a branch that already exists brings its own baseline, so there is no
  *  base to choose. The existing-agent option is offered and disabled: it is not
  *  a gap but a rule, and the copy below the fields says which. */
-export function assignmentHtml({ assignment, open = false, catalog = {}, worktrees = [] }) {
-  const summary = `<button class="ivassign-head" id="assigntoggle" aria-expanded="${open ? "true" : "false"}">
-    <span class="ivsec">Assignment</span><span class="ivassign-sum">${esc(assignmentSummary(assignment, worktrees))}</span></button>`;
-  if (!open) return `<div class="ivassign">${summary}</div>`;
+export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }) {
   const full = normalizeModelCatalog(catalog);
   const provider = assignment.provider || full.default_provider || "claude";
   const forProvider = catalogForProvider(full, provider);
@@ -108,8 +116,9 @@ export function assignmentHtml({ assignment, open = false, catalog = {}, worktre
             .join("")}
         </select></label>`
       : `<label class="ivfield"><span>Base branch</span><input id="assignbase" value="${esc(assignment.base || "")}" placeholder="the Issue base branch"></label>`;
-  return `<div class="ivassign open">${summary}
-    <div class="ivassign-body">
+  return `<div class="assign-pop-head"><span class="ivsec">Assignment</span>
+      <button class="btn mini" id="assignclose" data-assign-close>Done</button></div>
+    <div class="assign-fields">
       <label class="ivfield"><span>Worktree</span><select id="assignworktree">${options(WORKTREE_TARGETS, assignment.worktree)}</select></label>
       ${branchField}
       <label class="ivfield"><span>Agent</span><select id="assignagent">${options(AGENT_TARGETS, assignment.agent)}</select></label>
@@ -117,7 +126,7 @@ export function assignmentHtml({ assignment, open = false, catalog = {}, worktre
       <label class="ivfield"><span>Model</span><select id="assignmodel">${modelOptionsHtml(forProvider.models, assignment.model || "")}</select></label>
       <label class="ivfield"><span>Effort</span><select id="assigneffort">${effortOptionsHtml(forProvider.efforts, assignment.effort || "")}</select></label>
       <div class="ivassign-gap">${rules.map((rule) => `<div>${esc(rule)}</div>`).join("")}</div>
-    </div></div>`;
+    </div>`;
 }
 
 /** The left column: where the issue stands, its gate, its stages, the assignment
@@ -130,7 +139,6 @@ export function stageListHtml({
   selectedStageId = null,
   assignment,
   assignmentOpen = false,
-  catalog = {},
   worktrees = [],
 }) {
   const stages = (stagesData && stagesData.stages) || [];
@@ -164,7 +172,7 @@ export function stageListHtml({
       <div class="ivgate">${gate}</div>
     </div>
     <div class="stagelist" id="stagelist">${rows || '<div class="empty">No stages yet.</div>'}</div>
-    ${assignmentHtml({ assignment, open: assignmentOpen, catalog, worktrees })}
+    ${assignmentHtml({ assignment, open: assignmentOpen, worktrees })}
     ${lineageHtml(issue.implementation_lineage)}`;
 }
 

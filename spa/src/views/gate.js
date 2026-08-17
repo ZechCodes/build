@@ -7,7 +7,7 @@ import { esc } from "../core/text.js";
 import { RELAY_URL } from "../config.js";
 import { onlineStickyDeviceId } from "../core/devicePolicy.js";
 import { App, render } from "../app.js";
-import { openAppSession, adoptSession, setConn } from "../connection.js";
+import { openAppSession, adoptSession, greetLiveBridge, setConn } from "../connection.js";
 import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { openAddDevice } from "../sheets/addDevice.js";
@@ -45,6 +45,10 @@ async function enterApp() {
   setGate(false);
   paintDevicePicker();
   setConn('<span class="dot"></span>connected');
+  // Before the surfaces mount, so they take the cadence this bridge earns: a
+  // bridge that pushes lets them stand down to the safety poll, and one that
+  // does not leaves every interval exactly where it has always been.
+  greetLiveBridge();
   startFeed();
   initInboxRail();
   initToolbar();

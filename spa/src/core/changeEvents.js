@@ -183,3 +183,28 @@ export function dispatchChangeEvent(payload) {
 export function refetchEverything() {
   [...watchers].forEach(deliver);
 }
+
+/**
+ * Greet a freshly live session: ask what this bridge can do, arm event mode if
+ * it pushes, and read everything once.
+ *
+ * Every live session comes through here — the first one, a reconnect, a switch
+ * to another device — and each of them has a gap behind it that announced
+ * nothing, so the refetch is unconditional and so is the re-arming: the device
+ * on the other end may not be the one that answered last time.
+ *
+ * A bridge that predates push invalidation refuses `session.hello`. That is the
+ * feature detection, and it is the whole of it — the client goes back to
+ * polling with nothing to configure.
+ */
+export async function greetBridge(call) {
+  let greeting = null;
+  try {
+    greeting = await call("session.hello");
+  } catch {
+    greeting = null; // an old bridge, or one that dropped mid-greeting
+  }
+  armChangeEvents(greeting);
+  refetchEverything();
+  return changeEventsArmed();
+}

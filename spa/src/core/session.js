@@ -31,6 +31,7 @@ export async function openRelaySession({
   onDeviceKey = () => {},
   onDeviceOffline = () => {},
   onLost = () => {},
+  onPush = () => {},
 }) {
   // The relay is an untrusted broker: its device_key pushes are routing hints
   // only. Session keys are sealed exclusively to the api-pinned transport key
@@ -87,7 +88,13 @@ export async function openRelaySession({
     if (pend) {
       pending.delete(payload.id);
       payload.ok ? pend.resolve(payload.result) : pend.reject(new Error(payload.error));
+      return;
     }
+    // Nobody asked for this: the bridge is telling us something moved. A frame
+    // with no request behind it and a `type` is a push (board.changed,
+    // entity.changed); anything else is a reply to a call that already timed
+    // out, and has nowhere left to go.
+    if (payload && payload.type) onPush(payload);
   });
   ws.addEventListener("close", () => {
     if (!live) deliver({ type: "__closed" }); // fail the handshake cleanly

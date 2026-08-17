@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 let armChangeEvents,
   changeEventsArmed,
   dispatchChangeEvent,
+  greetBridge,
   pollIntervalMs,
   refetchEverything,
   resetChangeEvents,
@@ -31,6 +32,7 @@ beforeEach(async () => {
     armChangeEvents,
     changeEventsArmed,
     dispatchChangeEvent,
+    greetBridge,
     pollIntervalMs,
     refetchEverything,
     resetChangeEvents,
@@ -236,6 +238,47 @@ describe("a hidden tab", () => {
     setHidden(true);
     dispatchChangeEvent({ type: "entity.changed", id: "iss-1" });
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the greeting", () => {
+  it("arms event mode when the bridge answers the flag", async () => {
+    const call = vi.fn(async () => ({ push_events: true, events: ["board.changed"] }));
+    await greetBridge(call);
+    expect(call).toHaveBeenCalledWith("session.hello");
+    expect(changeEventsArmed()).toBe(true);
+  });
+
+  it("leaves a bridge that refuses the greeting polling", async () => {
+    const call = vi.fn(async () => {
+      throw new Error("unknown method: session.hello");
+    });
+    await greetBridge(call);
+    expect(changeEventsArmed()).toBe(false);
+    expect(pollIntervalMs(1600)).toBe(1600);
+  });
+
+  it("refetches every surface, whichever mode it lands in", async () => {
+    const armedRefresh = vi.fn();
+    watchChanges({ refresh: armedRefresh, intervalMs: 2000 });
+    await greetBridge(async () => ({ push_events: true }));
+    expect(armedRefresh).toHaveBeenCalledTimes(1);
+
+    resetChangeEvents();
+    const pollingRefresh = vi.fn();
+    watchChanges({ refresh: pollingRefresh, intervalMs: 2000 });
+    await greetBridge(async () => {
+      throw new Error("unknown method: session.hello");
+    });
+    expect(pollingRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("disarms when a reconnect lands on a bridge that cannot push", async () => {
+    await greetBridge(async () => ({ push_events: true }));
+    await greetBridge(async () => {
+      throw new Error("unknown method: session.hello");
+    });
+    expect(changeEventsArmed()).toBe(false);
   });
 });
 

@@ -23,6 +23,7 @@ import {
 } from "./devices.js";
 import { retargetTerminals } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
+import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -47,6 +48,19 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     onDeviceKey: markDeviceOnline,
     onDeviceOffline: markDeviceOffline,
     onLost: goOffline,
+    // The bridge saying something moved. A frame nobody asked for reaches the
+    // surface showing that state, which is what lets the polls stand down.
+    onPush: dispatchChangeEvent,
+  });
+}
+
+/** Greet a session that is live and unpaused: feature-detect push invalidation,
+ *  subscribe this session to it, and read everything once. Not awaited by its
+ *  callers — a slow greeting must not hold up the app, and a surface mounted
+ *  before it lands is re-timed the moment it does. */
+export function greetLiveBridge() {
+  return greetBridge(App.call).catch(() => {
+    /* the session died mid-greeting; the next one greets again */
   });
 }
 
@@ -112,6 +126,11 @@ export async function resume() {
     adoptSession(session);
     restoreOnline();
     reconnectDelay = 0;
+    // AFTER restoreOnline, which is what unpauses calls — and the greeting is a
+    // call. Whatever happened while we were away was pushed at a socket that
+    // was not there, so this reads every mounted surface once and re-arms event
+    // mode on whatever bridge we came back to.
+    greetLiveBridge();
     // The notifications view holds no user input, so refreshing it is safe; the
     // task view's own poll resumes and its key-diffing preserves in-progress work.
     if (App.route.name === "notifications") render();
@@ -151,6 +170,9 @@ export async function switchDevice(deviceId) {
   rememberSelectedDevice(deviceId);
   adoptSession(session);
   restoreOnline();
+  // A different device is a different bridge: it may push where the last one
+  // polled, or the other way round.
+  greetLiveBridge();
   retargetTerminals(); // the terminal socket follows the app session's device
   render();
 }

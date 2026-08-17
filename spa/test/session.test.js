@@ -110,6 +110,37 @@ describe("openRelaySession", () => {
     await expect(reply).rejects.toThrow("no such run");
   });
 
+  it("hands the bridge's unsolicited pushes to onPush", async () => {
+    const pushes = [];
+    const { promise, ws } = await startOpen({ onPush: (payload) => pushes.push(payload) });
+    const init = await completeHandshake(ws);
+    await promise;
+    ws.serverSend({
+      type: "e2ee_envelope",
+      session_id: init.session_id,
+      envelope: { frameFields: { payload: { type: "entity.changed", id: "run-7" } } },
+    });
+    await tick();
+    expect(pushes).toEqual([{ type: "entity.changed", id: "run-7" }]);
+  });
+
+  it("keeps an RPC reply out of onPush — it is somebody's answer, not a push", async () => {
+    const pushes = [];
+    const { promise, ws } = await startOpen({ onPush: (payload) => pushes.push(payload) });
+    const init = await completeHandshake(ws);
+    const session = await promise;
+    const reply = session.call("ping", {});
+    await tick();
+    const { payload } = ws.sent.at(-1).envelope.frameFields;
+    ws.serverSend({
+      type: "e2ee_envelope",
+      session_id: init.session_id,
+      envelope: { frameFields: { payload: { id: payload.id, ok: true, result: { pong: true } } } },
+    });
+    await expect(reply).resolves.toEqual({ pong: true });
+    expect(pushes).toEqual([]);
+  });
+
   it("waits for the preferred device, skipping other device_key pushes", async () => {
     const { promise, ws, events } = await startOpen({ preferDeviceId: "dev-b" });
     ws.serverSend({ type: "authenticated" });

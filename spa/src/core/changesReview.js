@@ -300,6 +300,7 @@ export function createReviewPlug({
     busy: () => Boolean(commentLayer && commentLayer.busy()),
 
     mount(element) {
+      if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
       diffKey = null; // a fresh host always needs a first paint
       host.innerHTML = '<div class="empty">loading…</div>';

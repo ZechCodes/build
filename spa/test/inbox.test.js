@@ -11,10 +11,12 @@ import {
   entryFactsText,
   entryRoute,
   entryState,
+  inboxEmptyHtml,
   inboxEntries,
-  inboxListHtml,
   inboxRowHtml,
   issueDoneConfirm,
+  recentIsOpen,
+  recentToggleHtml,
   unreadReasonText,
 } from "../src/core/inbox.js";
 
@@ -274,32 +276,30 @@ describe("the Recent section", () => {
     expect(inboxEntries({ items: [...busy, quiet()], nowMs: NOW }).autoOpen).toBe(false);
   });
 
-  it("is one disclosure at the end of the list, counting what is behind it", () => {
-    const partition = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
-    const shut = inboxListHtml(partition, { recentOpen: false });
+  it("is one disclosure, counting what is behind it", () => {
+    const { recent } = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
+    const shut = recentToggleHtml(recent, false);
     expect(shut).toContain("data-recent-toggle");
     expect(shut).toContain("Recent");
     expect(shut).toContain('aria-expanded="false"');
-    expect(shut).not.toContain('data-entity="run-old"');
-    // The disclosure comes after the list proper, never before it.
-    expect(shut.indexOf('data-entity="run-1"')).toBeLessThan(shut.indexOf("data-recent-toggle"));
-
-    const open = inboxListHtml(partition, { recentOpen: true });
-    expect(open).toContain('data-entity="run-old"');
-    expect(open).toContain('aria-expanded="true"');
+    expect(shut).toContain('class="inbox-recent-count">1<');
+    expect(recentToggleHtml(recent, true)).toContain('aria-expanded="true"');
   });
 
   it("follows its own auto-open when nobody has said otherwise", () => {
     const partition = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
-    expect(inboxListHtml(partition, {})).toContain('data-entity="run-old"');
+    expect(recentIsOpen(partition, null)).toBe(true);
+    expect(recentIsOpen(partition, undefined)).toBe(true);
+    expect(recentIsOpen(partition, false)).toBe(false);
+    expect(recentIsOpen({ autoOpen: false }, true)).toBe(true);
   });
 
   it("says nothing at all when nothing has gone quiet", () => {
-    expect(inboxListHtml(inboxEntries({ items: [branch()], nowMs: NOW }), {})).not.toContain("data-recent-toggle");
+    expect(inboxEntries({ items: [branch()], nowMs: NOW }).recent).toEqual([]);
   });
 
   it("says so when there is nothing waiting at all", () => {
-    expect(inboxListHtml(inboxEntries({ items: [], nowMs: NOW }), {})).toContain("Nothing needs you");
+    expect(inboxEmptyHtml()).toContain("Nothing needs you");
   });
 });
 

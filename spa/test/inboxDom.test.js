@@ -388,6 +388,64 @@ describe("the inbox rail", () => {
   });
 });
 
+// ---- the paint ---------------------------------------------------------------
+// The list is reconciled by row key, not rewritten: a tick that says what the
+// last one said touches nothing at all, and a tick that changes one row touches
+// only that row's own subtree.
+
+describe("the inbox rail's paint", () => {
+  /** Everything the DOM under `target` did while `act` ran. */
+  const churn = (target, act) => {
+    const observer = new MutationObserver(() => {});
+    observer.observe(target, { childList: true, subtree: true, attributes: true, characterData: true });
+    act();
+    const records = observer.takeRecords();
+    observer.disconnect();
+    return records;
+  };
+
+  const list = () => document.getElementById("inbox-list");
+
+  it("touches nothing when the feed repeats what it already said", () => {
+    expect(churn(list(), () => feed(feedItems))).toEqual([]);
+  });
+
+  it("redraws only the row that changed, and keeps every row's element", () => {
+    const branch = rowFor("run-1");
+    const issue = rowFor("iss-1");
+    const records = churn(list(), () => feed([branchRow({ unread_count: 4 }), issueRow()]));
+    expect(rowFor("run-1")).toBe(branch); // patched in place, never rebuilt
+    expect(rowFor("iss-1")).toBe(issue);
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((record) => branch.contains(record.target))).toBe(true);
+    expect(branch.querySelector(".inbox-unread").textContent).toBe("4");
+  });
+
+  it("keeps the rows already there when one arrives at the top of the list", () => {
+    const branch = rowFor("run-1");
+    const issue = rowFor("iss-1");
+    feed([branchRow({ branch: "build/oldest", run_id: "run-oldest", anchor: hoursAgo(20) }), ...feedItems]);
+    expect(rows().map((row) => row.dataset.entity)).toEqual(["run-oldest", "run-1", "iss-1"]);
+    expect(rowFor("run-1")).toBe(branch);
+    expect(rowFor("iss-1")).toBe(issue);
+  });
+
+  it("keeps Recent's disclosure after the list proper", () => {
+    feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    const toggle = document.querySelector("[data-recent-toggle]");
+    expect(rowFor("run-1").compareDocumentPosition(toggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Recent's own rows are its children, so each list reconciles only its own.
+    expect(rowFor("run-old").parentElement.className).toBe("inbox-recent");
+  });
+
+  it("leaves Recent alone when the feed repeats itself", () => {
+    feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    const quiet = rowFor("run-old");
+    expect(churn(list(), () => feed(feedItems))).toEqual([]);
+    expect(rowFor("run-old")).toBe(quiet);
+  });
+});
+
 // ---- captures ----------------------------------------------------------------
 // A capture on the rail is a route in progress. The row is where routing is
 // made visible and reversible: it answers the router, retries a route that gave

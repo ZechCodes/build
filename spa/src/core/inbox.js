@@ -412,29 +412,23 @@ export function inboxRowHtml(entry, ui = {}) {
   </div>`;
 }
 
-/** Recent: one disclosure at the end of the list, and behind it everything that
- *  has gone quiet for a day. */
-function recentSectionHtml(recent, open, ui) {
-  const rows = open ? recent.map((entry) => inboxRowHtml(entry, ui)).join("") : "";
-  return `<div class="inbox-recent">
-    <button class="inbox-recent-toggle" type="button" data-recent-toggle aria-expanded="${open ? "true" : "false"}">
-      <span class="inbox-recent-caret" aria-hidden="true">${open ? "▾" : "▸"}</span><span>Recent</span><span class="inbox-recent-count">${recent.length}</span>
-    </button>
-    ${rows}
-  </div>`;
+/** What the rail says when it is holding nothing at all. */
+export function inboxEmptyHtml() {
+  return '<div class="inbox-clear dim">Nothing needs you. Work you start shows up here.</div>';
 }
 
-/** The whole list: the partition inboxEntries returned, plus whether the user
- *  has opened or shut Recent themselves (`ui.recentOpen`; null or absent means
- *  the partition decides). */
-export function inboxListHtml({ entries = [], recent = [], autoOpen = false } = {}, ui = {}) {
-  if (!entries.length && !recent.length) {
-    return '<div class="inbox-clear dim">Nothing needs you. Work you start shows up here.</div>';
-  }
-  const rows = entries.map((entry) => inboxRowHtml(entry, ui)).join("");
-  if (!recent.length) return rows;
-  const open = ui.recentOpen === undefined || ui.recentOpen === null ? autoOpen : !!ui.recentOpen;
-  return rows + recentSectionHtml(recent, open, ui);
+/** Whether Recent is open: what the user said if they have said anything, else
+ *  what the partition decided for itself. */
+export function recentIsOpen({ autoOpen = false } = {}, recentOpen) {
+  return recentOpen === undefined || recentOpen === null ? !!autoOpen : !!recentOpen;
+}
+
+/** Recent's disclosure: the one control at the end of the list, counting what is
+ *  behind it. The quiet rows themselves are ordinary rows, painted under it. */
+export function recentToggleHtml(recent, open) {
+  return `<button class="inbox-recent-toggle" type="button" data-recent-toggle aria-expanded="${open ? "true" : "false"}">
+      <span class="inbox-recent-caret" aria-hidden="true">${open ? "▾" : "▸"}</span><span>Recent</span><span class="inbox-recent-count">${recent.length}</span>
+    </button>`;
 }
 
 // ---- capture rows ------------------------------------------------------------

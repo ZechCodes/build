@@ -6,7 +6,7 @@
 // wiring. Read state is the bridge's now (`entity.seen`), so opening an entry
 // tells the daemon, and nothing about what has been read is kept on the device.
 
-import { $ } from "../dom.js";
+import { $, el } from "../dom.js";
 import { App } from "../app.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { confirmAction } from "./confirm.js";
@@ -15,10 +15,15 @@ import {
   branchDoneConfirm,
   dismissParamsOf,
   entryKeyOf,
+  inboxEmptyHtml,
   inboxEntries,
-  inboxListHtml,
+  inboxRowHtml,
   issueDoneConfirm,
+  recentIsOpen,
+  recentToggleHtml,
 } from "./inbox.js";
+import { patchList } from "./patchList.js";
+import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -66,10 +71,11 @@ export function noteSelfAction(...entityIds) {
   return Promise.all([...new Set(entityIds.filter(Boolean))].map((id) => markSeen(id)));
 }
 
-/** A box in the list has the caret. The rows are rewritten whole, so a repaint
- *  now would replace the box being typed into — taking the words, the caret and,
- *  on a phone, the keyboard with it. A tick nobody asked for stands down until
- *  the caret leaves; the user's own actions still repaint. */
+/** A box in the list has the caret. The reconciler keeps a row that is still
+ *  there, and the box in it with the words and the caret — so a repaint no
+ *  longer takes what is being typed. This is the outer guard on top of that: a
+ *  tick nobody asked for leaves a half-named destination alone, whatever else
+ *  the paint would have decided. The user's own actions still repaint. */
 function typingInList() {
   const active = document.activeElement;
   return Boolean(active && active.tagName === "INPUT" && active.closest("#inbox-list"));
@@ -80,6 +86,9 @@ function drawFromFeed() {
   if (typingInList()) return;
   draw();
 }
+
+/** The one name a row has, which is what the reconciler matches rows by. */
+const keyOf = (entry) => entry.key;
 
 function draw() {
   const list = $("#inbox-list");
@@ -94,23 +103,57 @@ function draw() {
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
   entries = [...partition.entries, ...partition.recent];
-  const scroll = list.scrollTop;
-  list.innerHTML = inboxListHtml(partition, {
+  const ui = {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
-    recentOpen,
     rerouteKey,
     projects,
     rerouteBranchProject,
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
     rerouteBranches: branchOptions(items, rerouteBranchProject),
-  });
+  };
+  list.onclick = onListClick;
+  list.onkeydown = onListKeydown;
+  const scroll = list.scrollTop;
+  paintEmpty(list, entries.length === 0);
+  patchList(list, partition.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintRecent(list, partition, ui);
   list.scrollTop = scroll;
-  wire(list);
-  wireRecent(list);
-  wireCaptures(list);
   paintErrors(list);
+}
+
+/** The line the rail shows in place of rows when it is holding nothing. It is
+ *  chrome, not a row, and it goes the moment there is a row — a row is placed
+ *  after the last row, so nothing else may be sitting down there. */
+function paintEmpty(list, empty) {
+  const standing = list.querySelector(".inbox-clear");
+  if (empty === Boolean(standing)) return;
+  if (standing) standing.remove();
+  else list.appendChild(el(inboxEmptyHtml()));
+}
+
+/** Recent: the disclosure at the end of the list, and behind it the rows that
+ *  have gone quiet. It is its own container, so the quiet rows are its keyed
+ *  children and each list reconciles only its own. */
+function paintRecent(list, partition, ui) {
+  if (!partition.recent.length) {
+    list.querySelector(".inbox-recent")?.remove();
+    return;
+  }
+  let section = list.querySelector(".inbox-recent");
+  if (!section) {
+    section = document.createElement("div");
+    section.className = "inbox-recent";
+    section.append(el(recentToggleHtml(partition.recent, false)));
+  }
+  // Recent follows the list proper. A row that arrives while nothing was keyed
+  // above it lands after the section, so the section is put back at the end
+  // whenever a paint has left something below it.
+  if (list.lastElementChild !== section) list.appendChild(section);
+  const open = recentIsOpen(partition, recentOpen);
+  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open)));
+  patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a
@@ -134,60 +177,61 @@ function closeMenu() {
   draw();
 }
 
-function wire(list) {
-  list.querySelectorAll(".inbox-entry").forEach((row) => {
-    row.onclick = (event) => {
-      // The row's own controls answer for themselves.
-      if (event.target.closest("[data-done], [data-menu], [data-mute], [data-dismiss], .inbox-actions")) return;
-      openEntry(entryOf(row.dataset.key));
-    };
-  });
-  list.querySelectorAll("[data-done]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      closeMenu();
-      finishEntry(entryOf(control.dataset.done));
-    };
-  });
-  list.querySelectorAll("[data-mute]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      toggleMute(entryOf(control.dataset.mute));
-    };
-  });
-  list.querySelectorAll("[data-dismiss]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      dismissEntry(entryOf(control.dataset.dismiss));
-    };
-  });
-  list.querySelectorAll("[data-menu]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      openMenuKey = openMenuKey === control.dataset.menu ? null : control.dataset.menu;
-      draw();
-      if (openMenuKey !== null) {
-        const close = (outside) => {
-          if (!outside.target.closest(".inbox-actions")) {
-            document.removeEventListener("pointerdown", close);
-            closeMenu();
-          }
-        };
-        setTimeout(() => document.addEventListener("pointerdown", close), 0);
-      }
-    };
-  });
+/// Every control in the list, answered in one place.
+///
+/// A row's element survives the paints, but a control inside it does not have
+/// to — Done appears the moment the work can be finished — so nothing is wired
+/// to a row or to a button. The list itself listens, and reads off the DOM which
+/// row was spoken for.
+function onListClick(event) {
+  const { target } = event;
+  const done = target.closest("[data-done]");
+  if (done) {
+    closeMenu();
+    finishEntry(entryOf(done.dataset.done));
+    return;
+  }
+  const mute = target.closest("[data-mute]");
+  if (mute) {
+    toggleMute(entryOf(mute.dataset.mute));
+    return;
+  }
+  const dismiss = target.closest("[data-dismiss]");
+  if (dismiss) {
+    dismissEntry(entryOf(dismiss.dataset.dismiss));
+    return;
+  }
+  const menu = target.closest("[data-menu]");
+  if (menu) {
+    openMenu(menu.dataset.menu);
+    return;
+  }
+  // Recent is one disclosure, and pressing it is the user saying so — from then
+  // on the section stays as they left it, whatever the list above it does.
+  const recentToggle = target.closest("[data-recent-toggle]");
+  if (recentToggle) {
+    recentOpen = recentToggle.getAttribute("aria-expanded") !== "true";
+    draw();
+    return;
+  }
+  if (captureClicked(target)) return;
+  // The row's own controls answer for themselves; everything else on it opens.
+  const row = target.closest(".inbox-entry");
+  if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
 }
 
-/** Recent is one disclosure, and pressing it is the user saying so — from then
- *  on the section stays as they left it, whatever the list above it does. */
-function wireRecent(list) {
-  const toggle = list.querySelector("[data-recent-toggle]");
-  if (!toggle) return;
-  toggle.onclick = () => {
-    recentOpen = toggle.getAttribute("aria-expanded") !== "true";
-    draw();
+/** The row's menu, one step behind the row: it opens, and the next press
+ *  anywhere outside it shuts it again. */
+function openMenu(key) {
+  openMenuKey = openMenuKey === key ? null : key;
+  draw();
+  if (openMenuKey === null) return;
+  const close = (outside) => {
+    if (outside.target.closest(".inbox-actions")) return;
+    document.removeEventListener("pointerdown", close);
+    closeMenu();
   };
+  setTimeout(() => document.addEventListener("pointerdown", close), 0);
 }
 
 // ---- capture rows -------------------------------------------------------------
@@ -202,56 +246,64 @@ function wireRecent(list) {
 // by hand, words, or abandoning it — and the row opens the page that holds all
 // of them (views/captureDecision.js) rather than hosting the thinnest one.
 
-function wireCaptures(list) {
-  list.querySelectorAll("[data-capture-retry]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      rerouteCapture(control.dataset.captureRetry, null);
-    };
-  });
-  list.querySelectorAll("[data-capture-reroute]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      const key = `capture:${control.dataset.captureReroute}`;
-      rerouteKey = rerouteKey === key ? null : key;
-      rerouteBranchProject = null;
-      draw();
-    };
-  });
+/** The capture controls, answered off the same one listener. True when the press
+ *  was one of them. */
+function captureClicked(target) {
+  const retry = target.closest("[data-capture-retry]");
+  if (retry) {
+    rerouteCapture(retry.dataset.captureRetry, null);
+    return true;
+  }
+  const reroute = target.closest("[data-capture-reroute]");
+  if (reroute) {
+    const key = `capture:${reroute.dataset.captureReroute}`;
+    rerouteKey = rerouteKey === key ? null : key;
+    rerouteBranchProject = null;
+    draw();
+    return true;
+  }
   // Branch is the one destination with something left to say, so it discloses
   // the field that says it instead of dispatching on the spot.
-  list.querySelectorAll("[data-reroute-branch-open]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      const projectId = control.dataset.rerouteBranchOpen;
-      rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
-      draw();
-      // The field is found through the row that was just painted, never through
-      // a selector built out of an id the daemon minted.
-      if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
-    };
+  const branchOpen = target.closest("[data-reroute-branch-open]");
+  if (branchOpen) {
+    openRerouteBranch(branchOpen.dataset.rerouteBranchOpen);
+    return true;
+  }
+  const destination = target.closest("[data-reroute-project]");
+  if (destination) {
+    dispatchReroute(destination);
+    return true;
+  }
+  return false;
+}
+
+function openRerouteBranch(projectId) {
+  rerouteBranchProject = rerouteBranchProject === projectId ? null : projectId;
+  draw();
+  // The field is found through the list that was just painted, never through a
+  // selector built out of an id the daemon minted.
+  if (rerouteBranchProject) $("#inbox-list")?.querySelector("[data-reroute-branch]")?.focus();
+}
+
+function dispatchReroute(control) {
+  const row = control.closest(".capture-entry");
+  const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
+  rerouteKey = null;
+  rerouteBranchProject = null;
+  rerouteCapture(row.dataset.capture, {
+    projectId: control.dataset.rerouteProject,
+    kind: control.dataset.rerouteKind,
+    branch: named,
   });
-  list.querySelectorAll("[data-reroute-project]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      const row = control.closest(".capture-entry");
-      const named = control.dataset.rerouteKind === "branch" ? branchFieldValue(control) : "";
-      rerouteKey = null;
-      rerouteBranchProject = null;
-      rerouteCapture(row.dataset.capture, {
-        projectId: control.dataset.rerouteProject,
-        kind: control.dataset.rerouteKind,
-        branch: named,
-      });
-    };
-  });
-  list.querySelectorAll("[data-reroute-branch]").forEach((field) => {
-    field.onkeydown = (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      field.closest(".reroute-branch").querySelector("[data-reroute-kind='branch']").click();
-    };
-  });
+}
+
+/** Enter in the branch field is the Dispatch beside it. */
+function onListKeydown(event) {
+  if (event.key !== "Enter") return;
+  const field = event.target.closest("[data-reroute-branch]");
+  if (!field) return;
+  event.preventDefault();
+  field.closest(".reroute-branch").querySelector("[data-reroute-kind='branch']").click();
 }
 
 /** The branch named beside a Dispatch button, "" when the field is empty or

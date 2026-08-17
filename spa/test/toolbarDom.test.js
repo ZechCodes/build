@@ -187,6 +187,52 @@ describe("the two menus, one per half", () => {
   });
 });
 
+describe("the project you pick, against a feed that keeps ticking", () => {
+  const quiet = feed;
+
+  beforeEach(async () => {
+    feed = {
+      ...quiet,
+      items: [
+        ...quiet.items,
+        { kind: "branch", project_id: "p2", project: "mascot", branch: "build/spike", title: "Mascot spike", resume_at: ago(10) },
+      ],
+    };
+    await refreshFeed();
+  });
+
+  afterAll(() => {
+    feed = quiet;
+  });
+
+  it("holds the pick while you stand on another project's branch and the feed ticks", async () => {
+    openJump("project").querySelector('[data-project="p2"]').click();
+    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
+    await refreshFeed(); // two seconds later…
+    await refreshFeed(); // …and two more
+    expect(menu().querySelector(".tb-scope span").textContent).toBe("mascot");
+    expect([...menu().querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual(["build/spike"]);
+  });
+
+  it("still marks the picked project as the current one on the way back", async () => {
+    openJump("project").querySelector('[data-project="p2"]').click();
+    await refreshFeed();
+    menu().querySelector("[data-projects]").click();
+    expect(menu().querySelector(".mi.current .mt").textContent).toBe("mascot");
+  });
+
+  it("re-scopes to the project you navigate into", () => {
+    openJump("project").querySelector('[data-project="p2"]').click();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    App.route = { name: "issue", projectId: "p1", id: "plan-1" };
+    toolbarRouteChanged();
+    expect([...openJump("item").querySelectorAll("[data-work]")].map((row) => row.querySelector(".mt").textContent)).toEqual([
+      "Add a health endpoint",
+      "build/login",
+    ]);
+  });
+});
+
 describe("creating from the menu", () => {
   it("cuts a branch and opens it, echoing the branch the daemon will name", async () => {
     openJump("item").querySelector('[data-create="branch"]').click();

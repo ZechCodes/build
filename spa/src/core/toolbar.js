@@ -103,13 +103,21 @@ function paintStatus() {
   if (slot) slot.innerHTML = statusHtml(identity().row);
 }
 
-function paint() {
+/** Repaint the bar. `entering` says the paint follows a navigation (a route the
+ *  shell just entered, or the mount); every other paint is a poll landing.
+ *
+ *  Only a navigation re-scopes the menu. A poll must not: while you stand on one
+ *  project's branch you can pick another project in the switcher, and a feed
+ *  tick two seconds later would otherwise re-derive the scope from the route you
+ *  are still standing on and hand the menu back to that project — the pick would
+ *  never survive long enough to be acted on. Your pick stands until you move. */
+function paint({ entering = false } = {}) {
   const host = $("#toolbar");
   if (!host) return;
   const standing = identity();
-  // Standing in a work item scopes the menu to its project — the toolbar reads
-  // as one sentence, so the two halves can never name different projects.
-  if (standing.projectId) rememberScope(standing.projectId);
+  // Navigating into a work item scopes the menu to its project — the toolbar
+  // reads as one sentence, so the two halves can never name different projects.
+  if (entering && standing.projectId) rememberScope(standing.projectId);
   host.innerHTML = toolbarHtml({
     project: standing.project || projectNameOf(scopeProjectId()),
     kind: standing.kind,
@@ -508,7 +516,7 @@ function openSurfaceMenu(anchor) {
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
 export function initToolbar() {
   if (mounted) {
-    paint();
+    paint({ entering: true });
     return;
   }
   mounted = true;
@@ -523,14 +531,15 @@ export function initToolbar() {
   });
   // The working time is a clock, not a poll: it ticks between feeds.
   ticker = setInterval(paintStatus, 1000);
-  paint();
+  paint({ entering: true });
 }
 
-/** Repaint for the route the shell just entered. */
+/** Repaint for the route the shell just entered — the one paint that re-scopes,
+ *  because it is the one that follows a move. */
 export function toolbarRouteChanged() {
   if (!mounted) return;
   closeMenu();
-  paint();
+  paint({ entering: true });
 }
 
 /** Teardown, for tests and for a gate that tears the session down. */

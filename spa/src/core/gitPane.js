@@ -1,6 +1,6 @@
 // DOM-light controller for the Changes surface: a left rail (Uncommitted at the
-// top with its +/− counts, the commit list under it, and — where a view plugs
-// one in — the review aggregate below that) driving a right detail pane. Every
+// top with its +/− counts, then — where a view plugs one in — the review
+// aggregate, and the commit list under both) driving a right detail pane. Every
 // changeset the pane can show renders through ONE renderer: stacked full file
 // diffs with line numbers, a per-file header carrying counts, a ✎, and a ⋯ for
 // the file's own verbs. There is no staging and no changed-files list — commit

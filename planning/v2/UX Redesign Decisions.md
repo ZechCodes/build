@@ -110,11 +110,15 @@ final for this build unless the reviewer overrides them in the thread.
   of one project-scoped menu, which can also create either (creating opens
   the item; the agent session starts on the first message — issues too: no
   planning agent is spawned until the first message or an implement action).
-  Toolbar right shows working time and +/− counts.
+  Working time and +/− counts pin above the agent rail's composer instead of
+  the toolbar, alongside ahead/behind when nonzero.
 - **Branch tabs: Changes, Files. Nothing else.** Conversation and Agent tabs
   are deleted; both live in the agent rail. Terminals move to the console.
-- **Changes**: left column = commit list, `Uncommitted` (with +/− counts) as
-  top entry; no pinned "All changes" default. Review-plug content (triage,
+- **Changes**: left column = `Uncommitted` (with +/− counts) as top entry,
+  the review aggregate ("All changes") directly under it when the surface has
+  one, commit list under both; no pinned "All changes" default selection —
+  the row exists to be reached without scrolling, not to open on load.
+  Review-plug content (triage,
   comments) renders on the Uncommitted/selected changeset. Commit box
   discloses only while uncommitted changes exist. Viewer = stacked full file
   diffs, line numbers, per-file header with counts and a Comment button, in

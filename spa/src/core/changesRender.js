@@ -4,10 +4,11 @@
 // esc()d on the way out.
 //
 // The surface these draw is the one the UX Redesign Decisions doc specifies:
-// a left rail whose top entry is Uncommitted (carrying +/− counts), the commit
-// list under it, and the review aggregate ("All changes") below the list rather
-// than pinned above it. Every changeset — uncommitted, one commit, the
-// aggregate — renders through the SAME stacked full-file diff (core/diffRender's
+// a left rail whose top entry is Uncommitted (carrying +/− counts), the review
+// aggregate ("All changes") directly under it, and the commit list below both —
+// a long commit list would otherwise scroll the one row a reviewer reaches for
+// first out of view. Every changeset — uncommitted, one commit, the aggregate —
+// renders through the SAME stacked full-file diff (core/diffRender's
 // diffStackHtml); these builders only draw what wraps it.
 
 import "../styles/surfaces.css";
@@ -39,10 +40,10 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
 }
 
 /// The Changes rail, row by row: branch control, Uncommitted (top, with its +/−
-/// counts), the "Commits" head and the commit list under it with its paging
-/// affordance, and — for a surface that has one — the review aggregate at the
-/// bottom. `selected` is "uncommitted" | "review" | a commit hash | null (a
-/// clean branch, sitting on the list).
+/// counts), — for a surface that has one — the review aggregate directly under
+/// it, then the "Commits" head and the commit list with its paging affordance.
+/// `selected` is "uncommitted" | "review" | a commit hash | null (a clean
+/// branch, sitting on the list).
 ///
 /// Every row, label and affordance is an entry with a name of its own, so the
 /// rail is reconciled by name rather than rewritten: a commit that is still
@@ -66,6 +67,7 @@ export function changesRailEntries({
     key: "uncommitted",
     html: rrow("uncommitted", "Uncommitted", hasUncommittedChanges(status) ? plusMinusHtml(uncommittedTotals(status)) : "clean"),
   });
+  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
   entries.push({ key: "commits-head", html: '<div class="rhead">Commits</div>' });
   for (const commit of commits) {
     entries.push({ key: commit.hash, html: commitRowHtml(commit, { selected: selected === commit.hash, nowSeconds }) });
@@ -74,7 +76,6 @@ export function changesRailEntries({
   if (log && log.more) {
     entries.push({ key: "more", html: '<div class="gitmore" role="button" tabindex="0">Load older commits…</div>' });
   }
-  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
   return entries;
 }
 

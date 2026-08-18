@@ -472,6 +472,9 @@ async function submitCreate(raw) {
     const route = kind === "branch" ? await createBranch(projectId, value) : await createIssue(projectId, value);
     closeMenu();
     refreshFeed();
+    // A freshly cut branch has nobody in it yet — the rail opens on the ghost
+    // composer, and that is exactly where typing the first message belongs.
+    if (kind === "branch") App.focusComposerOnMount = true;
     go(route);
   } catch (error) {
     if (!open || !open.create) {

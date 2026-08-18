@@ -361,6 +361,45 @@ describe("the conversation panel", () => {
   });
 });
 
+describe("focusing the composer on a freshly created branch", () => {
+  // A branch fresh out of "New branch…" has no agent yet — the ghost state —
+  // same as every test in this block below.
+  const freshBranch = () => {
+    payload = branchRow({ run_id: null, run: null, agents: [] });
+  };
+
+  it("focuses the composer as soon as it paints, when the view says to", async () => {
+    freshBranch();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", autofocusComposer: true });
+    expect(document.activeElement).toBe(panel().querySelector("#railinput"));
+  });
+
+  it("leaves focus alone on an ordinary mount", async () => {
+    freshBranch();
+    await mount();
+    expect(document.activeElement).not.toBe(panel().querySelector("#railinput"));
+  });
+
+  it("expands a rail the human had collapsed, so there is a composer to focus at all", async () => {
+    freshBranch();
+    localStorage.setItem("build.rail.expanded", "0");
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", autofocusComposer: true });
+    expect(panel()).toBeTruthy();
+    expect(document.activeElement).toBe(panel().querySelector("#railinput"));
+  });
+
+  it("steals focus only once, not on every poll that repaints the same body", async () => {
+    freshBranch();
+    await mount({ kind: "branch", projectId: "p1", branch: "build/login", autofocusComposer: true });
+    panel().querySelector("#railinput").blur();
+    expect(document.activeElement).not.toBe(panel().querySelector("#railinput"));
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(document.activeElement).not.toBe(panel().querySelector("#railinput"));
+  });
+});
+
 describe("the pinned status line above the composer", () => {
   it("pins nothing when the feed row has nothing to report", async () => {
     await mount();

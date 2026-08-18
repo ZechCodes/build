@@ -167,7 +167,10 @@ export function mountAgentRail(host, context) {
   let entity = railEntity(null, context.kind);
   let selectedId = chosenAgent.get(key) || null;
   selection.set(selectedId);
-  let expanded = readExpanded();
+  // A collapsed rail has no composer to focus at all — the human just cut
+  // this branch and is about to type into it, so that intent outranks
+  // whatever they left the rail at on the last one.
+  let expanded = context.autofocusComposer === true || readExpanded();
   let mode = panelModes.get(key) || "chat";
   let poll = null;
   let disposed = false;
@@ -180,6 +183,10 @@ export function mountAgentRail(host, context) {
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
   let feedRow = null; // this work item's row off the shared feed, for the pinned status line
   let statusTicker = null;
+  // One-shot: the composer steals focus the first time it paints, then never
+  // again — a poll rebuilding the panel later (a new agent, a mode switch)
+  // must not keep yanking focus back while the human is doing something else.
+  let autofocusComposerPending = context.autofocusComposer === true;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -365,7 +372,13 @@ export function mountAgentRail(host, context) {
       panel.dataset.body = wantedBody;
       wireHead(panel);
       if (mode === "tui") mountTui();
-      else wireComposer(panel);
+      else {
+        wireComposer(panel);
+        if (autofocusComposerPending) {
+          autofocusComposerPending = false;
+          panel.querySelector(`#${COMPOSER_IDS.input}`)?.focus();
+        }
+      }
     } else if (panel.dataset.head !== wantedHead) {
       // The name changed under the panel (an agent whose provider was picked
       // after the fact), or the last agent beside this one went away. Nothing

@@ -28,6 +28,14 @@ export const App = {
   devices: [], // last GET /api/devices, statuses patched live by relay pushes
   selectedDeviceId: localStorage.getItem(SELECTED_DEVICE_KEY) || null,
   modelCatalog: null, // models.list result, fetched once per session
+
+  // One-shot: set right before navigating to a branch just cut from the
+  // toolbar's create form, so the branch view knows to focus the rail's
+  // composer the moment it exists — read and cleared by the very next
+  // renderBranch, which is what that navigation lands on. The route/hash
+  // can't carry this itself (routeFromHash/hashFromRoute only round-trip
+  // name/projectId/branch/tab).
+  focusComposerOnMount: false,
 };
 
 /** The bridge's provider/model catalog, cached for the session.

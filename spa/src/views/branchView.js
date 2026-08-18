@@ -77,6 +77,11 @@ export async function renderBranch() {
   const root = $("#root");
   const { projectId, branch } = App.route;
   const tab = App.route.tab || "changes";
+  // Consumed once: only the navigation the toolbar's create form just fired
+  // means it, and a later revisit to this same branch must not keep stealing
+  // focus back to the composer.
+  const autofocusComposer = App.focusComposerOnMount;
+  App.focusComposerOnMount = false;
   root.className = "surface";
   root.innerHTML = `
     <div class="surface-bar">
@@ -121,6 +126,7 @@ export async function renderBranch() {
     branch,
     selection: agentSelection,
     adopting: adoptingHere,
+    autofocusComposer,
   });
   const home = () => go({ name: "inbox" });
   /** An ending the user triggered here must not badge its own inbox entry:

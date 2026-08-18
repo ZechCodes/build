@@ -75,6 +75,24 @@ describe("the branch surface", () => {
     expect(document.querySelector("#tabbody").classList.contains("flush")).toBe(true);
   });
 
+  // The toolbar's create form arms this right before navigating here — the
+  // one-shot signal that this landing is a branch just cut, nobody in it yet.
+  it("focuses the rail's composer when the toolbar just cut this branch, and clears the flag", async () => {
+    App.call = vi.fn(async () => row);
+    App.focusComposerOnMount = true;
+    await renderBranch();
+    await flush();
+    expect(document.getElementById("railinput")).toBe(document.activeElement);
+    expect(App.focusComposerOnMount).toBe(false);
+  });
+
+  it("leaves focus alone on an ordinary visit", async () => {
+    App.call = vi.fn(async () => row);
+    await renderBranch();
+    await flush();
+    expect(document.getElementById("railinput")).not.toBe(document.activeElement);
+  });
+
   it("installs no poll when the view was torn down mid-load", async () => {
     let answer;
     const firstRead = new Promise((r) => {

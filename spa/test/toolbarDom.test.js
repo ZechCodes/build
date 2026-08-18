@@ -85,6 +85,7 @@ beforeEach(() => {
   localStorage.clear();
   App.gated = false;
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+  App.focusComposerOnMount = false;
   App.call = vi.fn(async (method) => {
     if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
     if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
@@ -293,6 +294,9 @@ describe("creating from the menu", () => {
     expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "Mascot Model Spike!" });
     expect(location.hash).toBe("#/project/p1/branch/build%2Fmascot-model-spike/changes");
     expect(menu()).toBeNull();
+    // The branch view this navigation lands on reads this to focus the rail's
+    // composer the moment it exists — a branch this fresh has nobody in it yet.
+    expect(App.focusComposerOnMount).toBe(true);
   });
 
   it("files an issue that starts nothing, and opens it", async () => {
@@ -302,6 +306,9 @@ describe("creating from the menu", () => {
     input.dispatchEvent(new Event("input"));
     menu().querySelector("[data-create-go]").click();
     await flush();
+    // Issue creation is not what was asked for this — only a branch cut from
+    // this form arms the composer autofocus.
+    expect(App.focusComposerOnMount).toBe(false);
     // Inert by contract: the record exists and no agent is dispatched until the
     // first message.
     expect(App.call).toHaveBeenCalledWith("issue.create", {

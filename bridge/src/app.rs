@@ -6932,12 +6932,23 @@ impl AppState {
             return Err("branch operations are project- or worktree-scope only".to_string());
         }
         let project_id = require_str(params, "project_id")?;
+        let base_branch = self.base_for(&project_id)?;
+        // Best-effort: a scan failure here costs the switcher its "adopt from
+        // here" affordance, not the branch list itself.
+        let external_branches = self
+            .external_worktrees(&project_id, false)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
+            .collect();
         if let Some(worktree_id) = params.get("worktree_id").and_then(Value::as_str) {
             let external = self.resolve_external_worktree(&project_id, worktree_id)?;
             return Ok(BranchScope {
                 project_id,
                 repo_path: external.path,
+                base_branch,
                 external_worktree: true,
+                external_branches,
             });
         }
         let project = self
@@ -6948,7 +6959,9 @@ impl AppState {
         Ok(BranchScope {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
+            base_branch,
             external_worktree: false,
+            external_branches,
         })
     }
 
@@ -6987,7 +7000,7 @@ impl AppState {
     /// list either way: branches are the repository's, not one checkout's).
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_branch_git(params, false, |scope, _| {
-            crate::gitgui::branch_list(&scope.repo_path)
+            crate::gitgui::branch_list(&scope.repo_path, &scope.base_branch, &scope.external_branches)
         })
     }
 
@@ -7014,7 +7027,7 @@ impl AppState {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             crate::gitgui::branch_delete(&scope.repo_path, &branch, force)?;
-            crate::gitgui::branch_list(&scope.repo_path)
+            crate::gitgui::branch_list(&scope.repo_path, &scope.base_branch, &scope.external_branches)
         })
     }
 
@@ -11970,7 +11983,24 @@ impl AppState {
         };
         let external_worktrees = self.external_worktrees_json();
         let primary_changes = self.primary_changes_json();
-        let items = self.work_items(&external_worktrees, &primary_changes);
+        // The inbox is in-flight work the user started in Build, nothing else:
+        // a branch Build never cut or adopted (no run behind it, and it is not
+        // the project's own primary checkout) earns no row here, ever — not
+        // while an agent happens to be active in it, not on a fresh commit.
+        // Adopting it (or sending it a first message, which adopts on the way)
+        // is what brings it in; from there its row leaves the same way every
+        // other row does — Done, deleted, or dismissed — never on its own.
+        // `branch.get` still resolves it directly (deep-linking); this filter
+        // is the feed list's alone.
+        let items: Vec<Value> = self
+            .work_items(&external_worktrees, &primary_changes)
+            .into_iter()
+            .filter(|row| {
+                row["kind"] != crate::branch::WorkItemKind::Branch.as_str()
+                    || !row["run_id"].is_null()
+                    || row["primary"] == json!(true)
+            })
+            .collect();
         json!({
             // The feed: one row per work item, branches and issues (Decisions
             // §Entity model). The keys below it are the same state told the way
@@ -11992,6 +12022,13 @@ impl AppState {
     /// the `main` row. An issue whose implementation is still in flight is
     /// spoken for by that implementation's branch row and emits none of its
     /// own. Both rules live in [`crate::branch`].
+    ///
+    /// Every branch a worktree names resolves here, whether or not it belongs
+    /// on the INBOX list — `branch.get` (deep-linking) and `board_list`'s
+    /// `items` both read this, and only the latter additionally filters out a
+    /// worktree Build never adopted with no agent presently in it (see
+    /// `board_list`). This function stays the unfiltered source of truth for
+    /// "what branch is this," not "what does the inbox show."
     ///
     /// The scans are passed in rather than taken again: `board_list` already
     /// paid for them, and re-running them here would double every poll's git
@@ -14410,7 +14447,13 @@ struct GitScopeWorktree {
 struct BranchScope {
     project_id: String,
     repo_path: std::path::PathBuf,
+    base_branch: String,
     external_worktree: bool,
+    /// Branch name → worktree id, for every OTHER worktree of this project
+    /// Build has not adopted. The switcher reads this to offer "adopt and
+    /// open" in place of a checkout git would refuse (a branch already
+    /// checked out elsewhere).
+    external_branches: std::collections::HashMap<String, String>,
 }
 
 /// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
@@ -20761,7 +20804,98 @@ mod tests {
         assert_eq!(branches[0]["ahead"], 0);
         assert_eq!(branches[0]["behind"], 0);
         assert!(branches[0]["upstream"].is_null());
+        // A branch with nothing on it yet has nothing to weigh.
+        assert_eq!(branches[0]["stat"]["insertions"], 0, "{branches:?}");
+        assert_eq!(branches[0]["stat"]["deletions"], 0, "{branches:?}");
         assert!(branches.iter().any(|b| b["name"] == "feature-a"));
+    }
+
+    /// The switcher reads a branch's own weight against the project's base —
+    /// not the checked-out branch's, and not requiring the branch to BE
+    /// checked out at all.
+    #[test]
+    fn git_branches_carries_each_branchs_own_diffstat_against_base() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["checkout", "-b", "feature-a"]);
+        std::fs::write(repo.join("feature.rs"), "one\ntwo\nthree\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "feature work"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let feature = branches
+            .iter()
+            .find(|b| b["name"] == "feature-a")
+            .expect("feature-a is listed even though it is not checked out");
+        assert_eq!(feature["stat"]["files_changed"], 1, "{feature:?}");
+        assert_eq!(feature["stat"]["insertions"], 3, "{feature:?}");
+        assert_eq!(feature["stat"]["deletions"], 0, "{feature:?}");
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(main["stat"]["insertions"], 0, "{main:?}");
+    }
+
+    /// A branch checked out in a worktree Build never adopted is unpickable
+    /// as a plain checkout — git refuses the same branch in two working
+    /// directories — so the switcher flags it with the worktree that has it,
+    /// for the client to adopt instead.
+    #[test]
+    fn git_branches_flags_a_branch_checked_out_in_an_unadopted_worktree() {
+        let (dir, repo) = init_repo();
+        add_external_worktree(&repo, dir.path(), "elsewhere", "feature-elsewhere");
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let worktree_id = state
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("feature-elsewhere"))
+            .expect("discoverable")
+            .id;
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let elsewhere = branches
+            .iter()
+            .find(|b| b["name"] == "feature-elsewhere")
+            .unwrap();
+        assert_eq!(
+            elsewhere["external_worktree_id"], worktree_id,
+            "{elsewhere:?}"
+        );
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert!(
+            main["external_worktree_id"].is_null(),
+            "the checked-out-here branch is not flagged: {main:?}"
+        );
+    }
+
+    /// Adopting the very worktree Build already runs a run in stays unflagged
+    /// — that branch is a normal checkout target for anything else, not a
+    /// switcher special case (adoption already happened).
+    #[test]
+    fn git_branches_does_not_flag_a_branch_a_run_already_owns() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
+        assert!(state.runs.contains_key(&run_id));
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let adopted = branches
+            .iter()
+            .find(|b| b["name"] == "feature-adopted")
+            .unwrap();
+        assert!(
+            adopted["external_worktree_id"].is_null(),
+            "{adopted:?}"
+        );
     }
 
     #[test]
@@ -30797,6 +30931,75 @@ mod tests {
         state.lock().unwrap().tabs[&key].session.kill_and_reap();
     }
 
+    /// A worktree Build never touched — no run, no adoption — is not the
+    /// user's inbox to clutter, and nothing short of the user bringing it into
+    /// Build changes that: not a commit landing on it, not an agent tab
+    /// somehow live in it (a raw terminal opened by hand, say). Only adopting
+    /// it — the same act that mints a run for it — earns it a row, and from
+    /// there it leaves the inbox the way every other row does.
+    #[tokio::test]
+    async fn a_bare_external_worktree_stays_off_the_board_no_matter_what_happens_in_it() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let checkout = add_external_worktree(&repo, dir.path(), "hand-made", "hand-made");
+        let worktree_id = state
+            .lock()
+            .unwrap()
+            .external_worktrees(&project_id, true)
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some("hand-made"))
+            .expect("discoverable")
+            .id;
+
+        let has_branch_row = |state: &Arc<Mutex<AppState>>| {
+            let board = state.lock().unwrap().handle(req("board.list", json!({})));
+            board["result"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["kind"] == "branch" && row["branch"] == json!("hand-made"))
+        };
+        assert!(
+            !has_branch_row(&state),
+            "nobody has touched it yet — it stays out of the inbox"
+        );
+
+        commit_in(&checkout, "some work landed");
+        assert!(!has_branch_row(&state), "a commit alone does not earn it a row");
+
+        let root = {
+            let mut s = state.lock().unwrap();
+            let owner = "agent-in-the-worktree".to_string();
+            s.entity_project.insert(owner, project_id.clone());
+            s.resolve_external_worktree(&project_id, &worktree_id)
+                .unwrap()
+                .path
+        };
+        ensure_agent_tab(
+            &state,
+            &root,
+            "agent-in-the-worktree",
+            &crate::agent::derived_agent_id("agent-in-the-worktree"),
+            &ModelChoice::default(),
+        )
+        .expect("the agent spawns");
+        assert!(
+            !has_branch_row(&state),
+            "an agent happening to be live in it is not the same as Build having adopted it"
+        );
+        let key = first_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
+        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+
+        let adopted = state.lock().unwrap().handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert!(has_branch_row(&state), "adopting it is what earns the row");
+    }
+
     /// The relay calls `dispatch` directly — `handle` is a test convenience — so
     /// a stamp wired into `handle` would pass every test and fire in no real
     /// session. This drives the wire path the daemon actually uses.
@@ -31206,82 +31409,14 @@ mod tests {
         git_in_dir(checkout, &["commit", "-m", message]);
     }
 
-    /// A branch checked out where Build never cut it has no run, no issue and
-    /// no conversation — and the human must still be able to clear its row.
-    /// It goes on what the row IS, and comes back when the branch does
-    /// something.
+    /// The primary checkout's row is entity-less — a different dismissal path
+    /// than an issue's or a run's — and it must survive a restart too.
     #[test]
-    fn clearing_a_bare_branch_row_holds_until_the_branch_commits() {
+    fn a_primary_row_dismissal_survives_a_restart() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
-        let checkout = add_external_worktree(&repo, dir.path(), "loose", "loose");
-
-        let row = branch_row(&mut state, "loose");
-        assert_eq!(row["run_id"], Value::Null, "nothing stands behind it");
-        assert_eq!(row["dismissed"], false, "{row:?}");
-
-        let cleared = state.handle(req(
-            "entity.dismiss",
-            json!({ "project_id": project_id, "branch": "loose" }),
-        ));
-        assert_eq!(cleared["ok"], true, "{cleared:?}");
-        assert_eq!(cleared["result"]["dismissed"], true, "{cleared:?}");
-        assert_eq!(cleared["result"]["project_id"], project_id, "{cleared:?}");
-        assert_eq!(cleared["result"]["branch"], "loose", "{cleared:?}");
-        assert_eq!(cleared["result"]["primary"], false, "{cleared:?}");
-
-        let row = branch_row(&mut state, "loose");
-        assert_eq!(row["dismissed"], true, "{row:?}");
-
-        // A commit is the branch speaking, and the row is back with nobody
-        // having to un-dismiss it.
-        commit_in(&checkout, "new work");
-        let row = branch_row(&mut state, "loose");
-        assert_eq!(row["dismissed"], false, "{row:?}");
-    }
-
-    /// The same row named the way the client already has it — by the worktree
-    /// id the feed ships — lands on the same dismissal, because it is the same
-    /// row.
-    #[test]
-    fn clearing_a_bare_checkout_by_its_worktree_id_clears_the_same_row() {
-        let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        let project_id = state.projects[0].id.clone();
-        add_external_worktree(&repo, dir.path(), "loose", "loose");
-        let worktree_id = state
-            .external_worktrees(&project_id, true)
-            .unwrap()
-            .into_iter()
-            .find(|w| w.branch.as_deref() == Some("loose"))
-            .expect("the external worktree is discoverable")
-            .id;
-
-        let cleared = state.handle(req(
-            "entity.dismiss",
-            json!({ "entity_id": worktree_id.clone() }),
-        ));
-        assert_eq!(cleared["ok"], true, "{cleared:?}");
-        assert_eq!(cleared["result"]["entity_id"], worktree_id, "{cleared:?}");
-        let row = branch_row(&mut state, "loose");
-        assert_eq!(row["dismissed"], true, "{row:?}");
-    }
-
-    /// A row cleared away must still be cleared after a restart, whether or not
-    /// anything stands behind it.
-    #[test]
-    fn a_bare_row_dismissal_survives_a_restart() {
-        let (dir, repo) = init_repo();
-        add_external_worktree(&repo, dir.path(), "loose", "loose");
         {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
-            let cleared = state.handle(req(
-                "entity.dismiss",
-                json!({ "project_id": project_id.clone(), "branch": "loose" }),
-            ));
-            assert_eq!(cleared["ok"], true, "{cleared:?}");
             let cleared = state.handle(req(
                 "entity.dismiss",
                 json!({ "project_id": project_id, "primary": true }),
@@ -31290,17 +31425,15 @@ mod tests {
         }
 
         let mut reloaded = qa_state(&repo, dir.path());
-        let row = branch_row(&mut reloaded, "loose");
-        assert_eq!(row["dismissed"], true, "{row:?}");
         let row = branch_row(&mut reloaded, "main");
         assert_eq!(row["dismissed"], true, "{row:?}");
     }
 
-    /// Adoption gives the branch a run, and a run is something new to say: the
-    /// row comes back as the entity it has become, and is cleared from then on
-    /// the way every entity is — through its conversation.
+    /// Adopting a bare worktree is what brings its row onto the feed at all —
+    /// releasing it hands the worktree back to the human, and the row goes
+    /// with it, the same as it never having been adopted.
     #[test]
-    fn adopting_a_cleared_bare_branch_brings_its_row_back() {
+    fn adopting_a_bare_worktree_brings_its_row_and_releasing_it_takes_it_away() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
@@ -31312,11 +31445,12 @@ mod tests {
             .find(|w| w.branch.as_deref() == Some("loose"))
             .expect("the external worktree is discoverable")
             .id;
-        state.handle(req(
-            "entity.dismiss",
-            json!({ "project_id": project_id.clone(), "branch": "loose" }),
-        ));
-        assert_eq!(branch_row(&mut state, "loose")["dismissed"], true);
+        assert!(
+            work_item_rows(&mut state)
+                .iter()
+                .all(|row| row["branch"] != json!("loose")),
+            "not on the feed until adopted"
+        );
 
         let adopted = state.handle(req(
             "run.adopt",
@@ -31325,18 +31459,17 @@ mod tests {
         assert_eq!(adopted["ok"], true, "{adopted:?}");
         let row = branch_row(&mut state, "loose");
         assert_eq!(row["run_id"], run_id_of(&adopted), "{row:?}");
-        assert_eq!(
-            row["dismissed"], false,
-            "the branch became a run, which is news: {row:?}"
-        );
+        assert_eq!(row["dismissed"], false, "{row:?}");
 
-        // …and the row does not fall back into a dismissal it left behind: the
-        // run's arrival ended that one, whatever happens to the run afterwards.
         let released = state.handle(req("run.release", json!({ "run_id": run_id_of(&adopted) })));
         assert_eq!(released["ok"], true, "{released:?}");
-        let row = branch_row(&mut state, "loose");
-        assert_eq!(row["run_id"], Value::Null, "{row:?}");
-        assert_eq!(row["dismissed"], false, "{row:?}");
+        assert!(
+            work_item_rows(&mut state)
+                .iter()
+                .all(|row| row["branch"] != json!("loose")),
+            "released back to a bare worktree — off the feed again: {:?}",
+            work_item_rows(&mut state)
+        );
     }
 
     /// The primary checkout is the project's own row: it has no entity, no
@@ -33301,10 +33434,12 @@ mod tests {
             .collect()
     }
 
-    /// A run, a worktree Build never cut, and the primary checkout are three
-    /// ways of storing the same kind of thing. The feed shows one row shape for
-    /// all of them, keyed by branch, and the primary checkout is the `main`
-    /// row.
+    /// A run and the primary checkout are two ways of storing the same kind of
+    /// thing. The feed shows one row shape for both, keyed by branch, and the
+    /// primary checkout is the `main` row. A worktree Build never cut or
+    /// adopted is a THIRD source `work_items` still folds in (`branch.get`
+    /// deep-links to it), but `board_list`'s feed leaves it out — it is not
+    /// work the user started in Build.
     #[test]
     fn the_feed_folds_runs_worktrees_and_the_primary_checkout_into_branch_rows() {
         let (dir, repo) = init_repo();
@@ -33344,14 +33479,27 @@ mod tests {
         assert_eq!(adopted["muted"], false, "{adopted:?}");
         assert!(adopted["stat"]["insertions"].is_u64(), "{adopted:?}");
 
-        let stray = branch_row(&mut state, "feature-stray");
-        assert_eq!(stray["kind"], "branch", "{stray:?}");
-        assert!(stray["run_id"].is_null(), "{stray:?}");
-        assert!(stray["worktree_id"].is_string(), "{stray:?}");
-        assert_eq!(stray["state"], "idle", "{stray:?}");
+        // Discoverable on disk, resolvable by name, but not on the feed:
+        // Build never cut or adopted it, so it is not the user's in-flight
+        // work.
         assert!(
-            stray["worktree_path"].as_str().unwrap().ends_with("stray"),
-            "{stray:?}"
+            state
+                .external_worktrees(&project_id, true)
+                .unwrap()
+                .into_iter()
+                .any(|w| w.branch.as_deref() == Some("feature-stray")),
+            "still discoverable for adoption"
+        );
+        let routed = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-stray" }),
+        ));
+        assert_eq!(routed["ok"], true, "branch.get still deep-links to it: {routed:?}");
+        assert!(
+            work_item_rows(&mut state)
+                .iter()
+                .all(|row| row["branch"] != json!("feature-stray")),
+            "not on the feed"
         );
 
         let main = branch_row(&mut state, "main");

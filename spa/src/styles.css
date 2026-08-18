@@ -656,6 +656,8 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gtbranch-item.current .gtbranch-name { color:var(--accent); font-weight:600; }
 .gtbranch-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:12.5px; }
 .gtbranch-chips { font-family:var(--mono); font-size:11px; color:var(--dim); flex:none; }
+.gtbranch-chips .a { color:var(--green); } .gtbranch-chips .d { color:var(--red); }
+.gtbranch-elsewhere { flex:none; font-size:10.5px; letter-spacing:.02em; color:var(--dim); border:1px solid var(--line2); border-radius:5px; padding:1px 6px; }
 .gtbranch-del { flex:none; font:inherit; font-size:11px; background:transparent; border:0; color:var(--dim); cursor:pointer; padding:2px 6px; border-radius:5px; }
 .gtbranch-del:hover, .gtbranch-del.force { color:var(--red); }
 .gtbranch-del.armed { background:var(--red); color:var(--accent-ink); }

@@ -158,6 +158,25 @@ fn merge_base_tree<'repo>(
     Ok(repo.find_commit(merge_base_id)?.tree()?)
 }
 
+/// One local branch's total delta from its fork point with `base_branch`, by
+/// tree alone — no working directory or index involved, so this reads safely
+/// for ANY branch, not only the one presently checked out. The branch-switcher
+/// list uses this: every branch's own weight, not just the checked-out one's.
+pub fn stat_branch_against_base(
+    worktree_path: &Path,
+    branch: &str,
+    base_branch: &str,
+) -> Result<DiffStat, DiffError> {
+    let repo = git2::Repository::open(worktree_path)?;
+    let branch_commit = repo.revparse_single(branch)?.peel_to_commit()?;
+    let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
+    let merge_base_id = repo.merge_base(branch_commit.id(), base_commit.id())?;
+    let merge_base_tree = repo.find_commit(merge_base_id)?.tree()?;
+    let branch_tree = branch_commit.tree()?;
+    let diff = repo.diff_tree_to_tree(Some(&merge_base_tree), Some(&branch_tree), None)?;
+    diff_stat_without_rendering(&repo, &diff)
+}
+
 /// Render an immutable commit-to-commit range. Inputs must be full object ids,
 /// not revspecs: callers resolve only persisted stage boundaries through this
 /// helper, so later HEAD movement and dirty files cannot alter the result.
@@ -903,6 +922,35 @@ mod tests {
         let strayed = diff_against_base(&repo, "main").unwrap();
         assert!(strayed.touched_outside_plan_scope());
         assert_eq!(strayed.paths_outside(PLAN_SCOPE_PREFIX), vec!["src.rs"]);
+    }
+
+    #[test]
+    fn stat_branch_against_base_reads_a_branch_that_is_not_checked_out() {
+        let (_dir, repo) = init_repo();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .status()
+                .unwrap()
+                .success());
+        };
+        git(&["checkout", "-b", "build/x"]);
+        std::fs::write(repo.join("feature.rs"), "one\ntwo\nthree\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feature"]);
+        // Not the checked-out branch — main still is — so this reads the tree
+        // alone, no working directory involved.
+        git(&["checkout", "main"]);
+
+        let stat = stat_branch_against_base(&repo, "build/x", "main").unwrap();
+        assert_eq!(stat.files_changed, 1, "{stat:?}");
+        assert_eq!(stat.insertions, 3, "{stat:?}");
+        assert_eq!(stat.deletions, 0, "{stat:?}");
+
+        // A branch measured against itself has nothing to say.
+        let same = stat_branch_against_base(&repo, "main", "main").unwrap();
+        assert_eq!(same, DiffStat::default(), "{same:?}");
     }
 
     #[test]

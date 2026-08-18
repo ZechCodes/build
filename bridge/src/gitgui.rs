@@ -739,8 +739,18 @@ pub fn push(repo_path: &Path, force: bool) -> Result<(), String> {
     run_git_network(repo_path, &arg_refs).map(|_| ())
 }
 
-/// One local branch's wire summary for [`branch_list`].
-fn branch_entry_json(repo: &git2::Repository, branch: &git2::Branch) -> Result<Value, String> {
+/// One local branch's wire summary for [`branch_list`]: the sync chips
+/// against its own upstream (unrelated to `base_branch`, which is what
+/// `stat` below is measured from), and its own weight — the diffstat a
+/// reviewer would see switching onto it, whether or not it is presently
+/// checked out.
+fn branch_entry_json(
+    repo: &git2::Repository,
+    repo_path: &Path,
+    base_branch: &str,
+    external_branches: &std::collections::HashMap<String, String>,
+    branch: &git2::Branch,
+) -> Result<Value, String> {
     let name = branch
         .name()
         .map_err(|e| e.to_string())?
@@ -764,6 +774,11 @@ fn branch_entry_json(repo: &git2::Repository, branch: &git2::Branch) -> Result<V
         }
         Err(_) => (None, 0, 0),
     };
+    // The branch's own weight against the project's base — same fork-point
+    // math as every other diffstat in the app, just read for a branch that
+    // may not be the one checked out.
+    let stat = crate::diff::stat_branch_against_base(repo_path, &name, base_branch)
+        .map_err(|e| e.to_string())?;
     Ok(json!({
         "name": name,
         "is_current": branch.is_head(),
@@ -772,12 +787,26 @@ fn branch_entry_json(repo: &git2::Repository, branch: &git2::Branch) -> Result<V
         "behind": behind,
         "head_subject": subject,
         "head_time": commit.time().seconds(),
+        "stat": {
+            "files_changed": stat.files_changed,
+            "insertions": stat.insertions,
+            "deletions": stat.deletions,
+        },
+        // Set when this branch is checked out in a worktree Build has not
+        // adopted — picking it in the switcher cannot be a checkout (git
+        // refuses the same branch in two places at once), so the client
+        // adopts this worktree instead.
+        "external_worktree_id": external_branches.get(&name),
     }))
 }
 
 /// `git.branches`: local branches only, current first then by most-recent head
 /// commit time. Pure git2 reads — no working-tree mutation.
-pub fn branch_list(repo_path: &Path) -> Result<Value, String> {
+pub fn branch_list(
+    repo_path: &Path,
+    base_branch: &str,
+    external_branches: &std::collections::HashMap<String, String>,
+) -> Result<Value, String> {
     let repo = open_repo(repo_path)?;
     let current = current_branch(&repo)?;
     let mut branches = Vec::new();
@@ -786,7 +815,13 @@ pub fn branch_list(repo_path: &Path) -> Result<Value, String> {
         .map_err(|e| e.to_string())?
     {
         let (branch, _) = item.map_err(|e| e.to_string())?;
-        branches.push(branch_entry_json(&repo, &branch)?);
+        branches.push(branch_entry_json(
+            &repo,
+            repo_path,
+            base_branch,
+            external_branches,
+            &branch,
+        )?);
     }
     branches.sort_by(|a, b| {
         let a_current = a["is_current"].as_bool().unwrap_or(false);

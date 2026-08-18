@@ -398,7 +398,6 @@ export function mountGitPane(
     agentSelection = createAgentSelection(),
   } = {},
 ) {
-  void onNavigate; // accepted per the pane contract; no link targets yet
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let lastStatus = null;
@@ -1155,6 +1154,22 @@ export function mountGitPane(
       await applyStatusResult(status, create ? `Created ${branch}.` : `Switched to ${branch}.`);
     });
 
+  /** A branch the switcher found checked out in another worktree cannot be a
+   *  checkout here — git refuses the same branch in two places — so picking
+   *  it adopts that worktree instead, and hands the human off to it. */
+  const adoptAndSwitchTo = (branch, worktreeId) =>
+    runGuarded(async () => {
+      try {
+        await callRpc("run.adopt", { project_id: scope.project_id, worktree_id: worktreeId });
+      } catch (e) {
+        if (!disposed) actionError(e);
+        return;
+      }
+      if (disposed) return;
+      resetBranchMenu();
+      if (onNavigate) onNavigate({ name: "branch", projectId: scope.project_id, branch, tab: "changes" });
+    });
+
   const createBranch = () => {
     const name = (branchQuery || "").trim();
     if (!name) {
@@ -1230,7 +1245,11 @@ export function mountGitPane(
         }
         // Branch rows are <div>s, so (unlike the disabled toolbar buttons) they
         // stay clickable during an in-flight action — guard the checkout here.
-        if (inFlightActions === 0) checkoutBranch(item.dataset.branch);
+        if (inFlightActions === 0) {
+          const externalWorktreeId = item.dataset.externalWorktreeId;
+          if (externalWorktreeId) adoptAndSwitchTo(item.dataset.branch, externalWorktreeId);
+          else checkoutBranch(item.dataset.branch);
+        }
         return;
       }
       if (target.closest(".gtbranch-menu")) return; // a click on the input keeps the menu open

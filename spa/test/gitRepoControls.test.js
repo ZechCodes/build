@@ -429,6 +429,39 @@ describe("branchMenuHtml", () => {
     expect(featRow).not.toContain("gtbranch-chips");
   });
 
+  it("renders a branch's own diffstat, whether or not it is checked out or tracks an upstream", () => {
+    const withStat = {
+      current: "main",
+      branches: [
+        { name: "main", is_current: true, upstream: null, ahead: 0, behind: 0, head_subject: "init", head_time: 1, stat: { insertions: 0, deletions: 0 } },
+        { name: "feat/login", is_current: false, upstream: null, ahead: 0, behind: 0, head_subject: "wip", head_time: 2, stat: { insertions: 12, deletions: 4 } },
+      ],
+    };
+    const html = branchMenuHtml(withStat);
+    const mainRow = html.slice(0, html.indexOf('data-branch="feat/login"'));
+    expect(mainRow).not.toContain("gtbranch-chips"); // nothing to weigh, nothing to sync
+    const featRow = html.slice(html.indexOf('data-branch="feat/login"'));
+    expect(featRow).toContain("gtbranch-chips");
+    expect(featRow).toContain("+12");
+    expect(featRow).toContain("−4");
+  });
+
+  it("flags a branch checked out in another worktree, and carries its id for adoption", () => {
+    const elsewhere = {
+      current: "main",
+      branches: [
+        { name: "main", is_current: true, upstream: null, ahead: 0, behind: 0, head_subject: "init", head_time: 1 },
+        { name: "feat/parked", is_current: false, upstream: null, ahead: 0, behind: 0, head_subject: "wip", head_time: 2, external_worktree_id: "wt-9" },
+      ],
+    };
+    const html = branchMenuHtml(elsewhere);
+    expect(html).toContain('data-external-worktree-id="wt-9"');
+    expect(html).toContain("in another worktree");
+    const mainRow = html.slice(0, html.indexOf('data-branch="feat/parked"'));
+    expect(mainRow).not.toContain("in another worktree");
+    expect(mainRow).not.toContain("data-external-worktree-id");
+  });
+
   it("shows the armed delete label when a delete is pending", () => {
     const html = branchMenuHtml(payload, { pendingConfirm: "branch_delete:feat/login" });
     expect(html).toContain("Delete?");

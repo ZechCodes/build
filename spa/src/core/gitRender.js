@@ -50,11 +50,27 @@ export function gitStateBannerHtml(banner, { pendingConfirm = null } = {}) {
   return `<div class="gitstate"><span class="gitstate-msg">${esc(banner.message)}</span>${abort}</div>`;
 }
 
-/** One branch row's ahead/behind chips — shown only when the branch tracks an
- *  upstream and both counts are numbers. */
+/** One branch row's sync chips (↑/↓ against its own upstream, shown only when
+ *  it tracks one) and its own diffstat against the project's base — what a
+ *  reviewer would see switching onto it, whether or not it is checked out. */
 function branchChipsHtml(branch) {
-  if (!branch.upstream || !Number.isFinite(Number(branch.ahead)) || !Number.isFinite(Number(branch.behind))) return "";
-  return `<span class="gtbranch-chips">↑${esc(branch.ahead)} ↓${esc(branch.behind)}</span>`;
+  const sync =
+    branch.upstream && Number.isFinite(Number(branch.ahead)) && Number.isFinite(Number(branch.behind))
+      ? `↑${esc(branch.ahead)} ↓${esc(branch.behind)}`
+      : "";
+  const stat = branch.stat || {};
+  const insertions = Number(stat.insertions) || 0;
+  const deletions = Number(stat.deletions) || 0;
+  const weight = insertions || deletions ? `<span class="a">+${insertions}</span> <span class="d">−${deletions}</span>` : "";
+  if (!sync && !weight) return "";
+  return `<span class="gtbranch-chips">${sync}${sync && weight ? " " : ""}${weight}</span>`;
+}
+
+/** A branch checked out in a worktree Build has not adopted: picking it in the
+ *  switcher cannot be a checkout, so the row says so and the client adopts
+ *  that worktree instead. */
+function branchElsewhereHtml(branch) {
+  return branch.external_worktree_id ? `<span class="gtbranch-elsewhere">in another worktree</span>` : "";
 }
 
 /** One branch row's delete affordance: hidden for the current branch, a plain
@@ -106,8 +122,11 @@ export function branchMenuHtml(
   // ↓ walks from the last branch onto "Create …" without a special case.
   const rows = shown
     .map(
-      (b, i) => `<div class="gtbranch-item${b.is_current ? " current" : ""}${i === activeIndex ? " active" : ""}" data-branch="${esc(b.name)}">
+      (b, i) => `<div class="gtbranch-item${b.is_current ? " current" : ""}${i === activeIndex ? " active" : ""}" data-branch="${esc(b.name)}"${
+        b.external_worktree_id ? ` data-external-worktree-id="${esc(b.external_worktree_id)}"` : ""
+      }>
         <span class="gtbranch-name">${esc(b.name)}</span>
+        ${branchElsewhereHtml(b)}
         ${branchChipsHtml(b)}
         ${branchDeleteHtml(b, pendingConfirm, forceDeleteOffered)}</div>`,
     )

@@ -7000,7 +7000,11 @@ impl AppState {
     /// list either way: branches are the repository's, not one checkout's).
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
         self.defer_branch_git(params, false, |scope, _| {
-            crate::gitgui::branch_list(&scope.repo_path, &scope.base_branch, &scope.external_branches)
+            crate::gitgui::branch_list(
+                &scope.repo_path,
+                &scope.base_branch,
+                &scope.external_branches,
+            )
         })
     }
 
@@ -7027,7 +7031,11 @@ impl AppState {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             crate::gitgui::branch_delete(&scope.repo_path, &branch, force)?;
-            crate::gitgui::branch_list(&scope.repo_path, &scope.base_branch, &scope.external_branches)
+            crate::gitgui::branch_list(
+                &scope.repo_path,
+                &scope.base_branch,
+                &scope.external_branches,
+            )
         })
     }
 
@@ -20892,10 +20900,7 @@ mod tests {
             .iter()
             .find(|b| b["name"] == "feature-adopted")
             .unwrap();
-        assert!(
-            adopted["external_worktree_id"].is_null(),
-            "{adopted:?}"
-        );
+        assert!(adopted["external_worktree_id"].is_null(), "{adopted:?}");
     }
 
     #[test]
@@ -30967,7 +30972,10 @@ mod tests {
         );
 
         commit_in(&checkout, "some work landed");
-        assert!(!has_branch_row(&state), "a commit alone does not earn it a row");
+        assert!(
+            !has_branch_row(&state),
+            "a commit alone does not earn it a row"
+        );
 
         let root = {
             let mut s = state.lock().unwrap();
@@ -33494,7 +33502,10 @@ mod tests {
             "branch.get",
             json!({ "project_id": project_id, "branch": "feature-stray" }),
         ));
-        assert_eq!(routed["ok"], true, "branch.get still deep-links to it: {routed:?}");
+        assert_eq!(
+            routed["ok"], true,
+            "branch.get still deep-links to it: {routed:?}"
+        );
         assert!(
             work_item_rows(&mut state)
                 .iter()

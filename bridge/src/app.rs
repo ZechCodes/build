@@ -10443,6 +10443,29 @@ impl AppState {
     /// session and never moves plan/run state — with no live agent the message
     /// simply waits for the next session's catch-up. Refused only where no
     /// conversation remains to post to: a terminal or unknown entity.
+    /// The conversation a message posted to this implementation lands in, and
+    /// so the one whose open offer a choice answers: its Issue's, when its
+    /// first agent is speaking, and its own otherwise — the same redirection
+    /// [`thread_post`](Self::thread_post) makes when it appends.
+    fn offering_thread(
+        &self,
+        entity_id: &str,
+        agent_id: &str,
+        addresses_first_agent: bool,
+    ) -> Result<&crate::thread::Thread, String> {
+        let run = self.runs.get(entity_id).ok_or("unknown run_id")?;
+        let issue = run
+            .run
+            .plan_id
+            .as_ref()
+            .filter(|_| addresses_first_agent)
+            .and_then(|issue_id| self.plans.get(&issue_id.0));
+        match issue {
+            Some(issue) => Ok(&issue.agents.first().thread),
+            None => Ok(&run.agents.resolve(Some(agent_id))?.thread),
+        }
+    }
+
     fn thread_post(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         // Which conversation: the agent the caller named, or the entity's
@@ -10457,6 +10480,11 @@ impl AppState {
         };
         let agent_id = roster.resolve(addressed.as_deref())?.id.clone();
         let addresses_first_agent = roster.first().id == agent_id;
+        // A press on the agent's suggested actions comes in here rather than
+        // through a verb of its own: it IS a reviewer message, so everything
+        // that follows one — waking the agent, resuming a parked entity, the
+        // inbox anchor — has to happen exactly as it does for a typed one.
+        let choice = parse_option_choice(params)?;
         if let Some(active) = self.plans.get(&entity_id) {
             if active.plan.state.is_terminal() {
                 return Err(format!(
@@ -10465,11 +10493,21 @@ impl AppState {
                 ));
             }
             let attachments = self.parse_message_attachments(&entity_id, params)?;
-            let messages = parse_thread_post_input(
-                params,
-                crate::thread::ArtifactKind::Plan,
-                !attachments.is_empty(),
-            )?;
+            let messages = match &choice {
+                Some(choice) => vec![(
+                    active
+                        .agents
+                        .resolve(Some(&agent_id))?
+                        .thread
+                        .option_reply_text(choice)?,
+                    None,
+                )],
+                None => parse_thread_post_input(
+                    params,
+                    crate::thread::ArtifactKind::Plan,
+                    !attachments.is_empty(),
+                )?,
+            };
             // A reply IS the unblock: the Blocked/Failed/Idle arms exist to
             // wait for exactly this message, so posting it resumes drafting.
             // Interrupted is deliberately excluded — its session is gone, and
@@ -10493,10 +10531,11 @@ impl AppState {
                         })
                     });
             let mut active = self.take_plan(&entity_id)?;
-            append_user_thread_messages_with_attachments(
+            append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
+                choice.as_ref(),
             );
             if resume {
                 active
@@ -10567,11 +10606,18 @@ impl AppState {
                 ));
             }
             let attachments = self.parse_message_attachments(&entity_id, params)?;
-            let messages = parse_thread_post_input(
-                params,
-                crate::thread::ArtifactKind::Diff,
-                !attachments.is_empty(),
-            )?;
+            let messages = match &choice {
+                Some(choice) => vec![(
+                    self.offering_thread(&entity_id, &agent_id, addresses_first_agent)?
+                        .option_reply_text(choice)?,
+                    None,
+                )],
+                None => parse_thread_post_input(
+                    params,
+                    crate::thread::ArtifactKind::Diff,
+                    !attachments.is_empty(),
+                )?,
+            };
             // Same rule as plans: the reply resumes a parked run (Interrupted
             // excluded — its session is gone).
             let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
@@ -10600,11 +10646,7 @@ impl AppState {
                 .filter(|_| addresses_first_agent)
             {
                 let mut issue = self.take_plan(&issue_id)?;
-                append_user_thread_messages_with_attachments(
-                    &mut issue.agents,
-                    messages,
-                    attachments,
-                );
+                append_reviewer_messages(&mut issue.agents, messages, attachments, choice.as_ref());
                 self.tell_the_agent_a_message_is_waiting(
                     &worktree_path,
                     &agent_id,
@@ -10628,10 +10670,11 @@ impl AppState {
                 return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
             }
             let mut active = self.take_run(&entity_id)?;
-            append_user_thread_messages_with_attachments(
+            append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
+                choice.as_ref(),
             );
             if resume {
                 active
@@ -15563,6 +15606,7 @@ fn apply_thread_action(
             anchor,
             links,
             still_working,
+            options,
         } => {
             let body = body.trim();
             if body.is_empty() {
@@ -15588,7 +15632,7 @@ fn apply_thread_action(
             }
             validate_thread_links(&links)?;
             let message_id =
-                thread.post_agent_with_links_working(body, anchor, links, now, still_working);
+                thread.post_agent_offering(body, anchor, links, options, now, still_working);
             Ok(json!({ "message_id": message_id }))
         }
         // A search spans every conversation the agent may read, which one
@@ -15848,6 +15892,52 @@ fn open_session_lineage(thread: &mut crate::thread::Thread, turn: &PendingAgentT
         None,
         now_rfc3339(),
     );
+}
+
+/// The choice the reviewer submitted from an agent's suggested actions, when
+/// this post is one. `None` for a typed message, which is every other post.
+fn parse_option_choice(params: &Value) -> Result<Option<crate::thread::OptionChoice>, String> {
+    let Some(reply) = params.get("option_reply").filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let message_id = require_str(reply, "message_id")?;
+    let option_ids = reply
+        .get("option_ids")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "option_reply.option_ids must be an array".to_string())?
+        .iter()
+        .map(|id| {
+            id.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "every option id must be a string".to_string())
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+    Ok(Some(crate::thread::OptionChoice {
+        message_id,
+        option_ids,
+    }))
+}
+
+/// Append what the reviewer sent: the words they typed, or the options they
+/// pressed.
+///
+/// A choice is recorded on the offer that made it and posted as an ordinary
+/// reviewer message, so what the agent reads is the same shape either way. The
+/// caller validated it against this very thread a moment earlier, under the
+/// same lock — the fallback is there so that if the two ever came apart the
+/// reviewer's words still land, unmarked, rather than vanishing.
+fn append_reviewer_messages(
+    thread: &mut crate::thread::Thread,
+    messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
+    attachments: Vec<crate::thread::MessageAttachment>,
+    choice: Option<&crate::thread::OptionChoice>,
+) {
+    if let Some(choice) = choice {
+        if thread.post_option_reply(choice, &now_rfc3339()).is_ok() {
+            return;
+        }
+    }
+    append_user_thread_messages_with_attachments(thread, messages, attachments);
 }
 
 fn append_user_thread_messages(
@@ -25577,6 +25667,7 @@ mod tests {
                     anchor: None,
                     links: Vec::new(),
                     still_working: false,
+                    options: Vec::new(),
                 },
             )
             .unwrap();
@@ -25591,6 +25682,7 @@ mod tests {
                     line_end: None,
                 }],
                 still_working: false,
+                options: Vec::new(),
             },
         );
         assert_eq!(
@@ -25636,6 +25728,7 @@ mod tests {
                     path: stage_b.path,
                 }],
                 still_working: false,
+                options: Vec::new(),
             },
         );
         assert_eq!(
@@ -25649,6 +25742,7 @@ mod tests {
                 anchor: None,
                 links: vec![crate::thread::ThreadLink::Run { run_id: run_b }],
                 still_working: false,
+                options: Vec::new(),
             },
         );
         assert_eq!(
@@ -25674,6 +25768,7 @@ mod tests {
                     anchor: None,
                     links: Vec::new(),
                     still_working: false,
+                    options: Vec::new(),
                 },
             )
             .unwrap_or_else(|error| panic!("{entity_id} could not post: {error}"));
@@ -26171,6 +26266,156 @@ mod tests {
     }
 
     // ---- thread.post: the non-dispatching conversation write ---------------
+
+    fn suggested(labels: &[(&str, Option<&str>)]) -> Vec<crate::thread::MessageOption> {
+        let drafts: Vec<crate::thread::MessageOptionDraft> = labels
+            .iter()
+            .map(|(label, message)| crate::thread::MessageOptionDraft {
+                label: (*label).to_string(),
+                message: message.map(str::to_string),
+            })
+            .collect();
+        crate::thread::numbered_message_options(&drafts).unwrap()
+    }
+
+    /// The whole of a suggested action: the agent offers it, the reviewer
+    /// presses it, and what comes back to the agent is an ordinary unread
+    /// message carrying the option's own words.
+    #[test]
+    fn pressing_a_suggested_action_answers_the_agent_and_marks_the_offer() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+        let offer = state
+            .on_mcp_action(
+                &run_id,
+                BridgeAction::PostThreadMessage {
+                    body: "Two ways out. Which?".into(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                    options: suggested(&[
+                        (
+                            "Revert it",
+                            Some("Revert the commit that turned the tests red."),
+                        ),
+                        ("Fix forward", None),
+                    ]),
+                },
+            )
+            .unwrap();
+        let offer_id = offer["message_id"].as_str().unwrap().to_string();
+
+        let pressed = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "option_reply": { "message_id": offer_id, "option_ids": ["option-1"] },
+            }),
+        ));
+        assert_eq!(pressed["ok"], true, "{pressed:?}");
+
+        // The choice is on the offer, which is the only place the chat shows it.
+        let items = state.plans[&issue_id].agents.first().thread.items.clone();
+        let crate::thread::ThreadItem::Message(offered) = items
+            .iter()
+            .find(|item| matches!(item, crate::thread::ThreadItem::Message(message) if message.id == offer_id))
+            .unwrap()
+        else {
+            panic!("the offer is a message");
+        };
+        assert_eq!(offered.selected_options, vec!["option-1".to_string()]);
+
+        // And the agent hears the option's longer text, as a message like any
+        // other — the reason to write one is that this is what survives into a
+        // session that no longer remembers the offer.
+        let read = state
+            .on_mcp_action(&run_id, BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        let unread = read["messages"].as_array().unwrap();
+        let last = unread.last().unwrap();
+        assert_eq!(last["body"], "Revert the commit that turned the tests red.");
+        assert_eq!(last["role"], "user");
+        assert_eq!(last["answers_options_of"], offer_id.as_str());
+    }
+
+    /// The race the disabled chips cannot cover: something is said between the
+    /// render and the press. The answer is refused rather than sent stale, and
+    /// the conversation is left exactly as it stood.
+    #[test]
+    fn a_choice_made_after_the_conversation_moved_on_is_refused() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+        let offer = state
+            .on_mcp_action(
+                &run_id,
+                BridgeAction::PostThreadMessage {
+                    body: "Two ways out. Which?".into(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                    options: suggested(&[("Revert it", None), ("Fix forward", None)]),
+                },
+            )
+            .unwrap();
+        let offer_id = offer["message_id"].as_str().unwrap().to_string();
+        let choice = json!({
+            "entity_id": run_id,
+            "option_reply": { "message_id": offer_id, "option_ids": ["option-2"] },
+        });
+        assert_eq!(state.handle(req("thread.post", choice.clone()))["ok"], true);
+
+        let again = state.handle(req("thread.post", choice));
+        assert_eq!(again["ok"], false, "{again:?}");
+        let thread = &state.plans[&issue_id].agents.first().thread;
+        assert_eq!(
+            thread
+                .items
+                .iter()
+                .filter(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Message(message)
+                        if message.answers_options_of.is_some()
+                ))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_option_the_agent_never_offered_cannot_be_answered_with() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_issue_id, run_id) = planned_run_in_review(&mut state, "the tests are red");
+        let offer = state
+            .on_mcp_action(
+                &run_id,
+                BridgeAction::PostThreadMessage {
+                    body: "Which?".into(),
+                    anchor: None,
+                    links: Vec::new(),
+                    still_working: false,
+                    options: suggested(&[("Revert it", None)]),
+                },
+            )
+            .unwrap();
+
+        let pressed = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "option_reply": {
+                    "message_id": offer["message_id"].as_str().unwrap(),
+                    "option_ids": ["option-9"],
+                },
+            }),
+        ));
+        assert_eq!(pressed["ok"], false, "{pressed:?}");
+        // Refused before the entity was checked out of its map, so the run is
+        // still there to talk to.
+        assert!(state.runs.contains_key(&run_id));
+    }
 
     /// Talking to the agent you are looking at must reach it, whatever the run
     /// happens to be parked as.

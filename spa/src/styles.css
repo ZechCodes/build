@@ -1130,6 +1130,25 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .composer-shortcut { display:none; }
 }
 
+/* ---- the actions a message suggests -------------------------------------
+   Chips under what the agent said, and one send. A shut offer is the same
+   chips at lower contrast — what was pressed stays marked, so the conversation
+   still says what was chosen when it is read back weeks later. */
+.thread-options { display:flex; flex-direction:column; gap:8px; padding:0 12px 12px; }
+.thread-option-list { display:flex; flex-wrap:wrap; gap:6px; }
+.thread-option { max-width:100%; border:1px solid var(--line); border-radius:8px; padding:6px 10px;
+  background:var(--bg); color:var(--ink2); cursor:pointer; font:12.5px var(--sans); text-align:left; }
+.thread-option:hover:not(:disabled) { border-color:var(--accent); color:var(--accent); }
+.thread-option.chosen { border-color:var(--accent); color:var(--accent);
+  background:color-mix(in srgb, var(--accent) 12%, var(--bg)); }
+.thread-option-label { overflow-wrap:anywhere; }
+.thread-options-send { align-self:flex-start; border:1px solid var(--accent); border-radius:8px;
+  padding:5px 12px; background:color-mix(in srgb, var(--accent) 14%, var(--bg)); color:var(--accent);
+  cursor:pointer; font:12.5px/1.2 var(--sans); font-weight:650; }
+/* Dim, not hidden and not restyled: a disabled chip is the same chip, so the
+   offer reads as an offer that has closed rather than as new furniture. */
+.thread-option:disabled, .thread-options-send:disabled { opacity:.55; cursor:default; }
+
 /* ---- files on a message -------------------------------------------------
    An image is shown, because looking at it is the message. Everything else is
    a chip that downloads what it names. */

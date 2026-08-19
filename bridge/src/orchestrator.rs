@@ -637,6 +637,7 @@ pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) 
          - You may implement an unambiguous directive without replying; the next revision is its acknowledgment.\n\
          - Call `post_thread_message` only for a question, necessary pushback or clarification, or an explicit request for a response.\n\
          - Do not post acknowledgments or diff recaps.\n\
+         - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
          - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
     );
     let catch_up = thread.catch_up_markdown(40);

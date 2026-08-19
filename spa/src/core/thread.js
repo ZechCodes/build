@@ -273,7 +273,67 @@ function attachmentsHtml(attachments) {
     .join("")}</div>`;
 }
 
-function messageHtml(message, agentLabel = "Agent") {
+/// What the reader has picked on an offer and not yet sent, keyed by the offer
+/// it was picked on.
+///
+/// Held outside the markup because the conversation repaints every second and a
+/// half: a selection lives in the render, so it has to survive one — the same
+/// reason the composer's draft is not kept in the DOM either. Dropped once the
+/// choice is on the record, which is the moment the chips stop being pressable.
+const pendingChoices = new Map();
+
+/// The offers being submitted right now. They read as shut while the daemon
+/// decides, so a second press cannot send the same choice twice.
+const sendingChoices = new Set();
+
+/// What a pick is filed under. Every conversation numbers its messages from
+/// one, so the message id alone would put one thread's picks on another's
+/// chips the moment the reader switched agents.
+const offerKey = (threadId, messageId) => `${threadId || ""}::${messageId || ""}`;
+
+/// What is marked on an offer's chips: what was actually sent, once there is
+/// such a thing; what is picked and not yet sent, while it can still be sent;
+/// and nothing at all on an offer that went by unanswered — picking is not
+/// choosing, so an offer overtaken mid-pick leaves no mark.
+const chosenOn = (message, live, key) => {
+  if ((message.selected_options || []).length) return new Set(message.selected_options);
+  return live ? pendingChoices.get(key) || new Set() : new Set();
+};
+
+/// The actions the agent suggested taking in answer to its message.
+///
+/// `live` is the whole of whether they can be pressed: an offer is answerable
+/// only while it is the last thing said and nothing has been chosen on it, so
+/// anything said afterwards — by either side — leaves it dim exactly as it
+/// stands. A choice already made keeps its chips marked, because that mark is
+/// the conversation's only record of what the reader pressed.
+function optionsHtml(message, live, key) {
+  const options = message.options || [];
+  if (!options.length) return "";
+  const answered = (message.selected_options || []).length > 0;
+  const shut = answered || !live;
+  const chosen = chosenOn(message, live, key);
+  const chips = options
+    .map(
+      (option) => `<button type="button" class="thread-option${chosen.has(option.id) ? " chosen" : ""}"
+        data-option-id="${esc(option.id)}" aria-pressed="${chosen.has(option.id)}"${shut ? " disabled" : ""}>
+        <span class="thread-option-label">${esc(option.label || "")}</span>
+      </button>`,
+    )
+    .join("");
+  // The send is dropped once the choice is recorded rather than dimmed with the
+  // chips: a shut offer with nothing chosen can still be read as an offer that
+  // went by, but an answered one has nothing left to send.
+  const send = answered
+    ? ""
+    : `<button type="button" class="thread-options-send"${shut || !chosen.size ? " disabled" : ""}>Send</button>`;
+  return `<div class="thread-options" data-message="${esc(message.id || "")}" data-offer="${esc(key)}">
+    <div class="thread-option-list">${chips}</div>
+    ${send}
+  </div>`;
+}
+
+function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
   const user = message.role === "user";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
@@ -289,6 +349,7 @@ function messageHtml(message, agentLabel = "Agent") {
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
       ${attachmentsHtml(message.attachments)}
       ${linksHtml(message.links)}
+      ${optionsHtml(message, liveOptions, offer)}
     </div>
   </article>`;
 }
@@ -331,13 +392,22 @@ function eventHtml(event, agentLabel = "Agent") {
 /// are standing in the work, and they change every second — so they live on the
 /// toolbar (core/toolbar.js) and the conversation keeps its own record: the
 /// messages, the events, and whether the agent has read you.
-function timelineHtml(items, agentLabel) {
-  return items.flatMap((item) => {
+function timelineHtml(items, agentLabel, threadId) {
+  // Which message may still be answered with a chip: the last one said, and
+  // only that one. An event between it and now changes nothing — a commit
+  // landing is not somebody speaking.
+  const lastSpoken = items.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  return items.flatMap((item, index) => {
     if (item.type !== "message") return [eventHtml(item.data || {}, agentLabel)];
     const message = item.data || {};
     // Old bridges persisted the noisy structured handoff as a chat message.
     if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
-    return [messageHtml(message, agentLabel)];
+    // A choice is drawn on the chips that offered it, so the message it sent
+    // would be the same words a second time.
+    if (message.answers_options_of) return [];
+    const key = offerKey(threadId, message.id);
+    const live = index === lastSpoken && !sendingChoices.has(key);
+    return [messageHtml(message, agentLabel, live, key)];
   });
 }
 
@@ -387,7 +457,7 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const renderedItems = timelineHtml(items, agentLabel);
+  const renderedItems = timelineHtml(items, agentLabel, thread && thread.id);
   const itemCount = renderedItems.length;
   // The timeline draws the avatar spine, and the messages sit in the gutter it
   // runs down. With nothing on the record there is neither, so the empty case
@@ -576,6 +646,62 @@ export function wireThreadRevisionLinks(root, loadRevision) {
 ///
 /// `load(path)` resolves the bridge's `thread.attachment` payload
 /// (`{mime, content_b64}`).
+/// Wire the suggested actions: the picking, and the one press that sends them.
+///
+/// `submit` takes `{ messageId, optionIds }` and answers with a promise. The
+/// offer shuts the instant it is pressed rather than when the daemon answers —
+/// the reader has made their choice, and a second press would send it twice —
+/// and comes back if the send is refused, with what they picked still marked.
+export function wireThreadOptions(root, submit) {
+  if (!root) return;
+  root.querySelectorAll(".thread-options").forEach((group) => {
+    const messageId = group.dataset.message;
+    const key = group.dataset.offer;
+    const chips = [...group.querySelectorAll(".thread-option")];
+    const send = group.querySelector(".thread-options-send");
+    const picked = () => chips.filter((chip) => chip.classList.contains("chosen")).map((chip) => chip.dataset.optionId);
+    const shut = (closed) => {
+      chips.forEach((chip) => {
+        chip.disabled = closed;
+      });
+      if (send) send.disabled = closed || !picked().length;
+    };
+
+    chips.forEach((chip) => {
+      chip.onclick = () => {
+        if (chip.disabled) return;
+        const chosen = !chip.classList.contains("chosen");
+        chip.classList.toggle("chosen", chosen);
+        chip.setAttribute("aria-pressed", String(chosen));
+        // Remembered outside the markup, so the next repaint of the
+        // conversation draws the selection back rather than clearing it.
+        pendingChoices.set(key, new Set(picked()));
+        if (send) send.disabled = !picked().length;
+      };
+    });
+
+    if (!send) return;
+    send.onclick = () => {
+      const optionIds = picked();
+      if (!optionIds.length || send.disabled) return;
+      sendingChoices.add(key);
+      shut(true);
+      Promise.resolve(submit({ messageId, optionIds })).then(
+        () => {
+          sendingChoices.delete(key);
+          pendingChoices.delete(key);
+        },
+        () => {
+          // Refused: the offer is still the last thing said, so it goes back
+          // to being answerable with the same chips still marked.
+          sendingChoices.delete(key);
+          shut(false);
+        },
+      );
+    };
+  });
+}
+
 export function wireThreadAttachments(root, load) {
   if (!root) return;
   const dataUrlFor = async (path) => {

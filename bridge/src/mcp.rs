@@ -296,6 +296,8 @@ pub enum BridgeAction {
         body: String,
         anchor: Option<crate::thread::MessageAnchor>,
         links: Vec<crate::thread::ThreadLink>,
+        /// Actions suggested beside the message, already numbered.
+        options: Vec<crate::thread::MessageOption>,
     },
     /// Ask the agent's own conversation history a question. Read-only, and
     /// scoped by the daemon to what this agent may read.
@@ -713,6 +715,19 @@ impl DoneServer {
                                     "body": { "type": "string" },
                                     "still_working": { "type": "boolean", "description": "True when this is a progress note and you are continuing without waiting for a reply. Omit (false) for an ordinary reply, which hands the turn back." },
                                     "anchor": { "type": "object", "description": "Optional structured plan/diff anchor copied from the reviewer message." },
+                                    "options": {
+                                        "type": "array",
+                                        "maxItems": crate::thread::MAX_MESSAGE_OPTIONS,
+                                        "description": "Actions to suggest the reviewer take in answer to this message, shown as pressable chips under it. Offer them when the reply you need is a choice you can enumerate, not when it is prose. The reviewer may pick several and submits once; what comes back is an ordinary reviewer message. Anything said afterwards closes the offer, so the chips are only ever answered while they are the newest thing on the thread.",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string", "description": "What the chip says. Short — a few words." },
+                                                "message": { "type": "string", "description": "What you are told when it is chosen, in place of the label. Write the full instruction here, so the choice still carries its context in a session that no longer remembers this message." }
+                                            },
+                                            "required": ["label"]
+                                        }
+                                    },
                                     "links": {
                                         "type": "array",
                                         "maxItems": 20,
@@ -862,11 +877,39 @@ impl DoneServer {
                     }
                 }
             };
+            let options = match arguments.get("options") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(value) => {
+                    let drafts: Vec<crate::thread::MessageOptionDraft> =
+                        match serde_json::from_value(value.clone()) {
+                            Ok(drafts) => drafts,
+                            Err(error) => {
+                                return Handled {
+                                    reply: Some(tool_error(
+                                        id,
+                                        format!("invalid options: {error}"),
+                                    )),
+                                    ..Handled::default()
+                                }
+                            }
+                        };
+                    match crate::thread::numbered_message_options(&drafts) {
+                        Ok(options) => options,
+                        Err(error) => {
+                            return Handled {
+                                reply: Some(tool_error(id, error)),
+                                ..Handled::default()
+                            }
+                        }
+                    }
+                }
+            };
             return Handled {
                 action: Some(BridgeAction::PostThreadMessage {
                     body: body.to_string(),
                     anchor,
                     links,
+                    options,
                     still_working: arguments
                         .get("still_working")
                         .and_then(Value::as_bool)
@@ -1461,6 +1504,48 @@ mod tests {
                 }]
         ));
         assert!(post.reply.is_none());
+    }
+
+    #[test]
+    fn post_thread_message_numbers_the_actions_it_suggests() {
+        let post = server().handle_message(
+            r#"{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"post_thread_message","arguments":{"body":"Which way?","options":[{"label":"Revert it","message":"Revert the commit that turned the tests red."},{"label":"  Fix forward  "}]}}}"#,
+        );
+
+        let Some(BridgeAction::PostThreadMessage { options, .. }) = post.action else {
+            panic!("the suggestion rides the post");
+        };
+        assert_eq!(
+            options,
+            vec![
+                crate::thread::MessageOption {
+                    id: "option-1".to_string(),
+                    label: "Revert it".to_string(),
+                    message: Some("Revert the commit that turned the tests red.".to_string()),
+                },
+                crate::thread::MessageOption {
+                    id: "option-2".to_string(),
+                    label: "Fix forward".to_string(),
+                    message: None,
+                },
+            ]
+        );
+        assert!(post.reply.is_none());
+    }
+
+    #[test]
+    fn an_unchoosable_suggestion_is_refused_rather_than_posted() {
+        for arguments in [
+            r#"{"body":"Which way?","options":[{"label":"   "}]}"#,
+            r#"{"body":"Which way?","options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"},{"label":"e"},{"label":"f"},{"label":"g"}]}"#,
+            r#"{"body":"Which way?","options":"revert it"}"#,
+        ] {
+            let post = server().handle_message(&format!(
+                r#"{{"jsonrpc":"2.0","id":26,"method":"tools/call","params":{{"name":"post_thread_message","arguments":{arguments}}}}}"#,
+            ));
+            assert!(post.action.is_none(), "{arguments}");
+            assert!(post.reply.is_some(), "{arguments}");
+        }
     }
 
     #[test]

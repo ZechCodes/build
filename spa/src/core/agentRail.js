@@ -44,6 +44,7 @@ import {
   paintThreadKeepingPlace,
   threadHtml,
   wireThreadAttachments,
+  wireThreadOptions,
   wireThreadComposer,
   wireThreadLinks,
   wireThreadRevisionLinks,
@@ -533,6 +534,10 @@ export function mountAgentRail(host, context) {
       App.call("thread.revision", { entity_id: entity.entityId, revision_id: revisionId }),
     );
     wireThreadLinks(body, openLink);
+    wireThreadOptions(body, (choice) => choose(choice).catch((error) => {
+      notifyError("Choice failed", error.message);
+      throw error;
+    }));
   };
 
   /// Wire the pinned box. `panel` rather than the composer row itself, so a file
@@ -602,7 +607,7 @@ export function mountAgentRail(host, context) {
    * conversation. An issue needs none of that: the daemon dispatches its
    * planning agent on the first message.
    */
-  const send = async (body, attachments) => {
+  const post = async (message) => {
     sending = true;
     try {
       const entityId = await ensureEntity();
@@ -610,8 +615,7 @@ export function mountAgentRail(host, context) {
       await App.call("thread.post", {
         entity_id: entityId,
         ...(agent ? { agent_id: agent.id } : {}),
-        body,
-        attachments,
+        ...message,
       });
       if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
         const started = await App.call("agent.start", {
@@ -630,6 +634,14 @@ export function mountAgentRail(host, context) {
     await refreshFeed();
     await refresh();
   };
+
+  const send = (body, attachments) => post({ body, attachments });
+
+  /** A press on the actions the agent suggested. It goes out as the message it
+   *  is — same adoption, same waking, same refresh — and the daemon composes
+   *  what the agent hears out of the options it offered. */
+  const choose = ({ messageId, optionIds }) =>
+    post({ option_reply: { message_id: messageId, option_ids: optionIds } });
 
   // ---- the strip's presses --------------------------------------------------
 

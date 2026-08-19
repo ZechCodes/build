@@ -132,6 +132,98 @@ pub struct MessageAttachment {
     pub size: u64,
 }
 
+/// One action an agent suggested the reviewer take in answer to its message.
+///
+/// `label` is the whole of what the chip says, and `message` is what the agent
+/// is told when the chip is pressed — fuller than the label, so a choice still
+/// carries its reasoning into a session that has forgotten the conversation.
+/// Absent, the label is the message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageOption {
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl MessageOption {
+    /// What choosing this option says to the agent.
+    fn reply_text(&self) -> &str {
+        self.message.as_deref().unwrap_or(&self.label)
+    }
+}
+
+/// How many actions one message may suggest. A dozen chips is a menu, and a
+/// menu is what the composer is for.
+pub const MAX_MESSAGE_OPTIONS: usize = 6;
+
+/// What the reviewer submitted: which offer, and which of its options.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionChoice {
+    pub message_id: String,
+    pub option_ids: Vec<String>,
+}
+
+/// An option as the agent offers it: everything but the id, which is Build's
+/// to give — the same split the router's capture options make.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MessageOptionDraft {
+    pub label: String,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+/// The agent's offer, numbered and checked. Refused when there are too many,
+/// when one carries no label, or when a label is too long to read on a chip.
+pub fn numbered_message_options(
+    drafts: &[MessageOptionDraft],
+) -> Result<Vec<MessageOption>, String> {
+    if drafts.len() > MAX_MESSAGE_OPTIONS {
+        return Err(format!(
+            "at most {MAX_MESSAGE_OPTIONS} options can be suggested with a message; {} were",
+            drafts.len()
+        ));
+    }
+    drafts
+        .iter()
+        .enumerate()
+        .map(|(index, draft)| {
+            let label = draft.label.trim();
+            if label.is_empty() {
+                return Err("an option with no label is nothing the user can choose".to_string());
+            }
+            if label.chars().count() > MAX_OPTION_LABEL_CHARS {
+                return Err(format!(
+                    "an option label is at most {MAX_OPTION_LABEL_CHARS} characters; {:?} is longer",
+                    label
+                ));
+            }
+            let message = draft
+                .message
+                .as_deref()
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_string);
+            if message.as_ref().is_some_and(|message| message.len() > MAX_OPTION_MESSAGE_BYTES) {
+                return Err(format!(
+                    "an option message exceeds {MAX_OPTION_MESSAGE_BYTES} bytes"
+                ));
+            }
+            Ok(MessageOption {
+                id: format!("option-{}", index + 1),
+                label: label.to_string(),
+                message,
+            })
+        })
+        .collect()
+}
+
+/// How long a chip may be. Past this it is a paragraph wearing a button.
+pub const MAX_OPTION_LABEL_CHARS: usize = 80;
+
+/// How much an option may say to the agent when it is chosen.
+pub const MAX_OPTION_MESSAGE_BYTES: usize = 4_000;
+
 /// What one item says about itself so a later search can find it.
 ///
 /// Derived once, when the item is written, from the text and the links it
@@ -339,6 +431,22 @@ pub struct ThreadMessage {
     /// existed.
     #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
     pub metadata: ItemMetadata,
+    /// Actions the agent suggested the reviewer take in answer to this message.
+    /// Only an agent message carries them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<MessageOption>,
+    /// Which of those options the reviewer submitted. Empty until they do, and
+    /// what the chat renders as the selection afterwards — the choice is
+    /// recorded here rather than on the reply, because the offer is the only
+    /// place it is shown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selected_options: Vec<String>,
+    /// The offer this message answers, when it is an option submission. The
+    /// chat draws the choice on those chips and nothing for this message, so
+    /// pressing a suggestion reads as pressing it rather than as typing what it
+    /// said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answers_options_of: Option<String>,
 }
 
 /// Where a plan-doc comment points inside a stage document: the passage the
@@ -1293,6 +1401,100 @@ impl Thread {
         )
     }
 
+    /// An agent message that offers the reviewer a set of actions to take.
+    ///
+    /// The options ride the message rather than living beside it: they are the
+    /// end of what the agent said, they go stale the moment anything else is
+    /// said, and the reviewer's answer is drawn on them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_agent_offering(
+        &mut self,
+        body: impl Into<String>,
+        anchor: Option<MessageAnchor>,
+        links: Vec<ThreadLink>,
+        options: Vec<MessageOption>,
+        now: impl Into<String>,
+        still_working: bool,
+    ) -> String {
+        let id = self.post_agent_with_links_working(body, anchor, links, now, still_working);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.options = options;
+        }
+        id
+    }
+
+    /// The message whose options the reviewer may still act on — the newest
+    /// message on the thread, if it offered any and none were chosen.
+    ///
+    /// Newest MESSAGE, not newest item: an offer stands until somebody says
+    /// something, and a commit landing is not somebody saying something.
+    pub fn open_offer(&self) -> Option<&ThreadMessage> {
+        self.items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                ThreadItem::Message(message) => Some(message),
+                ThreadItem::Event(_) => None,
+            })
+            .filter(|message| !message.options.is_empty() && message.selected_options.is_empty())
+    }
+
+    /// What a choice says to the agent, or why it cannot be sent.
+    ///
+    /// Read-only on purpose: the daemon validates a submission here, before it
+    /// checks the entity out of its map, so a refusal costs nothing.
+    pub fn option_reply_text(&self, choice: &OptionChoice) -> Result<String, String> {
+        let offer = self
+            .open_offer()
+            .filter(|message| message.id == choice.message_id)
+            .ok_or_else(|| "these options are no longer open".to_string())?;
+        if choice.option_ids.is_empty() {
+            return Err("choose at least one option".to_string());
+        }
+        let mut chosen = Vec::new();
+        for id in &choice.option_ids {
+            let option = offer
+                .options
+                .iter()
+                .find(|option| &option.id == id)
+                .ok_or_else(|| format!("no option {id} on {}", offer.id))?;
+            if chosen.contains(&option.reply_text()) {
+                return Err(format!("option {id} was chosen twice"));
+            }
+            chosen.push(option.reply_text());
+        }
+        Ok(chosen.join("\n\n"))
+    }
+
+    /// Record the reviewer's choice on the offer and post the reply it sends.
+    ///
+    /// One call, because the two halves must not come apart: a recorded choice
+    /// the agent never heard reads as answered, and a reply with nothing marked
+    /// leaves the chat with no record of what was pressed.
+    pub fn post_option_reply(
+        &mut self,
+        choice: &OptionChoice,
+        now: &str,
+    ) -> Result<String, String> {
+        let body = self.option_reply_text(choice)?;
+        let sequence = self.next();
+        for item in self.items.iter_mut() {
+            let ThreadItem::Message(message) = item else {
+                continue;
+            };
+            if message.id == choice.message_id {
+                message.selected_options = choice.option_ids.clone();
+                message.updated_sequence = sequence;
+                break;
+            }
+        }
+        let id = self.post_user(body, None, now);
+        if let Some(ThreadItem::Message(reply)) = self.items.last_mut() {
+            reply.answers_options_of = Some(choice.message_id.clone());
+        }
+        Ok(id)
+    }
+
     pub fn remember_completion(&mut self, report: &CompletionReport) {
         self.last_completion = Some(report.clone());
     }
@@ -1372,6 +1574,9 @@ impl Thread {
             agent_reply: None,
             links,
             attachments: Vec::new(),
+            options: Vec::new(),
+            selected_options: Vec::new(),
+            answers_options_of: None,
         }));
         id
     }
@@ -3048,5 +3253,168 @@ mod doc_comment_tests {
             "{wire:?}"
         );
         assert!(thread.doc_comments().is_empty());
+    }
+}
+
+/// The suggested actions an agent offers with a message, and what answering
+/// one does to the conversation.
+#[cfg(test)]
+mod option_tests {
+    use super::*;
+
+    fn option(id: &str, label: &str, message: Option<&str>) -> MessageOption {
+        MessageOption {
+            id: id.to_string(),
+            label: label.to_string(),
+            message: message.map(str::to_string),
+        }
+    }
+
+    fn offered() -> Thread {
+        let mut thread = Thread::new("run-1");
+        thread.post_user("the tests are red", None, "2026-08-19T09:00:00Z");
+        thread.post_agent_offering(
+            "Two ways out. Which?",
+            None,
+            Vec::new(),
+            vec![
+                option(
+                    "option-1",
+                    "Revert it",
+                    Some("Revert the commit that turned the tests red."),
+                ),
+                option("option-2", "Fix forward", None),
+            ],
+            "2026-08-19T09:01:00Z",
+            false,
+        );
+        thread
+    }
+
+    #[test]
+    fn an_answer_sends_the_options_longer_text_and_falls_back_to_the_label() {
+        let mut thread = offered();
+        let choice = OptionChoice {
+            message_id: "message-2".to_string(),
+            option_ids: vec!["option-1".to_string(), "option-2".to_string()],
+        };
+
+        assert_eq!(
+            thread.option_reply_text(&choice).unwrap(),
+            "Revert the commit that turned the tests red.\n\nFix forward"
+        );
+        thread
+            .post_option_reply(&choice, "2026-08-19T09:02:00Z")
+            .unwrap();
+        let ThreadItem::Message(reply) = thread.items.last().unwrap() else {
+            panic!("the reply is a message");
+        };
+        assert_eq!(reply.role, MessageRole::User);
+        assert_eq!(reply.answers_options_of.as_deref(), Some("message-2"));
+        assert!(reply.body.contains("Fix forward"));
+    }
+
+    /// The chat's only record of what was chosen, so it has to be on the
+    /// message that offered it rather than on the reply.
+    #[test]
+    fn the_choice_is_recorded_on_the_message_that_offered_it() {
+        let mut thread = offered();
+        thread
+            .post_option_reply(
+                &OptionChoice {
+                    message_id: "message-2".to_string(),
+                    option_ids: vec!["option-2".to_string()],
+                },
+                "2026-08-19T09:02:00Z",
+            )
+            .unwrap();
+
+        let ThreadItem::Message(offer) = &thread.items[1] else {
+            panic!("the offer is a message");
+        };
+        assert_eq!(offer.selected_options, vec!["option-2".to_string()]);
+        // An in-place mutation of an already-sequenced item, so a cursored poll
+        // re-ships it with the selection on it.
+        assert!(offer.updated_sequence > offer.sequence, "{offer:?}");
+    }
+
+    #[test]
+    fn an_option_nobody_offered_is_refused_and_leaves_the_thread_alone() {
+        let mut thread = offered();
+        let choice = OptionChoice {
+            message_id: "message-2".to_string(),
+            option_ids: vec!["option-9".to_string()],
+        };
+
+        assert!(thread.option_reply_text(&choice).is_err());
+        assert!(thread
+            .post_option_reply(&choice, "2026-08-19T09:02:00Z")
+            .is_err());
+        assert_eq!(thread.items.len(), 2);
+    }
+
+    #[test]
+    fn answering_an_empty_set_is_refused() {
+        let thread = offered();
+        assert!(thread
+            .option_reply_text(&OptionChoice {
+                message_id: "message-2".to_string(),
+                option_ids: Vec::new(),
+            })
+            .is_err());
+    }
+
+    #[test]
+    fn options_are_answered_once() {
+        let mut thread = offered();
+        let choice = OptionChoice {
+            message_id: "message-2".to_string(),
+            option_ids: vec!["option-1".to_string()],
+        };
+        thread
+            .post_option_reply(&choice, "2026-08-19T09:02:00Z")
+            .unwrap();
+
+        assert!(thread
+            .post_option_reply(&choice, "2026-08-19T09:03:00Z")
+            .is_err());
+    }
+
+    /// What the reviewer sees disabled, the daemon refuses: a newer message —
+    /// from either side — closes the offer, and the race where one lands
+    /// between the render and the press must not send a stale answer.
+    #[test]
+    fn a_newer_message_closes_the_offer_and_an_event_does_not() {
+        let mut thread = offered();
+        let choice = OptionChoice {
+            message_id: "message-2".to_string(),
+            option_ids: vec!["option-1".to_string()],
+        };
+        thread.push_event(
+            ThreadEventKind::Committed,
+            Some("Changes committed".to_string()),
+            None,
+            None,
+            "2026-08-19T09:02:00Z",
+        );
+        assert!(thread.option_reply_text(&choice).is_ok());
+
+        thread.post_agent(
+            "actually, I found a third way",
+            None,
+            "2026-08-19T09:03:00Z",
+        );
+        assert!(thread.option_reply_text(&choice).is_err());
+    }
+
+    #[test]
+    fn a_message_with_no_options_cannot_be_answered() {
+        let thread = offered();
+        assert!(thread
+            .option_reply_text(&OptionChoice {
+                message_id: "message-1".to_string(),
+                option_ids: vec!["option-1".to_string()],
+            })
+            .is_err());
     }
 }

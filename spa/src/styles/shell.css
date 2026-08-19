@@ -456,7 +456,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   50% { transform:translate(3px,-3px); opacity:.9; } }
 /* Reduced motion keeps the faces and drops the movement: every pattern stays
    paused at whatever frame it is on, which is the idle look — the one an agent
-   wears most of the time anyway. */
+   wears most of the time anyway. Last in the sheet, which is what wins over the
+   `.working` pair above it. */
 @media (prefers-reduced-motion: reduce) {
   .rail-bubble.working::after { animation:none; }
   .rail-bubble.working .rail-glyph::before,

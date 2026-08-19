@@ -12,14 +12,7 @@
 // tests; mountGitPane is the only DOM-touching entry point.
 
 import { esc } from "./text.js";
-import {
-  gitBranchControlHtml,
-  gitToolbarHtml,
-  gitStateBannerHtml,
-  branchMenuHtml,
-  moveActiveIndex,
-  AGENT_COMMIT_MESSAGE,
-} from "./gitRender.js";
+import { gitToolbarHtml, gitStateBannerHtml, AGENT_COMMIT_MESSAGE } from "./gitRender.js";
 import {
   changesRailEntries,
   uncommittedHeaderHtml,
@@ -74,13 +67,6 @@ export function syncChipState(status) {
   return { ahead, behind };
 }
 
-/** Branch switching belongs to the checkouts the human owns — the project's
- *  primary one and its worktrees. A run worktree's branch is owned by the run
- *  lifecycle, so sessions show it as static text instead. */
-export function showBranchControl(scope) {
-  return Boolean(scope && scope.project_id && !scope.run_id);
-}
-
 /** Every toolbar verb is disabled while any action RPC is in flight (the same
  *  freeze that suppresses poll repaints), so a mid-action repaint never revives
  *  a live button to double-fire. */
@@ -96,8 +82,8 @@ export function actionSettleReenables(inFlightCount) {
 }
 
 /** The button vocabulary the git bar's verbs wear. The bar is a dense toolbar
- *  of secondary actions, so Fetch, the branch control and the Pull/Push/Stash
- *  split buttons are all the app's mini button — no look of its own. */
+ *  of secondary actions, so Fetch and the Pull/Push/Stash split buttons are all
+ *  the app's mini button — no look of its own. */
 export const TOOLBAR_BUTTON_VARIANT = "mini";
 
 /** The controls one settled action re-enables — every toolbar verb PLUS the
@@ -106,13 +92,7 @@ export const TOOLBAR_BUTTON_VARIANT = "mini";
  *  in flight), so the SAME settle that re-enables the toolbar must also re-enable
  *  Commit, or a Fetch/Push leaves it stuck disabled. */
 export function settleReenableSelectors() {
-  return [
-    ".gtfetch",
-    ".gtbranchbtn",
-    ".gtsync .btn",
-    ".gtstash .btn",
-    ".gitcommit-actions .btn.primary:not(.caret)",
-  ];
+  return [".gtfetch", ".gtsync .btn", ".gtstash .btn", ".gitcommit-actions .btn.primary:not(.caret)"];
 }
 
 /** Pull split button: fast-forward primary, then merge / rebase in the menu. */
@@ -173,17 +153,17 @@ export function syncActionRpc(optionId) {
 }
 
 /** The inline two-click confirm machine shared by every destructive verb
- *  (discard, force push, branch delete, merge abort): a first touch arms the
- *  control (returns its key as the new pending); a second touch of the SAME
- *  control fires and disarms; touching a different control re-arms that one. */
+ *  (discard, force push, merge abort): a first touch arms the control (returns
+ *  its key as the new pending); a second touch of the SAME control fires and
+ *  disarms; touching a different control re-arms that one. */
 export function resolveInlineConfirm(pending, key) {
   if (pending === key) return { fire: true, pending: null };
   return { fire: false, pending: key };
 }
 
 /** How long an armed inline confirm stays live before the poll auto-disarms it.
- *  A destructive verb (force push / discard / abort / branch delete) armed and
- *  then abandoned must not stay one click from firing indefinitely. */
+ *  A destructive verb (force push / discard / abort) armed and then abandoned
+ *  must not stay one click from firing indefinitely. */
 export const INLINE_CONFIRM_TTL_MS = 10000;
 
 /** True when an armed confirm (stamped at `armedAt`) has aged past the TTL, so
@@ -314,20 +294,20 @@ export function isPermanentGitScopeError(message) {
  *  repaint outright (a repaint would remount the busy split button enabled and
  *  recreate checkboxes mid-RPC); otherwise a rendered pane is left alone while
  *  the key is unchanged, a commit draft is active, or an interaction is live
- *  (an armed inline confirm or an open branch menu a repaint would clobber). */
+ *  (an armed inline confirm or an open file menu a repaint would clobber). */
 export function pollRenderFrozen({ paneRendered, keyUnchanged, draftActive, actionInFlight, interactionActive = false }) {
   if (actionInFlight) return true;
   return Boolean(paneRendered && (keyUnchanged || draftActive || interactionActive));
 }
 
 /** Whether a document-level pointerdown should dismiss the pane's live
- *  interaction: a press OUTSIDE the pane closes an open branch menu or disarms a
- *  pending confirm (an inside press never does — the pane's own handlers own
+ *  interaction: a press OUTSIDE the pane disarms a pending confirm or closes an
+ *  open file menu (an inside press never does — the pane's own handlers own
  *  it). Without this, an abandoned menu/confirm freezes the poll indefinitely
  *  (S5), since interactionActive stays true until a click inside disarms it. */
-export function outsidePressDismisses({ inside, branchMenuOpen, hasPendingConfirm, fileMenuOpen = false }) {
+export function outsidePressDismisses({ inside, hasPendingConfirm, fileMenuOpen = false }) {
   if (inside) return false;
-  return Boolean(branchMenuOpen || hasPendingConfirm || fileMenuOpen);
+  return Boolean(hasPendingConfirm || fileMenuOpen);
 }
 
 /** The commit split-button option list: the plain Commit action first (primary),
@@ -374,8 +354,7 @@ export function taskAgentCommitOptions(state, goal) {
  *  in as the rail's "All changes" entry — under the commit list, never the
  *  default selection: { getBase(), mount(host), unmount() }, and the plug owns
  *  the detail pane's DOM while selected (this pane never repaints over it).
- *  `revisionId()` names the diff revision this surface's comments anchor to;
- *  `onNavigate` is reserved for future cross-surface links. */
+ *  `revisionId()` names the diff revision this surface's comments anchor to. */
 export function mountGitPane(
   container,
   {
@@ -384,7 +363,6 @@ export function mountGitPane(
     agentCommitOptions = [],
     review = null,
     revisionId = () => null,
-    onNavigate = null,
     // Review prioritization: the run's freshest triage pass (read on every
     // paint — a re-triage lands under this pane), and the project the reviewer's
     // trust dial is remembered for. A surface with neither renders the plain
@@ -429,16 +407,8 @@ export function mountGitPane(
   // freshest parsed diff of the OPEN changeset, which is what a stamp is of.
   let reviewStamps = new Map();
   let renderedFiles = [];
-  const branchControl = showBranchControl(scope); // interactive branch menu?
-  let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort/delete)
+  let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
-  let branchMenuOpen = false; // the branch dropdown is showing
-  let branchList = null; // the last git.branches payload (null until fetched)
-  const forceDeleteOffered = []; // branches whose non-force delete failed → offer force
-  // One input drives the menu: it filters the list fuzzily AND names the branch
-  // the "Create …" row would cut. Survives repaints.
-  let branchQuery = "";
-  let branchActive = 0; // keyboard cursor over the menu's rows
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
@@ -454,9 +424,9 @@ export function mountGitPane(
   };
   const actionError = (e) => setHint("error: " + ((e && e.message) || "error").slice(0, 70));
 
-  // ---- the ONE inline-confirm arm/disarm path (force push / discard / abort /
-  // branch delete). Every armed confirm is stamped so the poll can auto-expire
-  // it, and any other action disarms it — no verb keeps its own bookkeeping.
+  // ---- the ONE inline-confirm arm/disarm path (force push / discard / abort).
+  // Every armed confirm is stamped so the poll can auto-expire it, and any
+  // other action disarms it — no verb keeps its own bookkeeping.
   const clearConfirm = () => {
     pendingConfirm = null;
     armedAt = null;
@@ -658,20 +628,6 @@ export function mountGitPane(
     if (disposed || !lastStatus || !lastLog) return;
     if (!container.querySelector(".changes2")) paintSkeleton();
     const repoControls = supportsRepoManagement(lastStatus);
-    const branchMarkup = repoControls
-      ? gitBranchControlHtml({
-          branch: lastStatus.branch,
-          showBranchControl: branchControl,
-          branchMenuHtml: branchMenuOpen
-            ? branchMenuHtml(branchList, {
-                pendingConfirm,
-                forceDeleteOffered,
-                query: branchQuery,
-                activeIndex: branchActive,
-              })
-            : "",
-        })
-      : "";
     container.querySelector(".gp-toolbar").innerHTML = repoControls
       ? gitToolbarHtml({
           chips: syncChipState(lastStatus),
@@ -690,7 +646,6 @@ export function mountGitPane(
       status: lastStatus,
       log: mergedLog,
       selected,
-      branchControlHtml: branchMarkup,
     });
     const detailHost = container.querySelector(".cdetail-host");
     if (selected === "review") {
@@ -720,85 +675,25 @@ export function mountGitPane(
     // mid-action must not resurrect a live button to double-fire); the action
     // wrapper re-enables them once the RPC settles.
     if (toolbarControlsDisabled(inFlightActions)) disableToolbarControls();
-    wireBranchMenu();
   };
 
   /// The rail, reconciled row by row rather than rewritten.
   ///
   /// Every row it holds has a name — "uncommitted", a commit's sha, the labels
   /// and affordances between them — so a poll that added one commit inserts one
-  /// row, and the rest of the rail, its scroll and the branch menu open over it
-  /// are exactly where they were. Nothing in the rail is wired to a row: the
-  /// surface's one click handler reads which row was pressed off the DOM.
+  /// row, and the rest of the rail and its scroll position are exactly where
+  /// they were. Nothing in the rail is wired to a row: the surface's one click
+  /// handler reads which row was pressed off the DOM.
   const paintRail = (parts) => {
     const host = container.querySelector(".crail-host");
     const rail = host.querySelector(".crail") || host.appendChild(el('<div class="crail"></div>'));
     patchList(rail, changesRailEntries(parts), { keyOf: (entry) => entry.key, render: (entry) => entry.html });
   };
 
-  /** The branch menu's input + placement. Typing re-renders the menu (the filter
-   *  IS the list), Enter takes the first row, and the menu is positioned in
-   *  viewport coordinates from the button — it lives inside the rail, which
-   *  scrolls, and an absolutely-positioned menu was clipped on both sides along
-   *  with the shadow that made it read as a layer. */
-  const wireBranchMenu = () => {
-    const menu = container.querySelector(".gtbranch-menu");
-    const button = container.querySelector(".gtbranchbtn");
-    if (!menu || !button) return;
-    if (button.getBoundingClientRect) {
-      const box = button.getBoundingClientRect();
-      menu.style.left = `${box.left}px`;
-      menu.style.top = `${box.bottom + 4}px`;
-      menu.style.minWidth = `${Math.max(box.width, 260)}px`;
-    }
-    // Keep the cursor on a row that still exists after a filter narrowed the list.
-    const rows = [...menu.querySelectorAll(".gtbranch-item")];
-    if (branchActive >= rows.length) branchActive = 0;
-    const activeRow = rows[branchActive];
-    if (activeRow && activeRow.scrollIntoView) activeRow.scrollIntoView({ block: "nearest" });
-
-    const input = menu.querySelector(".gtbranch-newinput");
-    if (!input) return;
-    input.oninput = () => {
-      branchQuery = input.value;
-      branchActive = 0; // a new query is a new list; start at its best match
-      render();
-      // The repaint replaces the input, so put the caret back where it was.
-      const fresh = container.querySelector(".gtbranch-newinput");
-      if (fresh) {
-        fresh.focus();
-        fresh.setSelectionRange(fresh.value.length, fresh.value.length);
-      }
-    };
-    // The whole menu is driven from this input: it never loses focus, so ↑/↓ move
-    // a cursor through the rows, Enter takes the one under it, and Esc gives up.
-    input.onkeydown = (event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        resetBranchMenu();
-        render();
-        return;
-      }
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-        event.preventDefault();
-        branchActive = moveActiveIndex(branchActive, event.key === "ArrowDown" ? 1 : -1, rows.length);
-        render();
-        return;
-      }
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      const chosen = rows[branchActive];
-      if (!chosen) return;
-      if (chosen.classList.contains("gtbranch-create")) createBranch();
-      else if (inFlightActions === 0) checkoutBranch(chosen.dataset.branch);
-    };
-    if (document.activeElement !== input) input.focus();
-  };
-
   /** Mount the Pull/Push/Stash split buttons into their toolbar hosts. Each host
    *  is absent unless the repo-management toolbar rendered (older bridge → no
    *  hosts, nothing to mount). The git bar is a dense toolbar, so its verbs wear
-   *  the mini button — the same one Fetch and the branch control wear. */
+   *  the mini button — the same one Fetch wears. */
   const mountToolbarControls = () => {
     const pullHost = container.querySelector(".gtpull");
     if (pullHost) mountSplitButton(pullHost, { options: pullSplitOptions(), run: runSyncOption, variant: TOOLBAR_BUTTON_VARIANT });
@@ -820,10 +715,7 @@ export function mountGitPane(
       });
   };
 
-  const toolbarButtons = () => [
-    ...container.querySelectorAll(".gtbranchbtn"),
-    ...container.querySelectorAll(".gtsync .btn, .gtstash .btn"),
-  ];
+  const toolbarButtons = () => [...container.querySelectorAll(".gtsync .btn, .gtstash .btn")];
   const disableToolbarControls = () => toolbarButtons().forEach((b) => (b.disabled = true));
 
   /** The ONE settle re-enable, shared by every action wrapper: revive every
@@ -996,7 +888,7 @@ export function mountGitPane(
     render();
   };
 
-  // ---- repo-management actions (v2 toolbar / banner / discard / branch) ----
+  // ---- repo-management actions (v2 toolbar / banner / discard) ----
 
   /** Run a repo-management mutation under the shared in-flight guard: poll
    *  repaints freeze and every toolbar verb stays disabled while awaited, then
@@ -1100,109 +992,6 @@ export function mountGitPane(
       await applyStatusResult(status);
     });
 
-  const resetBranchMenu = () => {
-    branchMenuOpen = false;
-    branchList = null;
-    branchQuery = "";
-    branchActive = 0;
-    forceDeleteOffered.length = 0;
-    clearConfirm();
-  };
-
-  const closeBranchMenu = () => {
-    resetBranchMenu();
-    render();
-  };
-
-  /** Open the branch dropdown and load git.branches. Every branch RPC carries
-   *  the whole scope: on a worktree surface the switch belongs to THAT
-   *  checkout, and sending the project id alone would move the project's. A
-   *  second click on the branch button closes it. */
-  const toggleBranchMenu = async () => {
-    if (branchMenuOpen) {
-      closeBranchMenu();
-      return;
-    }
-    branchMenuOpen = true;
-    branchList = null;
-    clearConfirm();
-    render(); // the loading placeholder shows immediately
-    let payload;
-    try {
-      payload = await callRpc("git.branches", { ...scope });
-    } catch (e) {
-      if (!disposed) actionError(e);
-      branchMenuOpen = false;
-      render();
-      return;
-    }
-    if (disposed || !branchMenuOpen) return;
-    branchList = payload;
-    render();
-  };
-
-  const checkoutBranch = (branch, create = false) =>
-    runGuarded(async () => {
-      let status;
-      try {
-        status = await callRpc("git.checkout", { ...scope, branch, create });
-      } catch (e) {
-        if (!disposed) actionError(e);
-        return;
-      }
-      resetBranchMenu();
-      await applyStatusResult(status, create ? `Created ${branch}.` : `Switched to ${branch}.`);
-    });
-
-  /** A branch the switcher found checked out in another worktree cannot be a
-   *  checkout here — git refuses the same branch in two places — so picking
-   *  it adopts that worktree instead, and hands the human off to it. */
-  const adoptAndSwitchTo = (branch, worktreeId) =>
-    runGuarded(async () => {
-      try {
-        await callRpc("run.adopt", { project_id: scope.project_id, worktree_id: worktreeId });
-      } catch (e) {
-        if (!disposed) actionError(e);
-        return;
-      }
-      if (disposed) return;
-      resetBranchMenu();
-      if (onNavigate) onNavigate({ name: "branch", projectId: scope.project_id, branch, tab: "changes" });
-    });
-
-  const createBranch = () => {
-    const name = (branchQuery || "").trim();
-    if (!name) {
-      setHint("Type a branch name first.");
-      return undefined;
-    }
-    return checkoutBranch(name, true);
-  };
-
-  const deleteBranch = (branch, force) =>
-    runGuarded(async () => {
-      let payload;
-      try {
-        payload = await callRpc("git.branch_delete", { ...scope, branch, force });
-      } catch (e) {
-        if (!disposed) {
-          actionError(e);
-          // Offer a force delete only after a non-force delete has failed.
-          if (!force && !forceDeleteOffered.includes(branch)) forceDeleteOffered.push(branch);
-          clearConfirm();
-          render();
-        }
-        return;
-      }
-      if (disposed) return;
-      branchList = payload; // git.branch_delete returns the fresh branches list
-      const offered = forceDeleteOffered.indexOf(branch);
-      if (offered >= 0) forceDeleteOffered.splice(offered, 1);
-      clearConfirm();
-      setHint(`Deleted ${branch}.`);
-      render(); // the menu stays open, now without the deleted branch
-    });
-
   /** The inline-confirm gate for a destructive click: a first click arms and
    *  repaints the armed label; a second on the same control fires `action`. */
   const confirmThen = (key, action) => {
@@ -1223,38 +1012,6 @@ export function mountGitPane(
     // bubble here, so bail before the "disarm on any other click" fallthrough —
     // otherwise a click would clear the very confirm it just armed.
     if (target.closest(".gtsync") || target.closest(".gtstash")) return;
-    if (target.closest(".gtbranchbtn")) {
-      toggleBranchMenu();
-      return;
-    }
-    if (branchMenuOpen) {
-      const deleteButton = target.closest(".gtbranch-del");
-      if (deleteButton) {
-        const branch = deleteButton.dataset.branch;
-        const force = deleteButton.dataset.force === "1";
-        confirmThen(`${force ? "branch_delete_force" : "branch_delete"}:${branch}`, () => deleteBranch(branch, force));
-        return;
-      }
-      const item = target.closest(".gtbranch-item");
-      if (item) {
-        // The create row wears the item class so it lands in the same list — it
-        // is an answer to the query, not a separate form.
-        if (item.classList.contains("gtbranch-create")) {
-          createBranch();
-          return;
-        }
-        // Branch rows are <div>s, so (unlike the disabled toolbar buttons) they
-        // stay clickable during an in-flight action — guard the checkout here.
-        if (inFlightActions === 0) {
-          const externalWorktreeId = item.dataset.externalWorktreeId;
-          if (externalWorktreeId) adoptAndSwitchTo(item.dataset.branch, externalWorktreeId);
-          else checkoutBranch(item.dataset.branch);
-        }
-        return;
-      }
-      if (target.closest(".gtbranch-menu")) return; // a click on the input keeps the menu open
-      closeBranchMenu(); // any other click dismisses the menu, then falls through
-    }
     const abortButton = target.closest(".gitabort");
     if (abortButton) {
       confirmThen("abort", runAbort);
@@ -1400,9 +1157,9 @@ export function mountGitPane(
     const rendered = container.querySelector(".gitpane .changes2");
     // Freeze while unchanged, while the user is drafting a commit message, while
     // any action RPC is in flight, or while an interaction is live: an armed
-    // confirm, an open branch or file menu, or a review in progress (pending
-    // comments, an open popover, typed general text) a repaint would clobber. A
-    // just-expired confirm bypasses the freeze so its armed label actually clears.
+    // confirm, an open file menu, or a review in progress (pending comments, an
+    // open popover, typed general text) a repaint would clobber. A just-expired
+    // confirm bypasses the freeze so its armed label actually clears.
     if (
       !expired &&
       pollRenderFrozen({
@@ -1412,8 +1169,6 @@ export function mountGitPane(
         actionInFlight: inFlightActions > 0,
         interactionActive:
           Boolean(pendingConfirm) ||
-          branchMenuOpen ||
-          Boolean(branchQuery) ||
           fileMenuPath !== null ||
           // A split button's menu (Commit, Pull, Push, Stash) is open because
           // somebody is reaching into it, and the repaint that rebuilds the
@@ -1428,22 +1183,20 @@ export function mountGitPane(
     render();
   };
 
-  // A press anywhere outside the pane dismisses a live interaction (open branch
-  // menu / armed confirm), mirroring splitButton's own outside-close. Without it
-  // an abandoned menu/confirm keeps interactionActive true and freezes the poll
-  // until the user clicks back inside (S5). Removed on dispose.
+  // A press anywhere outside the pane dismisses a live interaction (an armed
+  // confirm or an open file menu), mirroring splitButton's own outside-close.
+  // Without it an abandoned confirm/menu keeps interactionActive true and
+  // freezes the poll until the user clicks back inside (S5). Removed on dispose.
   const onOutsidePointerDown = (event) => {
     if (
       !outsidePressDismisses({
         inside: container.contains(event.target),
-        branchMenuOpen,
         hasPendingConfirm: pendingConfirm !== null,
         fileMenuOpen: fileMenuPath !== null,
       })
     )
       return;
-    if (branchMenuOpen) resetBranchMenu();
-    else clearConfirm();
+    clearConfirm();
     fileMenuPath = null; // an abandoned file menu must not freeze the poll
     render();
   };

@@ -96,11 +96,6 @@ describe("changesRailEntries", () => {
     expect(rail()).not.toContain("gitmore");
   });
 
-  it("places supplied branch selection above everything", () => {
-    const html = rail({ branchControlHtml: '<button class="gtbranchbtn">main</button>' });
-    expect(html.indexOf("crail-branch")).toBeLessThan(html.indexOf('data-sel="uncommitted"'));
-  });
-
   it("renders the empty state for a repo with no commits", () => {
     expect(rail({ log: log({ commits: [] }) })).toContain("No commits yet.");
   });

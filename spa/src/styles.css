@@ -493,9 +493,6 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    column is paid — the same line the toolbar's project name and the tab labels
    stand on. The right side keeps the rail's own tighter inset; nothing is
    aligned against it. */
-.crail-branch { position:relative; padding:10px 13px 10px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.crail-branch .gtbranchbtn { width:100%; display:flex; justify-content:space-between; min-width:0;
-  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .crail .rhead { font-size:10.5px; letter-spacing:.08em; color:var(--dim); font-weight:700;
   text-transform:uppercase; padding:10px 13px 4px var(--pane-gutter); border-top:1px solid var(--line2); }
 .crail .empty { padding:6px 13px 10px var(--pane-gutter); }
@@ -603,9 +600,6 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .actionbar .right { margin-left:auto; display:flex; gap:10px; }
 /* git repo-management toolbar (v2) */
 .gittoolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-.gtbranch { position:relative; }
-.gtbranchbtn { font-family:var(--mono); }
-.gtbranchlabel { font-family:var(--mono); font-size:12.5px; color:var(--ink2); display:inline-flex; align-items:center; gap:5px; }
 .gtsync { display:flex; align-items:center; gap:7px; }
 .gtchips { font-family:var(--mono); font-size:12px; display:inline-flex; gap:8px; }
 .gtahead { color:var(--accent); } .gtbehind { color:var(--amber); }
@@ -616,41 +610,6 @@ tr.hunk td { background:var(--hunk-bg); color:var(--accent); }
 .gtpull .btn:not(.caret)::before { content:"↓"; margin-right:6px; }
 .gtpush .btn:not(.caret)::before { content:"↑"; margin-right:6px; }
 .gtstash .btn:not(.caret)::before { content:"↧"; margin-right:6px; }
-/* Fixed to the viewport, placed from the branch button in JS: this menu lives
-   inside the commit rail, which scrolls, and an absolutely-positioned one was
-   clipped on both sides — taking its shadow with it, which is what made an open
-   menu read as part of the rail rather than a layer over it. The shadow is
-   heavier now for the same reason: it has to say "this is on top". */
-.gtbranch-menu { position:fixed; min-width:260px; max-width:min(420px, 92vw);
-  background:var(--panel); border:1px solid var(--line); border-radius:12px;
-  box-shadow:0 16px 44px var(--shadow), 0 2px 6px var(--shadow-soft);
-  overflow:hidden; z-index:60; }
-/* The list scrolls; the search row and the create row stay put. */
-.gtbranch-list { max-height:min(46vh, 380px); overflow-y:auto; }
-.gtbranch-searchrow { padding:9px 10px; border-bottom:1px solid var(--line); }
-.gtbranch-searchrow .gtbranch-newinput { width:100%; }
-.gtbranch-more { padding:8px 13px; font-size:11.5px; color:var(--dim); border-top:1px solid var(--line2); }
-.gtbranch-item.gtbranch-create { border-top:1px solid var(--line); color:var(--accent); }
-.gtbranch-item.gtbranch-create strong { font-family:var(--mono); font-weight:600; }
-.gtbranch-loading, .gtbranch-empty { padding:11px 13px; font-size:12.5px; color:var(--dim); }
-.gtbranch-item { display:flex; align-items:center; gap:9px; padding:8px 13px; font-size:13px; cursor:pointer; border-top:1px solid var(--line2); }
-.gtbranch-item:first-child { border-top:0; }
-.gtbranch-item:hover { background:var(--line2); }
-/* The keyboard cursor. Distinct from :hover (the pointer may be anywhere) and
-   from .current (which branch is checked out) — a row can be all three. */
-.gtbranch-item.active { background:var(--accent-soft); box-shadow:inset 2px 0 0 var(--accent); }
-.gtbranch-item.current { background:var(--accent-soft); }
-.gtbranch-item.current .gtbranch-name { color:var(--accent); font-weight:600; }
-.gtbranch-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--mono); font-size:12.5px; }
-.gtbranch-chips { font-family:var(--mono); font-size:11px; color:var(--dim); flex:none; }
-.gtbranch-chips .a { color:var(--green); } .gtbranch-chips .d { color:var(--red); }
-.gtbranch-elsewhere { flex:none; font-size:10.5px; letter-spacing:.02em; color:var(--dim); border:1px solid var(--line2); border-radius:5px; padding:1px 6px; }
-.gtbranch-del { flex:none; font:inherit; font-size:11px; background:transparent; border:0; color:var(--dim); cursor:pointer; padding:2px 6px; border-radius:5px; }
-.gtbranch-del:hover, .gtbranch-del.force { color:var(--red); }
-.gtbranch-del.armed { background:var(--red); color:var(--accent-ink); }
-.gtbranch-newinput { flex:1; min-width:0; font:inherit; font-size:12.5px; padding:7px 9px;
-  border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); }
-.gtbranch-newinput:focus { outline:2px solid color-mix(in srgb, var(--accent) 35%, transparent); border-color:var(--accent); }
 /* git repo-state banner (merge/rebase in progress) */
 .gitstate { display:flex; align-items:center; gap:12px; background:var(--red-bg); border:1px solid var(--red); color:var(--red); border-radius:9px; padding:10px 13px; font-size:13px; margin-bottom:18px; }
 .gitstate-msg { flex:1; }

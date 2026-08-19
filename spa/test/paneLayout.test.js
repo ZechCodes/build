@@ -750,7 +750,6 @@ describe("the surface's text column", () => {
     "the toolbar's project name": [".toolbar", ".tb-sel"],
     "a tab label": [...inRail(".railtabs"), ".tabs .t"],
     "a one-column pane": [".surface #tabbody"],
-    "the Changes rail's branch button": inRail(".crail-branch"),
     "a section heading in the Changes rail": inRail(".crail .rhead"),
     "a changeset in the Changes rail": inRail(".crail .rrow"),
     "a commit in the Changes rail": inRail(".crow"),

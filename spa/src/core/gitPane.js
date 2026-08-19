@@ -352,8 +352,9 @@ export function taskAgentCommitOptions(state, goal) {
  *  channel; `agentCommitOptions` (run scope) appends to the commit button;
  *  `review` (task/worktree surfaces) plugs the surface's aggregate review diff
  *  in as the rail's "All changes" entry — the rail's top row, and where a
- *  surface that has one opens: { getBase(), mount(host), unmount() }, and the plug owns
- *  the detail pane's DOM while selected (this pane never repaints over it).
+ *  surface that has one opens: { getBase(), mount(host), unmount() }, and the
+ *  plug owns the detail pane's DOM while selected (this pane never repaints
+ *  over it).
  *  `revisionId()` names the diff revision this surface's comments anchor to. */
 export function mountGitPane(
   container,

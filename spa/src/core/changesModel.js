@@ -4,10 +4,11 @@
 // here, so a rule about what the surface shows lives in exactly one place.
 //
 // The rules come from the UX Redesign Decisions doc's "Changes" bullet:
-// Uncommitted is the top rail entry (carrying +/− counts, not a file count),
-// the review aggregate is never the default selection, a clean branch opens at
-// the commit list with no commit box, commit is commit-all (no staged set), and
-// noise files are COLLAPSED, never filtered away.
+// the review aggregate ("All changes") is the rail's top entry and where the
+// surface opens, Uncommitted sits under it carrying +/− counts (not a file
+// count), a branch with no aggregate and a clean tree opens at the commit list
+// with no commit box, commit is commit-all (no staged set), and noise files are
+// COLLAPSED, never filtered away.
 
 /** Generated files a reviewer almost never reads: they still render, grouped
  *  and collapsed at the bottom of the stack. Matched on the basename so a
@@ -67,20 +68,23 @@ export function hasUncommittedChanges(status) {
   return ((status && status.files) || []).length > 0;
 }
 
-/** Where the surface opens: on the uncommitted changeset while the tree is
+/** Where the surface opens: on the review aggregate wherever the surface has
+ *  one — everything this branch carries against its base is what a reviewer
+ *  came to read, committed or not. Without an aggregate (the primary checkout,
+ *  a bare project) it opens on the uncommitted changeset while the tree is
  *  dirty, otherwise at the commit list with nothing selected (a clean branch
- *  gets no commit box). The review aggregate is never the default — it is an
- *  entry under the commit list, reachable but not in the way. */
-export function defaultChangesSelection({ status }) {
+ *  gets no commit box). */
+export function defaultChangesSelection({ status, review = null }) {
+  if (review) return "review";
   return hasUncommittedChanges(status) ? "uncommitted" : null;
 }
 
 /** The selection a fresh poll should hold: the user's, always — except that an
- *  empty selection follows the tree into dirt, so the first edit after a commit
- *  lands somewhere visible. */
-export function selectionAfterPoll(selected, status) {
+ *  empty selection falls back to where the surface opens, so the first edit
+ *  after a commit lands somewhere visible. */
+export function selectionAfterPoll(selected, status, { review = null } = {}) {
   if (selected !== null && selected !== undefined) return selected;
-  return hasUncommittedChanges(status) ? "uncommitted" : null;
+  return defaultChangesSelection({ status, review });
 }
 
 /** Progressive disclosure: the commit message box and its button exist only

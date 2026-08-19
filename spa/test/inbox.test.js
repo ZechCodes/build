@@ -438,20 +438,29 @@ describe("what a row says", () => {
     expect(inboxRowHtml(entry, {})).not.toContain("inbox-unread");
   });
 
-  it("puts the files, the ahead/behind and the +/− on line two", () => {
-    const [entry] = listed([branch({ stat: { ...branch().stat, ahead: 2, behind: 1 } })]);
+  it("weighs the uncommitted tree on line two, not the branch's whole history", () => {
+    const [entry] = listed([
+      branch({
+        stat: { ...branch().stat, ahead: 2, behind: 1, uncommitted: { files_changed: 3, insertions: 42, deletions: 7 } },
+      }),
+    ]);
     expect(entry.facts).toBe("3 files · ↑2 ↓1 · +42 −7");
     expect(inboxRowHtml(entry, {})).toContain("3 files · ↑2 ↓1 · +42 −7");
   });
 
+  it("says nothing about work the branch has already committed", () => {
+    const [entry] = listed([branch({ stat: { ...branch().stat, ahead: 2 } })]);
+    expect(entry.facts).toBe("↑2");
+  });
+
   it("counts one file as one file", () => {
-    expect(entryFactsText({ stat: { files_changed: 1, insertions: 1, deletions: 0 } })).toBe("1 file · +1 −0");
+    expect(entryFactsText({ stat: { uncommitted: { files_changed: 1, insertions: 1, deletions: 0 } } })).toBe("1 file · +1 −0");
   });
 
   it("says nothing about a branch that is level with what it is compared to", () => {
-    expect(entryFactsText({ stat: { files_changed: 2, insertions: 3, deletions: 4, ahead: 0, behind: 0 } })).toBe(
-      "2 files · +3 −4",
-    );
+    expect(
+      entryFactsText({ stat: { uncommitted: { files_changed: 2, insertions: 3, deletions: 4 }, ahead: 0, behind: 0 } }),
+    ).toBe("2 files · +3 −4");
   });
 
   // An issue has no checkout and no commits: there is nothing to weigh yet.

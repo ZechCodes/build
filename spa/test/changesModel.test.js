@@ -101,25 +101,29 @@ describe("hasUncommittedChanges", () => {
 });
 
 describe("defaultChangesSelection", () => {
-  it("opens on Uncommitted while the tree is dirty", () => {
+  it("opens on the review aggregate wherever the surface has one", () => {
+    expect(defaultChangesSelection({ status: status(), log: log(), review: true })).toBe("review");
+    expect(defaultChangesSelection({ status: status({ files: [] }), log: log(), review: true })).toBe("review");
+  });
+
+  it("opens on Uncommitted while the tree is dirty and there is no aggregate", () => {
     expect(defaultChangesSelection({ status: status(), log: log() })).toBe("uncommitted");
   });
 
   it("opens a clean branch at the commit list — nothing selected, no commit box", () => {
     expect(defaultChangesSelection({ status: status({ files: [] }), log: log() })).toBeNull();
   });
-
-  it("never defaults to the review aggregate", () => {
-    expect(defaultChangesSelection({ status: status({ files: [] }), log: log(), review: true })).toBeNull();
-    expect(defaultChangesSelection({ status: status(), log: log(), review: true })).toBe("uncommitted");
-  });
 });
 
 describe("selectionAfterPoll", () => {
   it("keeps whatever the user selected", () => {
-    expect(selectionAfterPoll("review", status())).toBe("review");
+    expect(selectionAfterPoll("uncommitted", status(), { review: true })).toBe("uncommitted");
     expect(selectionAfterPoll("a".repeat(40), status())).toBe("a".repeat(40));
     expect(selectionAfterPoll("uncommitted", status({ files: [] }))).toBe("uncommitted");
+  });
+
+  it("moves an empty selection onto the aggregate where there is one", () => {
+    expect(selectionAfterPoll(null, status({ files: [] }), { review: true })).toBe("review");
   });
 
   it("moves an empty selection onto Uncommitted once the tree goes dirty", () => {

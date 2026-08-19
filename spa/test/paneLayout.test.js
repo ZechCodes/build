@@ -344,7 +344,7 @@ describe("tab layout primitives", () => {
     const [tree] = rulesFor(".ftree");
     // …and the tree is what gives ground for it: a column that cannot shrink
     // would overflow the pane instead, and the flush body clips what overflows.
-    expect(declaration(tree.body, "flex")).toBe("0 1 300px");
+    expect(declaration(tree.body, "flex")).toBe("0 1 var(--pane-rail)");
   });
 
   it("fills its grid column instead of centring over the agent rail", () => {
@@ -375,9 +375,33 @@ describe("tab layout primitives", () => {
 
   const RAILS = [".crail-host", ".ftree"];
 
+  /** The one flex shorthand each rail states outside every media query. */
+  const railFlexRule = (token) =>
+    rulesMentioning(token).filter(
+      (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "flex"),
+    )[0];
+
+  it("gives Changes and Files the same rail, from one token", () => {
+    // The reviewer's gap: the Changes rail rendered twice the width of the file
+    // tree and squashed the diffs, so the two tabs read as different views. One
+    // token, one flex shorthand — a tab switch moves the divider nowhere.
+    const shorthands = RAILS.map((token) => declaration(railFlexRule(token).body, "flex"));
+    expect(shorthands).toEqual(["0 1 var(--pane-rail)", "0 1 var(--pane-rail)"]);
+    expect(stylesSource.match(/--pane-rail:/g) || []).toHaveLength(1);
+  });
+
+  it.each(RAILS)("lets %s's content ellipsize inside the rail rather than set its width", (token) => {
+    // A flex item's automatic minimum size is its content's min-content width,
+    // and a commit subject is one unbreakable nowrap line: without min-width:0
+    // the longest subject on the page sets the rail's width and the basis is
+    // decoration. The rows are marked up to truncate — this is what lets them.
+    expect(declaration(railFlexRule(token).body, "min-width")).toBe("0");
+  });
+
   /** How wide a rail renders inside an unstacked split: its flex basis, which it
-   *  neither grows nor shrinks from, minus whatever a cap takes off it. The cap
-   *  can only ever subtract — which is the whole point of measuring it. */
+   *  never grows past and only gives ground from in a pane too narrow for both
+   *  columns, minus whatever a cap takes off it. The cap can only ever
+   *  subtract — which is the whole point of measuring it. */
   function railWidth(token, viewport) {
     const tokens = tokensAt(viewport);
     const [rail] = rulesMentioning(token).filter(
@@ -405,7 +429,9 @@ describe("tab layout primitives", () => {
         const [rail] = rulesMentioning(token).filter(
           (rule) => enclosingAtRule(rule.at) === null && declaration(rule.body, "flex"),
         );
-        expect(railWidth(token, viewport)).toBe(pixels(declaration(rail.body, "flex").split(/\s+/)[2], {}));
+        expect(railWidth(token, viewport)).toBe(
+          pixels(declaration(rail.body, "flex").split(/\s+/)[2], tokensAt(viewport)),
+        );
       }
     },
   );
@@ -456,6 +482,19 @@ describe("tab layout primitives", () => {
     // The split is what the drawer measures and floats against, so it is the
     // containing block — stated once, at every width, where the primitive is.
     expect(declaration(rulesFor(".pane-split")[0].body, "position")).toBe("relative");
+  });
+
+  it("splits the rail's floor evenly between Changes and Files", () => {
+    // The bar at the bottom of the rail is the rail's own two-way switch, not a
+    // row of pills at the top of a surface: each tab takes half the column and
+    // centres its label in it.
+    const [cell] = cssRules().filter((rule) => rule.selector === ".railtabs .tabs .t");
+    expect(cell).toBeTruthy();
+    expect(declaration(cell.body, "flex")).toBe("1 1 0");
+    expect(declaration(cell.body, "justify-content")).toBe("center");
+    // Half a squeezed rail is narrower than a label: the cell has to give
+    // ground rather than push the bar past the column.
+    expect(declaration(cell.body, "min-width")).toBe("0");
   });
 
   it("drawers both panes from one rule, so neither can drift", () => {

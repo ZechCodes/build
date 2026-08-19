@@ -4,10 +4,11 @@
 // esc()d on the way out.
 //
 // The surface these draw is the one the UX Redesign Decisions doc specifies:
-// a left rail whose top entry is Uncommitted (carrying +/− counts), the review
-// aggregate ("All changes") directly under it, and the commit list below both —
-// a long commit list would otherwise scroll the one row a reviewer reaches for
-// first out of view. Every changeset — uncommitted, one commit, the aggregate —
+// a left rail whose top entry is the review aggregate ("All changes"),
+// Uncommitted (carrying +/− counts) directly under it, and the commit list
+// below both — a long commit list would otherwise scroll the two rows a
+// reviewer reaches for first out of view. Every changeset — the aggregate,
+// uncommitted, one commit —
 // renders through the SAME stacked full-file diff (core/diffRender's
 // diffStackHtml); these builders only draw what wraps it.
 
@@ -39,10 +40,11 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
     <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }
 
-/// The Changes rail, row by row: Uncommitted (top, with its +/− counts), — for
-/// a surface that has one — the review aggregate directly under it, then the
-/// "Commits" head and the commit list with its paging affordance. The branch
-/// itself is not named here — the nav bar already says it.
+/// The Changes rail, row by row: — for a surface that has one — the review
+/// aggregate at the top (where the surface opens), Uncommitted under it with
+/// its +/− counts, then the "Commits" head and the commit list with its paging
+/// affordance. The branch itself is not named here — the nav bar already says
+/// it.
 /// `selected` is "uncommitted" | "review" | a commit hash | null (a clean
 /// branch, sitting on the list).
 ///
@@ -56,11 +58,11 @@ export function changesRailEntries({ status, log, selected, review = null, nowSe
       <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
   const commits = (log && log.commits) || [];
   const entries = [];
+  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
   entries.push({
     key: "uncommitted",
     html: rrow("uncommitted", "Uncommitted", hasUncommittedChanges(status) ? plusMinusHtml(uncommittedTotals(status)) : "clean"),
   });
-  if (review) entries.push({ key: "review", html: rrow("review", "All changes", `vs ${esc(review.base || "main")}`) });
   entries.push({ key: "commits-head", html: '<div class="rhead">Commits</div>' });
   for (const commit of commits) {
     entries.push({ key: commit.hash, html: commitRowHtml(commit, { selected: selected === commit.hash, nowSeconds }) });

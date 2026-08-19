@@ -1,6 +1,6 @@
-// DOM-light controller for the Changes surface: a left rail (Uncommitted at the
-// top with its +/− counts, then — where a view plugs one in — the review
-// aggregate, and the commit list under both) driving a right detail pane. Every
+// DOM-light controller for the Changes surface: a left rail (— where a view
+// plugs one in — the review aggregate at the top, Uncommitted under it with its
+// +/− counts, and the commit list under both) driving a right detail pane. Every
 // changeset the pane can show renders through ONE renderer: stacked full file
 // diffs with line numbers, a per-file header carrying counts, a ✎, and a ⋯ for
 // the file's own verbs. There is no staging and no changed-files list — commit
@@ -351,8 +351,8 @@ export function taskAgentCommitOptions(state, goal) {
  *  one of { project_id } / { run_id }; `callRpc(method, params)` is the RPC
  *  channel; `agentCommitOptions` (run scope) appends to the commit button;
  *  `review` (task/worktree surfaces) plugs the surface's aggregate review diff
- *  in as the rail's "All changes" entry — under the commit list, never the
- *  default selection: { getBase(), mount(host), unmount() }, and the plug owns
+ *  in as the rail's "All changes" entry — the rail's top row, and where a
+ *  surface that has one opens: { getBase(), mount(host), unmount() }, and the plug owns
  *  the detail pane's DOM while selected (this pane never repaints over it).
  *  `revisionId()` names the diff revision this surface's comments anchor to. */
 export function mountGitPane(
@@ -481,7 +481,7 @@ export function mountGitPane(
     };
   };
 
-  const defaultSelection = () => defaultChangesSelection({ status: lastStatus });
+  const defaultSelection = () => defaultChangesSelection({ status: lastStatus, review });
 
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
   // run_id to name in the RPC), so a bare worktree or the primary checkout
@@ -1145,9 +1145,10 @@ export function mountGitPane(
     lastHead = status.head;
     lastStatus = status;
     lastLog = log;
-    // Where the surface opens is a function of the tree: the first status picks
-    // it, and an empty selection follows the tree into dirt afterwards.
-    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, status);
+    // Where the surface opens is a function of what it has to show: the first
+    // status picks it, and an empty selection falls back to the same place
+    // afterwards.
+    selected = selected === undefined ? defaultSelection() : selectionAfterPoll(selected, status, { review });
     // An abandoned confirm auto-expires: past the TTL the poll disarms it and
     // forces a repaint (S2c), so a destructive verb never stays one click from
     // firing — and the interactionActive freeze it caused is released too.

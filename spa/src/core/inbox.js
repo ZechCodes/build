@@ -143,18 +143,27 @@ export function dismissParamsOf(entry) {
  * it is compared with, and the +/− it carries — in that order, and only the
  * parts it actually has. "" when there is nothing to say, which the row renders
  * as GETTING_STARTED.
+ *
+ * The files and the +/− are the UNCOMMITTED tree, not the branch against its
+ * base: the inbox says what is waiting on the reader, and a long branch's
+ * lifetime totals bury that under thousands of lines they have already seen.
+ * The branch's whole weight is what the Changes surface opens on. Ahead/behind
+ * stay as they are — they are the row's sync facts, not its change facts.
  */
 export function entryFactsText(item) {
   const stat = item && item.stat;
   if (!stat) return "";
+  const uncommitted = stat.uncommitted || {};
   const parts = [];
-  const files = stat.files_changed || 0;
+  const files = uncommitted.files_changed || 0;
   if (files > 0) parts.push(`${files} file${files === 1 ? "" : "s"}`);
   const sync = [];
   if (stat.ahead) sync.push(`↑${stat.ahead}`);
   if (stat.behind) sync.push(`↓${stat.behind}`);
   if (sync.length) parts.push(sync.join(" "));
-  if (stat.insertions || stat.deletions) parts.push(`+${stat.insertions || 0} −${stat.deletions || 0}`);
+  if (uncommitted.insertions || uncommitted.deletions) {
+    parts.push(`+${uncommitted.insertions || 0} −${uncommitted.deletions || 0}`);
+  }
   return parts.join(" · ");
 }
 

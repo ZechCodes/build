@@ -52,6 +52,11 @@ describe("changesRailEntries", () => {
     expect(html.indexOf('data-sel="uncommitted"')).toBeLessThan(html.indexOf('data-hash='));
   });
 
+  it("puts the review aggregate above Uncommitted where the surface has one", () => {
+    const html = rail({ review: { base: "main" } });
+    expect(html.indexOf('data-sel="review"')).toBeLessThan(html.indexOf('data-sel="uncommitted"'));
+  });
+
   it("carries +/− counts on Uncommitted, not a file count", () => {
     const html = rail();
     expect(html).toContain("+7");
@@ -70,13 +75,12 @@ describe("changesRailEntries", () => {
     expect(html).toContain("Commits");
   });
 
-  it("offers the review aggregate directly under Uncommitted, above the commit list, only when the surface has one", () => {
+  it("offers the review aggregate above the commit list, only when the surface has one", () => {
     expect(rail()).not.toContain('data-sel="review"');
     const html = rail({ review: { base: "main" } });
     expect(html).toContain('data-sel="review"');
     expect(html).toContain("All changes");
     expect(html).toContain("vs main");
-    expect(html.indexOf('data-sel="uncommitted"')).toBeLessThan(html.indexOf('data-sel="review"'));
     expect(html.indexOf('data-sel="review"')).toBeLessThan(html.indexOf('data-hash='));
   });
 

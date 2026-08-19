@@ -98,19 +98,52 @@ const writeExpanded = (on) => {
   }
 };
 
-/** Pure: the strip. Bubbles top to bottom, the `+` last. */
+/** Pure: the strip's IDENTITY — bubbles top to bottom, the `+` last, carrying
+ *  only what cannot change while a bubble lives: which agent it is and which
+ *  face it wears. Everything that moves — which one is open, which is working,
+ *  what it is waiting on — is written onto the live buttons by syncStripState,
+ *  so this string changes only when the AGENTS do.
+ *
+ *  That is not a micro-optimisation. A bubble's pattern animation is paused
+ *  while its agent is idle, and it holds the frame it stopped on; replacing the
+ *  element would restart it from the beginning every time the agent's news
+ *  changed. (It is also what keeps a press that lands mid-repaint from being
+ *  swallowed by a swapped button.) */
 export function stripHtml(bubbles) {
   return bubbles
     .map((bubble) => {
       const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
-      if (bubble.active) classes.push("active");
-      if (bubble.working) classes.push("working");
-      const badge = bubble.unread ? `<span class="rail-badge">${esc(String(bubble.unread))}</span>` : "";
+      if (bubble.pattern) classes.push(`rail-pattern-${bubble.pattern}`);
+      // A pattern IS the bubble's face, so it takes the label's place. The `+`
+      // and anything else that speaks in a glyph keeps one.
+      const face = bubble.pattern
+        ? `<span class="rail-glyph" aria-hidden="true"></span>`
+        : `<span class="rail-bubble-label">${esc(bubble.label)}</span>`;
       return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
-        data-agent="${esc(bubble.id)}" title="${esc(bubble.title)}" aria-label="${esc(bubble.title)}">
-        <span class="rail-bubble-label">${esc(bubble.label)}</span>${badge}</button>`;
+        data-agent="${esc(bubble.id)}">
+        ${face}<span class="rail-badge" hidden></span></button>`;
     })
     .join("");
+}
+
+/** Write the moving half onto a strip that is already painted: which bubble is
+ *  open, which is working, its unread count, and the tooltip that says why.
+ *  Positional — the strip's own HTML is rebuilt whenever the bubbles themselves
+ *  change, so index N here is always bubble N there. */
+export function syncStripState(strip, bubbles) {
+  const buttons = strip.querySelectorAll("[data-bubble]");
+  bubbles.forEach((bubble, index) => {
+    const button = buttons[index];
+    if (!button) return;
+    button.classList.toggle("active", !!bubble.active);
+    button.classList.toggle("working", !!bubble.working);
+    button.title = bubble.title;
+    button.setAttribute("aria-label", bubble.title);
+    const badge = button.querySelector(".rail-badge");
+    if (!badge) return;
+    badge.textContent = bubble.unread ? String(bubble.unread) : "";
+    badge.hidden = !bubble.unread;
+  });
 }
 
 /** Pure: the line pinned above the composer — a pulsing dot and how long the
@@ -330,7 +363,8 @@ export function mountAgentRail(host, context) {
       paintedStrip = null;
     }
     const strip = host.querySelector(".rail-strip");
-    const wantedStrip = stripHtml(railBubbles({ agents: entity.agents, selectedId, kind: entity.kind }));
+    const bubbles = railBubbles({ agents: entity.agents, selectedId, kind: entity.kind });
+    const wantedStrip = stripHtml(bubbles);
     if (paintedStrip !== wantedStrip) {
       strip.innerHTML = wantedStrip;
       paintedStrip = wantedStrip;
@@ -338,6 +372,8 @@ export function mountAgentRail(host, context) {
         bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
       });
     }
+    // The news goes onto the buttons that are there — see stripHtml.
+    syncStripState(strip, bubbles);
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");

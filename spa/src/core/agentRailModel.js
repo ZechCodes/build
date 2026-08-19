@@ -31,6 +31,20 @@ export function agentTitle(agent) {
   return `${providerLabel(agent && agent.provider)} ${(agent && agent.ordinal) || 1}`;
 }
 
+/** How many faces there are for an agent to wear. Each is a pattern of dots or
+ *  lines drawn in CSS (styles/shell.css, .rail-pattern-N), animated while the
+ *  agent works and frozen where it stopped when it does not. */
+export const AGENT_PATTERN_COUNT = 5;
+
+/** Which face this agent wears, from its place on the work item: the agents
+ *  beside each other are the ones that have to be tellable apart, so the strip's
+ *  first five are always five different patterns, and the same agent wears the
+ *  same one every time the rail is painted. */
+export function agentPattern(ordinal) {
+  const place = Math.max(1, Number(ordinal) || 1);
+  return ((place - 1) % AGENT_PATTERN_COUNT) + 1;
+}
+
 /** The bubble's tooltip: who it is, and the one thing it is waiting on. Unread
  *  wins over working — an agent that asked something while it kept going is
  *  still asking. */
@@ -48,19 +62,36 @@ export function bubbleTip(agent) {
  * The strip, top to bottom: one bubble per agent, then the `+` that gives a
  * branch another one.
  *
+ * An agent's bubble carries a PATTERN, not a number: `label` is empty for it and
+ * `pattern` says which face it wears. The `+` is a control rather than an agent,
+ * so it keeps its glyph and wears no pattern.
+ *
  * A work item Build owns no agent in yet gets a single GHOST bubble instead:
  * the conversation exists before the agent does, and the first message is what
- * brings the agent into being. Nothing can be added beside an agent that is not
- * there yet, so the `+` waits for it.
+ * brings the agent into being — so the ghost wears the face that first agent
+ * will. Nothing can be added beside an agent that is not there yet, so the `+`
+ * waits for it.
  */
 export function railBubbles({ agents = [], selectedId = null, kind = "branch" } = {}) {
   if (!agents.length) {
-    return [{ type: "ghost", id: "", label: "1", title: "Send a message to start an agent here", active: true, unread: 0, working: false }];
+    return [
+      {
+        type: "ghost",
+        id: "",
+        label: "",
+        pattern: agentPattern(1),
+        title: "Send a message to start an agent here",
+        active: true,
+        unread: 0,
+        working: false,
+      },
+    ];
   }
   const bubbles = agents.map((agent) => ({
     type: "agent",
     id: agent.id,
-    label: String(agent.ordinal || 1),
+    label: "",
+    pattern: agentPattern(agent.ordinal),
     title: bubbleTip(agent),
     active: agent.id === selectedId,
     unread: agent.unread_count || 0,
@@ -70,7 +101,16 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
   // Issues carry exactly one agent session: implementing one hands the work to
   // a new agent on a branch, which is a different work item entirely.
   if (kind === "branch") {
-    bubbles.push({ type: "add", id: "", label: "+", title: "Add another agent to this branch", active: false, unread: 0, working: false });
+    bubbles.push({
+      type: "add",
+      id: "",
+      label: "+",
+      pattern: null,
+      title: "Add another agent to this branch",
+      active: false,
+      unread: 0,
+      working: false,
+    });
   }
   return bubbles;
 }

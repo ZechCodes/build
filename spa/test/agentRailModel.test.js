@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  AGENT_PATTERN_COUNT,
+  agentPattern,
   agentTitle,
   aheadBehindText,
   bubbleTip,
@@ -75,7 +77,42 @@ describe("the bubble strip", () => {
   it("shows one ghost where no agent has been born yet, and nothing to add to", () => {
     const bubbles = railBubbles({ agents: [], selectedId: null, kind: "branch" });
     expect(bubbles.map((b) => b.type)).toEqual(["ghost"]);
-    expect(bubbles[0].label).toBe("1");
+    expect(bubbles[0].label).toBe("");
+    expect(bubbles[0].pattern).toBe(1);
+  });
+});
+
+// An agent is not a number. Each wears one of a handful of patterns instead —
+// animated while it is working, frozen where it stopped when it is not — so the
+// strip reads as a set of faces rather than a numbered list.
+describe("the pattern an agent wears", () => {
+  it("gives each of the first agents on a work item a pattern of its own", () => {
+    const patterns = [1, 2, 3, 4, 5].map((ordinal) => agentPattern(ordinal));
+    expect(new Set(patterns).size).toBe(AGENT_PATTERN_COUNT);
+    expect(patterns.every((pattern) => pattern >= 1 && pattern <= AGENT_PATTERN_COUNT)).toBe(true);
+  });
+
+  it("is the same pattern every time for the same agent, and wraps past the last", () => {
+    expect(agentPattern(3)).toBe(agentPattern(3));
+    expect(agentPattern(AGENT_PATTERN_COUNT + 1)).toBe(agentPattern(1));
+  });
+
+  it("dresses an agent with no ordinal as the first one", () => {
+    expect(agentPattern(0)).toBe(agentPattern(1));
+    expect(agentPattern(undefined)).toBe(agentPattern(1));
+  });
+
+  it("puts the pattern on the bubble, and no number anywhere on it", () => {
+    const bubbles = railBubbles({
+      agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
+      selectedId: "ag-1",
+      kind: "branch",
+    });
+    expect(bubbles.slice(0, 2).map((bubble) => bubble.pattern)).toEqual([agentPattern(1), agentPattern(2)]);
+    expect(bubbles.slice(0, 2).map((bubble) => bubble.label)).toEqual(["", ""]);
+    // The `+` is a control, not an agent: it keeps its glyph and wears no pattern.
+    expect(bubbles[2].label).toBe("+");
+    expect(bubbles[2].pattern).toBe(null);
   });
 });
 

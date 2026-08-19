@@ -152,16 +152,56 @@ describe("the bubble strip", () => {
     expect(after.every((bubble, index) => bubble === before[index])).toBe(true);
   });
 
-  it("repaints the strip the moment a bubble has something new to say", async () => {
+  // What a bubble SAYS — its unread count, whether it is working, which one is
+  // open — is written onto the button that is already there. The element only
+  // changes when the AGENTS do. That is what lets a paused pattern animation
+  // keep the frame it stopped on: replacing the element would restart it.
+  it("writes a bubble's news onto the button already there, rather than replacing it", async () => {
     await mount();
     const before = bubbles()[0];
-    payload = branchRow({ agents: [agent({ unread_count: 3 })] });
+    payload = branchRow({ agents: [agent({ unread_count: 3, working: true })] });
 
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(bubbles()[0]).not.toBe(before);
+    expect(bubbles()[0]).toBe(before);
     expect(bubbles()[0].querySelector(".rail-badge").textContent).toBe("3");
+    expect(bubbles()[0].querySelector(".rail-badge").hidden).toBe(false);
+    expect(bubbles()[0].classList.contains("working")).toBe(true);
+    expect(bubbles()[0].title).toContain("unread");
+
+    // …and back again: the badge goes, the animation stops where it was.
+    payload = branchRow({ agents: [agent()] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(bubbles()[0]).toBe(before);
+    expect(bubbles()[0].querySelector(".rail-badge").hidden).toBe(true);
+    expect(bubbles()[0].classList.contains("working")).toBe(false);
+  });
+
+  it("rebuilds the strip when the agents themselves change", async () => {
+    await mount();
+    const before = bubbles()[0];
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()).toHaveLength(3);
+    expect(bubbles()[0]).not.toBe(before);
+  });
+
+  it("wears a pattern instead of a number", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    const [first, second] = bubbles();
+    expect(first.className).toMatch(/rail-pattern-1\b/);
+    expect(second.className).toMatch(/rail-pattern-2\b/);
+    expect(first.querySelector(".rail-glyph")).toBeTruthy();
+    expect(first.textContent.trim()).toBe("");
+    // The name is still said where a name belongs — the tooltip and the
+    // accessible name — so two agents are still tellable apart in words.
+    expect(first.getAttribute("aria-label")).toBe("Claude Code 1");
   });
 
   it("shows a single ghost where no agent has been born yet", async () => {

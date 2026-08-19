@@ -399,6 +399,70 @@ describe("the conversation panel", () => {
     await mount();
     expect(markSeen).not.toHaveBeenCalled();
   });
+
+  // The reviewer's bug: pressing the second bubble moved the selection and the
+  // remove button, and left the first agent's conversation on screen. The panel
+  // waited for the poll to bring the other conversation — and with the bridge
+  // pushing change events, that poll has stood down to a 60s safety read, so the
+  // wrong words sat there for a minute.
+  describe("switching between two agents", () => {
+    const twoAgents = () => {
+      const said = (who) => ({
+        items: [{ type: "message", data: { role: "agent", body: `words from ${who}`, seen_at: null } }],
+        sessions: [],
+      });
+      App.call = vi.fn(async (method, params) => {
+        calls.push({ method, params });
+        if (method === "branch.get") {
+          return branchRow({
+            agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
+            run: { run_id: "run-3", thread: said(params.agent_id || "ag-1") },
+          });
+        }
+        return {};
+      });
+    };
+
+    it("reads the newly opened agent's conversation at once, not on the next poll", async () => {
+      twoAgents();
+      await mount();
+      const before = callsTo("branch.get").length;
+
+      bubbles()[1].click();
+      await flush();
+
+      const reads = callsTo("branch.get");
+      expect(reads.length).toBeGreaterThan(before);
+      expect(reads.at(-1).params.agent_id).toBe("ag-2");
+    });
+
+    it("shows the conversation of the agent it switched to", async () => {
+      twoAgents();
+      await mount();
+      expect(panel().textContent).toContain("words from ag-1");
+
+      bubbles()[1].click();
+      await flush();
+
+      expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+      expect(panel().textContent).toContain("words from ag-2");
+      expect(panel().textContent).not.toContain("words from ag-1");
+    });
+
+    it("never shows one agent's words under another's name while the read is in flight", async () => {
+      twoAgents();
+      await mount();
+      expect(panel().textContent).toContain("words from ag-1");
+
+      // The press repaints before its read can answer. Whatever the panel draws
+      // in that gap, it must not be the conversation of the agent just left.
+      bubbles()[1].click();
+      expect(panel().textContent).not.toContain("words from ag-1");
+
+      await flush();
+      expect(panel().textContent).toContain("words from ag-2");
+    });
+  });
 });
 
 describe("focusing the composer on a freshly created branch", () => {

@@ -210,6 +210,12 @@ export function mountAgentRail(host, context) {
   let tui = null; // the mounted PTY pane, in TUI mode
   let threadCache = createThreadCache();
   let threadAgentId = null; // whose conversation the cache holds
+  // Which agent the payload in hand was READ FOR. Not the same question as
+  // threadAgentId: that one is about the cache, this one is about the answer the
+  // cache would be filled from. Between opening another agent's bubble and its
+  // read landing, the payload still belongs to the agent just left, and its
+  // words must not be drawn under the new one's name.
+  let threadOwner = null;
   let adopting = null;
   let sending = false; // a first message is adopting/starting — do not repaint over it
   let paintedStrip = null; // the markup the bubble strip currently stands on
@@ -341,6 +347,10 @@ export function mountAgentRail(host, context) {
     agentlessOnce = false;
     entity = answered;
     chooseAgent(selectAgentId(entity.agents, selectedId));
+    // Whose conversation this payload carries: the agent we asked about, or —
+    // when we asked about none, which is every first read — the entity's own,
+    // which is the agent the selection just landed on (its first).
+    threadOwner = asked === null ? selectedId : asked;
     if (!sending) paint();
   };
 
@@ -460,6 +470,12 @@ export function mountAgentRail(host, context) {
       threadCache.reset();
       threadAgentId = selectedId;
     }
+    // The payload in hand belongs to the agent it was read for. Just after a
+    // switch that is the agent just left, and absorbing it would refill the
+    // cache the switch cleared with the wrong conversation — which is exactly
+    // what made switching look like it did nothing. Nothing until the read for
+    // THIS agent lands; pressBubble asks for it immediately.
+    if (threadOwner !== selectedId) return null;
     return entity.thread ? threadCache.absorb(entity.thread) : null;
   };
 
@@ -629,6 +645,11 @@ export function mountAgentRail(host, context) {
       expanded = true;
       writeExpanded(true);
       paint();
+      // …and ask for this agent's conversation NOW. Waiting for the watcher is
+      // what made the switch look broken: with the bridge pushing change events
+      // the rail's own read has stood down to a 60s safety poll, and nothing
+      // about opening a different bubble is a change the bridge would push.
+      refresh();
       return;
     }
     // The bubble already open is the way back out: press it again to collapse.

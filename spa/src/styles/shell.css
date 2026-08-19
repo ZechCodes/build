@@ -11,6 +11,9 @@
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
+  --inbox-open-clear:56px; /* the floating reopen toggle's own footprint (its
+    10px offset plus its box plus a gap), so the collapsed toolbar's first
+    button never sits under it */
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
@@ -256,10 +259,18 @@ body.inbox-collapsed #inbox-open { display:block; }
 .toolbar { display:flex; align-items:center; gap:2px;
   padding:0 10px 0 var(--toolbar-gutter);
   height:var(--toolbar-h); min-width:0; }
+/* With the inbox rail away, its floating reopen toggle (shell.css above)
+   floats over exactly where the project name starts — give the bar enough
+   left padding to clear it instead. */
+body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-sel { display:flex; align-items:center; gap:5px; min-width:0; max-width:42%;
   font:inherit; font-size:13px; color:var(--ink); background:none; border:none;
   border-radius:6px; padding:4px var(--tbsel-inset); cursor:pointer; }
 .tb-sel:hover { background:var(--panel2); }
+/* The branch/issue half is the one that runs long. It grows to fill whatever
+   the project name and the right side leave it, rather than truncating at a
+   fixed share of the bar while the rest of the row sits empty. */
+.tb-item { flex:1 1 auto; max-width:none; }
 .tb-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tb-project .tb-name { font-weight:600; }
 .tb-caret { flex:none; font-size:9px; color:var(--dim); }

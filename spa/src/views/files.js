@@ -61,13 +61,18 @@ const parentPath = (dir) => dir.split("/").slice(0, -1).join("/");
 export function filesTreeHtml(dir, entries) {
   const crumb = `<div class="fcrumb mono">${dir ? esc(dir) : "/"}</div>`;
   const up = dir ? `<div class="frow fup" data-up="1"><span class="fk">↰</span> ..</div>` : "";
+  // The name is its own element in every row: the tree is a fixed-width column
+  // that gives ground rather than growing, so a long unbroken name has to
+  // ellipsize inside it (.fname), and a bare text node in the row's flex line
+  // has no box to do that in.
   const rows = entries
     .map((entry) => {
+      const name = `<span class="fname">${esc(entry.name)}</span>`;
       if (entry.kind === "dir")
-        return `<div class="frow fdir" data-dir="${esc(entry.name)}"><span class="fk">▸</span> ${esc(entry.name)}</div>`;
+        return `<div class="frow fdir" data-dir="${esc(entry.name)}"><span class="fk">▸</span> ${name}</div>`;
       if (entry.kind === "symlink")
-        return `<div class="frow fsym" title="symlink — not followed"><span class="fk">↳</span> ${esc(entry.name)}</div>`;
-      return `<div class="frow ffile" data-file="${esc(entry.name)}"><span class="fk">·</span> ${esc(entry.name)}<span class="fsize mono">${Number(entry.size) || 0}</span></div>`;
+        return `<div class="frow fsym" title="symlink — not followed"><span class="fk">↳</span> ${name}</div>`;
+      return `<div class="frow ffile" data-file="${esc(entry.name)}"><span class="fk">·</span> ${name}<span class="fsize mono">${Number(entry.size) || 0}</span></div>`;
     })
     .join("");
   return crumb + (up + rows || '<div class="empty">Empty directory.</div>');

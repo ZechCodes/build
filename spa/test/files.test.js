@@ -81,6 +81,19 @@ describe("filesTreeHtml", () => {
     expect(html).toContain("&quot;");
   });
 
+  it("gives every name a box of its own to truncate inside", () => {
+    // The tree column is a fixed width that gives ground rather than growing,
+    // so a name with no break opportunity has to ellipsize — which needs an
+    // element, not a bare text node in the row's flex line.
+    const html = filesTreeHtml("src", [
+      { kind: "dir", name: "core" },
+      { kind: "file", name: "aVeryLongUnbrokenFileName.module.test.js", size: 12 },
+      { kind: "symlink", name: "link" },
+    ]);
+    expect(html.match(/class="fname"/g)).toHaveLength(3);
+    expect(html).toContain('<span class="fname">aVeryLongUnbrokenFileName.module.test.js</span>');
+  });
+
   it("escapes the breadcrumb directory and renders the up-row only below the root", () => {
     const nested = filesTreeHtml('<b>evil</b>/"sub', [{ kind: "file", name: "a.txt", size: 1 }]);
     expect(nested).not.toContain("<b>evil</b>");

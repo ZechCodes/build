@@ -842,6 +842,9 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .frow.sel { background:var(--accent-soft); color:var(--accent); }
 .frow.fsym { cursor:default; color:var(--dim); }
 .frow .fk { flex:0 0 12px; text-align:center; color:var(--dim); font-size:11px; }
+/* The name gives ground before the row does: a path with no break opportunity
+   would otherwise run past the tree's divider and under the preview. */
+.frow .fname { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .frow .fsize { margin-left:auto; font-size:11px; color:var(--dim); }
 .fphead { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line);
   font-size:12px; }

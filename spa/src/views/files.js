@@ -137,8 +137,13 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
 export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   // The tree and the preview are the two columns of the shell's two-column
   // primitive, so the browser's outer box measures like every other tab.
-  body.innerHTML = `<div class="files pane-split"><div class="ftree pane-list" id="ftree"></div><div class="fpreview idle" id="fpreview"></div>${paneDrawerHtml("files")}</div>`;
+  // `#ftree` is the stable column (what the drawer slides, what the tab bar
+  // pins to the bottom of); `.ftree-list` is the part `loadTree` replaces —
+  // splitting them is what lets a directory change repaint the rows without
+  // taking the tab bar below them with it.
+  body.innerHTML = `<div class="files pane-split"><div class="ftree pane-list" id="ftree"><div class="ftree-list"></div></div><div class="fpreview idle" id="fpreview"></div>${paneDrawerHtml("files")}</div>`;
   const treeEl = body.querySelector("#ftree");
+  const treeListEl = body.querySelector(".ftree-list");
   const previewEl = body.querySelector("#fpreview");
   // On a narrow viewport the tree is a drawer over the preview. Only a file
   // closes it: a directory row is still part of choosing one, and closing the
@@ -159,7 +164,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   let sourceOverride = false; // per-selected-file "view source" toggle
 
   const renderTree = (entries) => {
-    treeEl.innerHTML = filesTreeHtml(dir, entries);
+    treeListEl.innerHTML = filesTreeHtml(dir, entries);
     if (dir) treeEl.querySelector(".fup").onclick = () => loadTree(parentPath(dir));
     treeEl.querySelectorAll(".fdir").forEach((row) => (row.onclick = () => loadTree(joinPath(dir, row.dataset.dir))));
     treeEl.querySelectorAll(".ffile").forEach((row) => (row.onclick = () => selectFile(joinPath(dir, row.dataset.file), row)));
@@ -170,7 +175,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
     try {
       res = await callRpc("fs.tree", { ...scope, path: nextDir });
     } catch (e) {
-      treeEl.innerHTML = `<div class="empty">cannot list: ${esc((e && e.message) || "error")}</div>`;
+      treeListEl.innerHTML = `<div class="empty">cannot list: ${esc((e && e.message) || "error")}</div>`;
       return;
     }
     dir = res.path || "";

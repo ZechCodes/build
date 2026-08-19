@@ -199,27 +199,10 @@ main#root.surface { max-width:none;
      and hands scrolling to #tabbody. */
   height:100%;
   display:flex; flex-direction:column; overflow:hidden; }
-/* No rule under it: the selected pill marks the tab row, and the surface shares
-   the page background like every other section.
-   The bar pays the gutter LESS the pill's own inset, so a tab's LABEL stands on
-   the text column — under the toolbar's project name, over the pane it opens.
-   The pill's fill (hover only) reaching nearer the frame is the point: the row
-   reads as tabs on the surface rather than as a strip inset from it. */
-.surface-bar { display:flex; align-items:center; gap:12px;
-  padding:4px var(--pane-gutter) 4px var(--tabbar-gutter);
-  background:var(--bg); flex:none; }
-/* The row owns the bar's whole width, so its right cluster lands at the far
-   right of the surface. */
-.surface-bar .tabrow { flex:1 1 auto; min-width:0; overflow-x:auto; }
-.surface-bar .tabs { margin-bottom:0; }
-/* The bar's one verb — how the work ends — sits at the far right, sized to the
-   row rather than to a pane's actionbar. */
-.surface-verb { flex:none; display:flex; align-items:center; }
-.surface-verb .btn { padding:5px 12px; font-size:12.5px; border-radius:8px; }
-.surface-verb .splitbtn .caret { padding:5px 8px; }
-/* This bar tops the surface, so its menu drops DOWN and hangs off the right
-   edge (the changeset actionbar's opens upward, from the foot of its pane). */
-.surface-verb .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; }
+/* The branch surface has no bar of its own any more: Changes/Files pin to the
+   bottom of whichever rail is open (.railtabs, near .crail-host below), and
+   Done lives in the toolbar's verb slot (core/toolbar.js's #tb-verb) — #tabbody
+   is the surface's only child, flush against the toolbar above it. */
 .cluster-pane .board-head { margin-bottom:14px; }
 /* A single 1fr row hands the mounted pane the leftover height as a definite one,
    which is what an empty state's `height:100%` needs; taller content grows the
@@ -476,7 +459,12 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    sidebar is a 272px column here, so 40% of the pane is under the basis in every
    window from the stacking width up to 1066px, leaving the rail narrower than
    the stacked strip one pixel below. */
-.crail-host { flex:0 0 300px; overflow-y:auto; border-right:1px solid var(--line); }
+/* A flex column now, not the scroller itself: .crail (below) scrolls in the
+   room this leaves it, and .railtabs (shared with .ftree, near the bottom of
+   this file) pins under it, unscrolled. */
+.crail-host { flex:0 0 300px; border-right:1px solid var(--line);
+  display:flex; flex-direction:column; min-height:0; }
+.crail { flex:1 1 auto; min-height:0; overflow-y:auto; }
 /* The right pane: a flex column — pinned toolbar/banner over the scrolling
    detail host. Its regions pay the gutter on the divider side only: the split
    already insets the pane from the frame, and repeating it on the right would
@@ -500,7 +488,6 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .gp-commit:not(:empty) { flex:none; padding:12px var(--pane-gutter) 14px; border-top:1px solid var(--line);
   background:var(--panel); box-shadow:0 -8px 20px var(--shadow-soft); }
 .gp-commit .actionbar { position:static; background:none; padding:8px 0 0; margin:0; }
-.crail { overflow:visible; }
 /* Every row in the rail carries the gutter on its LEFT: the column itself meets
    the frame (.pane-split .pane-list), so the row is where the surface's text
    column is paid — the same line the toolbar's project name and the tab labels
@@ -742,8 +729,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .board-head { flex-wrap:wrap; gap:10px; }
   .board-head h1 { font-size:20px; }
   .tabs { overflow-x:auto; -webkit-overflow-scrolling:touch; }
-  .surface-bar { padding:0 var(--pane-gutter) 0 var(--tabbar-gutter); gap:8px; }
-  .surface-bar.project-surface { flex-wrap:wrap; padding-bottom:8px; }
   .project-surface .tabrow { flex:1 1 100%; order:1; }
   .project-surface .projectactions { order:2; margin-left:0; width:100%; justify-content:flex-end; }
   /* Both layouts narrow from here — the token is the only place the phone's
@@ -851,8 +836,17 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    laptop) has to take the room from somewhere, and taking it from the tree
    leaves the preview readable, where taking it from the preview leaves the tree
    listing files there is nowhere to read. */
+/* A flex column: .ftree-list (what loadTree replaces) scrolls in the room
+   .railtabs (below) leaves it, unscrolled at the bottom of the column. */
 .ftree { flex:0 1 300px; border-right:1px solid var(--line);
-  overflow-y:auto; padding:6px 0; }
+  display:flex; flex-direction:column; min-height:0; }
+.ftree-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding:6px 0; }
+/* Changes/Files, pinned under whichever rail is open (.crail-host above,
+   .ftree here) — a plain flex-column child of a flex-column parent needs no
+   position:sticky to sit fixed at the bottom: the scroller above it already
+   takes only the room this leaves. */
+.railtabs { flex:none; border-top:1px solid var(--line); padding:8px var(--pane-gutter) 8px var(--tabbar-gutter); }
+.railtabs .tabs { margin-bottom:0; }
 /* The floor is the preview's share of that squeeze, and it is deliberately
    below what any real two-column pane hands it — it changes nothing until the
    pane is too narrow for both columns. */

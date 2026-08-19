@@ -1,13 +1,14 @@
 // The branch work item's surface: two tabs, Changes and Files, and nothing
 // else — the conversation is the agent rail and the terminals are the console.
 //
-// The row is tabs and one verb. Which branch this is, which project it lives
-// in, how long its agent has been working and what the diff weighs are the
-// toolbar's (core/toolbar.js), one row above; the surface below states only
-// what is inside it. The verb at the far right of the row is how the branch
-// ends: Done, the same `branch.finish` the inbox row's Done sends, where a
-// reader standing IN the branch can find it (core/branchFinish.js decides when
-// it is offered and what it promises).
+// The surface has no bar of its own: which branch this is, and how it ends,
+// are both the toolbar's now (core/toolbar.js) — the branch name because the
+// nav bar already says it, Done (the same `branch.finish` the inbox row's
+// Done sends) through the toolbar's verb slot (`setToolbarVerb`), so a reader
+// standing IN the branch finds it beside the name it ends. Changes/Files
+// themselves pin to the bottom of whichever rail is open (`paintTabs`) —
+// #tabbody is flush against the toolbar, nothing above it spends the height.
+// core/branchFinish.js decides when Done is offered and what it promises.
 //
 // The surface resolves what stands under the branch with `branch.get`: a run,
 // a bare worktree, or the primary checkout. That resolution names the git
@@ -25,6 +26,7 @@ import { App, go } from "../app.js";
 import { watchChanges } from "../core/changeEvents.js";
 import { tabShellHtml } from "../core/tabshell.js";
 import { mountConsole } from "../core/console.js";
+import { setToolbarVerb, clearToolbarVerb } from "../core/toolbar.js";
 import { mountAgentRail } from "../core/agentRail.js";
 import { createAgentSelection } from "../core/agentSelection.js";
 import { mountGitPane, taskAgentCommitOptions } from "../core/gitPane.js";
@@ -83,18 +85,47 @@ export async function renderBranch() {
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
   root.className = "surface";
-  root.innerHTML = `
-    <div class="surface-bar">
-      <div class="tabrow" id="branch-tabs"></div>
-      <div class="surface-verb" id="branch-finish"></div>
-    </div>
-    <div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
-  $("#branch-tabs").innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
-  $("#branch-tabs")
-    .querySelectorAll("[data-tab]")
-    .forEach((cell) => {
+  root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
+  /** Changes/Files, painted into whichever rail the mounted pane just built
+   *  (.crail-host or .ftree — both flex columns ending in a slot for exactly
+   *  this) and pinned there by CSS (.railtabs). Returns whether a rail was
+   *  there to paint into. */
+  const paintTabs = () => {
+    const railHost = $("#tabbody .crail-host, #tabbody .ftree");
+    if (!railHost) return false;
+    let bar = railHost.querySelector(".railtabs");
+    if (!bar) {
+      bar = document.createElement("div");
+      bar.className = "railtabs";
+      railHost.appendChild(bar);
+    }
+    bar.innerHTML = tabShellHtml({ tabs: BRANCH_TABS, active: tab });
+    bar.querySelectorAll("[data-tab]").forEach((cell) => {
       cell.onclick = () => go({ name: "branch", projectId, branch, tab: cell.dataset.tab });
     });
+    return true;
+  };
+  // The pane just mounted builds its own rail asynchronously (gitPane's
+  // skeleton waits on its first git.status/git.log; the files tree is
+  // synchronous but this stays uniform either way) — there is nothing to
+  // paint tabs into yet at the moment mountBody() calls this. Watch #tabbody
+  // until the rail actually lands, then paint once and stop watching.
+  let tabsWatcher = null;
+  const ensureTabsPainted = () => {
+    if (tabsWatcher) {
+      tabsWatcher.disconnect();
+      tabsWatcher = null;
+    }
+    if (paintTabs()) return;
+    const host = $("#tabbody");
+    if (!host) return;
+    tabsWatcher = new MutationObserver(() => {
+      if (!paintTabs()) return;
+      tabsWatcher.disconnect();
+      tabsWatcher = null;
+    });
+    tabsWatcher.observe(host, { childList: true, subtree: true });
+  };
   // The basement, at the bottom of the view column: this branch's checkout, as
   // terminals. Shut unless the last visit left it open.
   const consolePanel = mountConsole($("#console-region"), { kind: "branch", projectId, branch });
@@ -173,12 +204,14 @@ export async function renderBranch() {
   // vanished before the user could reach an item.
   let paintedFinish = null;
 
-  /** Paint the row's Done off the freshest branch.get row. Frozen while a
-   *  close-out is in flight, so no poll can remount an enabled button over a
+  /** Paint the branch's Done into the toolbar's verb slot, off the freshest
+   *  branch.get row. Frozen while a close-out is in flight, so no poll — this
+   *  view's own row poll, or the toolbar's independent one, which also calls
+   *  this via setToolbarVerb below — can remount an enabled button over a
    *  pending branch.finish, and while its menu is open — a click in progress
    *  outranks a repaint, which lands on a later tick once the menu is shut. */
-  const paintFinish = () => {
-    const host = $("#branch-finish");
+  const paintFinish = (host) => {
+    host = host || $("#tb-verb");
     if (!host || finishFlight.active()) return;
     if (host.querySelector(".splitmenu:not([hidden])")) return;
     const closeout = branchCloseout(row);
@@ -189,10 +222,13 @@ export async function renderBranch() {
       host.innerHTML = "";
       return;
     }
-    // Always pressable: Done is never refused for the state of the work — what
-    // the deletion would cost is in the confirmation, not in a disabled button.
-    mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight });
+    // Sized down to the toolbar's own vocabulary — this is a fact in a bar of
+    // facts, not the loudest thing on the page — but always pressable: Done is
+    // never refused for the state of the work, what the deletion would cost is
+    // in the confirmation, not in a disabled button.
+    mountSplitButton(host, { options: closeout.options, run: runFinish, flight: finishFlight, variant: "mini" });
   };
+  setToolbarVerb(paintFinish);
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
    *  A run reviews through its own diff and verbs; a bare worktree adopts on
@@ -255,6 +291,7 @@ export async function renderBranch() {
     }
     if (tab === "files") {
       pane = renderFilesTab(host, { scope, callRpc });
+      ensureTabsPainted();
       return;
     }
     pane = mountGitPane(host, {
@@ -270,6 +307,7 @@ export async function renderBranch() {
       projectId,
       triage: () => (row && row.run && row.run.triage) || null,
     });
+    ensureTabsPainted();
   };
 
   /** One read of the branch row. `force` remounts even when the backing is
@@ -307,6 +345,9 @@ export async function renderBranch() {
     // slot it put it in.
     if (watcher) watcher.dispose();
     watcher = null;
+    if (tabsWatcher) tabsWatcher.disconnect();
+    tabsWatcher = null;
+    clearToolbarVerb(paintFinish);
     if (pane) pane.dispose();
     pane = null;
     rail.dispose();

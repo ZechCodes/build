@@ -39,9 +39,10 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
     <span class="cmeta"><span class="chash">${esc(commit.short)}</span> · <span class="cauthor">${esc(commit.author)}</span> · <span class="cage">${esc(humanAge(nowSeconds - (commit.time || 0)))}</span></span></div>`;
 }
 
-/// The Changes rail, row by row: branch control, Uncommitted (top, with its +/−
-/// counts), — for a surface that has one — the review aggregate directly under
-/// it, then the "Commits" head and the commit list with its paging affordance.
+/// The Changes rail, row by row: Uncommitted (top, with its +/− counts), — for
+/// a surface that has one — the review aggregate directly under it, then the
+/// "Commits" head and the commit list with its paging affordance. The branch
+/// itself is not named here — the nav bar already says it.
 /// `selected` is "uncommitted" | "review" | a commit hash | null (a clean
 /// branch, sitting on the list).
 ///
@@ -49,20 +50,12 @@ export function commitRowHtml(commit, { selected = false, nowSeconds = Date.now(
 /// rail is reconciled by name rather than rewritten: a commit that is still
 /// there is still the same element after a poll, and the labels between the
 /// rows keep their places without being anything special.
-export function changesRailEntries({
-  status,
-  log,
-  selected,
-  review = null,
-  branchControlHtml = "",
-  nowSeconds = Date.now() / 1000,
-}) {
+export function changesRailEntries({ status, log, selected, review = null, nowSeconds = Date.now() / 1000 }) {
   const rrow = (sel, title, sub) =>
     `<div class="${["rrow", selected === sel ? "sel" : ""].filter(Boolean).join(" ")}" data-sel="${sel}">
       <span class="rtitle">${title}</span><span class="rsub mono">${sub}</span></div>`;
   const commits = (log && log.commits) || [];
   const entries = [];
-  if (branchControlHtml) entries.push({ key: "branch", html: `<div class="crail-branch">${branchControlHtml}</div>` });
   entries.push({
     key: "uncommitted",
     html: rrow("uncommitted", "Uncommitted", hasUncommittedChanges(status) ? plusMinusHtml(uncommittedTotals(status)) : "clean"),

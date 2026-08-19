@@ -9,14 +9,21 @@
 // issues are the only navigation targets); picking work goes there; picking a
 // create asks for the one thing it needs and opens what it made.
 //
-// Right: the ⋯ that carries what used to be the tab row's right cluster — the
-// archive and the project's settings. The working-time ticker and the
-// diffstat used to sit beside it; they pin above the agent rail's composer
-// now instead (core/agentRail.js) — a fact about the work item, read beside
-// the conversation about it rather than in a bar that outlives every view.
+// Right: a slot the standing view can fill with its own verb — a branch's
+// Done, say — then the ⋯ that carries what used to be the tab row's right
+// cluster (the archive and the project's settings). The working-time ticker
+// and the diffstat used to sit beside it too; they pin above the agent rail's
+// composer now instead (core/agentRail.js) — a fact about the work item, read
+// beside the conversation about it rather than in a bar that outlives every
+// view.
 //
-// The toolbar outlives views (it is the shell's row, not a view's), so it mounts
-// once and repaints from the feed and the route.
+// The toolbar outlives views (it is the shell's row, not a view's), so it
+// mounts once and repaints from the feed and the route. The verb slot is the
+// one piece of it a view owns: `setToolbarVerb`/`clearToolbarVerb` register
+// and release a paint function the view supplies, called every repaint —
+// including poll-driven ones the toolbar itself would otherwise skip, since a
+// verb like Done carries its own in-flight/open-menu state that must survive
+// a tick it has nothing new to say.
 
 import { $ } from "../dom.js";
 import { esc } from "./text.js";
@@ -39,6 +46,36 @@ let feed = { items: [], projects: [] };
 let scopedProjectId = null;
 let open = null; // { element, anchor, mode, dismiss } while the menu is up
 let mounted = false;
+let paintedIdentity = null; // what the bar's OWN markup was last built from — see paint()
+let verbRender = null; // (host) => void, the standing view's own verb-slot paint
+
+/** Register the standing view's verb-slot content — called every repaint the
+ *  toolbar does, poll-driven ticks included, so the caller's own function must
+ *  be idempotent the way core/views/branchView.js's `paintFinish` already is
+ *  (skip when nothing changed, freeze while a menu is open or an action is in
+ *  flight). Repaints immediately so the slot fills without waiting for the
+ *  next tick. */
+export function setToolbarVerb(render) {
+  verbRender = render;
+  paintVerb();
+}
+
+/** Release the verb slot — a view calls this from its own teardown. Only the
+ *  view that set it can clear it: an async clear racing a newer view's set
+ *  (a fast back-to-back navigation) must not blank a slot that is no longer
+ *  this caller's to own. */
+export function clearToolbarVerb(render) {
+  if (verbRender !== render) return;
+  verbRender = null;
+  paintVerb();
+}
+
+function paintVerb() {
+  const host = $("#tb-verb");
+  if (!host) return;
+  if (verbRender) verbRender(host);
+  else host.innerHTML = "";
+}
 
 const projectsOf = () => feed.projects || [];
 const projectNameOf = (projectId) => {
@@ -81,6 +118,7 @@ export function toolbarHtml({ project, kind, label }) {
     </button>
     ${itemSelector}
     <div class="tb-right">
+      <span class="tb-verb" id="tb-verb"></span>
       <button class="iconbtn tb-more" data-select="more" type="button" title="More" aria-label="More actions" aria-haspopup="menu">⋯</button>
     </div>
   </div>`;
@@ -105,28 +143,39 @@ function paint({ entering = false } = {}) {
   // Navigating into a work item scopes the menu to its project — the toolbar
   // reads as one sentence, so the two halves can never name different projects.
   if (entering && standing.projectId) rememberScope(standing.projectId);
-  host.innerHTML = toolbarHtml({
+  const shown = {
     project: standing.project || projectNameOf(scopeProjectId()),
     kind: standing.kind,
     label: standing.label,
-  });
-  // A repaint replaces the very buttons a menu hangs off, so an open menu is
-  // re-pointed at the new one — otherwise its anchor is a detached node and the
-  // selector that opened it stops toggling it shut.
-  if (open) open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
-  host.querySelectorAll("[data-select]").forEach((control) => {
-    control.onclick = (event) => {
-      event.stopPropagation();
-      const wanted = control.dataset.select;
-      if (open && open.anchor === control) {
+  };
+  const signature = JSON.stringify(shown);
+  // A poll tick that says the same thing the bar already shows must leave the
+  // DOM alone: the verb slot (setToolbarVerb) can carry a view's own open menu
+  // or in-flight action, and rebuilding out from under it would close the one
+  // or double-fire the other. A navigation always rebuilds regardless — it is
+  // the one paint that re-scopes the menu below.
+  if (entering || signature !== paintedIdentity || !host.querySelector(".toolbar")) {
+    paintedIdentity = signature;
+    host.innerHTML = toolbarHtml(shown);
+    // A repaint replaces the very buttons a menu hangs off, so an open menu is
+    // re-pointed at the new one — otherwise its anchor is a detached node and
+    // the selector that opened it stops toggling it shut.
+    if (open) open.anchor = host.querySelector(`[data-select="${open.select}"]`) || open.anchor;
+    host.querySelectorAll("[data-select]").forEach((control) => {
+      control.onclick = (event) => {
+        event.stopPropagation();
+        const wanted = control.dataset.select;
+        if (open && open.anchor === control) {
+          closeMenu();
+          return;
+        }
         closeMenu();
-        return;
-      }
-      closeMenu();
-      if (wanted === "more") openSurfaceMenu(control);
-      else openJumpMenu(control);
-    };
-  });
+        if (wanted === "more") openSurfaceMenu(control);
+        else openJumpMenu(control);
+      };
+    });
+  }
+  paintVerb();
   // A create form is a question in flight: the feed may move under it, and its
   // answer is not repainted away.
   if (open && !(open.create && open.create.busy)) paintMenu();

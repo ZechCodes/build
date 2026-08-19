@@ -363,9 +363,9 @@ describe("tab layout primitives", () => {
   // Each column scrolls itself. This is what the two-column layout is for, and
   // it is exactly what capping and insetting the pane could break.
   it.each([
-    [".crail-host", "overflow-y", "auto"],
+    [".crail", "overflow-y", "auto"],
     [".cdetail-host", "overflow-y", "auto"],
-    [".ftree", "overflow-y", "auto"],
+    [".ftree-list", "overflow-y", "auto"],
     [".fpbody", "overflow", "auto"],
   ])("keeps %s scrolling internally", (token, property, value) => {
     const scroller = rulesMentioning(token).find((rule) => declaration(rule.body, property));
@@ -748,7 +748,7 @@ describe("the surface's text column", () => {
   const inRail = (row) => [FLUSH_BODY, ".pane-split", LIST_COLUMN, row];
   const CHAIN = {
     "the toolbar's project name": [".toolbar", ".tb-sel"],
-    "a tab label": [".surface-bar", ".tabs .t"],
+    "a tab label": [...inRail(".railtabs"), ".tabs .t"],
     "a one-column pane": [".surface #tabbody"],
     "the Changes rail's branch button": inRail(".crail-branch"),
     "a section heading in the Changes rail": inRail(".crail .rhead"),
@@ -777,7 +777,7 @@ describe("the surface's text column", () => {
   // drawer's follow it there too. (Below the stacking width the list column is
   // an overlay positioned against the split's border box, so its rows' own
   // inset is the whole distance — the test below pins that instead.)
-  it.each(["the toolbar's project name", "a tab label", "a one-column pane"])(
+  it.each(["the toolbar's project name", "a one-column pane"])(
     "keeps %s on the gutter where the phone narrows it",
     (row) => {
       expect(textColumn(CHAIN[row], 390)).toBe(pixels("var(--pane-gutter)", tokensAt(390)));
@@ -792,7 +792,7 @@ describe("the surface's text column", () => {
     const [toolbar] = rulesFor(".toolbar");
     expect(shorthandSide(declaration(toolbar.body, "padding"), 3)).toBe("var(--toolbar-gutter)");
     expect(declaration(rulesFor(".tb-sel")[0].body, "padding")).toMatch(/var\(--tbsel-inset\)/);
-    for (const bar of rulesFor(".surface-bar")) {
+    for (const bar of rulesFor(".railtabs")) {
       expect(shorthandSide(declaration(bar.body, "padding"), 3)).toBe("var(--tabbar-gutter)");
     }
     expect(declaration(rulesFor(".tabs .t")[0].body, "padding")).toMatch(/var\(--tab-inset\)/);

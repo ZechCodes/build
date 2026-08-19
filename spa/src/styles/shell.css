@@ -276,6 +276,14 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-caret { flex:none; font-size:9px; color:var(--dim); }
 .tb-sep { color:var(--line); flex:none; }
 .tb-right { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+/* The standing view's own verb (core/toolbar.js setToolbarVerb) — Done, on a
+   branch. Empty and collapses to nothing when no view has claimed it. Sized
+   down from the surface's old primary-button treatment: this is a fact in a
+   bar of facts, not the loudest thing on the page. */
+.tb-verb:empty { display:none; }
+.tb-verb .btn { padding:4px 10px; font-size:12px; border-radius:7px; }
+.tb-verb .splitbtn .caret { padding:4px 6px; }
+.tb-verb .splitmenu { top:calc(100% + 6px); bottom:auto; right:0; left:auto; }
 
 /* Both menus hang off their anchor, fixed to the viewport like the tab row's:
    the toolbar is a short row and would clip a child popup. The item shape

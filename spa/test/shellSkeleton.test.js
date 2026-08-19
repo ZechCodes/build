@@ -32,7 +32,8 @@ const { railStartsCollapsed } = await import("../src/core/inboxShell.js");
 const { consoleHeadHtml } = await import("../src/core/console.js");
 
 const rpc = (method) => {
-  if (method === "branch.get") return { kind: "branch", branch: "build/login", state: "building", stat: "+4 −1" };
+  if (method === "branch.get")
+    return { kind: "branch", branch: "build/login", worktree_id: "wt-1", state: "building", stat: "+4 −1" };
   if (method === "issue.get")
     return {
       issue_id: "i-1",
@@ -175,7 +176,7 @@ describe("render dispatch", () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    const tabs = [...root().querySelectorAll("#branch-tabs [data-tab]")].map((cell) => cell.dataset.tab);
+    const tabs = [...root().querySelectorAll(".railtabs [data-tab]")].map((cell) => cell.dataset.tab);
     expect(tabs).toEqual(["changes", "files"]);
     expect(root().classList.contains("surface")).toBe(true);
     // The console is reserved and shut.
@@ -193,7 +194,7 @@ describe("render dispatch", () => {
     App.route = { name: "branch", projectId: "p-1", branch: "build/login", tab: "changes" };
     render();
     await flush();
-    root().querySelector('#branch-tabs [data-tab="files"]').click();
+    root().querySelector('.railtabs [data-tab="files"]').click();
     expect(location.hash).toBe("#/project/p-1/branch/build%2Flogin/files");
   });
 
@@ -202,7 +203,7 @@ describe("render dispatch", () => {
     render();
     await flush();
     expect(root().querySelector(".ivsplit")).toBeTruthy();
-    expect(root().querySelector("#branch-tabs")).toBeNull();
+    expect(root().querySelector(".railtabs")).toBeNull();
     expect(root().querySelector('[data-stage="s1"]').textContent).toContain("First half");
   });
 

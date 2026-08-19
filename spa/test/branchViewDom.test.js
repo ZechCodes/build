@@ -45,6 +45,10 @@ beforeEach(async () => {
   ({ App } = await import("../src/app.js"));
   ({ renderBranch } = await import("../src/views/branchView.js"));
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
+  // core/toolbar.js isn't mounted in this file — Done paints into its verb
+  // slot (setToolbarVerb), so stand in for the one thing branchView.js needs
+  // there: the slot existing, the way it always does once the app has booted.
+  document.getElementById("toolbar").innerHTML = '<span id="tb-verb"></span>';
 });
 
 afterEach(() => {
@@ -153,8 +157,8 @@ describe("closing the branch out", () => {
     await flush();
   };
 
-  const finishHost = () => document.querySelector("#branch-finish");
-  const doneButton = () => finishHost().querySelector(".btn.primary:not(.caret)");
+  const finishHost = () => document.querySelector("#tb-verb");
+  const doneButton = () => finishHost().querySelector(".btn.mini:not(.caret)");
   const finishCalls = () => App.call.mock.calls.filter(([method]) => method === "branch.finish");
 
   it("offers Done in the surface bar, always pressable — it is never refused", async () => {

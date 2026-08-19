@@ -251,18 +251,27 @@ main#root.surface { max-width:none;
    cap (the reviewer's gap), and a diff is a tool, not prose. Reading pages
    (main:not(.surface)) keep their own centred cap.
    (.bare is not one of them — a terminal is deliberately full-bleed.) */
-/* The flush body has no padding of its own, so the split states the shared
-   gutters itself. content-box keeps the two layouts measuring the same: the
-   gutter falls outside the content box, exactly as the padded body does it
-   for the one column.
-   No bottom gutter: its columns scroll to the frame's edge, and a gap under a
-   live scroller is dead space rather than rhythm — the one-column layout's
-   bottom padding is scroll-end room inside its own scroller. The height sheds
-   the top gutter for the same reason the width does not: content-box measures
-   content, and the split must still fill the frame exactly. */
-.pane-split { box-sizing:content-box; height:calc(100% - var(--pane-top));
+/* The flush body has no padding of its own, so the split states what it pays
+   itself — and on three of its four sides it pays nothing.
+   LEFT is the only gutter: it is the text column every surface's first words
+   stand on (--pane-gutter, see the toolbar), and the rail bleeds back through it
+   to meet the frame. content-box keeps that one number measuring the same as
+   the padded body's.
+   RIGHT is the seam with the conversation, and the pane owns it: the rail's
+   divider, a diff card, the toolbar's rule all run to the agent rail's border
+   instead of stopping a gutter short of it, which read as a dead strip between
+   the work and the chat. The controls inside — the toolbar's buttons, the
+   commit box, an actionbar — state that inset themselves, so a BUTTON still
+   keeps its distance from the seam while the surface it sits on does not.
+   TOP is the seam with the nav bar, and it goes for the same reason: the rail's
+   selected row and the toolbar's rule now meet the bar that names where you are,
+   and the reading column below still pays its own top gutter (.cdetail-host).
+   BOTTOM: its columns scroll to the frame's edge, and a gap under a live
+   scroller is dead space rather than rhythm — the one-column layout's bottom
+   padding is scroll-end room inside its own scroller. */
+.pane-split { box-sizing:content-box; height:100%;
   min-height:0; display:flex; align-items:stretch; position:relative;
-  padding:var(--pane-top) var(--pane-gutter) 0; }
+  padding:0 0 0 var(--pane-gutter); }
 /* The list column is a rail, not a card: the commit list, the file tree and the
    issue's stages meet the frame the way the inbox rail on the other side of the
    divider does, so their fills, their hover and their divider run edge to edge
@@ -491,14 +500,18 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .crail { flex:1 1 auto; min-height:0; overflow-y:auto; }
 /* The right pane: a flex column — pinned toolbar/banner over the scrolling
    detail host. Its regions pay the gutter on the divider side only: the split
-   already insets the pane from the frame, and repeating it on the right would
-   stop the diffs short of where every one-column tab's content ends. */
+   pays nothing on the seam with the conversation, so a diff card, a rule and a
+   banner's fill all reach it, and only what is INSIDE a region — the toolbar's
+   buttons, an actionbar's controls, the tray's boxes — keeps its distance. */
 .cdetail { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
 .cdetail-host { flex:1; min-height:0; overflow-y:auto;
   padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
 .gp-toolbar:empty, .gp-banner:empty { display:none; }
-.gp-toolbar { padding:12px 0 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
-.gp-banner { padding:16px 0 0 var(--pane-gutter); }
+/* Rows of controls, not surfaces: their box still spans to the seam (the
+   toolbar's rule is the pane's own line) while the buttons and boxes on them
+   stop a gutter short of it. */
+.gp-toolbar { padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
+.gp-banner { padding:16px var(--pane-gutter) 0 var(--pane-gutter); }
 /* Below the stacking width there is no divider to clear — the rail floats over
    this column instead of sitting beside it — and a gutter paid on one side only
    leaves the diffs off centre in a frame they now have to themselves. The

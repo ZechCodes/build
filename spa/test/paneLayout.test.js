@@ -105,20 +105,29 @@ const pixels = (value, tokens) => {
   return Number.parseFloat(resolved);
 };
 
-/** The horizontal half of a padding shorthand. */
-const sidePadding = (shorthand, tokens) => {
-  if (!shorthand) return 0;
-  const parts = shorthand.split(/\s+/);
-  return pixels(parts.length === 1 ? parts[0] : parts[1], tokens);
+/** The two horizontal sides of a padding shorthand, expanded as CSS expands it.
+ *  Both sides, separately: the split pays a gutter on its left and nothing on
+ *  its right, so a model that reads one number for "the horizontal padding"
+ *  cannot see where either layout actually ends. */
+const sidePaddings = (shorthand, tokens) => {
+  if (!shorthand) return { left: 0, right: 0 };
+  const parts = shorthand.trim().split(/\s+/);
+  const [top, right = top, , left = right] = parts;
+  return { left: pixels(left, tokens), right: pixels(right, tokens) };
 };
+
+/** The horizontal half of a padding shorthand, where a box pays the same on
+ *  both sides. */
+const sidePadding = (shorthand, tokens) => sidePaddings(shorthand, tokens).right;
 
 /** Where a box's content actually lands: its left edge in the frame and its
  *  width, given the content width its container offers and where that container
  *  starts. This is the part the declaration assertions cannot see — whether a
- *  gutter falls inside or outside the max-width box, and so whether the two
- *  layouts agree once the cap, not the viewport, is the binding constraint. */
+ *  gutter falls inside or outside the max-width box, and so where each layout
+ *  begins and ends once the cap, not the viewport, is the binding constraint. */
 function contentSpan({ available, offset, rule, tokens }) {
-  const gutter = sidePadding(declaration(rule, "padding"), tokens);
+  const { left: leftGutter, right: rightGutter } = sidePaddings(declaration(rule, "padding"), tokens);
+  const gutters = leftGutter + rightGutter;
   const cap = pixels(declaration(rule, "max-width"), tokens) ?? Infinity;
   const stated = declaration(rule, "width");
   const borderBox = (declaration(rule, "box-sizing") ?? "border-box") === "border-box";
@@ -126,11 +135,11 @@ function contentSpan({ available, offset, rule, tokens }) {
   if (borderBox) {
     outer = Math.min(available, cap); // width:100% and width:auto both fill
   } else {
-    outer = Math.min(stated === "100%" ? available : available - gutter * 2, cap) + gutter * 2;
+    outer = Math.min(stated === "100%" ? available : available - gutters, cap) + gutters;
   }
   // margin:0 auto centres what is left; an over-constrained box hugs the start.
   const left = offset + Math.max(0, (available - outer) / 2);
-  return { left: left + gutter, width: outer - gutter * 2 };
+  return { left: left + leftGutter, width: outer - gutters };
 }
 
 /** What the tab shell actually has to hand a pane. Above the stacking width the
@@ -209,13 +218,17 @@ describe("tab layout primitives", () => {
     expect(body).toBeTruthy();
     expect(body.body).toMatch(/padding:\s*var\(--pane-top\) var\(--pane-gutter\) var\(--pane-bottom\)/);
     const [split] = rulesFor(".pane-split");
-    expect(split.body).toMatch(/padding:\s*var\(--pane-top\) var\(--pane-gutter\)/);
     expect(split.body).toMatch(/display:\s*flex/);
-    // The split measures its content, so its own gutters land outside the cap
-    // the way the tab body's do for the one column — and its height has to shed
-    // the top gutter to still fill the frame rather than overflow it.
+    // One gutter, on the left, from the same token: the column every surface's
+    // first words stand on. The other three sides are the pane's seams with what
+    // is around it — the nav bar above, the conversation to the right — and the
+    // reviewer's gap was the pane stopping short of both.
+    expect(declaration(split.body, "padding")).toBe("0 0 0 var(--pane-gutter)");
+    // The split measures its content, so that gutter lands outside the cap the
+    // way the tab body's does for the one column. With no top gutter left to
+    // shed, the height is simply the frame.
     expect(declaration(split.body, "box-sizing")).toBe("content-box");
-    expect(declaration(split.body, "height")).toBe("calc(100% - var(--pane-top))");
+    expect(declaration(split.body, "height")).toBe("100%");
   });
 
   it("narrows both layouts through the token, not a per-pane override", () => {
@@ -229,19 +242,30 @@ describe("tab layout primitives", () => {
   });
 
   // The declaration assertions above can all pass while the two layouts still
-  // render differently: the one-column gutter comes from the tab body, outside
-  // the capped box, and the split's comes from itself. Whether those cancel
-  // depends on which constraint binds, so check the arithmetic at both regimes —
-  // narrow, where the viewport binds, and wide, where the cap does.
+  // start in different places: the one-column gutter comes from the tab body,
+  // outside the capped box, and the split's comes from itself. Whether those
+  // cancel depends on which constraint binds, so check the arithmetic at both
+  // regimes — narrow, where the viewport binds, and wide, where the cap does.
   it.each([360, 640, 720, 900, 1224, 1400, 2000, 3200])(
-    "puts both layouts' content in the same place at %ipx",
+    "starts both layouts' content on the same column at %ipx",
     (viewport) => {
       const { col, split } = layouts(viewport);
-      expect(split).toEqual(col);
+      expect(split.left).toBe(col.left);
       expect(col.width).toBeGreaterThan(0);
       expect(col.left).toBeGreaterThanOrEqual(0);
     },
   );
+
+  // …and they deliberately END in different places. The one-column layout is
+  // read as prose and keeps its right gutter; the split is a tool whose rails,
+  // rules and cards run to the seam with the conversation, and only the controls
+  // inside it keep their distance (the actionbar, the toolbar's buttons).
+  it.each([1224, 1400, 2000, 3200])("runs the split to the seam and insets the one column at %ipx", (viewport) => {
+    const { col, split } = layouts(viewport);
+    const frame = shellWidth(viewport);
+    expect(split.left + split.width).toBe(frame);
+    expect(col.left + col.width).toBe(frame - pixels("var(--pane-gutter)", tokensAt(viewport)));
+  });
 
   // Every one-column pane the four tab-shell surfaces paint into the padded tab
   // body, and the elements those panes are built from. None may state a width
@@ -547,19 +571,40 @@ describe("tab layout primitives", () => {
   // padding, so it reads the same at either width.
   const DIVIDER_SIDE = [".cdetail-host", ".gp-toolbar", ".gp-banner"];
 
-  it("gutters the detail column from the tokens, on the divider side only", () => {
-    // The split already insets the pane from the frame, so the column that
-    // touches the frame pays the gutter once — on its left, against the rail's
-    // divider. Repeating it on the right would stop the diffs 44px short of
-    // where every one-column tab's content ends.
+  it("gutters every region of the detail column on the divider side", () => {
+    // The column touches the frame on its left, so each of its regions pays the
+    // gutter there — against the rail's divider, on the same text column the
+    // rail's own rows stand on.
     for (const token of DIVIDER_SIDE) {
       const [rule] = rulesMentioning(token).filter((rule) => declaration(rule.body, "padding"));
       expect(rule).toBeTruthy();
       const sides = declaration(rule.body, "padding").split(/\s+/);
       expect(sides).toHaveLength(4);
-      expect(sides[1]).toBe("0");
       expect(sides[3]).toBe("var(--pane-gutter)");
     }
+  });
+
+  it("hands the seam with the conversation to the surfaces and keeps the controls off it", () => {
+    // The scrolling column pays nothing on the right: a diff card, a rule, a
+    // banner's fill run to the agent rail's border rather than stopping a gutter
+    // short of it — the strip of page between the work and the chat was the
+    // reviewer's gap. The rows of CONTROLS pay it instead, so a button never
+    // sits on another surface's border.
+    const rightOf = (token) => {
+      const [rule] = rulesMentioning(token).filter((rule) => declaration(rule.body, "padding"));
+      return declaration(rule.body, "padding").split(/\s+/)[1];
+    };
+    expect(rightOf(".cdetail-host")).toBe("0");
+    for (const controls of [".gp-toolbar", ".gp-banner"]) {
+      expect(rightOf(controls)).toBe("var(--pane-gutter)");
+    }
+    // The sticky bar and the comment tray live in the surfaces sheet, and state
+    // the same inset there.
+    const surfaceRules = rulesIn(strippedSurfaces);
+    const bar = surfaceRules.find((rule) => rule.selector.includes("> .actionbar"));
+    expect(declaration(bar.body, "padding-right")).toBe("var(--pane-gutter)");
+    const tray = surfaceRules.find((rule) => rule.selector.trim() === ".csfeedback");
+    expect(declaration(tray.body, "padding-right")).toBe("var(--pane-gutter)");
   });
 
   it("drops that gutter where the divider is a drawer", () => {

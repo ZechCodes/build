@@ -99,8 +99,11 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .toverride:hover { color:var(--accent); border-color:var(--accent); border-style:solid; opacity:1; }
 
 /* The pending-comment tray under a changeset: what has been written but not yet
-   sent, plus the general note and the send controls. */
-.csfeedback { margin-top:18px; }
+   sent, plus the general note and the send controls.
+   It pays the seam's gutter its column no longer does (see .pane-split): a diff
+   card runs to the agent rail's border, but a box you type into stops short of
+   it the way every other control does. */
+.csfeedback { margin-top:18px; padding-right:var(--pane-gutter); }
 .csgeneral { min-height:62px; }
 .csfeedback .cslist:empty { display:none; }
 
@@ -118,8 +121,12 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    a stage's heading — stops with the target clear of the bar rather than
    underneath it. It is the bar's height plus the room the column already pays
    at its foot. */
+/* The bar's own right inset is the seam's: the column runs to the agent rail's
+   border now, and a Send button sitting on that border would be the only
+   control in the app touching another surface. */
 .gitpane .cdetail-host > .actionbar, .issueview .ivviewer > .actionbar {
   background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
+  padding-right:var(--pane-gutter);
 }
 /* A sticky box cannot travel past its parent's content box, so a column that
    pays its scroll-end room as bottom padding pins the bar that many pixels

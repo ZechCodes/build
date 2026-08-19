@@ -354,6 +354,24 @@ main#root.surface { max-width:none;
 .tabs .t.tmenu { color:var(--dim); padding:7px 11px; }
 .tabs .t.ticon svg, .tabs .t.tmenu svg { width:16px; height:16px; display:block; }
 .tabs .t.tmenu:hover, .tabs .t.tmenu.active { color:var(--accent); }
+/* ---- markdown tables ----
+   Wherever renderMarkdown renders — a chat message, a plan or issue doc, a
+   markdown file preview — a pipe table lands as .mdtable, so one rule set
+   dresses all three and the type scale is inherited from whichever of them is
+   hosting it.
+   The scroller is the WRAPPER, not the table: a table wider than the column it
+   sits in has to scroll in place, or a six-column run report takes the whole
+   conversation panel's width with it. Row separators only, no vertical rules —
+   the same flat, line-based surface every other list in the app is. */
+.mdtable { margin:8px 0 12px; max-width:100%; overflow-x:auto; }
+.mdtable table { border-collapse:collapse; min-width:100%; font-variant-numeric:tabular-nums; }
+.mdtable th, .mdtable td { padding:5px 16px 5px 0; text-align:left; vertical-align:top;
+  border-bottom:1px solid var(--line2); }
+/* The header is the one row that names things, so it reads as ink and holds its
+   line: a wrapped header over a scrolling table is unreadable. */
+.mdtable th { color:var(--ink); font-weight:650; white-space:nowrap; border-bottom-color:var(--line); }
+.mdtable tr:last-child td { border-bottom:0; }
+.mdtable th:last-child, .mdtable td:last-child { padding-right:0; }
 /* plan */
 .plan { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:26px 30px; }
 .plan h1 { font-size:20px; margin:0 0 12px; } .plan h2 { font-size:15px; margin:18px 0 6px; }

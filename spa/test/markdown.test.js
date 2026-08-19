@@ -68,3 +68,102 @@ describe("renderMarkdown", () => {
     expect(renderMarkdown(null)).toBe("");
   });
 });
+
+// Pipe tables are how an agent reports a run: a row per case, a column per
+// number. Rendered as text they were the least readable thing in the thread —
+// six lines of pipes for what a table says at a glance.
+describe("renderMarkdown pipe tables", () => {
+  const TABLE = ["| Run | Precision | Violations |", "|---|---|---|", "| mention-qa | 100% (2/2) | 0 |", "| reply-chain-join | 100% (3/3) | 0 |"].join("\n");
+
+  it("renders a header row, a body row per line, and nothing left as text", () => {
+    const html = renderMarkdown(TABLE);
+    expect(html).toContain("<table>");
+    expect(html).toContain("<thead><tr><th>Run</th><th>Precision</th><th>Violations</th></tr></thead>");
+    expect(html).toContain("<td>mention-qa</td>");
+    expect(html).toContain("<td>reply-chain-join</td>");
+    expect(html).not.toContain("|---|");
+    expect(html).not.toContain("<p>| Run");
+  });
+
+  it("scrolls a wide table inside its own box rather than widening the message", () => {
+    // The thread panel is a narrow column; a table wider than it has to scroll
+    // in place, or it takes the conversation's width with it.
+    expect(renderMarkdown(TABLE)).toContain('<div class="mdtable">');
+  });
+
+  it("takes each column's alignment from the delimiter row", () => {
+    const html = renderMarkdown("| a | b | c | d |\n|:---|---:|:---:|---|\n| 1 | 2 | 3 | 4 |");
+    expect(html).toContain('<th style="text-align:left">a</th>');
+    expect(html).toContain('<th style="text-align:right">b</th>');
+    expect(html).toContain('<th style="text-align:center">c</th>');
+    expect(html).toContain("<th>d</th>");
+    expect(html).toContain('<td style="text-align:left">1</td>');
+    expect(html).toContain('<td style="text-align:right">2</td>');
+    expect(html).toContain('<td style="text-align:center">3</td>');
+    expect(html).toContain("<td>4</td>");
+  });
+
+  it("reads rows with or without the outer pipes", () => {
+    const html = renderMarkdown("a | b\n--- | ---\n1 | 2");
+    expect(html).toContain("<th>a</th>");
+    expect(html).toContain("<td>2</td>");
+  });
+
+  it("renders inline markdown inside cells, and escapes their html", () => {
+    const html = renderMarkdown("| what | how |\n|---|---|\n| **bold** | `code` |\n| <img src=x> | plain |");
+    expect(html).toContain("<td><strong>bold</strong></td>");
+    expect(html).toContain("<td><code>code</code></td>");
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x&gt;");
+  });
+
+  it("keeps an escaped pipe inside its cell", () => {
+    const html = renderMarkdown("| pattern | note |\n|---|---|\n| a \\| b | alternation |");
+    expect(html).toContain("<td>a | b</td>");
+    expect(html).toContain("<td>alternation</td>");
+  });
+
+  it("pads a short row and drops what overflows the header", () => {
+    const html = renderMarkdown("| a | b | c |\n|---|---|---|\n| 1 |\n| 1 | 2 | 3 | 4 |");
+    expect(html).toContain("<tr><td>1</td><td></td><td></td></tr>");
+    expect(html).toContain("<tr><td>1</td><td>2</td><td>3</td></tr>");
+    expect(html).not.toContain("<td>4</td>");
+  });
+
+  it("ends the table at the first line that is not a row", () => {
+    const html = renderMarkdown("| a |\n|---|\n| 1 |\n\nAfter the table.");
+    expect(html).toContain("</table>");
+    expect(html.indexOf("</table>")).toBeLessThan(html.indexOf("<p>After the table.</p>"));
+  });
+
+  it("leaves a pipe line with no delimiter row as a paragraph", () => {
+    const html = renderMarkdown("| not | a table |\nplain text");
+    expect(html).not.toContain("<table>");
+    expect(html).toContain("<p>| not | a table |</p>");
+  });
+
+  it("leaves pipes inside a code fence alone", () => {
+    const html = renderMarkdown("```\n| a | b |\n|---|---|\n```");
+    expect(html).not.toContain("<table>");
+    expect(html).toContain("| a | b |");
+  });
+
+  it("closes a table the document ended in the middle of", () => {
+    const html = renderMarkdown("| a |\n|---|\n| 1 |");
+    expect(html).toContain("</tbody></table>");
+    expect(html.split("<table>")).toHaveLength(2);
+  });
+
+  it("renders a header-only table", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|");
+    expect(html).toContain("<th>a</th>");
+    expect(html).not.toContain("<tbody>");
+  });
+
+  it("interrupts a list, so a table after bullets is still a table", () => {
+    const html = renderMarkdown("- one\n\n| a |\n|---|\n| 1 |");
+    expect(html).toContain("</ul>");
+    expect(html).toContain("<table>");
+    expect(html.indexOf("</ul>")).toBeLessThan(html.indexOf("<table>"));
+  });
+});

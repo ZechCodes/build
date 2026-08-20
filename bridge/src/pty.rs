@@ -1,10 +1,17 @@
-//! Full-PTY harness sessions — the one way Build talks *to* an agent.
+//! Full-PTY harness sessions — the subprocess implementation of
+//! [`HarnessSession`](crate::harness::HarnessSession).
 //!
-//! There is no harness SDK. Dispatching a phase means writing a prompt into the
-//! agent's PTY; the user dropping in means attaching to the same PTY. A harness
-//! adapter is just two things (scope §3): a spawn command and how to submit a
-//! prompt. Output is broadcast to every subscriber (the relay stream, the
-//! quiescence monitor) and the time of the last byte drives idle detection.
+//! There is no harness SDK behind this one. Dispatching a phase means writing a
+//! prompt into the agent's PTY; the user dropping in means attaching to the
+//! same PTY. Output is broadcast to every subscriber (the relay stream, the
+//! quiescence monitor) and the time of the last byte is what "working" is
+//! measured from — a terminal has no other way to tell.
+//!
+//! What stays in this module is the part that is genuinely a terminal's: PATH
+//! resolution for the binary, bracketed-paste framing, and the paint-settling
+//! that decides when a TUI will accept a turn. Every session question with a
+//! transport-free answer is asked through the trait instead, so nothing above
+//! here has to know any of it.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -15,23 +22,14 @@ use std::time::{Duration, Instant};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
-/// Things that can go wrong driving a PTY.
-#[derive(Debug, thiserror::Error)]
-pub enum PtyError {
-    #[error("pty error: {0}")]
-    Pty(String),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("harness {binary:?} not found in PATH {path:?} — install it, or restart the daemon from a shell that can see it")]
-    HarnessNotFound { binary: String, path: String },
-}
+use crate::harness::{HarnessError, HarnessSession};
 
 /// Resolve `binary` the way a shell would, against the daemon's PATH (or the
 /// spec's own override). We do this rather than leaving it to portable-pty:
 /// portable-pty searches the *CommandBuilder's* environment, which falls back to
 /// confstr `_CS_PATH` ("/usr/bin:/bin:/usr/sbin:/sbin") and produces an opaque
 /// "No viable candidates" error that names neither the harness nor the fix.
-fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, PtyError> {
+fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, HarnessError> {
     if spec.binary.contains('/') {
         return Ok(PathBuf::from(&spec.binary));
     }
@@ -48,7 +46,7 @@ fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, PtyError> {
             return Ok(candidate);
         }
     }
-    Err(PtyError::HarnessNotFound {
+    Err(HarnessError::NotFound {
         binary: spec.binary.clone(),
         path,
     })
@@ -250,11 +248,11 @@ impl PtySession {
         spec: &HarnessSpec,
         cwd: Option<PathBuf>,
         size: PtySize,
-    ) -> Result<PtySession, PtyError> {
+    ) -> Result<PtySession, HarnessError> {
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system
             .openpty(size)
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
+            .map_err(|e| HarnessError::Session(e.to_string()))?;
 
         let mut cmd = CommandBuilder::new(resolve_binary(spec)?);
         cmd.args(&spec.args);
@@ -271,18 +269,18 @@ impl PtySession {
         let child = pair
             .slave
             .spawn_command(cmd)
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
+            .map_err(|e| HarnessError::Session(e.to_string()))?;
         // Close the slave in the parent so EOF propagates when the child exits.
         drop(pair.slave);
 
         let reader = pair
             .master
             .try_clone_reader()
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
+            .map_err(|e| HarnessError::Session(e.to_string()))?;
         let writer = pair
             .master
             .take_writer()
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
+            .map_err(|e| HarnessError::Session(e.to_string()))?;
 
         let (sender, _) = broadcast::channel(1024);
         let output_tx = Arc::new(Mutex::new(Some(sender.clone())));
@@ -343,9 +341,35 @@ impl PtySession {
         })
     }
 
+    /// Resolve once the PTY has been silent for at least `threshold` — the
+    /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
+    pub async fn wait_quiescent(&self, threshold: Duration) {
+        loop {
+            let idle = self.idle_for();
+            if idle >= threshold {
+                return;
+            }
+            tokio::time::sleep(threshold - idle).await;
+        }
+    }
+
+    /// Kill the harness process.
+    pub fn kill(&self) -> Result<(), HarnessError> {
+        self.child.lock().unwrap().kill()?;
+        Ok(())
+    }
+
+    /// Block until the harness exits, returning whether it exited successfully.
+    pub fn wait(&self) -> Result<bool, HarnessError> {
+        Ok(self.child.lock().unwrap().wait()?.success())
+    }
+}
+
+/// The daemon's whole contract with a live agent, carried over a PTY.
+impl HarnessSession for PtySession {
     /// Subscribe to the raw output stream. Each subscriber sees every chunk from
     /// the moment it subscribes, and observes `Closed` once the PTY hits EOF.
-    pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         match self.output_tx.lock().unwrap().as_ref() {
             Some(tx) => tx.subscribe(),
             None => {
@@ -363,7 +387,7 @@ impl PtySession {
     /// as the Enter key and submit the prompt as fragmented turns. Prompts
     /// written verbatim (`SubmitKey::None`) are never framed — that contract
     /// promises the harness the exact bytes.
-    pub fn write_prompt(&self, prompt: &str) -> Result<(), PtyError> {
+    fn write_prompt(&self, prompt: &str) -> Result<(), HarnessError> {
         let sanitized = strip_bracketed_paste_markers(prompt);
         {
             let mut writer = self.writer.lock().unwrap();
@@ -399,7 +423,7 @@ impl PtySession {
     }
 
     /// Write raw bytes to the PTY (user keystrokes from an attached terminal).
-    pub fn write_input(&self, bytes: &[u8]) -> Result<(), PtyError> {
+    fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError> {
         let mut writer = self.writer.lock().unwrap();
         writer.write_all(bytes)?;
         writer.flush()?;
@@ -407,7 +431,7 @@ impl PtySession {
     }
 
     /// How long since the PTY last produced output.
-    pub fn idle_for(&self) -> Duration {
+    fn idle_for(&self) -> Duration {
         Instant::now().saturating_duration_since(*self.last_activity.lock().unwrap())
     }
 
@@ -419,42 +443,24 @@ impl PtySession {
     /// may sleep, and the alternative — a real wait — would make the suite
     /// unrunnable. The process stays genuinely alive; only the clock moves.
     #[cfg(test)]
-    pub fn backdate_last_output(&self, ago: Duration) {
+    fn backdate_last_output(&self, ago: Duration) {
         let mut last = self.last_activity.lock().unwrap();
         *last = last.checked_sub(ago).expect("a stamp old enough to age");
     }
 
-    /// Resolve once the PTY has been silent for at least `threshold` — the
-    /// quiescence signal that demotes to `idle_unreported` when no `done` arrives.
-    pub async fn wait_quiescent(&self, threshold: Duration) {
-        loop {
-            let idle = self.idle_for();
-            if idle >= threshold {
-                return;
-            }
-            tokio::time::sleep(threshold - idle).await;
-        }
-    }
-
     /// Resize the terminal (an attached client changed its viewport).
-    pub fn resize(&self, size: PtySize) -> Result<(), PtyError> {
+    fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
         self.master
             .lock()
             .unwrap()
             .resize(size)
-            .map_err(|e| PtyError::Pty(e.to_string()))
-    }
-
-    /// Kill the harness process.
-    pub fn kill(&self) -> Result<(), PtyError> {
-        self.child.lock().unwrap().kill()?;
-        Ok(())
+            .map_err(|e| HarnessError::Session(e.to_string()))
     }
 
     /// Whether the harness process has exited (crash, completion, kill). Reaps the
     /// child if it has — `try_wait` collects the exit status — so polling this
     /// never leaves a zombie behind.
-    pub fn has_exited(&self) -> bool {
+    fn has_exited(&self) -> bool {
         self.exit_code().is_some()
     }
 
@@ -470,7 +476,7 @@ impl PtySession {
     /// honored". Returns `false` (promptly, not at the deadline) for a child
     /// that exits first: it will never become ready, and the caller's exit-race
     /// guard should see the write failure without extra delay.
-    pub fn ready_within(&self, timeout: Duration) -> bool {
+    fn ready_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             // Paste mode alone is necessary but NOT sufficient: a real TUI
@@ -496,7 +502,7 @@ impl PtySession {
     /// can report a harness that is already gone as still running. Callers
     /// deciding whether a PTY write error means "crashed" (benign) rather
     /// than "wedged" (fatal) wait out that reap lag here instead.
-    pub fn exited_within(&self, timeout: Duration) -> bool {
+    fn exited_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             if self.has_exited() {
@@ -513,7 +519,7 @@ impl PtySession {
     /// running. Caches the first observed status: `try_wait` reaps the child once,
     /// so a later poll would otherwise lose the code (contract: the crash message
     /// carries the real exit code).
-    pub fn exit_code(&self) -> Option<i32> {
+    fn exit_code(&self) -> Option<i32> {
         let mut cached = self.exit_code.lock().unwrap();
         if cached.is_none() {
             if let Ok(Some(status)) = self.child.lock().unwrap().try_wait() {
@@ -524,22 +530,17 @@ impl PtySession {
     }
 
     /// The harness's OS process id, if it is still running.
-    pub fn pid(&self) -> Option<u32> {
+    fn pid(&self) -> Option<u32> {
         self.child.lock().unwrap().process_id()
     }
 
     /// Kill the harness and reap it. `kill` alone leaves a zombie: portable-pty's
     /// unix child does not reap on drop, so every phase transition on a long-lived
     /// daemon would otherwise leak one process-table entry.
-    pub fn kill_and_reap(&self) {
+    fn kill_and_reap(&self) {
         let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();
-    }
-
-    /// Block until the harness exits, returning whether it exited successfully.
-    pub fn wait(&self) -> Result<bool, PtyError> {
-        Ok(self.child.lock().unwrap().wait()?.success())
     }
 }
 

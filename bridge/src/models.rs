@@ -1,10 +1,10 @@
-//! The harness model catalog: which models an entity's agents (a plan's or a
-//! run's) can run on, and the reasoning-effort levels the harness accepts.
+//! A model selection and the vocabulary it travels in.
 //!
-//! Catalogs are curated here and served to clients over RPC (`models.list`), so
-//! the UI never hardcodes provider models. Codex has an experimental debug
-//! catalog command, but Build cannot assume every installed CLI version exposes
-//! it; shipping the catalog keeps the web contract deterministic.
+//! What each provider offers — its catalog, its reasoning-effort levels, the
+//! flags a selection turns into — belongs to that provider's
+//! [`Harness`](crate::harness::Harness), not here. This module holds only what
+//! is true of every selection: how one is named on the wire, and the sanity
+//! gate every one passes through.
 //!
 //! Selection is validated but not restricted to the catalog: an unknown id with
 //! a safe shape passes through, so a newly released model is usable before a
@@ -12,6 +12,8 @@
 //! so validation is a sanity gate, not the injection barrier.
 
 use serde::{Deserialize, Serialize};
+
+use crate::harness::harness_for;
 
 /// The local coding-agent CLI used for an entity's sessions. Persisted on plans
 /// and runs so changing a later default never moves existing work to a different
@@ -25,17 +27,34 @@ pub enum AgentProvider {
 }
 
 impl AgentProvider {
-    pub fn label(self) -> &'static str {
+    /// Every provider Build can dispatch to. The one place they are enumerated:
+    /// anything that has to visit them all — the catalog RPC, the tests that
+    /// hold each harness to the same contract — reads this rather than writing
+    /// the list out again.
+    pub const ALL: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::Codex];
+
+    /// How a provider is spelled on the wire and in the store. Matches the
+    /// serde representation, so a persisted record and an RPC param agree.
+    pub fn wire_id(self) -> &'static str {
         match self {
-            AgentProvider::Claude => "Claude Code",
-            AgentProvider::Codex => "Codex CLI",
+            AgentProvider::Claude => "claude",
+            AgentProvider::Codex => "codex",
         }
     }
-}
 
-/// Reasoning-effort levels accepted by the harness (`claude --effort`).
-pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
-pub const CODEX_EFFORT_LEVELS: [&str; 6] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+    /// The provider a client named, or `None` if this bridge has no such
+    /// harness.
+    pub fn from_wire(id: &str) -> Option<AgentProvider> {
+        AgentProvider::ALL
+            .into_iter()
+            .find(|provider| provider.wire_id() == id)
+    }
+
+    /// What a human sees this provider called.
+    pub fn label(self) -> &'static str {
+        harness_for(self).label()
+    }
+}
 
 /// One selectable model.
 #[derive(Debug, Clone, Serialize)]
@@ -58,94 +77,20 @@ pub struct ProviderCatalog {
     pub efforts: &'static [&'static str],
 }
 
-/// The curated catalog, most capable first. (cached: 2026-07)
-pub fn catalog() -> Vec<ModelOption> {
-    vec![
-        ModelOption {
-            id: "claude-fable-5",
-            label: "Claude Fable 5",
-            supports_effort: true,
-            efforts: &EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "claude-opus-4-8",
-            label: "Claude Opus 4.8",
-            supports_effort: true,
-            efforts: &EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "claude-sonnet-5",
-            label: "Claude Sonnet 5",
-            supports_effort: true,
-            efforts: &EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "claude-sonnet-4-6",
-            label: "Claude Sonnet 4.6",
-            supports_effort: true,
-            efforts: &EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "claude-haiku-4-5",
-            label: "Claude Haiku 4.5",
-            supports_effort: false,
-            efforts: &[],
-        },
-    ]
-}
-
-pub fn codex_catalog() -> Vec<ModelOption> {
-    const THROUGH_XHIGH: &[&str] = &["low", "medium", "high", "xhigh"];
-    const THROUGH_MAX: &[&str] = &["low", "medium", "high", "xhigh", "max"];
-    vec![
-        ModelOption {
-            id: "gpt-5.6-sol",
-            label: "GPT-5.6-Sol",
-            supports_effort: true,
-            efforts: &CODEX_EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "gpt-5.6-terra",
-            label: "GPT-5.6-Terra",
-            supports_effort: true,
-            efforts: &CODEX_EFFORT_LEVELS,
-        },
-        ModelOption {
-            id: "gpt-5.6-luna",
-            label: "GPT-5.6-Luna",
-            supports_effort: true,
-            efforts: THROUGH_MAX,
-        },
-        ModelOption {
-            id: "gpt-5.5",
-            label: "GPT-5.5",
-            supports_effort: true,
-            efforts: THROUGH_XHIGH,
-        },
-        ModelOption {
-            id: "gpt-5.2",
-            label: "GPT-5.2",
-            supports_effort: true,
-            efforts: THROUGH_XHIGH,
-        },
-    ]
-}
-
+/// Every provider's catalog, for the picker that has to show them all.
 pub fn provider_catalogs() -> Vec<ProviderCatalog> {
-    vec![
-        ProviderCatalog {
-            id: AgentProvider::Claude,
-            label: AgentProvider::Claude.label(),
-            models: catalog(),
-            efforts: &EFFORT_LEVELS,
-        },
-        ProviderCatalog {
-            id: AgentProvider::Codex,
-            label: AgentProvider::Codex.label(),
-            models: codex_catalog(),
-            efforts: &CODEX_EFFORT_LEVELS,
-        },
-    ]
+    AgentProvider::ALL
+        .into_iter()
+        .map(|provider| {
+            let harness = harness_for(provider);
+            ProviderCatalog {
+                id: provider,
+                label: harness.label(),
+                models: harness.models(),
+                efforts: harness.effort_levels(),
+            }
+        })
+        .collect()
 }
 
 /// An agent's model selection (chosen at plan or run dispatch). `None` means the
@@ -182,10 +127,8 @@ impl ModelChoice {
             }
         }
         if let Some(effort) = &self.effort {
-            let allowed = match self.provider {
-                AgentProvider::Claude => EFFORT_LEVELS.as_slice(),
-                AgentProvider::Codex => CODEX_EFFORT_LEVELS.as_slice(),
-            };
+            let harness = harness_for(self.provider);
+            let allowed = harness.effort_levels();
             if !allowed.contains(&effort.as_str()) {
                 return Err(format!(
                     "invalid effort {effort:?} (expected one of {})",
@@ -193,11 +136,7 @@ impl ModelChoice {
                 ));
             }
             if let Some(model) = &self.model {
-                let catalog = match self.provider {
-                    AgentProvider::Claude => catalog(),
-                    AgentProvider::Codex => codex_catalog(),
-                };
-                if let Some(entry) = catalog.iter().find(|m| m.id == model) {
+                if let Some(entry) = harness.models().iter().find(|m| m.id == model) {
                     if !entry.efforts.contains(&effort.as_str()) {
                         return Err(format!("model {model} does not support effort {effort}"));
                     }
@@ -207,29 +146,10 @@ impl ModelChoice {
         Ok(())
     }
 
-    /// The harness argv fragment for this selection.
+    /// The argv fragment this selection becomes, in the flags its own provider
+    /// spells them with.
     pub fn harness_args(&self) -> Vec<String> {
-        let mut args = Vec::new();
-        if let Some(model) = &self.model {
-            args.push("--model".to_string());
-            args.push(model.clone());
-        }
-        if let Some(effort) = &self.effort {
-            match self.provider {
-                AgentProvider::Claude => {
-                    args.push("--effort".to_string());
-                    args.push(effort.clone());
-                }
-                AgentProvider::Codex => {
-                    args.push("--config".to_string());
-                    args.push(format!(
-                        "model_reasoning_effort={}",
-                        serde_json::to_string(effort).expect("effort serializes")
-                    ));
-                }
-            }
-        }
-        args
+        harness_for(self.provider).model_args(self)
     }
 }
 
@@ -278,10 +198,11 @@ mod tests {
     }
 
     #[test]
-    fn effort_must_come_from_the_fixed_set() {
+    fn effort_must_come_from_the_providers_own_set() {
+        // "ultra" is a Codex level; a Claude selection must not take it.
         assert!(choice(None, Some("ultra")).validate().is_err());
-        for level in EFFORT_LEVELS {
-            assert!(choice(None, Some(level)).validate().is_ok());
+        for level in harness_for(AgentProvider::Claude).effort_levels() {
+            assert!(choice(None, Some(level)).validate().is_ok(), "{level}");
         }
     }
 
@@ -293,13 +214,20 @@ mod tests {
         assert!(choice(Some("claude-haiku-4-5"), None).validate().is_ok());
     }
 
+    /// The wire spelling is the serde spelling. A record persisted through
+    /// serde and a provider named in an RPC param have to be the same string,
+    /// or a reloaded plan dispatches to a harness the client cannot ask for.
     #[test]
-    fn catalog_is_nonempty_and_ids_are_sane() {
-        let cat = catalog();
-        assert!(!cat.is_empty());
-        for m in cat {
-            assert!(choice(Some(m.id), None).validate().is_ok(), "{}", m.id);
+    fn a_provider_round_trips_through_its_wire_id() {
+        for provider in AgentProvider::ALL {
+            let id = provider.wire_id();
+            assert_eq!(AgentProvider::from_wire(id), Some(provider));
+            assert_eq!(
+                serde_json::to_value(provider).unwrap(),
+                serde_json::Value::String(id.to_string())
+            );
         }
+        assert_eq!(AgentProvider::from_wire("adk"), None);
     }
 
     #[test]

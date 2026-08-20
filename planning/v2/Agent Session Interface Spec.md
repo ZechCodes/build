@@ -240,14 +240,15 @@ Two mechanical consequences follow, and neither is optional. They are §6.
 ## 6. The two things this breaks
 
 Both are in code that predates agent activity being conversational, and both must
-be fixed in the same change that introduces the new kinds.
+be fixed in the same change that introduces the new kinds. Both are now decided.
 
-### 6.1 The catch-up packet would evict the human
+### 6.1 The catch-up packet is messages only
 
-`Thread::catch_up_markdown` (`bridge/src/thread.rs:1975`) is what a resumed or
-cold-started agent is handed as its context, through `conversation_prompt`. It
-takes the **last N items by recency**, N = 40, filtering only completion
-messages:
+**Decided 2026-08-20:** the catch-up packet a resumed agent is handed carries
+**only messages to and from the agent** — nothing else on the thread.
+
+`Thread::catch_up_markdown` (`bridge/src/thread.rs:1975`) currently takes the
+last N items by recency, N = 40, filtered only for completion messages:
 
 ```rust
 for item in self.items.iter().rev().take(limit).rev() { … }
@@ -255,39 +256,82 @@ for item in self.items.iter().rev().take(limit).rev() { … }
 
 Nothing about class. A session that emitted forty tool calls before restarting
 would hand its replacement forty tool calls and **none of the human's messages**
-— the exact context the packet exists to carry.
+— the exact context the packet exists to carry. Filtering to messages fixes that
+by construction rather than by tuning a ratio, and it does not need revisiting
+when a fifth activity kind is added later.
 
-**Fix:** `catch_up_markdown` selects by class, not by recency alone. Messages and
-`Attention` events are the packet; `Status` events fill what is left, if
-anything. Small change, well covered by tests — but it lands with the new kinds,
-not after them.
+**What this drops, deliberately:** the packet's event branch emits a line for
+every event carrying a summary. In practice that is four places — `Done`,
+`Blocked` / `ReviewBlocked`, `RunFailed` / `IdleUnreported` / crash reasons, and
+revision/approval events. So a resumed agent stops being told "you went quiet
+without reporting done" or "the reviewer approved revision 3".
 
-### 6.2 Threads are unbounded and persisted whole
+Two reasons that is the right trade:
 
-`Thread::items` is a `Vec` with no cap, no retention rule and no trimming. It is
-serialized in full to the store, and `thread.revision` reports `item_count` /
-`thread_total` over it.
+1. Those are **Build's observations about the agent**, not the conversation. An
+   agent that blocked said why in a message; the event is Build restating it for
+   the human's timeline.
+2. The structured completion report survives regardless —
+   `conversation_prompt` appends `thread.last_completion` separately, after the
+   packet (`bridge/src/orchestrator.rs:658`), so the densest of the four is not
+   carried by this path anyway.
 
-Lifecycle events arrive a handful per run. Tool-use events arrive at agent speed
-— hundreds per session is ordinary. That is a change in the *rate* of growth by
-two or three orders of magnitude, against a structure that was never bounded
-because it never needed to be.
+### 6.2 Activity cannot live in the aggregate record
 
-"Activity lives in the conversation" answers **where** scrollback is kept. It
-does not answer **how much**, and that question is now load-bearing. Options,
-cheapest first:
+This is the part the storage layer decides, not the design.
 
-1. **Cap per session.** Keep the last N activity events per session lineage and
-   drop older ones when the session ends. Messages and lifecycle events are never
-   dropped. Bounded, simple, and matches what scrollback always did.
-2. **Drop activity on session end.** Activity is live-only; the conversation
-   keeps messages and lifecycle. Closest to today's PTY behaviour, and gives up
-   reviewing what an agent did after the fact.
-3. **Keep everything.** Simplest to build, unbounded on disk and on the wire. A
-   long-lived issue's thread eventually becomes too big to ship.
+**There is no database.** The store is one `record.json` per Issue under
+`~/.build/tasks/issues/<id>/`, holding the Issue *and every implementation
+inside it*, each with its own thread. Records are written atomically — tmp file,
+fsync, rename — and `save_issue_implementation` (`bridge/src/store.rs:615`) is a
+read-modify-write of the whole aggregate:
 
-Recommendation: **(1)**. It keeps post-hoc review — the reason to put activity in
-the conversation at all — without an unbounded record.
+```rust
+let mut aggregate: PersistedIssue = read_record(&path)?;   // the entire Issue
+… replace one implementation …
+let json = serde_json::to_string_pretty(&aggregate)?;      // re-serialize all of it
+write_record_atomically(&path, &json)                      // + fsync
+```
+
+So appending one thread item costs a full read, a full pretty-print
+serialization, and an fsync **of every thread on that Issue**.
+
+That is correct and cheap for what the thread holds today: messages and
+lifecycle events, a handful per run. It is quadratic for activity. Tool events
+arrive hundreds per session, and each one would rewrite a file that each previous
+one made bigger — **O(n²) bytes written and fsynced over a session**, against a
+disk, with the app mutex in the neighbourhood.
+
+The problem is not that the file gets big. It is write amplification.
+
+**So activity does not go in the aggregate record at all.** It goes in an
+append-only log beside it:
+
+```text
+issues/<issue_id>/record.json              messages + lifecycle  (unchanged)
+issues/<issue_id>/activity/<agent_id>.jsonl   reasoning, tool use, narration
+```
+
+- **Appending is O(1)** — one write, no read, no re-serialization of anything
+  else. This is the whole point.
+- `Thread::items` holds a **recent window** in memory and on the wire; older
+  activity is read back from the log on demand.
+- The log is per agent, so two agents on one checkout never contend, and
+  deleting one agent's history never touches another's.
+
+This is also a format Build already reads: claude keeps transcripts as
+`~/.claude/projects/**/*.jsonl` and codex keeps dated JSONL rollouts, and the
+transcript probes in `harness/claude.rs` and `harness/codex.rs` parse both today.
+The activity log is the same shape, owned by Build.
+
+**The alternative considered and rejected for now:** an embedded database
+(sqlite, redb). It solves paging properly and would let the thread be queried
+rather than loaded whole. But there is no database dependency in the bridge
+today and the entire store is file-per-entity JSON, so introducing one for a
+single subsystem is an architectural move that should be made deliberately and on
+its own — not smuggled in behind an activity feed. The jsonl log can be migrated
+into a database later; it cannot be un-migrated out of the aggregate record once
+the write amplification has been shipped.
 
 ## 7. Terminal-coupled surfaces — the inventory
 
@@ -304,8 +348,9 @@ Everything that must become conditional. This is the actual size of the work.
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
 | `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
-| `catch_up_markdown` (`thread.rs:1975`) | last 40 items by recency | selects by class (§6.1) |
-| `Thread::items` (`thread.rs`) | unbounded `Vec`, persisted whole | retention rule for activity kinds (§6.2) |
+| `catch_up_markdown` (`thread.rs:1975`) | last 40 items by recency, events included | messages only (§6.1) |
+| `Thread::items` (`thread.rs`) | unbounded `Vec`, in the aggregate record | recent window; activity in a per-agent jsonl log (§6.2) |
+| `save_issue_implementation` (`store.rs:615`) | read-modify-write of the whole Issue per append | unchanged — activity never reaches it (§6.2) |
 
 ### SPA
 
@@ -359,12 +404,16 @@ Solved by the decision in §5, rather than designed here.
 | Surface | Snapshot | Cursor |
 |---|---|---|
 | Terminal | vt100 screen + byte total | `term.ack` flow control |
-| Conversation (activity included) | thread revision | item sequence |
+| Conversation (recent activity included) | thread revision | item sequence |
 
-There is no third row. Activity reconnects the way the conversation does because
-it *is* the conversation, which is the single largest thing this design buys: no
-new cursor protocol, no new snapshot, no new flow control, and no live-only
-window that a reconnecting client can fall out of.
+There is no third protocol. Activity reconnects the way the conversation does
+because it *is* the conversation — no new cursor, no new snapshot, no new flow
+control, and no live-only window a reconnecting client can fall out of.
+
+Paging **older** activity out of the jsonl log (§6.2) is a separate, ordinary
+read — a client asking for history it has scrolled back to, not a client
+resyncing. It has no bearing on reconnect, which only ever needs the recent
+window the thread already carries.
 
 ---
 
@@ -380,10 +429,11 @@ Each step compiles, ships and is green on its own.
 3. **Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest, and
    add the typed refusals to `agent_attach` / `term.input` / `term.resize`. No
    session returns `None` yet — the paths are dead but exercised by tests.
-4. **Add the four activity kinds**, classed `Status`, *with* the `catch_up_markdown`
-   class fix (§6.1) and the retention rule (§6.2) in the same change. Nothing
-   emits them yet. This is the step that must not be split: the two fixes exist
-   precisely because the kinds do.
+4. **Add the four activity kinds**, classed `Status`, *with* the
+   messages-only catch-up packet (§6.1) and the per-agent activity log (§6.2) in
+   the same change. Nothing emits them yet. This is the step that must not be
+   split: both fixes exist precisely because the kinds do, and shipping the kinds
+   without the log ships the write amplification.
 5. **SPA: hide the TUI button when `has_terminal` is false**, and render the four
    kinds in the thread, folded by default.
 6. **Then, and only then, add a provider with no terminal.** By this point it is
@@ -398,9 +448,11 @@ catch-up packet regardless of who fills the thread.
 
 ## 11. Decisions needed before step 1
 
-1. **What is the retention rule for activity?** §6.2, options 1–3. The
-   recommendation is a per-session cap. This one gates step 4 and nothing else,
-   but step 4 cannot start without it.
+1. **How large is the thread's recent activity window?** §6.2 settles *where*
+   activity is persisted; it does not settle how much of it the thread carries in
+   memory and on the wire before a client has to page the log. A few hundred
+   items keeps a session's work visible without a snapshot that is expensive to
+   ship. This gates step 4 and nothing else.
 
 2. **Does `Turn` carry structure, or stay a string?** A PTY can only take text.
    ADK can take structured content (attachments, images, tool results). Making
@@ -431,3 +483,9 @@ catch-up packet regardless of who fills the thread.
   terminal becomes purely an escape hatch for opaque CLI wrappers. Removed the
   event ring, the cursor protocol and the RPC. Added §6 — the catch-up packet
   and thread-retention consequences the move creates.
+- **2026-08-20, §6 decided.** Catch-up carries messages only, dropping the
+  lifecycle summaries it used to include. Activity is persisted in a per-agent
+  append-only jsonl log rather than the Issue's aggregate record — the store has
+  no database and rewrites the whole aggregate per append, so activity in the
+  record would be O(n²) bytes written per session. The open question narrows from
+  "what is the retention rule" to "how large is the in-memory window".

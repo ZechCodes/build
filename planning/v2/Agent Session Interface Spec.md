@@ -278,6 +278,14 @@ Two reasons that is the right trade:
 
 ### 6.2 Activity cannot live in the aggregate record
 
+> **Superseded 2026-08-21 by `Store Migration Spec.md`.** The conclusion below —
+> that activity needs a per-agent jsonl log — was reasoning around a JSON store
+> that rewrites a whole aggregate per append. That store is being replaced with
+> SQLite, where a thread item is a row, appending is one `INSERT`, and paging is
+> a `LIMIT`. The jsonl log is not needed and should not be built. The *diagnosis*
+> below still stands and is why the store is changing; only the remedy is
+> withdrawn.
+
 This is the part the storage layer decides, not the design.
 
 **There is no database.** The store is one `record.json` per Issue under
@@ -483,6 +491,11 @@ catch-up packet regardless of who fills the thread.
   terminal becomes purely an escape hatch for opaque CLI wrappers. Removed the
   event ring, the cursor protocol and the RPC. Added §6 — the catch-up packet
   and thread-retention consequences the move creates.
+- **2026-08-21, §6.2 superseded.** The store is moving to SQLite
+  (`Store Migration Spec.md`), which removes the write amplification the jsonl
+  activity log was designed to route around and gives pagination directly. The
+  activity kinds land as ordinary thread rows. Step 4's dependency order changes:
+  it now waits on store phases 1–3.
 - **2026-08-20, §6 decided.** Catch-up carries messages only, dropping the
   lifecycle summaries it used to include. Activity is persisted in a per-agent
   append-only jsonl log rather than the Issue's aggregate record — the store has

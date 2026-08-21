@@ -2100,29 +2100,15 @@ impl AppState {
         if let Some(parent) = dir.parent() {
             self.state_root = parent.to_path_buf();
         }
-        let store = Store::new(dir);
-        // First: migrate any legacy fused-task records into the split's plan
-        // and run records (idempotent; a store with only new-format records is
-        // a no-op). This must run before the loaders so recovery only ever
-        // sees the split shape.
-        store.migrate_legacy_tasks().map_err(|e| e.to_string())?;
-        store
-            .migrate_split_records_to_issues()
-            .map_err(|e| e.to_string())?;
-        // Then: move every entity-keyed conversation onto the entity's first
-        // agent. Idempotent (the first agent's id is derived from its owner),
-        // and before the loaders so recovery only ever sees agent-keyed
-        // conversations.
-        store
-            .migrate_threads_to_agents()
-            .map_err(|e| e.to_string())?;
-        // Then: move every persisted stage comment onto that agent's
-        // conversation, where comments live now. After the agents exist (the
-        // posts need one) and before the loaders, which read comments only off
-        // the conversation.
-        store
-            .migrate_stage_comments_to_posts()
-            .map_err(|e| e.to_string())?;
+        let store = Store::new(dir).map_err(|e| e.to_string())?;
+        // One-way import of the JSON record tree this store replaced. A no-op
+        // once it has run; the imported files are parked, never deleted, so a
+        // database that turns out to be wrong can be thrown away and rebuilt.
+        match store.import_json_store() {
+            Ok(0) => {}
+            Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
+            Err(error) => return Err(format!("store import failed: {error}")),
+        }
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
         let archived_worktrees = store
@@ -2639,7 +2625,6 @@ impl AppState {
             // Retired storage: comments are posts on the conversation now. The
             // field stays on the record only so pre-cutover files still load,
             // and the boot migration empties it.
-            comments: Vec::new(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
@@ -2708,7 +2693,7 @@ impl AppState {
         if record
             .plan_id
             .as_deref()
-            .is_some_and(|issue_id| store.issue_record_path(issue_id).is_file())
+            .is_some_and(|issue_id| store.issue_exists(issue_id))
         {
             store
                 .save_issue_implementation(&record)
@@ -21392,6 +21377,7 @@ mod tests {
         ));
         assert_eq!(failed["ok"], false, "{failed:?}");
         let record = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_runs()
             .unwrap()
             .into_iter()
@@ -21461,9 +21447,8 @@ mod tests {
         assert_eq!(stages["result"]["issue_id"], issue_id);
         assert_eq!(stages["result"]["plan_id"], issue_id);
         assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
-        let store = Store::new(dir.path().join("store"));
-        assert!(store.issue_record_path(&issue_id).is_file());
-        assert!(!store.plan_record_path(&issue_id).exists());
+        let store = Store::new(dir.path().join("store")).expect("store opens");
+        assert!(store.issue_exists(&issue_id));
     }
 
     #[test]
@@ -26897,7 +26882,7 @@ mod tests {
         run_id: &str,
         run_state: RunState,
     ) -> std::path::PathBuf {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -27506,137 +27491,13 @@ mod tests {
     // ---- boot recovery + migration -------------------------------------------
 
     #[test]
-    fn legacy_task_migrates_into_a_plan_and_run_on_boot() {
-        let (dir, repo) = init_repo();
-        let store_dir = dir.path().join("store");
-        // A quick legacy task in review, with a real surviving worktree.
-        let (_wt_dir, quick_wt) = init_repo();
-        let store = crate::store::Store::new(&store_dir);
-        store
-            .save(&legacy_task(
-                "task-quick",
-                crate::legacy::TaskKind::Quick,
-                crate::legacy::TaskState::Review,
-                &repo,
-                &quick_wt,
-            ))
-            .unwrap();
-        // A standard legacy task still in plan review (planning phase) → plan only.
-        let (_wt2, plan_wt) = init_repo();
-        store
-            .save(&legacy_task(
-                "task-plan",
-                crate::legacy::TaskKind::Standard,
-                crate::legacy::TaskState::PlanReview,
-                &repo,
-                &plan_wt,
-            ))
-            .unwrap();
-        // A standard legacy task past planning (building) → an approved plan AND
-        // a run pointing back at it, both surfaced.
-        let (_wt3, build_wt) = init_repo();
-        store
-            .save(&legacy_task(
-                "task-build",
-                crate::legacy::TaskKind::Standard,
-                crate::legacy::TaskState::Building,
-                &repo,
-                &build_wt,
-            ))
-            .unwrap();
-
-        let mut state = qa_state(&repo, dir.path());
-        // The quick task became a plan-less run kept at review.
-        let run = state.handle(req("run.get", json!({ "run_id": "task-quick" })));
-        assert_eq!(run["result"]["state"], "review", "{run:?}");
-        assert_eq!(run["result"]["plan_id"], Value::Null);
-        // The standard task became a plan at plan_review, no run.
-        let plan = state.handle(req("plan.get", json!({ "plan_id": "task-plan" })));
-        assert_eq!(plan["result"]["state"], "plan_review", "{plan:?}");
-        assert_eq!(
-            state.handle(req("run.get", json!({ "run_id": "task-plan" })))["ok"],
-            false
-        );
-        // The past-planning task became an approved plan plus a run linked back
-        // to it. The plan is a resting Approved; the run was mid-build, so boot
-        // recovery demotes it to Interrupted (its PTY died on the restart).
-        let built_plan = state.handle(req("plan.get", json!({ "plan_id": "task-build" })));
-        assert_eq!(built_plan["result"]["state"], "approved", "{built_plan:?}");
-        // The run half takes a derived, disjoint id — plan and run ids never
-        // collide, or done-report routing (plans-first) would swallow the
-        // run's reports.
-        let built_run = state.handle(req("run.get", json!({ "run_id": "run-task-build" })));
-        assert_eq!(built_run["result"]["state"], "interrupted", "{built_run:?}");
-        assert_eq!(built_run["result"]["plan_id"], "task-build");
-
-        // Everything surfaces on the board, in the right collection.
-        let board = state.handle(req("board.list", json!({})));
-        let ids = |arr: &Value, key: &str| -> Vec<String> {
-            arr.as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v[key].as_str().unwrap().to_string())
-                .collect()
-        };
-        let plan_ids = ids(&board["result"]["plans"], "plan_id");
-        let run_ids = ids(&board["result"]["runs"], "run_id");
-        assert!(plan_ids.contains(&"task-plan".to_string()), "{plan_ids:?}");
-        assert!(plan_ids.contains(&"task-build".to_string()), "{plan_ids:?}");
-        assert!(
-            !plan_ids.contains(&"task-quick".to_string()),
-            "the quick task has no plan: {plan_ids:?}"
-        );
-        assert!(run_ids.contains(&"task-quick".to_string()), "{run_ids:?}");
-        assert!(
-            run_ids.contains(&"run-task-build".to_string()),
-            "{run_ids:?}"
-        );
-        assert!(
-            !run_ids.contains(&"task-plan".to_string()),
-            "the plan-only task has no run: {run_ids:?}"
-        );
-    }
-
-    fn legacy_task(
-        id: &str,
-        kind: crate::legacy::TaskKind,
-        st: crate::legacy::TaskState,
-        repo: &std::path::Path,
-        worktree: &std::path::Path,
-    ) -> crate::store::PersistedTask {
-        crate::store::PersistedTask {
-            id: id.into(),
-            goal: "legacy".into(),
-            kind,
-            project_path: repo.display().to_string(),
-            base_branch: "main".into(),
-            state: st,
-            branch: format!("build/{id}"),
-            worktree_name: id.into(),
-            worktree_path: worktree.display().to_string(),
-            plan_path: ".build/plan.md".into(),
-            last_summary: None,
-            model: None,
-            effort: None,
-            last_error: None,
-            stages: Vec::new(),
-            current_stage_id: None,
-            revising_stage_id: None,
-            auto_advance: false,
-            comments: Vec::new(),
-            adopted: false,
-            pending_continuation: false,
-            created_at: "2026-07-01T10:00:00Z".into(),
-            updated_at: "2026-07-01T10:00:00Z".into(),
-        }
-    }
-
-    #[test]
     fn working_plan_and_run_surface_interrupted_on_boot() {
         let (dir, repo) = init_repo();
         let (_b, run_wt) = init_repo();
-        let store = crate::store::Store::new(dir.path().join("store"));
-        store.save_plan(&drafting_plan("plan-1", &repo)).unwrap();
+        let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
+        store
+            .save_issue_plan(&drafting_plan("plan-1", &repo))
+            .unwrap();
         store
             .save_run(&building_run("run-1", &repo, &run_wt))
             .unwrap();
@@ -27655,7 +27516,7 @@ mod tests {
     #[test]
     fn missing_run_worktree_abandons_and_missing_repo_too() {
         let (dir, repo) = init_repo();
-        let store = crate::store::Store::new(dir.path().join("store"));
+        let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
         // Worktree gone, repo present → abandoned (branch kept).
         let mut gone = building_run("run-gone", &repo, std::path::Path::new("/tmp/nope-run"));
         gone.state = RunState::Building;
@@ -27702,7 +27563,7 @@ mod tests {
             &["update-ref", "-d", "refs/remotes/mirror/build/journaled"],
         );
 
-        let store = Store::new(dir.path().join("store"));
+        let store = Store::new(dir.path().join("store")).expect("store opens");
         let mut record = building_run("run-journaled", &repo, &repo);
         record.state = RunState::Review;
         record.branch = "build/journaled".into();
@@ -27767,7 +27628,6 @@ mod tests {
             implementation_activity: crate::plan::ImplementationActivity::Idle,
             plan_path: ".build/plan.md".into(),
             stages: Vec::new(),
-            comments: Vec::new(),
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
@@ -28394,7 +28254,7 @@ mod tests {
         side_root: std::path::PathBuf,
         run_id: &str,
     ) -> (TabKey, String) {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -28452,7 +28312,7 @@ mod tests {
         side_root: std::path::PathBuf,
         run_id: &str,
     ) -> std::path::PathBuf {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -28883,6 +28743,7 @@ mod tests {
         );
         assert_eq!(choice.effort, None);
         let persisted = crate::store::Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_runs()
             .unwrap()
             .into_iter()
@@ -28916,6 +28777,7 @@ mod tests {
             AgentProvider::Codex
         );
         let persisted = crate::store::Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_plans()
             .unwrap()
             .into_iter()
@@ -31731,9 +31593,11 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "store-failure", "store-failure");
         let worktree_id = external_id(&mut state, &project_id, Some("store-failure"));
-        let store_root = dir.path().join("store");
-        std::fs::create_dir_all(&store_root).unwrap();
-        std::fs::write(store_root.join("archived-worktrees"), "not a directory").unwrap();
+        state
+            .store
+            .as_ref()
+            .expect("the qa state has a store")
+            .fail_next_write();
 
         let failed = state.handle(req(
             "worktree.finish",
@@ -32378,15 +32242,18 @@ mod tests {
             assert_eq!(finished["ok"], true, "{finished:?}");
         }
 
-        let record_path = dir
-            .path()
-            .join("store/archived-worktrees")
-            .join(format!("{worktree_id}.json"));
-        let mut record: Value =
-            serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
-        record["status"] = json!("pending");
-        record["archived_at"] = Value::Null;
-        std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        // Put the record back the way an interrupted daemon would have left it:
+        // the intent is durable, the worktree removal never happened.
+        {
+            let store = Store::new(dir.path().join("store")).expect("store opens");
+            let raw = store
+                .archived_worktree_json(&worktree_id)
+                .expect("the finish wrote an archive record");
+            let mut record: Value = serde_json::from_str(&raw).unwrap();
+            record["status"] = json!("pending");
+            record["archived_at"] = Value::Null;
+            store.set_archived_worktree_json(&worktree_id, &record.to_string());
+        }
 
         let mut reloaded = qa_state(&repo, dir.path());
         let project_id = reloaded.projects[0].id.clone();
@@ -32396,8 +32263,15 @@ mod tests {
             .unwrap()
             .iter()
             .any(|worktree| worktree["worktree_id"] == worktree_id));
-        let recovered: Value =
-            serde_json::from_str(&std::fs::read_to_string(record_path).unwrap()).unwrap();
+        // The recovery is durable, not just in memory: a store opened fresh
+        // sees the completed finish.
+        let recovered: Value = serde_json::from_str(
+            &Store::new(dir.path().join("store"))
+                .expect("store opens")
+                .archived_worktree_json(&worktree_id)
+                .expect("the archive record survives"),
+        )
+        .unwrap();
         assert_eq!(recovered["status"], "archived");
         assert!(recovered["archived_at"].is_string());
     }
@@ -34926,6 +34800,7 @@ mod tests {
 
         // On disk already — read by a store this daemon never told about it.
         let on_disk = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_captures()
             .unwrap();
         assert_eq!(on_disk.len(), 1, "the record is written before the answer");
@@ -34956,6 +34831,7 @@ mod tests {
         assert!(state.captures.is_empty());
         assert_eq!(
             Store::new(dir.path().join("store"))
+                .expect("store opens")
                 .load_all_captures()
                 .unwrap(),
             Vec::new()
@@ -35090,7 +34966,7 @@ mod tests {
     #[test]
     fn boot_refires_an_interrupted_route_and_leaves_the_rest_alone() {
         let (dir, repo) = init_repo();
-        let store = Store::new(dir.path().join("store"));
+        let store = Store::new(dir.path().join("store")).expect("store opens");
         let mut mid_route = crate::capture::Capture::new(
             "capture-mid-route",
             "fix the login redirect",
@@ -35298,6 +35174,7 @@ mod tests {
 
         // On disk, not just in this process.
         let on_disk = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_captures()
             .unwrap();
         assert_eq!(
@@ -35674,6 +35551,7 @@ mod tests {
         );
         assert_eq!(
             Store::new(dir.path().join("store"))
+                .expect("store opens")
                 .load_all_captures()
                 .unwrap(),
             Vec::new(),

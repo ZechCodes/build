@@ -1,6 +1,6 @@
 # Bridge Store — SQLite Migration Spec
 
-**Status:** Draft for review
+**Status:** Shipped — phases 1, 2 and 3 are in `build/agent-polymorphism`
 **Last updated:** August 21, 2026
 **Relates to:** `Agent Session Interface Spec.md` (§6.2 is superseded by this)
 
@@ -125,6 +125,14 @@ API shape survives; the backend changes under it.
 those tests describe record shapes and boot migrations and can be pointed at the
 new backend rather than rewritten.
 
+> **Phase 2 shipped 2026-08-22.** `RESIDENT_CONVERSATION_TAIL` is 200: a boot
+> reads the newest items of each conversation and remembers how many it left
+> behind. The audit below was done and the split held — but the sharp edge this
+> spec warned about did bite: unread badges were counted off the tail and
+> under-reported. The fix was to make the class a column (`thread_items.attention`,
+> schema 2) so the badge is a `COUNT` between the read cursor and the resident
+> floor rather than a scan. See `ca54ebd`.
+
 ### Phase 2 — the thread stops being fully resident
 
 `Thread::items` becomes a bounded window over the table rather than the whole
@@ -142,6 +150,15 @@ groups:
 **Unlocks:** memory stops growing with conversation length. This is the phase
 that carries semantic risk — an unread count computed by a query has to agree
 exactly with one computed by a scan, or badges lie.
+
+> **Phase 3 shipped 2026-08-22.** `Thread::wire_value_page` bounds the
+> uncursored first load at `DEFAULT_THREAD_PAGE` (60), `thread.page` walks
+> backward, and the SPA's gap check became the contiguity test this spec
+> predicted it would have to. Three critical defects were caught in validation
+> before release, all in the client cache: a forward delta pulling a
+> below-window item into the window (`d6c1c3f`), a repaint after reset sticking
+> a one-item conversation (`c6e061b`), and an in-flight page merging into a
+> window that had been replaced (`f5faf88`).
 
 ### Phase 3 — wire pagination
 

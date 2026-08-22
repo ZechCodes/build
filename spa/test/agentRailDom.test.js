@@ -479,16 +479,16 @@ describe("reading back past the top of a paged conversation", () => {
     oldest_sequence: 98,
     has_more: hasMore,
   });
-  const pageAbove = {
+  const pageAbove = (hasMore) => ({
     items: [said(96, "the oldest we asked for"), said(97, "one before the window")],
     thread_total: 99,
     thread_last_sequence: 99,
     oldest_sequence: 96,
-    has_more: true,
-  };
+    has_more: hasMore,
+  });
   const railBody = () => railHost().querySelector("#rail-body");
 
-  const pagedConversation = (hasMore) => {
+  const pagedConversation = (hasMore, moreAboveThatPage = true) => {
     App.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") {
@@ -499,7 +499,7 @@ describe("reading back past the top of a paged conversation", () => {
           : firstPage(hasMore);
         return branchRow({ run: { run_id: "run-3", thread } });
       }
-      if (method === "thread.page") return pageAbove;
+      if (method === "thread.page") return pageAbove(moreAboveThatPage);
       return {};
     });
   };
@@ -541,6 +541,24 @@ describe("reading back past the top of a paged conversation", () => {
     await flush();
 
     expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("stops asking once a page answers that the window holds the start", async () => {
+    // The page above is the start of the conversation, so there is nothing
+    // left to fetch. The repaint that draws it folds the first-load page back
+    // through the cache on its way — and that page still says there is more
+    // above a floor the reader has now scrolled past.
+    pagedConversation(true, false);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+    expect(callsTo("thread.page")).toHaveLength(1);
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toHaveLength(1);
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {

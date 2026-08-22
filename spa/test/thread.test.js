@@ -497,6 +497,26 @@ describe("thread cache paging (the window over a long conversation)", () => {
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 250 });
   });
 
+  it("keeps the top the reader reached when the page it opened on is absorbed again", () => {
+    const cache = createThreadCache();
+    // Every repaint folds the payload in hand back through the cache, and the
+    // payload in hand stays the page the window was opened on until the next
+    // poll replaces it with a delta. That page says there is more above ITS
+    // floor, which stopped being the window's floor the moment the reader
+    // scrolled back to the start.
+    const openedOn = page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true });
+    cache.absorb(openedOn);
+    cache.absorbOlderPage(page([item(1, "a"), item(2, "b"), item(3, "c"), item(4, "d"), item(5, "e"), item(6, "f"), item(7, "g")], { thread_total: 9, has_more: false }), cache.olderPageParam());
+    expect(cache.hasOlderItems()).toBe(false);
+
+    cache.absorb(openedOn);
+
+    // Believing it again would put the reader back at a top they have already
+    // reached, and every further scroll gesture would ask the daemon for a
+    // page it has already said does not exist.
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+
   it("forgets that older items remain when it resets", () => {
     const cache = createThreadCache();
     cache.absorb(page([item(9, "i")], { thread_total: 9, has_more: true }));

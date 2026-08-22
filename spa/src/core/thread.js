@@ -166,6 +166,23 @@ export function createThreadCache() {
     return arrivedItems.filter((item) => (item.data?.sequence || 0) >= floor);
   };
 
+  /// Whether a payload's `has_more` is still an answer about the window in
+  /// hand. It answers one question — is there anything above the payload's own
+  /// first item — so it holds only while that item is still the window's floor.
+  /// With no window open, the payload is the one about to become it.
+  ///
+  /// The distinction is not academic: a repaint folds the payload in hand back
+  /// through the cache, and the payload in hand stays the page the window was
+  /// opened on until the next poll replaces it with a delta. Once the reader
+  /// has scrolled back, that page speaks for a floor the window has already
+  /// lifted past, and taking its answer would put them at a top they have
+  /// already reached — every further scroll gesture asking for a page the
+  /// daemon has already said is not there.
+  const speaksForTheWindowsFloor = (arrivedItems) => {
+    if (!accumulatedItems.length) return true;
+    return (arrivedItems[0]?.data?.sequence || 0) === (accumulatedItems[0].data?.sequence || 0);
+  };
+
   const mergeArrivals = (arrivedItems) => {
     // Keyed by creation sequence so a replay never grows the list, while an
     // arrived copy replaces the held one — the bridge re-ships an item
@@ -232,10 +249,13 @@ export function createThreadCache() {
         deliveredSequence = 0;
         return threadPayload;
       }
-      // A paged answer is the only one that knows what lies above it; a bare
-      // forward delta leaves the standing answer alone.
-      if (threadPayload.has_more != null) olderItemsRemain = threadPayload.has_more === true;
       const arrivedItems = threadPayload.items || [];
+      // A paged answer is the only one that knows what lies above it; a bare
+      // forward delta leaves the standing answer alone, and so does a page that
+      // no longer speaks for the window's floor.
+      if (threadPayload.has_more != null && speaksForTheWindowsFloor(arrivedItems)) {
+        olderItemsRemain = threadPayload.has_more === true;
+      }
       if (threadPayload.thread_total == null) {
         // An uncursored (full) response is authoritative: replace, don't merge.
         accumulatedItems = [...arrivedItems];

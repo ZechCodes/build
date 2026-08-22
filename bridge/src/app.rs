@@ -2104,6 +2104,12 @@ impl AppState {
         // One-way import of the JSON record tree this store replaced. A no-op
         // once it has run; the imported files are parked, never deleted, so a
         // database that turns out to be wrong can be thrown away and rebuilt.
+        // Before anything is read: if an older bridge has been run against this
+        // directory since the import, two copies of the user's work exist and
+        // only one of them is about to be served.
+        store
+            .refuse_a_rolled_back_store()
+            .map_err(|error| error.to_string())?;
         match store.import_json_store() {
             Ok(0) => {}
             Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),

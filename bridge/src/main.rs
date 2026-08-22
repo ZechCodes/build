@@ -48,6 +48,7 @@ async fn main() {
         Some("serve") | None => serve().await,
         Some("mcp") => mcp_stdio(),
         Some("provision") => provision(),
+        Some("backup") => backup(),
         Some("install-service") => install_service().await,
         Some("uninstall-service") => uninstall_service(),
         Some("--version") | Some("-V") => {
@@ -55,9 +56,38 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|provision|install-service|uninstall-service]"
+                "unknown command: {other}\nusage: build-bridge [serve|backup <path>|provision|install-service|uninstall-service]"
             );
             std::process::exit(2);
+        }
+    }
+}
+
+/// Copy the state database to a file, consistently, while the daemon runs.
+///
+/// The state dir holds a live database and its write-ahead log, which a
+/// file-at-a-time backup tool cannot copy coherently — the JSON records it
+/// replaced could each be copied on their own, and this cannot. This is the
+/// supported way to take one.
+fn backup() {
+    let Some(destination) = std::env::args().nth(2) else {
+        eprintln!("usage: build-bridge backup <path>");
+        std::process::exit(2);
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tasks_dir = env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks"));
+    let store = match build_bridge::store::Store::new(&tasks_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("cannot open the store at {tasks_dir}: {error}");
+            std::process::exit(1);
+        }
+    };
+    match store.backup_to(std::path::Path::new(&destination)) {
+        Ok(()) => println!("wrote {destination}"),
+        Err(error) => {
+            eprintln!("backup failed: {error}");
+            std::process::exit(1);
         }
     }
 }

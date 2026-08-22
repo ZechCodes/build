@@ -82,6 +82,11 @@ pub enum StoreError {
     /// corrupt state that build does not understand, so boot refuses.
     #[error("store schema version {found} is newer than this bridge supports ({supported}) — update build-bridge")]
     SchemaTooNew { found: i64, supported: i64 },
+    /// The JSON records this store imported have been written to since. An
+    /// older bridge was run against this directory, and the two halves of the
+    /// user's work now live in different places.
+    #[error("{path} was written after this store was imported into build.db ({count} record(s) changed) — an older build-bridge has been run against this directory. Work now lives in two places: sort them out before starting, or move the JSON tree aside if the database is the copy you want")]
+    RolledBack { path: PathBuf, count: usize },
     #[error("corrupt store record {path}: {source}")]
     Corrupt {
         path: PathBuf,
@@ -709,6 +714,35 @@ impl Store {
                 [version.to_string()],
             )
             .expect("the schema version is stamped");
+    }
+
+    /// Copy the database to `destination` as a consistent snapshot.
+    ///
+    /// The state dir holds a live `build.db` plus its `-wal` and `-shm`
+    /// sidecars, and a file-at-a-time copy of that triple while the daemon is
+    /// running takes a torn database — the JSON records it replaced could each
+    /// be copied on their own, and this cannot. `VACUUM INTO` writes one
+    /// self-contained file from a single consistent read, so a backup taken
+    /// mid-write is a database rather than a puzzle.
+    ///
+    /// Refuses to overwrite: a backup that silently replaced the previous one
+    /// is a backup that can be lost twice.
+    pub fn backup_to(&self, destination: &Path) -> Result<(), StoreError> {
+        if destination.exists() {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("{} already exists", destination.display()),
+            )));
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // A bound parameter is not accepted here (VACUUM INTO takes a literal),
+        // so the path is quoted the way SQLite quotes a string literal.
+        let quoted = destination.to_string_lossy().replace('\'', "''");
+        self.connection()
+            .execute_batch(&format!("VACUUM INTO '{quoted}'"))?;
+        Ok(())
     }
 
     /// Test-only: strip the v2 column and stamp the version back, so the
@@ -1406,7 +1440,81 @@ impl Store {
             )?;
             conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
         }
+        // Last, and only once the import is durable: the note doubles as the
+        // timestamp the rollback check measures against, so it must not predate
+        // the data it describes.
+        self.write_superseded_note(imported)?;
         Ok(imported)
+    }
+
+    /// The name of the note left in the JSON tree once it has been imported.
+    ///
+    /// It is for a human reading the state dir, not for Build: an old bridge
+    /// would ignore it. What protects against a rollback is
+    /// [`refuse_a_rolled_back_store`](Self::refuse_a_rolled_back_store); this
+    /// is what tells the person looking at the directory why there are two
+    /// copies of their work in it.
+    const SUPERSEDED_NOTE: &'static str = "SUPERSEDED-BY-build.db.md";
+
+    fn write_superseded_note(&self, imported: usize) -> Result<(), StoreError> {
+        let note = format!(
+            "# These records were imported into `build.db`\n\n             {imported} records were read out of this tree and into the SQLite              database beside it. Build no longer reads them.\n\n             They are kept, not deleted, for two reasons:\n\n             - They are the backup of the migration. Deleting `build.db` makes              Build import them again from scratch, which is the whole recovery              if the database ever turns out to be wrong.\n             - They are yours to delete once you are satisfied. Build never will.\n\n             **Do not run an older build-bridge against this directory.** It              would read these files and serve state frozen at the moment of the              import, silently, and anything you did in the meantime would be              invisible. A build that understands the database refuses to start              if these files change after this point.\n"
+        );
+        std::fs::write(self.dir.join(Store::SUPERSEDED_NOTE), note)?;
+        Ok(())
+    }
+
+    /// Refuse to start when the imported JSON has been written to since the
+    /// import.
+    ///
+    /// The rollback hazard runs in one direction and is silent in both halves:
+    /// an older bridge run against this directory reads the JSON tree, serves
+    /// state frozen at the import, and writes its own changes back there — and
+    /// then a newer bridge, coming forward again, reads only the database and
+    /// never sees any of it. Neither half says anything.
+    ///
+    /// So the newer one checks. If a JSON record is newer than the note the
+    /// import left, something wrote to a store Build stopped reading, and the
+    /// honest answer is to stop and say which file rather than to quietly
+    /// discard whichever copy is younger.
+    pub fn refuse_a_rolled_back_store(&self) -> Result<(), StoreError> {
+        let note = self.dir.join(Store::SUPERSEDED_NOTE);
+        let Ok(imported_at) = std::fs::metadata(&note).and_then(|meta| meta.modified()) else {
+            // No note: nothing was ever imported here, so there is no older
+            // store to have been rolled back to.
+            return Ok(());
+        };
+        let mut newer = Vec::new();
+        let mut look = |path: PathBuf| {
+            if let Ok(modified) = std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+                if modified > imported_at {
+                    newer.push(path);
+                }
+            }
+        };
+        if let Ok(entries) = std::fs::read_dir(self.dir.join("issues")) {
+            for entry in entries.flatten() {
+                look(entry.path().join("record.json"));
+            }
+        }
+        for dir in ["runs", "captures", "archived-worktrees"] {
+            if let Ok(entries) = std::fs::read_dir(self.dir.join(dir)) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if is_json_record(&path) {
+                        look(path);
+                    }
+                }
+            }
+        }
+        look(self.dir.join("attention").join("map.json"));
+        match newer.first() {
+            None => Ok(()),
+            Some(path) => Err(StoreError::RolledBack {
+                path: path.clone(),
+                count: newer.len(),
+            }),
+        }
     }
 
     /// Read every `*.json` in one store subdirectory and hand each record to
@@ -2482,6 +2590,36 @@ mod tests {
             1,
             "the migration did not disturb the conversation"
         );
+    }
+
+    /// A backup is one self-contained file taken from a consistent read, so a
+    /// copy made while the daemon is writing is a database rather than a torn
+    /// one — the thing a file-at-a-time tool can no longer do for itself.
+    #[test]
+    fn a_backup_is_a_whole_store_and_never_silently_replaces_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("keep me", None, NOW);
+        store.save_run(&record).expect("the run saves");
+
+        let backup = dir.path().join("backups").join("store.db");
+        store.backup_to(&backup).expect("the backup is written");
+        assert!(backup.is_file(), "the backup created its parent directory");
+
+        // The copy stands on its own: opened as a store, it holds the work.
+        let restored = Store::new(dir.path().join("restored")).expect("store opens");
+        drop(restored);
+        std::fs::copy(&backup, dir.path().join("restored").join("build.db")).unwrap();
+        let restored = Store::new(dir.path().join("restored")).expect("the backup opens");
+        let runs = restored.load_all_runs().expect("runs load");
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].agents[0].thread.items.len(), 1);
+
+        // Overwriting is refused: a backup that replaced the previous one
+        // silently is one that can be lost twice.
+        let refused = store.backup_to(&backup).expect_err("the second is refused");
+        assert!(refused.to_string().contains("already exists"), "{refused}");
     }
 
     /// The attention map is pruned to the entities that still exist, so it

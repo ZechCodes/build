@@ -21,8 +21,8 @@ fn fixture() -> Option<PathBuf> {
 
 /// Every thread item on every agent of a record set, keyed so the two sides can
 /// be compared without caring what order anything was read in.
-fn conversations(store: &Store) -> BTreeMap<String, Vec<String>> {
-    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+fn conversations(store: &Store) -> BTreeMap<String, Vec<serde_json::Value>> {
+    let mut out: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
     for issue in store.load_all_issues().expect("issues load") {
         for agent in issue.issue.agents.iter() {
             out.insert(
@@ -31,7 +31,7 @@ fn conversations(store: &Store) -> BTreeMap<String, Vec<String>> {
                     .thread
                     .items
                     .iter()
-                    .map(|item| serde_json::to_string(item).unwrap())
+                    .map(|item| serde_json::to_value(item).unwrap())
                     .collect(),
             );
         }
@@ -44,9 +44,65 @@ fn conversations(store: &Store) -> BTreeMap<String, Vec<String>> {
                     .thread
                     .items
                     .iter()
-                    .map(|item| serde_json::to_string(item).unwrap())
+                    .map(|item| serde_json::to_value(item).unwrap())
                     .collect(),
             );
+        }
+    }
+    out
+}
+
+/// Every conversation item in the JSON tree, keyed by agent id, straight out of
+/// the records — never through the store that is under test.
+///
+/// Counting records proves nothing about what is inside them. This is the side
+/// of the comparison the migration must reproduce exactly: if an item's body,
+/// its sequence, or its seen state changed on the way in, only comparing the
+/// items themselves will say so.
+fn conversations_in_json(root: &Path) -> BTreeMap<String, Vec<serde_json::Value>> {
+    let mut out: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+    let mut absorb = |value: &serde_json::Value| {
+        for agent in value["agents"].as_array().into_iter().flatten() {
+            let Some(id) = agent["id"].as_str() else {
+                continue;
+            };
+            out.insert(
+                id.to_string(),
+                agent["thread"]["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect(),
+            );
+        }
+    };
+    if let Ok(entries) = std::fs::read_dir(root.join("issues")) {
+        for entry in entries.flatten() {
+            let Ok(raw) = std::fs::read_to_string(entry.path().join("record.json")) else {
+                continue;
+            };
+            let aggregate: serde_json::Value = serde_json::from_str(&raw).expect("issue parses");
+            absorb(&aggregate["issue"]);
+            for implementation in aggregate["implementations"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                absorb(implementation);
+            }
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(root.join("runs")) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            absorb(&serde_json::from_str::<serde_json::Value>(&raw).expect("run parses"));
         }
     }
     out
@@ -132,11 +188,29 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
         "the attention map survives"
     );
 
-    // Conversations are the thing that cannot be re-derived. Count them, and
-    // check every item is byte-identical after a round trip through the rows.
+    // Conversations are the thing that cannot be re-derived. Compare them
+    // against the JSON they came from — item by item, not by count — because a
+    // migration that dropped a field or reordered a thread would pass every
+    // count assertion above it.
+    let source = conversations_in_json(&root);
     let before = conversations(&store);
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        source.keys().collect::<Vec<_>>(),
+        "the imported store holds exactly the agents the JSON did"
+    );
+    for (agent_id, items) in &source {
+        assert_eq!(
+            before.get(agent_id),
+            Some(items),
+            "agent {agent_id}: the imported conversation differs from the JSON it came from"
+        );
+    }
     let items: usize = before.values().map(Vec::len).sum();
-    println!("{} agents, {items} conversation items", before.len());
+    println!(
+        "{} agents, {items} conversation items — every one identical to its JSON",
+        before.len()
+    );
     assert!(items > 0, "the fixture has no conversation to preserve");
 
     // Reopen from scratch: nothing may depend on the process that imported.
@@ -175,9 +249,35 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
     );
     assert_eq!(
         conversations(&rebuilt),
-        before,
+        source,
         "a database rebuilt from the untouched JSON holds the same conversations"
     );
+
+    // The import leaves a note for whoever opens this directory, and that note
+    // is the timestamp the rollback guard measures against.
+    assert!(
+        root.join("SUPERSEDED-BY-build.db.md").is_file(),
+        "the import left no note saying these records were superseded"
+    );
+    rebuilt
+        .refuse_a_rolled_back_store()
+        .expect("an untouched tree is not a rollback");
+
+    // Now stage the rollback: an older bridge writing a record back. Starting
+    // must refuse rather than serve one of the two copies silently.
+    let touched = std::fs::read_dir(root.join("issues"))
+        .expect("issues dir")
+        .flatten()
+        .map(|entry| entry.path().join("record.json"))
+        .find(|path| path.is_file())
+        .expect("a record to touch");
+    let raw = std::fs::read_to_string(&touched).expect("record reads");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    std::fs::write(&touched, raw).expect("record rewrites");
+    match rebuilt.refuse_a_rolled_back_store() {
+        Err(error) => println!("rollback refused: {error}"),
+        Ok(()) => panic!("a JSON record written after the import was not noticed"),
+    }
 
     // Plan docs stay on disk, because an agent reads and writes them.
     let docs: usize = std::fs::read_dir(root.join("issues"))

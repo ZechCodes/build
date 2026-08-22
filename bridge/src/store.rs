@@ -2,18 +2,26 @@
 //! (`~/.build/tasks/` by default, next to the identity file):
 //!
 //! ```text
-//! issues/<issue_id>/record.json one aggregate: planning + implementation lineage
-//! issues/<issue_id>/docs/…      canonical stage-plan docs
-//! runs/<run_id>.json            planless adopted-worktree conversations only
-//! plans/… / <task_id>.json      legacy formats; boot migrates and tombstones them
+//! build.db                 every record and every conversation
+//! issues/<issue_id>/docs/… canonical stage-plan docs
 //! ```
 //!
-//! Every record holds the *durable core* of its entity — identity, project,
-//! lifecycle state, worktree/branch bookkeeping, timestamps, and the last
-//! `done` summary. Records are written atomically (tmp file + fsync + rename)
-//! on every state transition, so a daemon crash never leaves a half-written
-//! record, and read back in full on boot so a restart re-attaches every plan
-//! and run instead of orphaning the worktrees that survived on disk.
+//! One SQLite database, and one table in it carries the design: `thread_items`,
+//! a row per conversation item. Everything else is a small, bounded record read
+//! and written whole, so those rows keep their serde shape in a `record`
+//! column. A conversation is the opposite — it grows without bound and is
+//! appended to constantly — so appending one message writes one row, and paging
+//! is a `LIMIT` rather than a full read.
+//!
+//! That is what this store replaced: one `record.json` per Issue holding the
+//! Issue, every implementation inside it, and every thread on all of them,
+//! rewritten whole on every state transition. 593 KB per transition on the
+//! largest Issue in the one real installation.
+//!
+//! Writes are transactional: a record and the conversation rows that belong to
+//! it land together or not at all. Everything is read back on boot so a restart
+//! re-attaches every plan and run instead of orphaning the worktrees that
+//! survived on disk.
 //!
 //! Plan docs live here as the **source of truth** (spec: Plan/Run Split):
 //! the scratch docs dir is disposable, so `ingest_plan_docs` (scratch → store)
@@ -127,13 +135,13 @@ pub struct PersistedPlan {
     #[serde(default)]
     pub effort: Option<String>,
     /// This entity's agents, each owning its own conversation. Empty only on a
-    /// record written before agents existed — [`Store::migrate_threads_to_agents`]
-    /// (and `AgentRoster::restore` on reattach) fills it from `legacy_thread`.
+    /// record written before agents existed. `AgentRoster::restore` fills it
+    /// from `legacy_thread` on reattach.
     #[serde(default)]
     pub agents: Vec<Agent>,
-    /// The pre-agent, entity-keyed conversation. Read once, by the migration
-    /// that moves it onto the first agent, and empty on every record written
-    /// since.
+    /// The pre-agent, entity-keyed conversation. Retained so the JSON records
+    /// the one-off import reads still deserialize; empty on everything written
+    /// since, and never written by this store.
     #[serde(rename = "thread", default, skip_serializing_if = "Thread::is_empty")]
     pub legacy_thread: Thread,
     pub last_summary: Option<String>,
@@ -449,6 +457,25 @@ impl Store {
         let dir = dir.into();
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join(DB_FILE))?;
+        // Refuse BEFORE writing anything. A store written by a newer bridge
+        // must not receive this build's pragmas or DDL on the way to being
+        // rejected — the refusal exists to leave it untouched.
+        let stored: Option<i64> = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap_or(None);
+        if let Some(found) = stored {
+            if found > SCHEMA_VERSION {
+                return Err(StoreError::SchemaTooNew {
+                    found,
+                    supported: SCHEMA_VERSION,
+                });
+            }
+        }
         // WAL is what makes an append cheap: the reader keeps reading while the
         // writer commits, and a commit appends to the log instead of rewriting
         // the page it touched. `synchronous = NORMAL` under WAL fsyncs at
@@ -458,28 +485,16 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // A contended write waits instead of failing outright. Clones of this
+        // Store share one connection, but the daemon is not the only process
+        // that may ever open the file (a backup, a shell).
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
-        let stored: Option<i64> = conn
-            .query_row(
-                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        match stored {
-            Some(found) if found > SCHEMA_VERSION => {
-                return Err(StoreError::SchemaTooNew {
-                    found,
-                    supported: SCHEMA_VERSION,
-                })
-            }
-            Some(_) => {}
-            None => {
-                conn.execute(
-                    "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
-                    [SCHEMA_VERSION.to_string()],
-                )?;
-            }
+        if stored.is_none() {
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+                [SCHEMA_VERSION.to_string()],
+            )?;
         }
         Ok(Store {
             dir,
@@ -507,10 +522,38 @@ impl Store {
             )));
         }
         let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
+        // IMMEDIATE, not the default DEFERRED: every caller here writes, and
+        // several read first. A deferred transaction takes its write lock on
+        // the first write, and a failed upgrade raises SQLITE_BUSY_SNAPSHOT,
+        // which SQLite does NOT route through the busy handler — so the
+        // timeout above would not cover it.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let out = work(&tx)?;
         tx.commit()?;
         Ok(out)
+    }
+
+    /// Test-only: how many rows this connection has written since it opened.
+    /// The only way to hold the store to its central promise — that appending
+    /// one message writes one row rather than rewriting the conversation.
+    #[cfg(test)]
+    pub fn total_changes(&self) -> u64 {
+        self.conn.lock().unwrap().total_changes()
+    }
+
+    /// Test-only: stamp a schema version, so the refusal path can be exercised
+    /// without a second build of the bridge.
+    #[cfg(test)]
+    pub fn set_schema_version(&self, version: i64) {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
+                [version.to_string()],
+            )
+            .expect("the schema version is stamped");
     }
 
     /// Test-only: make the next write fail once, then behave normally.
@@ -613,23 +656,26 @@ impl Store {
     /// Write one owner's agents and their conversations.
     ///
     /// The roster is replaced wholesale (an agent can be removed), but the
-    /// conversation is not: items are upserted by `(agent_id, sequence)`, so an
-    /// append writes ONE row and a mutated item replaces ONE row. That is the
-    /// whole reason this store exists — the JSON records it replaces rewrote
-    /// every conversation on the Issue for every append.
+    /// conversation is NOT rewritten. The stored `(sequence, updated_sequence)`
+    /// pairs are read first — integers off a covering index, never the item
+    /// bodies — and only items that are new or have changed since are written.
+    /// So appending one message writes one row, whatever the conversation
+    /// already holds. That is the entire reason this store replaced a JSON
+    /// aggregate that rewrote every conversation on the Issue for every append;
+    /// writing all N items here would have moved the amplification rather than
+    /// removed it.
     fn write_agents(
         tx: &rusqlite::Transaction,
         owner_id: &str,
         agents: &[Agent],
     ) -> Result<(), StoreError> {
-        let keep: Vec<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
-        let mut stale = tx.prepare("SELECT id FROM agents WHERE owner_id = ?1")?;
-        let existing: Vec<String> = stale
+        let keep: HashSet<&str> = agents.iter().map(|agent| agent.id.as_str()).collect();
+        let mut roster = tx.prepare("SELECT id FROM agents WHERE owner_id = ?1")?;
+        let existing: Vec<String> = roster
             .query_map([owner_id], |row| row.get::<_, String>(0))?
-            .flatten()
-            .collect();
-        drop(stale);
-        for gone in existing.iter().filter(|id| !keep.contains(&id.as_str())) {
+            .collect::<Result<_, _>>()?;
+        drop(roster);
+        for gone in existing.iter().filter(|id| !keep.contains(id.as_str())) {
             tx.execute("DELETE FROM thread_items WHERE agent_id = ?1", [gone])?;
             tx.execute("DELETE FROM agents WHERE id = ?1", [gone])?;
         }
@@ -643,7 +689,13 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(agent_id, sequence) DO UPDATE SET updated_sequence = ?3, item = ?4",
         )?;
-        let mut held = tx.prepare("SELECT sequence FROM thread_items WHERE agent_id = ?1")?;
+        let mut delete_item =
+            tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
+        // The cursor columns alone, which `thread_items_cursor` covers: this is
+        // what keeps the read cheap enough that skipping the writes is a win.
+        let mut stored_cursors =
+            tx.prepare("SELECT sequence, updated_sequence FROM thread_items WHERE agent_id = ?1")?;
+
         for agent in agents {
             // The agent row carries everything about the conversation EXCEPT
             // its items — sessions, revisions, the last completion report —
@@ -656,28 +708,30 @@ impl Store {
                 agent.ordinal,
                 serde_json::to_string(&skeleton).expect("an agent always serializes")
             ])?;
+
+            let mut stored: HashMap<i64, i64> = stored_cursors
+                .query_map([&agent.id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?;
             for item in &items {
+                let sequence = item.sequence() as i64;
+                let updated = item.latest_sequence() as i64;
+                // `remove` both answers "was it stored?" and leaves the map
+                // holding exactly the sequences the roster no longer has.
+                if stored.remove(&sequence) == Some(updated) {
+                    continue;
+                }
                 upsert_item.execute(rusqlite::params![
                     agent.id,
-                    item.sequence() as i64,
-                    item.latest_sequence() as i64,
+                    sequence,
+                    updated,
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
-            // An item can be deleted from a conversation (a withdrawn draft),
-            // so sequences the roster no longer holds are dropped rather than
-            // left behind to reappear on the next load.
-            let live: Vec<i64> = items.iter().map(|item| item.sequence() as i64).collect();
-            let orphans: Vec<i64> = held
-                .query_map([&agent.id], |row| row.get::<_, i64>(0))?
-                .flatten()
-                .filter(|sequence| !live.contains(sequence))
-                .collect();
-            for orphan in orphans {
-                tx.execute(
-                    "DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2",
-                    rusqlite::params![agent.id, orphan],
-                )?;
+            // An item can be taken off a conversation (a withdrawn draft), so
+            // what is left over is deleted rather than left behind to reappear
+            // on the next load.
+            for orphan in stored.keys() {
+                delete_item.execute(rusqlite::params![agent.id, orphan])?;
             }
         }
         Ok(())
@@ -790,8 +844,14 @@ impl Store {
         Ok(issues)
     }
 
-    /// Delete an Issue, its implementations and every conversation on them.
+    /// Delete an Issue, its implementations, every conversation on them, and
+    /// its canonical plan docs.
+    ///
+    /// The docs are the filesystem half of the delete: they deliberately live
+    /// outside the database, so removing only rows would leave the Issue's
+    /// plan on disk forever with nothing referring to it.
     pub fn delete_plan(&self, plan_id: &str) -> Result<(), StoreError> {
+        remove_dir_if_present(&self.issue_dir(plan_id))?;
         self.in_transaction(|tx| {
             let mut owned = tx.prepare("SELECT id FROM implementations WHERE issue_id = ?1")?;
             let runs: Vec<String> = owned
@@ -1000,9 +1060,15 @@ impl Store {
     /// already migrated in place by the JSON store's own boot migrations, which
     /// is why none of them survive here.
     ///
-    /// Safe to run on every boot. It does nothing once the marker is set, and
-    /// the JSON tree is RENAMED rather than deleted — a database that turns out
-    /// to be wrong can be thrown away and rebuilt from what is still on disk.
+    /// Safe to run on every boot: it does nothing once the marker is set.
+    ///
+    /// The JSON tree is left exactly where it is — not renamed, not deleted.
+    /// That is what makes the recovery real rather than stated: the marker
+    /// lives IN the database, so deleting `build.db` deletes the marker too,
+    /// and the next boot imports the untouched records again. A database that
+    /// turns out to be wrong is thrown away, not repaired. The JSON is the
+    /// user's to delete once they are satisfied; Build never does.
+    ///
     /// Returns how many records were imported.
     pub fn import_json_store(&self) -> Result<usize, StoreError> {
         const MARKER: &str = "json_import";
@@ -1050,46 +1116,30 @@ impl Store {
         // next save prunes it anyway.
         let attention_path = self.dir.join("attention").join("map.json");
         if attention_path.is_file() {
-            if let Ok(raw) = std::fs::read_to_string(&attention_path) {
-                if let Ok(map) = serde_json::from_str::<HashMap<String, Attention>>(&raw) {
-                    let all: HashSet<String> = map.keys().cloned().collect();
-                    self.save_attention(&map, &all)?;
-                    imported += map.len();
-                }
-            }
+            // Fatal, like every other record kind. Attention is what the inbox
+            // is ordered by and what "unread" is measured against; importing
+            // zero of it silently would present the user with every one of
+            // their conversations unread and no way to tell why.
+            let map: HashMap<String, Attention> = read_record(&attention_path)?;
+            let all: HashSet<String> = map.keys().cloned().collect();
+            self.save_attention(&map, &all)?;
+            imported += map.len();
         }
 
-        // Park the imported tree beside the database rather than deleting it.
-        // Plan docs and attachments are NOT parked — they stay where they are,
-        // because they are still the live store for the things that must be
-        // files.
-        for parked in [
-            "runs",
-            "captures",
-            "archived-worktrees",
-            "attention",
-            "plans",
-        ] {
-            let from = self.dir.join(parked);
-            if from.exists() {
-                let _ = std::fs::rename(&from, self.dir.join(format!("{parked}.imported")));
-            }
+        // Make the import durable BEFORE it is declared done. Ordinary writes
+        // run at `synchronous = NORMAL`, which defers the fsync to the next
+        // checkpoint — right for a daemon that can redo a lost transition, and
+        // wrong for the one write that can never be redone. Checkpointing here
+        // is what makes the marker a truthful record of what is on disk.
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?1, ?2)",
+                rusqlite::params![MARKER, crate::store::now_rfc3339()],
+            )?;
+            conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
         }
-        if issues_dir.is_dir() {
-            for entry in std::fs::read_dir(&issues_dir)? {
-                let record_path = entry?.path().join("record.json");
-                if record_path.is_file() {
-                    let _ =
-                        std::fs::rename(&record_path, record_path.with_extension("json.imported"));
-                }
-            }
-        }
-
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2)",
-            rusqlite::params![MARKER, crate::store::now_rfc3339()],
-        )?;
         Ok(imported)
     }
 
@@ -1347,6 +1397,16 @@ fn dir_contains_a_file(dir: &Path) -> bool {
 }
 
 /// Remove a file, treating "already gone" as success (delete idempotency).
+/// Remove a directory and everything under it, if it is there. Absent is not
+/// an error: deleting twice is the same as deleting once.
+fn remove_dir_if_present(path: &Path) -> Result<(), StoreError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StoreError::Io(error)),
+    }
+}
+
 fn remove_file_if_present(path: &Path) -> Result<(), StoreError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1407,6 +1467,393 @@ pub fn now_rfc3339() -> String {
 mod tests {
     use super::*;
     use crate::capture::{Capture, CaptureRouting, CaptureState, CaptureTarget};
+
+    use crate::agent::AgentRoster;
+    use crate::models::ModelChoice;
+
+    const NOW: &str = "2026-08-21T10:00:00Z";
+
+    fn run_record(id: &str, plan_id: Option<&str>, created_at: &str) -> PersistedRun {
+        PersistedRun {
+            id: id.into(),
+            plan_id: plan_id.map(str::to_string),
+            goal: format!("goal for {id}"),
+            project_path: "/repo".into(),
+            base_branch: "main".into(),
+            state: RunState::Building,
+            branch: format!("build/{id}"),
+            worktree_name: id.into(),
+            worktree_path: format!("/wt/{id}"),
+            base_sha: None,
+            stages: Vec::new(),
+            current_stage_id: None,
+            revising_stage_id: None,
+            auto_advance: false,
+            adopted: false,
+            pending_continuation: false,
+            triage: None,
+            recovery: None,
+            publication_attempt: None,
+            provider: Default::default(),
+            model: None,
+            effort: None,
+            agents: AgentRoster::with_first(id, ModelChoice::default(), created_at)
+                .agents()
+                .to_vec(),
+            legacy_thread: Default::default(),
+            last_summary: None,
+            last_error: None,
+            created_at: created_at.into(),
+            updated_at: created_at.into(),
+            state_changed_at: None,
+        }
+    }
+
+    fn plan_record(id: &str) -> PersistedPlan {
+        PersistedPlan {
+            id: id.into(),
+            goal: format!("goal for {id}"),
+            project_path: "/repo".into(),
+            base_branch: "main".into(),
+            state: PlanState::Drafting,
+            archived_at: None,
+            implementation_intent: Default::default(),
+            implementation_activity: Default::default(),
+            plan_path: ".build/plan.md".into(),
+            stages: Vec::new(),
+            provider: Default::default(),
+            model: None,
+            effort: None,
+            agents: AgentRoster::with_first(id, ModelChoice::default(), NOW)
+                .agents()
+                .to_vec(),
+            legacy_thread: Default::default(),
+            last_summary: None,
+            last_error: None,
+            created_at: NOW.into(),
+            updated_at: NOW.into(),
+            state_changed_at: None,
+        }
+    }
+
+    fn reload_run(store: &Store, run_id: &str) -> PersistedRun {
+        store
+            .load_all_runs()
+            .expect("runs load")
+            .into_iter()
+            .find(|run| run.id == run_id)
+            .unwrap_or_else(|| panic!("{run_id} is missing after a reload"))
+    }
+
+    /// The conversation is the one thing that cannot be re-derived, and saving
+    /// splits it off the record into its own rows. It has to come back — from a
+    /// store opened again from scratch, not from the process that wrote it.
+    #[test]
+    fn a_runs_conversation_survives_a_store_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let mut record = run_record("run-1", Some("plan-1"), NOW);
+        let agent_id = record.agents[0].id.clone();
+        record.agents[0]
+            .thread
+            .post_user("build the thing", None, NOW);
+        record.agents[0].thread.post_agent("on it", None, NOW);
+
+        Store::new(&root)
+            .expect("store opens")
+            .save_run(&record)
+            .expect("the run saves");
+
+        let reloaded = reload_run(&Store::new(&root).expect("store reopens"), "run-1");
+        assert_eq!(reloaded.agents.len(), 1);
+        assert_eq!(reloaded.agents[0].id, agent_id);
+        assert_eq!(
+            reloaded.agents[0].thread.items, record.agents[0].thread.items,
+            "every conversation item comes back unchanged"
+        );
+    }
+
+    /// Appending one message writes ONE row. This is the whole reason the store
+    /// changed: the JSON records it replaced rewrote every conversation on the
+    /// Issue for every append, and a store that upserted all N items per save
+    /// would have moved that cost rather than removed it.
+    #[test]
+    fn appending_one_message_writes_one_row_however_long_the_conversation_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for n in 0..60 {
+            record.agents[0]
+                .thread
+                .post_user(format!("message {n}"), None, NOW);
+        }
+        store.save_run(&record).expect("the first save writes");
+
+        let before = store.total_changes();
+        record.agents[0].thread.post_user("one more", None, NOW);
+        store.save_run(&record).expect("the append saves");
+        let written = store.total_changes() - before;
+
+        // One thread item, plus the agent row and the run row that always
+        // carry the entity's own state. Never the 61 items already stored.
+        assert!(
+            written <= 3,
+            "an append wrote {written} rows — the conversation is being rewritten"
+        );
+        assert_eq!(reload_run(&store, "run-1").agents[0].thread.items.len(), 61);
+    }
+
+    /// A conversation comes back in the order it happened, and an item taken
+    /// off it is gone rather than resurrected by the next load.
+    #[test]
+    fn conversation_items_keep_their_order_and_a_removed_item_stays_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for n in 0..5 {
+            record.agents[0]
+                .thread
+                .post_user(format!("message {n}"), None, NOW);
+        }
+        store.save_run(&record).expect("the run saves");
+
+        let ordered: Vec<u64> = reload_run(&store, "run-1").agents[0]
+            .thread
+            .items
+            .iter()
+            .map(|item| item.sequence())
+            .collect();
+        assert!(
+            ordered.windows(2).all(|pair| pair[0] < pair[1]),
+            "items came back out of order: {ordered:?}"
+        );
+
+        record.agents[0].thread.items.remove(2);
+        store.save_run(&record).expect("the shortened run saves");
+        let after = reload_run(&store, "run-1");
+        assert_eq!(after.agents[0].thread.items.len(), 4);
+        assert_eq!(
+            after.agents[0].thread.items, record.agents[0].thread.items,
+            "the removed item did not come back"
+        );
+    }
+
+    /// An in-place mutation — marking a message seen — reaches the store even
+    /// though the item's creation sequence has not moved. The cursor column is
+    /// what makes that visible, so a save that compared creation sequences
+    /// alone would silently drop it.
+    #[test]
+    fn a_message_mutated_in_place_is_written_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("read me", None, NOW);
+        store.save_run(&record).expect("the run saves");
+
+        let read = record.agents[0].thread.read_unread(NOW);
+        assert!(!read.is_empty(), "there is an unread message to mark seen");
+        store.save_run(&record).expect("the mutation saves");
+
+        let reloaded = reload_run(&store, "run-1");
+        assert_eq!(
+            reloaded.agents[0].thread.items, record.agents[0].thread.items,
+            "the in-place mutation reached the store"
+        );
+    }
+
+    /// Removing an agent from the roster takes its conversation with it — a
+    /// left-behind row would reappear on the next load as an agent the entity
+    /// no longer has.
+    #[test]
+    fn removing_an_agent_removes_its_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        let mut roster = AgentRoster::restore(
+            "run-1",
+            record.agents.clone(),
+            Default::default(),
+            ModelChoice::default(),
+            NOW,
+        );
+        let second = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+        roster
+            .by_id_mut(&second)
+            .expect("the second agent is on the roster")
+            .thread
+            .post_user("only agent two hears this", None, NOW);
+        record.agents = roster.agents().to_vec();
+        store.save_run(&record).expect("both agents save");
+        assert_eq!(reload_run(&store, "run-1").agents.len(), 2);
+
+        roster
+            .remove(&second)
+            .expect("the second agent is removable");
+        record.agents = roster.agents().to_vec();
+        store.save_run(&record).expect("the shortened roster saves");
+
+        let after = reload_run(&store, "run-1");
+        assert_eq!(after.agents.len(), 1);
+        assert!(after.agents.iter().all(|agent| agent.id != second));
+    }
+
+    /// Boot reattaches in creation order, so the loaders have to hand records
+    /// back oldest first — a plan is recovered before the run that reads its
+    /// record.
+    #[test]
+    fn records_load_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        for (id, created) in [
+            ("run-late", "2026-08-21T12:00:00Z"),
+            ("run-early", "2026-08-21T08:00:00Z"),
+            ("run-middle", "2026-08-21T10:00:00Z"),
+        ] {
+            store
+                .save_run(&run_record(id, None, created))
+                .expect("the run saves");
+        }
+        let order: Vec<String> = store
+            .load_all_runs()
+            .expect("runs load")
+            .into_iter()
+            .map(|run| run.id)
+            .collect();
+        assert_eq!(order, vec!["run-early", "run-middle", "run-late"]);
+    }
+
+    /// Deleting an Issue takes its canonical plan docs with it. They live
+    /// outside the database on purpose, so deleting only rows would leave the
+    /// plan on disk forever with nothing referring to it.
+    #[test]
+    fn deleting_an_issue_removes_its_canonical_docs_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let store = Store::new(&root).expect("store opens");
+        let docs = root.join("issues").join("plan-1").join("docs");
+        std::fs::create_dir_all(docs.join(".build/plan")).unwrap();
+        std::fs::write(docs.join(".build/plan/01-stage.md"), "# stage").unwrap();
+
+        store.delete_plan("plan-1").expect("the delete succeeds");
+        assert!(
+            !root.join("issues").join("plan-1").exists(),
+            "the Issue's docs outlived the Issue"
+        );
+        store
+            .delete_plan("plan-1")
+            .expect("deleting twice is the same as deleting once");
+    }
+
+    /// The attention map is pruned to the entities that still exist, so it
+    /// tracks the world rather than growing forever.
+    #[test]
+    fn saving_attention_prunes_entities_that_no_longer_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut map = HashMap::new();
+        map.insert("run-live".to_string(), Attention::default());
+        map.insert("run-gone".to_string(), Attention::default());
+        let live: HashSet<String> = ["run-live".to_string()].into_iter().collect();
+
+        store.save_attention(&map, &live).expect("attention saves");
+        let loaded = store.load_attention();
+        assert!(loaded.contains_key("run-live"));
+        assert!(!loaded.contains_key("run-gone"), "a dead id was kept");
+    }
+
+    /// A database written by a newer bridge is refused, and refused WITHOUT
+    /// being written to — the point of the guard is to leave it untouched.
+    #[test]
+    fn a_newer_schema_is_refused_rather_than_downgraded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        {
+            let store = Store::new(&root).expect("store opens");
+            store.set_schema_version(SCHEMA_VERSION + 1);
+        }
+        match Store::new(&root) {
+            Err(StoreError::SchemaTooNew { found, supported }) => {
+                assert_eq!(found, SCHEMA_VERSION + 1);
+                assert_eq!(supported, SCHEMA_VERSION);
+            }
+            Err(other) => panic!("wrong refusal: {other}"),
+            Ok(_) => panic!("a store from a newer bridge was opened anyway"),
+        }
+    }
+
+    /// The import runs once, imports everything, and leaves the JSON where it
+    /// was — which is what makes throwing the database away a real recovery.
+    /// Runs on every `cargo test`: the one-way door is the change's riskiest
+    /// step, so it cannot be covered only by a test that needs a real store.
+    #[test]
+    fn the_json_import_runs_once_and_leaves_the_records_it_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let mut issue_record = run_record("run-in-issue", Some("plan-1"), NOW);
+        issue_record.agents[0]
+            .thread
+            .post_user("carried across", None, NOW);
+        std::fs::create_dir_all(root.join("issues/plan-1")).unwrap();
+        std::fs::write(
+            root.join("issues/plan-1/record.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "issue": plan_record("plan-1"),
+                "implementations": [issue_record],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("runs")).unwrap();
+        std::fs::write(
+            root.join("runs/run-planless.json"),
+            serde_json::to_string_pretty(&run_record("run-planless", None, NOW)).unwrap(),
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("attention")).unwrap();
+        std::fs::write(
+            root.join("attention/map.json"),
+            serde_json::to_string(&HashMap::from([(
+                "plan-1".to_string(),
+                Attention::default(),
+            )]))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = Store::new(&root).expect("store opens");
+        assert_eq!(store.import_json_store().expect("the import runs"), 4);
+        assert_eq!(store.load_all_issues().expect("issues load").len(), 1);
+        assert_eq!(store.load_all_runs().expect("runs load").len(), 2);
+        assert!(store.load_attention().contains_key("plan-1"));
+        assert_eq!(
+            store.load_all_runs().expect("runs load")[0].agents[0]
+                .thread
+                .items
+                .len(),
+            1,
+            "the imported conversation came with its record"
+        );
+
+        assert_eq!(
+            store.import_json_store().expect("a second import runs"),
+            0,
+            "the import is one-way"
+        );
+        assert!(
+            root.join("issues/plan-1/record.json").is_file(),
+            "the import moved the records it read"
+        );
+
+        // Deleting the database deletes the marker with it, so the untouched
+        // JSON rebuilds the store. This is the documented recovery.
+        drop(store);
+        for sidecar in ["build.db", "build.db-wal", "build.db-shm"] {
+            let _ = std::fs::remove_file(root.join(sidecar));
+        }
+        let rebuilt = Store::new(&root).expect("store reopens");
+        assert_eq!(rebuilt.import_json_store().expect("the rebuild imports"), 4);
+        assert_eq!(rebuilt.load_all_runs().expect("runs load").len(), 2);
+    }
 
     /// A capture is durable before anything is decided about it: what the user
     /// said survives a store that is opened again from scratch, routing and

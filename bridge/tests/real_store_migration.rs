@@ -152,24 +152,32 @@ fn the_real_store_imports_with_every_record_and_conversation_intact() {
         "every conversation item survives a reopen unchanged"
     );
 
-    // The JSON tree is parked, never deleted.
-    assert!(
-        root.join("runs.imported").exists() || runs_on_disk == 0,
-        "the imported runs directory is parked, not removed"
-    );
+    // The JSON tree is untouched — which is what makes "throw the database
+    // away and rebuild" a real recovery rather than a claim. Prove it: delete
+    // the database (and the marker with it) and import again from scratch.
     for entry in std::fs::read_dir(root.join("issues")).expect("issues dir") {
         let dir = entry.expect("entry").path();
         assert!(
-            !dir.join("record.json").exists(),
-            "{} still holds a live JSON record",
-            dir.display()
-        );
-        assert!(
-            dir.join("record.json.imported").exists(),
-            "{} lost its parked JSON record",
+            dir.join("record.json").is_file(),
+            "{} lost its JSON record — the import must not move it",
             dir.display()
         );
     }
+    drop(reopened);
+    for sidecar in ["build.db", "build.db-wal", "build.db-shm"] {
+        let _ = std::fs::remove_file(root.join(sidecar));
+    }
+    let rebuilt = Store::new(&root).expect("store reopens after the database is deleted");
+    let reimported = rebuilt.import_json_store().expect("the rebuild imports");
+    assert_eq!(
+        reimported, imported,
+        "a rebuild imports exactly what it did before"
+    );
+    assert_eq!(
+        conversations(&rebuilt),
+        before,
+        "a database rebuilt from the untouched JSON holds the same conversations"
+    );
 
     // Plan docs stay on disk, because an agent reads and writes them.
     let docs: usize = std::fs::read_dir(root.join("issues"))

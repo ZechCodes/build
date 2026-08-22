@@ -2622,9 +2622,6 @@ impl AppState {
             implementation_activity: active.plan.implementation_activity.clone(),
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
-            // Retired storage: comments are posts on the conversation now. The
-            // field stays on the record only so pre-cutover files still load,
-            // and the boot migration empties it.
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),

@@ -15,7 +15,7 @@
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
 //! - `BRIDGE_PROJECTS_DIR` where cloned repos land (default `~/.build/projects`)
 //! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
-//! - `BRIDGE_TASKS_DIR`   durable task records, one JSON per task (default `~/.build/tasks`)
+//! - `BRIDGE_TASKS_DIR`   state dir: `build.db` plus canonical plan docs (default `~/.build/tasks`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 //! - `BRIDGE_IDLE_SECONDS` PTY-quiet threshold before a working task without a

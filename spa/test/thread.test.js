@@ -615,6 +615,51 @@ describe("thread cache paging (the window over a long conversation)", () => {
     expect(cache.hasOlderItems()).toBe(false);
   });
 
+  it("reopens on a window as tall as the one the gap took away", () => {
+    const cache = createThreadCache();
+    const conversation = Array.from({ length: 300 }, (_, index) => item(index + 1, `m${index + 1}`));
+    const newestPage = (limit) =>
+      page(conversation.slice(-limit), { thread_total: 300, has_more: limit < 300 });
+    const pageAbove = (seek) =>
+      page(conversation.slice(seek.before_sequence - 1 - FIRST_PAGE_ITEMS, seek.before_sequence - 1), {
+        thread_total: 300,
+        has_more: true,
+      });
+
+    // The reader is reading the start of a long task: three scrolls back past
+    // the first page, so the window is 240 items of 300.
+    cache.absorb(newestPage(FIRST_PAGE_ITEMS));
+    for (let widening = 0; widening < 3; widening += 1) {
+      cache.absorbOlderPage(pageAbove(cache.olderPageParam()), cache.olderPageParam());
+    }
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 61 });
+
+    // Then a delta goes missing and the window is dropped. Reopening on the
+    // newest page alone would take 240 items of history off the reader's
+    // screen mid-sentence — the surfaces keep the scroll offset they had, and
+    // a timeline a quarter the height clamps it to somewhere they never were.
+    cache.absorb({ items: [], thread_total: 300, thread_last_sequence: 305 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: 240 });
+
+    const reopened = cache.absorb(newestPage(240));
+    expect(reopened.items.map((i) => i.data.sequence)).toEqual(
+      conversation.slice(-240).map((i) => i.data.sequence),
+    );
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 300 });
+  });
+
+  it("asks for a first page again when the reader opens another conversation", () => {
+    const cache = createThreadCache();
+    const conversation = Array.from({ length: 300 }, (_, index) => item(index + 1, `m${index + 1}`));
+    cache.absorb(page(conversation.slice(-200), { thread_total: 300, has_more: true }));
+
+    // The height a broken window is reopened at belongs to the conversation it
+    // was a window on. Another agent's is opened at the top like any other.
+    cache.reset();
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
   it("keeps an item mutated below the window out of it, and still moves past the bump", () => {
     const cache = createThreadCache();
     const opened = [];

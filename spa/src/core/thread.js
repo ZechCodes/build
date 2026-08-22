@@ -106,7 +106,7 @@ function timeHtml(createdAt) {
 // back — tells the caller which cursor to send, and folds each delta back into
 // a full thread for rendering. A window that no longer reaches the newest item,
 // or that holds more than the conversation does (bridge restart, entity swap,
-// dropped delta), resets it to a full refetch.
+// dropped delta), drops it for a refetch of a window the same height.
 // How much conversation a first load asks for. The daemon clamps whatever it
 // hears, so this is a request rather than a promise — but it has to be made:
 // a poll that names no bound gets the conversation whole, which is the only
@@ -145,6 +145,9 @@ export function createThreadCache() {
   // window is open. Held because a REMOVAL is the one change the wire has no
   // other word for (see `growsByWhatItWasTold`).
   let knownTotalItems = null;
+  // How tall the window was when it last broke, or 0 with nothing to recover.
+  // See `forgetTheBrokenWindowButNotItsHeight`.
+  let itemsToRecover = 0;
 
   // The bridge bumps `updated_sequence` (drawn from the same counter as
   // `sequence`) when it mutates a message in place — marking it seen,
@@ -196,12 +199,36 @@ export function createThreadCache() {
   };
 
   /// Drop the window: what is held, what was said about either end of it, and
-  /// how long the conversation was. The next poll opens a fresh one.
+  /// how long the conversation was. The next poll opens a fresh one on the
+  /// newest items, which is where a conversation is opened.
   const forgetTheWindow = () => {
     accumulatedItems = [];
     olderItemsRemain = false;
     deliveredSequence = 0;
     knownTotalItems = null;
+    itemsToRecover = 0;
+  };
+
+  /// Drop a window that turned out to be broken, remembering how tall it was.
+  ///
+  /// A reader who has scrolled back is reading history, and the window they are
+  /// reading it in is the only record of how far back they went — the daemon's
+  /// detail poll takes a size, not a floor, so the height is what can be asked
+  /// for again. Reopening on a first page instead would take that history off
+  /// the screen with nothing said: the surfaces write the reader's scroll
+  /// offset back after a repaint, and a timeline a quarter as tall clamps it to
+  /// a point in the conversation they were never at, with the passage they were
+  /// reading only reachable by scrolling back page by page a second time.
+  ///
+  /// So a break asks for the window again rather than for a first page, and the
+  /// recovery is invisible. This is the one thing kept across a break: what was
+  /// held is suspect, and what it was a window on may not even be the same
+  /// conversation any more, but how much the reader had open is a fact about
+  /// the reader.
+  const forgetTheBrokenWindowButNotItsHeight = () => {
+    const heldItemCount = accumulatedItems.length;
+    forgetTheWindow();
+    itemsToRecover = heldItemCount;
   };
 
   const mergeArrivals = (arrivedItems) => {
@@ -291,11 +318,14 @@ export function createThreadCache() {
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
     // — with no window open (first load, or after a reset) — how much of the
-    // newest conversation to open one on.
+    // newest conversation to open one on. A window dropped for a break asks for
+    // its own height back, so the reader keeps the history they had scrolled to
+    // (`forgetTheBrokenWindowButNotItsHeight`); the daemon clamps that like any
+    // other request.
     cursorParam() {
       return accumulatedItems.length
         ? { thread_after_sequence: deliveredSequence }
-        : { thread_limit: FIRST_PAGE_ITEMS };
+        : { thread_limit: Math.max(FIRST_PAGE_ITEMS, itemsToRecover) };
     },
     // Extra params for the next thread.page: the seek for the page above the
     // window, or nothing while there is no window to widen.
@@ -362,8 +392,9 @@ export function createThreadCache() {
         growsByWhatItWasTold(threadPayload, arrivedItems, deliveredSequence);
       if (!sound) {
         // A real gap: render what we have this tick, but drop the cache so the
-        // next poll refetches from the newest page down and self-heals.
-        forgetTheWindow();
+        // next poll refetches a window this tall from the newest item down and
+        // self-heals under a reader who never sees it happen.
+        forgetTheBrokenWindowButNotItsHeight();
         return { ...threadPayload, items: merged };
       }
       accumulatedItems = merged;

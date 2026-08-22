@@ -14354,15 +14354,41 @@ fn thread_cursor(params: &Value) -> Option<u64> {
 /// a window unasked and that count never matches again, so it drops its cache
 /// every tick, never sends a cursor, and never sees a word above the window.
 /// A client that can page says so, and says how much.
+///
+/// Which is why only silence may mean whole. A limit nobody can read is still
+/// a client saying it can page, and answering it with the conversation entire
+/// hands it the one thing paging exists to prevent — with no `has_more` to
+/// tell it the answer was not the page it asked for. So an unreadable limit
+/// falls back to the default page, not to the unbounded answer. (The garbage
+/// cursor above can afford to read as absent: what it falls back to is
+/// bounded.)
 fn thread_detail(params: &Value) -> ThreadDetail {
-    match params
-        .get("thread_limit")
-        .and_then(Value::as_u64)
-        .and_then(|limit| usize::try_from(limit).ok())
-    {
-        Some(limit) => ThreadDetail::Page(limit.clamp(1, crate::thread::MAX_THREAD_PAGE)),
-        None => ThreadDetail::Full,
+    match params.get("thread_limit") {
+        // `null` is how a client spells a field it is not sending.
+        None | Some(Value::Null) => ThreadDetail::Full,
+        Some(named) => ThreadDetail::Page(
+            thread_limit_size(named)
+                .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+                .clamp(1, crate::thread::MAX_THREAD_PAGE),
+        ),
     }
+}
+
+/// The page size a `thread_limit` names, however its client spelled the
+/// number: a JSON integer, the whole float a language without an integer type
+/// encodes one as, or the string a URL or a number-stringifying encoder leaves
+/// behind. `None` for anything that names no size at all — a negative count, a
+/// word, a structure.
+fn thread_limit_size(named: &Value) -> Option<usize> {
+    let size = match named {
+        Value::Number(number) => number.as_u64().or_else(|| {
+            let whole = number.as_f64().filter(|float| float.fract() == 0.0)?;
+            (whole >= 0.0).then_some(whole as u64)
+        })?,
+        Value::String(text) => text.trim().parse().ok()?,
+        _ => return None,
+    };
+    usize::try_from(size).ok()
 }
 
 /// How much conversation the VIEW under a detail poll builds, given what the
@@ -14393,8 +14419,7 @@ fn view_thread_detail(replacement: &Option<Value>, params: &Value) -> ThreadDeta
 fn thread_page_limit(params: &Value) -> usize {
     params
         .get("limit")
-        .and_then(Value::as_u64)
-        .and_then(|limit| usize::try_from(limit).ok())
+        .and_then(thread_limit_size)
         .map(|limit| limit.clamp(1, crate::thread::MAX_THREAD_PAGE))
         .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
 }
@@ -25999,6 +26024,59 @@ mod tests {
         );
     }
 
+    /// Silence means whole, so a limit that cannot be read must not read as
+    /// silence: a client that asked for a page and got the conversation entire
+    /// has no `has_more` to tell it the answer was not the one it asked for,
+    /// and pays the whole cost of it on every first load.
+    #[test]
+    fn a_detail_poll_whose_limit_is_not_a_plain_integer_still_gets_a_page() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-odd-limit", 250);
+
+        let page_of = |state: &mut AppState, limit: Value| {
+            let answer = state.handle(req(
+                "run.get",
+                json!({ "run_id": "run-odd-limit", "thread_limit": limit }),
+            ));
+            answer["result"]["thread"].clone()
+        };
+
+        // A number that went through a URL or an encoder without an integer
+        // type still names the page its client typed.
+        for spelling in [json!("60"), json!(60.0)] {
+            let thread = page_of(&mut state, spelling.clone());
+            assert_eq!(
+                thread["items"].as_array().unwrap().len(),
+                crate::thread::DEFAULT_THREAD_PAGE,
+                "{spelling} -> {thread:?}"
+            );
+            assert_eq!(thread["has_more"], true, "{spelling} -> {thread:?}");
+        }
+
+        // A limit nobody can read is still a client saying it can page, so it
+        // gets one — the default's worth — rather than the unbounded answer.
+        for nonsense in [json!(-1), json!("sixty"), json!(true), json!([60])] {
+            let thread = page_of(&mut state, nonsense.clone());
+            assert_eq!(
+                thread["items"].as_array().unwrap().len(),
+                crate::thread::DEFAULT_THREAD_PAGE,
+                "{nonsense} -> {thread:?}"
+            );
+            assert_eq!(thread["has_more"], true, "{nonsense} -> {thread:?}");
+        }
+
+        // `null` is how a client spells a field it is not sending, so it keeps
+        // meaning what leaving the field out means.
+        let unspoken = page_of(&mut state, Value::Null);
+        assert_eq!(
+            unspoken["items"].as_array().unwrap().len(),
+            held,
+            "{unspoken:?}"
+        );
+        assert!(unspoken.get("has_more").is_none(), "{unspoken:?}");
+    }
+
     #[test]
     fn a_detail_poll_that_asks_for_a_page_of_a_long_conversation_gets_one_not_all_of_it() {
         let (dir, repo) = init_repo();
@@ -26340,6 +26418,18 @@ mod tests {
         assert_eq!(
             unsaid["result"]["items"].as_array().unwrap().len(),
             crate::thread::DEFAULT_THREAD_PAGE
+        );
+
+        // Scroll-back reads a page size the way a first load does, so a
+        // client whose numbers arrive as strings walks the same history.
+        let stringified = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": "120" }),
+        ));
+        assert_eq!(
+            stringified["result"]["items"].as_array().unwrap().len(),
+            120,
+            "{stringified:?}"
         );
     }
 

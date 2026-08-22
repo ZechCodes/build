@@ -45,7 +45,7 @@ use crate::attention::Attention;
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{is_worktree_contained_path, PlanState, StageDoc};
 use crate::run::{RunState, StageProgress};
-use crate::thread::Thread;
+use crate::thread::{Thread, ThreadItem};
 
 /// Things that can go wrong reading or writing the store.
 #[derive(Debug, thiserror::Error)]
@@ -416,6 +416,22 @@ CREATE TABLE IF NOT EXISTS archived_worktrees (
 );
 "#;
 
+/// The two conversation reads that must never walk a whole conversation, held
+/// here rather than inline so the test that checks their query plans checks
+/// the statements that actually run.
+///
+/// `sequence DESC` with a `LIMIT` walks the primary key backward from the seek
+/// point and stops, so the cost of a page is the page.
+const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND sequence < ?2 \
+     ORDER BY sequence DESC LIMIT ?3";
+
+/// The forward cursor, which `thread_items_cursor` covers: the seek is the
+/// filter, so a poll that finds nothing new reads nothing.
+const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND updated_sequence > ?2 \
+     ORDER BY updated_sequence";
+
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
@@ -755,19 +771,83 @@ impl Store {
                     path: PathBuf::from(format!("agents/{id}")),
                     source,
                 })?;
-            agent.thread.items = items
-                .query_map([&id], |row| row.get::<_, String>(0))?
-                .collect::<Result<Vec<String>, _>>()?
-                .into_iter()
-                .map(|raw| serde_json::from_str(&raw))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| StoreError::Corrupt {
-                    path: PathBuf::from(format!("thread_items/{id}")),
-                    source,
-                })?;
+            agent.thread.items =
+                decode_thread_items(&id, items.query_map([&id], |row| row.get::<_, String>(0))?)?;
             agents.push(agent);
         }
         Ok(agents)
+    }
+
+    // ---- paged conversation reads ----------------------------------------
+
+    /// One page of a conversation: the newest `limit` items strictly older
+    /// than `before_sequence`, or the newest `limit` items when it is `None`.
+    ///
+    /// Handed back oldest-first even though SQL reads it newest-first, so the
+    /// caller renders a page in the order it happened without reversing it
+    /// again. This is what a first load asks for: a conversation of hundreds
+    /// of items ships its tail, and the client walks backward from there.
+    pub fn thread_page(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        // No bound means "from the newest", which the same seek expresses as a
+        // point past every sequence there could be.
+        let before = before_sequence
+            .and_then(|sequence| i64::try_from(sequence).ok())
+            .unwrap_or(i64::MAX);
+        let connection = self.conn.lock().unwrap();
+        let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
+        let mut page = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, before, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )?;
+        page.reverse();
+        Ok(page)
+    }
+
+    /// How many items a conversation holds. A `COUNT(*)`, never a load — the
+    /// client needs the total to know whether its cache is whole, and reading
+    /// the items to count them would spend exactly what paging saves.
+    pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
+        let count: i64 = self.conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM thread_items WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
+    /// The forward cursor: everything that has happened on a conversation
+    /// since `after_sequence`, oldest-first.
+    ///
+    /// It compares `updated_sequence`, not `sequence`, because an item mutated
+    /// in place — a message marked seen, a comment resolved — is news to a
+    /// client whose cursor is already past that item's creation. The
+    /// `thread_items_cursor` index is on exactly that column, so the seek is
+    /// the filter.
+    pub fn thread_items_after(
+        &self,
+        agent_id: &str,
+        after_sequence: u64,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
+        let connection = self.conn.lock().unwrap();
+        let mut statement = connection.prepare(THREAD_CURSOR_SQL)?;
+        let mut delta = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, after], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )?;
+        // Index order is mutation order; the conversation's own order is
+        // creation order, which is what a client merges its cache against.
+        delta.sort_by_key(ThreadItem::sequence);
+        Ok(delta)
     }
 
     // ---- issues and implementations --------------------------------------
@@ -1454,6 +1534,22 @@ fn copy_tree(
     Ok(copied)
 }
 
+/// Turn stored item rows into conversation items, naming the conversation in
+/// the error so a corrupt row says which agent's history stopped parsing.
+fn decode_thread_items(
+    agent_id: &str,
+    rows: rusqlite::MappedRows<'_, impl FnMut(&rusqlite::Row<'_>) -> rusqlite::Result<String>>,
+) -> Result<Vec<ThreadItem>, StoreError> {
+    rows.collect::<Result<Vec<String>, _>>()?
+        .into_iter()
+        .map(|raw| serde_json::from_str(&raw))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| StoreError::Corrupt {
+            path: PathBuf::from(format!("thread_items/{agent_id}")),
+            source,
+        })
+}
+
 // ---- Legacy → split mapping (pure; the migration's translation table) ----
 
 /// The current time as an RFC 3339 UTC string (the store's timestamp format).
@@ -1659,6 +1755,196 @@ mod tests {
             reloaded.agents[0].thread.items, record.agents[0].thread.items,
             "the in-place mutation reached the store"
         );
+    }
+
+    /// A conversation of `count` messages, saved, with the id of the agent
+    /// holding it — the shape every paging test starts from.
+    fn store_with_conversation(root: &Path, count: usize) -> (Store, String) {
+        let store = Store::new(root).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for n in 0..count {
+            record.agents[0]
+                .thread
+                .post_user(format!("message {n}"), None, NOW);
+        }
+        store.save_run(&record).expect("the conversation saves");
+        (store, record.agents[0].id.clone())
+    }
+
+    fn sequences(items: &[ThreadItem]) -> Vec<u64> {
+        items.iter().map(ThreadItem::sequence).collect()
+    }
+
+    /// The whole point of paging: a client can walk a long conversation
+    /// backward a page at a time and see every item exactly once, in order,
+    /// without ever asking for the conversation whole.
+    #[test]
+    fn paging_backward_reaches_every_item_exactly_once_and_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, agent_id) = store_with_conversation(&dir.path().join("tasks"), 60);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before = None;
+        loop {
+            let page = store
+                .thread_page(&agent_id, before, 17)
+                .expect("a page reads");
+            if page.is_empty() {
+                break;
+            }
+            let page_sequences = sequences(&page);
+            assert!(
+                page_sequences.windows(2).all(|pair| pair[0] < pair[1]),
+                "a page came back out of order: {page_sequences:?}"
+            );
+            before = page_sequences.first().copied();
+            // Pages arrive newest-first, so the walk builds the conversation
+            // from the front.
+            walked.splice(0..0, page_sequences);
+        }
+
+        let every_sequence: Vec<u64> = (1..=60).collect();
+        assert_eq!(
+            walked, every_sequence,
+            "the backward walk missed, repeated or reordered items"
+        );
+    }
+
+    /// A short conversation is not a special case — a page wider than the
+    /// conversation is simply the whole of it.
+    #[test]
+    fn a_page_wider_than_the_conversation_returns_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, agent_id) = store_with_conversation(&dir.path().join("tasks"), 4);
+
+        let page = store
+            .thread_page(&agent_id, None, 500)
+            .expect("a page reads");
+        assert_eq!(sequences(&page), vec![1, 2, 3, 4]);
+    }
+
+    /// The end of the walk. Asking for what precedes the oldest item is the
+    /// ordinary way a client learns the conversation has no more history, so
+    /// it answers empty rather than failing or wrapping around.
+    #[test]
+    fn paging_before_the_oldest_item_returns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, agent_id) = store_with_conversation(&dir.path().join("tasks"), 10);
+
+        let oldest = store
+            .thread_page(&agent_id, None, 10)
+            .expect("a page reads")
+            .first()
+            .map(ThreadItem::sequence)
+            .expect("the conversation has an oldest item");
+        let page = store
+            .thread_page(&agent_id, Some(oldest), 10)
+            .expect("a page reads");
+        assert!(page.is_empty(), "{:?}", sequences(&page));
+    }
+
+    /// The forward cursor is not a `sequence > ?` filter. Marking a message
+    /// seen moves its `updated_sequence` and leaves its creation sequence
+    /// where it was, and the client polling from a cursor past that creation
+    /// sequence still has to be told.
+    #[test]
+    fn the_forward_cursor_returns_a_message_mutated_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let store = Store::new(&root).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("read me", None, NOW);
+        record.agents[0].thread.post_agent("on it", None, NOW);
+        store.save_run(&record).expect("the conversation saves");
+        let agent_id = record.agents[0].id.clone();
+        let cursor = record.agents[0].thread.last_sequence();
+
+        assert!(
+            store
+                .thread_items_after(&agent_id, cursor)
+                .expect("the cursor reads")
+                .is_empty(),
+            "nothing has happened since the cursor yet"
+        );
+
+        let seen = record.agents[0].thread.read_unread(NOW);
+        assert_eq!(seen.len(), 1, "there is one unread message to mark seen");
+        store.save_run(&record).expect("the mutation saves");
+
+        let delta = store
+            .thread_items_after(&agent_id, cursor)
+            .expect("the cursor reads");
+        assert_eq!(
+            sequences(&delta),
+            vec![1],
+            "the message whose updated_sequence moved did not come back"
+        );
+    }
+
+    /// How long a conversation is, without reading it. The client needs the
+    /// total to know whether it holds the whole thing; loading the items to
+    /// count them would undo the paging it pays for.
+    #[test]
+    fn counting_a_conversation_does_not_load_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, agent_id) = store_with_conversation(&dir.path().join("tasks"), 60);
+
+        assert_eq!(
+            store.thread_item_count(&agent_id).expect("the count reads"),
+            60
+        );
+        assert_eq!(
+            store
+                .thread_page(&agent_id, None, 5)
+                .expect("a page reads")
+                .len(),
+            5,
+            "the count is not the size of what a read returns"
+        );
+        assert_eq!(
+            store
+                .thread_item_count("no-such-agent")
+                .expect("the count reads"),
+            0
+        );
+    }
+
+    /// The contract underneath every paging test above: both reads seek into
+    /// the conversation rather than walking it. A predicate SQLite cannot
+    /// answer from an index — or an `ORDER BY` it has to satisfy with a sort —
+    /// reads every row of a 600-item conversation to hand back ten of them,
+    /// and the returned page looks identical either way.
+    #[test]
+    fn the_conversation_reads_seek_instead_of_walking() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let connection = store.conn.lock().unwrap();
+        for statement in [THREAD_PAGE_SQL, THREAD_CURSOR_SQL] {
+            let mut explain = connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
+                .expect("the statement prepares");
+            // The plan does not depend on what the parameters hold, only on
+            // how many there are.
+            let placeholders = vec![1_i64; explain.parameter_count()];
+            let plan: Vec<String> = explain
+                .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                    row.get::<_, String>(3)
+                })
+                .expect("the plan reads")
+                .collect::<Result<_, _>>()
+                .expect("the plan reads");
+
+            assert!(
+                plan.iter().any(|step| step.contains("SEARCH")),
+                "{statement} does not seek: {plan:?}"
+            );
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.contains("SCAN") || step.contains("TEMP B-TREE")),
+                "{statement} walks or sorts the conversation: {plan:?}"
+            );
+        }
     }
 
     /// Removing an agent from the roster takes its conversation with it — a

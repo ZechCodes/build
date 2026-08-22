@@ -696,6 +696,36 @@ describe("thread cache paging (the window over a long conversation)", () => {
       [...older, ...opened].map((i) => i.data.sequence),
     );
   });
+
+  it("takes the new half of a delta that also carries an item mutated below the window", () => {
+    const cache = createThreadCache();
+    const opened = [];
+    for (let sequence = 62; sequence <= 121; sequence += 1) opened.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(opened, { thread_total: 121, has_more: true }));
+
+    // What resolving a doc comment actually looks like on the wire: the
+    // revision the agent wrote is appended AND the comment it answers — item 1,
+    // 61 items below the floor — is stamped in the same breath, so one delta
+    // carries both. The floor rule has to read the arrival item by item: taking
+    // it whole buries the conversation between item 1 and the window, and
+    // dropping it whole loses the revision the reader is waiting on.
+    const delta = cache.absorb({
+      items: [
+        { type: "message", data: { sequence: 1, updated_sequence: 122, role: "user", body: "rename it", resolved_by_revision: "plan-revision-2" } },
+        item(123, "revised the plan"),
+      ],
+      thread_total: 122,
+      thread_last_sequence: 123,
+    });
+
+    expect(delta.items.map((i) => i.data.sequence)).toEqual([
+      ...opened.map((i) => i.data.sequence),
+      123,
+    ]);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 62 });
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 123 });
+  });
 });
 
 describe("structured review messages", () => {

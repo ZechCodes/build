@@ -40,6 +40,7 @@ import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
 import { patchList } from "./patchList.js";
+import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
 
 export const GIT_PANE_POLL_MS = 1600;
@@ -512,7 +513,12 @@ export function mountGitPane(
   const commentLayer = commentable
     ? createCommentLayer({
         submit: async (messages) => {
-          await callRpc("run.request_changes", { run_id: scope.run_id, ...agentSelection.scope(), messages });
+          await callRpc("run.request_changes", {
+            run_id: scope.run_id,
+            ...agentSelection.scope(),
+            messages,
+            ...MUTATION_THREAD_PAGE,
+          });
           // Stamp what was just reviewed, per changeset: the next pass marks
           // which of ITS files moved since the comments went out.
           reviewStamps = stampChangeset(reviewStamps, selected, renderedFiles);
@@ -820,7 +826,11 @@ export function mountGitPane(
     }
     if (optionId === "agent_commit") {
       try {
-        await callRpc("run.message", { run_id: scope.run_id, message: AGENT_COMMIT_MESSAGE });
+        await callRpc("run.message", {
+          run_id: scope.run_id,
+          message: AGENT_COMMIT_MESSAGE,
+          ...MUTATION_THREAD_PAGE,
+        });
       } catch (e) {
         actionError(e);
         throw e;
@@ -833,7 +843,7 @@ export function mountGitPane(
     }
     if (optionId === "auto_commit") {
       try {
-        await callRpc("run.git_action", { run_id: scope.run_id, action: "commit" });
+        await callRpc("run.git_action", { run_id: scope.run_id, action: "commit", ...MUTATION_THREAD_PAGE });
       } catch (e) {
         actionError(e);
         throw e;

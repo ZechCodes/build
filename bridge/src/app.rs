@@ -2539,7 +2539,7 @@ impl AppState {
                     links,
                     now_rfc3339(),
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
             }
         }
@@ -2696,22 +2696,50 @@ impl AppState {
             .map_err(|e| format!("run store: {e}"))
     }
 
-    /// The shared tail of every plan mutation: stamp times, compute the response
-    /// view, persist the durable core, throttle a notify, put the plan back in
-    /// the map, and prompt terminal closure + pump start. Returns the view and
-    /// the persistence outcome separately so callers can order their errors.
-    fn finish_plan_mutation(
+    /// The shared tail of every plan mutation: stamp times, persist the durable
+    /// core, throttle a notify, put the plan back in the map, and prompt
+    /// terminal closure + pump start.
+    fn finish_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
+        self.stamp_plan_mutation(&plan_id, &active);
+        self.settle_plan_mutation(plan_id, active)
+    }
+
+    /// The same tail for a mutation whose answer IS the plan, with
+    /// `thread_detail` saying how much conversation that answer carries. A
+    /// write is the hottest call the SPA makes; answering a one-word post with
+    /// every item a long conversation ever held is the cost paging exists to
+    /// avoid, so a caller that named a `thread_limit` gets that page here too.
+    ///
+    /// The view is taken where it always was — after the stamps, before the
+    /// record goes back in the map — and returned beside the persistence
+    /// outcome so callers can order their errors.
+    fn answer_plan_mutation(
         &mut self,
         plan_id: String,
         active: ActivePlan,
+        thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
+        self.stamp_plan_mutation(&plan_id, &active);
+        let view = self.plan_view(&plan_id, &active, thread_detail);
+        (view, self.settle_plan_mutation(plan_id, active))
+    }
+
+    /// First half of the tail: the stamps the response view must already see.
+    /// Split from the second so `answer_plan_mutation` can take its view
+    /// between them — where the view has always been taken.
+    fn stamp_plan_mutation(&mut self, plan_id: &str, active: &ActivePlan) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(plan_id.clone())
+            .entry(plan_id.to_string())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(plan_id.clone(), now.clone());
-        self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
-        let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
+        self.entity_updated_at
+            .insert(plan_id.to_string(), now.clone());
+        self.stamp_state_change(plan_id, plan_state_str(&active.plan.state), now);
+    }
+
+    /// Second half: persist, notify, put the record back, and tell the
+    /// browsers.
+    fn settle_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
@@ -2726,25 +2754,46 @@ impl AppState {
         // delivery failure — so this is the one place that has to tell the
         // browsers, whatever started it.
         self.note_entity_changed(&plan_id);
-        (view, persisted)
+        persisted
     }
 
     /// The run-half twin of
     /// [`finish_plan_mutation`](Self::finish_plan_mutation).
-    fn finish_run_mutation(
+    fn finish_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
+        self.stamp_run_mutation(&run_id, &active);
+        self.settle_run_mutation(run_id, active)
+    }
+
+    /// The run-half twin of
+    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
+    fn answer_run_mutation(
         &mut self,
         run_id: String,
         active: ActiveRun,
+        thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
+        self.stamp_run_mutation(&run_id, &active);
+        let view = self.run_view(&run_id, &active, thread_detail);
+        (view, self.settle_run_mutation(run_id, active))
+    }
+
+    /// The run-half twin of
+    /// [`stamp_plan_mutation`](Self::stamp_plan_mutation).
+    fn stamp_run_mutation(&mut self, run_id: &str, active: &ActiveRun) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(run_id.clone())
+            .entry(run_id.to_string())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(run_id.clone(), now.clone());
-        self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
+        self.entity_updated_at
+            .insert(run_id.to_string(), now.clone());
+        self.stamp_state_change(run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
-        self.invalidate_run_stat(&run_id);
-        let view = self.run_view(&run_id, &active, ThreadDetail::Full);
+        self.invalidate_run_stat(run_id);
+    }
+
+    /// The run-half twin of
+    /// [`settle_plan_mutation`](Self::settle_plan_mutation).
+    fn settle_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
@@ -2754,7 +2803,7 @@ impl AppState {
         self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();
         self.note_entity_changed(&run_id);
-        (view, persisted)
+        persisted
     }
 
     /// A cold delivery started a new harness for `turn.owner`: open the
@@ -2822,7 +2871,7 @@ impl AppState {
             if let Some(agent) = active.agents.by_id_mut(agent_id) {
                 record_session_death_in_thread(&mut agent.thread, &now);
             }
-            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
+            let persisted = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
                 eprintln!("close_turn_of_dead_agent {owner}: {error}");
             }
@@ -2845,7 +2894,7 @@ impl AppState {
         if let Err(error) = recorded {
             eprintln!("close_turn_of_dead_agent {owner}: {error}");
         }
-        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
+        let persisted = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("close_turn_of_dead_agent {owner}: {error}");
         }
@@ -2866,7 +2915,7 @@ impl AppState {
                 return;
             };
             edit(&mut active.agents);
-            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
+            let persisted = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
                 eprintln!("{context} {owner}: {error}");
             }
@@ -2876,7 +2925,7 @@ impl AppState {
             return;
         };
         edit(&mut active.agents);
-        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
+        let persisted = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("{context} {owner}: {error}");
         }
@@ -2906,7 +2955,7 @@ impl AppState {
                 return;
             };
             active.last_error = Some(reason);
-            let (_, persisted) = self.finish_plan_mutation(turn.owner.clone(), active);
+            let persisted = self.finish_plan_mutation(turn.owner.clone(), active);
             if let Err(error) = persisted {
                 eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
             }
@@ -2916,7 +2965,7 @@ impl AppState {
             return;
         };
         active.last_error = Some(reason);
-        let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
+        let persisted = self.finish_run_mutation(turn.owner.clone(), active);
         if let Err(error) = persisted {
             eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
         }
@@ -4032,7 +4081,7 @@ impl AppState {
                     &now,
                 )
             });
-            let (_, persisted) = self.finish_plan_mutation(entity_id.to_string(), active);
+            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4052,7 +4101,7 @@ impl AppState {
                 action,
                 &now,
             );
-            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4067,7 +4116,7 @@ impl AppState {
                     &now,
                 )
             });
-            let (_, persisted) = self.finish_run_mutation(entity_id.to_string(), active);
+            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4324,7 +4373,7 @@ impl AppState {
                 );
             }
         }
-        let (_, persisted) = self.finish_plan_mutation(plan_id.to_string(), active);
+        let persisted = self.finish_plan_mutation(plan_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {plan_id}: {e}");
         }
@@ -4543,12 +4592,12 @@ impl AppState {
                 }
             }
         }
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
         if let (Some(issue_id), Some(issue)) = (issue_id, issue) {
-            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
             if let Err(e) = persisted {
                 eprintln!("on_agent_done {run_id}: issue conversation persist failed: {e}");
             }
@@ -4681,7 +4730,7 @@ impl AppState {
             }
         };
         let succeeded = event == crate::thread::ThreadEventKind::RecoverySucceeded;
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("recovery {run_id}: run persist failed: {error}");
             return;
@@ -4709,7 +4758,7 @@ impl AppState {
                 issue
                     .agents
                     .push_event_with_links(event, Some(summary), None, None, links, &now);
-                let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
+                let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
                 if let Err(error) = persisted {
                     eprintln!("recovery {run_id}: Issue persist failed: {error}");
                     return;
@@ -4780,12 +4829,12 @@ impl AppState {
             }
         }
         if let (Some(pid), Some(plan)) = (plan_id, plan) {
-            let (_, persisted) = self.finish_plan_mutation(pid, plan);
+            let persisted = self.finish_plan_mutation(pid, plan);
             if let Err(e) = persisted {
                 eprintln!("on_agent_done {run_id}: plan persist: {e}");
             }
         }
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
@@ -5639,7 +5688,7 @@ impl AppState {
                 active.last_error = Some(exit.describe());
             }
             record_idle_in_thread(&mut active.agents, exit_code.as_ref());
-            let (_, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
+            let persisted = self.finish_plan_mutation(plan_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {plan_id}: {e}");
             }
@@ -5667,7 +5716,7 @@ impl AppState {
             }) {
                 eprintln!("idle monitor {run_id}: {e}");
             }
-            let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+            let persisted = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {run_id}: {e}");
             }
@@ -7322,7 +7371,7 @@ impl AppState {
             );
         });
         let triage = self.triage_json(&active);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         recorded?;
         persisted?;
         Ok(json!({
@@ -7443,7 +7492,7 @@ impl AppState {
             .agents
             .add(&entity_id, choice, &now_rfc3339())
             .clone();
-        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        let persisted = self.finish_run_mutation(entity_id.clone(), active);
         persisted?;
         self.touch_attention(&entity_id);
         let root = self.entity_agent_root(&entity_id).ok();
@@ -7502,7 +7551,7 @@ impl AppState {
                 return Err(format!("agent.remove: {refused}"));
             }
         };
-        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        let persisted = self.finish_run_mutation(entity_id.clone(), active);
         self.retire_agent(&root, &removed.id);
         if let Some(attention) = self.attention.get_mut(&entity_id) {
             // Nothing prunes cursors by agent, so one left behind here would
@@ -7705,8 +7754,7 @@ impl AppState {
         };
         let mut issue = self.take_plan(&issue_id)?;
         write(&mut issue.agents);
-        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
-        persisted
+        self.finish_plan_mutation(issue_id, issue)
     }
 
     /// Tell the Issue where its implementation got to.
@@ -7745,8 +7793,7 @@ impl AppState {
             }],
             now_rfc3339(),
         );
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     /// Tell an issue that the branch implementing it is gone, and that nothing
@@ -7789,7 +7836,7 @@ impl AppState {
             links,
             now_rfc3339(),
         );
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        let persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
         if let Err(error) = persisted {
             eprintln!("{issue_id}: could not record the abandoned branch {branch}: {error}");
         }
@@ -7824,8 +7871,7 @@ impl AppState {
         if let Some(run) = self.runs.get(run_id) {
             record_current_stage_started(&mut issue.agents, run, stages);
         }
-        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
-        persisted
+        self.finish_plan_mutation(issue_id, issue)
     }
 
     /// Queue a plan's turn for its agent in the primary checkout. A plan whose
@@ -8442,7 +8488,7 @@ impl AppState {
             }
         };
         let started = self.start_inert_plan(issue_id, &mut active);
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), active);
+        let persisted = self.finish_plan_mutation(issue_id.to_string(), active);
         if let Err(error) = &started {
             eprintln!("route: {issue_id} could not start planning: {error}");
         }
@@ -8593,7 +8639,7 @@ impl AppState {
         };
         self.retire_issue_session(issue_session(&active));
         active.plan.archived_at = Some(now_rfc3339());
-        let (_, persisted) = self.finish_plan_mutation(routing.target_id.clone(), active);
+        let persisted = self.finish_plan_mutation(routing.target_id.clone(), active);
         if let Err(error) = persisted {
             eprintln!("reroute: could not archive {}: {error}", routing.target_id);
         }
@@ -8746,7 +8792,8 @@ impl AppState {
             );
             self.entity_project
                 .insert(plan_id.clone(), project_id.clone());
-            let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+            let (view, persisted) =
+                self.answer_plan_mutation(plan_id, active, thread_detail(params));
             persisted?;
             return Ok(view);
         }
@@ -8760,7 +8807,7 @@ impl AppState {
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -8892,9 +8939,16 @@ impl AppState {
             .map(|run| run.run.id.0.clone())
     }
 
-    fn issue_view_full(&self, issue_id: &str) -> Result<Value, String> {
+    /// The whole Issue an implementation RPC answers with — every field of the
+    /// board's issue view, with `thread_detail` saying how much of its
+    /// conversation rides along.
+    fn issue_view_full(
+        &self,
+        issue_id: &str,
+        thread_detail: ThreadDetail,
+    ) -> Result<Value, String> {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        Ok(self.plan_view(issue_id, issue, ThreadDetail::Full))
+        Ok(self.plan_view(issue_id, issue, thread_detail))
     }
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
@@ -8904,7 +8958,7 @@ impl AppState {
             self.block_issue_scheduler(&issue_id, None, &error);
             return Err(error);
         }
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
@@ -8929,7 +8983,7 @@ impl AppState {
             self.block_issue_scheduler(&issue_id, Some(stage_id), &error);
             return Err(error);
         }
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     /// Persist scheduler intent before any worktree/git/agent side effect. The
@@ -8947,8 +9001,7 @@ impl AppState {
         }
         issue.plan.implementation_intent = intent;
         issue.plan.implementation_activity = ImplementationActivity::Preparing;
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn set_issue_scheduler_activity(
@@ -8962,8 +9015,7 @@ impl AppState {
             issue.plan.implementation_intent = intent;
         }
         issue.plan.implementation_activity = activity;
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn block_issue_scheduler(&mut self, issue_id: &str, stage_id: Option<String>, reason: &str) {
@@ -9142,7 +9194,7 @@ impl AppState {
                 active.worktree = worktree;
                 active.last_error = None;
                 let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
                 issue.agents.push_event_with_links(
@@ -9167,8 +9219,7 @@ impl AppState {
                     ],
                     now_rfc3339(),
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-                persisted
+                self.finish_plan_mutation(issue_id.to_string(), issue)
             }
             Err(error) => {
                 if active
@@ -9234,7 +9285,7 @@ impl AppState {
                         prompt,
                         &issue.agents,
                     ));
-                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
                 let mut links = vec![
@@ -9267,7 +9318,7 @@ impl AppState {
                     links,
                     started_at,
                 );
-                let (_, issue_persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+                let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
                 issue_persisted?;
                 Err(format!(
                     "automatic restore failed; verified recovery {recovery_id} started"
@@ -9379,7 +9430,7 @@ impl AppState {
             .ok_or("issue params must be an object")?
             .insert("run_id".to_string(), json!(run_id));
         self.run_set_auto_advance(&run_params)?;
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -9441,7 +9492,7 @@ impl AppState {
             "git_action" => self.run_git_action(&run_params)?,
             _ => unreachable!("known issue run action"),
         };
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     /// Read the single (non-staged) plan doc from the canonical store — never
@@ -9543,7 +9594,7 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9568,7 +9619,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9597,7 +9648,8 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
+        let (view, persisted) =
+            self.answer_plan_mutation(plan_id.clone(), active, thread_detail(params));
         outcome?;
         persisted?;
         // Implement All remains armed while it waits on an unapproved stage.
@@ -9649,7 +9701,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9681,7 +9733,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9705,7 +9757,7 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9724,7 +9776,7 @@ impl AppState {
         if active.plan.archived_at.is_none() {
             active.plan.archived_at = Some(now_rfc3339());
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -9807,7 +9859,7 @@ impl AppState {
                 .find(|comment| comment.id == id);
             Ok(())
         })();
-        let (_, persisted) = self.finish_plan_mutation(plan_id, active);
+        let persisted = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
         let comment = minted.expect("outcome Ok implies a comment was posted");
@@ -9834,7 +9886,7 @@ impl AppState {
                 .map(|_| ())
                 .ok_or_else(|| format!("unknown comment_id: {comment_id}"))
         })();
-        let (_, persisted) = self.finish_plan_mutation(plan_id, active);
+        let persisted = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
         Ok(json!({ "ok": true }))
@@ -9912,6 +9964,7 @@ impl AppState {
             &agent_id,
             crate::thread::ThreadEventKind::WorktreeCreated,
             |run_id| format!("Created the Issue implementation worktree for {run_id}"),
+            thread_detail(params),
         )
     }
 
@@ -10016,6 +10069,7 @@ impl AppState {
             &agent_id,
             crate::thread::ThreadEventKind::WorktreeReused,
             move |_| format!("Implementing into the existing checkout on {branch}"),
+            thread_detail(params),
         )
     }
 
@@ -10050,6 +10104,7 @@ impl AppState {
         agent_id: &str,
         checkout_event: crate::thread::ThreadEventKind,
         checkout_summary: impl Fn(&str) -> String,
+        thread_detail: ThreadDetail,
     ) -> Result<Value, String> {
         let plan_docs = self.owning_plan_stage_docs(&active);
 
@@ -10063,7 +10118,7 @@ impl AppState {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         let mut plan = self.take_plan(&issue_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
@@ -10092,11 +10147,11 @@ impl AppState {
         if let Some(run) = self.runs.get(&run_id) {
             record_current_stage_started(&mut plan.agents, run, &plan_docs);
         }
-        let (_, plan_persisted) = self.finish_plan_mutation(issue_id, plan);
+        let plan_persisted = self.finish_plan_mutation(issue_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -10313,7 +10368,8 @@ impl AppState {
                     &agent.thread,
                 );
             }
-            let (view, persisted) = self.finish_plan_mutation(entity_id, active);
+            let (view, persisted) =
+                self.answer_plan_mutation(entity_id, active, thread_detail(params));
             // The message is durable either way: a dispatch that could not start
             // leaves the issue inert, with what was said still on its thread.
             started_planning?;
@@ -10323,7 +10379,7 @@ impl AppState {
                 run.run
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
-                let (_, run_persisted) = self.finish_run_mutation(run_id, run);
+                let run_persisted = self.finish_run_mutation(run_id, run);
                 run_persisted?;
             }
             return Ok(view);
@@ -10384,7 +10440,7 @@ impl AppState {
                     agent_choice,
                     &issue.agents,
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
                 if resume {
                     let mut active = self.take_run(&entity_id)?;
@@ -10392,12 +10448,13 @@ impl AppState {
                         .run
                         .apply(crate::run::RunEvent::Reply)
                         .expect("Reply is legal from every parked run state");
-                    let (view, run_persisted) = self.finish_run_mutation(entity_id, active);
+                    let (view, run_persisted) =
+                        self.answer_run_mutation(entity_id, active, thread_detail(params));
                     run_persisted?;
                     return Ok(view);
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&entity_id, active, thread_detail(params)));
             }
             let mut active = self.take_run(&entity_id)?;
             append_reviewer_messages(
@@ -10420,7 +10477,8 @@ impl AppState {
                 agent_choice,
                 &agent.thread,
             );
-            let (view, persisted) = self.finish_run_mutation(entity_id, active);
+            let (view, persisted) =
+                self.answer_run_mutation(entity_id, active, thread_detail(params));
             persisted?;
             return Ok(view);
         }
@@ -10844,10 +10902,10 @@ impl AppState {
             issue.agents = std::mem::replace(&mut active.agents, legacy_thread);
         }
         let issue_persisted = match (issue_id, issue) {
-            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue).1),
+            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue)),
             _ => None,
         };
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         outcome?;
         if let Some(issue_persisted) = issue_persisted {
             issue_persisted?;
@@ -10879,13 +10937,13 @@ impl AppState {
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -10911,13 +10969,13 @@ impl AppState {
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -10955,15 +11013,15 @@ impl AppState {
         })();
         // Both entities re-insert before any error propagates — the
         // take → finish_mutation invariant covers the plan here too.
-        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan).1);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan));
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         if let Some(persisted) = plan_persisted {
             persisted?;
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -10980,13 +11038,13 @@ impl AppState {
             return Err("cannot set auto_advance on a terminal run".to_string());
         }
         active.auto_advance = enabled;
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         if enabled {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -11025,7 +11083,7 @@ impl AppState {
                     .push(PendingAgentTurn::for_run(run_id, &active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
             })();
-            let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+            let persisted = self.finish_run_mutation(run_id.to_string(), active);
             if let Err(e) = outcome {
                 eprintln!("auto-advance {run_id}: {e}");
                 return;
@@ -11192,7 +11250,8 @@ impl AppState {
         }
         let merged_worktree = (result.is_ok() && active.run.state == RunState::Merged)
             .then(|| active.worktree.clone());
-        let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let (view, persisted) =
+            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
         let issue_persisted = if let Some(issue_id) = issue_id {
             let mut issue = self.take_plan(&issue_id)?;
             issue.agents.push_event_with_links(
@@ -11203,7 +11262,7 @@ impl AppState {
                 links,
                 now_rfc3339(),
             );
-            Some(self.finish_plan_mutation(issue_id, issue).1)
+            Some(self.finish_plan_mutation(issue_id, issue))
         } else {
             None
         };
@@ -11282,7 +11341,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -11341,7 +11400,8 @@ impl AppState {
                 }
             }
         }
-        let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let (view, persisted) =
+            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
         result?;
         persisted?;
         if let Some(issue_id) = &issue_id {
@@ -11386,7 +11446,7 @@ impl AppState {
                 links,
                 now_rfc3339(),
             );
-            let (_, issue_persisted) = self.finish_plan_mutation(issue_id, issue);
+            let issue_persisted = self.finish_plan_mutation(issue_id, issue);
             issue_persisted?;
         }
         Ok(view)
@@ -11483,7 +11543,7 @@ impl AppState {
         let (checkout, scope) = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, thread_detail(params)));
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
@@ -11495,7 +11555,7 @@ impl AppState {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, thread_detail(params)));
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
@@ -11519,7 +11579,7 @@ impl AppState {
         // bare row if the run is ever released.
         self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
         self.invalidate_external_scan(&project_id);
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -11585,7 +11645,7 @@ impl AppState {
                 .run
                 .apply(RunEvent::Archive)
                 .map_err(|error| error.to_string())?;
-            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            let persisted = self.finish_run_mutation(run_id, active);
             persisted?;
             return Ok(PlannedRunFinish::Settled(json!({ "archived": true })));
         }
@@ -11662,7 +11722,7 @@ impl AppState {
                 .run
                 .apply(RunEvent::Archive)
                 .map_err(|error| error.to_string())?;
-            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            let persisted = self.finish_run_mutation(run_id, active);
             persisted?;
             self.reap_orphaned_terminals();
             return Ok(archived_worktree);
@@ -12565,7 +12625,7 @@ impl AppState {
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "dispatch",
         });
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         self.touch_attention(&run_id);
         Ok(json!({
@@ -12903,7 +12963,7 @@ impl AppState {
                 }
                 Err(e) => eprintln!("archive {run_id}: {e}"),
             }
-            let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+            let persisted = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("archive {run_id}: {e}");
             }
@@ -12951,7 +13011,7 @@ impl AppState {
                             );
                         }
                     }
-                    let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
+                    let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
                     if let Err(e) = persisted {
                         eprintln!("archive {run_id}: issue event persist failed: {e}");
                     }
@@ -14179,8 +14239,9 @@ fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
 }
 
-/// How much conversation a detail poll can hold: a page of the size its
-/// `thread_limit` names, or the conversation whole when it names none.
+/// How much conversation a call can hold — a detail poll's answer or a
+/// mutation's: a page of the size its `thread_limit` names, or the
+/// conversation whole when it names none.
 ///
 /// Silence has to keep meaning "whole". A client written before paging holds
 /// every item and reconciles each later delta against `thread_total`; hand it
@@ -25749,6 +25810,103 @@ mod tests {
         assert!(!opened.to_string().contains("turn 0\""), "{thread:?}");
     }
 
+    /// The write path is the hot one: a reviewer types one word into a
+    /// conversation of hundreds, and the answer to that post is a whole view of
+    /// the run. It has to obey the same bound the detail polls do — a client
+    /// that named a `thread_limit` gets that page back, not every item it
+    /// already holds, serialized and encrypted for it to drop on the floor.
+    #[test]
+    fn posting_a_message_answers_with_the_page_the_client_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-post-page", 250);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": "run-post-page",
+                "body": "one more word",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+
+        // Bounded, and honest about what sits behind the window: the word just
+        // said is the newest item, and the count names the whole conversation.
+        assert_eq!(thread["thread_total"], held as u64 + 1, "{thread:?}");
+        assert_eq!(
+            thread["items"].as_array().unwrap().last().unwrap()["data"]["body"],
+            "one more word"
+        );
+        assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    /// And the same silence rule as the reads: a client that named no page is
+    /// one that cannot page, so posting still answers it with the conversation
+    /// entire.
+    #[test]
+    fn posting_a_message_without_naming_a_page_still_answers_with_the_whole_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-post-whole", 250);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-whole", "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            held + 1,
+            "{thread:?}"
+        );
+        assert!(thread.get("thread_total").is_none(), "{thread:?}");
+    }
+
+    /// The routed post: an implementation's first agent speaks in its Issue's
+    /// conversation, so the branch view that answers the post carries the
+    /// Issue's items. That answer is bounded by the same limit.
+    #[test]
+    fn posting_to_an_implementation_answers_with_a_page_of_its_issues_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "page the routed post");
+        let held = {
+            let issue = state.plans.get_mut(&issue_id).unwrap();
+            for turn in 0..250 {
+                issue
+                    .agents
+                    .post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+            issue.agents.first().thread.items.len()
+        };
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "body": "one more word",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+        assert_eq!(thread["thread_total"], held as u64 + 1, "{thread:?}");
+        assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
     #[test]
     fn thread_page_walks_backward_to_the_start_of_the_conversation() {
         let (dir, repo) = init_repo();
@@ -33070,8 +33228,7 @@ mod tests {
                 .unwrap()
                 .thread
                 .post_agent("here is what I found", None, now_rfc3339());
-            let (_, persisted) = state.finish_run_mutation(run_id.clone(), run);
-            persisted.unwrap();
+            state.finish_run_mutation(run_id.clone(), run).unwrap();
         }
 
         let view = state.handle(req("run.get", json!({ "run_id": run_id })));

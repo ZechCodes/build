@@ -40,6 +40,7 @@ import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
+  MUTATION_THREAD_PAGE,
   createThreadCache,
   paintThreadKeepingPlace,
   threadHtml,
@@ -663,6 +664,7 @@ export function mountAgentRail(host, context) {
         entity_id: entityId,
         ...(agent ? { agent_id: agent.id } : {}),
         ...message,
+        ...MUTATION_THREAD_PAGE,
       });
       if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
         const started = await App.call("agent.start", {

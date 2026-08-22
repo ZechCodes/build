@@ -42,6 +42,7 @@ const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
+const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude", state: "live",
@@ -661,6 +662,19 @@ describe("the first message", () => {
       entity_id: "run-3", agent_id: "ag-1", body: "please look at this",
     });
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
+  });
+
+  // The answer to a post is a whole entity view, conversation and all, and
+  // nothing here reads it — the refresh that follows is what paints. The page
+  // is asked for anyway, because an answer nobody reads must still not grow
+  // with the conversation, and asking for none fetches all of it.
+  it("names a page on the post it is about to throw away", async () => {
+    payload = branchRow({ agents: [agent({ state: "idle" })] });
+    await mount();
+    panel().querySelector("#railinput").value = "one more word";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("thread.post")[0].params.thread_limit).toBe(FIRST_PAGE_ITEMS);
   });
 
   it("says nothing twice to an agent already listening", async () => {

@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountIssueView, openingStageId, docAnnotatable } from "../src/core/issueView.js";
+import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -285,7 +286,10 @@ describe("the issue view", () => {
     const { host, view, calls } = await mount();
     host.querySelector("#approvestage").click();
     await flush();
-    expect(calls).toContainEqual(["issue.stage_approve", { issue_id: "issue-1", stage_id: "s1" }]);
+    expect(calls).toContainEqual([
+      "issue.stage_approve",
+      { issue_id: "issue-1", stage_id: "s1", thread_limit: FIRST_PAGE_ITEMS },
+    ]);
     view.dispose();
   });
 
@@ -388,7 +392,7 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release" });
+    expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release", thread_limit: FIRST_PAGE_ITEMS });
     view.dispose();
   });
 
@@ -482,7 +486,7 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
+    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1", thread_limit: FIRST_PAGE_ITEMS });
     view.dispose();
   });
 

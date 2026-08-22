@@ -6,6 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createTaskReview, reviewMergeOptions, REVIEW_POLL_MS } from "../src/views/taskReview.js";
+import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 
 const PATCH = [
   "diff --git a/a.txt b/a.txt",
@@ -139,6 +140,7 @@ describe("taskReview merge flight vs the poll (DOM)", () => {
       run_id: "r2",
       action: "merge",
       cleanup: "release",
+      thread_limit: FIRST_PAGE_ITEMS,
     });
     plug.unmount();
   });

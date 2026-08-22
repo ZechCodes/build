@@ -113,6 +113,15 @@ function timeHtml(createdAt) {
 // answer a client written before paging could reconcile.
 export const FIRST_PAGE_ITEMS = 60;
 
+// What a MUTATION asks its answer to carry. Every mutation RPC answers with
+// the whole entity, conversation included, and no caller here reads that
+// answer — the refresh that follows is what paints. The page is asked for
+// anyway: an answer nobody reads must still not grow with the conversation,
+// and a call that names no bound gets every item it ever held. A cursor is no
+// use here, since the answer has to stand on its own for whoever starts
+// reading it.
+export const MUTATION_THREAD_PAGE = Object.freeze({ thread_limit: FIRST_PAGE_ITEMS });
+
 export function createThreadCache() {
   let accumulatedItems = [];
   // Whether the daemon said there is conversation above the window. Only a

@@ -51,7 +51,7 @@ import {
   worktreeChoices,
 } from "./issueModel.js";
 import { createDocCommentLayer, headingForKey } from "./issueDocComments.js";
-import { MUTATION_THREAD_PAGE } from "./thread.js";
+import { MUTATION_THREAD_PAGE, SMALLEST_THREAD_PAGE } from "./thread.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { watchChanges } from "./changeEvents.js";
@@ -713,7 +713,14 @@ export function mountIssueView(
         callRpc("issue.get", {
           issue_id: issueId,
           ...agentSelection.scope(),
-          ...(threadCursor ? { thread_after_sequence: threadCursor } : {}),
+          // The only thing this surface takes off the answer's thread is how
+          // far the conversation has got; the rail beside it owns what gets
+          // rendered. So a read with no cursor yet asks for the smallest page
+          // the daemon will cut rather than naming no bound at all, which
+          // would ship every item of a long conversation to compute one
+          // integer — on the first read of every issue, and again after every
+          // bubble switch.
+          ...(threadCursor ? { thread_after_sequence: threadCursor } : SMALLEST_THREAD_PAGE),
         }),
         callRpc("issue.stages", { issue_id: issueId }),
       ]);

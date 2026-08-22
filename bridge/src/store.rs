@@ -447,6 +447,28 @@ const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT ?3";
 
+/// How much of a conversation a load reads and the daemon then holds.
+///
+/// The tail, never the whole: a conversation costs this process a constant
+/// rather than its length, and everything older is one page read away. Far
+/// above any page a client asks for or any catch-up packet an agent is handed,
+/// so the bound is only ever felt by history nobody has scrolled back to.
+///
+/// The tail is the conversation's working set, and what is loaded is what the
+/// daemon reasons over: the mailbox an agent is sent to, the unread count a
+/// row carries. Both are about what has just been said, and a message with
+/// this many items of conversation after it has been gone past rather than
+/// left waiting. The two readers that are asked ABOUT history instead —
+/// searching a conversation, and replaying an entity's anchor — go to the
+/// store for the whole of it (`Store::thread_items`) rather than answering
+/// off the tail.
+pub const RESIDENT_CONVERSATION_TAIL: usize = 200;
+
+/// How long a conversation is, asked of the primary key rather than of the
+/// items: the load needs the total to say how much of a conversation it left
+/// behind, and reading the items to count them would spend what paging saves.
+const THREAD_ITEM_COUNT_SQL: &str = "SELECT COUNT(*) FROM thread_items WHERE agent_id = ?1";
+
 /// The forward cursor, which `thread_items_cursor` covers: the seek is the
 /// filter, so a poll that finds nothing new reads nothing.
 const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
@@ -745,8 +767,14 @@ impl Store {
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
         // The cursor columns alone, which `thread_items_cursor` covers: this is
         // what keeps the read cheap enough that skipping the writes is a win.
-        let mut stored_cursors =
-            tx.prepare("SELECT sequence, updated_sequence FROM thread_items WHERE agent_id = ?1")?;
+        // Bounded below by the tail the agent holds: a conversation loaded as
+        // its tail knows nothing about the history under it, and an orphan
+        // sweep that read that history would take it for items withdrawn from
+        // a conversation that never had them.
+        let mut stored_cursors = tx.prepare(
+            "SELECT sequence, updated_sequence FROM thread_items \
+             WHERE agent_id = ?1 AND sequence >= ?2",
+        )?;
 
         for agent in agents {
             // The agent row carries everything about the conversation EXCEPT
@@ -762,7 +790,10 @@ impl Store {
             ])?;
 
             let mut stored: HashMap<i64, i64> = stored_cursors
-                .query_map([&agent.id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .query_map(
+                    rusqlite::params![&agent.id, agent.thread.resident_from_sequence() as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?
                 .collect::<Result<_, _>>()?;
             for item in &items {
                 let sequence = item.sequence() as i64;
@@ -798,8 +829,11 @@ impl Store {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?
             .collect::<Result<_, _>>()?;
-        let mut items =
-            conn.prepare("SELECT item FROM thread_items WHERE agent_id = ?1 ORDER BY sequence")?;
+        // The tail of each conversation, not the whole of it: a boot that read
+        // every item of every conversation would spend, in one go and for the
+        // life of the process, exactly what the paged reads exist to save.
+        let mut tail = conn.prepare(THREAD_PAGE_SQL)?;
+        let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
             let mut agent: Agent =
@@ -807,8 +841,12 @@ impl Store {
                     path: PathBuf::from(format!("agents/{id}")),
                     source,
                 })?;
-            agent.thread.items =
-                decode_thread_items(&id, items.query_map([&id], |row| row.get::<_, String>(0))?)?;
+            let held = count.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
+            let items = read_thread_page(&mut tail, &id, i64::MAX, RESIDENT_CONVERSATION_TAIL)?;
+            agent.thread.adopt_stored_tail(
+                items,
+                held.saturating_sub(RESIDENT_CONVERSATION_TAIL as u64),
+            );
             agents.push(agent);
         }
         Ok(agents)
@@ -836,25 +874,16 @@ impl Store {
             .unwrap_or(i64::MAX);
         let connection = self.connection();
         let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
-        let mut page = decode_thread_items(
-            agent_id,
-            statement.query_map(rusqlite::params![agent_id, before, limit as i64], |row| {
-                row.get::<_, String>(0)
-            })?,
-        )?;
-        page.reverse();
-        Ok(page)
+        read_thread_page(&mut statement, agent_id, before, limit)
     }
 
     /// How many items a conversation holds. A `COUNT(*)`, never a load — the
     /// client needs the total to know whether its cache is whole, and reading
     /// the items to count them would spend exactly what paging saves.
     pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
-        let count: i64 = self.connection().query_row(
-            "SELECT COUNT(*) FROM thread_items WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )?;
+        let count: i64 = self
+            .connection()
+            .query_row(THREAD_ITEM_COUNT_SQL, [agent_id], |row| row.get(0))?;
         Ok(count as u64)
     }
 
@@ -884,6 +913,21 @@ impl Store {
         // creation order, which is what a client merges its cache against.
         delta.sort_by_key(ThreadItem::sequence);
         Ok(delta)
+    }
+
+    /// The whole of one conversation, history included — the deliberate
+    /// exception to paging.
+    ///
+    /// For the two readers that are answering ABOUT history rather than
+    /// rendering it: a search of the conversation, and the anchor the boot
+    /// migration replays out of everything the user ever said. Both are wrong
+    /// if they only see the tail, and neither runs on a poll.
+    pub fn thread_items(&self, agent_id: &str) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare("SELECT item FROM thread_items WHERE agent_id = ?1 ORDER BY sequence")?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        decode_thread_items(agent_id, rows)
     }
 
     // ---- issues and implementations --------------------------------------
@@ -1557,6 +1601,26 @@ fn copy_tree(
     Ok(copied)
 }
 
+/// One page off an already-prepared [`THREAD_PAGE_SQL`] — shared by the load,
+/// which pages every conversation of an owner off one statement, and by
+/// [`Store::thread_page`], which prepares its own. Turns the seek's
+/// newest-first read into the order the conversation happened in.
+fn read_thread_page(
+    statement: &mut rusqlite::Statement<'_>,
+    agent_id: &str,
+    before: i64,
+    limit: usize,
+) -> Result<Vec<ThreadItem>, StoreError> {
+    let mut page = decode_thread_items(
+        agent_id,
+        statement.query_map(rusqlite::params![agent_id, before, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?,
+    )?;
+    page.reverse();
+    Ok(page)
+}
+
 /// Turn stored item rows into conversation items, naming the conversation in
 /// the error so a corrupt row says which agent's history stopped parsing.
 fn decode_thread_items(
@@ -1796,6 +1860,69 @@ mod tests {
 
     fn sequences(items: &[ThreadItem]) -> Vec<u64> {
         items.iter().map(ThreadItem::sequence).collect()
+    }
+
+    /// What paging is for, said at the load: a conversation costs the daemon
+    /// its tail, not its length. A boot that reads every item of every
+    /// conversation back into memory pays the whole cost the paged reads
+    /// exist to avoid, however carefully those reads seek.
+    #[test]
+    fn a_load_reads_the_tail_of_a_conversation_not_all_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = RESIDENT_CONVERSATION_TAIL + 60;
+        let (store, _agent_id) = store_with_conversation(&dir.path().join("tasks"), held);
+
+        let reloaded = reload_run(&store, "run-1");
+        let thread = &reloaded.agents[0].thread;
+        assert_eq!(
+            thread.items.len(),
+            RESIDENT_CONVERSATION_TAIL,
+            "the load is bounded by the tail, not by the conversation"
+        );
+        assert_eq!(
+            thread.items.first().map(ThreadItem::sequence),
+            Some(61),
+            "the tail is the newest items, so the load starts past the first 60"
+        );
+        assert_eq!(
+            thread.total_item_count(),
+            held as u64,
+            "a conversation still knows how long it is, whatever was read of it"
+        );
+        assert_eq!(
+            thread.last_sequence(),
+            held as u64,
+            "appends carry on from the end of the conversation, not the end of the tail"
+        );
+    }
+
+    /// The history a load left in the store is not history this process may
+    /// throw away. Saving a conversation whose tail is all the daemon read
+    /// must not read the missing items as items that were taken off it.
+    #[test]
+    fn saving_a_tail_leaves_the_history_it_never_read_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = RESIDENT_CONVERSATION_TAIL + 60;
+        let (store, agent_id) = store_with_conversation(&dir.path().join("tasks"), held);
+
+        let mut reloaded = reload_run(&store, "run-1");
+        reloaded.agents[0].thread.post_user("one more", None, NOW);
+        store.save_run(&reloaded).expect("the append saves");
+
+        assert_eq!(
+            store.thread_item_count(&agent_id).expect("the count reads"),
+            held as u64 + 1,
+            "the conversation lost the history the daemon never read"
+        );
+        assert_eq!(
+            store
+                .thread_page(&agent_id, Some(2), 1)
+                .expect("a page reads")
+                .first()
+                .map(ThreadItem::sequence),
+            Some(1),
+            "the oldest item is still there"
+        );
     }
 
     /// The whole point of paging: a client can walk a long conversation

@@ -1145,6 +1145,19 @@ pub struct Thread {
     /// on its way to a mutation. Never persisted, never compared.
     #[serde(skip)]
     scope: WorktreeScope,
+    /// How much of this conversation was left in the store, and where the part
+    /// that was read of it starts.
+    ///
+    /// `items` is the tail of a conversation, not necessarily the whole of it:
+    /// a load reads a bounded window and leaves the history behind until a
+    /// page asks for it. Both are zero for a conversation held whole — one
+    /// built in this process, or one short enough that its tail is all there
+    /// is. Never persisted: they describe this process's view of the
+    /// conversation, not the conversation.
+    #[serde(skip)]
+    earlier_item_count: u64,
+    #[serde(skip)]
+    resident_from_sequence: u64,
 }
 
 fn empty_agent() -> AgentIdentity {
@@ -1835,6 +1848,52 @@ impl Thread {
             .unwrap_or(0)
     }
 
+    /// Take a conversation's tail as it was read from the store, told how many
+    /// older items were left there.
+    ///
+    /// The counter the appends run off (`next_sequence`) travels with the
+    /// agent's own record, not with the items, so a conversation carries on
+    /// from where it really ended rather than from the end of its tail.
+    pub fn adopt_stored_tail(&mut self, tail: Vec<ThreadItem>, earlier_item_count: u64) {
+        // The floor is remembered rather than re-derived from `items`, which
+        // moves: an append or a withdrawn draft would otherwise shift what
+        // this process believes it read.
+        self.resident_from_sequence = match earlier_item_count {
+            0 => 0,
+            _ => tail.first().map(ThreadItem::sequence).unwrap_or(0),
+        };
+        self.earlier_item_count = earlier_item_count;
+        self.items = tail;
+    }
+
+    /// The oldest sequence this process read, or 0 when it read the whole
+    /// conversation — the floor under which the stored history is not this
+    /// process's to rewrite.
+    pub fn resident_from_sequence(&self) -> u64 {
+        self.resident_from_sequence
+    }
+
+    /// How long the whole conversation is, resident or not. What the client is
+    /// told, because it is what the client's gap check means: "is my cache a
+    /// window, or did it lose something?"
+    pub fn total_item_count(&self) -> u64 {
+        self.earlier_item_count + self.items.len() as u64
+    }
+
+    /// Whether the page asked for reaches under the tail this process holds,
+    /// and so has to be read from the store instead of out of memory.
+    pub fn page_reaches_stored_history(&self, before_sequence: Option<u64>, limit: usize) -> bool {
+        if self.earlier_item_count == 0 {
+            return false;
+        }
+        let before = before_sequence.unwrap_or(u64::MAX);
+        self.items
+            .iter()
+            .filter(|item| item.sequence() < before)
+            .count()
+            < limit
+    }
+
     /// When the turn the agent is working started, or `None` when nothing is
     /// in flight — the authoritative source of working time.
     ///
@@ -1880,7 +1939,14 @@ impl Thread {
     /// by replaying exactly these through the anchor rule, so its place in the
     /// inbox is the place it would always have had.
     pub fn user_message_times(&self) -> impl Iterator<Item = &str> {
-        self.items.iter().filter_map(|item| match item {
+        Thread::user_message_times_in(&self.items)
+    }
+
+    /// The same reading of items the caller read for itself. The migration is
+    /// about everything the user ever said, so it looks at the conversation
+    /// whole rather than at whatever tail a load left resident.
+    pub fn user_message_times_in(items: &[ThreadItem]) -> impl Iterator<Item = &str> {
+        items.iter().filter_map(|item| match item {
             ThreadItem::Message(message) if message.role == MessageRole::User => {
                 Some(message.created_at.as_str())
             }
@@ -1930,7 +1996,18 @@ impl Thread {
     /// The point of the tool this serves: a session that lost its context asks
     /// what was decided about one thing, instead of replaying the whole log.
     pub fn search(&self, query: &ConversationQuery) -> Vec<ConversationHit> {
-        self.items
+        self.search_items(&self.items, query)
+    }
+
+    /// The same search over items the caller read for itself — how a search
+    /// reaches history no load left resident: the answer is about the whole
+    /// conversation, so the tail is not enough to look through.
+    pub fn search_items(
+        &self,
+        items: &[ThreadItem],
+        query: &ConversationQuery,
+    ) -> Vec<ConversationHit> {
+        items
             .iter()
             .rev()
             .filter(|item| query.matches(item))
@@ -1961,7 +2038,7 @@ impl Thread {
         json!({
             "id": self.id,
             "agent": self.agent,
-            "item_count": self.items.len(),
+            "item_count": self.total_item_count(),
             "last_sequence": self.last_sequence(),
             "last_event": latest_event.map(|event| json!({
                 "event": event.event,
@@ -1990,7 +2067,7 @@ impl Thread {
             "items": newer,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
-            "thread_total": self.items.len(),
+            "thread_total": self.total_item_count(),
             "thread_last_sequence": self.last_sequence(),
         })
     }
@@ -2001,9 +2078,9 @@ impl Thread {
     /// `oldest_sequence`, the seek for the next page up, and `has_more`,
     /// whether asking for one is worth it.
     ///
-    /// `thread_total` still counts the whole conversation, not the page, so the
-    /// client can tell "my cache is a bounded window" from "my cache lost
-    /// something" — the gap check the forward cursor already relies on.
+    /// Reads the tail this process holds, so `has_more` counts the history no
+    /// load read as pages still to come: the caller answers those from the
+    /// store through [`wire_value_of_page`](Self::wire_value_of_page).
     pub fn wire_value_page(&self, before_sequence: Option<u64>, limit: usize) -> Value {
         // No bound means "from the newest", which the same filter expresses as
         // a point past every sequence there could be.
@@ -2014,6 +2091,19 @@ impl Thread {
             .filter(|item| item.sequence() < before)
             .collect();
         let page = &older[older.len().saturating_sub(limit)..];
+        // What is left above this page, plus the history no load read: both
+        // are pages the client can still ask for.
+        let outstanding = older.len() - page.len() + self.earlier_item_count as usize;
+        self.wire_value_of_page(page, outstanding > 0)
+    }
+
+    /// The page shape, around items the caller already chose — the tail this
+    /// process holds, or a page read back out of the store.
+    ///
+    /// `thread_total` still counts the whole conversation, not the page, so the
+    /// client can tell "my cache is a bounded window" from "my cache lost
+    /// something" — the gap check the forward cursor already relies on.
+    pub fn wire_value_of_page(&self, page: &[&ThreadItem], has_more: bool) -> Value {
         json!({
             "id": self.id,
             "agent": self.agent,
@@ -2021,10 +2111,10 @@ impl Thread {
             "items": page,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
-            "thread_total": self.items.len(),
+            "thread_total": self.total_item_count(),
             "thread_last_sequence": self.last_sequence(),
             "oldest_sequence": page.first().map(|item| item.sequence()),
-            "has_more": page.len() < older.len(),
+            "has_more": has_more,
         })
     }
 

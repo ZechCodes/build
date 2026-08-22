@@ -3032,10 +3032,26 @@ impl AppState {
                     .is_none_or(|attention| attention.anchor_at.is_none())
             })
             .map(|(id, roster)| {
+                // Every user message the entity ever had, not the tail the load
+                // left resident: an anchor is replayed over the whole history,
+                // and one replayed over part of it puts the entry in a place it
+                // never had. A history the store cannot hand back leaves the
+                // anchor to what is held rather than leaving the entry unseeded.
                 let mut said_at: Vec<String> = roster
                     .iter()
-                    .flat_map(|agent| agent.thread.user_message_times())
-                    .map(str::to_string)
+                    .flat_map(|agent| match self.whole_conversation(&agent.thread) {
+                        Ok(items) => crate::thread::Thread::user_message_times_in(&items)
+                            .map(str::to_string)
+                            .collect::<Vec<String>>(),
+                        Err(error) => {
+                            eprintln!("anchor seeding: {error}");
+                            agent
+                                .thread
+                                .user_message_times()
+                                .map(str::to_string)
+                                .collect()
+                        }
+                    })
                     .collect();
                 said_at.sort();
                 let created_at = self
@@ -4130,6 +4146,29 @@ impl AppState {
     /// which is where its first agent's words are actually recorded. Never
     /// another entity's: an agent asking about work it was never given must
     /// come back empty, not informed.
+    /// The whole of a conversation, for a reader answering ABOUT its history
+    /// rather than rendering it.
+    ///
+    /// Borrows what is already held whenever that is the whole conversation —
+    /// which it is for every conversation this process wrote itself — and goes
+    /// to the store only for the history a bounded load left there.
+    fn whole_conversation<'a>(
+        &self,
+        thread: &'a crate::thread::Thread,
+    ) -> Result<std::borrow::Cow<'a, [crate::thread::ThreadItem]>, String> {
+        if thread.total_item_count() == thread.items.len() as u64 {
+            return Ok(std::borrow::Cow::Borrowed(&thread.items));
+        }
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        store
+            .thread_items(&thread.agent.id)
+            .map(std::borrow::Cow::Owned)
+            .map_err(|error| format!("conversation store: {error}"))
+    }
+
     fn search_agent_conversations(
         &self,
         entity_id: &str,
@@ -4153,10 +4192,14 @@ impl AppState {
             return Err(format!("unknown conversation owner: {entity_id}"));
         }
 
-        let mut hits: Vec<crate::thread::ConversationHit> = threads
-            .iter()
-            .flat_map(|thread| thread.search(query))
-            .collect();
+        let mut hits: Vec<crate::thread::ConversationHit> = Vec::new();
+        for thread in &threads {
+            // A search is asked about the whole conversation — what was decided
+            // about a thing, however long ago — so it looks past the tail the
+            // load left resident.
+            let items = self.whole_conversation(thread)?;
+            hits.extend(thread.search_items(&items, query));
+        }
         // One answer out of possibly two conversations, so the ordering the
         // per-conversation search guarantees has to be re-established across
         // them: newest first, by when it was said.
@@ -10213,10 +10256,39 @@ impl AppState {
     fn thread_page(&self, params: &Value) -> Result<Value, String> {
         let entity_id = conversation_owner_param(params)?;
         let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
-        Ok(thread.wire_value_page(
-            params.get("before_sequence").and_then(Value::as_u64),
-            thread_page_limit(params),
-        ))
+        let before = params.get("before_sequence").and_then(Value::as_u64);
+        let limit = thread_page_limit(params);
+        // A conversation is loaded as its tail, so a walk far enough up one
+        // leaves memory. Where it does, the page comes back out of the store —
+        // the same page, in the same shape, off the same seek.
+        if thread.page_reaches_stored_history(before, limit) {
+            return self.stored_thread_page(thread, before, limit);
+        }
+        Ok(thread.wire_value_page(before, limit))
+    }
+
+    /// One page of the history no load read, straight off the store.
+    ///
+    /// Asks for one item more than the page, which is how it knows whether
+    /// there is anything above without counting the conversation.
+    fn stored_thread_page(
+        &self,
+        thread: &crate::thread::Thread,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        let mut page = store
+            .thread_page(&thread.agent.id, before_sequence, limit + 1)
+            .map_err(|error| format!("conversation store: {error}"))?;
+        let has_more = page.len() > limit;
+        if has_more {
+            page.remove(0);
+        }
+        Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
     }
 
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
@@ -25586,6 +25658,49 @@ mod tests {
             .is_err());
     }
 
+    /// A search is asked ABOUT a conversation, not asked to render it, so a
+    /// restart that loaded the tail of a long one must still answer out of the
+    /// whole of it. An agent that could only search what is resident has lost
+    /// exactly the old decisions the tool exists to look up.
+    #[test]
+    fn a_search_reaches_history_the_restart_never_loaded() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-history", 250);
+        let active = state.runs.remove("run-history").expect("the run is there");
+        state
+            .persist_run_record("run-history", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        assert!(
+            restarted.runs["run-history"]
+                .agents
+                .first()
+                .thread
+                .items
+                .len()
+                < held,
+            "the restart loaded the conversation whole, so the search proves nothing"
+        );
+
+        // "turn 0" is the first thing ever said here, 249 items below the tail.
+        let found = restarted
+            .on_mcp_action(
+                "run-history",
+                BridgeAction::SearchConversation {
+                    query: text_query("turn 0"),
+                },
+            )
+            .unwrap();
+        assert_eq!(found["hits"].as_array().unwrap().len(), 1, "{found:?}");
+        assert_eq!(found["hits"][0]["sequence"], 1, "{found:?}");
+        assert!(found["hits"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("turn 0"));
+    }
+
     /// The whole point of the tool: a session with no memory asks what was
     /// decided and gets back a pointer with the metadata that found it.
     #[test]
@@ -25945,6 +26060,64 @@ mod tests {
         ascending.sort_unstable();
         ascending.dedup();
         assert_eq!(walked, ascending);
+    }
+
+    /// A restarted daemon holds the tail of a long conversation, not all of
+    /// it, so a walk back through one leaves memory and reaches the store.
+    /// The reviewer scrolling up must not be able to tell: every item, once,
+    /// in the order it happened, right back to the first thing ever said.
+    #[test]
+    fn paging_reaches_the_history_a_restart_never_loaded() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-restart", 250);
+        let active = state.runs.remove("run-restart").expect("the run is there");
+        state
+            .persist_run_record("run-restart", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        let resident = restarted.runs["run-restart"]
+            .agents
+            .first()
+            .thread
+            .items
+            .len();
+        assert!(
+            resident < held,
+            "the restart loaded the conversation whole: {resident} of {held}"
+        );
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let page = restarted.handle(req(
+                "thread.page",
+                json!({
+                    "entity_id": "run-restart",
+                    "before_sequence": before,
+                    "limit": 25,
+                }),
+            ));
+            assert_eq!(page["ok"], true, "{page:?}");
+            let thread = &page["result"];
+            let sequences = page_sequences(thread);
+            assert_eq!(sequences.len(), 25, "{thread:?}");
+            assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+            let mut older = sequences;
+            older.extend(walked);
+            walked = older;
+            if thread["has_more"] == json!(false) {
+                break;
+            }
+            before = thread["oldest_sequence"].as_u64();
+        }
+
+        let every_sequence: Vec<u64> = (1..=held as u64).collect();
+        assert_eq!(
+            walked, every_sequence,
+            "the walk missed, repeated or reordered the history it read out of the store"
+        );
     }
 
     #[test]

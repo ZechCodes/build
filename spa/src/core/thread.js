@@ -122,6 +122,14 @@ export const FIRST_PAGE_ITEMS = 60;
 // reading it.
 export const MUTATION_THREAD_PAGE = Object.freeze({ thread_limit: FIRST_PAGE_ITEMS });
 
+// What a surface asks for when it renders no conversation at all but still
+// polls a detail RPC — the branch surface, whose conversation is the rail's
+// beside it, and the console, which wants only a directory to stand in. Naming
+// no bound would ship every item the conversation ever held on every tick; the
+// smallest page the daemon will cut still carries the bounded fields off the
+// thread these surfaces do read (the diff revision a comment anchors to).
+export const SMALLEST_THREAD_PAGE = Object.freeze({ thread_limit: 1 });
+
 export function createThreadCache() {
   let accumulatedItems = [];
   // Whether the daemon said there is conversation above the window. Only a

@@ -33714,6 +33714,49 @@ mod tests {
         );
     }
 
+    /// `branch.get` is the branch surface's read, and that surface paints no
+    /// conversation — the rail beside it does, off its own paged read of this
+    /// same RPC. So the surface asks for the smallest page there is, and the
+    /// bound has to hold on both roads through the run view: the poll that
+    /// named an agent (the rail's bubble is open) and the poll that named none.
+    #[test]
+    fn branch_get_ships_the_page_the_branch_surface_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-bounded-branch");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let held = {
+            let active = state.runs.get_mut(&run_id).unwrap();
+            for turn in 0..250 {
+                active
+                    .agents
+                    .post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+            active.agents.first().thread.items.len()
+        };
+        let project_id = state.projects[0].id.clone();
+
+        for scope in [json!({}), json!({ "agent_id": first_agent })] {
+            let mut params = json!({
+                "project_id": project_id,
+                "branch": "feature-bounded-branch",
+                "thread_limit": 1,
+            });
+            for (key, value) in scope.as_object().unwrap() {
+                params[key] = value.clone();
+            }
+            let read = state.handle(req("branch.get", params));
+            assert_eq!(read["ok"], true, "{read:?}");
+            let thread = &read["result"]["run"]["thread"];
+            assert_eq!(thread["items"].as_array().unwrap().len(), 1, "{read:?}");
+            // Bounded, and still honest about the conversation behind the
+            // window: the count is the whole of it, and there is more above.
+            assert_eq!(thread["thread_total"], held as u64, "{read:?}");
+            assert_eq!(thread["has_more"], true, "{read:?}");
+            assert!(!read.to_string().contains("turn 0\""), "{read:?}");
+        }
+    }
+
     /// The delta cursor is per conversation: a sequence held for one agent's
     /// thread must be applied to THAT thread, and the totals it is checked
     /// against must be that thread's too. Cursoring one agent can never drain

@@ -767,12 +767,13 @@ pub enum ThreadItem {
 
 /// How much conversation a wire view carries: `Digest` for the polled list
 /// surfaces (board.list / plan.list re-ship every entity every ~2.5s, so a
-/// full thread there grows without bound), `Full` for the detail surfaces
-/// that actually render the conversation.
+/// full thread there grows without bound), `Page` for the detail surfaces that
+/// actually render the conversation — the newest page of it, with everything
+/// older a scroll-back away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadDetail {
     Digest,
-    Full,
+    Page,
 }
 
 impl ThreadItem {
@@ -921,6 +922,12 @@ pub struct ConversationQuery {
 /// older is a page up, which is the point: a conversation of hundreds no longer
 /// ships whole to show its last hour.
 pub const DEFAULT_THREAD_PAGE: usize = 60;
+
+/// The most conversation one page ships, however large a limit it asks for.
+///
+/// A scroll-back that asks for the whole conversation at once is the thing
+/// paging exists to prevent, so the cap holds even when the caller means well.
+pub const MAX_THREAD_PAGE: usize = 200;
 
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;

@@ -2717,7 +2717,7 @@ impl AppState {
             .or_insert_with(|| now.clone());
         self.entity_updated_at.insert(plan_id.clone(), now.clone());
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
-        let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
+        let view = self.plan_view(&plan_id, &active, ThreadDetail::Page);
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
@@ -2750,7 +2750,7 @@ impl AppState {
         self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
         self.invalidate_run_stat(&run_id);
-        let view = self.run_view(&run_id, &active, ThreadDetail::Full);
+        let view = self.run_view(&run_id, &active, ThreadDetail::Page);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
@@ -4958,9 +4958,10 @@ impl AppState {
     }
 
     /// The `thread` a detail poll ships when it asked for one in particular:
-    /// the named agent's conversation, whole or only past what the client
-    /// already holds. `None` when the poll named no agent and carried no
-    /// cursor — the view's own thread already is exactly that.
+    /// the named agent's conversation, either its newest page or only what has
+    /// happened past the cursor the client already holds. `None` when the poll
+    /// named no agent and carried no cursor — the view's own thread already is
+    /// exactly that.
     fn detail_thread_value(
         &self,
         entity_id: &str,
@@ -4974,7 +4975,7 @@ impl AppState {
         let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
         Ok(Some(match cursor {
             Some(after_sequence) => thread.wire_value_after(after_sequence),
-            None => thread.wire_value(),
+            None => thread.wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
         }))
     }
 
@@ -5214,6 +5215,7 @@ impl AppState {
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
+            "thread.page" => self.thread_page(params),
             "thread.post" => self.thread_post(params),
             "thread.attach" => self.thread_attach(params),
             "thread.attachment" => self.thread_attachment(params),
@@ -8787,7 +8789,7 @@ impl AppState {
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
-        let mut view = self.plan_view(&plan_id, active, ThreadDetail::Full);
+        let mut view = self.plan_view(&plan_id, active, ThreadDetail::Page);
         // See `run_get`. An issue carries exactly one agent, so naming it is a
         // check rather than a choice — but the check still holds.
         if let Some(thread) = self.detail_thread_value(&plan_id, params)? {
@@ -8894,7 +8896,7 @@ impl AppState {
 
     fn issue_view_full(&self, issue_id: &str) -> Result<Value, String> {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        Ok(self.plan_view(issue_id, issue, ThreadDetail::Full))
+        Ok(self.plan_view(issue_id, issue, ThreadDetail::Page))
     }
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
@@ -10096,16 +10098,16 @@ impl AppState {
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
+        let mut view = self.run_view(&run_id, active, ThreadDetail::Page);
         // Which conversation, and how much of it: the rail's open bubble names
         // the agent, and the client's cursor says what it already holds.
-        // Neither → the full backward-compatible thread the view already built.
+        // Neither → the newest page the view already built.
         if let Some(thread) = self.detail_thread_value(&run_id, params)? {
             view.as_object_mut()
                 .expect("run_view returns an object")
@@ -10146,6 +10148,22 @@ impl AppState {
             "created_at": revision.created_at,
             "contents": contents,
         }))
+    }
+
+    /// One page up a conversation: the items immediately older than
+    /// `before_sequence`, newest page when it says nothing. This is the other
+    /// half of the bounded first load — the reviewer scrolling back through
+    /// work the detail poll deliberately left off the wire.
+    ///
+    /// Ships exactly what a first page ships, so a client merges a page up the
+    /// way it merges the page it opened on.
+    fn thread_page(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = conversation_owner_param(params)?;
+        let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
+        Ok(thread.wire_value_page(
+            params.get("before_sequence").and_then(Value::as_u64),
+            thread_page_limit(params),
+        ))
     }
 
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
@@ -10381,7 +10399,7 @@ impl AppState {
                     return Ok(view);
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&entity_id, active, ThreadDetail::Page));
             }
             let mut active = self.take_run(&entity_id)?;
             append_reviewer_messages(
@@ -10869,7 +10887,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -10901,7 +10919,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -10947,7 +10965,7 @@ impl AppState {
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -10970,7 +10988,7 @@ impl AppState {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -11467,7 +11485,7 @@ impl AppState {
         let (checkout, scope) = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Page));
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
@@ -11479,7 +11497,7 @@ impl AppState {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Page));
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
@@ -12233,7 +12251,7 @@ impl AppState {
         row["run"] = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
-                let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
+                let mut view = self.run_view(&run_id, active, ThreadDetail::Page);
                 // The branch surface sits under the rail: it reads the
                 // conversation of whichever agent's bubble is open. See
                 // `run_get`.
@@ -13216,7 +13234,9 @@ impl AppState {
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
                 ThreadDetail::Digest => active.agents.digest_value(),
-                ThreadDetail::Full => active.agents.wire_value(),
+                ThreadDetail::Page => active
+                    .agents
+                    .wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
@@ -13345,7 +13365,9 @@ impl AppState {
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
                 ThreadDetail::Digest => self.conversation_thread_for_run(active).digest_value(),
-                ThreadDetail::Full => self.conversation_thread_for_run(active).wire_value(),
+                ThreadDetail::Page => self
+                    .conversation_thread_for_run(active)
+                    .wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id),
@@ -14154,9 +14176,39 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
 /// garbage (non-integer, negative) value reads as absent — the poll then gets
-/// the full backward-compatible thread instead of an error.
+/// the conversation's newest page instead of an error.
 fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
+}
+
+/// How much of a conversation a `thread.page` call asked for. Absent means a
+/// first load's page; a limit larger than one page could sanely carry is
+/// clamped rather than refused, since the caller still wants conversation
+/// back — and shipping the whole of a long one is the thing paging exists to
+/// prevent.
+fn thread_page_limit(params: &Value) -> usize {
+    params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .and_then(|limit| usize::try_from(limit).ok())
+        .map(|limit| limit.clamp(1, crate::thread::MAX_THREAD_PAGE))
+        .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+}
+
+/// The conversation owner a thread verb names. `entity_id` is the canonical
+/// name, and a detail surface's own id is accepted as well, so a client paging
+/// the view it is looking at does not have to rename the id it already holds.
+fn conversation_owner_param(params: &Value) -> Result<String, String> {
+    ["entity_id", "run_id", "plan_id", "issue_id"]
+        .iter()
+        .find_map(|key| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+        })
+        .map(str::to_string)
+        .ok_or_else(|| "missing required param: entity_id".to_string())
 }
 
 /// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
@@ -22472,12 +22524,14 @@ mod tests {
             }),
         );
 
-        // Without a cursor the wire is exactly as before: every item, no totals.
+        // Without a cursor the wire is the newest page — which for a
+        // conversation this short is every item it holds.
         let full = call(&handler, "run.get", json!({ "run_id": run_id }));
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(full_items.len() >= 2, "{full:?}");
-        assert!(full["result"]["thread"].get("thread_total").is_none());
+        assert_eq!(full["result"]["thread"]["has_more"], false, "{full:?}");
         let total = full_items.len() as u64;
+        assert_eq!(full["result"]["thread"]["thread_total"], total);
         let last_sequence = full_items.last().unwrap()["data"]["sequence"]
             .as_u64()
             .unwrap();
@@ -22515,7 +22569,7 @@ mod tests {
         );
         assert_eq!(drained["result"]["thread"]["thread_total"], total);
 
-        // A garbage cursor is treated as absent: the full backward-compatible thread.
+        // A garbage cursor is treated as absent: the newest page, not an error.
         let garbage = call(
             &handler,
             "run.get",
@@ -22529,7 +22583,6 @@ mod tests {
                 .len(),
             full_items.len()
         );
-        assert!(garbage["result"]["thread"].get("thread_total").is_none());
     }
 
     #[tokio::test]
@@ -25536,6 +25589,187 @@ mod tests {
             0,
             "{drained:?}"
         );
+    }
+
+    // ---- paged conversation reads -----------------------------------------
+
+    /// A run whose conversation is several pages long, so what a poll ships can
+    /// be told apart from what the conversation holds.
+    fn run_with_long_conversation(state: &mut AppState, run_id: &str, turns: usize) -> usize {
+        let mut active = crate::orchestrator::ActiveRun::reattach(
+            &fake_run_record(run_id),
+            ".build/plan.md".into(),
+        );
+        for turn in 0..turns {
+            active
+                .agents
+                .post_user(format!("turn {turn}"), None, now_rfc3339());
+        }
+        let held = active.agents.first().thread.items.len();
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert(run_id.into(), project_id);
+        state.runs.insert(run_id.into(), active);
+        held
+    }
+
+    /// The sequences a page shipped, in the order it shipped them.
+    fn page_sequences(thread: &Value) -> Vec<u64> {
+        thread["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["data"]["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn an_uncursored_detail_poll_ships_a_page_of_a_long_conversation_not_all_of_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-long", 250);
+
+        let opened = state.handle(req("run.get", json!({ "run_id": "run-long" })));
+        let thread = &opened["result"]["thread"];
+        let items = thread["items"].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+
+        // Bounded, but still honest about the conversation behind it: the
+        // fields a client already reads mean exactly what they did.
+        assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+        assert_eq!(
+            thread["thread_last_sequence"].as_u64().unwrap(),
+            *page_sequences(thread).last().unwrap()
+        );
+        assert_eq!(thread["has_more"], true, "{thread:?}");
+        assert_eq!(
+            thread["oldest_sequence"].as_u64().unwrap(),
+            page_sequences(thread)[0]
+        );
+
+        // The page is the tail — the work you were doing, not the first hour.
+        assert_eq!(items.last().unwrap()["data"]["body"], "turn 249");
+        assert!(!opened.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    #[test]
+    fn thread_page_walks_backward_to_the_start_of_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-walk", 250);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let page = state.handle(req(
+                "thread.page",
+                json!({
+                    "entity_id": "run-walk",
+                    "before_sequence": before,
+                    "limit": 25,
+                }),
+            ));
+            assert_eq!(page["ok"], true, "{page:?}");
+            let thread = &page["result"];
+            let sequences = page_sequences(thread);
+            assert_eq!(sequences.len(), 25, "{thread:?}");
+            assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+            let mut older = sequences;
+            older.extend(walked);
+            walked = older;
+            if thread["has_more"] == json!(false) {
+                assert!(thread["oldest_sequence"].is_number(), "{thread:?}");
+                break;
+            }
+            before = thread["oldest_sequence"].as_u64();
+        }
+
+        // Every item, once, in the order it happened.
+        assert_eq!(walked.len(), held);
+        let mut ascending = walked.clone();
+        ascending.sort_unstable();
+        ascending.dedup();
+        assert_eq!(walked, ascending);
+    }
+
+    #[test]
+    fn thread_page_clamps_the_limit_it_was_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-clamp", 250);
+
+        let greedy = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": 10_000 }),
+        ));
+        assert_eq!(
+            greedy["result"]["items"].as_array().unwrap().len(),
+            crate::thread::MAX_THREAD_PAGE,
+            "{greedy:?}"
+        );
+
+        // A limit of nothing is not an empty page — it is the smallest one.
+        let empty = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": 0 }),
+        ));
+        assert_eq!(empty["result"]["items"].as_array().unwrap().len(), 1);
+
+        // No limit at all is the same page a first load gets.
+        let unsaid = state.handle(req("thread.page", json!({ "entity_id": "run-clamp" })));
+        assert_eq!(
+            unsaid["result"]["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE
+        );
+    }
+
+    #[test]
+    fn thread_page_reads_the_agent_it_was_addressed_to() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-addressed", 80);
+        let second_agent_id = {
+            let active = state.runs.get_mut("run-addressed").unwrap();
+            let id = active
+                .agents
+                .add("run-addressed", ModelChoice::default(), &now_rfc3339())
+                .id
+                .clone();
+            active.agents.by_id_mut(&id).unwrap().thread.post_user(
+                "only the second agent heard this",
+                None,
+                now_rfc3339(),
+            );
+            id
+        };
+
+        let addressed = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-addressed", "agent_id": second_agent_id }),
+        ));
+        assert_eq!(addressed["result"]["thread_total"], 1, "{addressed:?}");
+        assert_eq!(
+            addressed["result"]["items"][0]["data"]["body"],
+            "only the second agent heard this"
+        );
+    }
+
+    #[test]
+    fn thread_page_of_an_unknown_entity_is_an_error() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let missing = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-that-never-was" }),
+        ));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+        assert_eq!(missing["error"], "unknown id", "{missing:?}");
+
+        let nameless = state.handle(req("thread.page", json!({})));
+        assert_eq!(nameless["ok"], false, "{nameless:?}");
     }
 
     // ---- thread.attach: files sent with a conversation message -------------

@@ -475,6 +475,16 @@ const THREAD_CURSOR_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND updated_sequence > ?2 \
      ORDER BY updated_sequence";
 
+/// The newest counter value anything in a conversation has reached, read off
+/// the far end of `thread_items_cursor` rather than by looking at the items.
+///
+/// A load reads the tail, so it cannot see that an item under the tail was
+/// mutated in place — a message marked seen, a comment resolved — before the
+/// process before it stopped. This is how far a cursor has to have travelled
+/// for the tail to be the whole answer to it.
+const THREAD_LAST_SEQUENCE_SQL: &str =
+    "SELECT COALESCE(MAX(updated_sequence), 0) FROM thread_items WHERE agent_id = ?1";
+
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
@@ -834,6 +844,7 @@ impl Store {
         // life of the process, exactly what the paged reads exist to save.
         let mut tail = conn.prepare(THREAD_PAGE_SQL)?;
         let mut count = conn.prepare(THREAD_ITEM_COUNT_SQL)?;
+        let mut last_sequence = conn.prepare(THREAD_LAST_SEQUENCE_SQL)?;
         let mut agents = Vec::with_capacity(rows.len());
         for (id, raw) in rows {
             let mut agent: Agent =
@@ -842,10 +853,12 @@ impl Store {
                     source,
                 })?;
             let held = count.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
+            let stored_last = last_sequence.query_row([&id], |row| row.get::<_, i64>(0))? as u64;
             let items = read_thread_page(&mut tail, &id, i64::MAX, RESIDENT_CONVERSATION_TAIL)?;
             agent.thread.adopt_stored_tail(
                 items,
                 held.saturating_sub(RESIDENT_CONVERSATION_TAIL as u64),
+                stored_last,
             );
             agents.push(agent);
         }

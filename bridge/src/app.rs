@@ -5061,6 +5061,13 @@ impl AppState {
         }
         let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
         Ok(Some(match cursor {
+            // A conversation is loaded as its tail, so a cursor from before a
+            // restart can be owed news memory does not hold: an item under the
+            // tail that the process before this one mutated in place. Where it
+            // is, the delta is completed out of the store.
+            Some(after_sequence) if thread.cursor_reaches_stored_history(after_sequence) => {
+                self.stored_thread_delta(thread, after_sequence)?
+            }
             Some(after_sequence) => thread.wire_value_after(after_sequence),
             None => match thread_detail(params) {
                 ThreadDetail::Page(limit) => thread.wire_value_page(None, limit),
@@ -10291,6 +10298,29 @@ impl AppState {
             page.remove(0);
         }
         Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
+    }
+
+    /// A cursor's delta completed out of the store: the forward seek answers
+    /// for the history the load left behind, and the conversation merges it
+    /// with the tail it holds.
+    ///
+    /// Only a cursor older than the mark the load read gets here, and the
+    /// answer carries a `thread_last_sequence` past that mark — so a client
+    /// pays this read once after a restart and its steady-state polls go on
+    /// being answered out of memory.
+    fn stored_thread_delta(
+        &self,
+        thread: &crate::thread::Thread,
+        after_sequence: u64,
+    ) -> Result<Value, String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        let history = store
+            .thread_items_after(&thread.agent.id, after_sequence)
+            .map_err(|error| format!("conversation store: {error}"))?;
+        Ok(thread.wire_value_after_including_history(after_sequence, &history))
     }
 
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
@@ -26006,6 +26036,85 @@ mod tests {
         // The page is the tail — the work you were doing, not the first hour.
         assert_eq!(items.last().unwrap()["data"]["body"], "turn 249");
         assert!(!opened.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    /// A restart drops the history under the tail; the tab watching it does
+    /// not drop its cursor. An item mutated in place before the restart — a
+    /// message the agent marked seen — is news no creation sequence expresses,
+    /// so a delta answered only out of the tail leaves that tab rendering a
+    /// read message unread for as long as it stays open.
+    #[test]
+    fn a_cursored_poll_after_a_restart_reships_a_mutation_under_the_tail() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-restart-delta", 250);
+        // Where the open tab's cursor sits: it holds every item said so far.
+        let cursor = state.runs["run-restart-delta"]
+            .agents
+            .first()
+            .thread
+            .last_sequence();
+
+        // The agent reads the mailbox, which bumps the `updated_sequence` of
+        // every message in it — including the ones at the very start of the
+        // conversation, which the restart is about to leave in the store.
+        state
+            .on_mcp_action("run-restart-delta", BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        let active = state
+            .runs
+            .remove("run-restart-delta")
+            .expect("the run is there");
+        let total = active.agents.first().thread.items.len();
+        state
+            .persist_run_record("run-restart-delta", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        assert!(
+            restarted.runs["run-restart-delta"]
+                .agents
+                .first()
+                .thread
+                .items
+                .len()
+                < total,
+            "the restart loaded the conversation whole, so the delta proves nothing"
+        );
+
+        let delta = restarted.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-restart-delta",
+                "thread_after_sequence": cursor,
+            }),
+        ));
+        let thread = &delta["result"]["thread"];
+        let items = thread["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|item| item["data"]["body"] == "turn 0"
+                && item["data"]["seen_at"].is_string()),
+            "the mutation under the tail never reached the cursor: {thread:?}"
+        );
+        assert_eq!(thread["thread_total"], total as u64, "{thread:?}");
+
+        // And it drains: the high-water mark it names is past the mutations it
+        // just shipped, so the tab asks once and stops asking.
+        let advanced = thread["thread_last_sequence"].as_u64().unwrap();
+        let drained = restarted.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-restart-delta",
+                "thread_after_sequence": advanced,
+            }),
+        ));
+        assert!(
+            drained["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{drained:?}"
+        );
     }
 
     /// The write path is the hot one: a reviewer types one word into a

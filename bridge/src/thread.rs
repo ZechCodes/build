@@ -1188,6 +1188,12 @@ pub struct Thread {
     earlier_item_count: u64,
     #[serde(skip)]
     resident_from_sequence: u64,
+    /// The newest counter value the store held for this conversation when the
+    /// load read its tail. Nothing under that tail can move again in this
+    /// process — only the items it holds can — so this is the exact point past
+    /// which the tail is the whole answer to a cursor.
+    #[serde(skip)]
+    stored_last_sequence: u64,
 }
 
 fn empty_agent() -> AgentIdentity {
@@ -1871,21 +1877,34 @@ impl Thread {
     /// mutation bump (0 for an empty thread) — the client's cursor high-water
     /// mark. Counting mutation bumps is what keeps the cursored polls from
     /// re-shipping a mutated item forever.
+    ///
+    /// Counts the history the load left in the store as well, since a mutation
+    /// down there is a counter value too: a mark the tail alone could name
+    /// would sit below such a mutation forever, and the client handed it would
+    /// ask for the same delta on every poll.
     pub fn last_sequence(&self) -> u64 {
         self.items
             .iter()
             .map(ThreadItem::latest_sequence)
             .max()
             .unwrap_or(0)
+            .max(self.stored_last_sequence)
     }
 
     /// Take a conversation's tail as it was read from the store, told how many
-    /// older items were left there.
+    /// older items were left there and how far the whole conversation's counter
+    /// had got by the time it was read.
     ///
     /// The counter the appends run off (`next_sequence`) travels with the
     /// agent's own record, not with the items, so a conversation carries on
     /// from where it really ended rather than from the end of its tail.
-    pub fn adopt_stored_tail(&mut self, tail: Vec<ThreadItem>, earlier_item_count: u64) {
+    pub fn adopt_stored_tail(
+        &mut self,
+        tail: Vec<ThreadItem>,
+        earlier_item_count: u64,
+        stored_last_sequence: u64,
+    ) {
+        self.stored_last_sequence = stored_last_sequence;
         // The floor is remembered rather than re-derived from `items`, which
         // moves: an append or a withdrawn draft would otherwise shift what
         // this process believes it read.
@@ -1923,6 +1942,19 @@ impl Thread {
             .filter(|item| item.sequence() < before)
             .count()
             < limit
+    }
+
+    /// Whether a cursor this far back reaches under the tail this process
+    /// holds, and so has to be completed out of the store.
+    ///
+    /// An item under the tail is one this process cannot mutate — it does not
+    /// hold it — so the only news down there is a mutation the process before
+    /// this one made, and every one of those is at or below the counter value
+    /// the load read. A cursor past that mark has already been told everything
+    /// the history has to say, which is what stops a caught-up client from
+    /// asking the store anything on its steady-state polls.
+    pub fn cursor_reaches_stored_history(&self, after_sequence: u64) -> bool {
+        self.earlier_item_count > 0 && after_sequence < self.stored_last_sequence
     }
 
     /// When the turn the agent is working started, or `None` when nothing is
@@ -2086,17 +2118,49 @@ impl Thread {
     /// the wire. Sessions, revisions and last_completion are small and
     /// bounded, so they always ship whole.
     pub fn wire_value_after(&self, after_sequence: u64) -> Value {
-        let newer: Vec<&ThreadItem> = self
-            .items
+        self.wire_value_of_delta(&self.resident_after(after_sequence))
+    }
+
+    /// The same cursor view, completed with items read back out of the store:
+    /// the history under the tail this process loaded, which memory has no
+    /// answer for and which a client whose cursor predates a restart is still
+    /// owed. Items the tail already holds are taken from the tail, not from
+    /// `history` — memory is the fresher copy of those.
+    pub fn wire_value_after_including_history(
+        &self,
+        after_sequence: u64,
+        history: &[ThreadItem],
+    ) -> Value {
+        let mut delta: Vec<&ThreadItem> = history
+            .iter()
+            .filter(|item| {
+                item.sequence() < self.resident_from_sequence
+                    && item.latest_sequence() > after_sequence
+            })
+            .chain(self.resident_after(after_sequence))
+            .collect();
+        // The store hands its rows back in mutation order; a conversation's own
+        // order is creation order, which is what a client merges against.
+        delta.sort_by_key(|item| item.sequence());
+        self.wire_value_of_delta(&delta)
+    }
+
+    /// The items this process holds that a cursor has not been told about.
+    fn resident_after(&self, after_sequence: u64) -> Vec<&ThreadItem> {
+        self.items
             .iter()
             .filter(|item| item.latest_sequence() > after_sequence)
-            .collect();
-        count_serialized_items(newer.len());
+            .collect()
+    }
+
+    /// The delta shape, around items the caller already chose.
+    fn wire_value_of_delta(&self, delta: &[&ThreadItem]) -> Value {
+        count_serialized_items(delta.len());
         json!({
             "id": self.id,
             "agent": self.agent,
             "sessions": self.sessions,
-            "items": newer,
+            "items": delta,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
             "thread_total": self.total_item_count(),

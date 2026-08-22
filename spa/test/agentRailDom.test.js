@@ -465,6 +465,96 @@ describe("the conversation panel", () => {
   });
 });
 
+describe("reading back past the top of a paged conversation", () => {
+  // A long conversation reaches the client as a page of its newest items, so
+  // the top of the scroller is a floor rather than the start of anything. The
+  // reader hitting it is the ask for the page above.
+  const said = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  const firstPage = (hasMore) => ({
+    sessions: [],
+    items: [said(98, "second to last"), said(99, "the newest")],
+    thread_total: 99,
+    thread_last_sequence: 99,
+    oldest_sequence: 98,
+    has_more: hasMore,
+  });
+  const pageAbove = {
+    items: [said(96, "the oldest we asked for"), said(97, "one before the window")],
+    thread_total: 99,
+    thread_last_sequence: 99,
+    oldest_sequence: 96,
+    has_more: true,
+  };
+  const railBody = () => railHost().querySelector("#rail-body");
+
+  const pagedConversation = (hasMore) => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "branch.get") {
+        // A cursored poll is a forward delta and says nothing about the far
+        // end of the conversation — only a paged answer does.
+        const thread = params.thread_after_sequence
+          ? { sessions: [], items: [], thread_total: 99, thread_last_sequence: 99 }
+          : firstPage(hasMore);
+        return branchRow({ run: { run_id: "run-3", thread } });
+      }
+      if (method === "thread.page") return pageAbove;
+      return {};
+    });
+  };
+
+  it("asks the daemon for the page above the window when the reader reaches the top", async () => {
+    pagedConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", before_sequence: 98 },
+    ]);
+  });
+
+  it("folds the older items in above the ones already on screen", async () => {
+    pagedConversation(true);
+    await mount();
+    expect(panel().textContent).not.toContain("one before the window");
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    const bodies = [...railBody().querySelectorAll(".thread-body")].map((node) => node.textContent);
+    expect(bodies).toEqual([
+      "the oldest we asked for",
+      "one before the window",
+      "second to last",
+      "the newest",
+    ]);
+  });
+
+  it("asks nothing when the window already holds the start of the conversation", async () => {
+    pagedConversation(false);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("asks once for a page, however many scroll events the gesture fires", async () => {
+    pagedConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    railBody().dispatchEvent(new Event("scroll"));
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toHaveLength(1);
+  });
+});
+
 describe("focusing the composer on a freshly created branch", () => {
   // A branch fresh out of "New branch…" has no agent yet — the ghost state —
   // same as every test in this block below.

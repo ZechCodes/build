@@ -366,6 +366,108 @@ describe("thread cache (cursor merge for the detail polls)", () => {
   });
 });
 
+describe("thread cache paging (the window over a long conversation)", () => {
+  const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  // What the daemon's `thread.page` ships: the newest items it was asked for,
+  // plus the whole conversation's size and the seek for the page above.
+  const page = (items, { thread_total, has_more }) => ({
+    id: "thread:run-1",
+    items,
+    revisions: [],
+    thread_total,
+    thread_last_sequence: items.at(-1)?.data.sequence || 0,
+    oldest_sequence: items[0]?.data.sequence ?? null,
+    has_more,
+  });
+
+  it("holds a bounded first page without calling it a loss", () => {
+    const cache = createThreadCache();
+    const opened = cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    expect(opened.items.map((i) => i.data.sequence)).toEqual([98, 99]);
+    // The window is 2 of 99 on purpose. A cursor here is the whole point of
+    // paging: dropping to a full refetch would ship the other 97 every tick.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 99 });
+    const polled = cache.absorb({ items: [item(100, "new")], thread_total: 100, thread_last_sequence: 100 });
+    expect(polled.items.map((i) => i.data.sequence)).toEqual([98, 99, 100]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 100 });
+  });
+
+  it("resets when the window no longer reaches the newest item the daemon names", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    // A delta went missing: the daemon says 101 is the newest and shipped
+    // nothing that gets us there, so what we hold has a hole in it.
+    const gapped = cache.absorb({ items: [], thread_total: 101, thread_last_sequence: 101 });
+    expect(gapped.items.map((i) => i.data.sequence)).toEqual([98, 99]);
+    expect(cache.cursorParam()).toEqual({});
+  });
+
+  it("resets when the conversation holds fewer items than the window does", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(1, "a"), item(2, "b"), item(3, "c")], { thread_total: 3, has_more: false }));
+    // A bridge restart, or another entity's conversation under the same id:
+    // the sequences still line up at the top but the whole is smaller than
+    // the part we hold.
+    cache.absorb({ items: [], thread_total: 2, thread_last_sequence: 3 });
+    expect(cache.cursorParam()).toEqual({});
+  });
+
+  it("asks for the page above the window while the daemon says there is one", () => {
+    const cache = createThreadCache();
+    expect(cache.olderPageParam()).toBeNull();
+    cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 98 });
+    cache.absorbOlderPage(page([item(96, "w"), item(97, "x")], { thread_total: 99, has_more: false }));
+    expect(cache.hasOlderItems()).toBe(false);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 96 });
+  });
+
+  it("never asks for older items when the first page already holds the start", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(1, "a"), item(2, "b")], { thread_total: 2, has_more: false }));
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+
+  it("folds an older page in at the front, in order, without disturbing the cursor", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
+    const older = page([item(5, "e"), item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true });
+    const widened = cache.absorbOlderPage(older);
+    expect(widened.items.map((i) => i.data.sequence)).toEqual([5, 6, 7, 8, 9]);
+    expect(older.items.map((i) => i.data.sequence)).toEqual([5, 6, 7]); // payload untouched
+    // Older items arriving must not walk the forward cursor backwards: the
+    // next poll still wants only what is newer than the newest we hold.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 9 });
+  });
+
+  it("keeps the widened window through the next poll rather than resetting on it", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
+    cache.absorbOlderPage(page([item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true }));
+    const polled = cache.absorb({ items: [item(10, "j")], thread_total: 10, thread_last_sequence: 10 });
+    expect(polled.items.map((i) => i.data.sequence)).toEqual([6, 7, 8, 9, 10]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 10 });
+  });
+
+  it("ignores an older page when there is no window left to extend", () => {
+    const cache = createThreadCache();
+    // The reader switched agents while the page was in flight, so the cache it
+    // would extend is gone. Folding it in would make a window whose top is not
+    // the conversation's newest — a hole, dressed as history.
+    expect(cache.absorbOlderPage(page([item(1, "a")], { thread_total: 9, has_more: false }))).toBeNull();
+    expect(cache.cursorParam()).toEqual({});
+    expect(cache.olderPageParam()).toBeNull();
+  });
+
+  it("forgets that older items remain when it resets", () => {
+    const cache = createThreadCache();
+    cache.absorb(page([item(9, "i")], { thread_total: 9, has_more: true }));
+    cache.reset();
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+});
+
 describe("structured review messages", () => {
   it("preserves diff anchors instead of flattening them into a prompt", () => {
     expect(diffThreadMessages([{ file: "src/a.js", lnA: 2, lnB: 4, snippet: "old()", comment: "rename" }], "ship safely", "diff-r1"))

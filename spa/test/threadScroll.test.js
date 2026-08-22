@@ -87,6 +87,51 @@ describe("a conversation opens at its newest message", () => {
     }
   });
 
+  // ---- reading back into history -------------------------------------------
+  //
+  // A long conversation opens on a page of it, so the top of the scroller is a
+  // floor rather than the start. Lifting it puts content ABOVE the reader,
+  // which is the one direction the pinning above does not cover.
+
+  it("holds the reader on the message they were reading when older items land above it", () => {
+    let height = 1000;
+    const body = document.createElement("div");
+    Object.defineProperty(body, "scrollHeight", { get: () => height, configurable: true });
+    Object.defineProperty(body, "clientHeight", { get: () => 300, configurable: true });
+    body.scrollTop = 0;
+    document.body.appendChild(body);
+    paintThreadKeepingPlace(body, paintThread(body)); // opens: bottom
+    body.scrollTop = 0; // the reader reads all the way back to the top
+
+    // The paint itself is what makes the timeline taller: 600px of history
+    // above everything that was already there.
+    const paintWithHistoryOnTop = () => {
+      height = 1600;
+      paintThread(body)();
+    };
+    paintThreadKeepingPlace(body, paintWithHistoryOnTop, { olderItemsPrepended: true });
+
+    expect(body.scrollTop).toBe(600);
+  });
+
+  it("never takes a reader asking for history to the bottom instead", () => {
+    let height = 1000;
+    const body = document.createElement("div");
+    Object.defineProperty(body, "scrollHeight", { get: () => height, configurable: true });
+    Object.defineProperty(body, "clientHeight", { get: () => 300, configurable: true });
+    body.scrollTop = 700; // at the bottom, where a short thread opens
+    document.body.appendChild(body);
+    paintThreadKeepingPlace(body, paintThread(body));
+    body.scrollTop = 0;
+
+    paintThreadKeepingPlace(body, () => {
+      height = 1200;
+      paintThread(body)();
+    }, { olderItemsPrepended: true });
+
+    expect(body.scrollTop).toBe(200);
+  });
+
   it("does not chase a reader who scrolls away between the paint and the frame", () => {
     const frames = [];
     const original = globalThis.requestAnimationFrame;

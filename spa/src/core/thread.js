@@ -101,12 +101,17 @@ function timeHtml(createdAt) {
 
 // Client half of the thread cursor: the detail polls (plan.get / run.get every
 // 1.6s) would otherwise re-ship the whole forever-growing conversation over
-// E2EE on every tick. The cache holds one entity's accumulated items, tells the
-// caller which cursor to send, and folds each delta back into a full thread for
-// rendering. A `thread_total` that disagrees with what it holds (bridge
-// restart, entity swap, dropped delta) resets it to a full refetch.
+// E2EE on every tick. The cache holds a WINDOW over one entity's conversation —
+// the newest items the daemon paged out, widened upwards as the reader scrolls
+// back — tells the caller which cursor to send, and folds each delta back into
+// a full thread for rendering. A window that no longer reaches the newest item,
+// or that holds more than the conversation does (bridge restart, entity swap,
+// dropped delta), resets it to a full refetch.
 export function createThreadCache() {
   let accumulatedItems = [];
+  // Whether the daemon said there is conversation above the window. Only a
+  // paged answer knows; a forward delta says nothing about the far end.
+  let olderItemsRemain = false;
 
   // The bridge bumps `updated_sequence` (drawn from the same counter as
   // `sequence`) when it mutates a message in place — marking it seen,
@@ -118,46 +123,104 @@ export function createThreadCache() {
   const lastHeldSequence = () =>
     accumulatedItems.reduce((highest, item) => Math.max(highest, itemCursorSequence(item)), 0);
 
+  const mergeArrivals = (arrivedItems) => {
+    // Keyed by creation sequence so a replay never grows the list, while an
+    // arrived copy replaces the held one — the bridge re-ships an item
+    // exactly when it holds newer state (seen, resolved) for it.
+    const mergedBySequence = new Map(accumulatedItems.map((item) => [item.data?.sequence, item]));
+    for (const arrived of arrivedItems) {
+      mergedBySequence.set(arrived.data?.sequence, arrived);
+    }
+    return [...mergedBySequence.values()].sort(
+      (a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0),
+    );
+  };
+
+  /// Whether a window is still one unbroken run of the conversation's newest
+  /// items — the only shape the forward cursor is safe on top of.
+  ///
+  /// Counting is not the test any more: a paged client holds fewer items than
+  /// `thread_total` on purpose, and treating that as a loss would refetch the
+  /// whole conversation every 1.6s, which is the exact cost paging exists to
+  /// avoid. Contiguity WITHIN the window is kept by construction — a forward
+  /// delta carries everything after the cursor, an older page carries the items
+  /// immediately before the front — so what is left to check is the two ends:
+  /// the top must reach the newest item the daemon names (a window that falls
+  /// short of it lost a delta), and the window can never be larger than the
+  /// conversation it is a window on (a smaller whole means the conversation
+  /// restarted, was trimmed, or belongs to somebody else now).
+  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, threadPayload) => {
+    const newest = threadPayload.thread_last_sequence;
+    const topOfWindow = merged.reduce(
+      (highest, item) => Math.max(highest, itemCursorSequence(item)),
+      0,
+    );
+    // A daemon old enough not to name its newest sequence leaves only the size
+    // check to go on.
+    if (newest != null && topOfWindow !== newest) return false;
+    return merged.length <= threadPayload.thread_total;
+  };
+
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
     // nothing when a full fetch is needed (first load, or after a reset).
     cursorParam() {
       return accumulatedItems.length ? { thread_after_sequence: lastHeldSequence() } : {};
     },
+    // Extra params for the next thread.page: the seek for the page above the
+    // window, or nothing while there is no window to widen.
+    olderPageParam() {
+      if (!accumulatedItems.length) return null;
+      return { before_sequence: accumulatedItems[0].data?.sequence };
+    },
+    // Whether asking for that page is worth it — the daemon's own answer.
+    hasOlderItems() {
+      return olderItemsRemain;
+    },
     // Fold a polled thread payload into the cache and return a thread whose
     // `items` is the complete accumulated list. Never mutates the payload.
     absorb(threadPayload) {
       if (!threadPayload) {
         accumulatedItems = [];
+        olderItemsRemain = false;
         return threadPayload;
       }
+      // A paged answer is the only one that knows what lies above it; a bare
+      // forward delta leaves the standing answer alone.
+      if (threadPayload.has_more != null) olderItemsRemain = threadPayload.has_more === true;
       const arrivedItems = threadPayload.items || [];
       if (threadPayload.thread_total == null) {
         // An uncursored (full) response is authoritative: replace, don't merge.
         accumulatedItems = [...arrivedItems];
         return { ...threadPayload, items: accumulatedItems };
       }
-      // Keyed by creation sequence so a replay never grows the list, while an
-      // arrived copy replaces the held one — the bridge re-ships an item
-      // exactly when it holds newer state (seen, resolved) for it.
-      const mergedBySequence = new Map(accumulatedItems.map((item) => [item.data?.sequence, item]));
-      for (const arrived of arrivedItems) {
-        mergedBySequence.set(arrived.data?.sequence, arrived);
-      }
-      const merged = [...mergedBySequence.values()].sort(
-        (a, b) => (a.data?.sequence || 0) - (b.data?.sequence || 0),
-      );
-      if (merged.length !== threadPayload.thread_total) {
-        // Gap or shrink: render what we have this tick, but drop the cache so
-        // the next poll refetches the full thread and self-heals.
+      const merged = mergeArrivals(arrivedItems);
+      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, threadPayload)) {
+        // A real gap: render what we have this tick, but drop the cache so the
+        // next poll refetches from the newest page down and self-heals.
         accumulatedItems = [];
+        olderItemsRemain = false;
         return { ...threadPayload, items: merged };
       }
       accumulatedItems = merged;
       return { ...threadPayload, items: accumulatedItems };
     },
+    // Widen the window upwards with a `thread.page` answer and return the whole
+    // of it. Never mutates the payload, and never moves the forward cursor:
+    // that one reads the newest held sequence, which older items cannot change.
+    absorbOlderPage(pagePayload) {
+      // An older page extends a window; with none open — the reader switched
+      // agents while it was in flight — there is nothing to extend, and folding
+      // it in would leave a window whose top is not the conversation's newest.
+      // A hole, dressed as history. The next poll opens the window instead.
+      if (!pagePayload || !accumulatedItems.length) return null;
+      if (pagePayload.has_more != null) olderItemsRemain = pagePayload.has_more === true;
+      accumulatedItems = mergeArrivals(pagePayload.items || []);
+      return { ...pagePayload, items: accumulatedItems };
+    },
     reset() {
       accumulatedItems = [];
+      olderItemsRemain = false;
     },
   };
 }
@@ -591,7 +654,13 @@ function paintAndSayWhetherAnythingMoved(scroller, paint) {
 /// assignment is not free: on iOS it cancels the momentum of a flick in
 /// progress and drops the reader back where the tick found them, which at a
 /// poll every 1.6 seconds is a thread that cannot be scrolled down at all.
-export function paintThreadKeepingPlace(scroller, paint) {
+///
+/// `olderItemsPrepended` says this paint grew the timeline at the TOP — a page
+/// of history the reader asked for by scrolling back past the start of the
+/// window. Everything they were reading has moved down by the height of what
+/// arrived, so keeping their scrollTop would keep the pixel and lose the
+/// message, jumping them a page further back on every load.
+export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false } = {}) {
   if (!scroller) {
     paint();
     return;
@@ -600,9 +669,14 @@ export function paintThreadKeepingPlace(scroller, paint) {
   // selected, or a shell rebuild wiped the body under it.
   const opening = !scroller.querySelector(".review-thread");
   const previousScrollTop = scroller.scrollTop;
+  const previousScrollHeight = scroller.scrollHeight;
   const wasAtBottom =
-    scroller.scrollHeight - scroller.clientHeight - previousScrollTop <= AT_BOTTOM_SLACK_PX;
+    previousScrollHeight - scroller.clientHeight - previousScrollTop <= AT_BOTTOM_SLACK_PX;
   const changed = paintAndSayWhetherAnythingMoved(scroller, paint);
+  if (olderItemsPrepended) {
+    scroller.scrollTop = previousScrollTop + (scroller.scrollHeight - previousScrollHeight);
+    return;
+  }
   if (!opening && !changed) return;
   if (!opening && !wasAtBottom) {
     scroller.scrollTop = previousScrollTop;

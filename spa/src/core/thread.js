@@ -118,6 +118,12 @@ export function createThreadCache() {
   // Whether the daemon said there is conversation above the window. Only a
   // paged answer knows; a forward delta says nothing about the far end.
   let olderItemsRemain = false;
+  // The newest counter value the daemon has named that this cache has already
+  // taken delivery of. Usually the top of the window — but an item mutated in
+  // place BELOW the window is taken delivery of by being left out of it (see
+  // `theWindowMayTake`), and the cursor still has to move past its bump or the
+  // daemon re-ships it on every poll for as long as the view is open.
+  let deliveredSequence = 0;
 
   // The bridge bumps `updated_sequence` (drawn from the same counter as
   // `sequence`) when it mutates a message in place — marking it seen,
@@ -126,8 +132,30 @@ export function createThreadCache() {
   const itemCursorSequence = (item) =>
     Math.max(item.data?.sequence || 0, item.data?.updated_sequence || 0);
 
-  const lastHeldSequence = () =>
-    accumulatedItems.reduce((highest, item) => Math.max(highest, itemCursorSequence(item)), 0);
+  const highestCursorSequence = (items) =>
+    items.reduce((highest, item) => Math.max(highest, itemCursorSequence(item)), 0);
+
+  /// The part of an arrival the window is allowed to fold in.
+  ///
+  /// The daemon's forward cursor selects on the newest counter value an item
+  /// has TOUCHED, so mutating an old message in place — marking it seen,
+  /// resolving it with a revision, answering its offer — re-ships that message
+  /// however far below the window it was written. Folding it back in by
+  /// creation sequence would seat it under the window's floor with everything
+  /// between them missing: a hole the two-ended check below cannot see, because
+  /// the mutated item's own bump IS the newest sequence the daemon names. Worse,
+  /// it would move the floor down to the far side of the hole, so one scroll
+  /// back would answer with the handful of items above the mutated one, say
+  /// there is no more, and bury the rest of the conversation for the life of
+  /// the view.
+  ///
+  /// So an arrival from under the window stays out of it. The reader meets its
+  /// current state the moment they scroll back far enough to fetch it.
+  const theWindowMayTake = (arrivedItems) => {
+    if (!accumulatedItems.length) return arrivedItems;
+    const floor = accumulatedItems[0].data?.sequence || 0;
+    return arrivedItems.filter((item) => (item.data?.sequence || 0) >= floor);
+  };
 
   const mergeArrivals = (arrivedItems) => {
     // Keyed by creation sequence so a replay never grows the list, while an
@@ -151,19 +179,19 @@ export function createThreadCache() {
   /// avoid. Contiguity WITHIN the window is kept by construction — a forward
   /// delta carries everything after the cursor, an older page carries the items
   /// immediately before the front — so what is left to check is the two ends:
-  /// the top must reach the newest item the daemon names (a window that falls
-  /// short of it lost a delta), and the window can never be larger than the
-  /// conversation it is a window on (a smaller whole means the conversation
-  /// restarted, was trimmed, or belongs to somebody else now).
-  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, threadPayload) => {
+  /// the cache must have taken delivery of everything up to the newest sequence
+  /// the daemon names (falling short of it means a delta went missing), and the
+  /// window can never be larger than the conversation it is a window on (a
+  /// smaller whole means the conversation restarted, was trimmed, or belongs to
+  /// somebody else now).
+  ///
+  /// Delivery rather than the top of the window, because the two part company:
+  /// an item mutated below the floor is delivered and deliberately not held.
+  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, delivered, threadPayload) => {
     const newest = threadPayload.thread_last_sequence;
-    const topOfWindow = merged.reduce(
-      (highest, item) => Math.max(highest, itemCursorSequence(item)),
-      0,
-    );
     // A daemon old enough not to name its newest sequence leaves only the size
     // check to go on.
-    if (newest != null && topOfWindow !== newest) return false;
+    if (newest != null && delivered !== newest) return false;
     return merged.length <= threadPayload.thread_total;
   };
 
@@ -173,7 +201,7 @@ export function createThreadCache() {
     // newest conversation to open one on.
     cursorParam() {
       return accumulatedItems.length
-        ? { thread_after_sequence: lastHeldSequence() }
+        ? { thread_after_sequence: deliveredSequence }
         : { thread_limit: FIRST_PAGE_ITEMS };
     },
     // Extra params for the next thread.page: the seek for the page above the
@@ -192,6 +220,7 @@ export function createThreadCache() {
       if (!threadPayload) {
         accumulatedItems = [];
         olderItemsRemain = false;
+        deliveredSequence = 0;
         return threadPayload;
       }
       // A paged answer is the only one that knows what lies above it; a bare
@@ -201,22 +230,33 @@ export function createThreadCache() {
       if (threadPayload.thread_total == null) {
         // An uncursored (full) response is authoritative: replace, don't merge.
         accumulatedItems = [...arrivedItems];
+        deliveredSequence = highestCursorSequence(accumulatedItems);
         return { ...threadPayload, items: accumulatedItems };
       }
-      const merged = mergeArrivals(arrivedItems);
-      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, threadPayload)) {
+      const merged = mergeArrivals(theWindowMayTake(arrivedItems));
+      // Everything the delta carried is delivered, whether the window took it
+      // or left it below the floor.
+      const delivered = Math.max(
+        deliveredSequence,
+        highestCursorSequence(merged),
+        highestCursorSequence(arrivedItems),
+      );
+      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload)) {
         // A real gap: render what we have this tick, but drop the cache so the
         // next poll refetches from the newest page down and self-heals.
         accumulatedItems = [];
         olderItemsRemain = false;
+        deliveredSequence = 0;
         return { ...threadPayload, items: merged };
       }
       accumulatedItems = merged;
+      deliveredSequence = delivered;
       return { ...threadPayload, items: accumulatedItems };
     },
     // Widen the window upwards with a `thread.page` answer and return the whole
     // of it. Never mutates the payload, and never moves the forward cursor:
-    // that one reads the newest held sequence, which older items cannot change.
+    // that one reads what has been delivered, and history arriving late is not
+    // news.
     absorbOlderPage(pagePayload) {
       // An older page extends a window; with none open — the reader switched
       // agents while it was in flight — there is nothing to extend, and folding
@@ -230,6 +270,7 @@ export function createThreadCache() {
     reset() {
       accumulatedItems = [];
       olderItemsRemain = false;
+      deliveredSequence = 0;
     },
   };
 }

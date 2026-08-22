@@ -474,6 +474,43 @@ describe("thread cache paging (the window over a long conversation)", () => {
     cache.reset();
     expect(cache.hasOlderItems()).toBe(false);
   });
+
+  it("keeps an item mutated below the window out of it, and still moves past the bump", () => {
+    const cache = createThreadCache();
+    const opened = [];
+    for (let sequence = 191; sequence <= 250; sequence += 1) opened.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(opened, { thread_total: 250, has_more: true }));
+
+    // The agent resolved a doc comment made near the start of the
+    // conversation: item 5 is stamped and its updated_sequence bumped to the
+    // newest the daemon has, without a single item being appended. The forward
+    // cursor selects on that bump, so the delta ships item 5 alone — from 186
+    // items below the window's floor.
+    const delta = cache.absorb({
+      items: [{ type: "message", data: { sequence: 5, updated_sequence: 251, role: "user", body: "rename it", resolved_by_revision: "rev-2" } }],
+      thread_total: 250,
+      thread_last_sequence: 251,
+    });
+
+    // Taking it would seat message 5 directly above message 191 with 185
+    // messages missing between them, and leave the window's floor at 5 — so
+    // one scroll back would answer with items 1..4, say there is no more, and
+    // bury the rest of the conversation for the life of the view.
+    expect(delta.items.map((i) => i.data.sequence)).toEqual(opened.map((i) => i.data.sequence));
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 191 });
+    expect(cache.hasOlderItems()).toBe(true);
+    // The bump is still accounted for: a cursor left at 250 would have the
+    // daemon re-ship item 5 on every poll for as long as the view is open.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 251 });
+
+    const older = [];
+    for (let sequence = 131; sequence <= 190; sequence += 1) older.push(item(sequence, `m${sequence}`));
+    const widened = cache.absorbOlderPage(page(older, { thread_total: 250, has_more: true }));
+    expect(widened.items[0].data.sequence).toBe(131);
+    expect(widened.items.map((i) => i.data.sequence)).toEqual(
+      [...older, ...opened].map((i) => i.data.sequence),
+    );
+  });
 });
 
 describe("structured review messages", () => {

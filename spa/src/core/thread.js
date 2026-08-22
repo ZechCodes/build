@@ -254,15 +254,26 @@ export function createThreadCache() {
       return { ...threadPayload, items: accumulatedItems };
     },
     // Widen the window upwards with a `thread.page` answer and return the whole
-    // of it. Never mutates the payload, and never moves the forward cursor:
-    // that one reads what has been delivered, and history arriving late is not
-    // news.
-    absorbOlderPage(pagePayload) {
-      // An older page extends a window; with none open — the reader switched
-      // agents while it was in flight — there is nothing to extend, and folding
-      // it in would leave a window whose top is not the conversation's newest.
-      // A hole, dressed as history. The next poll opens the window instead.
+    // of it, or nothing when the page no longer belongs above the window.
+    // Never mutates the payload, and never moves the forward cursor: that one
+    // reads what has been delivered, and history arriving late is not news.
+    //
+    // `seek` is the `olderPageParam()` the page was asked for with, and it is
+    // what makes the answer safe to fold in: a page carries the items
+    // immediately before the seek it was fetched at, so it abuts this window
+    // only while the window's floor is still that seek. A round trip is long
+    // enough for it to stop being — the reader switched agents, or a poll
+    // tripped the gap check and the poll after it opened a fresh window on the
+    // newest items. Folding the page in then would seat it under a floor it was
+    // never below, with everything between them missing and the floor left on
+    // the far side of the hole, so scrolling back would walk downward and the
+    // skipped items could never be asked for again. A hole, dressed as history
+    // — and one neither end of the window is short enough to give away. So a
+    // page that has outlived its seek is dropped; the reader's next scroll asks
+    // for the page this window actually wants.
+    absorbOlderPage(pagePayload, seek) {
       if (!pagePayload || !accumulatedItems.length) return null;
+      if (!seek || seek.before_sequence !== accumulatedItems[0].data?.sequence) return null;
       if (pagePayload.has_more != null) olderItemsRemain = pagePayload.has_more === true;
       accumulatedItems = mergeArrivals(pagePayload.items || []);
       return { ...pagePayload, items: accumulatedItems };

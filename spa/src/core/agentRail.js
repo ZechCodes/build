@@ -509,7 +509,10 @@ export function mountAgentRail(host, context) {
       // The reader opened another agent's conversation while this was in
       // flight: it is history from a thread nobody is looking at.
       if (disposed || asked !== selectedId) return;
-      if (threadCache.absorbOlderPage(page)) paintChat({ olderItemsPrepended: true });
+      // The seek goes back with the page: the cache is the one that knows
+      // whether the window it was fetched above is still the window in hand —
+      // a poll during this round trip can have reset and reopened it.
+      if (threadCache.absorbOlderPage(page, seek)) paintChat({ olderItemsPrepended: true });
     } catch (error) {
       // Scrolling to the top is a deliberate ask, so a refusal is worth
       // saying — unlike a poll, which fails quietly and tries again.

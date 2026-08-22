@@ -426,7 +426,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
     cache.absorb(page([item(98, "y"), item(99, "z")], { thread_total: 99, has_more: true }));
     expect(cache.hasOlderItems()).toBe(true);
     expect(cache.olderPageParam()).toEqual({ before_sequence: 98 });
-    cache.absorbOlderPage(page([item(96, "w"), item(97, "x")], { thread_total: 99, has_more: false }));
+    cache.absorbOlderPage(page([item(96, "w"), item(97, "x")], { thread_total: 99, has_more: false }), { before_sequence: 98 });
     expect(cache.hasOlderItems()).toBe(false);
     expect(cache.olderPageParam()).toEqual({ before_sequence: 96 });
   });
@@ -441,7 +441,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
     const cache = createThreadCache();
     cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
     const older = page([item(5, "e"), item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true });
-    const widened = cache.absorbOlderPage(older);
+    const widened = cache.absorbOlderPage(older, cache.olderPageParam());
     expect(widened.items.map((i) => i.data.sequence)).toEqual([5, 6, 7, 8, 9]);
     expect(older.items.map((i) => i.data.sequence)).toEqual([5, 6, 7]); // payload untouched
     // Older items arriving must not walk the forward cursor backwards: the
@@ -452,7 +452,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
   it("keeps the widened window through the next poll rather than resetting on it", () => {
     const cache = createThreadCache();
     cache.absorb(page([item(8, "h"), item(9, "i")], { thread_total: 9, has_more: true }));
-    cache.absorbOlderPage(page([item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true }));
+    cache.absorbOlderPage(page([item(6, "f"), item(7, "g")], { thread_total: 9, has_more: true }), cache.olderPageParam());
     const polled = cache.absorb({ items: [item(10, "j")], thread_total: 10, thread_last_sequence: 10 });
     expect(polled.items.map((i) => i.data.sequence)).toEqual([6, 7, 8, 9, 10]);
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 10 });
@@ -463,9 +463,38 @@ describe("thread cache paging (the window over a long conversation)", () => {
     // The reader switched agents while the page was in flight, so the cache it
     // would extend is gone. Folding it in would make a window whose top is not
     // the conversation's newest — a hole, dressed as history.
-    expect(cache.absorbOlderPage(page([item(1, "a")], { thread_total: 9, has_more: false }))).toBeNull();
+    expect(cache.absorbOlderPage(page([item(1, "a")], { thread_total: 9, has_more: false }), { before_sequence: 2 })).toBeNull();
     expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
     expect(cache.olderPageParam()).toBeNull();
+  });
+
+  it("ignores an older page whose window was replaced while it was in flight", () => {
+    const cache = createThreadCache();
+    const newest = [];
+    for (let sequence = 191; sequence <= 250; sequence += 1) newest.push(item(sequence, `m${sequence}`));
+    cache.absorb(page(newest, { thread_total: 250, has_more: true }));
+    const widened = [];
+    for (let sequence = 131; sequence <= 190; sequence += 1) widened.push(item(sequence, `m${sequence}`));
+    const seek = cache.olderPageParam();
+    cache.absorbOlderPage(page(widened, { thread_total: 250, has_more: true }), seek);
+
+    // The reader scrolls back past 131 and the page for it goes out. While it
+    // is in flight the poll trips the gap check and drops the cache, and the
+    // poll after that opens a fresh window on the newest items.
+    const staleSeek = cache.olderPageParam();
+    expect(staleSeek).toEqual({ before_sequence: 131 });
+    cache.absorb({ items: [], thread_total: 250, thread_last_sequence: 999 });
+    cache.absorb(page(newest, { thread_total: 250, has_more: true }));
+
+    // The page now lands under a window it was never above. Taking it would
+    // seat 71..130 directly under 191..250 with sixty items missing between
+    // them — and leave the floor at 71, so every further scroll back walks
+    // downward and 131..190 could never be asked for again.
+    const stale = [];
+    for (let sequence = 71; sequence <= 130; sequence += 1) stale.push(item(sequence, `m${sequence}`));
+    expect(cache.absorbOlderPage(page(stale, { thread_total: 250, has_more: true }), staleSeek)).toBeNull();
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 191 });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 250 });
   });
 
   it("forgets that older items remain when it resets", () => {
@@ -505,7 +534,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
 
     const older = [];
     for (let sequence = 131; sequence <= 190; sequence += 1) older.push(item(sequence, `m${sequence}`));
-    const widened = cache.absorbOlderPage(page(older, { thread_total: 250, has_more: true }));
+    const widened = cache.absorbOlderPage(page(older, { thread_total: 250, has_more: true }), cache.olderPageParam());
     expect(widened.items[0].data.sequence).toBe(131);
     expect(widened.items.map((i) => i.data.sequence)).toEqual(
       [...older, ...opened].map((i) => i.data.sequence),

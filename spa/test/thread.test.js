@@ -420,6 +420,36 @@ describe("thread cache paging (the window over a long conversation)", () => {
     expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 
+  it("cannot open a window on a delta, so a repaint after a reset still refetches", () => {
+    const cache = createThreadCache();
+    // The reader has paged all the way back: the window IS the conversation.
+    cache.absorb(page([item(1, "a"), item(2, "b"), item(3, "c")], { thread_total: 3, has_more: false }));
+
+    // One poll interval later: a doc comment was deleted (an item removed, no
+    // sequence spent) and the agent posted. The delta names a newest of 4 and
+    // a whole of 3, which is smaller than the four items the window would then
+    // hold — so the cache renders what it has and drops itself for a refetch.
+    const delta = { items: [item(4, "d")], thread_total: 3, thread_last_sequence: 4 };
+    expect(cache.absorb(delta).items.map((i) => i.data.sequence)).toEqual([1, 2, 3, 4]);
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+
+    // A repaint before the next poll folds the SAME payload back through the
+    // emptied cache — pressing a bubble, or leaving the chat and coming back,
+    // is enough. It is a delta, and a delta says nothing about how far back the
+    // conversation goes: taking it as the window would leave the reader with a
+    // one-message thread, a cursor past the end of it, and no page above — a
+    // view no later poll ever brings the rest back to.
+    const repainted = cache.absorb(delta);
+    expect(repainted.items.map((i) => i.data.sequence)).toEqual([4]);
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+    expect(cache.olderPageParam()).toBeNull();
+
+    // The refetch that cursor asks for is what paints, and it heals.
+    const healed = cache.absorb(page([item(2, "b"), item(3, "c"), item(4, "d")], { thread_total: 3, has_more: false }));
+    expect(healed.items.map((i) => i.data.sequence)).toEqual([2, 3, 4]);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 4 });
+  });
+
   it("asks for the page above the window while the daemon says there is one", () => {
     const cache = createThreadCache();
     expect(cache.olderPageParam()).toBeNull();

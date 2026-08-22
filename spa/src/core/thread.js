@@ -262,6 +262,23 @@ export function createThreadCache() {
         deliveredSequence = highestCursorSequence(accumulatedItems);
         return { ...threadPayload, items: accumulatedItems };
       }
+      // A window is opened by a PAGE and only by a page. A forward delta
+      // carries what is newer than the cursor it was asked with, which says
+      // nothing about how far back the conversation goes — only a paged answer
+      // knows that, and says so with `has_more`. So a delta arriving on an
+      // empty cache is rendered and forgotten rather than taken as the window:
+      // the cache holds no window here because the last absorb reset it (or
+      // the reader just switched agents), and the delta is the tail of a
+      // conversation whose floor it cannot name. Seating it as the window would
+      // pass both ends of the check trivially — it reaches the newest item, and
+      // a handful of items is never more than the whole — leaving the reader
+      // with those few messages, a cursor past them, and no page above, which
+      // no later delta ever brings the rest back to. The repaints that make
+      // this reachable are ordinary: pressing a bubble, or leaving the chat and
+      // coming back, folds the payload in hand through the cache again.
+      if (!accumulatedItems.length && threadPayload.has_more == null) {
+        return { ...threadPayload, items: arrivedItems };
+      }
       const merged = mergeArrivals(theWindowMayTake(arrivedItems));
       // Everything the delta carried is delivered, whether the window took it
       // or left it below the floor.

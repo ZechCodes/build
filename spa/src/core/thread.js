@@ -213,11 +213,24 @@ export function createThreadCache() {
   ///
   /// Delivery rather than the top of the window, because the two part company:
   /// an item mutated below the floor is delivered and deliberately not held.
-  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, delivered, threadPayload) => {
+  ///
+  /// A PAGE is held to the size end only. It is the answer that OPENS a window
+  /// rather than one that extends it, so there is no delta it could have lost
+  /// — the cursor is read straight back off the items it shipped. Meanwhile
+  /// `thread_last_sequence` names the newest counter value in the whole
+  /// conversation, which an in-place bump routinely puts on an item the page
+  /// deliberately left out: an old message marked seen, an old comment
+  /// resolved, with nothing posted since. That is the state an idle
+  /// conversation is normally opened in, so holding a page to the delivery end
+  /// would fail the check on every first load — resetting the window every
+  /// tick, leaving the reader the newest page with no scroll-back, and never
+  /// letting the cursor engage. The bump arrives from under the floor on the
+  /// next poll, as a delta, and moves delivery past itself there.
+  const holdsAnUnbrokenRunEndingAtTheNewest = (merged, delivered, threadPayload, arrivedAsAPage) => {
     const newest = threadPayload.thread_last_sequence;
     // A daemon old enough not to name its newest sequence leaves only the size
     // check to go on.
-    if (newest != null && delivered !== newest) return false;
+    if (!arrivedAsAPage && newest != null && delivered !== newest) return false;
     return merged.length <= threadPayload.thread_total;
   };
 
@@ -250,10 +263,13 @@ export function createThreadCache() {
         return threadPayload;
       }
       const arrivedItems = threadPayload.items || [];
+      // `has_more` is what a page carries and a forward delta does not, so it
+      // is also what tells the two kinds of answer apart.
+      const arrivedAsAPage = threadPayload.has_more != null;
       // A paged answer is the only one that knows what lies above it; a bare
       // forward delta leaves the standing answer alone, and so does a page that
       // no longer speaks for the window's floor.
-      if (threadPayload.has_more != null && speaksForTheWindowsFloor(arrivedItems)) {
+      if (arrivedAsAPage && speaksForTheWindowsFloor(arrivedItems)) {
         olderItemsRemain = threadPayload.has_more === true;
       }
       if (threadPayload.thread_total == null) {
@@ -276,7 +292,7 @@ export function createThreadCache() {
       // no later delta ever brings the rest back to. The repaints that make
       // this reachable are ordinary: pressing a bubble, or leaving the chat and
       // coming back, folds the payload in hand through the cache again.
-      if (!accumulatedItems.length && threadPayload.has_more == null) {
+      if (!accumulatedItems.length && !arrivedAsAPage) {
         return { ...threadPayload, items: arrivedItems };
       }
       const merged = mergeArrivals(theWindowMayTake(arrivedItems));
@@ -287,7 +303,7 @@ export function createThreadCache() {
         highestCursorSequence(merged),
         highestCursorSequence(arrivedItems),
       );
-      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload)) {
+      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload, arrivedAsAPage)) {
         // A real gap: render what we have this tick, but drop the cache so the
         // next poll refetches from the newest page down and self-heals.
         accumulatedItems = [];

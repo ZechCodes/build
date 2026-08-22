@@ -3193,6 +3193,34 @@ mod tests {
     }
 
     #[test]
+    fn wire_value_page_names_the_conversations_newest_counter_value_not_the_pages() {
+        // The idle state a reviewer opens a long conversation in: the last
+        // thing the counter moved for was an in-place bump on an old item — a
+        // long-queued question marked seen, a plan comment resolved — with
+        // nothing posted after it. The bump lands far below the newest page.
+        let mut thread = Thread::new("plan-long");
+        thread.post_user("please rename the helper", None, "2026-08-20T09:00:00Z");
+        for turn in 0..200 {
+            thread.post_agent(format!("progress {turn}"), None, "2026-08-20T09:01:00Z");
+        }
+        thread.read_unread("2026-08-20T10:00:00Z");
+
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        let sequences = page_sequences(&page);
+        assert_eq!(sequences.len(), DEFAULT_THREAD_PAGE, "{sequences:?}");
+        assert!(!sequences.contains(&1), "the bumped item is below the page");
+        // One meaning for one field: the newest counter value in the whole
+        // conversation, exactly as the forward cursor reports it. A page that
+        // named its own top instead would leave the client asking for a
+        // cursor the daemon has already moved past, so the bump would re-ship
+        // on every poll for the life of the view. The client knows a page
+        // delivers only its own window and reads its cursor off the items.
+        assert_eq!(page["thread_last_sequence"], 202);
+        assert_eq!(page["thread_total"], 201);
+        assert_eq!(*sequences.last().unwrap(), 201);
+    }
+
+    #[test]
     fn wire_value_page_has_more_only_while_older_items_remain() {
         let thread = thread_with_long_conversation(30);
 

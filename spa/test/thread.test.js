@@ -410,6 +410,33 @@ describe("thread cache paging (the window over a long conversation)", () => {
     expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 
+  it("opens a window on a page whose newest counter value sits below it", () => {
+    const cache = createThreadCache();
+    // `thread_last_sequence` names the whole conversation's newest counter
+    // value, and an in-place bump puts that on whatever item was mutated —
+    // a long-queued message marked seen, an old plan comment resolved — which
+    // is routinely an item the page deliberately left out. That is the state a
+    // reviewer opens an idle conversation in. The page still delivered
+    // everything it claims to, so the window is sound; calling the un-shipped
+    // bump a lost delta would reset the cache on every first load, and the
+    // cursor would never engage.
+    const opened = cache.absorb({
+      ...page([item(98, "y"), item(99, "z"), item(100, "newest")], { thread_total: 100, has_more: true }),
+      thread_last_sequence: 101,
+    });
+    expect(opened.items.map((i) => i.data.sequence)).toEqual([98, 99, 100]);
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 100 });
+
+    // The bump itself arrives on the next poll, from under the floor, and the
+    // cursor walks past it — rather than the daemon re-shipping the newest
+    // page every tick for the life of the view.
+    const markedSeen = { type: "message", data: { sequence: 5, updated_sequence: 101, role: "user", body: "old" } };
+    cache.absorb({ items: [markedSeen], thread_total: 100, thread_last_sequence: 101 });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 101 });
+    expect(cache.hasOlderItems()).toBe(true);
+  });
+
   it("resets when the conversation holds fewer items than the window does", () => {
     const cache = createThreadCache();
     cache.absorb(page([item(1, "a"), item(2, "b"), item(3, "c")], { thread_total: 3, has_more: false }));

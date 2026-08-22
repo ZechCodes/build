@@ -33,6 +33,7 @@ vi.mock("../src/core/taskFeed.js", () => ({
 // never call.
 let App;
 let mountInboxList;
+let markSeen;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const rows = () => [...document.querySelectorAll("#inbox-list .inbox-entry")];
@@ -124,7 +125,7 @@ const feed = (items) => {
 beforeEach(async () => {
   vi.resetModules();
   ({ App } = await import("../src/app.js"));
-  ({ mountInboxList } = await import("../src/core/inboxView.js"));
+  ({ mountInboxList, markSeen } = await import("../src/core/inboxView.js"));
   document.body.innerHTML = bodyHtml;
   document.body.className = "";
   location.hash = "";
@@ -199,6 +200,23 @@ describe("the inbox rail", () => {
     await flush();
     expect(App.call).not.toHaveBeenCalledWith("entity.seen", expect.anything());
     expect(location.hash).toBe("#/project/p1/branch/main/changes");
+  });
+
+  // A reader of a long conversation holds a window on it, not the whole
+  // transcript, and the daemon needs to hear which — reading the end of a
+  // window is no claim about the messages below its floor.
+  it("carries the floor of the reader's window onto the wire", async () => {
+    await markSeen("run-1", "ag-1", 341);
+    expect(App.call).toHaveBeenCalledWith("entity.seen", {
+      entity_id: "run-1",
+      agent_id: "ag-1",
+      read_from_sequence: 341,
+    });
+  });
+
+  it("names no floor for a conversation that arrived whole", async () => {
+    await markSeen("run-1", "ag-1", null);
+    expect(App.call).toHaveBeenCalledWith("entity.seen", { entity_id: "run-1", agent_id: "ag-1" });
   });
 
   it("marks the entry the route stands on", async () => {

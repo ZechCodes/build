@@ -337,6 +337,15 @@ export function createThreadCache() {
     hasOlderItems() {
       return olderItemsRemain;
     },
+    // The oldest sequence the window holds, or null while it holds no window
+    // at all. What a read report is measured against: reaching the end of a
+    // window says the reader was shown what is in it, and nothing about the
+    // conversation below. Null is the honest answer for a conversation that
+    // arrived whole, where the end of what is held IS the end.
+    windowFloorSequence() {
+      if (!accumulatedItems.length) return null;
+      return accumulatedItems[0].data?.sequence ?? null;
+    },
     // Fold a polled thread payload into the cache and return a thread whose
     // `items` is the complete accumulated list. Never mutates the payload.
     absorb(threadPayload) {

@@ -393,7 +393,8 @@ describe("the conversation panel", () => {
   it("tells the daemon an agent's conversation has been read while it is open at the end", async () => {
     payload = branchRow({ agents: [agent({ unread_count: 2, unread_reason: "done" })] });
     await mount();
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1");
+    // No floor: this conversation arrived whole, so the end of it is the end.
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", null);
   });
 
   it("says nothing about reading a conversation with nothing waiting", async () => {
@@ -488,7 +489,7 @@ describe("reading back past the top of a paged conversation", () => {
   });
   const railBody = () => railHost().querySelector("#rail-body");
 
-  const pagedConversation = (hasMore, moreAboveThatPage = true) => {
+  const pagedConversation = (hasMore, moreAboveThatPage = true, agents = [agent()]) => {
     App.call = vi.fn(async (method, params) => {
       calls.push({ method, params });
       if (method === "branch.get") {
@@ -497,7 +498,7 @@ describe("reading back past the top of a paged conversation", () => {
         const thread = params.thread_after_sequence
           ? { sessions: [], items: [], thread_total: 99, thread_last_sequence: 99 }
           : firstPage(hasMore);
-        return branchRow({ run: { run_id: "run-3", thread } });
+        return branchRow({ agents, run: { run_id: "run-3", thread } });
       }
       if (method === "thread.page") return pageAbove(moreAboveThatPage);
       return {};
@@ -559,6 +560,29 @@ describe("reading back past the top of a paged conversation", () => {
     await flush();
 
     expect(callsTo("thread.page")).toHaveLength(1);
+  });
+
+  // The reviewer's bug: the scroller sitting at the bottom used to mean the
+  // whole conversation had been shipped and could be read through. It now
+  // means the reader reached the end of a window, so the read report says
+  // where that window starts and the daemon keeps the badge up for a message
+  // waiting below it.
+  it("reports how much of the conversation it holds when it reports it read", async () => {
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    await mount();
+
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98);
+  });
+
+  it("moves the floor it reports down as the reader scrolls back", async () => {
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    await mount();
+    markSeen.mockClear();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96);
   });
 
   it("asks once for a page, however many scroll events the gesture fires", async () => {

@@ -623,15 +623,21 @@ export function mountAgentRail(host, context) {
     }
   };
 
-  /// Tell the daemon this agent's conversation has been read.
+  /// Tell the daemon this agent's conversation has been read, and how much of
+  /// it this panel was ever sent.
   ///
   /// Open, in Chat, and scrolled to the end: all three, because a panel showing
   /// the top of a long thread has not read the message at the bottom of it.
+  /// The end of the scroller is the end of a WINDOW, though — a long
+  /// conversation arrives as a page of its newest items — so the floor of that
+  /// window goes with the report. Without it the daemon reads the whole
+  /// conversation through, clearing the badge for a message waiting a hundred
+  /// items back that this panel never received and nobody ever saw.
   const reportRead = (body) => {
     const agent = agentOf(selectedId);
     if (!agent || !agent.unread_count || !entity.entityId) return;
     if (body.scrollHeight - body.clientHeight - body.scrollTop > 32) return;
-    markSeen(entity.entityId, agent.id).then(refreshFeed);
+    markSeen(entity.entityId, agent.id, threadCache.windowFloorSequence()).then(refreshFeed);
   };
 
   // ---- sending --------------------------------------------------------------

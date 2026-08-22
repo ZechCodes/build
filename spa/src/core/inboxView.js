@@ -53,14 +53,23 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * Tell the bridge this entry has been read. No agent id means the whole entry —
  * which is what opening it means; a bubble passes its own agent.
  *
+ * A reader who holds a WINDOW on a long conversation rather than the whole of
+ * it passes the sequence that window starts at, so the daemon moves the read
+ * cursor only as far as the reader was actually sent. No floor says what it
+ * always said: the conversation arrived whole.
+ *
  * This is also the hook for a self-initiated ending: merge and abandon are
  * attention-class events, so a merge the user triggered from this client would
  * otherwise badge its own entry. Whoever runs that verb calls this after it.
  */
-export async function markSeen(entityId, agentId) {
+export async function markSeen(entityId, agentId, readFromSequence = null) {
   if (!entityId || !App.call) return;
   try {
-    await App.call("entity.seen", agentId ? { entity_id: entityId, agent_id: agentId } : { entity_id: entityId });
+    await App.call("entity.seen", {
+      entity_id: entityId,
+      ...(agentId ? { agent_id: agentId } : {}),
+      ...(typeof readFromSequence === "number" ? { read_from_sequence: readFromSequence } : {}),
+    });
   } catch {
     /* the cursor is the daemon's; a failed clear is re-tried by the next open */
   }

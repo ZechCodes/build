@@ -4974,11 +4974,15 @@ impl AppState {
     /// has read its conversations through to the end — every agent's, or one
     /// named agent's. The read cursors are what unread is derived against, so
     /// this is the one place a badge clears.
-    fn see_attention(&mut self, id: &str, agent_id: Option<&str>) {
+    ///
+    /// `read_from_sequence` is where the reader's conversation window starts,
+    /// when they are reading one that does not reach back to the beginning.
+    /// See [`conversation_last_sequences`](Self::conversation_last_sequences).
+    fn see_attention(&mut self, id: &str, agent_id: Option<&str>, read_from_sequence: Option<u64>) {
         let Some(state_changed_at) = self.entity_state_clock(id) else {
             return;
         };
-        let read_through = self.conversation_last_sequences(id, agent_id);
+        let read_through = self.conversation_last_sequences(id, agent_id, read_from_sequence);
         let attention = self.attention.entry(id.to_string()).or_default();
         attention.see(&state_changed_at);
         for (agent_id, sequence) in read_through {
@@ -4993,10 +4997,19 @@ impl AppState {
     /// The entity-level conversation of a planned run is its Issue's, so its
     /// first agent is read through to the end of THAT thread; every other agent
     /// speaks in its own.
+    ///
+    /// A conversation reaches a client as a window on its newest items, and
+    /// `read_from_sequence` is where that window starts. The end of it is not
+    /// the end of the conversation, so a report from such a reader carries no
+    /// claim about the items below the floor: an unread message calling the
+    /// human down there leaves that conversation out of the answer entirely,
+    /// keeping its badge until the reader scrolls back far enough to be sent
+    /// it. A caller that names no floor is one holding the whole conversation.
     fn conversation_last_sequences(
         &self,
         entity_id: &str,
         agent_id: Option<&str>,
+        read_from_sequence: Option<u64>,
     ) -> Vec<(String, u64)> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
@@ -5005,13 +5018,16 @@ impl AppState {
         roster
             .iter()
             .filter(|agent| agent_id.is_none_or(|named| named == agent.id))
-            .map(|agent| {
+            .filter_map(|agent| {
                 let thread = if agent.id == roster.first().id {
                     entity_thread.unwrap_or(&agent.thread)
                 } else {
                     &agent.thread
                 };
-                (agent.id.clone(), thread.last_sequence())
+                let hidden_below = read_from_sequence.is_some_and(|floor| {
+                    thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
+                });
+                (!hidden_below).then(|| (agent.id.clone(), thread.last_sequence()))
             })
             .collect()
     }
@@ -7089,7 +7105,12 @@ impl AppState {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_string);
-        self.see_attention(&entity_id, agent_id.as_deref());
+        // Where the reader's conversation window starts. A client paging a long
+        // conversation reaches the end of a window, not the end of the thread,
+        // so it says how much of it was ever shipped and the cursor moves only
+        // as far as that honestly covers.
+        let read_from_sequence = params.get("read_from_sequence").and_then(Value::as_u64);
+        self.see_attention(&entity_id, agent_id.as_deref(), read_from_sequence);
         Ok(json!({ "ok": true }))
     }
 
@@ -33712,6 +33733,77 @@ mod tests {
         };
         assert_eq!(unread_of(&first_agent), 1);
         assert_eq!(unread_of(&second_agent), 0);
+    }
+
+    /// Reaching the end of a WINDOW is not reading the conversation. A long
+    /// conversation reaches the client as a page of its newest items, so a
+    /// `seen` that names where that page starts has to leave the badge up for
+    /// an agent message waiting below the floor: the reader was never shipped
+    /// it, let alone shown it. Scrolling back far enough to hold it is what
+    /// clears it.
+    #[test]
+    fn seeing_a_window_leaves_the_message_below_its_floor_unread() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-window");
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        // One message that calls the human, then enough conversation after it
+        // to push it out of any window the client opens on the newest items.
+        let mut run = state.take_run(&run_id).unwrap();
+        {
+            let thread = &mut run.agents.resolve_mut(Some(&agent_id)).unwrap().thread;
+            thread.post_agent("the question nobody has answered", None, now_rfc3339());
+            for turn in 0..40 {
+                thread.post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+        }
+        state.finish_run_mutation(run_id.clone(), run).unwrap();
+
+        let window = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(window["result"]["unread_count"], 1, "{window:?}");
+        let floor = window["result"]["thread"]["oldest_sequence"]
+            .as_u64()
+            .expect("a page names where it starts");
+
+        let seen = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "read_from_sequence": floor,
+            }),
+        ));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(
+            view["result"]["unread_count"], 1,
+            "a window that never held the message cannot have read it: {view:?}"
+        );
+
+        // Scrolled back to the start of the conversation: the same report on a
+        // window that does hold the message clears it.
+        let seen = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "read_from_sequence": 1,
+            }),
+        ));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(view["result"]["unread_count"], 0, "{view:?}");
     }
 
     /// Two agents on one checkout are two PTYs, and each reports as itself:

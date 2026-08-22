@@ -2038,6 +2038,25 @@ impl Thread {
         summary
     }
 
+    /// Whether an unread attention-class item sits below `floor` — under the
+    /// window a reader was actually shipped.
+    ///
+    /// A client reads a long conversation through a window on its newest
+    /// items, so reaching the end of what it holds says nothing about the
+    /// items beneath it. This is the question a read report has to answer
+    /// before the cursor may jump to the end: is there anything down there the
+    /// human is being called to and has never been sent?
+    ///
+    /// Creation sequence at both ends, for the reason
+    /// [`unread_since`](Self::unread_since) reads it, and the floor itself is
+    /// inside the window — it is the oldest item the reader holds.
+    pub fn unread_attention_below(&self, floor: u64, cursor: u64) -> bool {
+        self.items
+            .iter()
+            .filter(|item| item.sequence() > cursor && item.sequence() < floor)
+            .any(|item| item.attention_reason().is_some())
+    }
+
     /// The creation sequence of the newest item here that needed the human, or
     /// 0 when nothing ever has — the line a dismissal is measured against.
     ///

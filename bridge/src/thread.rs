@@ -913,6 +913,15 @@ pub struct ConversationQuery {
     pub limit: usize,
 }
 
+/// How many conversation items a first load ships when the caller does not say.
+///
+/// One sitting at a task — the asks, the agent's replies, and the events
+/// between them — runs to a few dozen items; 60 holds a long one whole, so the
+/// view a reviewer opens onto is already the work they were doing. Everything
+/// older is a page up, which is the point: a conversation of hundreds no longer
+/// ships whole to show its last hour.
+pub const DEFAULT_THREAD_PAGE: usize = 60;
+
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;
 /// The most any one query returns, however large a limit it asks for.
@@ -1972,6 +1981,39 @@ impl Thread {
         })
     }
 
+    /// Backward view for a first load and for scrolling up: the newest `limit`
+    /// items strictly older than `before_sequence`, ascending, in the shape
+    /// `wire_value_after` produces plus the two fields a backward walk needs —
+    /// `oldest_sequence`, the seek for the next page up, and `has_more`,
+    /// whether asking for one is worth it.
+    ///
+    /// `thread_total` still counts the whole conversation, not the page, so the
+    /// client can tell "my cache is a bounded window" from "my cache lost
+    /// something" — the gap check the forward cursor already relies on.
+    pub fn wire_value_page(&self, before_sequence: Option<u64>, limit: usize) -> Value {
+        // No bound means "from the newest", which the same filter expresses as
+        // a point past every sequence there could be.
+        let before = before_sequence.unwrap_or(u64::MAX);
+        let older: Vec<&ThreadItem> = self
+            .items
+            .iter()
+            .filter(|item| item.sequence() < before)
+            .collect();
+        let page = &older[older.len().saturating_sub(limit)..];
+        json!({
+            "id": self.id,
+            "agent": self.agent,
+            "sessions": self.sessions,
+            "items": page,
+            "revisions": self.revision_summaries(),
+            "last_completion": self.last_completion,
+            "thread_total": self.items.len(),
+            "thread_last_sequence": self.last_sequence(),
+            "oldest_sequence": page.first().map(|item| item.sequence()),
+            "has_more": page.len() < older.len(),
+        })
+    }
+
     pub fn catch_up_markdown(&self, limit: usize) -> String {
         let mut lines = Vec::new();
         for item in self.items.iter().rev().take(limit).rev() {
@@ -2971,6 +3013,133 @@ mod tests {
         assert!(bumped > cursor, "{delta:?}");
         let drained = thread.wire_value_after(bumped);
         assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    fn thread_with_long_conversation(item_count: usize) -> Thread {
+        let mut thread = Thread::new("plan-long");
+        for turn in 0..item_count {
+            thread.post_user(format!("ask number {turn}"), None, "2026-08-20T09:00:00Z");
+        }
+        thread
+    }
+
+    fn page_sequences(page: &Value) -> Vec<u64> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["data"]["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn wire_value_page_ships_only_its_limit_but_reports_the_whole_conversation() {
+        let thread = thread_with_long_conversation(200);
+        let page = thread.wire_value_page(None, 25);
+
+        let sequences = page_sequences(&page);
+        assert_eq!(sequences.len(), 25, "{sequences:?}");
+        // The tail of the conversation, ascending, so the client renders it in
+        // the order it happened.
+        assert_eq!(sequences, (176..=200).collect::<Vec<u64>>());
+        assert_eq!(page["oldest_sequence"], 176);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["thread_total"], 200);
+        assert_eq!(page["thread_last_sequence"], 200);
+        // The small bounded companions still ship in full, exactly as the
+        // forward cursor ships them.
+        assert_eq!(page["id"], "thread:plan-long");
+        assert_eq!(page["agent"]["id"], "agent:plan-long");
+        assert!(page["sessions"].is_array());
+        assert!(page["revisions"].is_array());
+        assert!(page.get("last_completion").is_some(), "{page:?}");
+    }
+
+    #[test]
+    fn wire_value_page_has_more_only_while_older_items_remain() {
+        let thread = thread_with_long_conversation(30);
+
+        let oldest_page = thread.wire_value_page(Some(11), 10);
+        assert_eq!(page_sequences(&oldest_page), (1..=10).collect::<Vec<u64>>());
+        assert_eq!(oldest_page["oldest_sequence"], 1);
+        assert_eq!(oldest_page["has_more"], false);
+
+        let middle_page = thread.wire_value_page(Some(21), 10);
+        assert_eq!(
+            page_sequences(&middle_page),
+            (11..=20).collect::<Vec<u64>>()
+        );
+        assert_eq!(middle_page["has_more"], true);
+    }
+
+    #[test]
+    fn a_conversation_shorter_than_the_page_ships_whole_and_says_so() {
+        let thread = thread_with_conversation();
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page_sequences(&page), vec![1, 2, 3]);
+        assert_eq!(page["oldest_sequence"], 1);
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 3);
+    }
+
+    #[test]
+    fn paging_backward_from_oldest_sequence_walks_the_whole_conversation() {
+        let thread = thread_with_long_conversation(97);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before = None;
+        loop {
+            let page = thread.wire_value_page(before, 20);
+            let sequences = page_sequences(&page);
+            assert!(!sequences.is_empty(), "{page:?}");
+            // Prepending keeps the walk in conversation order, which is how the
+            // client grows its cache upward.
+            walked.splice(0..0, sequences);
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = Some(page["oldest_sequence"].as_u64().unwrap());
+        }
+
+        assert_eq!(walked, (1..=97).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn wire_value_page_of_an_empty_conversation_is_empty_and_final() {
+        let page = Thread::new("plan-empty").wire_value_page(None, DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page["items"].as_array().unwrap().len(), 0, "{page:?}");
+        assert!(page["oldest_sequence"].is_null(), "{page:?}");
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 0);
+        assert_eq!(page["thread_last_sequence"], 0);
+    }
+
+    #[test]
+    fn paging_before_the_oldest_item_is_an_empty_final_page() {
+        let thread = thread_with_conversation();
+        let page = thread.wire_value_page(Some(1), DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page["items"].as_array().unwrap().len(), 0, "{page:?}");
+        assert!(page["oldest_sequence"].is_null(), "{page:?}");
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 3);
+    }
+
+    #[test]
+    fn the_default_page_bounds_a_first_load_without_hiding_a_sitting() {
+        // A long sitting — a few dozen asks, replies and events — opens whole,
+        // so the default is not a bound the reviewer feels.
+        let one_sitting = thread_with_long_conversation(40);
+        let sitting_page = one_sitting.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        assert_eq!(sitting_page["has_more"], false, "{sitting_page:?}");
+
+        // Everything past it is paged, not shipped.
+        let long = thread_with_long_conversation(DEFAULT_THREAD_PAGE * 4);
+        let page = long.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        assert_eq!(page_sequences(&page).len(), DEFAULT_THREAD_PAGE);
+        assert_eq!(page["has_more"], true, "{page:?}");
     }
 
     #[test]

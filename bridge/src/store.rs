@@ -29,6 +29,20 @@
 //! `materialize_plan_docs` (store → worktree) recreates the docs for run
 //! dispatch and plan-revision sessions.
 //!
+//! **Backups have to stop the daemon.** WAL means the state dir holds three
+//! live files — `build.db`, `build.db-wal`, `build.db-shm` — and a committed
+//! change lives in the `-wal` until a checkpoint folds it back. Anything that
+//! copies files one at a time while the bridge runs (Time Machine, Dropbox and
+//! iCloud on `~`, `cp -r`, a `tar` of `~/.build`) can catch the database and
+//! its log at different instants and produce a copy that will not open, or one
+//! missing the last few state transitions. Restoring it looks like a bridge
+//! that lost work rather than a bad backup, which is the dangerous part. The
+//! answer is to stop the daemon first, so SQLite checkpoints and removes the
+//! `-wal` on the last close and the copy is one consistent file — or, when
+//! that lands, an explicit backup entry point here using SQLite's own online
+//! backup API, which is the only way to take a consistent copy of a live
+//! database.
+//!
 //! Live PTY output streams are intentionally **not** persisted: the terminal is
 //! reconstructable observation, not state. What is durable is what the review
 //! surfaces need — the lifecycle position and where the files live.
@@ -57,6 +71,13 @@ pub enum StoreError {
     /// work without a trace.
     #[error("store database error: {0}")]
     Db(#[from] rusqlite::Error),
+    /// The store directory or its database file could not be opened at all.
+    /// Distinct from a bare io/rusqlite error because this is the failure the
+    /// daemon dies on, and under a KeepAlive supervisor it dies on it over and
+    /// over — so the message has to name the file the user must go look at
+    /// rather than leaving them a cause with no location.
+    #[error("cannot open the store at {path}: {cause}")]
+    Unopenable { path: PathBuf, cause: String },
     /// The database was written by a newer bridge. Opening it read-write would
     /// corrupt state that build does not understand, so boot refuses.
     #[error("store schema version {found} is newer than this bridge supports ({supported}) — update build-bridge")]
@@ -471,8 +492,15 @@ impl Store {
     /// that would silently orphan every worktree it cannot see.
     pub fn new(dir: impl Into<PathBuf>) -> Result<Self, StoreError> {
         let dir = dir.into();
-        std::fs::create_dir_all(&dir)?;
-        let conn = Connection::open(dir.join(DB_FILE))?;
+        std::fs::create_dir_all(&dir).map_err(|cause| StoreError::Unopenable {
+            path: dir.clone(),
+            cause: cause.to_string(),
+        })?;
+        let database_path = dir.join(DB_FILE);
+        let conn = Connection::open(&database_path).map_err(|cause| StoreError::Unopenable {
+            path: database_path,
+            cause: cause.to_string(),
+        })?;
         // Refuse BEFORE writing anything. A store written by a newer bridge
         // must not receive this build's pragmas or DDL on the way to being
         // rejected — the refusal exists to leave it untouched.
@@ -520,6 +548,22 @@ impl Store {
         })
     }
 
+    /// The connection, whatever an earlier panic left behind.
+    ///
+    /// A poisoned mutex says only that some call panicked while it held the
+    /// guard — never that the connection is torn. SQLite rolls an uncommitted
+    /// transaction back when its handle drops, so the database is already at
+    /// its last commit by the time the guard is released, and the next caller
+    /// finds exactly the state a clean failure would have left. Treating the
+    /// poison as fatal would turn one panic into a permanent one: every later
+    /// store call would panic too, and the daemon would sit there up and
+    /// connected while it could neither read nor write state.
+    fn connection(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// Run `work` inside one transaction. Every save is all-or-nothing: a
     /// record and the conversation rows that belong to it land together or not
     /// at all, which is the guarantee the old tmp-file-and-rename bought one
@@ -537,7 +581,7 @@ impl Store {
                 "injected store failure",
             )));
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.connection();
         // IMMEDIATE, not the default DEFERRED: every caller here writes, and
         // several read first. A deferred transaction takes its write lock on
         // the first write, and a failed upgrade raises SQLITE_BUSY_SNAPSHOT,
@@ -554,16 +598,14 @@ impl Store {
     /// one message writes one row rather than rewriting the conversation.
     #[cfg(test)]
     pub fn total_changes(&self) -> u64 {
-        self.conn.lock().unwrap().total_changes()
+        self.connection().total_changes()
     }
 
     /// Test-only: stamp a schema version, so the refusal path can be exercised
     /// without a second build of the bridge.
     #[cfg(test)]
     pub fn set_schema_version(&self, version: i64) {
-        self.conn
-            .lock()
-            .unwrap()
+        self.connection()
             .execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -583,9 +625,7 @@ impl Store {
     /// loader's fail-fast contract can be exercised against real corruption.
     #[cfg(test)]
     pub fn corrupt_capture_row(&self, capture_id: &str) {
-        self.conn
-            .lock()
-            .unwrap()
+        self.connection()
             .execute(
                 "INSERT INTO captures (id, record) VALUES (?1, ?2)
                  ON CONFLICT(id) DO UPDATE SET record = ?2",
@@ -599,9 +639,7 @@ impl Store {
     /// would have left it.
     #[cfg(test)]
     pub fn archived_worktree_json(&self, worktree_id: &str) -> Option<String> {
-        self.conn
-            .lock()
-            .unwrap()
+        self.connection()
             .query_row(
                 "SELECT record FROM archived_worktrees WHERE id = ?1",
                 [worktree_id],
@@ -615,9 +653,7 @@ impl Store {
     /// Test-only counterpart of [`archived_worktree_json`](Self::archived_worktree_json).
     #[cfg(test)]
     pub fn set_archived_worktree_json(&self, worktree_id: &str, record: &str) {
-        self.conn
-            .lock()
-            .unwrap()
+        self.connection()
             .execute(
                 "UPDATE archived_worktrees SET record = ?2 WHERE id = ?1",
                 rusqlite::params![worktree_id, record],
@@ -631,7 +667,7 @@ impl Store {
     /// fatal: this is ordering and colour, never correctness, and losing one
     /// costs a badly sorted rail rather than a task.
     pub fn load_attention(&self) -> HashMap<String, Attention> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.connection();
         let Ok(mut statement) = conn.prepare("SELECT entity_id, record FROM attention") else {
             return HashMap::new();
         };
@@ -798,7 +834,7 @@ impl Store {
         let before = before_sequence
             .and_then(|sequence| i64::try_from(sequence).ok())
             .unwrap_or(i64::MAX);
-        let connection = self.conn.lock().unwrap();
+        let connection = self.connection();
         let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
         let mut page = decode_thread_items(
             agent_id,
@@ -814,7 +850,7 @@ impl Store {
     /// client needs the total to know whether its cache is whole, and reading
     /// the items to count them would spend exactly what paging saves.
     pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
-        let count: i64 = self.conn.lock().unwrap().query_row(
+        let count: i64 = self.connection().query_row(
             "SELECT COUNT(*) FROM thread_items WHERE agent_id = ?1",
             [agent_id],
             |row| row.get(0),
@@ -836,7 +872,7 @@ impl Store {
         after_sequence: u64,
     ) -> Result<Vec<ThreadItem>, StoreError> {
         let after = i64::try_from(after_sequence).unwrap_or(i64::MAX);
-        let connection = self.conn.lock().unwrap();
+        let connection = self.connection();
         let mut statement = connection.prepare(THREAD_CURSOR_SQL)?;
         let mut delta = decode_thread_items(
             agent_id,
@@ -855,9 +891,7 @@ impl Store {
     /// Whether an Issue exists. The question `issue_record_path(..).is_file()`
     /// used to answer.
     pub fn issue_exists(&self, issue_id: &str) -> bool {
-        self.conn
-            .lock()
-            .unwrap()
+        self.connection()
             .query_row("SELECT 1 FROM issues WHERE id = ?1", [issue_id], |_| Ok(()))
             .optional()
             .map(|found| found.is_some())
@@ -885,20 +919,9 @@ impl Store {
         })
     }
 
-    /// Write one implementation and its agents.
-    pub fn save_issue_implementation(&self, record: &PersistedRun) -> Result<(), StoreError> {
-        if record.plan_id.is_none() {
-            return Err(StoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "implementation has no issue_id",
-            )));
-        }
-        self.save_run(record)
-    }
-
     /// Every Issue with its implementations, oldest first.
     pub fn load_all_issues(&self) -> Result<Vec<PersistedIssue>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.connection();
         let mut statement =
             conn.prepare("SELECT id, record FROM issues ORDER BY created_at, id")?;
         let rows: Vec<(String, String)> = statement
@@ -1016,7 +1039,7 @@ impl Store {
     /// Every run, oldest first — an Issue's implementations and the planless
     /// adopted ones alike. Boot reattaches from this one list.
     pub fn load_all_runs(&self) -> Result<Vec<PersistedRun>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.connection();
         Store::read_runs(&conn, None)
     }
 
@@ -1066,7 +1089,7 @@ impl Store {
     }
 
     pub fn load_all_captures(&self) -> Result<Vec<crate::capture::Capture>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.connection();
         let mut statement = conn.prepare("SELECT id, record FROM captures")?;
         let rows: Vec<(String, String)> = statement
             .query_map([], |row| {
@@ -1106,7 +1129,7 @@ impl Store {
     pub fn load_all_archived_worktrees(
         &self,
     ) -> Result<Vec<PersistedArchivedWorktree>, StoreError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.connection();
         let mut statement = conn.prepare("SELECT id, record FROM archived_worktrees")?;
         let rows: Vec<(String, String)> = statement
             .query_map([], |row| {
@@ -1153,7 +1176,7 @@ impl Store {
     pub fn import_json_store(&self) -> Result<usize, StoreError> {
         const MARKER: &str = "json_import";
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.connection();
             let done: Option<String> = conn
                 .query_row("SELECT value FROM meta WHERE key = ?1", [MARKER], |row| {
                     row.get(0)
@@ -1212,7 +1235,7 @@ impl Store {
         // wrong for the one write that can never be redone. Checkpointing here
         // is what makes the marker a truthful record of what is on disk.
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.connection();
             conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES (?1, ?2)",
@@ -1918,7 +1941,7 @@ mod tests {
     fn the_conversation_reads_seek_instead_of_walking() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
-        let connection = store.conn.lock().unwrap();
+        let connection = store.connection();
         for statement in [THREAD_PAGE_SQL, THREAD_CURSOR_SQL] {
             let mut explain = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
@@ -1945,6 +1968,104 @@ mod tests {
                 "{statement} walks or sorts the conversation: {plan:?}"
             );
         }
+    }
+
+    /// A panic anywhere under the connection lock poisons the mutex, and a
+    /// store that treats poison as fatal answers every later call with a panic
+    /// of its own. The daemon would stay up and connected while it could
+    /// neither read nor write a thing, which is a far worse failure than the
+    /// one panic that started it.
+    #[test]
+    fn a_panic_under_the_connection_lock_does_not_wedge_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        store
+            .save_run(&run_record("run-1", None, NOW))
+            .expect("the run saves");
+
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = store.connection();
+            panic!("a store call panicked while it held the connection");
+        }));
+        std::panic::set_hook(previous_hook);
+        assert!(panicked.is_err(), "the test did not poison the mutex");
+
+        store
+            .save_run(&run_record("run-2", None, NOW))
+            .expect("a write after the poisoning still lands");
+        assert_eq!(
+            store
+                .load_all_runs()
+                .expect("a read after the poisoning still runs")
+                .len(),
+            2
+        );
+    }
+
+    /// The forward cursor's index by name. `thread_items_cursor` exists only
+    /// for this query — the primary key already covers `agent_id` — so a plan
+    /// that no longer names it means the index is dead weight on every write.
+    #[test]
+    fn the_forward_cursor_reads_through_its_own_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let connection = store.connection();
+        let mut explain = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_CURSOR_SQL}"))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan: Vec<String> = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        assert!(
+            plan.iter().any(|step| step.contains("thread_items_cursor")),
+            "the forward cursor does not use thread_items_cursor: {plan:?}"
+        );
+    }
+
+    /// The failure the daemon dies on. Under a KeepAlive supervisor it dies on
+    /// it once a second, so the message is the only thing standing between the
+    /// user and a silent restart loop: it has to name the file.
+    #[test]
+    fn a_store_that_cannot_be_opened_names_its_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let occupied = dir.path().join("tasks");
+        std::fs::write(&occupied, "not a directory").unwrap();
+
+        let Err(error) = Store::new(&occupied) else {
+            panic!("a file where the store directory belongs must fail to open");
+        };
+        let message = error.to_string();
+        assert!(
+            message.contains(&occupied.display().to_string()),
+            "the failure does not name the store: {message}"
+        );
+    }
+
+    /// A run that belongs to an Issue is filed under it by `save_run` alone —
+    /// there is no second write path for implementations, and the `issue_id`
+    /// column comes off `plan_id` whichever way the run got here.
+    #[test]
+    fn save_run_files_a_run_under_the_issue_its_plan_id_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        store
+            .save_issue_plan(&plan_record("plan-1"))
+            .expect("the Issue saves");
+        store
+            .save_run(&run_record("run-1", Some("plan-1"), NOW))
+            .expect("the run saves");
+
+        let issues = store.load_all_issues().expect("issues load");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].implementations.len(), 1);
+        assert_eq!(issues[0].implementations[0].id, "run-1");
     }
 
     /// Removing an agent from the roster takes its conversation with it — a

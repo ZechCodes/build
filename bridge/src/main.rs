@@ -234,7 +234,20 @@ async fn serve() {
     let app = match app.with_task_store(&tasks_dir) {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("task store ({tasks_dir}): {e}");
+            // Continuing without the store is not on the table: the daemon
+            // would come up blind to every worktree it already owns. But this
+            // exit runs under launchd's KeepAlive, and the causes — a database
+            // another bridge still holds, a full disk, a state dir this user
+            // cannot write — do not heal between restarts. So the log gets the
+            // cause, the file, and what to do, rather than the same mute line
+            // every few seconds forever.
+            eprintln!("bridge: cannot start — the task store did not open.");
+            eprintln!("  {e}");
+            eprintln!("  state lives in {tasks_dir} (build.db plus its -wal and -shm).");
+            eprintln!(
+                "  check: no second bridge is already running                  (`launchctl list | grep getbuild`), the disk is not full (`df -h`),                  and {tasks_dir} is readable and writable by this user."
+            );
+            eprintln!("  restarting will not clear this; fix the cause above first.");
             std::process::exit(1);
         }
     };

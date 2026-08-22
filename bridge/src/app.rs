@@ -2686,20 +2686,14 @@ impl AppState {
             updated_at,
             state_changed_at: self.entity_state_changed_at.get(run_id).cloned(),
         };
-        let store = self.store.as_ref().expect("checked above");
-        if record
-            .plan_id
-            .as_deref()
-            .is_some_and(|issue_id| store.issue_exists(issue_id))
-        {
-            store
-                .save_issue_implementation(&record)
-                .map_err(|e| format!("issue store: {e}"))
-        } else {
-            store
-                .save_run(&record)
-                .map_err(|e| format!("run store: {e}"))
-        }
+        // One write path, whether or not the run belongs to an Issue: the
+        // `issue_id` column is `record.plan_id`, so asking the store whether
+        // the Issue exists first only bought a lock acquisition per save.
+        self.store
+            .as_ref()
+            .expect("checked above")
+            .save_run(&record)
+            .map_err(|e| format!("run store: {e}"))
     }
 
     /// The shared tail of every plan mutation: stamp times, compute the response

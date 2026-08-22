@@ -8877,10 +8877,11 @@ impl AppState {
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
-        let mut view = self.plan_view(&plan_id, active, thread_detail(params));
         // See `run_get`. An issue carries exactly one agent, so naming it is a
         // check rather than a choice — but the check still holds.
-        if let Some(thread) = self.detail_thread_value(&plan_id, params)? {
+        let detail_thread = self.detail_thread_value(&plan_id, params)?;
+        let mut view = self.plan_view(&plan_id, active, view_thread_detail(&detail_thread, params));
+        if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("plan_view returns an object")
                 .insert("thread".to_string(), thread);
@@ -10200,11 +10201,12 @@ impl AppState {
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let mut view = self.run_view(&run_id, active, thread_detail(params));
         // Which conversation, and how much of it: the rail's open bubble names
         // the agent, and the client's cursor says what it already holds.
-        // Neither → the thread the view already built, cut the same way.
-        if let Some(thread) = self.detail_thread_value(&run_id, params)? {
+        // Neither → the thread the view builds itself, cut the same way.
+        let detail_thread = self.detail_thread_value(&run_id, params)?;
+        let mut view = self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+        if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("run_view returns an object")
                 .insert("thread".to_string(), thread);
@@ -12381,11 +12383,13 @@ impl AppState {
         row["run"] = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
-                let mut view = self.run_view(&run_id, active, thread_detail(params));
                 // The branch surface sits under the rail: it reads the
                 // conversation of whichever agent's bubble is open. See
                 // `run_get`.
-                if let Some(thread) = self.detail_thread_value(&run_id, params)? {
+                let detail_thread = self.detail_thread_value(&run_id, params)?;
+                let mut view =
+                    self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+                if let Some(thread) = detail_thread {
                     view["thread"] = thread;
                 }
                 view
@@ -14328,6 +14332,26 @@ fn thread_detail(params: &Value) -> ThreadDetail {
     {
         Some(limit) => ThreadDetail::Page(limit.clamp(1, crate::thread::MAX_THREAD_PAGE)),
         None => ThreadDetail::Full,
+    }
+}
+
+/// How much conversation the VIEW under a detail poll builds, given what the
+/// poll already has to put in its place.
+///
+/// A poll that named an agent or carried a cursor gets its `thread` from
+/// [`AppState::detail_thread_value`], and that answer overwrites the view's
+/// own — so building the view's whole meant every item of the conversation
+/// through serde on every steady-state poll of every open browser, thrown away
+/// unread. The wire was bounded; the daemon was not. The digest holds the key
+/// until the replacement lands and costs nothing per item.
+///
+/// Taking the replacement itself, rather than re-reading the params that imply
+/// one, is what keeps the two from drifting: the cheap thread is built exactly
+/// when there is something to overwrite it with.
+fn view_thread_detail(replacement: &Option<Value>, params: &Value) -> ThreadDetail {
+    match replacement {
+        Some(_) => ThreadDetail::Digest,
+        None => thread_detail(params),
     }
 }
 
@@ -22742,6 +22766,65 @@ mod tests {
                 .len(),
             full_items.len()
         );
+    }
+
+    /// The wire is bounded on a steady-state poll; the daemon has to be too.
+    ///
+    /// Every poll after a client's first load carries a cursor and no limit, so
+    /// the delta it gets back is a handful of items at most. The view underneath
+    /// it used to build the conversation whole anyway and then have it replaced
+    /// unread — every item of it through serde, on every poll, for every open
+    /// browser. That is the cost paging exists to remove, and only counting it
+    /// can tell it apart from the answer, which was correct all along.
+    #[test]
+    fn a_cursored_detail_poll_serializes_the_delta_and_not_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "poll a long conversation");
+        let now = crate::store::now_rfc3339();
+        for n in 0..200 {
+            state.plans.get_mut(&issue_id).unwrap().agents.post_user(
+                format!("message {n}"),
+                None,
+                now.clone(),
+            );
+        }
+        let conversation = &state.plans[&issue_id].agents;
+        let total = conversation.total_item_count();
+        assert!(total > 200, "the conversation is long enough to matter");
+        let last_sequence = conversation.last_sequence();
+
+        // The branch surface polls by project and branch rather than by id.
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let project_id = state.projects[0].id.clone();
+        let polls = [
+            ("run.get", json!({ "run_id": run_id })),
+            ("plan.get", json!({ "plan_id": issue_id })),
+            (
+                "branch.get",
+                json!({ "project_id": project_id, "branch": branch }),
+            ),
+        ];
+        for (method, base) in polls {
+            let mut params = base;
+            params["thread_after_sequence"] = json!(last_sequence);
+            let before = crate::thread::items_serialized();
+            let answer = state.handle(req(method, params));
+            let serialized = crate::thread::items_serialized() - before;
+
+            assert_eq!(answer["ok"], true, "{answer:?}");
+            let thread = match method {
+                "branch.get" => &answer["result"]["run"]["thread"],
+                _ => &answer["result"]["thread"],
+            };
+            assert_eq!(thread["items"].as_array().unwrap().len(), 0, "{answer:?}");
+            assert_eq!(thread["thread_total"], total, "{answer:?}");
+            assert!(
+                serialized < 8,
+                "{method} put {serialized} conversation items through serde \
+                 to answer with a delta of none"
+            );
+        }
     }
 
     #[tokio::test]

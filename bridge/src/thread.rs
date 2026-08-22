@@ -782,6 +782,36 @@ pub enum ThreadDetail {
     Page(usize),
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Conversation items this OS thread has put through serde on its way to a
+    /// wire payload, since the process started.
+    ///
+    /// A payload that was built whole and then thrown away is byte-identical to
+    /// one that was never built, so nothing about the answer can tell the two
+    /// apart — only the count can. Paging exists to keep this from growing with
+    /// conversation length on a steady-state poll, and the tests that hold that
+    /// promise read it here. Per-OS-thread rather than global so tests running
+    /// side by side do not read each other's work.
+    static ITEMS_SERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many conversation items this OS thread has serialized into wire
+/// payloads — read before and after a call to measure what it cost.
+#[cfg(test)]
+pub fn items_serialized() -> usize {
+    ITEMS_SERIALIZED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_serialized_items(count: usize) {
+    ITEMS_SERIALIZED.with(|counter| counter.set(counter.get() + count));
+}
+
+/// Nothing is counted outside the tests: only they ask what a payload cost.
+#[cfg(not(test))]
+fn count_serialized_items(_count: usize) {}
+
 impl ThreadItem {
     pub fn sequence(&self) -> u64 {
         match self {
@@ -1809,6 +1839,7 @@ impl Thread {
     /// Public thread payload for the SPA. Historical snapshots are deliberately
     /// excluded so board polling never ships every old patch over E2EE.
     pub fn wire_value(&self) -> Value {
+        count_serialized_items(self.items.len());
         json!({
             "id": self.id,
             "agent": self.agent,
@@ -2060,6 +2091,7 @@ impl Thread {
             .iter()
             .filter(|item| item.latest_sequence() > after_sequence)
             .collect();
+        count_serialized_items(newer.len());
         json!({
             "id": self.id,
             "agent": self.agent,
@@ -2104,6 +2136,7 @@ impl Thread {
     /// client can tell "my cache is a bounded window" from "my cache lost
     /// something" — the gap check the forward cursor already relies on.
     pub fn wire_value_of_page(&self, page: &[&ThreadItem], has_more: bool) -> Value {
+        count_serialized_items(page.len());
         json!({
             "id": self.id,
             "agent": self.agent,

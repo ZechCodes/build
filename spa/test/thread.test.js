@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -290,7 +290,7 @@ describe("thread cache (cursor merge for the detail polls)", () => {
 
   it("starts with a full fetch, then sends the last-known sequence as the cursor", () => {
     const cache = createThreadCache();
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
     const absorbed = cache.absorb({ id: "thread:plan-1", items: [item(1, "hello"), item(3, "world")], revisions: [] });
     expect(absorbed.items.map((i) => i.data.sequence)).toEqual([1, 3]);
     expect(absorbed.revisions).toEqual([]);
@@ -353,7 +353,7 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     // The bridge restarted (or the entity swapped): it now reports fewer items
     // than we hold. The cache drops its state so the next poll refetches whole.
     cache.absorb({ items: [], thread_total: 1, thread_last_sequence: 1 });
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
     const refetched = cache.absorb({ items: [item(1, "only")] });
     expect(refetched.items.map((i) => i.data.sequence)).toEqual([1]);
   });
@@ -362,12 +362,20 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     const cache = createThreadCache();
     cache.absorb({ items: [item(1, "a")] });
     expect(cache.absorb(null)).toBeNull();
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 });
 
 describe("thread cache paging (the window over a long conversation)", () => {
   const item = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+
+  it("names the page it can hold on a first load, so the daemon knows to bound one", () => {
+    const cache = createThreadCache();
+    // A daemon that hears no bound answers with the conversation whole, which
+    // is the only answer a client that cannot page can reconcile. Asking is
+    // what makes the answer a window.
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
   // What the daemon's `thread.page` ships: the newest items it was asked for,
   // plus the whole conversation's size and the seek for the page above.
   const page = (items, { thread_total, has_more }) => ({
@@ -399,7 +407,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
     // nothing that gets us there, so what we hold has a hole in it.
     const gapped = cache.absorb({ items: [], thread_total: 101, thread_last_sequence: 101 });
     expect(gapped.items.map((i) => i.data.sequence)).toEqual([98, 99]);
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 
   it("resets when the conversation holds fewer items than the window does", () => {
@@ -409,7 +417,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
     // the sequences still line up at the top but the whole is smaller than
     // the part we hold.
     cache.absorb({ items: [], thread_total: 2, thread_last_sequence: 3 });
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 
   it("asks for the page above the window while the daemon says there is one", () => {
@@ -456,7 +464,7 @@ describe("thread cache paging (the window over a long conversation)", () => {
     // would extend is gone. Folding it in would make a window whose top is not
     // the conversation's newest — a hole, dressed as history.
     expect(cache.absorbOlderPage(page([item(1, "a")], { thread_total: 9, has_more: false }))).toBeNull();
-    expect(cache.cursorParam()).toEqual({});
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
     expect(cache.olderPageParam()).toBeNull();
   });
 

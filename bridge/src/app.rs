@@ -2711,7 +2711,7 @@ impl AppState {
             .or_insert_with(|| now.clone());
         self.entity_updated_at.insert(plan_id.clone(), now.clone());
         self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
-        let view = self.plan_view(&plan_id, &active, ThreadDetail::Page);
+        let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
@@ -2744,7 +2744,7 @@ impl AppState {
         self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
         self.invalidate_run_stat(&run_id);
-        let view = self.run_view(&run_id, &active, ThreadDetail::Page);
+        let view = self.run_view(&run_id, &active, ThreadDetail::Full);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
@@ -4952,8 +4952,9 @@ impl AppState {
     }
 
     /// The `thread` a detail poll ships when it asked for one in particular:
-    /// the named agent's conversation, either its newest page or only what has
-    /// happened past the cursor the client already holds. `None` when the poll
+    /// the named agent's conversation, cut to what the poll can hold — only
+    /// what has happened past the cursor it already holds, or as much of the
+    /// newest conversation as its `thread_limit` allows. `None` when the poll
     /// named no agent and carried no cursor — the view's own thread already is
     /// exactly that.
     fn detail_thread_value(
@@ -4969,7 +4970,10 @@ impl AppState {
         let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
         Ok(Some(match cursor {
             Some(after_sequence) => thread.wire_value_after(after_sequence),
-            None => thread.wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
+            None => match thread_detail(params) {
+                ThreadDetail::Page(limit) => thread.wire_value_page(None, limit),
+                _ => thread.wire_value(),
+            },
         }))
     }
 
@@ -8783,7 +8787,7 @@ impl AppState {
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
-        let mut view = self.plan_view(&plan_id, active, ThreadDetail::Page);
+        let mut view = self.plan_view(&plan_id, active, thread_detail(params));
         // See `run_get`. An issue carries exactly one agent, so naming it is a
         // check rather than a choice — but the check still holds.
         if let Some(thread) = self.detail_thread_value(&plan_id, params)? {
@@ -8890,7 +8894,7 @@ impl AppState {
 
     fn issue_view_full(&self, issue_id: &str) -> Result<Value, String> {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        Ok(self.plan_view(issue_id, issue, ThreadDetail::Page))
+        Ok(self.plan_view(issue_id, issue, ThreadDetail::Full))
     }
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
@@ -10092,16 +10096,16 @@ impl AppState {
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let mut view = self.run_view(&run_id, active, ThreadDetail::Page);
+        let mut view = self.run_view(&run_id, active, thread_detail(params));
         // Which conversation, and how much of it: the rail's open bubble names
         // the agent, and the client's cursor says what it already holds.
-        // Neither → the newest page the view already built.
+        // Neither → the thread the view already built, cut the same way.
         if let Some(thread) = self.detail_thread_value(&run_id, params)? {
             view.as_object_mut()
                 .expect("run_view returns an object")
@@ -10393,7 +10397,7 @@ impl AppState {
                     return Ok(view);
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(&entity_id, active, ThreadDetail::Page));
+                return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
             }
             let mut active = self.take_run(&entity_id)?;
             append_reviewer_messages(
@@ -10881,7 +10885,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -10913,7 +10917,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -10959,7 +10963,7 @@ impl AppState {
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -10982,7 +10986,7 @@ impl AppState {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Page))
+        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -11479,7 +11483,7 @@ impl AppState {
         let (checkout, scope) = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Page));
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
@@ -11491,7 +11495,7 @@ impl AppState {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Page));
+                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
@@ -12245,7 +12249,7 @@ impl AppState {
         row["run"] = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
-                let mut view = self.run_view(&run_id, active, ThreadDetail::Page);
+                let mut view = self.run_view(&run_id, active, thread_detail(params));
                 // The branch surface sits under the rail: it reads the
                 // conversation of whichever agent's bubble is open. See
                 // `run_get`.
@@ -13228,9 +13232,8 @@ impl AppState {
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
                 ThreadDetail::Digest => active.agents.digest_value(),
-                ThreadDetail::Page => active
-                    .agents
-                    .wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
+                ThreadDetail::Full => active.agents.wire_value(),
+                ThreadDetail::Page(limit) => active.agents.wire_value_page(None, limit),
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
@@ -13359,9 +13362,10 @@ impl AppState {
             "effort": active.model_choice.effort,
             "thread": match thread_detail {
                 ThreadDetail::Digest => self.conversation_thread_for_run(active).digest_value(),
-                ThreadDetail::Page => self
+                ThreadDetail::Full => self.conversation_thread_for_run(active).wire_value(),
+                ThreadDetail::Page(limit) => self
                     .conversation_thread_for_run(active)
-                    .wire_value_page(None, crate::thread::DEFAULT_THREAD_PAGE),
+                    .wire_value_page(None, limit),
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id),
@@ -14173,6 +14177,25 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 /// the conversation's newest page instead of an error.
 fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
+}
+
+/// How much conversation a detail poll can hold: a page of the size its
+/// `thread_limit` names, or the conversation whole when it names none.
+///
+/// Silence has to keep meaning "whole". A client written before paging holds
+/// every item and reconciles each later delta against `thread_total`; hand it
+/// a window unasked and that count never matches again, so it drops its cache
+/// every tick, never sends a cursor, and never sees a word above the window.
+/// A client that can page says so, and says how much.
+fn thread_detail(params: &Value) -> ThreadDetail {
+    match params
+        .get("thread_limit")
+        .and_then(Value::as_u64)
+        .and_then(|limit| usize::try_from(limit).ok())
+    {
+        Some(limit) => ThreadDetail::Page(limit.clamp(1, crate::thread::MAX_THREAD_PAGE)),
+        None => ThreadDetail::Full,
+    }
 }
 
 /// How much of a conversation a `thread.page` call asked for. Absent means a
@@ -22518,9 +22541,13 @@ mod tests {
             }),
         );
 
-        // Without a cursor the wire is the newest page — which for a
+        // The first load a paging client makes: the newest page, which for a
         // conversation this short is every item it holds.
-        let full = call(&handler, "run.get", json!({ "run_id": run_id }));
+        let full = call(
+            &handler,
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": crate::thread::DEFAULT_THREAD_PAGE }),
+        );
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(full_items.len() >= 2, "{full:?}");
         assert_eq!(full["result"]["thread"]["has_more"], false, "{full:?}");
@@ -22563,11 +22590,16 @@ mod tests {
         );
         assert_eq!(drained["result"]["thread"]["thread_total"], total);
 
-        // A garbage cursor is treated as absent: the newest page, not an error.
+        // A garbage cursor is treated as absent: the page the poll asked for,
+        // not an error.
         let garbage = call(
             &handler,
             "run.get",
-            json!({ "run_id": run_id, "thread_after_sequence": "junk" }),
+            json!({
+                "run_id": run_id,
+                "thread_after_sequence": "junk",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
         );
         assert_eq!(garbage["ok"], true, "{garbage:?}");
         assert_eq!(
@@ -25617,12 +25649,80 @@ mod tests {
     }
 
     #[test]
-    fn an_uncursored_detail_poll_ships_a_page_of_a_long_conversation_not_all_of_it() {
+    fn a_detail_poll_that_names_no_page_ships_the_conversation_whole() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-unbounded", 250);
+
+        let opened = state.handle(req("run.get", json!({ "run_id": "run-unbounded" })));
+        let thread = &opened["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            held,
+            "{thread:?}"
+        );
+
+        // The silence is the whole point: a client written before paging holds
+        // the conversation entire and reconciles every later delta against
+        // `thread_total`. An answer that names one has told it a count it can
+        // never match, so it drops its cache every tick, never sends a cursor
+        // again, and never sees a word above the window it was handed.
+        assert!(thread.get("thread_total").is_none(), "{thread:?}");
+        assert!(thread.get("has_more").is_none(), "{thread:?}");
+
+        // And the delta after it reconciles: the count the daemon names is the
+        // count the client now holds, so the cache survives and the next poll
+        // is a cursored one — the bandwidth win the cursor exists for, still
+        // reachable by a client that cannot page.
+        let last_sequence = thread["items"].as_array().unwrap().last().unwrap()["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+        let delta = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-unbounded", "thread_after_sequence": last_sequence }),
+        ));
+        let delta_thread = &delta["result"]["thread"];
+        assert!(
+            delta_thread["items"].as_array().unwrap().is_empty(),
+            "{delta_thread:?}"
+        );
+        assert_eq!(
+            delta_thread["thread_total"], held as u64,
+            "{delta_thread:?}"
+        );
+    }
+
+    #[test]
+    fn a_detail_poll_cannot_ask_for_more_conversation_than_a_page_carries() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-greedy", 250);
+
+        let greedy = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-greedy", "thread_limit": 10_000 }),
+        ));
+        let thread = &greedy["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::MAX_THREAD_PAGE,
+            "{thread:?}"
+        );
+    }
+
+    #[test]
+    fn a_detail_poll_that_asks_for_a_page_of_a_long_conversation_gets_one_not_all_of_it() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let held = run_with_long_conversation(&mut state, "run-long", 250);
 
-        let opened = state.handle(req("run.get", json!({ "run_id": "run-long" })));
+        let opened = state.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-long",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
         let thread = &opened["result"]["thread"];
         let items = thread["items"].as_array().unwrap();
         assert_eq!(

@@ -767,13 +767,19 @@ pub enum ThreadItem {
 
 /// How much conversation a wire view carries: `Digest` for the polled list
 /// surfaces (board.list / plan.list re-ship every entity every ~2.5s, so a
-/// full thread there grows without bound), `Page` for the detail surfaces that
-/// actually render the conversation — the newest page of it, with everything
-/// older a scroll-back away.
+/// full thread there grows without bound), `Page` for a caller that said how
+/// much it can hold — the newest items of the conversation, with everything
+/// older a scroll-back away — and `Full` for one that said nothing.
+///
+/// `Full` is not a fallback, it is the older contract kept: a client written
+/// before paging holds the conversation entire and checks every delta against
+/// `thread_total`, so a window handed to it unasked is a count it can never
+/// match again. Bounding is therefore the caller's to ask for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadDetail {
     Digest,
-    Page,
+    Full,
+    Page(usize),
 }
 
 impl ThreadItem {
@@ -914,7 +920,8 @@ pub struct ConversationQuery {
     pub limit: usize,
 }
 
-/// How many conversation items a first load ships when the caller does not say.
+/// How many conversation items a page carries when the caller asks for one
+/// without saying how large.
 ///
 /// One sitting at a task — the asks, the agent's replies, and the events
 /// between them — runs to a few dozen items; 60 holds a long one whole, so the

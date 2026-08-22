@@ -107,6 +107,12 @@ function timeHtml(createdAt) {
 // a full thread for rendering. A window that no longer reaches the newest item,
 // or that holds more than the conversation does (bridge restart, entity swap,
 // dropped delta), resets it to a full refetch.
+// How much conversation a first load asks for. The daemon clamps whatever it
+// hears, so this is a request rather than a promise — but it has to be made:
+// a poll that names no bound gets the conversation whole, which is the only
+// answer a client written before paging could reconcile.
+export const FIRST_PAGE_ITEMS = 60;
+
 export function createThreadCache() {
   let accumulatedItems = [];
   // Whether the daemon said there is conversation above the window. Only a
@@ -163,9 +169,12 @@ export function createThreadCache() {
 
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
-    // nothing when a full fetch is needed (first load, or after a reset).
+    // — with no window open (first load, or after a reset) — how much of the
+    // newest conversation to open one on.
     cursorParam() {
-      return accumulatedItems.length ? { thread_after_sequence: lastHeldSequence() } : {};
+      return accumulatedItems.length
+        ? { thread_after_sequence: lastHeldSequence() }
+        : { thread_limit: FIRST_PAGE_ITEMS };
     },
     // Extra params for the next thread.page: the seek for the page above the
     // window, or nothing while there is no window to widen.

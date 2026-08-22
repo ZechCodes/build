@@ -447,6 +447,40 @@ describe("thread cache paging (the window over a long conversation)", () => {
     expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
   });
 
+  it("resets when an item is deleted from inside a window smaller than the whole", () => {
+    const cache = createThreadCache();
+    const newest = Array.from({ length: 60 }, (_, index) => item(41 + index, `m${41 + index}`));
+    cache.absorb(page(newest, { thread_total: 100, has_more: true }));
+
+    // The reviewer deleted their own open plan comment. A removal spends no
+    // sequence, so the delta is empty and the newest sequence is where it was:
+    // the conversation getting shorter is the only word the wire carries for
+    // it. A window is shorter than the whole by design, so the size check
+    // cannot hear that word — and without it the deleted comment stays on the
+    // rail for the life of the view, since nothing ever arrives to unsay it.
+    cache.absorb({ items: [], thread_total: 99, thread_last_sequence: 100 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+
+    // The refetch the reset asks for is what drops it.
+    const healed = cache.absorb(
+      page(newest.filter((entry) => entry.data.sequence !== 95), { thread_total: 99, has_more: true }),
+    );
+    expect(healed.items.some((entry) => entry.data.sequence === 95)).toBe(false);
+  });
+
+  it("resets when a tick both deletes an item and posts one, leaving the whole the same length", () => {
+    const cache = createThreadCache();
+    const newest = Array.from({ length: 60 }, (_, index) => item(41 + index, `m${41 + index}`));
+    cache.absorb(page(newest, { thread_total: 100, has_more: true }));
+
+    // One poll interval is long enough for both, and the count that comes back
+    // says nothing on its own. What the window knows is how much conversation
+    // it was told about: one item arrived, so a hundred items should have
+    // become a hundred and one.
+    cache.absorb({ items: [item(101, "posted")], thread_total: 100, thread_last_sequence: 101 });
+    expect(cache.cursorParam()).toStrictEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
   it("cannot open a window on a delta, so a repaint after a reset still refetches", () => {
     const cache = createThreadCache();
     // The reader has paged all the way back: the window IS the conversation.

@@ -133,6 +133,10 @@ export function createThreadCache() {
   // `theWindowMayTake`), and the cursor still has to move past its bump or the
   // daemon re-ships it on every poll for as long as the view is open.
   let deliveredSequence = 0;
+  // How long the daemon last said the whole conversation is, or null while no
+  // window is open. Held because a REMOVAL is the one change the wire has no
+  // other word for (see `growsByWhatItWasTold`).
+  let knownTotalItems = null;
 
   // The bridge bumps `updated_sequence` (drawn from the same counter as
   // `sequence`) when it mutates a message in place — marking it seen,
@@ -181,6 +185,15 @@ export function createThreadCache() {
   const speaksForTheWindowsFloor = (arrivedItems) => {
     if (!accumulatedItems.length) return true;
     return (arrivedItems[0]?.data?.sequence || 0) === (accumulatedItems[0].data?.sequence || 0);
+  };
+
+  /// Drop the window: what is held, what was said about either end of it, and
+  /// how long the conversation was. The next poll opens a fresh one.
+  const forgetTheWindow = () => {
+    accumulatedItems = [];
+    olderItemsRemain = false;
+    deliveredSequence = 0;
+    knownTotalItems = null;
   };
 
   const mergeArrivals = (arrivedItems) => {
@@ -234,6 +247,39 @@ export function createThreadCache() {
     return merged.length <= threadPayload.thread_total;
   };
 
+  /// How many of an arrival's items are conversation that did not exist when
+  /// the window was last checked. The forward cursor re-ships an item it merely
+  /// mutated in place, and that item was counted the first time it arrived —
+  /// only a creation makes the conversation longer, and a creation is exactly
+  /// an item whose own sequence is past everything delivered so far.
+  const createdSince = (arrivedItems, delivered) =>
+    arrivedItems.filter((item) => (item.data?.sequence || 0) > delivered).length;
+
+  /// Whether the conversation is as long as what the cache has been told about
+  /// it — the only signal the wire carries for an item that was DELETED.
+  ///
+  /// Nothing arrives to unsay a removed item. `Thread::remove_doc_comment`
+  /// takes it out of the conversation and spends no sequence doing so, so the
+  /// next delta is empty, the newest sequence is where it was, and the one
+  /// thing that moves is `thread_total` going down by one. A window is shorter
+  /// than the whole by design, so the size check cannot hear that: a reviewer
+  /// deleting their own comment would leave it drawn on the rail for the life
+  /// of the view, because no later poll ever mentions it again.
+  ///
+  /// So the length is predicted instead of compared: whatever the daemon said
+  /// last, plus the items it has since shipped that are new. Falling short of
+  /// that means the conversation lost something — a deletion inside the window
+  /// or below it — and the window is dropped for a refetch. Predicting also
+  /// catches the tick that deletes one item and posts another, which leaves the
+  /// count alone and would otherwise pass unnoticed.
+  ///
+  /// Only falling SHORT is a loss. A conversation longer than predicted is a
+  /// delta the daemon bounded, which the delivery end of the check answers.
+  const growsByWhatItWasTold = (threadPayload, arrivedItems, delivered) => {
+    if (knownTotalItems == null) return true;
+    return threadPayload.thread_total >= knownTotalItems + createdSince(arrivedItems, delivered);
+  };
+
   return {
     // Extra params for the next plan.get / run.get: the last sequence held, or
     // — with no window open (first load, or after a reset) — how much of the
@@ -257,9 +303,7 @@ export function createThreadCache() {
     // `items` is the complete accumulated list. Never mutates the payload.
     absorb(threadPayload) {
       if (!threadPayload) {
-        accumulatedItems = [];
-        olderItemsRemain = false;
-        deliveredSequence = 0;
+        forgetTheWindow();
         return threadPayload;
       }
       const arrivedItems = threadPayload.items || [];
@@ -274,8 +318,10 @@ export function createThreadCache() {
       }
       if (threadPayload.thread_total == null) {
         // An uncursored (full) response is authoritative: replace, don't merge.
+        // It names no length, so there is none to hold the next one to.
         accumulatedItems = [...arrivedItems];
         deliveredSequence = highestCursorSequence(accumulatedItems);
+        knownTotalItems = null;
         return { ...threadPayload, items: accumulatedItems };
       }
       // A window is opened by a PAGE and only by a page. A forward delta
@@ -303,16 +349,18 @@ export function createThreadCache() {
         highestCursorSequence(merged),
         highestCursorSequence(arrivedItems),
       );
-      if (!holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload, arrivedAsAPage)) {
+      const sound =
+        holdsAnUnbrokenRunEndingAtTheNewest(merged, delivered, threadPayload, arrivedAsAPage) &&
+        growsByWhatItWasTold(threadPayload, arrivedItems, deliveredSequence);
+      if (!sound) {
         // A real gap: render what we have this tick, but drop the cache so the
         // next poll refetches from the newest page down and self-heals.
-        accumulatedItems = [];
-        olderItemsRemain = false;
-        deliveredSequence = 0;
+        forgetTheWindow();
         return { ...threadPayload, items: merged };
       }
       accumulatedItems = merged;
       deliveredSequence = delivered;
+      knownTotalItems = threadPayload.thread_total;
       return { ...threadPayload, items: accumulatedItems };
     },
     // Widen the window upwards with a `thread.page` answer and return the whole
@@ -341,9 +389,7 @@ export function createThreadCache() {
       return { ...pagePayload, items: accumulatedItems };
     },
     reset() {
-      accumulatedItems = [];
-      olderItemsRemain = false;
-      deliveredSequence = 0;
+      forgetTheWindow();
     },
   };
 }

@@ -5114,7 +5114,11 @@ impl AppState {
         // (an Issue's, for a planned implementation), every other agent's off
         // its own.
         let Ok(roster) = self.entity_agents(entity_id) else {
-            return thread.unread_since(self.read_cursor(entity_id, ""));
+            return self.unread_including_history(
+                entity_id,
+                thread,
+                self.read_cursor(entity_id, ""),
+            );
         };
         let mut summary = crate::thread::UnreadSummary::default();
         for agent in roster.iter() {
@@ -5123,7 +5127,11 @@ impl AppState {
             } else {
                 &agent.thread
             };
-            let unread = agent_thread.unread_since(self.read_cursor(entity_id, &agent.id));
+            let unread = self.unread_including_history(
+                &agent.id,
+                agent_thread,
+                self.read_cursor(entity_id, &agent.id),
+            );
             summary.count += unread.count;
             summary.reason = unread.reason.or(summary.reason);
         }
@@ -5143,7 +5151,41 @@ impl AppState {
         if self.is_muted(entity_id) {
             return crate::thread::UnreadSummary::default();
         }
-        thread.unread_since(self.read_cursor(entity_id, &agent.id))
+        self.unread_including_history(&agent.id, thread, self.read_cursor(entity_id, &agent.id))
+    }
+
+    /// One conversation's unread, counting the part of it this process did not
+    /// load.
+    ///
+    /// A conversation is held as its newest items, so counting the badge off
+    /// what is resident under-reports exactly when it matters most — the human
+    /// has not read in a while and the unread has fallen under the tail. The
+    /// badge is the one number they use to decide whether to look, so it is
+    /// counted in the database rather than guessed from the tail. A
+    /// conversation that was loaded whole has no history under it and asks
+    /// nothing.
+    fn unread_including_history(
+        &self,
+        agent_id: &str,
+        thread: &crate::thread::Thread,
+        cursor: u64,
+    ) -> crate::thread::UnreadSummary {
+        let mut summary = thread.unread_since(cursor);
+        let floor = thread.resident_from_sequence();
+        if floor == 0 || floor <= cursor {
+            return summary;
+        }
+        let Some(store) = &self.store else {
+            return summary;
+        };
+        match store.unread_attention_between(agent_id, cursor, floor) {
+            Ok(under) => summary.count += under,
+            // A badge is not worth failing a poll over: report what is
+            // resident, which is an undercount rather than a wrong kind of
+            // answer.
+            Err(error) => eprintln!("unread under the tail for {agent_id}: {error}"),
+        }
+        summary
     }
 
     /// How far the human has read one agent's conversation, folding in the

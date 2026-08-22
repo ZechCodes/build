@@ -415,9 +415,16 @@ CREATE TABLE IF NOT EXISTS thread_items (
     agent_id         TEXT NOT NULL,
     sequence         INTEGER NOT NULL,
     updated_sequence INTEGER NOT NULL,
+    -- 1 when this item calls the human: what an unread badge counts. Hoisted
+    -- out of the item JSON because a conversation is loaded as its tail, so the
+    -- items under it can only be counted by the database — and counting them
+    -- by deserializing every one would undo the tail.
+    attention        INTEGER NOT NULL DEFAULT 0,
     item             TEXT NOT NULL,
     PRIMARY KEY (agent_id, sequence)
 );
+CREATE INDEX IF NOT EXISTS thread_items_attention
+    ON thread_items(agent_id, attention, sequence);
 CREATE INDEX IF NOT EXISTS thread_items_cursor
     ON thread_items(agent_id, updated_sequence);
 
@@ -488,7 +495,7 @@ const THREAD_LAST_SEQUENCE_SQL: &str =
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -565,10 +572,19 @@ impl Store {
         // Store share one connection, but the daemon is not the only process
         // that may ever open the file (a backup, a shell).
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // The column BEFORE the schema batch: `SCHEMA` indexes `attention`,
+        // and a v1 table has no such column for the index to name.
+        if stored == Some(1) {
+            Store::add_attention_column(&conn)?;
+        }
         conn.execute_batch(SCHEMA)?;
-        if stored.is_none() {
+        if stored == Some(1) {
+            Store::classify_stored_items(&conn)?;
+        }
+        if stored.is_none() || stored == Some(1) {
             conn.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = ?1",
                 [SCHEMA_VERSION.to_string()],
             )?;
         }
@@ -594,6 +610,55 @@ impl Store {
         self.conn
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Add the v2 `attention` column to a v1 table.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` does not alter a table that already exists,
+    /// so a database written by v1 needs the column added by hand — and needs
+    /// it before the schema batch, which indexes it.
+    fn add_attention_column(conn: &Connection) -> Result<(), StoreError> {
+        if conn
+            .prepare("SELECT attention FROM thread_items LIMIT 1")
+            .is_ok()
+        {
+            return Ok(());
+        }
+        conn.execute(
+            "ALTER TABLE thread_items ADD COLUMN attention INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Classify every stored item for the freshly added column.
+    ///
+    /// The one place Build reads whole conversations on purpose: it runs once,
+    /// on the upgrade, because a column added with a default says nothing about
+    /// the items already under it.
+    fn classify_stored_items(conn: &Connection) -> Result<(), StoreError> {
+        let rows: Vec<(String, i64, String)> = {
+            let mut statement =
+                conn.prepare("SELECT agent_id, sequence, item FROM thread_items")?;
+            let read = statement.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get::<_, String>(2)?))
+            })?;
+            read.collect::<Result<_, _>>()?
+        };
+        let mut set = conn.prepare(
+            "UPDATE thread_items SET attention = ?3 WHERE agent_id = ?1 AND sequence = ?2",
+        )?;
+        for (agent_id, sequence, raw) in rows {
+            let Ok(item) = serde_json::from_str::<ThreadItem>(&raw) else {
+                continue;
+            };
+            set.execute(rusqlite::params![
+                agent_id,
+                sequence,
+                i64::from(item.attention_reason().is_some())
+            ])?;
+        }
+        Ok(())
     }
 
     /// Run `work` inside one transaction. Every save is all-or-nothing: a
@@ -644,6 +709,19 @@ impl Store {
                 [version.to_string()],
             )
             .expect("the schema version is stamped");
+    }
+
+    /// Test-only: strip the v2 column and stamp the version back, so the
+    /// upgrade path can be exercised against a database this build wrote.
+    #[cfg(test)]
+    pub fn pretend_to_be_v1(&self) {
+        let conn = self.connection();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS thread_items_attention;
+             ALTER TABLE thread_items DROP COLUMN attention;
+             UPDATE meta SET value = '1' WHERE key = 'schema_version';",
+        )
+        .expect("the v1 shape is staged");
     }
 
     /// Test-only: make the next write fail once, then behave normally.
@@ -769,9 +847,10 @@ impl Store {
              ON CONFLICT(id) DO UPDATE SET owner_id = ?2, ordinal = ?3, record = ?4",
         )?;
         let mut upsert_item = tx.prepare(
-            "INSERT INTO thread_items (agent_id, sequence, updated_sequence, item)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(agent_id, sequence) DO UPDATE SET updated_sequence = ?3, item = ?4",
+            "INSERT INTO thread_items (agent_id, sequence, updated_sequence, attention, item)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(agent_id, sequence)
+             DO UPDATE SET updated_sequence = ?3, attention = ?4, item = ?5",
         )?;
         let mut delete_item =
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
@@ -817,6 +896,7 @@ impl Store {
                     agent.id,
                     sequence,
                     updated,
+                    i64::from(item.attention_reason().is_some()),
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
@@ -893,6 +973,32 @@ impl Store {
     /// How many items a conversation holds. A `COUNT(*)`, never a load — the
     /// client needs the total to know whether its cache is whole, and reading
     /// the items to count them would spend exactly what paging saves.
+    /// How many attention-class items sit strictly between `cursor` and
+    /// `floor` — the unread the human is owed from UNDER the resident tail.
+    ///
+    /// A conversation is loaded as its newest items, so a badge counted off
+    /// what this process holds under-reports the moment the human has not read
+    /// in a while. The count has to come from the database, and it is a count
+    /// rather than a read: deserializing the history to size a badge would
+    /// undo the tail it exists to keep.
+    pub fn unread_attention_between(
+        &self,
+        agent_id: &str,
+        cursor: u64,
+        floor: u64,
+    ) -> Result<u64, StoreError> {
+        if floor == 0 || floor <= cursor {
+            return Ok(0);
+        }
+        let count: i64 = self.connection().query_row(
+            "SELECT COUNT(*) FROM thread_items
+             WHERE agent_id = ?1 AND attention = 1 AND sequence > ?2 AND sequence < ?3",
+            rusqlite::params![agent_id, cursor as i64, floor as i64],
+            |row| row.get(0),
+        )?;
+        Ok(count as u64)
+    }
+
     pub fn thread_item_count(&self, agent_id: &str) -> Result<u64, StoreError> {
         let count: i64 = self
             .connection()
@@ -2289,6 +2395,93 @@ mod tests {
         store
             .delete_plan("plan-1")
             .expect("deleting twice is the same as deleting once");
+    }
+
+    /// A conversation is loaded as its newest items, so the badge has to count
+    /// what is under them. This is the query that does it — and it counts only
+    /// what calls the human, only between the cursor and the tail.
+    #[test]
+    fn unread_under_the_tail_is_counted_in_the_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        let agent_id = record.agents[0].id.clone();
+        // Agent messages call the human; status events do not.
+        for n in 0..10 {
+            record.agents[0]
+                .thread
+                .post_agent(format!("said {n}"), None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Triaged,
+                None,
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the run saves");
+        let floor = record.agents[0].thread.last_sequence() + 1;
+
+        assert_eq!(
+            store
+                .unread_attention_between(&agent_id, 0, floor)
+                .expect("the count runs"),
+            10,
+            "only the items that call the human are counted"
+        );
+        // A cursor inside the conversation counts only what is above it.
+        let midpoint = record.agents[0].thread.items[9].sequence();
+        let above = store
+            .unread_attention_between(&agent_id, midpoint, floor)
+            .expect("the count runs");
+        assert!(above < 10 && above > 0, "counted {above} above the cursor");
+        // A conversation held whole has no history under it to ask about.
+        assert_eq!(
+            store
+                .unread_attention_between(&agent_id, 0, 0)
+                .expect("the count runs"),
+            0
+        );
+    }
+
+    /// A v1 database gains the attention column and is classified in place —
+    /// the one real installation is a v1 database, so this path is the only one
+    /// that will ever run on it.
+    #[test]
+    fn a_v1_database_is_migrated_and_its_items_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let agent_id;
+        let floor;
+        {
+            let store = Store::new(&root).expect("store opens");
+            let mut record = run_record("run-1", None, NOW);
+            agent_id = record.agents[0].id.clone();
+            record.agents[0]
+                .thread
+                .post_agent("look at this", None, NOW);
+            store.save_run(&record).expect("the run saves");
+            floor = record.agents[0].thread.last_sequence() + 1;
+            // Put it back the way a v1 store looks: no attention column, and a
+            // schema version that says so.
+            store.pretend_to_be_v1();
+        }
+        let migrated = Store::new(&root).expect("a v1 store opens");
+        assert_eq!(
+            migrated
+                .unread_attention_between(&agent_id, 0, floor)
+                .expect("the count runs"),
+            1,
+            "the backfill classified the items already stored"
+        );
+        assert_eq!(
+            migrated.load_all_runs().expect("runs load")[0].agents[0]
+                .thread
+                .items
+                .len(),
+            1,
+            "the migration did not disturb the conversation"
+        );
     }
 
     /// The attention map is pruned to the entities that still exist, so it

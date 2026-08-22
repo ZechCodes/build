@@ -3481,6 +3481,7 @@ mod doc_comment_tests {
     use super::*;
 
     const NOW: &str = "2026-08-13T09:00:00Z";
+
     const STAGE_PATH: &str = ".build/plan/01-database-schema.md";
 
     fn passage() -> DocAnchor {

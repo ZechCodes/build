@@ -317,6 +317,19 @@ describe("the rail's poll on an unchanged conversation", () => {
     }));
     vi.doMock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
     vi.doMock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: () => {} }) }));
+    // The bubble's painter rides requestAnimationFrame, and the one stubbed
+    // above answers in the same tick it is asked — which for a working agent is
+    // a loop that never yields. Nothing here is about the face anyway.
+    vi.doMock("../src/core/agentCanvas.js", () => ({
+      createPatternRenderer: () => ({
+        setWorking: () => {},
+        setInk: () => {},
+        setDimmed: () => {},
+        destroy: () => {},
+        isWorking: () => false,
+      }),
+      animatingRendererCount: () => 0,
+    }));
     ({ App } = await import("../src/app.js"));
     ({ mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js"));
 

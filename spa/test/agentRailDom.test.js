@@ -38,6 +38,38 @@ vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(
 const mountAgentTab = vi.fn(() => ({ dispose: () => {} }));
 vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: (...args) => mountAgentTab(...args) }));
 
+// The painter behind a bubble's face, standing in for the real one: jsdom has
+// no 2D context to draw into, and what the rail owes the painter is a lifecycle
+// — one per bubble, told what it should be doing, let go when its agent leaves.
+const painters = [];
+vi.mock("../src/core/agentCanvas.js", () => ({
+  createPatternRenderer: (options) => {
+    const painter = {
+      options,
+      working: false,
+      ink: null,
+      dimmed: false,
+      destroyed: false,
+      setWorking: (next) => {
+        painter.working = !!next;
+      },
+      setInk: (next) => {
+        painter.ink = next;
+      },
+      setDimmed: (next) => {
+        painter.dimmed = !!next;
+      },
+      destroy: () => {
+        painter.destroyed = true;
+      },
+      isWorking: () => painter.working,
+    };
+    painters.push(painter);
+    return painter;
+  },
+  animatingRendererCount: () => painters.filter((painter) => painter.working && !painter.destroyed).length,
+}));
+
 const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
@@ -70,6 +102,8 @@ const flush = async () => {
 
 const railHost = () => document.getElementById("agent-rail");
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
+const livePainters = () => painters.filter((painter) => !painter.destroyed);
+const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
@@ -92,6 +126,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
+  painters.length = 0;
   feedSubscribers.clear();
   feedSnapshot = { items: [], projects: [] };
   markSeen.mockClear();
@@ -119,7 +154,7 @@ describe("the bubble strip", () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, unread_count: 4, working: true })] });
     await mount();
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent", "agent", "add"]);
-    expect(bubbles()[1].querySelector(".rail-badge").textContent).toBe("4");
+    expect(countOn(bubbles()[1]).textContent).toBe("4");
     expect(bubbles()[1].classList.contains("working")).toBe(true);
   });
 
@@ -166,17 +201,18 @@ describe("the bubble strip", () => {
     await flush();
 
     expect(bubbles()[0]).toBe(before);
-    expect(bubbles()[0].querySelector(".rail-badge").textContent).toBe("3");
-    expect(bubbles()[0].querySelector(".rail-badge").hidden).toBe(false);
+    expect(countOn(bubbles()[0]).textContent).toBe("3");
+    expect(countOn(bubbles()[0]).hidden).toBe(false);
     expect(bubbles()[0].classList.contains("working")).toBe(true);
-    expect(bubbles()[0].title).toContain("unread");
+    expect(bubbles()[0].title).toContain("3 unread");
+    expect(bubbles()[0].getAttribute("aria-label")).toContain("3 unread");
 
-    // …and back again: the badge goes, the animation stops where it was.
+    // …and back again: the count goes, the animation stops where it was.
     payload = branchRow({ agents: [agent()] });
     vi.advanceTimersByTime(1600);
     await flush();
     expect(bubbles()[0]).toBe(before);
-    expect(bubbles()[0].querySelector(".rail-badge").hidden).toBe(true);
+    expect(countOn(bubbles()[0]).hidden).toBe(true);
     expect(bubbles()[0].classList.contains("working")).toBe(false);
   });
 
@@ -192,17 +228,28 @@ describe("the bubble strip", () => {
     expect(bubbles()[0]).not.toBe(before);
   });
 
-  it("wears a pattern instead of a number", async () => {
+  it("wears a painted pattern instead of a number", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     await mount();
-    const [first, second] = bubbles();
-    expect(first.className).toMatch(/rail-pattern-1\b/);
-    expect(second.className).toMatch(/rail-pattern-2\b/);
-    expect(first.querySelector(".rail-glyph")).toBeTruthy();
+    const [first, second, add] = bubbles();
+    expect(first.querySelector("canvas.rail-glyph")).toBeTruthy();
+    expect(first.dataset.pattern).toBe("1");
+    expect(second.dataset.pattern).toBe("2");
     expect(first.textContent.trim()).toBe("");
+    // The `+` speaks in a glyph, not a pattern, so it gets no canvas at all.
+    expect(add.querySelector("canvas")).toBe(null);
+    expect(add.textContent.trim()).toBe("+");
     // The name is still said where a name belongs — the tooltip and the
     // accessible name — so two agents are still tellable apart in words.
     expect(first.getAttribute("aria-label")).toBe("Claude Code 1");
+  });
+
+  // The corner badge is gone: an unread count is the whole face now, over a
+  // pattern dropped back far enough to read it against.
+  it("carries no corner badge", async () => {
+    payload = branchRow({ agents: [agent({ unread_count: 2 })] });
+    await mount();
+    expect(railHost().querySelector(".rail-badge")).toBe(null);
   });
 
   it("shows a single ghost where no agent has been born yet", async () => {
@@ -264,6 +311,110 @@ describe("the bubble strip", () => {
     vi.advanceTimersByTime(2000);
     await flush();
     expect(callsTo("branch.get").at(-1).params.agent_id).toBe(undefined);
+  });
+});
+
+// The bubble's face is painted, not styled: core/agentCanvas.js draws a tiling
+// into the canvas and the rail owns one painter per bubble. What the rail owes
+// it is a lifecycle and three switches — working, ink, dimmed.
+describe("the painter behind a bubble", () => {
+  it("makes one painter per patterned bubble, on the pattern that bubble wears", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    expect(livePainters().map((painter) => painter.options.patternIndex)).toEqual([1, 2]);
+  });
+
+  // The same agent has to look like itself for as long as the tab is open, and
+  // like something else the next time it is opened — so the seed is the agent's
+  // id turned by a salt that lives as long as the page does.
+  it("seeds each agent differently, and the same agent the same way all session", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    const [first, second] = livePainters().map((painter) => painter.options.seed);
+    expect(first).not.toBe(second);
+
+    rail.dispose();
+    painters.length = 0;
+    await mount();
+    expect(livePainters()[0].options.seed).toBe(first);
+  });
+
+  it("runs the painter while the agent works and stops it when it does not", async () => {
+    await mount();
+    expect(livePainters()[0].working).toBe(false);
+
+    payload = branchRow({ agents: [agent({ working: true })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(livePainters()[0].working).toBe(true);
+
+    payload = branchRow({ agents: [agent()] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(livePainters()[0].working).toBe(false);
+  });
+
+  // An unread count is drawn ON the face: the pattern drops back, turns amber,
+  // and the number sits centred over it.
+  it("turns the face amber and dim under an unread count, and back again", async () => {
+    await mount();
+    const painter = livePainters()[0];
+    const resting = painter.ink;
+    expect(painter.dimmed).toBe(false);
+    expect(countOn(bubbles()[0]).hidden).toBe(true);
+
+    payload = branchRow({ agents: [agent({ unread_count: 2 })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(painter.dimmed).toBe(true);
+    expect(painter.ink).toBeTruthy();
+    expect(painter.ink).not.toBe(resting);
+    expect(countOn(bubbles()[0]).hidden).toBe(false);
+    expect(countOn(bubbles()[0]).textContent).toBe("2");
+
+    payload = branchRow({ agents: [agent()] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(painter.dimmed).toBe(false);
+    expect(painter.ink).toBe(resting);
+    expect(countOn(bubbles()[0]).hidden).toBe(true);
+  });
+
+  // Same invariant as the buttons themselves: a painter is made when its
+  // element is, and a tick that only changes what a bubble SAYS must not make
+  // another — that would rewind the pattern to its first frame.
+  it("keeps the same painter through a tick that only changes the news", async () => {
+    await mount();
+    const painter = livePainters()[0];
+    payload = branchRow({ agents: [agent({ working: true, unread_count: 1 })] });
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(livePainters()).toEqual([painter]);
+  });
+
+  it("lets go of the painter for an agent that left the strip", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    const [, second] = livePainters();
+
+    payload = branchRow({ agents: [agent()] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(second.destroyed).toBe(true);
+    expect(livePainters()).toHaveLength(1);
+  });
+
+  it("lets go of every painter when the rail comes down", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+    await mount();
+    expect(livePainters()).toHaveLength(2);
+
+    rail.dispose();
+    rail = null;
+    expect(livePainters()).toHaveLength(0);
   });
 });
 

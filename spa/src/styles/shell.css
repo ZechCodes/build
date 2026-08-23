@@ -383,85 +383,35 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   animation:rail-pulse 1.6s ease-in-out infinite; }
 .rail-bubble-ghost { border-style:dashed; color:var(--dim); }
 .rail-bubble-add { border-style:dashed; color:var(--dim); font-size:14px; }
-.rail-badge[hidden] { display:none; }
-.rail-badge { position:absolute; top:-4px; right:-4px; min-width:16px; height:16px;
-  padding:0 4px; display:grid; place-items:center; border-radius:999px;
-  background:var(--amber); color:var(--bg); font:700 10px/1 var(--mono); }
 @keyframes rail-pulse { 0%,100% { opacity:.55; transform:scale(1); }
   50% { opacity:.15; transform:scale(1.08); } }
 
 /* ---- the faces an agent wears ----------------------------------------------
-   An agent is not a number. Each wears one of five patterns of dots and lines
-   (core/agentRailModel.js's agentPattern picks it from the agent's place on the
-   work item, so the agents beside each other never wear the same one), drawn
-   here in gradients and transforms — no images, no SVG, nothing to load.
+   An agent is not a number. Each wears one of five tilings — squares, hexagons,
+   triangles, diamonds, the truncated square — drifting, turning and breathing
+   under a wave of its own. The whole of that is painted in a canvas by
+   core/agentCanvas.js, which owns the movement, the ink and the reduced-motion
+   answer; there is nothing here for the sheet to animate.
 
-   Working and idle are ONE animation, not two states drawn separately: every
-   pattern's animation is always applied and PAUSED, and .working sets it
-   running. So an agent that stops mid-cycle holds the frame it stopped on, and
-   one on a freshly loaded page sits at the first frame of a pattern it has not
-   played yet — which is exactly what an idle agent should look like: its own
-   face, still. (This is also why the strip's buttons outlive a repaint: see
-   core/agentRail.js's stripHtml. A replaced element would start over.)
-
-   currentColor throughout, so the pattern takes the bubble's own ink — dim for a
-   ghost, accent for the conversation that is open. */
-.rail-glyph { position:absolute; inset:0; border-radius:50%; overflow:hidden;
+   What the sheet still owes it is the box: the canvas fills the bubble, clipped
+   to its circle, and takes no pointer events — the button underneath is what is
+   being pressed. `width`/`height` rather than `inset` alone, because a replaced
+   element with `width:auto` takes its INTRINSIC size however its edges are
+   pinned, which would be the canvas element's default 300x150. */
+.rail-glyph { position:absolute; inset:0; width:100%; height:100%;
+  border-radius:50%; pointer-events:none; }
+/* An unread count is read ON the face rather than in a corner: the painter drops
+   the whole pattern back (setDimmed) and turns it amber, and the number sits
+   centred over what is left. Small and monospaced — a bubble is 32px, and this
+   has to be a number at a glance rather than a badge to decode. */
+.rail-count[hidden] { display:none; }
+.rail-count { position:absolute; inset:0; display:grid; place-items:center;
+  color:var(--amber); font:700 11px/1 var(--mono); letter-spacing:-.02em;
   pointer-events:none; }
-.rail-glyph::before, .rail-glyph::after { content:""; position:absolute; }
-/* 1 — a dot in orbit inside a faint ring. */
-.rail-pattern-1 .rail-glyph::before { inset:0;
-  background:radial-gradient(circle 2.5px at 50% 5px, currentColor 98%, transparent 100%);
-  animation:rail-spin 2.6s linear infinite; }
-.rail-pattern-1 .rail-glyph::after { inset:7px; border-radius:50%;
-  border:1px solid currentColor; opacity:.3; animation:none; }
-/* 2 — a wedge sweeping round, radar fashion. */
-.rail-pattern-2 .rail-glyph::before { inset:0; opacity:.55;
-  background:conic-gradient(from 0deg, currentColor 0deg 26deg, transparent 26deg 360deg);
-  animation:rail-spin 3.2s linear infinite; }
-.rail-pattern-2 .rail-glyph::after { inset:13px; border-radius:50%;
-  background:currentColor; opacity:.7; animation:none; }
-/* 3 — rings leaving the centre, one behind the other. */
-.rail-pattern-3 .rail-glyph::before, .rail-pattern-3 .rail-glyph::after { inset:2px;
-  border-radius:50%; border:1px solid currentColor;
-  animation:rail-ring 2.8s ease-out infinite; }
-.rail-pattern-3 .rail-glyph::after { animation-delay:-1.4s; }
-/* 4 — a field of lines drifting sideways, clipped to the circle. Two weights in
-   the repeat, so the travel is legible: a field of identical lines drifting by
-   exactly its own period looks like it is standing still. */
-.rail-pattern-4 .rail-glyph::before { inset:-50%; opacity:.6;
-  background:repeating-linear-gradient(90deg, currentColor 0 1.5px, transparent 1.5px 5px,
-    currentColor 5px 6px, transparent 6px 11px);
-  animation:rail-drift 3.4s linear infinite; }
-/* 5 — a grid of dots breathing across the circle: it drifts and swells, for the
-   same reason — a grid moved by one cell is the same grid. */
-.rail-pattern-5 .rail-glyph::before { inset:-50%;
-  background-image:radial-gradient(circle 1.1px at 50% 50%, currentColor 98%, transparent 100%);
-  background-size:6px 6px;
-  animation:rail-float 4s ease-in-out infinite; }
-/* Paused unless the agent is working — and stated AFTER every pattern above,
-   because each of those sets the `animation` shorthand, and a shorthand resets
-   the play-state longhand to `running` whatever an earlier rule asked for. Same
-   specificity as a pattern rule, later in the sheet; the .working pair outranks
-   both. */
-.rail-bubble .rail-glyph::before,
-.rail-bubble .rail-glyph::after { animation-play-state:paused; }
-.rail-bubble.working .rail-glyph::before,
-.rail-bubble.working .rail-glyph::after { animation-play-state:running; }
-@keyframes rail-spin { to { transform:rotate(360deg); } }
-@keyframes rail-ring { 0% { transform:scale(.2); opacity:.85; }
-  100% { transform:scale(1); opacity:0; } }
-@keyframes rail-drift { to { transform:translateX(11px); } }
-@keyframes rail-float { 0%,100% { transform:translate(0,0); opacity:.4; }
-  50% { transform:translate(3px,-3px); opacity:.9; } }
-/* Reduced motion keeps the faces and drops the movement: every pattern stays
-   paused at whatever frame it is on, which is the idle look — the one an agent
-   wears most of the time anyway. Last in the sheet, which is what wins over the
-   `.working` pair above it. */
+/* Reduced motion drops the pulse ring. The patterns need nothing here — the
+   painter reads the same preference and holds a single frame. */
 @media (prefers-reduced-motion: reduce) {
   .rail-bubble.working::after { animation:none; }
-  .rail-bubble.working .rail-glyph::before,
-  .rail-bubble.working .rail-glyph::after { animation-play-state:paused; }
 }
 
 /* The panel: one conversation, or the same agent's screen.

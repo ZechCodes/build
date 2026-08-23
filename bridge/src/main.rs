@@ -15,7 +15,7 @@
 //! - `BRIDGE_BASE_BRANCH` base branch (default `main`)
 //! - `BRIDGE_PROJECTS_DIR` where cloned repos land (default `~/.build/projects`)
 //! - `BRIDGE_CONFIG`      projects/settings persistence (default `~/.build/config.json`)
-//! - `BRIDGE_TASKS_DIR`   durable task records, one JSON per task (default `~/.build/tasks`)
+//! - `BRIDGE_TASKS_DIR`   state dir: `build.db` plus canonical plan docs (default `~/.build/tasks`)
 //! - `BRIDGE_DEVICE_ID`   device id presented to the relay (default `bridge-dev`)
 //! - `BRIDGE_QA_AGENT`    `1` to run the deterministic scripted agent (no LLM)
 //! - `BRIDGE_IDLE_SECONDS` PTY-quiet threshold before a working task without a
@@ -48,6 +48,7 @@ async fn main() {
         Some("serve") | None => serve().await,
         Some("mcp") => mcp_stdio(),
         Some("provision") => provision(),
+        Some("backup") => backup(),
         Some("install-service") => install_service().await,
         Some("uninstall-service") => uninstall_service(),
         Some("--version") | Some("-V") => {
@@ -55,9 +56,38 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|provision|install-service|uninstall-service]"
+                "unknown command: {other}\nusage: build-bridge [serve|backup <path>|provision|install-service|uninstall-service]"
             );
             std::process::exit(2);
+        }
+    }
+}
+
+/// Copy the state database to a file, consistently, while the daemon runs.
+///
+/// The state dir holds a live database and its write-ahead log, which a
+/// file-at-a-time backup tool cannot copy coherently — the JSON records it
+/// replaced could each be copied on their own, and this cannot. This is the
+/// supported way to take one.
+fn backup() {
+    let Some(destination) = std::env::args().nth(2) else {
+        eprintln!("usage: build-bridge backup <path>");
+        std::process::exit(2);
+    };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let tasks_dir = env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks"));
+    let store = match build_bridge::store::Store::new(&tasks_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("cannot open the store at {tasks_dir}: {error}");
+            std::process::exit(1);
+        }
+    };
+    match store.backup_to(std::path::Path::new(&destination)) {
+        Ok(()) => println!("wrote {destination}"),
+        Err(error) => {
+            eprintln!("backup failed: {error}");
+            std::process::exit(1);
         }
     }
 }
@@ -234,7 +264,20 @@ async fn serve() {
     let app = match app.with_task_store(&tasks_dir) {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("task store ({tasks_dir}): {e}");
+            // Continuing without the store is not on the table: the daemon
+            // would come up blind to every worktree it already owns. But this
+            // exit runs under launchd's KeepAlive, and the causes — a database
+            // another bridge still holds, a full disk, a state dir this user
+            // cannot write — do not heal between restarts. So the log gets the
+            // cause, the file, and what to do, rather than the same mute line
+            // every few seconds forever.
+            eprintln!("bridge: cannot start — the task store did not open.");
+            eprintln!("  {e}");
+            eprintln!("  state lives in {tasks_dir} (build.db plus its -wal and -shm).");
+            eprintln!(
+                "  check: no second bridge is already running                  (`launchctl list | grep getbuild`), the disk is not full (`df -h`),                  and {tasks_dir} is readable and writable by this user."
+            );
+            eprintln!("  restarting will not clear this; fix the cause above first.");
             std::process::exit(1);
         }
     };

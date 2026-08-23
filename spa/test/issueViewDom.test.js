@@ -5,6 +5,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountIssueView, openingStageId, docAnnotatable } from "../src/core/issueView.js";
+import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
+import { createAgentSelection } from "../src/core/agentSelection.js";
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -285,7 +287,10 @@ describe("the issue view", () => {
     const { host, view, calls } = await mount();
     host.querySelector("#approvestage").click();
     await flush();
-    expect(calls).toContainEqual(["issue.stage_approve", { issue_id: "issue-1", stage_id: "s1" }]);
+    expect(calls).toContainEqual([
+      "issue.stage_approve",
+      { issue_id: "issue-1", stage_id: "s1", thread_limit: FIRST_PAGE_ITEMS },
+    ]);
     view.dispose();
   });
 
@@ -388,7 +393,7 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release" });
+    expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release", thread_limit: FIRST_PAGE_ITEMS });
     view.dispose();
   });
 
@@ -482,7 +487,7 @@ describe("the issue view", () => {
     document.querySelector("#confirm-scrim [data-confirm-ok]").click();
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
-    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
+    expect(dispatched[1]).toEqual({ issue_id: "issue-1", worktree_id: "wt-1", thread_limit: FIRST_PAGE_ITEMS });
     view.dispose();
   });
 
@@ -543,6 +548,35 @@ describe("the issue view", () => {
     expect(calls.filter(([method]) => method === "issue.get").length).toBe(fetched);
     host.querySelector("#goneback").click();
     expect(gone).toEqual([true]);
+    view.dispose();
+  });
+
+  it("names a bound on every issue.get, so no read of it ships a conversation whole", async () => {
+    // The only thing this surface reads off the payload's thread is the newest
+    // sequence — the rail beside it owns what gets rendered. A read that names
+    // no bound gets every item the conversation ever held, over E2EE, to
+    // compute one integer.
+    const selection = createAgentSelection("agent:one");
+    const { view, calls } = await mount({ agentSelection: selection });
+    const reads = calls.filter(([method]) => method === "issue.get");
+    expect(reads).toHaveLength(1);
+    expect(reads[0][1].thread_limit).toBe(1);
+    expect(reads[0][1].thread_after_sequence).toBeUndefined();
+    view.dispose();
+  });
+
+  it("names a bound again on the read after a bubble switch, which drops the cursor", async () => {
+    const selection = createAgentSelection("agent:one");
+    const { view, calls } = await mount({ agentSelection: selection, pollMs: 1 });
+    selection.set("agent:two");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await flush();
+    const reads = calls.filter(([method]) => method === "issue.get");
+    expect(reads.length).toBeGreaterThan(1);
+    const afterSwitch = reads[reads.length - 1][1];
+    expect(afterSwitch.agent_id).toBe("agent:two");
+    expect(afterSwitch.thread_limit).toBe(1);
+    expect(afterSwitch.thread_after_sequence).toBeUndefined();
     view.dispose();
   });
 

@@ -112,6 +112,15 @@ describe("opening it", () => {
     expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-1");
   });
 
+  // All the console wants off the row is which directory to open a shell in.
+  // Naming no bound would have the daemon serialize the branch's whole
+  // conversation to answer that.
+  it("asks the row for a directory, not for a conversation", async () => {
+    await mount();
+    await open();
+    expect(callsTo("branch.get")[0].params.thread_limit).toBe(1);
+  });
+
   it("opens a checkout Build never cut by the worktree itself", async () => {
     branchRow = { project_id: "p1", branch: "loose", run_id: null, worktree_id: "wt-9", primary: false };
     await mount({ kind: "branch", projectId: "p1", branch: "loose" });

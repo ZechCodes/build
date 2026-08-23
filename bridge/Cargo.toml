@@ -34,6 +34,7 @@ time = { version = "0.3", features = ["formatting", "parsing"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 # passwd lookup for the user's login shell (terminal + PATH resolution).
 libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

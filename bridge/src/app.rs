@@ -2100,29 +2100,21 @@ impl AppState {
         if let Some(parent) = dir.parent() {
             self.state_root = parent.to_path_buf();
         }
-        let store = Store::new(dir);
-        // First: migrate any legacy fused-task records into the split's plan
-        // and run records (idempotent; a store with only new-format records is
-        // a no-op). This must run before the loaders so recovery only ever
-        // sees the split shape.
-        store.migrate_legacy_tasks().map_err(|e| e.to_string())?;
+        let store = Store::new(dir).map_err(|e| e.to_string())?;
+        // One-way import of the JSON record tree this store replaced. A no-op
+        // once it has run; the imported files are parked, never deleted, so a
+        // database that turns out to be wrong can be thrown away and rebuilt.
+        // Before anything is read: if an older bridge has been run against this
+        // directory since the import, two copies of the user's work exist and
+        // only one of them is about to be served.
         store
-            .migrate_split_records_to_issues()
-            .map_err(|e| e.to_string())?;
-        // Then: move every entity-keyed conversation onto the entity's first
-        // agent. Idempotent (the first agent's id is derived from its owner),
-        // and before the loaders so recovery only ever sees agent-keyed
-        // conversations.
-        store
-            .migrate_threads_to_agents()
-            .map_err(|e| e.to_string())?;
-        // Then: move every persisted stage comment onto that agent's
-        // conversation, where comments live now. After the agents exist (the
-        // posts need one) and before the loaders, which read comments only off
-        // the conversation.
-        store
-            .migrate_stage_comments_to_posts()
-            .map_err(|e| e.to_string())?;
+            .refuse_a_rolled_back_store()
+            .map_err(|error| error.to_string())?;
+        match store.import_json_store() {
+            Ok(0) => {}
+            Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
+            Err(error) => return Err(format!("store import failed: {error}")),
+        }
         let plans = store.load_all_plans().map_err(|e| e.to_string())?;
         let runs = store.load_all_runs().map_err(|e| e.to_string())?;
         let archived_worktrees = store
@@ -2553,7 +2545,7 @@ impl AppState {
                     links,
                     now_rfc3339(),
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
             }
         }
@@ -2636,10 +2628,6 @@ impl AppState {
             implementation_activity: active.plan.implementation_activity.clone(),
             plan_path: active.plan_path.clone(),
             stages: active.stages.clone(),
-            // Retired storage: comments are posts on the conversation now. The
-            // field stays on the record only so pre-cutover files still load,
-            // and the boot migration empties it.
-            comments: Vec::new(),
             provider: active.model_choice.provider,
             model: active.model_choice.model.clone(),
             effort: active.model_choice.effort.clone(),
@@ -2704,38 +2692,60 @@ impl AppState {
             updated_at,
             state_changed_at: self.entity_state_changed_at.get(run_id).cloned(),
         };
-        let store = self.store.as_ref().expect("checked above");
-        if record
-            .plan_id
-            .as_deref()
-            .is_some_and(|issue_id| store.issue_record_path(issue_id).is_file())
-        {
-            store
-                .save_issue_implementation(&record)
-                .map_err(|e| format!("issue store: {e}"))
-        } else {
-            store
-                .save_run(&record)
-                .map_err(|e| format!("run store: {e}"))
-        }
+        // One write path, whether or not the run belongs to an Issue: the
+        // `issue_id` column is `record.plan_id`, so asking the store whether
+        // the Issue exists first only bought a lock acquisition per save.
+        self.store
+            .as_ref()
+            .expect("checked above")
+            .save_run(&record)
+            .map_err(|e| format!("run store: {e}"))
     }
 
-    /// The shared tail of every plan mutation: stamp times, compute the response
-    /// view, persist the durable core, throttle a notify, put the plan back in
-    /// the map, and prompt terminal closure + pump start. Returns the view and
-    /// the persistence outcome separately so callers can order their errors.
-    fn finish_plan_mutation(
+    /// The shared tail of every plan mutation: stamp times, persist the durable
+    /// core, throttle a notify, put the plan back in the map, and prompt
+    /// terminal closure + pump start.
+    fn finish_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
+        self.stamp_plan_mutation(&plan_id, &active);
+        self.settle_plan_mutation(plan_id, active)
+    }
+
+    /// The same tail for a mutation whose answer IS the plan, with
+    /// `thread_detail` saying how much conversation that answer carries. A
+    /// write is the hottest call the SPA makes; answering a one-word post with
+    /// every item a long conversation ever held is the cost paging exists to
+    /// avoid, so a caller that named a `thread_limit` gets that page here too.
+    ///
+    /// The view is taken where it always was — after the stamps, before the
+    /// record goes back in the map — and returned beside the persistence
+    /// outcome so callers can order their errors.
+    fn answer_plan_mutation(
         &mut self,
         plan_id: String,
         active: ActivePlan,
+        thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
+        self.stamp_plan_mutation(&plan_id, &active);
+        let view = self.plan_view(&plan_id, &active, thread_detail);
+        (view, self.settle_plan_mutation(plan_id, active))
+    }
+
+    /// First half of the tail: the stamps the response view must already see.
+    /// Split from the second so `answer_plan_mutation` can take its view
+    /// between them — where the view has always been taken.
+    fn stamp_plan_mutation(&mut self, plan_id: &str, active: &ActivePlan) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(plan_id.clone())
+            .entry(plan_id.to_string())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(plan_id.clone(), now.clone());
-        self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
-        let view = self.plan_view(&plan_id, &active, ThreadDetail::Full);
+        self.entity_updated_at
+            .insert(plan_id.to_string(), now.clone());
+        self.stamp_state_change(plan_id, plan_state_str(&active.plan.state), now);
+    }
+
+    /// Second half: persist, notify, put the record back, and tell the
+    /// browsers.
+    fn settle_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(&active.agents);
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
@@ -2750,25 +2760,46 @@ impl AppState {
         // delivery failure — so this is the one place that has to tell the
         // browsers, whatever started it.
         self.note_entity_changed(&plan_id);
-        (view, persisted)
+        persisted
     }
 
     /// The run-half twin of
     /// [`finish_plan_mutation`](Self::finish_plan_mutation).
-    fn finish_run_mutation(
+    fn finish_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
+        self.stamp_run_mutation(&run_id, &active);
+        self.settle_run_mutation(run_id, active)
+    }
+
+    /// The run-half twin of
+    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
+    fn answer_run_mutation(
         &mut self,
         run_id: String,
         active: ActiveRun,
+        thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
+        self.stamp_run_mutation(&run_id, &active);
+        let view = self.run_view(&run_id, &active, thread_detail);
+        (view, self.settle_run_mutation(run_id, active))
+    }
+
+    /// The run-half twin of
+    /// [`stamp_plan_mutation`](Self::stamp_plan_mutation).
+    fn stamp_run_mutation(&mut self, run_id: &str, active: &ActiveRun) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(run_id.clone())
+            .entry(run_id.to_string())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at.insert(run_id.clone(), now.clone());
-        self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
+        self.entity_updated_at
+            .insert(run_id.to_string(), now.clone());
+        self.stamp_state_change(run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
-        self.invalidate_run_stat(&run_id);
-        let view = self.run_view(&run_id, &active, ThreadDetail::Full);
+        self.invalidate_run_stat(run_id);
+    }
+
+    /// The run-half twin of
+    /// [`settle_plan_mutation`](Self::settle_plan_mutation).
+    fn settle_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self.conversation_news(self.conversation_thread_for_run(&active));
         let state_kind = crate::notify::kind_for_run_state(&active.run.state);
@@ -2778,7 +2809,7 @@ impl AppState {
         self.seed_anchor(&run_id);
         self.reap_orphaned_terminals();
         self.note_entity_changed(&run_id);
-        (view, persisted)
+        persisted
     }
 
     /// A cold delivery started a new harness for `turn.owner`: open the
@@ -2846,7 +2877,7 @@ impl AppState {
             if let Some(agent) = active.agents.by_id_mut(agent_id) {
                 record_session_death_in_thread(&mut agent.thread, &now);
             }
-            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
+            let persisted = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
                 eprintln!("close_turn_of_dead_agent {owner}: {error}");
             }
@@ -2869,7 +2900,7 @@ impl AppState {
         if let Err(error) = recorded {
             eprintln!("close_turn_of_dead_agent {owner}: {error}");
         }
-        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
+        let persisted = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("close_turn_of_dead_agent {owner}: {error}");
         }
@@ -2890,7 +2921,7 @@ impl AppState {
                 return;
             };
             edit(&mut active.agents);
-            let (_, persisted) = self.finish_plan_mutation(owner.to_string(), active);
+            let persisted = self.finish_plan_mutation(owner.to_string(), active);
             if let Err(error) = persisted {
                 eprintln!("{context} {owner}: {error}");
             }
@@ -2900,7 +2931,7 @@ impl AppState {
             return;
         };
         edit(&mut active.agents);
-        let (_, persisted) = self.finish_run_mutation(owner.to_string(), active);
+        let persisted = self.finish_run_mutation(owner.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("{context} {owner}: {error}");
         }
@@ -2930,7 +2961,7 @@ impl AppState {
                 return;
             };
             active.last_error = Some(reason);
-            let (_, persisted) = self.finish_plan_mutation(turn.owner.clone(), active);
+            let persisted = self.finish_plan_mutation(turn.owner.clone(), active);
             if let Err(error) = persisted {
                 eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
             }
@@ -2940,7 +2971,7 @@ impl AppState {
             return;
         };
         active.last_error = Some(reason);
-        let (_, persisted) = self.finish_run_mutation(turn.owner.clone(), active);
+        let persisted = self.finish_run_mutation(turn.owner.clone(), active);
         if let Err(error) = persisted {
             eprintln!("record_agent_delivery_failure {}: {error}", turn.owner);
         }
@@ -3007,10 +3038,26 @@ impl AppState {
                     .is_none_or(|attention| attention.anchor_at.is_none())
             })
             .map(|(id, roster)| {
+                // Every user message the entity ever had, not the tail the load
+                // left resident: an anchor is replayed over the whole history,
+                // and one replayed over part of it puts the entry in a place it
+                // never had. A history the store cannot hand back leaves the
+                // anchor to what is held rather than leaving the entry unseeded.
                 let mut said_at: Vec<String> = roster
                     .iter()
-                    .flat_map(|agent| agent.thread.user_message_times())
-                    .map(str::to_string)
+                    .flat_map(|agent| match self.whole_conversation(&agent.thread) {
+                        Ok(items) => crate::thread::Thread::user_message_times_in(&items)
+                            .map(str::to_string)
+                            .collect::<Vec<String>>(),
+                        Err(error) => {
+                            eprintln!("anchor seeding: {error}");
+                            agent
+                                .thread
+                                .user_message_times()
+                                .map(str::to_string)
+                                .collect()
+                        }
+                    })
                     .collect();
                 said_at.sort();
                 let created_at = self
@@ -4056,7 +4103,7 @@ impl AppState {
                     &now,
                 )
             });
-            let (_, persisted) = self.finish_plan_mutation(entity_id.to_string(), active);
+            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4076,7 +4123,7 @@ impl AppState {
                 action,
                 &now,
             );
-            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4091,7 +4138,7 @@ impl AppState {
                     &now,
                 )
             });
-            let (_, persisted) = self.finish_run_mutation(entity_id.to_string(), active);
+            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
             let value = result?;
             persisted?;
             return Ok(value);
@@ -4105,6 +4152,29 @@ impl AppState {
     /// which is where its first agent's words are actually recorded. Never
     /// another entity's: an agent asking about work it was never given must
     /// come back empty, not informed.
+    /// The whole of a conversation, for a reader answering ABOUT its history
+    /// rather than rendering it.
+    ///
+    /// Borrows what is already held whenever that is the whole conversation —
+    /// which it is for every conversation this process wrote itself — and goes
+    /// to the store only for the history a bounded load left there.
+    fn whole_conversation<'a>(
+        &self,
+        thread: &'a crate::thread::Thread,
+    ) -> Result<std::borrow::Cow<'a, [crate::thread::ThreadItem]>, String> {
+        if thread.total_item_count() == thread.items.len() as u64 {
+            return Ok(std::borrow::Cow::Borrowed(&thread.items));
+        }
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        store
+            .thread_items(&thread.agent.id)
+            .map(std::borrow::Cow::Owned)
+            .map_err(|error| format!("conversation store: {error}"))
+    }
+
     fn search_agent_conversations(
         &self,
         entity_id: &str,
@@ -4128,10 +4198,14 @@ impl AppState {
             return Err(format!("unknown conversation owner: {entity_id}"));
         }
 
-        let mut hits: Vec<crate::thread::ConversationHit> = threads
-            .iter()
-            .flat_map(|thread| thread.search(query))
-            .collect();
+        let mut hits: Vec<crate::thread::ConversationHit> = Vec::new();
+        for thread in &threads {
+            // A search is asked about the whole conversation — what was decided
+            // about a thing, however long ago — so it looks past the tail the
+            // load left resident.
+            let items = self.whole_conversation(thread)?;
+            hits.extend(thread.search_items(&items, query));
+        }
         // One answer out of possibly two conversations, so the ordering the
         // per-conversation search guarantees has to be re-established across
         // them: newest first, by when it was said.
@@ -4348,7 +4422,7 @@ impl AppState {
                 );
             }
         }
-        let (_, persisted) = self.finish_plan_mutation(plan_id.to_string(), active);
+        let persisted = self.finish_plan_mutation(plan_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {plan_id}: {e}");
         }
@@ -4567,12 +4641,12 @@ impl AppState {
                 }
             }
         }
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
         if let (Some(issue_id), Some(issue)) = (issue_id, issue) {
-            let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
             if let Err(e) = persisted {
                 eprintln!("on_agent_done {run_id}: issue conversation persist failed: {e}");
             }
@@ -4705,7 +4779,7 @@ impl AppState {
             }
         };
         let succeeded = event == crate::thread::ThreadEventKind::RecoverySucceeded;
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(error) = persisted {
             eprintln!("recovery {run_id}: run persist failed: {error}");
             return;
@@ -4733,7 +4807,7 @@ impl AppState {
                 issue
                     .agents
                     .push_event_with_links(event, Some(summary), None, None, links, &now);
-                let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
+                let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
                 if let Err(error) = persisted {
                     eprintln!("recovery {run_id}: Issue persist failed: {error}");
                     return;
@@ -4804,12 +4878,12 @@ impl AppState {
             }
         }
         if let (Some(pid), Some(plan)) = (plan_id, plan) {
-            let (_, persisted) = self.finish_plan_mutation(pid, plan);
+            let persisted = self.finish_plan_mutation(pid, plan);
             if let Err(e) = persisted {
                 eprintln!("on_agent_done {run_id}: plan persist: {e}");
             }
         }
-        let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+        let persisted = self.finish_run_mutation(run_id.to_string(), active);
         if let Err(e) = persisted {
             eprintln!("on_agent_done {run_id}: {e}");
         }
@@ -4906,11 +4980,15 @@ impl AppState {
     /// has read its conversations through to the end — every agent's, or one
     /// named agent's. The read cursors are what unread is derived against, so
     /// this is the one place a badge clears.
-    fn see_attention(&mut self, id: &str, agent_id: Option<&str>) {
+    ///
+    /// `read_from_sequence` is where the reader's conversation window starts,
+    /// when they are reading one that does not reach back to the beginning.
+    /// See [`conversation_last_sequences`](Self::conversation_last_sequences).
+    fn see_attention(&mut self, id: &str, agent_id: Option<&str>, read_from_sequence: Option<u64>) {
         let Some(state_changed_at) = self.entity_state_clock(id) else {
             return;
         };
-        let read_through = self.conversation_last_sequences(id, agent_id);
+        let read_through = self.conversation_last_sequences(id, agent_id, read_from_sequence);
         let attention = self.attention.entry(id.to_string()).or_default();
         attention.see(&state_changed_at);
         for (agent_id, sequence) in read_through {
@@ -4925,10 +5003,19 @@ impl AppState {
     /// The entity-level conversation of a planned run is its Issue's, so its
     /// first agent is read through to the end of THAT thread; every other agent
     /// speaks in its own.
+    ///
+    /// A conversation reaches a client as a window on its newest items, and
+    /// `read_from_sequence` is where that window starts. The end of it is not
+    /// the end of the conversation, so a report from such a reader carries no
+    /// claim about the items below the floor: an unread message calling the
+    /// human down there leaves that conversation out of the answer entirely,
+    /// keeping its badge until the reader scrolls back far enough to be sent
+    /// it. A caller that names no floor is one holding the whole conversation.
     fn conversation_last_sequences(
         &self,
         entity_id: &str,
         agent_id: Option<&str>,
+        read_from_sequence: Option<u64>,
     ) -> Vec<(String, u64)> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
@@ -4937,13 +5024,16 @@ impl AppState {
         roster
             .iter()
             .filter(|agent| agent_id.is_none_or(|named| named == agent.id))
-            .map(|agent| {
+            .filter_map(|agent| {
                 let thread = if agent.id == roster.first().id {
                     entity_thread.unwrap_or(&agent.thread)
                 } else {
                     &agent.thread
                 };
-                (agent.id.clone(), thread.last_sequence())
+                let hidden_below = read_from_sequence.is_some_and(|floor| {
+                    thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
+                });
+                (!hidden_below).then(|| (agent.id.clone(), thread.last_sequence()))
             })
             .collect()
     }
@@ -4976,9 +5066,11 @@ impl AppState {
     }
 
     /// The `thread` a detail poll ships when it asked for one in particular:
-    /// the named agent's conversation, whole or only past what the client
-    /// already holds. `None` when the poll named no agent and carried no
-    /// cursor — the view's own thread already is exactly that.
+    /// the named agent's conversation, cut to what the poll can hold — only
+    /// what has happened past the cursor it already holds, or as much of the
+    /// newest conversation as its `thread_limit` allows. `None` when the poll
+    /// named no agent and carried no cursor — the view's own thread already is
+    /// exactly that.
     fn detail_thread_value(
         &self,
         entity_id: &str,
@@ -4991,8 +5083,18 @@ impl AppState {
         }
         let thread = self.agent_conversation(entity_id, addressed.as_deref())?;
         Ok(Some(match cursor {
+            // A conversation is loaded as its tail, so a cursor from before a
+            // restart can be owed news memory does not hold: an item under the
+            // tail that the process before this one mutated in place. Where it
+            // is, the delta is completed out of the store.
+            Some(after_sequence) if thread.cursor_reaches_stored_history(after_sequence) => {
+                self.stored_thread_delta(thread, after_sequence)?
+            }
             Some(after_sequence) => thread.wire_value_after(after_sequence),
-            None => thread.wire_value(),
+            None => match thread_detail(params) {
+                ThreadDetail::Page(limit) => thread.wire_value_page(None, limit),
+                _ => thread.wire_value(),
+            },
         }))
     }
 
@@ -5018,7 +5120,11 @@ impl AppState {
         // (an Issue's, for a planned implementation), every other agent's off
         // its own.
         let Ok(roster) = self.entity_agents(entity_id) else {
-            return thread.unread_since(self.read_cursor(entity_id, ""));
+            return self.unread_including_history(
+                entity_id,
+                thread,
+                self.read_cursor(entity_id, ""),
+            );
         };
         let mut summary = crate::thread::UnreadSummary::default();
         for agent in roster.iter() {
@@ -5027,7 +5133,11 @@ impl AppState {
             } else {
                 &agent.thread
             };
-            let unread = agent_thread.unread_since(self.read_cursor(entity_id, &agent.id));
+            let unread = self.unread_including_history(
+                &agent.id,
+                agent_thread,
+                self.read_cursor(entity_id, &agent.id),
+            );
             summary.count += unread.count;
             summary.reason = unread.reason.or(summary.reason);
         }
@@ -5047,7 +5157,41 @@ impl AppState {
         if self.is_muted(entity_id) {
             return crate::thread::UnreadSummary::default();
         }
-        thread.unread_since(self.read_cursor(entity_id, &agent.id))
+        self.unread_including_history(&agent.id, thread, self.read_cursor(entity_id, &agent.id))
+    }
+
+    /// One conversation's unread, counting the part of it this process did not
+    /// load.
+    ///
+    /// A conversation is held as its newest items, so counting the badge off
+    /// what is resident under-reports exactly when it matters most — the human
+    /// has not read in a while and the unread has fallen under the tail. The
+    /// badge is the one number they use to decide whether to look, so it is
+    /// counted in the database rather than guessed from the tail. A
+    /// conversation that was loaded whole has no history under it and asks
+    /// nothing.
+    fn unread_including_history(
+        &self,
+        agent_id: &str,
+        thread: &crate::thread::Thread,
+        cursor: u64,
+    ) -> crate::thread::UnreadSummary {
+        let mut summary = thread.unread_since(cursor);
+        let floor = thread.resident_from_sequence();
+        if floor == 0 || floor <= cursor {
+            return summary;
+        }
+        let Some(store) = &self.store else {
+            return summary;
+        };
+        match store.unread_attention_between(agent_id, cursor, floor) {
+            Ok(under) => summary.count += under,
+            // A badge is not worth failing a poll over: report what is
+            // resident, which is an undercount rather than a wrong kind of
+            // answer.
+            Err(error) => eprintln!("unread under the tail for {agent_id}: {error}"),
+        }
+        summary
     }
 
     /// How far the human has read one agent's conversation, folding in the
@@ -5232,6 +5376,7 @@ impl AppState {
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
+            "thread.page" => self.thread_page(params),
             "thread.post" => self.thread_post(params),
             "thread.attach" => self.thread_attach(params),
             "thread.attachment" => self.thread_attachment(params),
@@ -5657,7 +5802,7 @@ impl AppState {
                 active.last_error = Some(exit.describe());
             }
             record_idle_in_thread(&mut active.agents, exit_code.as_ref());
-            let (_, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
+            let persisted = self.finish_plan_mutation(plan_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {plan_id}: {e}");
             }
@@ -5685,7 +5830,7 @@ impl AppState {
             }) {
                 eprintln!("idle monitor {run_id}: {e}");
             }
-            let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+            let persisted = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("idle monitor {run_id}: {e}");
             }
@@ -7008,7 +7153,12 @@ impl AppState {
             .and_then(Value::as_str)
             .filter(|id| !id.is_empty())
             .map(str::to_string);
-        self.see_attention(&entity_id, agent_id.as_deref());
+        // Where the reader's conversation window starts. A client paging a long
+        // conversation reaches the end of a window, not the end of the thread,
+        // so it says how much of it was ever shipped and the cursor moves only
+        // as far as that honestly covers.
+        let read_from_sequence = params.get("read_from_sequence").and_then(Value::as_u64);
+        self.see_attention(&entity_id, agent_id.as_deref(), read_from_sequence);
         Ok(json!({ "ok": true }))
     }
 
@@ -7340,7 +7490,7 @@ impl AppState {
             );
         });
         let triage = self.triage_json(&active);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         recorded?;
         persisted?;
         Ok(json!({
@@ -7461,7 +7611,7 @@ impl AppState {
             .agents
             .add(&entity_id, choice, &now_rfc3339())
             .clone();
-        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        let persisted = self.finish_run_mutation(entity_id.clone(), active);
         persisted?;
         self.touch_attention(&entity_id);
         let root = self.entity_agent_root(&entity_id).ok();
@@ -7520,7 +7670,7 @@ impl AppState {
                 return Err(format!("agent.remove: {refused}"));
             }
         };
-        let (_, persisted) = self.finish_run_mutation(entity_id.clone(), active);
+        let persisted = self.finish_run_mutation(entity_id.clone(), active);
         self.retire_agent(&root, &removed.id);
         if let Some(attention) = self.attention.get_mut(&entity_id) {
             // Nothing prunes cursors by agent, so one left behind here would
@@ -7723,8 +7873,7 @@ impl AppState {
         };
         let mut issue = self.take_plan(&issue_id)?;
         write(&mut issue.agents);
-        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
-        persisted
+        self.finish_plan_mutation(issue_id, issue)
     }
 
     /// Tell the Issue where its implementation got to.
@@ -7763,8 +7912,7 @@ impl AppState {
             }],
             now_rfc3339(),
         );
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     /// Tell an issue that the branch implementing it is gone, and that nothing
@@ -7807,7 +7955,7 @@ impl AppState {
             links,
             now_rfc3339(),
         );
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+        let persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
         if let Err(error) = persisted {
             eprintln!("{issue_id}: could not record the abandoned branch {branch}: {error}");
         }
@@ -7842,8 +7990,7 @@ impl AppState {
         if let Some(run) = self.runs.get(run_id) {
             record_current_stage_started(&mut issue.agents, run, stages);
         }
-        let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
-        persisted
+        self.finish_plan_mutation(issue_id, issue)
     }
 
     /// Queue a plan's turn for its agent in the primary checkout. A plan whose
@@ -8460,7 +8607,7 @@ impl AppState {
             }
         };
         let started = self.start_inert_plan(issue_id, &mut active);
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), active);
+        let persisted = self.finish_plan_mutation(issue_id.to_string(), active);
         if let Err(error) = &started {
             eprintln!("route: {issue_id} could not start planning: {error}");
         }
@@ -8611,7 +8758,7 @@ impl AppState {
         };
         self.retire_issue_session(issue_session(&active));
         active.plan.archived_at = Some(now_rfc3339());
-        let (_, persisted) = self.finish_plan_mutation(routing.target_id.clone(), active);
+        let persisted = self.finish_plan_mutation(routing.target_id.clone(), active);
         if let Err(error) = persisted {
             eprintln!("reroute: could not archive {}: {error}", routing.target_id);
         }
@@ -8764,7 +8911,8 @@ impl AppState {
             );
             self.entity_project
                 .insert(plan_id.clone(), project_id.clone());
-            let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+            let (view, persisted) =
+                self.answer_plan_mutation(plan_id, active, thread_detail(params));
             persisted?;
             return Ok(view);
         }
@@ -8778,7 +8926,7 @@ impl AppState {
         if self.qa_agent {
             self.qa_simulate_plan(&project_id, &mut active)?;
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -8805,10 +8953,11 @@ impl AppState {
     fn plan_get(&mut self, params: &Value) -> Result<Value, String> {
         let plan_id = require_str(params, "plan_id")?;
         let active = self.plans.get(&plan_id).ok_or("unknown plan_id")?;
-        let mut view = self.plan_view(&plan_id, active, ThreadDetail::Full);
         // See `run_get`. An issue carries exactly one agent, so naming it is a
         // check rather than a choice — but the check still holds.
-        if let Some(thread) = self.detail_thread_value(&plan_id, params)? {
+        let detail_thread = self.detail_thread_value(&plan_id, params)?;
+        let mut view = self.plan_view(&plan_id, active, view_thread_detail(&detail_thread, params));
+        if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("plan_view returns an object")
                 .insert("thread".to_string(), thread);
@@ -8910,9 +9059,16 @@ impl AppState {
             .map(|run| run.run.id.0.clone())
     }
 
-    fn issue_view_full(&self, issue_id: &str) -> Result<Value, String> {
+    /// The whole Issue an implementation RPC answers with — every field of the
+    /// board's issue view, with `thread_detail` saying how much of its
+    /// conversation rides along.
+    fn issue_view_full(
+        &self,
+        issue_id: &str,
+        thread_detail: ThreadDetail,
+    ) -> Result<Value, String> {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        Ok(self.plan_view(issue_id, issue, ThreadDetail::Full))
+        Ok(self.plan_view(issue_id, issue, thread_detail))
     }
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
@@ -8922,7 +9078,7 @@ impl AppState {
             self.block_issue_scheduler(&issue_id, None, &error);
             return Err(error);
         }
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     fn issue_implement_stage(&mut self, params: &Value) -> Result<Value, String> {
@@ -8947,7 +9103,7 @@ impl AppState {
             self.block_issue_scheduler(&issue_id, Some(stage_id), &error);
             return Err(error);
         }
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     /// Persist scheduler intent before any worktree/git/agent side effect. The
@@ -8965,8 +9121,7 @@ impl AppState {
         }
         issue.plan.implementation_intent = intent;
         issue.plan.implementation_activity = ImplementationActivity::Preparing;
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn set_issue_scheduler_activity(
@@ -8980,8 +9135,7 @@ impl AppState {
             issue.plan.implementation_intent = intent;
         }
         issue.plan.implementation_activity = activity;
-        let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-        persisted
+        self.finish_plan_mutation(issue_id.to_string(), issue)
     }
 
     fn block_issue_scheduler(&mut self, issue_id: &str, stage_id: Option<String>, reason: &str) {
@@ -9160,7 +9314,7 @@ impl AppState {
                 active.worktree = worktree;
                 active.last_error = None;
                 let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
                 issue.agents.push_event_with_links(
@@ -9185,8 +9339,7 @@ impl AppState {
                     ],
                     now_rfc3339(),
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
-                persisted
+                self.finish_plan_mutation(issue_id.to_string(), issue)
             }
             Err(error) => {
                 if active
@@ -9252,7 +9405,7 @@ impl AppState {
                         prompt,
                         &issue.agents,
                     ));
-                let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+                let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
                 let mut issue = self.take_plan(issue_id)?;
                 let mut links = vec![
@@ -9285,7 +9438,7 @@ impl AppState {
                     links,
                     started_at,
                 );
-                let (_, issue_persisted) = self.finish_plan_mutation(issue_id.to_string(), issue);
+                let issue_persisted = self.finish_plan_mutation(issue_id.to_string(), issue);
                 issue_persisted?;
                 Err(format!(
                     "automatic restore failed; verified recovery {recovery_id} started"
@@ -9397,7 +9550,7 @@ impl AppState {
             .ok_or("issue params must be an object")?
             .insert("run_id".to_string(), json!(run_id));
         self.run_set_auto_advance(&run_params)?;
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     fn issue_stage_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -9459,7 +9612,7 @@ impl AppState {
             "git_action" => self.run_git_action(&run_params)?,
             _ => unreachable!("known issue run action"),
         };
-        self.issue_view_full(&issue_id)
+        self.issue_view_full(&issue_id, thread_detail(params))
     }
 
     /// Read the single (non-staged) plan doc from the canonical store — never
@@ -9561,7 +9714,7 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9586,7 +9739,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9615,7 +9768,8 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id.clone(), active);
+        let (view, persisted) =
+            self.answer_plan_mutation(plan_id.clone(), active, thread_detail(params));
         outcome?;
         persisted?;
         // Implement All remains armed while it waits on an unapproved stage.
@@ -9667,7 +9821,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9699,7 +9853,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9723,7 +9877,7 @@ impl AppState {
                 now_rfc3339(),
             );
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -9742,7 +9896,7 @@ impl AppState {
         if active.plan.archived_at.is_none() {
             active.plan.archived_at = Some(now_rfc3339());
         }
-        let (view, persisted) = self.finish_plan_mutation(plan_id, active);
+        let (view, persisted) = self.answer_plan_mutation(plan_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -9825,7 +9979,7 @@ impl AppState {
                 .find(|comment| comment.id == id);
             Ok(())
         })();
-        let (_, persisted) = self.finish_plan_mutation(plan_id, active);
+        let persisted = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
         let comment = minted.expect("outcome Ok implies a comment was posted");
@@ -9852,7 +10006,7 @@ impl AppState {
                 .map(|_| ())
                 .ok_or_else(|| format!("unknown comment_id: {comment_id}"))
         })();
-        let (_, persisted) = self.finish_plan_mutation(plan_id, active);
+        let persisted = self.finish_plan_mutation(plan_id, active);
         outcome?;
         persisted?;
         Ok(json!({ "ok": true }))
@@ -9930,6 +10084,7 @@ impl AppState {
             &agent_id,
             crate::thread::ThreadEventKind::WorktreeCreated,
             |run_id| format!("Created the Issue implementation worktree for {run_id}"),
+            thread_detail(params),
         )
     }
 
@@ -10034,6 +10189,7 @@ impl AppState {
             &agent_id,
             crate::thread::ThreadEventKind::WorktreeReused,
             move |_| format!("Implementing into the existing checkout on {branch}"),
+            thread_detail(params),
         )
     }
 
@@ -10068,6 +10224,7 @@ impl AppState {
         agent_id: &str,
         checkout_event: crate::thread::ThreadEventKind,
         checkout_summary: impl Fn(&str) -> String,
+        thread_detail: ThreadDetail,
     ) -> Result<Value, String> {
         let plan_docs = self.owning_plan_stage_docs(&active);
 
@@ -10081,7 +10238,7 @@ impl AppState {
             self.qa_drive_run(&project_id, &mut active, &plan_docs)?;
         }
         let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         let mut plan = self.take_plan(&issue_id)?;
         let implementation_link = crate::thread::ThreadLink::Implementation {
@@ -10110,21 +10267,22 @@ impl AppState {
         if let Some(run) = self.runs.get(&run_id) {
             record_current_stage_started(&mut plan.agents, run, &plan_docs);
         }
-        let (_, plan_persisted) = self.finish_plan_mutation(issue_id, plan);
+        let plan_persisted = self.finish_plan_mutation(issue_id, plan);
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
         // Which conversation, and how much of it: the rail's open bubble names
         // the agent, and the client's cursor says what it already holds.
-        // Neither → the full backward-compatible thread the view already built.
-        if let Some(thread) = self.detail_thread_value(&run_id, params)? {
+        // Neither → the thread the view builds itself, cut the same way.
+        let detail_thread = self.detail_thread_value(&run_id, params)?;
+        let mut view = self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+        if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("run_view returns an object")
                 .insert("thread".to_string(), thread);
@@ -10164,6 +10322,74 @@ impl AppState {
             "created_at": revision.created_at,
             "contents": contents,
         }))
+    }
+
+    /// One page up a conversation: the items immediately older than
+    /// `before_sequence`, newest page when it says nothing. This is the other
+    /// half of the bounded first load — the reviewer scrolling back through
+    /// work the detail poll deliberately left off the wire.
+    ///
+    /// Ships exactly what a first page ships, so a client merges a page up the
+    /// way it merges the page it opened on.
+    fn thread_page(&self, params: &Value) -> Result<Value, String> {
+        let entity_id = conversation_owner_param(params)?;
+        let thread = self.agent_conversation(&entity_id, addressed_agent(params).as_deref())?;
+        let before = params.get("before_sequence").and_then(Value::as_u64);
+        let limit = thread_page_limit(params);
+        // A conversation is loaded as its tail, so a walk far enough up one
+        // leaves memory. Where it does, the page comes back out of the store —
+        // the same page, in the same shape, off the same seek.
+        if thread.page_reaches_stored_history(before, limit) {
+            return self.stored_thread_page(thread, before, limit);
+        }
+        Ok(thread.wire_value_page(before, limit))
+    }
+
+    /// One page of the history no load read, straight off the store.
+    ///
+    /// Asks for one item more than the page, which is how it knows whether
+    /// there is anything above without counting the conversation.
+    fn stored_thread_page(
+        &self,
+        thread: &crate::thread::Thread,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<Value, String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        let mut page = store
+            .thread_page(&thread.agent.id, before_sequence, limit + 1)
+            .map_err(|error| format!("conversation store: {error}"))?;
+        let has_more = page.len() > limit;
+        if has_more {
+            page.remove(0);
+        }
+        Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
+    }
+
+    /// A cursor's delta completed out of the store: the forward seek answers
+    /// for the history the load left behind, and the conversation merges it
+    /// with the tail it holds.
+    ///
+    /// Only a cursor older than the mark the load read gets here, and the
+    /// answer carries a `thread_last_sequence` past that mark — so a client
+    /// pays this read once after a restart and its steady-state polls go on
+    /// being answered out of memory.
+    fn stored_thread_delta(
+        &self,
+        thread: &crate::thread::Thread,
+        after_sequence: u64,
+    ) -> Result<Value, String> {
+        let store = self
+            .store
+            .as_ref()
+            .ok_or("this conversation's history is not stored")?;
+        let history = store
+            .thread_items_after(&thread.agent.id, after_sequence)
+            .map_err(|error| format!("conversation store: {error}"))?;
+        Ok(thread.wire_value_after_including_history(after_sequence, &history))
     }
 
     /// Post a reviewer message to an entity's conversation WITHOUT dispatching
@@ -10315,7 +10541,8 @@ impl AppState {
                     &agent.thread,
                 );
             }
-            let (view, persisted) = self.finish_plan_mutation(entity_id, active);
+            let (view, persisted) =
+                self.answer_plan_mutation(entity_id, active, thread_detail(params));
             // The message is durable either way: a dispatch that could not start
             // leaves the issue inert, with what was said still on its thread.
             started_planning?;
@@ -10325,7 +10552,7 @@ impl AppState {
                 run.run
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
-                let (_, run_persisted) = self.finish_run_mutation(run_id, run);
+                let run_persisted = self.finish_run_mutation(run_id, run);
                 run_persisted?;
             }
             return Ok(view);
@@ -10386,7 +10613,7 @@ impl AppState {
                     agent_choice,
                     &issue.agents,
                 );
-                let (_, persisted) = self.finish_plan_mutation(issue_id, issue);
+                let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
                 if resume {
                     let mut active = self.take_run(&entity_id)?;
@@ -10394,12 +10621,13 @@ impl AppState {
                         .run
                         .apply(crate::run::RunEvent::Reply)
                         .expect("Reply is legal from every parked run state");
-                    let (view, run_persisted) = self.finish_run_mutation(entity_id, active);
+                    let (view, run_persisted) =
+                        self.answer_run_mutation(entity_id, active, thread_detail(params));
                     run_persisted?;
                     return Ok(view);
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(&entity_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&entity_id, active, thread_detail(params)));
             }
             let mut active = self.take_run(&entity_id)?;
             append_reviewer_messages(
@@ -10422,7 +10650,8 @@ impl AppState {
                 agent_choice,
                 &agent.thread,
             );
-            let (view, persisted) = self.finish_run_mutation(entity_id, active);
+            let (view, persisted) =
+                self.answer_run_mutation(entity_id, active, thread_detail(params));
             persisted?;
             return Ok(view);
         }
@@ -10846,10 +11075,10 @@ impl AppState {
             issue.agents = std::mem::replace(&mut active.agents, legacy_thread);
         }
         let issue_persisted = match (issue_id, issue) {
-            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue).1),
+            (Some(issue_id), Some(issue)) => Some(self.finish_plan_mutation(issue_id, issue)),
             _ => None,
         };
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         outcome?;
         if let Some(issue_persisted) = issue_persisted {
             issue_persisted?;
@@ -10881,13 +11110,13 @@ impl AppState {
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -10913,13 +11142,13 @@ impl AppState {
                 .push(PendingAgentTurn::for_run(&run_id, &active, turn));
             self.qa_drive_run(&project_id, &mut active, &plan_docs)
         })();
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         persisted?;
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -10957,15 +11186,15 @@ impl AppState {
         })();
         // Both entities re-insert before any error propagates — the
         // take → finish_mutation invariant covers the plan here too.
-        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan).1);
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let plan_persisted = plan.map(|plan| self.finish_plan_mutation(plan_id, plan));
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         outcome?;
         if let Some(persisted) = plan_persisted {
             persisted?;
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -10982,13 +11211,13 @@ impl AppState {
             return Err("cannot set auto_advance on a terminal run".to_string());
         }
         active.auto_advance = enabled;
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         if enabled {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, ThreadDetail::Full))
+        Ok(self.run_view(&run_id, active, thread_detail(params)))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -11027,7 +11256,7 @@ impl AppState {
                     .push(PendingAgentTurn::for_run(run_id, &active, turn));
                 self.qa_drive_run(&project_id, &mut active, &plan_docs)
             })();
-            let (_, persisted) = self.finish_run_mutation(run_id.to_string(), active);
+            let persisted = self.finish_run_mutation(run_id.to_string(), active);
             if let Err(e) = outcome {
                 eprintln!("auto-advance {run_id}: {e}");
                 return;
@@ -11194,7 +11423,8 @@ impl AppState {
         }
         let merged_worktree = (result.is_ok() && active.run.state == RunState::Merged)
             .then(|| active.worktree.clone());
-        let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let (view, persisted) =
+            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
         let issue_persisted = if let Some(issue_id) = issue_id {
             let mut issue = self.take_plan(&issue_id)?;
             issue.agents.push_event_with_links(
@@ -11205,7 +11435,7 @@ impl AppState {
                 links,
                 now_rfc3339(),
             );
-            Some(self.finish_plan_mutation(issue_id, issue).1)
+            Some(self.finish_plan_mutation(issue_id, issue))
         } else {
             None
         };
@@ -11284,7 +11514,7 @@ impl AppState {
             }
             Ok(())
         })();
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         outcome?;
         persisted?;
         Ok(view)
@@ -11343,7 +11573,8 @@ impl AppState {
                 }
             }
         }
-        let (view, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let (view, persisted) =
+            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
         result?;
         persisted?;
         if let Some(issue_id) = &issue_id {
@@ -11388,7 +11619,7 @@ impl AppState {
                 links,
                 now_rfc3339(),
             );
-            let (_, issue_persisted) = self.finish_plan_mutation(issue_id, issue);
+            let issue_persisted = self.finish_plan_mutation(issue_id, issue);
             issue_persisted?;
         }
         Ok(view)
@@ -11485,7 +11716,7 @@ impl AppState {
         let (checkout, scope) = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, thread_detail(params)));
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
@@ -11497,7 +11728,7 @@ impl AppState {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, ThreadDetail::Full));
+                return Ok(self.run_view(&run_id, active, thread_detail(params)));
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
@@ -11521,7 +11752,7 @@ impl AppState {
         // bare row if the run is ever released.
         self.forget_row_dismissals(&project_id, checkout.branch.as_deref(), adopting_primary);
         self.invalidate_external_scan(&project_id);
-        let (view, persisted) = self.finish_run_mutation(run_id, active);
+        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
         persisted?;
         Ok(view)
     }
@@ -11587,7 +11818,7 @@ impl AppState {
                 .run
                 .apply(RunEvent::Archive)
                 .map_err(|error| error.to_string())?;
-            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            let persisted = self.finish_run_mutation(run_id, active);
             persisted?;
             return Ok(PlannedRunFinish::Settled(json!({ "archived": true })));
         }
@@ -11664,7 +11895,7 @@ impl AppState {
                 .run
                 .apply(RunEvent::Archive)
                 .map_err(|error| error.to_string())?;
-            let (_, persisted) = self.finish_run_mutation(run_id, active);
+            let persisted = self.finish_run_mutation(run_id, active);
             persisted?;
             self.reap_orphaned_terminals();
             return Ok(archived_worktree);
@@ -12251,11 +12482,13 @@ impl AppState {
         row["run"] = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
-                let mut view = self.run_view(&run_id, active, ThreadDetail::Full);
                 // The branch surface sits under the rail: it reads the
                 // conversation of whichever agent's bubble is open. See
                 // `run_get`.
-                if let Some(thread) = self.detail_thread_value(&run_id, params)? {
+                let detail_thread = self.detail_thread_value(&run_id, params)?;
+                let mut view =
+                    self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+                if let Some(thread) = detail_thread {
                     view["thread"] = thread;
                 }
                 view
@@ -12567,7 +12800,7 @@ impl AppState {
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "dispatch",
         });
-        let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+        let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
         self.touch_attention(&run_id);
         Ok(json!({
@@ -12905,7 +13138,7 @@ impl AppState {
                 }
                 Err(e) => eprintln!("archive {run_id}: {e}"),
             }
-            let (_, persisted) = self.finish_run_mutation(run_id.clone(), active);
+            let persisted = self.finish_run_mutation(run_id.clone(), active);
             if let Err(e) = persisted {
                 eprintln!("archive {run_id}: {e}");
             }
@@ -12953,7 +13186,7 @@ impl AppState {
                             );
                         }
                     }
-                    let (_, persisted) = self.finish_plan_mutation(issue_id.clone(), issue);
+                    let persisted = self.finish_plan_mutation(issue_id.clone(), issue);
                     if let Err(e) = persisted {
                         eprintln!("archive {run_id}: issue event persist failed: {e}");
                     }
@@ -13235,6 +13468,7 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => active.agents.digest_value(),
                 ThreadDetail::Full => active.agents.wire_value(),
+                ThreadDetail::Page(limit) => active.agents.wire_value_page(None, limit),
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
@@ -13364,6 +13598,9 @@ impl AppState {
             "thread": match thread_detail {
                 ThreadDetail::Digest => self.conversation_thread_for_run(active).digest_value(),
                 ThreadDetail::Full => self.conversation_thread_for_run(active).wire_value(),
+                ThreadDetail::Page(limit) => self
+                    .conversation_thread_for_run(active)
+                    .wire_value_page(None, limit),
             },
             // The rail's bubble strip — see `plan_view`.
             "agents": self.agent_digests(run_id),
@@ -14172,9 +14409,104 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
 
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
 /// garbage (non-integer, negative) value reads as absent — the poll then gets
-/// the full backward-compatible thread instead of an error.
+/// the conversation's newest page instead of an error.
 fn thread_cursor(params: &Value) -> Option<u64> {
     params.get("thread_after_sequence").and_then(Value::as_u64)
+}
+
+/// How much conversation a call can hold — a detail poll's answer or a
+/// mutation's: a page of the size its `thread_limit` names, or the
+/// conversation whole when it names none.
+///
+/// Silence has to keep meaning "whole". A client written before paging holds
+/// every item and reconciles each later delta against `thread_total`; hand it
+/// a window unasked and that count never matches again, so it drops its cache
+/// every tick, never sends a cursor, and never sees a word above the window.
+/// A client that can page says so, and says how much.
+///
+/// Which is why only silence may mean whole. A limit nobody can read is still
+/// a client saying it can page, and answering it with the conversation entire
+/// hands it the one thing paging exists to prevent — with no `has_more` to
+/// tell it the answer was not the page it asked for. So an unreadable limit
+/// falls back to the default page, not to the unbounded answer. (The garbage
+/// cursor above can afford to read as absent: what it falls back to is
+/// bounded.)
+fn thread_detail(params: &Value) -> ThreadDetail {
+    match params.get("thread_limit") {
+        // `null` is how a client spells a field it is not sending.
+        None | Some(Value::Null) => ThreadDetail::Full,
+        Some(named) => ThreadDetail::Page(
+            thread_limit_size(named)
+                .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+                .clamp(1, crate::thread::MAX_THREAD_PAGE),
+        ),
+    }
+}
+
+/// The page size a `thread_limit` names, however its client spelled the
+/// number: a JSON integer, the whole float a language without an integer type
+/// encodes one as, or the string a URL or a number-stringifying encoder leaves
+/// behind. `None` for anything that names no size at all — a negative count, a
+/// word, a structure.
+fn thread_limit_size(named: &Value) -> Option<usize> {
+    let size = match named {
+        Value::Number(number) => number.as_u64().or_else(|| {
+            let whole = number.as_f64().filter(|float| float.fract() == 0.0)?;
+            (whole >= 0.0).then_some(whole as u64)
+        })?,
+        Value::String(text) => text.trim().parse().ok()?,
+        _ => return None,
+    };
+    usize::try_from(size).ok()
+}
+
+/// How much conversation the VIEW under a detail poll builds, given what the
+/// poll already has to put in its place.
+///
+/// A poll that named an agent or carried a cursor gets its `thread` from
+/// [`AppState::detail_thread_value`], and that answer overwrites the view's
+/// own — so building the view's whole meant every item of the conversation
+/// through serde on every steady-state poll of every open browser, thrown away
+/// unread. The wire was bounded; the daemon was not. The digest holds the key
+/// until the replacement lands and costs nothing per item.
+///
+/// Taking the replacement itself, rather than re-reading the params that imply
+/// one, is what keeps the two from drifting: the cheap thread is built exactly
+/// when there is something to overwrite it with.
+fn view_thread_detail(replacement: &Option<Value>, params: &Value) -> ThreadDetail {
+    match replacement {
+        Some(_) => ThreadDetail::Digest,
+        None => thread_detail(params),
+    }
+}
+
+/// How much of a conversation a `thread.page` call asked for. Absent means a
+/// first load's page; a limit larger than one page could sanely carry is
+/// clamped rather than refused, since the caller still wants conversation
+/// back — and shipping the whole of a long one is the thing paging exists to
+/// prevent.
+fn thread_page_limit(params: &Value) -> usize {
+    params
+        .get("limit")
+        .and_then(thread_limit_size)
+        .map(|limit| limit.clamp(1, crate::thread::MAX_THREAD_PAGE))
+        .unwrap_or(crate::thread::DEFAULT_THREAD_PAGE)
+}
+
+/// The conversation owner a thread verb names. `entity_id` is the canonical
+/// name, and a detail surface's own id is accepted as well, so a client paging
+/// the view it is looking at does not have to rename the id it already holds.
+fn conversation_owner_param(params: &Value) -> Result<String, String> {
+    ["entity_id", "run_id", "plan_id", "issue_id"]
+        .iter()
+        .find_map(|key| {
+            params
+                .get(key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+        })
+        .map(str::to_string)
+        .ok_or_else(|| "missing required param: entity_id".to_string())
 }
 
 /// The optional `agent_id` a verb was addressed to. Empty reads as absent: a
@@ -21392,6 +21724,7 @@ mod tests {
         ));
         assert_eq!(failed["ok"], false, "{failed:?}");
         let record = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_runs()
             .unwrap()
             .into_iter()
@@ -21461,9 +21794,8 @@ mod tests {
         assert_eq!(stages["result"]["issue_id"], issue_id);
         assert_eq!(stages["result"]["plan_id"], issue_id);
         assert_eq!(stages["result"]["stages"].as_array().unwrap().len(), 2);
-        let store = Store::new(dir.path().join("store"));
-        assert!(store.issue_record_path(&issue_id).is_file());
-        assert!(!store.plan_record_path(&issue_id).exists());
+        let store = Store::new(dir.path().join("store")).expect("store opens");
+        assert!(store.issue_exists(&issue_id));
     }
 
     #[test]
@@ -22490,12 +22822,18 @@ mod tests {
             }),
         );
 
-        // Without a cursor the wire is exactly as before: every item, no totals.
-        let full = call(&handler, "run.get", json!({ "run_id": run_id }));
+        // The first load a paging client makes: the newest page, which for a
+        // conversation this short is every item it holds.
+        let full = call(
+            &handler,
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": crate::thread::DEFAULT_THREAD_PAGE }),
+        );
         let full_items = full["result"]["thread"]["items"].as_array().unwrap();
         assert!(full_items.len() >= 2, "{full:?}");
-        assert!(full["result"]["thread"].get("thread_total").is_none());
+        assert_eq!(full["result"]["thread"]["has_more"], false, "{full:?}");
         let total = full_items.len() as u64;
+        assert_eq!(full["result"]["thread"]["thread_total"], total);
         let last_sequence = full_items.last().unwrap()["data"]["sequence"]
             .as_u64()
             .unwrap();
@@ -22533,11 +22871,16 @@ mod tests {
         );
         assert_eq!(drained["result"]["thread"]["thread_total"], total);
 
-        // A garbage cursor is treated as absent: the full backward-compatible thread.
+        // A garbage cursor is treated as absent: the page the poll asked for,
+        // not an error.
         let garbage = call(
             &handler,
             "run.get",
-            json!({ "run_id": run_id, "thread_after_sequence": "junk" }),
+            json!({
+                "run_id": run_id,
+                "thread_after_sequence": "junk",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
         );
         assert_eq!(garbage["ok"], true, "{garbage:?}");
         assert_eq!(
@@ -22547,7 +22890,65 @@ mod tests {
                 .len(),
             full_items.len()
         );
-        assert!(garbage["result"]["thread"].get("thread_total").is_none());
+    }
+
+    /// The wire is bounded on a steady-state poll; the daemon has to be too.
+    ///
+    /// Every poll after a client's first load carries a cursor and no limit, so
+    /// the delta it gets back is a handful of items at most. The view underneath
+    /// it used to build the conversation whole anyway and then have it replaced
+    /// unread — every item of it through serde, on every poll, for every open
+    /// browser. That is the cost paging exists to remove, and only counting it
+    /// can tell it apart from the answer, which was correct all along.
+    #[test]
+    fn a_cursored_detail_poll_serializes_the_delta_and_not_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "poll a long conversation");
+        let now = crate::store::now_rfc3339();
+        for n in 0..200 {
+            state.plans.get_mut(&issue_id).unwrap().agents.post_user(
+                format!("message {n}"),
+                None,
+                now.clone(),
+            );
+        }
+        let conversation = &state.plans[&issue_id].agents;
+        let total = conversation.total_item_count();
+        assert!(total > 200, "the conversation is long enough to matter");
+        let last_sequence = conversation.last_sequence();
+
+        // The branch surface polls by project and branch rather than by id.
+        let branch = state.runs[&run_id].worktree.branch.clone();
+        let project_id = state.projects[0].id.clone();
+        let polls = [
+            ("run.get", json!({ "run_id": run_id })),
+            ("plan.get", json!({ "plan_id": issue_id })),
+            (
+                "branch.get",
+                json!({ "project_id": project_id, "branch": branch }),
+            ),
+        ];
+        for (method, base) in polls {
+            let mut params = base;
+            params["thread_after_sequence"] = json!(last_sequence);
+            let before = crate::thread::items_serialized();
+            let answer = state.handle(req(method, params));
+            let serialized = crate::thread::items_serialized() - before;
+
+            assert_eq!(answer["ok"], true, "{answer:?}");
+            let thread = match method {
+                "branch.get" => &answer["result"]["run"]["thread"],
+                _ => &answer["result"]["thread"],
+            };
+            assert_eq!(thread["items"].as_array().unwrap().len(), 0, "{answer:?}");
+            assert_eq!(thread["thread_total"], total, "{answer:?}");
+            assert!(
+                serialized < 8,
+                "{method} put {serialized} conversation items through serde \
+                 to answer with a delta of none"
+            );
+        }
     }
 
     #[tokio::test]
@@ -25464,6 +25865,49 @@ mod tests {
             .is_err());
     }
 
+    /// A search is asked ABOUT a conversation, not asked to render it, so a
+    /// restart that loaded the tail of a long one must still answer out of the
+    /// whole of it. An agent that could only search what is resident has lost
+    /// exactly the old decisions the tool exists to look up.
+    #[test]
+    fn a_search_reaches_history_the_restart_never_loaded() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-history", 250);
+        let active = state.runs.remove("run-history").expect("the run is there");
+        state
+            .persist_run_record("run-history", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        assert!(
+            restarted.runs["run-history"]
+                .agents
+                .first()
+                .thread
+                .items
+                .len()
+                < held,
+            "the restart loaded the conversation whole, so the search proves nothing"
+        );
+
+        // "turn 0" is the first thing ever said here, 249 items below the tail.
+        let found = restarted
+            .on_mcp_action(
+                "run-history",
+                BridgeAction::SearchConversation {
+                    query: text_query("turn 0"),
+                },
+            )
+            .unwrap();
+        assert_eq!(found["hits"].as_array().unwrap().len(), 1, "{found:?}");
+        assert_eq!(found["hits"][0]["sequence"], 1, "{found:?}");
+        assert!(found["hits"][0]["excerpt"]
+            .as_str()
+            .unwrap()
+            .contains("turn 0"));
+    }
+
     /// The whole point of the tool: a session with no memory asks what was
     /// decided and gets back a pointer with the metadata that found it.
     #[test]
@@ -25554,6 +25998,554 @@ mod tests {
             0,
             "{drained:?}"
         );
+    }
+
+    // ---- paged conversation reads -----------------------------------------
+
+    /// A run whose conversation is several pages long, so what a poll ships can
+    /// be told apart from what the conversation holds.
+    fn run_with_long_conversation(state: &mut AppState, run_id: &str, turns: usize) -> usize {
+        let mut active = crate::orchestrator::ActiveRun::reattach(
+            &fake_run_record(run_id),
+            ".build/plan.md".into(),
+        );
+        for turn in 0..turns {
+            active
+                .agents
+                .post_user(format!("turn {turn}"), None, now_rfc3339());
+        }
+        let held = active.agents.first().thread.items.len();
+        let project_id = state.projects[0].id.clone();
+        state.entity_project.insert(run_id.into(), project_id);
+        state.runs.insert(run_id.into(), active);
+        held
+    }
+
+    /// The sequences a page shipped, in the order it shipped them.
+    fn page_sequences(thread: &Value) -> Vec<u64> {
+        thread["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["data"]["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_detail_poll_that_names_no_page_ships_the_conversation_whole() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-unbounded", 250);
+
+        let opened = state.handle(req("run.get", json!({ "run_id": "run-unbounded" })));
+        let thread = &opened["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            held,
+            "{thread:?}"
+        );
+
+        // The silence is the whole point: a client written before paging holds
+        // the conversation entire and reconciles every later delta against
+        // `thread_total`. An answer that names one has told it a count it can
+        // never match, so it drops its cache every tick, never sends a cursor
+        // again, and never sees a word above the window it was handed.
+        assert!(thread.get("thread_total").is_none(), "{thread:?}");
+        assert!(thread.get("has_more").is_none(), "{thread:?}");
+
+        // And the delta after it reconciles: the count the daemon names is the
+        // count the client now holds, so the cache survives and the next poll
+        // is a cursored one — the bandwidth win the cursor exists for, still
+        // reachable by a client that cannot page.
+        let last_sequence = thread["items"].as_array().unwrap().last().unwrap()["data"]["sequence"]
+            .as_u64()
+            .unwrap();
+        let delta = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-unbounded", "thread_after_sequence": last_sequence }),
+        ));
+        let delta_thread = &delta["result"]["thread"];
+        assert!(
+            delta_thread["items"].as_array().unwrap().is_empty(),
+            "{delta_thread:?}"
+        );
+        assert_eq!(
+            delta_thread["thread_total"], held as u64,
+            "{delta_thread:?}"
+        );
+    }
+
+    #[test]
+    fn a_detail_poll_cannot_ask_for_more_conversation_than_a_page_carries() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-greedy", 250);
+
+        let greedy = state.handle(req(
+            "run.get",
+            json!({ "run_id": "run-greedy", "thread_limit": 10_000 }),
+        ));
+        let thread = &greedy["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::MAX_THREAD_PAGE,
+            "{thread:?}"
+        );
+    }
+
+    /// Silence means whole, so a limit that cannot be read must not read as
+    /// silence: a client that asked for a page and got the conversation entire
+    /// has no `has_more` to tell it the answer was not the one it asked for,
+    /// and pays the whole cost of it on every first load.
+    #[test]
+    fn a_detail_poll_whose_limit_is_not_a_plain_integer_still_gets_a_page() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-odd-limit", 250);
+
+        let page_of = |state: &mut AppState, limit: Value| {
+            let answer = state.handle(req(
+                "run.get",
+                json!({ "run_id": "run-odd-limit", "thread_limit": limit }),
+            ));
+            answer["result"]["thread"].clone()
+        };
+
+        // A number that went through a URL or an encoder without an integer
+        // type still names the page its client typed.
+        for spelling in [json!("60"), json!(60.0)] {
+            let thread = page_of(&mut state, spelling.clone());
+            assert_eq!(
+                thread["items"].as_array().unwrap().len(),
+                crate::thread::DEFAULT_THREAD_PAGE,
+                "{spelling} -> {thread:?}"
+            );
+            assert_eq!(thread["has_more"], true, "{spelling} -> {thread:?}");
+        }
+
+        // A limit nobody can read is still a client saying it can page, so it
+        // gets one — the default's worth — rather than the unbounded answer.
+        for nonsense in [json!(-1), json!("sixty"), json!(true), json!([60])] {
+            let thread = page_of(&mut state, nonsense.clone());
+            assert_eq!(
+                thread["items"].as_array().unwrap().len(),
+                crate::thread::DEFAULT_THREAD_PAGE,
+                "{nonsense} -> {thread:?}"
+            );
+            assert_eq!(thread["has_more"], true, "{nonsense} -> {thread:?}");
+        }
+
+        // `null` is how a client spells a field it is not sending, so it keeps
+        // meaning what leaving the field out means.
+        let unspoken = page_of(&mut state, Value::Null);
+        assert_eq!(
+            unspoken["items"].as_array().unwrap().len(),
+            held,
+            "{unspoken:?}"
+        );
+        assert!(unspoken.get("has_more").is_none(), "{unspoken:?}");
+    }
+
+    #[test]
+    fn a_detail_poll_that_asks_for_a_page_of_a_long_conversation_gets_one_not_all_of_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-long", 250);
+
+        let opened = state.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-long",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
+        let thread = &opened["result"]["thread"];
+        let items = thread["items"].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+
+        // Bounded, but still honest about the conversation behind it: the
+        // fields a client already reads mean exactly what they did.
+        assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+        assert_eq!(
+            thread["thread_last_sequence"].as_u64().unwrap(),
+            *page_sequences(thread).last().unwrap()
+        );
+        assert_eq!(thread["has_more"], true, "{thread:?}");
+        assert_eq!(
+            thread["oldest_sequence"].as_u64().unwrap(),
+            page_sequences(thread)[0]
+        );
+
+        // The page is the tail — the work you were doing, not the first hour.
+        assert_eq!(items.last().unwrap()["data"]["body"], "turn 249");
+        assert!(!opened.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    /// A restart drops the history under the tail; the tab watching it does
+    /// not drop its cursor. An item mutated in place before the restart — a
+    /// message the agent marked seen — is news no creation sequence expresses,
+    /// so a delta answered only out of the tail leaves that tab rendering a
+    /// read message unread for as long as it stays open.
+    #[test]
+    fn a_cursored_poll_after_a_restart_reships_a_mutation_under_the_tail() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-restart-delta", 250);
+        // Where the open tab's cursor sits: it holds every item said so far.
+        let cursor = state.runs["run-restart-delta"]
+            .agents
+            .first()
+            .thread
+            .last_sequence();
+
+        // The agent reads the mailbox, which bumps the `updated_sequence` of
+        // every message in it — including the ones at the very start of the
+        // conversation, which the restart is about to leave in the store.
+        state
+            .on_mcp_action("run-restart-delta", BridgeAction::ReadUnreadMessages)
+            .unwrap();
+        let active = state
+            .runs
+            .remove("run-restart-delta")
+            .expect("the run is there");
+        let total = active.agents.first().thread.items.len();
+        state
+            .persist_run_record("run-restart-delta", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        assert!(
+            restarted.runs["run-restart-delta"]
+                .agents
+                .first()
+                .thread
+                .items
+                .len()
+                < total,
+            "the restart loaded the conversation whole, so the delta proves nothing"
+        );
+
+        let delta = restarted.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-restart-delta",
+                "thread_after_sequence": cursor,
+            }),
+        ));
+        let thread = &delta["result"]["thread"];
+        let items = thread["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|item| item["data"]["body"] == "turn 0"
+                && item["data"]["seen_at"].is_string()),
+            "the mutation under the tail never reached the cursor: {thread:?}"
+        );
+        assert_eq!(thread["thread_total"], total as u64, "{thread:?}");
+
+        // And it drains: the high-water mark it names is past the mutations it
+        // just shipped, so the tab asks once and stops asking.
+        let advanced = thread["thread_last_sequence"].as_u64().unwrap();
+        let drained = restarted.handle(req(
+            "run.get",
+            json!({
+                "run_id": "run-restart-delta",
+                "thread_after_sequence": advanced,
+            }),
+        ));
+        assert!(
+            drained["result"]["thread"]["items"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{drained:?}"
+        );
+    }
+
+    /// The write path is the hot one: a reviewer types one word into a
+    /// conversation of hundreds, and the answer to that post is a whole view of
+    /// the run. It has to obey the same bound the detail polls do — a client
+    /// that named a `thread_limit` gets that page back, not every item it
+    /// already holds, serialized and encrypted for it to drop on the floor.
+    #[test]
+    fn posting_a_message_answers_with_the_page_the_client_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-post-page", 250);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": "run-post-page",
+                "body": "one more word",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+
+        // Bounded, and honest about what sits behind the window: the word just
+        // said is the newest item, and the count names the whole conversation.
+        assert_eq!(thread["thread_total"], held as u64 + 1, "{thread:?}");
+        assert_eq!(
+            thread["items"].as_array().unwrap().last().unwrap()["data"]["body"],
+            "one more word"
+        );
+        assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    /// And the same silence rule as the reads: a client that named no page is
+    /// one that cannot page, so posting still answers it with the conversation
+    /// entire.
+    #[test]
+    fn posting_a_message_without_naming_a_page_still_answers_with_the_whole_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-post-whole", 250);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-whole", "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            held + 1,
+            "{thread:?}"
+        );
+        assert!(thread.get("thread_total").is_none(), "{thread:?}");
+    }
+
+    /// The routed post: an implementation's first agent speaks in its Issue's
+    /// conversation, so the branch view that answers the post carries the
+    /// Issue's items. That answer is bounded by the same limit.
+    #[test]
+    fn posting_to_an_implementation_answers_with_a_page_of_its_issues_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "page the routed post");
+        let held = {
+            let issue = state.plans.get_mut(&issue_id).unwrap();
+            for turn in 0..250 {
+                issue
+                    .agents
+                    .post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+            issue.agents.first().thread.items.len()
+        };
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({
+                "entity_id": run_id,
+                "body": "one more word",
+                "thread_limit": crate::thread::DEFAULT_THREAD_PAGE,
+            }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let thread = &posted["result"]["thread"];
+        assert_eq!(
+            thread["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE,
+            "{thread:?}"
+        );
+        assert_eq!(thread["thread_total"], held as u64 + 1, "{thread:?}");
+        assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    #[test]
+    fn thread_page_walks_backward_to_the_start_of_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-walk", 250);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let page = state.handle(req(
+                "thread.page",
+                json!({
+                    "entity_id": "run-walk",
+                    "before_sequence": before,
+                    "limit": 25,
+                }),
+            ));
+            assert_eq!(page["ok"], true, "{page:?}");
+            let thread = &page["result"];
+            let sequences = page_sequences(thread);
+            assert_eq!(sequences.len(), 25, "{thread:?}");
+            assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+            let mut older = sequences;
+            older.extend(walked);
+            walked = older;
+            if thread["has_more"] == json!(false) {
+                assert!(thread["oldest_sequence"].is_number(), "{thread:?}");
+                break;
+            }
+            before = thread["oldest_sequence"].as_u64();
+        }
+
+        // Every item, once, in the order it happened.
+        assert_eq!(walked.len(), held);
+        let mut ascending = walked.clone();
+        ascending.sort_unstable();
+        ascending.dedup();
+        assert_eq!(walked, ascending);
+    }
+
+    /// A restarted daemon holds the tail of a long conversation, not all of
+    /// it, so a walk back through one leaves memory and reaches the store.
+    /// The reviewer scrolling up must not be able to tell: every item, once,
+    /// in the order it happened, right back to the first thing ever said.
+    #[test]
+    fn paging_reaches_the_history_a_restart_never_loaded() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let held = run_with_long_conversation(&mut state, "run-restart", 250);
+        let active = state.runs.remove("run-restart").expect("the run is there");
+        state
+            .persist_run_record("run-restart", &active)
+            .expect("the run saves");
+
+        let mut restarted = qa_state(&repo, dir.path());
+        let resident = restarted.runs["run-restart"]
+            .agents
+            .first()
+            .thread
+            .items
+            .len();
+        assert!(
+            resident < held,
+            "the restart loaded the conversation whole: {resident} of {held}"
+        );
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let page = restarted.handle(req(
+                "thread.page",
+                json!({
+                    "entity_id": "run-restart",
+                    "before_sequence": before,
+                    "limit": 25,
+                }),
+            ));
+            assert_eq!(page["ok"], true, "{page:?}");
+            let thread = &page["result"];
+            let sequences = page_sequences(thread);
+            assert_eq!(sequences.len(), 25, "{thread:?}");
+            assert_eq!(thread["thread_total"], held as u64, "{thread:?}");
+            let mut older = sequences;
+            older.extend(walked);
+            walked = older;
+            if thread["has_more"] == json!(false) {
+                break;
+            }
+            before = thread["oldest_sequence"].as_u64();
+        }
+
+        let every_sequence: Vec<u64> = (1..=held as u64).collect();
+        assert_eq!(
+            walked, every_sequence,
+            "the walk missed, repeated or reordered the history it read out of the store"
+        );
+    }
+
+    #[test]
+    fn thread_page_clamps_the_limit_it_was_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-clamp", 250);
+
+        let greedy = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": 10_000 }),
+        ));
+        assert_eq!(
+            greedy["result"]["items"].as_array().unwrap().len(),
+            crate::thread::MAX_THREAD_PAGE,
+            "{greedy:?}"
+        );
+
+        // A limit of nothing is not an empty page — it is the smallest one.
+        let empty = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": 0 }),
+        ));
+        assert_eq!(empty["result"]["items"].as_array().unwrap().len(), 1);
+
+        // No limit at all is the same page a first load gets.
+        let unsaid = state.handle(req("thread.page", json!({ "entity_id": "run-clamp" })));
+        assert_eq!(
+            unsaid["result"]["items"].as_array().unwrap().len(),
+            crate::thread::DEFAULT_THREAD_PAGE
+        );
+
+        // Scroll-back reads a page size the way a first load does, so a
+        // client whose numbers arrive as strings walks the same history.
+        let stringified = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-clamp", "limit": "120" }),
+        ));
+        assert_eq!(
+            stringified["result"]["items"].as_array().unwrap().len(),
+            120,
+            "{stringified:?}"
+        );
+    }
+
+    #[test]
+    fn thread_page_reads_the_agent_it_was_addressed_to() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-addressed", 80);
+        let second_agent_id = {
+            let active = state.runs.get_mut("run-addressed").unwrap();
+            let id = active
+                .agents
+                .add("run-addressed", ModelChoice::default(), &now_rfc3339())
+                .id
+                .clone();
+            active.agents.by_id_mut(&id).unwrap().thread.post_user(
+                "only the second agent heard this",
+                None,
+                now_rfc3339(),
+            );
+            id
+        };
+
+        let addressed = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-addressed", "agent_id": second_agent_id }),
+        ));
+        assert_eq!(addressed["result"]["thread_total"], 1, "{addressed:?}");
+        assert_eq!(
+            addressed["result"]["items"][0]["data"]["body"],
+            "only the second agent heard this"
+        );
+    }
+
+    #[test]
+    fn thread_page_of_an_unknown_entity_is_an_error() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let missing = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": "run-that-never-was" }),
+        ));
+        assert_eq!(missing["ok"], false, "{missing:?}");
+        assert_eq!(missing["error"], "unknown id", "{missing:?}");
+
+        let nameless = state.handle(req("thread.page", json!({})));
+        assert_eq!(nameless["ok"], false, "{nameless:?}");
     }
 
     // ---- thread.attach: files sent with a conversation message -------------
@@ -26897,7 +27889,7 @@ mod tests {
         run_id: &str,
         run_state: RunState,
     ) -> std::path::PathBuf {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -27506,137 +28498,13 @@ mod tests {
     // ---- boot recovery + migration -------------------------------------------
 
     #[test]
-    fn legacy_task_migrates_into_a_plan_and_run_on_boot() {
-        let (dir, repo) = init_repo();
-        let store_dir = dir.path().join("store");
-        // A quick legacy task in review, with a real surviving worktree.
-        let (_wt_dir, quick_wt) = init_repo();
-        let store = crate::store::Store::new(&store_dir);
-        store
-            .save(&legacy_task(
-                "task-quick",
-                crate::legacy::TaskKind::Quick,
-                crate::legacy::TaskState::Review,
-                &repo,
-                &quick_wt,
-            ))
-            .unwrap();
-        // A standard legacy task still in plan review (planning phase) → plan only.
-        let (_wt2, plan_wt) = init_repo();
-        store
-            .save(&legacy_task(
-                "task-plan",
-                crate::legacy::TaskKind::Standard,
-                crate::legacy::TaskState::PlanReview,
-                &repo,
-                &plan_wt,
-            ))
-            .unwrap();
-        // A standard legacy task past planning (building) → an approved plan AND
-        // a run pointing back at it, both surfaced.
-        let (_wt3, build_wt) = init_repo();
-        store
-            .save(&legacy_task(
-                "task-build",
-                crate::legacy::TaskKind::Standard,
-                crate::legacy::TaskState::Building,
-                &repo,
-                &build_wt,
-            ))
-            .unwrap();
-
-        let mut state = qa_state(&repo, dir.path());
-        // The quick task became a plan-less run kept at review.
-        let run = state.handle(req("run.get", json!({ "run_id": "task-quick" })));
-        assert_eq!(run["result"]["state"], "review", "{run:?}");
-        assert_eq!(run["result"]["plan_id"], Value::Null);
-        // The standard task became a plan at plan_review, no run.
-        let plan = state.handle(req("plan.get", json!({ "plan_id": "task-plan" })));
-        assert_eq!(plan["result"]["state"], "plan_review", "{plan:?}");
-        assert_eq!(
-            state.handle(req("run.get", json!({ "run_id": "task-plan" })))["ok"],
-            false
-        );
-        // The past-planning task became an approved plan plus a run linked back
-        // to it. The plan is a resting Approved; the run was mid-build, so boot
-        // recovery demotes it to Interrupted (its PTY died on the restart).
-        let built_plan = state.handle(req("plan.get", json!({ "plan_id": "task-build" })));
-        assert_eq!(built_plan["result"]["state"], "approved", "{built_plan:?}");
-        // The run half takes a derived, disjoint id — plan and run ids never
-        // collide, or done-report routing (plans-first) would swallow the
-        // run's reports.
-        let built_run = state.handle(req("run.get", json!({ "run_id": "run-task-build" })));
-        assert_eq!(built_run["result"]["state"], "interrupted", "{built_run:?}");
-        assert_eq!(built_run["result"]["plan_id"], "task-build");
-
-        // Everything surfaces on the board, in the right collection.
-        let board = state.handle(req("board.list", json!({})));
-        let ids = |arr: &Value, key: &str| -> Vec<String> {
-            arr.as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v[key].as_str().unwrap().to_string())
-                .collect()
-        };
-        let plan_ids = ids(&board["result"]["plans"], "plan_id");
-        let run_ids = ids(&board["result"]["runs"], "run_id");
-        assert!(plan_ids.contains(&"task-plan".to_string()), "{plan_ids:?}");
-        assert!(plan_ids.contains(&"task-build".to_string()), "{plan_ids:?}");
-        assert!(
-            !plan_ids.contains(&"task-quick".to_string()),
-            "the quick task has no plan: {plan_ids:?}"
-        );
-        assert!(run_ids.contains(&"task-quick".to_string()), "{run_ids:?}");
-        assert!(
-            run_ids.contains(&"run-task-build".to_string()),
-            "{run_ids:?}"
-        );
-        assert!(
-            !run_ids.contains(&"task-plan".to_string()),
-            "the plan-only task has no run: {run_ids:?}"
-        );
-    }
-
-    fn legacy_task(
-        id: &str,
-        kind: crate::legacy::TaskKind,
-        st: crate::legacy::TaskState,
-        repo: &std::path::Path,
-        worktree: &std::path::Path,
-    ) -> crate::store::PersistedTask {
-        crate::store::PersistedTask {
-            id: id.into(),
-            goal: "legacy".into(),
-            kind,
-            project_path: repo.display().to_string(),
-            base_branch: "main".into(),
-            state: st,
-            branch: format!("build/{id}"),
-            worktree_name: id.into(),
-            worktree_path: worktree.display().to_string(),
-            plan_path: ".build/plan.md".into(),
-            last_summary: None,
-            model: None,
-            effort: None,
-            last_error: None,
-            stages: Vec::new(),
-            current_stage_id: None,
-            revising_stage_id: None,
-            auto_advance: false,
-            comments: Vec::new(),
-            adopted: false,
-            pending_continuation: false,
-            created_at: "2026-07-01T10:00:00Z".into(),
-            updated_at: "2026-07-01T10:00:00Z".into(),
-        }
-    }
-
-    #[test]
     fn working_plan_and_run_surface_interrupted_on_boot() {
         let (dir, repo) = init_repo();
         let (_b, run_wt) = init_repo();
-        let store = crate::store::Store::new(dir.path().join("store"));
-        store.save_plan(&drafting_plan("plan-1", &repo)).unwrap();
+        let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
+        store
+            .save_issue_plan(&drafting_plan("plan-1", &repo))
+            .unwrap();
         store
             .save_run(&building_run("run-1", &repo, &run_wt))
             .unwrap();
@@ -27655,7 +28523,7 @@ mod tests {
     #[test]
     fn missing_run_worktree_abandons_and_missing_repo_too() {
         let (dir, repo) = init_repo();
-        let store = crate::store::Store::new(dir.path().join("store"));
+        let store = crate::store::Store::new(dir.path().join("store")).expect("store opens");
         // Worktree gone, repo present → abandoned (branch kept).
         let mut gone = building_run("run-gone", &repo, std::path::Path::new("/tmp/nope-run"));
         gone.state = RunState::Building;
@@ -27702,7 +28570,7 @@ mod tests {
             &["update-ref", "-d", "refs/remotes/mirror/build/journaled"],
         );
 
-        let store = Store::new(dir.path().join("store"));
+        let store = Store::new(dir.path().join("store")).expect("store opens");
         let mut record = building_run("run-journaled", &repo, &repo);
         record.state = RunState::Review;
         record.branch = "build/journaled".into();
@@ -27767,7 +28635,6 @@ mod tests {
             implementation_activity: crate::plan::ImplementationActivity::Idle,
             plan_path: ".build/plan.md".into(),
             stages: Vec::new(),
-            comments: Vec::new(),
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
@@ -28394,7 +29261,7 @@ mod tests {
         side_root: std::path::PathBuf,
         run_id: &str,
     ) -> (TabKey, String) {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -28452,7 +29319,7 @@ mod tests {
         side_root: std::path::PathBuf,
         run_id: &str,
     ) -> std::path::PathBuf {
-        let store = crate::store::Store::new(side_root.join("store"));
+        let store = crate::store::Store::new(side_root.join("store")).expect("store opens");
         let side = Orchestrator::new(
             repo.to_path_buf(),
             side_root.join("wt"),
@@ -28883,6 +29750,7 @@ mod tests {
         );
         assert_eq!(choice.effort, None);
         let persisted = crate::store::Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_runs()
             .unwrap()
             .into_iter()
@@ -28916,6 +29784,7 @@ mod tests {
             AgentProvider::Codex
         );
         let persisted = crate::store::Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_plans()
             .unwrap()
             .into_iter()
@@ -31731,9 +32600,11 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "store-failure", "store-failure");
         let worktree_id = external_id(&mut state, &project_id, Some("store-failure"));
-        let store_root = dir.path().join("store");
-        std::fs::create_dir_all(&store_root).unwrap();
-        std::fs::write(store_root.join("archived-worktrees"), "not a directory").unwrap();
+        state
+            .store
+            .as_ref()
+            .expect("the qa state has a store")
+            .fail_next_write();
 
         let failed = state.handle(req(
             "worktree.finish",
@@ -32378,15 +33249,18 @@ mod tests {
             assert_eq!(finished["ok"], true, "{finished:?}");
         }
 
-        let record_path = dir
-            .path()
-            .join("store/archived-worktrees")
-            .join(format!("{worktree_id}.json"));
-        let mut record: Value =
-            serde_json::from_str(&std::fs::read_to_string(&record_path).unwrap()).unwrap();
-        record["status"] = json!("pending");
-        record["archived_at"] = Value::Null;
-        std::fs::write(&record_path, serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+        // Put the record back the way an interrupted daemon would have left it:
+        // the intent is durable, the worktree removal never happened.
+        {
+            let store = Store::new(dir.path().join("store")).expect("store opens");
+            let raw = store
+                .archived_worktree_json(&worktree_id)
+                .expect("the finish wrote an archive record");
+            let mut record: Value = serde_json::from_str(&raw).unwrap();
+            record["status"] = json!("pending");
+            record["archived_at"] = Value::Null;
+            store.set_archived_worktree_json(&worktree_id, &record.to_string());
+        }
 
         let mut reloaded = qa_state(&repo, dir.path());
         let project_id = reloaded.projects[0].id.clone();
@@ -32396,8 +33270,15 @@ mod tests {
             .unwrap()
             .iter()
             .any(|worktree| worktree["worktree_id"] == worktree_id));
-        let recovered: Value =
-            serde_json::from_str(&std::fs::read_to_string(record_path).unwrap()).unwrap();
+        // The recovery is durable, not just in memory: a store opened fresh
+        // sees the completed finish.
+        let recovered: Value = serde_json::from_str(
+            &Store::new(dir.path().join("store"))
+                .expect("store opens")
+                .archived_worktree_json(&worktree_id)
+                .expect("the archive record survives"),
+        )
+        .unwrap();
         assert_eq!(recovered["status"], "archived");
         assert!(recovered["archived_at"].is_string());
     }
@@ -32871,8 +33752,7 @@ mod tests {
                 .unwrap()
                 .thread
                 .post_agent("here is what I found", None, now_rfc3339());
-            let (_, persisted) = state.finish_run_mutation(run_id.clone(), run);
-            persisted.unwrap();
+            state.finish_run_mutation(run_id.clone(), run).unwrap();
         }
 
         let view = state.handle(req("run.get", json!({ "run_id": run_id })));
@@ -32901,6 +33781,77 @@ mod tests {
         };
         assert_eq!(unread_of(&first_agent), 1);
         assert_eq!(unread_of(&second_agent), 0);
+    }
+
+    /// Reaching the end of a WINDOW is not reading the conversation. A long
+    /// conversation reaches the client as a page of its newest items, so a
+    /// `seen` that names where that page starts has to leave the badge up for
+    /// an agent message waiting below the floor: the reader was never shipped
+    /// it, let alone shown it. Scrolling back far enough to hold it is what
+    /// clears it.
+    #[test]
+    fn seeing_a_window_leaves_the_message_below_its_floor_unread() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-window");
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        // One message that calls the human, then enough conversation after it
+        // to push it out of any window the client opens on the newest items.
+        let mut run = state.take_run(&run_id).unwrap();
+        {
+            let thread = &mut run.agents.resolve_mut(Some(&agent_id)).unwrap().thread;
+            thread.post_agent("the question nobody has answered", None, now_rfc3339());
+            for turn in 0..40 {
+                thread.post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+        }
+        state.finish_run_mutation(run_id.clone(), run).unwrap();
+
+        let window = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(window["result"]["unread_count"], 1, "{window:?}");
+        let floor = window["result"]["thread"]["oldest_sequence"]
+            .as_u64()
+            .expect("a page names where it starts");
+
+        let seen = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "read_from_sequence": floor,
+            }),
+        ));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(
+            view["result"]["unread_count"], 1,
+            "a window that never held the message cannot have read it: {view:?}"
+        );
+
+        // Scrolled back to the start of the conversation: the same report on a
+        // window that does hold the message clears it.
+        let seen = state.handle(req(
+            "entity.seen",
+            json!({
+                "entity_id": run_id,
+                "agent_id": agent_id,
+                "read_from_sequence": 1,
+            }),
+        ));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        let view = state.handle(req(
+            "run.get",
+            json!({ "run_id": run_id, "thread_limit": 10 }),
+        ));
+        assert_eq!(view["result"]["unread_count"], 0, "{view:?}");
     }
 
     /// Two agents on one checkout are two PTYs, and each reports as itself:
@@ -33100,6 +34051,49 @@ mod tests {
                 .contains("unknown agent_id"),
             "{unknown:?}"
         );
+    }
+
+    /// `branch.get` is the branch surface's read, and that surface paints no
+    /// conversation — the rail beside it does, off its own paged read of this
+    /// same RPC. So the surface asks for the smallest page there is, and the
+    /// bound has to hold on both roads through the run view: the poll that
+    /// named an agent (the rail's bubble is open) and the poll that named none.
+    #[test]
+    fn branch_get_ships_the_page_the_branch_surface_asked_for() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-bounded-branch");
+        let first_agent = state.runs[&run_id].agents.first().id.clone();
+        let held = {
+            let active = state.runs.get_mut(&run_id).unwrap();
+            for turn in 0..250 {
+                active
+                    .agents
+                    .post_user(format!("turn {turn}"), None, now_rfc3339());
+            }
+            active.agents.first().thread.items.len()
+        };
+        let project_id = state.projects[0].id.clone();
+
+        for scope in [json!({}), json!({ "agent_id": first_agent })] {
+            let mut params = json!({
+                "project_id": project_id,
+                "branch": "feature-bounded-branch",
+                "thread_limit": 1,
+            });
+            for (key, value) in scope.as_object().unwrap() {
+                params[key] = value.clone();
+            }
+            let read = state.handle(req("branch.get", params));
+            assert_eq!(read["ok"], true, "{read:?}");
+            let thread = &read["result"]["run"]["thread"];
+            assert_eq!(thread["items"].as_array().unwrap().len(), 1, "{read:?}");
+            // Bounded, and still honest about the conversation behind the
+            // window: the count is the whole of it, and there is more above.
+            assert_eq!(thread["thread_total"], held as u64, "{read:?}");
+            assert_eq!(thread["has_more"], true, "{read:?}");
+            assert!(!read.to_string().contains("turn 0\""), "{read:?}");
+        }
     }
 
     /// The delta cursor is per conversation: a sequence held for one agent's
@@ -34926,6 +35920,7 @@ mod tests {
 
         // On disk already — read by a store this daemon never told about it.
         let on_disk = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_captures()
             .unwrap();
         assert_eq!(on_disk.len(), 1, "the record is written before the answer");
@@ -34956,6 +35951,7 @@ mod tests {
         assert!(state.captures.is_empty());
         assert_eq!(
             Store::new(dir.path().join("store"))
+                .expect("store opens")
                 .load_all_captures()
                 .unwrap(),
             Vec::new()
@@ -35090,7 +36086,7 @@ mod tests {
     #[test]
     fn boot_refires_an_interrupted_route_and_leaves_the_rest_alone() {
         let (dir, repo) = init_repo();
-        let store = Store::new(dir.path().join("store"));
+        let store = Store::new(dir.path().join("store")).expect("store opens");
         let mut mid_route = crate::capture::Capture::new(
             "capture-mid-route",
             "fix the login redirect",
@@ -35298,6 +36294,7 @@ mod tests {
 
         // On disk, not just in this process.
         let on_disk = Store::new(dir.path().join("store"))
+            .expect("store opens")
             .load_all_captures()
             .unwrap();
         assert_eq!(
@@ -35674,6 +36671,7 @@ mod tests {
         );
         assert_eq!(
             Store::new(dir.path().join("store"))
+                .expect("store opens")
                 .load_all_captures()
                 .unwrap(),
             Vec::new(),

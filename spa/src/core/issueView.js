@@ -51,6 +51,7 @@ import {
   worktreeChoices,
 } from "./issueModel.js";
 import { createDocCommentLayer, headingForKey } from "./issueDocComments.js";
+import { MUTATION_THREAD_PAGE, SMALLEST_THREAD_PAGE } from "./thread.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { watchChanges } from "./changeEvents.js";
@@ -180,7 +181,13 @@ export function mountIssueView(
           anchor: docCommentAnchor(comment),
         });
       }
-      if (general) await callRpc("thread.post", { entity_id: issueId, ...agentSelection.scope(), body: general });
+      if (general)
+        await callRpc("thread.post", {
+          entity_id: issueId,
+          ...agentSelection.scope(),
+          body: general,
+          ...MUTATION_THREAD_PAGE,
+        });
       renderedKey = null;
       await refresh();
     },
@@ -380,13 +387,13 @@ export function mountIssueView(
   const wireStageList = (listHost) => {
     bindAction(listHost.querySelector("#approveissue"), "approving…", async () => {
       if (!(await confirmAction(approvePlanConfirm()))) throw new Error("cancelled");
-      await guarded(() => callRpc("issue.approve", { issue_id: issueId }));
+      await guarded(() => callRpc("issue.approve", { issue_id: issueId, ...MUTATION_THREAD_PAGE }));
       await refresh();
     });
     bindAction(listHost.querySelector("#approveall"), "approving…", async () => {
       await guarded(async () => {
         for (const stageId of plannedStageIds(stages())) {
-          await callRpc("issue.stage_approve", { issue_id: issueId, stage_id: stageId });
+          await callRpc("issue.stage_approve", { issue_id: issueId, stage_id: stageId, ...MUTATION_THREAD_PAGE });
         }
       });
       await refresh();
@@ -405,7 +412,10 @@ export function mountIssueView(
         )
           throw new Error("cancelled");
         const result = await guarded(() =>
-          callRpc("issue.implement_all", implementParams(issueId, assignment, { models: providerModels() })),
+          callRpc("issue.implement_all", {
+            ...implementParams(issueId, assignment, { models: providerModels() }),
+            ...MUTATION_THREAD_PAGE,
+          }),
         );
         afterDispatch(result);
       });
@@ -538,17 +548,24 @@ export function mountIssueView(
       };
 
     bindAction(viewerHost.querySelector("#approvestage"), "approving…", async () => {
-      await guarded(() => callRpc("issue.stage_approve", { issue_id: issueId, stage_id: stage.id }));
+      await guarded(() =>
+        callRpc("issue.stage_approve", { issue_id: issueId, stage_id: stage.id, ...MUTATION_THREAD_PAGE }),
+      );
       await refresh();
     });
     bindAction(viewerHost.querySelector("#implementstage"), "starting…", async () => {
       const result = await guarded(() =>
-        callRpc("issue.implement_stage", implementParams(issueId, assignment, { models: providerModels(), stageId: stage.id })),
+        callRpc("issue.implement_stage", {
+          ...implementParams(issueId, assignment, { models: providerModels(), stageId: stage.id }),
+          ...MUTATION_THREAD_PAGE,
+        }),
       );
       afterDispatch(result);
     });
     bindAction(viewerHost.querySelector("#fixstage"), "sending…", async () => {
-      await guarded(() => callRpc("issue.stage_fix", { issue_id: issueId, stage_id: stage.id, note: "" }));
+      await guarded(() =>
+        callRpc("issue.stage_fix", { issue_id: issueId, stage_id: stage.id, note: "", ...MUTATION_THREAD_PAGE }),
+      );
       await refresh();
     });
     const sendNotes = viewerHost.querySelector("#sendnotes");
@@ -560,8 +577,8 @@ export function mountIssueView(
         bindAction(sendNotes, "sending…", async () => {
           const params =
             notesTarget.method === "run.stage_send_notes"
-              ? { run_id: notesTarget.entityId, stage_id: stage.id }
-              : { issue_id: issueId, stage_id: stage.id };
+              ? { run_id: notesTarget.entityId, stage_id: stage.id, ...MUTATION_THREAD_PAGE }
+              : { issue_id: issueId, stage_id: stage.id, ...MUTATION_THREAD_PAGE };
           await guarded(() => callRpc(notesTarget.method, params));
           await refresh();
         });
@@ -696,7 +713,14 @@ export function mountIssueView(
         callRpc("issue.get", {
           issue_id: issueId,
           ...agentSelection.scope(),
-          ...(threadCursor ? { thread_after_sequence: threadCursor } : {}),
+          // The only thing this surface takes off the answer's thread is how
+          // far the conversation has got; the rail beside it owns what gets
+          // rendered. So a read with no cursor yet asks for the smallest page
+          // the daemon will cut rather than naming no bound at all, which
+          // would ship every item of a long conversation to compute one
+          // integer — on the first read of every issue, and again after every
+          // bubble switch.
+          ...(threadCursor ? { thread_after_sequence: threadCursor } : SMALLEST_THREAD_PAGE),
         }),
         callRpc("issue.stages", { issue_id: issueId }),
       ]);

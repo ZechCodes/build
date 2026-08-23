@@ -42,6 +42,7 @@ const { App } = await import("../src/app.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
+const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 
 const agent = (over = {}) => ({
   id: "ag-1", ordinal: 1, provider: "claude", state: "live",
@@ -392,7 +393,8 @@ describe("the conversation panel", () => {
   it("tells the daemon an agent's conversation has been read while it is open at the end", async () => {
     payload = branchRow({ agents: [agent({ unread_count: 2, unread_reason: "done" })] });
     await mount();
-    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1");
+    // No floor: this conversation arrived whole, so the end of it is the end.
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", null);
   });
 
   it("says nothing about reading a conversation with nothing waiting", async () => {
@@ -462,6 +464,137 @@ describe("the conversation panel", () => {
       await flush();
       expect(panel().textContent).toContain("words from ag-2");
     });
+  });
+});
+
+describe("reading back past the top of a paged conversation", () => {
+  // A long conversation reaches the client as a page of its newest items, so
+  // the top of the scroller is a floor rather than the start of anything. The
+  // reader hitting it is the ask for the page above.
+  const said = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  const firstPage = (hasMore) => ({
+    sessions: [],
+    items: [said(98, "second to last"), said(99, "the newest")],
+    thread_total: 99,
+    thread_last_sequence: 99,
+    oldest_sequence: 98,
+    has_more: hasMore,
+  });
+  const pageAbove = (hasMore) => ({
+    items: [said(96, "the oldest we asked for"), said(97, "one before the window")],
+    thread_total: 99,
+    thread_last_sequence: 99,
+    oldest_sequence: 96,
+    has_more: hasMore,
+  });
+  const railBody = () => railHost().querySelector("#rail-body");
+
+  const pagedConversation = (hasMore, moreAboveThatPage = true, agents = [agent()]) => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "branch.get") {
+        // A cursored poll is a forward delta and says nothing about the far
+        // end of the conversation — only a paged answer does.
+        const thread = params.thread_after_sequence
+          ? { sessions: [], items: [], thread_total: 99, thread_last_sequence: 99 }
+          : firstPage(hasMore);
+        return branchRow({ agents, run: { run_id: "run-3", thread } });
+      }
+      if (method === "thread.page") return pageAbove(moreAboveThatPage);
+      return {};
+    });
+  };
+
+  it("asks the daemon for the page above the window when the reader reaches the top", async () => {
+    pagedConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page").map((call) => call.params)).toEqual([
+      { entity_id: "run-3", agent_id: "ag-1", before_sequence: 98 },
+    ]);
+  });
+
+  it("folds the older items in above the ones already on screen", async () => {
+    pagedConversation(true);
+    await mount();
+    expect(panel().textContent).not.toContain("one before the window");
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    const bodies = [...railBody().querySelectorAll(".thread-body")].map((node) => node.textContent);
+    expect(bodies).toEqual([
+      "the oldest we asked for",
+      "one before the window",
+      "second to last",
+      "the newest",
+    ]);
+  });
+
+  it("asks nothing when the window already holds the start of the conversation", async () => {
+    pagedConversation(false);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toEqual([]);
+  });
+
+  it("stops asking once a page answers that the window holds the start", async () => {
+    // The page above is the start of the conversation, so there is nothing
+    // left to fetch. The repaint that draws it folds the first-load page back
+    // through the cache on its way — and that page still says there is more
+    // above a floor the reader has now scrolled past.
+    pagedConversation(true, false);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+    expect(callsTo("thread.page")).toHaveLength(1);
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toHaveLength(1);
+  });
+
+  // The reviewer's bug: the scroller sitting at the bottom used to mean the
+  // whole conversation had been shipped and could be read through. It now
+  // means the reader reached the end of a window, so the read report says
+  // where that window starts and the daemon keeps the badge up for a message
+  // waiting below it.
+  it("reports how much of the conversation it holds when it reports it read", async () => {
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    await mount();
+
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 98);
+  });
+
+  it("moves the floor it reports down as the reader scrolls back", async () => {
+    pagedConversation(true, true, [agent({ unread_count: 1, unread_reason: "agent_message" })]);
+    await mount();
+    markSeen.mockClear();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(markSeen).toHaveBeenCalledWith("run-3", "ag-1", 96);
+  });
+
+  it("asks once for a page, however many scroll events the gesture fires", async () => {
+    pagedConversation(true);
+    await mount();
+
+    railBody().dispatchEvent(new Event("scroll"));
+    railBody().dispatchEvent(new Event("scroll"));
+    railBody().dispatchEvent(new Event("scroll"));
+    await flush();
+
+    expect(callsTo("thread.page")).toHaveLength(1);
   });
 });
 
@@ -571,6 +704,19 @@ describe("the first message", () => {
       entity_id: "run-3", agent_id: "ag-1", body: "please look at this",
     });
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
+  });
+
+  // The answer to a post is a whole entity view, conversation and all, and
+  // nothing here reads it — the refresh that follows is what paints. The page
+  // is asked for anyway, because an answer nobody reads must still not grow
+  // with the conversation, and asking for none fetches all of it.
+  it("names a page on the post it is about to throw away", async () => {
+    payload = branchRow({ agents: [agent({ state: "idle" })] });
+    await mount();
+    panel().querySelector("#railinput").value = "one more word";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("thread.post")[0].params.thread_limit).toBe(FIRST_PAGE_ITEMS);
   });
 
   it("says nothing twice to an agent already listening", async () => {

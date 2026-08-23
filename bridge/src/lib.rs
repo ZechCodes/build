@@ -31,8 +31,8 @@
 //!
 //! Enforcement is by observation, not permission: the bridge makes what an agent
 //! did legible (the git diff) and lets the human decide at the review gates.
-//! Pre-split stores are migrated on boot ([`legacy`](crate::legacy) holds the
-//! old serde shapes solely for that translation).
+//! State lives in one SQLite database under the bridge state dir; the canonical
+//! plan docs an agent reads and writes stay beside it as files.
 
 // The app mutex is a std lock guarding the whole daemon: everything a frame
 // touches is behind it. Holding it across an await parks it on a task that may
@@ -54,7 +54,6 @@ pub mod diff;
 pub mod gitgui;
 pub mod harness;
 pub mod identity;
-pub mod legacy;
 pub mod mcp;
 pub mod models;
 pub mod notify;

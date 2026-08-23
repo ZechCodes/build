@@ -767,13 +767,50 @@ pub enum ThreadItem {
 
 /// How much conversation a wire view carries: `Digest` for the polled list
 /// surfaces (board.list / plan.list re-ship every entity every ~2.5s, so a
-/// full thread there grows without bound), `Full` for the detail surfaces
-/// that actually render the conversation.
+/// full thread there grows without bound), `Page` for a caller that said how
+/// much it can hold — the newest items of the conversation, with everything
+/// older a scroll-back away — and `Full` for one that said nothing.
+///
+/// `Full` is not a fallback, it is the older contract kept: a client written
+/// before paging holds the conversation entire and checks every delta against
+/// `thread_total`, so a window handed to it unasked is a count it can never
+/// match again. Bounding is therefore the caller's to ask for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThreadDetail {
     Digest,
     Full,
+    Page(usize),
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Conversation items this OS thread has put through serde on its way to a
+    /// wire payload, since the process started.
+    ///
+    /// A payload that was built whole and then thrown away is byte-identical to
+    /// one that was never built, so nothing about the answer can tell the two
+    /// apart — only the count can. Paging exists to keep this from growing with
+    /// conversation length on a steady-state poll, and the tests that hold that
+    /// promise read it here. Per-OS-thread rather than global so tests running
+    /// side by side do not read each other's work.
+    static ITEMS_SERIALIZED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many conversation items this OS thread has serialized into wire
+/// payloads — read before and after a call to measure what it cost.
+#[cfg(test)]
+pub fn items_serialized() -> usize {
+    ITEMS_SERIALIZED.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+fn count_serialized_items(count: usize) {
+    ITEMS_SERIALIZED.with(|counter| counter.set(counter.get() + count));
+}
+
+/// Nothing is counted outside the tests: only they ask what a payload cost.
+#[cfg(not(test))]
+fn count_serialized_items(_count: usize) {}
 
 impl ThreadItem {
     pub fn sequence(&self) -> u64 {
@@ -912,6 +949,22 @@ pub struct ConversationQuery {
     #[serde(default = "default_query_limit")]
     pub limit: usize,
 }
+
+/// How many conversation items a page carries when the caller asks for one
+/// without saying how large.
+///
+/// One sitting at a task — the asks, the agent's replies, and the events
+/// between them — runs to a few dozen items; 60 holds a long one whole, so the
+/// view a reviewer opens onto is already the work they were doing. Everything
+/// older is a page up, which is the point: a conversation of hundreds no longer
+/// ships whole to show its last hour.
+pub const DEFAULT_THREAD_PAGE: usize = 60;
+
+/// The most conversation one page ships, however large a limit it asks for.
+///
+/// A scroll-back that asks for the whole conversation at once is the thing
+/// paging exists to prevent, so the cap holds even when the caller means well.
+pub const MAX_THREAD_PAGE: usize = 200;
 
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;
@@ -1122,6 +1175,25 @@ pub struct Thread {
     /// on its way to a mutation. Never persisted, never compared.
     #[serde(skip)]
     scope: WorktreeScope,
+    /// How much of this conversation was left in the store, and where the part
+    /// that was read of it starts.
+    ///
+    /// `items` is the tail of a conversation, not necessarily the whole of it:
+    /// a load reads a bounded window and leaves the history behind until a
+    /// page asks for it. Both are zero for a conversation held whole — one
+    /// built in this process, or one short enough that its tail is all there
+    /// is. Never persisted: they describe this process's view of the
+    /// conversation, not the conversation.
+    #[serde(skip)]
+    earlier_item_count: u64,
+    #[serde(skip)]
+    resident_from_sequence: u64,
+    /// The newest counter value the store held for this conversation when the
+    /// load read its tail. Nothing under that tail can move again in this
+    /// process — only the items it holds can — so this is the exact point past
+    /// which the tail is the whole answer to a cursor.
+    #[serde(skip)]
+    stored_last_sequence: u64,
 }
 
 fn empty_agent() -> AgentIdentity {
@@ -1773,6 +1845,7 @@ impl Thread {
     /// Public thread payload for the SPA. Historical snapshots are deliberately
     /// excluded so board polling never ships every old patch over E2EE.
     pub fn wire_value(&self) -> Value {
+        count_serialized_items(self.items.len());
         json!({
             "id": self.id,
             "agent": self.agent,
@@ -1804,12 +1877,84 @@ impl Thread {
     /// mutation bump (0 for an empty thread) — the client's cursor high-water
     /// mark. Counting mutation bumps is what keeps the cursored polls from
     /// re-shipping a mutated item forever.
+    ///
+    /// Counts the history the load left in the store as well, since a mutation
+    /// down there is a counter value too: a mark the tail alone could name
+    /// would sit below such a mutation forever, and the client handed it would
+    /// ask for the same delta on every poll.
     pub fn last_sequence(&self) -> u64 {
         self.items
             .iter()
             .map(ThreadItem::latest_sequence)
             .max()
             .unwrap_or(0)
+            .max(self.stored_last_sequence)
+    }
+
+    /// Take a conversation's tail as it was read from the store, told how many
+    /// older items were left there and how far the whole conversation's counter
+    /// had got by the time it was read.
+    ///
+    /// The counter the appends run off (`next_sequence`) travels with the
+    /// agent's own record, not with the items, so a conversation carries on
+    /// from where it really ended rather than from the end of its tail.
+    pub fn adopt_stored_tail(
+        &mut self,
+        tail: Vec<ThreadItem>,
+        earlier_item_count: u64,
+        stored_last_sequence: u64,
+    ) {
+        self.stored_last_sequence = stored_last_sequence;
+        // The floor is remembered rather than re-derived from `items`, which
+        // moves: an append or a withdrawn draft would otherwise shift what
+        // this process believes it read.
+        self.resident_from_sequence = match earlier_item_count {
+            0 => 0,
+            _ => tail.first().map(ThreadItem::sequence).unwrap_or(0),
+        };
+        self.earlier_item_count = earlier_item_count;
+        self.items = tail;
+    }
+
+    /// The oldest sequence this process read, or 0 when it read the whole
+    /// conversation — the floor under which the stored history is not this
+    /// process's to rewrite.
+    pub fn resident_from_sequence(&self) -> u64 {
+        self.resident_from_sequence
+    }
+
+    /// How long the whole conversation is, resident or not. What the client is
+    /// told, because it is what the client's gap check means: "is my cache a
+    /// window, or did it lose something?"
+    pub fn total_item_count(&self) -> u64 {
+        self.earlier_item_count + self.items.len() as u64
+    }
+
+    /// Whether the page asked for reaches under the tail this process holds,
+    /// and so has to be read from the store instead of out of memory.
+    pub fn page_reaches_stored_history(&self, before_sequence: Option<u64>, limit: usize) -> bool {
+        if self.earlier_item_count == 0 {
+            return false;
+        }
+        let before = before_sequence.unwrap_or(u64::MAX);
+        self.items
+            .iter()
+            .filter(|item| item.sequence() < before)
+            .count()
+            < limit
+    }
+
+    /// Whether a cursor this far back reaches under the tail this process
+    /// holds, and so has to be completed out of the store.
+    ///
+    /// An item under the tail is one this process cannot mutate — it does not
+    /// hold it — so the only news down there is a mutation the process before
+    /// this one made, and every one of those is at or below the counter value
+    /// the load read. A cursor past that mark has already been told everything
+    /// the history has to say, which is what stops a caught-up client from
+    /// asking the store anything on its steady-state polls.
+    pub fn cursor_reaches_stored_history(&self, after_sequence: u64) -> bool {
+        self.earlier_item_count > 0 && after_sequence < self.stored_last_sequence
     }
 
     /// When the turn the agent is working started, or `None` when nothing is
@@ -1857,7 +2002,14 @@ impl Thread {
     /// by replaying exactly these through the anchor rule, so its place in the
     /// inbox is the place it would always have had.
     pub fn user_message_times(&self) -> impl Iterator<Item = &str> {
-        self.items.iter().filter_map(|item| match item {
+        Thread::user_message_times_in(&self.items)
+    }
+
+    /// The same reading of items the caller read for itself. The migration is
+    /// about everything the user ever said, so it looks at the conversation
+    /// whole rather than at whatever tail a load left resident.
+    pub fn user_message_times_in(items: &[ThreadItem]) -> impl Iterator<Item = &str> {
+        items.iter().filter_map(|item| match item {
             ThreadItem::Message(message) if message.role == MessageRole::User => {
                 Some(message.created_at.as_str())
             }
@@ -1886,6 +2038,25 @@ impl Thread {
         summary
     }
 
+    /// Whether an unread attention-class item sits below `floor` — under the
+    /// window a reader was actually shipped.
+    ///
+    /// A client reads a long conversation through a window on its newest
+    /// items, so reaching the end of what it holds says nothing about the
+    /// items beneath it. This is the question a read report has to answer
+    /// before the cursor may jump to the end: is there anything down there the
+    /// human is being called to and has never been sent?
+    ///
+    /// Creation sequence at both ends, for the reason
+    /// [`unread_since`](Self::unread_since) reads it, and the floor itself is
+    /// inside the window — it is the oldest item the reader holds.
+    pub fn unread_attention_below(&self, floor: u64, cursor: u64) -> bool {
+        self.items
+            .iter()
+            .filter(|item| item.sequence() > cursor && item.sequence() < floor)
+            .any(|item| item.attention_reason().is_some())
+    }
+
     /// The creation sequence of the newest item here that needed the human, or
     /// 0 when nothing ever has — the line a dismissal is measured against.
     ///
@@ -1907,7 +2078,18 @@ impl Thread {
     /// The point of the tool this serves: a session that lost its context asks
     /// what was decided about one thing, instead of replaying the whole log.
     pub fn search(&self, query: &ConversationQuery) -> Vec<ConversationHit> {
-        self.items
+        self.search_items(&self.items, query)
+    }
+
+    /// The same search over items the caller read for itself — how a search
+    /// reaches history no load left resident: the answer is about the whole
+    /// conversation, so the tail is not enough to look through.
+    pub fn search_items(
+        &self,
+        items: &[ThreadItem],
+        query: &ConversationQuery,
+    ) -> Vec<ConversationHit> {
+        items
             .iter()
             .rev()
             .filter(|item| query.matches(item))
@@ -1938,7 +2120,7 @@ impl Thread {
         json!({
             "id": self.id,
             "agent": self.agent,
-            "item_count": self.items.len(),
+            "item_count": self.total_item_count(),
             "last_sequence": self.last_sequence(),
             "last_event": latest_event.map(|event| json!({
                 "event": event.event,
@@ -1955,20 +2137,100 @@ impl Thread {
     /// the wire. Sessions, revisions and last_completion are small and
     /// bounded, so they always ship whole.
     pub fn wire_value_after(&self, after_sequence: u64) -> Value {
-        let newer: Vec<&ThreadItem> = self
-            .items
+        self.wire_value_of_delta(&self.resident_after(after_sequence))
+    }
+
+    /// The same cursor view, completed with items read back out of the store:
+    /// the history under the tail this process loaded, which memory has no
+    /// answer for and which a client whose cursor predates a restart is still
+    /// owed. Items the tail already holds are taken from the tail, not from
+    /// `history` — memory is the fresher copy of those.
+    pub fn wire_value_after_including_history(
+        &self,
+        after_sequence: u64,
+        history: &[ThreadItem],
+    ) -> Value {
+        let mut delta: Vec<&ThreadItem> = history
+            .iter()
+            .filter(|item| {
+                item.sequence() < self.resident_from_sequence
+                    && item.latest_sequence() > after_sequence
+            })
+            .chain(self.resident_after(after_sequence))
+            .collect();
+        // The store hands its rows back in mutation order; a conversation's own
+        // order is creation order, which is what a client merges against.
+        delta.sort_by_key(|item| item.sequence());
+        self.wire_value_of_delta(&delta)
+    }
+
+    /// The items this process holds that a cursor has not been told about.
+    fn resident_after(&self, after_sequence: u64) -> Vec<&ThreadItem> {
+        self.items
             .iter()
             .filter(|item| item.latest_sequence() > after_sequence)
-            .collect();
+            .collect()
+    }
+
+    /// The delta shape, around items the caller already chose.
+    fn wire_value_of_delta(&self, delta: &[&ThreadItem]) -> Value {
+        count_serialized_items(delta.len());
         json!({
             "id": self.id,
             "agent": self.agent,
             "sessions": self.sessions,
-            "items": newer,
+            "items": delta,
             "revisions": self.revision_summaries(),
             "last_completion": self.last_completion,
-            "thread_total": self.items.len(),
+            "thread_total": self.total_item_count(),
             "thread_last_sequence": self.last_sequence(),
+        })
+    }
+
+    /// Backward view for a first load and for scrolling up: the newest `limit`
+    /// items strictly older than `before_sequence`, ascending, in the shape
+    /// `wire_value_after` produces plus the two fields a backward walk needs —
+    /// `oldest_sequence`, the seek for the next page up, and `has_more`,
+    /// whether asking for one is worth it.
+    ///
+    /// Reads the tail this process holds, so `has_more` counts the history no
+    /// load read as pages still to come: the caller answers those from the
+    /// store through [`wire_value_of_page`](Self::wire_value_of_page).
+    pub fn wire_value_page(&self, before_sequence: Option<u64>, limit: usize) -> Value {
+        // No bound means "from the newest", which the same filter expresses as
+        // a point past every sequence there could be.
+        let before = before_sequence.unwrap_or(u64::MAX);
+        let older: Vec<&ThreadItem> = self
+            .items
+            .iter()
+            .filter(|item| item.sequence() < before)
+            .collect();
+        let page = &older[older.len().saturating_sub(limit)..];
+        // What is left above this page, plus the history no load read: both
+        // are pages the client can still ask for.
+        let outstanding = older.len() - page.len() + self.earlier_item_count as usize;
+        self.wire_value_of_page(page, outstanding > 0)
+    }
+
+    /// The page shape, around items the caller already chose — the tail this
+    /// process holds, or a page read back out of the store.
+    ///
+    /// `thread_total` still counts the whole conversation, not the page, so the
+    /// client can tell "my cache is a bounded window" from "my cache lost
+    /// something" — the gap check the forward cursor already relies on.
+    pub fn wire_value_of_page(&self, page: &[&ThreadItem], has_more: bool) -> Value {
+        count_serialized_items(page.len());
+        json!({
+            "id": self.id,
+            "agent": self.agent,
+            "sessions": self.sessions,
+            "items": page,
+            "revisions": self.revision_summaries(),
+            "last_completion": self.last_completion,
+            "thread_total": self.total_item_count(),
+            "thread_last_sequence": self.last_sequence(),
+            "oldest_sequence": page.first().map(|item| item.sequence()),
+            "has_more": has_more,
         })
     }
 
@@ -2973,6 +3235,161 @@ mod tests {
         assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
     }
 
+    fn thread_with_long_conversation(item_count: usize) -> Thread {
+        let mut thread = Thread::new("plan-long");
+        for turn in 0..item_count {
+            thread.post_user(format!("ask number {turn}"), None, "2026-08-20T09:00:00Z");
+        }
+        thread
+    }
+
+    fn page_sequences(page: &Value) -> Vec<u64> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["data"]["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn wire_value_page_ships_only_its_limit_but_reports_the_whole_conversation() {
+        let thread = thread_with_long_conversation(200);
+        let page = thread.wire_value_page(None, 25);
+
+        let sequences = page_sequences(&page);
+        assert_eq!(sequences.len(), 25, "{sequences:?}");
+        // The tail of the conversation, ascending, so the client renders it in
+        // the order it happened.
+        assert_eq!(sequences, (176..=200).collect::<Vec<u64>>());
+        assert_eq!(page["oldest_sequence"], 176);
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["thread_total"], 200);
+        assert_eq!(page["thread_last_sequence"], 200);
+        // The small bounded companions still ship in full, exactly as the
+        // forward cursor ships them.
+        assert_eq!(page["id"], "thread:plan-long");
+        assert_eq!(page["agent"]["id"], "agent:plan-long");
+        assert!(page["sessions"].is_array());
+        assert!(page["revisions"].is_array());
+        assert!(page.get("last_completion").is_some(), "{page:?}");
+    }
+
+    #[test]
+    fn wire_value_page_names_the_conversations_newest_counter_value_not_the_pages() {
+        // The idle state a reviewer opens a long conversation in: the last
+        // thing the counter moved for was an in-place bump on an old item — a
+        // long-queued question marked seen, a plan comment resolved — with
+        // nothing posted after it. The bump lands far below the newest page.
+        let mut thread = Thread::new("plan-long");
+        thread.post_user("please rename the helper", None, "2026-08-20T09:00:00Z");
+        for turn in 0..200 {
+            thread.post_agent(format!("progress {turn}"), None, "2026-08-20T09:01:00Z");
+        }
+        thread.read_unread("2026-08-20T10:00:00Z");
+
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        let sequences = page_sequences(&page);
+        assert_eq!(sequences.len(), DEFAULT_THREAD_PAGE, "{sequences:?}");
+        assert!(!sequences.contains(&1), "the bumped item is below the page");
+        // One meaning for one field: the newest counter value in the whole
+        // conversation, exactly as the forward cursor reports it. A page that
+        // named its own top instead would leave the client asking for a
+        // cursor the daemon has already moved past, so the bump would re-ship
+        // on every poll for the life of the view. The client knows a page
+        // delivers only its own window and reads its cursor off the items.
+        assert_eq!(page["thread_last_sequence"], 202);
+        assert_eq!(page["thread_total"], 201);
+        assert_eq!(*sequences.last().unwrap(), 201);
+    }
+
+    #[test]
+    fn wire_value_page_has_more_only_while_older_items_remain() {
+        let thread = thread_with_long_conversation(30);
+
+        let oldest_page = thread.wire_value_page(Some(11), 10);
+        assert_eq!(page_sequences(&oldest_page), (1..=10).collect::<Vec<u64>>());
+        assert_eq!(oldest_page["oldest_sequence"], 1);
+        assert_eq!(oldest_page["has_more"], false);
+
+        let middle_page = thread.wire_value_page(Some(21), 10);
+        assert_eq!(
+            page_sequences(&middle_page),
+            (11..=20).collect::<Vec<u64>>()
+        );
+        assert_eq!(middle_page["has_more"], true);
+    }
+
+    #[test]
+    fn a_conversation_shorter_than_the_page_ships_whole_and_says_so() {
+        let thread = thread_with_conversation();
+        let page = thread.wire_value_page(None, DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page_sequences(&page), vec![1, 2, 3]);
+        assert_eq!(page["oldest_sequence"], 1);
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 3);
+    }
+
+    #[test]
+    fn paging_backward_from_oldest_sequence_walks_the_whole_conversation() {
+        let thread = thread_with_long_conversation(97);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before = None;
+        loop {
+            let page = thread.wire_value_page(before, 20);
+            let sequences = page_sequences(&page);
+            assert!(!sequences.is_empty(), "{page:?}");
+            // Prepending keeps the walk in conversation order, which is how the
+            // client grows its cache upward.
+            walked.splice(0..0, sequences);
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = Some(page["oldest_sequence"].as_u64().unwrap());
+        }
+
+        assert_eq!(walked, (1..=97).collect::<Vec<u64>>());
+    }
+
+    #[test]
+    fn wire_value_page_of_an_empty_conversation_is_empty_and_final() {
+        let page = Thread::new("plan-empty").wire_value_page(None, DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page["items"].as_array().unwrap().len(), 0, "{page:?}");
+        assert!(page["oldest_sequence"].is_null(), "{page:?}");
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 0);
+        assert_eq!(page["thread_last_sequence"], 0);
+    }
+
+    #[test]
+    fn paging_before_the_oldest_item_is_an_empty_final_page() {
+        let thread = thread_with_conversation();
+        let page = thread.wire_value_page(Some(1), DEFAULT_THREAD_PAGE);
+
+        assert_eq!(page["items"].as_array().unwrap().len(), 0, "{page:?}");
+        assert!(page["oldest_sequence"].is_null(), "{page:?}");
+        assert_eq!(page["has_more"], false);
+        assert_eq!(page["thread_total"], 3);
+    }
+
+    #[test]
+    fn the_default_page_bounds_a_first_load_without_hiding_a_sitting() {
+        // A long sitting — a few dozen asks, replies and events — opens whole,
+        // so the default is not a bound the reviewer feels.
+        let one_sitting = thread_with_long_conversation(40);
+        let sitting_page = one_sitting.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        assert_eq!(sitting_page["has_more"], false, "{sitting_page:?}");
+
+        // Everything past it is paged, not shipped.
+        let long = thread_with_long_conversation(DEFAULT_THREAD_PAGE * 4);
+        let page = long.wire_value_page(None, DEFAULT_THREAD_PAGE);
+        assert_eq!(page_sequences(&page).len(), DEFAULT_THREAD_PAGE);
+        assert_eq!(page["has_more"], true, "{page:?}");
+    }
+
     #[test]
     fn the_done_event_is_the_whole_wire_record_of_a_completion() {
         let mut thread = Thread::new("run-done");
@@ -3064,6 +3481,7 @@ mod doc_comment_tests {
     use super::*;
 
     const NOW: &str = "2026-08-13T09:00:00Z";
+
     const STAGE_PATH: &str = ".build/plan/01-database-schema.md";
 
     fn passage() -> DocAnchor {

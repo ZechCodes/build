@@ -24,6 +24,7 @@ import {
 } from "./consoleModel.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
 import { esc } from "./text.js";
+import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
@@ -169,7 +170,11 @@ export function mountConsole(host, context) {
     if (context.kind === "issue") return consoleScope(context, null);
     let row = null;
     try {
-      row = await App.call("branch.get", { project_id: context.projectId, branch: context.branch });
+      row = await App.call("branch.get", {
+        project_id: context.projectId,
+        branch: context.branch,
+        ...SMALLEST_THREAD_PAGE,
+      });
     } catch {
       // A branch that stopped resolving (finished, renamed) has no directory to
       // open a shell in; the console says so rather than showing a dead tab.

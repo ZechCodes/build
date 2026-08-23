@@ -40,6 +40,7 @@ import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
 import {
+  MUTATION_THREAD_PAGE,
   createThreadCache,
   paintThreadKeepingPlace,
   threadHtml,
@@ -57,6 +58,12 @@ import "../styles/shell.css";
  *  surfaces have always polled at: fast enough that a reply appears while you
  *  are still looking at the panel. */
 const RAIL_POLL_MS = 1600;
+
+/** How close to the top of the conversation counts as asking for the page
+ *  above it. Not zero: a reader flicking upwards should have the history on
+ *  its way before they land, so the join is one they scroll through rather
+ *  than wait at. */
+const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
@@ -211,6 +218,7 @@ export function mountAgentRail(host, context) {
   let tui = null; // the mounted PTY pane, in TUI mode
   let threadCache = createThreadCache();
   let threadAgentId = null; // whose conversation the cache holds
+  let loadingOlderItems = false; // a page of history is in flight
   // Which agent the payload in hand was READ FOR. Not the same question as
   // threadAgentId: that one is about the cache, this one is about the answer the
   // cache would be filled from. Between opening another agent's bubble and its
@@ -480,7 +488,42 @@ export function mountAgentRail(host, context) {
     return entity.thread ? threadCache.absorb(entity.thread) : null;
   };
 
-  const paintChat = () => {
+  /// Ask for the conversation above the window the reader is standing at the
+  /// top of.
+  ///
+  /// A long conversation arrives as a page of its newest items — the wire
+  /// carries a window, not a transcript — so the top of the scroller is a floor
+  /// rather than the start, and this is what lifts it. One page in flight at a
+  /// time: a scroll gesture fires the handler many times over, and each of
+  /// those would otherwise be a round trip for the same history.
+  const readOlderItems = async () => {
+    const seek = threadCache.olderPageParam();
+    if (loadingOlderItems || !seek || !threadCache.hasOlderItems() || !entity.entityId) return;
+    loadingOlderItems = true;
+    const asked = selectedId;
+    try {
+      const page = await App.call("thread.page", {
+        entity_id: entity.entityId,
+        ...(selectedId ? { agent_id: selectedId } : {}),
+        ...seek,
+      });
+      // The reader opened another agent's conversation while this was in
+      // flight: it is history from a thread nobody is looking at.
+      if (disposed || asked !== selectedId) return;
+      // The seek goes back with the page: the cache is the one that knows
+      // whether the window it was fetched above is still the window in hand —
+      // a poll during this round trip can have reset and reopened it.
+      if (threadCache.absorbOlderPage(page, seek)) paintChat({ olderItemsPrepended: true });
+    } catch (error) {
+      // Scrolling to the top is a deliberate ask, so a refusal is worth
+      // saying — unlike a poll, which fails quietly and tries again.
+      notifyError("Could not load older messages", error.message);
+    } finally {
+      loadingOlderItems = false;
+    }
+  };
+
+  const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
     const thread = threadFor();
@@ -493,7 +536,12 @@ export function mountAgentRail(host, context) {
       });
       writeThreadKeepingComposer(body, html);
       wireTimeline(body);
-    });
+    }, { olderItemsPrepended });
+    // Assignment rather than a listener: the scroller outlives every repaint,
+    // and adding one per paint would ask for the same page once per tick.
+    body.onscroll = () => {
+      if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
+    };
     syncComposerPlaceholder();
     reportRead(body);
   };
@@ -575,15 +623,21 @@ export function mountAgentRail(host, context) {
     }
   };
 
-  /// Tell the daemon this agent's conversation has been read.
+  /// Tell the daemon this agent's conversation has been read, and how much of
+  /// it this panel was ever sent.
   ///
   /// Open, in Chat, and scrolled to the end: all three, because a panel showing
   /// the top of a long thread has not read the message at the bottom of it.
+  /// The end of the scroller is the end of a WINDOW, though — a long
+  /// conversation arrives as a page of its newest items — so the floor of that
+  /// window goes with the report. Without it the daemon reads the whole
+  /// conversation through, clearing the badge for a message waiting a hundred
+  /// items back that this panel never received and nobody ever saw.
   const reportRead = (body) => {
     const agent = agentOf(selectedId);
     if (!agent || !agent.unread_count || !entity.entityId) return;
     if (body.scrollHeight - body.clientHeight - body.scrollTop > 32) return;
-    markSeen(entity.entityId, agent.id).then(refreshFeed);
+    markSeen(entity.entityId, agent.id, threadCache.windowFloorSequence()).then(refreshFeed);
   };
 
   // ---- sending --------------------------------------------------------------
@@ -616,6 +670,7 @@ export function mountAgentRail(host, context) {
         entity_id: entityId,
         ...(agent ? { agent_id: agent.id } : {}),
         ...message,
+        ...MUTATION_THREAD_PAGE,
       });
       if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
         const started = await App.call("agent.start", {

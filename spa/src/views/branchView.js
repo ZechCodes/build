@@ -40,6 +40,7 @@ import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
 import { refreshFeed } from "../core/taskFeed.js";
+import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../core/branchFinish.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
@@ -314,7 +315,12 @@ export async function renderBranch() {
   const refresh = async (force = false) => {
     let payload;
     try {
-      payload = await callRpc("branch.get", { project_id: projectId, branch, ...agentSelection.scope() });
+      payload = await callRpc("branch.get", {
+        project_id: projectId,
+        branch,
+        ...agentSelection.scope(),
+        ...SMALLEST_THREAD_PAGE,
+      });
     } catch {
       // The branch stopped resolving: merged away, renamed, or the worktree is
       // gone. A row we already painted stays; a first read that fails says so —

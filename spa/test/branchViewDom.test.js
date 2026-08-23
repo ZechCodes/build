@@ -67,6 +67,25 @@ describe("the branch surface", () => {
     expect(App.call).toHaveBeenCalledWith("branch.get", expect.objectContaining({ project_id: "p1" }));
   });
 
+  // This poll runs every 1.6s and again on every change event, and the surface
+  // renders no conversation — the rail beside it does, off its own paged read
+  // of the same RPC. A read that names no bound is answered with every item the
+  // conversation ever held, so a branch with hundreds of them shipped them all,
+  // twice a second, to be thrown away unread.
+  it("names a bound on the conversation it does not render", async () => {
+    App.call = vi.fn(async () => row);
+    await renderBranch();
+    await flush();
+    const reads = App.call.mock.calls.filter(([method]) => method === "branch.get").map(([, params]) => params);
+    expect(reads.length).toBeGreaterThan(0);
+    // The rail's read of the same RPC pages the conversation it paints; the
+    // surface's own asks for the smallest page there is. Neither may go
+    // unbounded — silence is what tells the daemon to ship every item.
+    for (const params of reads)
+      expect(params.thread_limit !== undefined || params.thread_after_sequence !== undefined).toBe(true);
+    expect(reads.some((params) => params.thread_limit === 1)).toBe(true);
+  });
+
   // Both tabs paint a .pane-split, which states the shell's gutters itself. In
   // a padded tab body those gutters are paid twice — a doubled inset all round —
   // and the body scrolls the two columns together instead of letting each scroll

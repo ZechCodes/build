@@ -3112,7 +3112,7 @@ mod tests {
     use crate::store::{PersistedPlan, PersistedRun, Store};
 
     fn split_store(dir: &tempfile::TempDir) -> Store {
-        Store::new(dir.path().join("store"))
+        Store::new(dir.path().join("store")).expect("store opens")
     }
 
     /// Leave a reviewer comment on one stage. A comment is a post on the
@@ -3910,7 +3910,6 @@ mod tests {
             ),
             plan_path: ".build/plan.md".into(),
             stages: vec![],
-            comments: Vec::new(),
             provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),

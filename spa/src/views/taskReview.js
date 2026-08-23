@@ -12,7 +12,7 @@
 import { createAgentSelection } from "../core/agentSelection.js";
 import { createReviewPlug, REVIEW_POLL_MS } from "../core/changesReview.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
-import { currentRevisionId } from "../core/thread.js";
+import { currentRevisionId, MUTATION_THREAD_PAGE } from "../core/thread.js";
 import { mergeFailureReason, gitActionConfirm } from "../core/taskActions.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
@@ -108,7 +108,13 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
         projectId: task.project_id || null,
       };
     },
-    submit: (messages) => callRpc("run.request_changes", { run_id: taskId, ...agentSelection.scope(), messages }),
+    submit: (messages) =>
+      callRpc("run.request_changes", {
+        run_id: taskId,
+        ...agentSelection.scope(),
+        messages,
+        ...MUTATION_THREAD_PAGE,
+      }),
     // The reviewer's disagreement with the pass. It lands on the run's own
     // triage, and in the conversation of the agent that wrote the rationale.
     submitOverride: ({ hunk_id, direction, note }) =>
@@ -160,7 +166,7 @@ export function createTaskReview({ taskId, callRpc, getTask, isOffline, agentSel
     const confirmPlan = gitActionConfirm(optionId, { branch: task.branch || "the branch", base: task.base_branch || "main" });
     if (confirmPlan && !(await confirmAction(confirmPlan))) throw new Error("cancelled");
     flashMessage = "";
-    const params = { run_id: taskId, action };
+    const params = { run_id: taskId, action, ...MUTATION_THREAD_PAGE };
     if (cleanup) params.cleanup = cleanup;
     try {
       await callRpc("run.git_action", params);

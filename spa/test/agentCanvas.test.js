@@ -9,7 +9,13 @@
 // it and the ops come back identical, because no time passed.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createPatternRenderer, animatingRendererCount } from "../src/core/agentCanvas.js";
+import {
+  createPatternRenderer,
+  animatingRendererCount,
+  latticeDrift,
+} from "../src/core/agentCanvas.js";
+import { cellPhase, motionParams } from "../src/core/patternMotion.js";
+import { TILINGS, pointInPolygon } from "../src/core/tilings.js";
 
 /** A 2D context that remembers what it was told to do. Style assignments are
  *  recorded too — ink and alpha are the two things the renderer says rather
@@ -433,5 +439,128 @@ describe("a canvas with no 2D context", () => {
       frames.run(16);
     }).not.toThrow();
     renderer.destroy();
+  });
+});
+
+// The travel is wrapped to one lattice period so the geometry is seamless, and
+// the wave is keyed on a cell's absolute row and col. Those two facts fight:
+// after a wrap the cell covering a given point on the bubble is a DIFFERENT
+// cell, one lattice step further along, and its phase would step with it —
+// every cell at once, which is a pop across the whole face. These tests watch
+// one point on the bubble through a wrap and hold the picture to being the
+// same picture.
+
+/** A field with room for the probe point to sit well inside the overscan
+ *  however far the lattice has drifted under it. */
+const FIELD_SIZE = 40;
+const CELL_SIZE = 9;
+
+/** The point on the bubble the tests watch, kept off the lattice lines of all
+ *  five tilings so the cell covering it is never in doubt. */
+const PROBE_POINT = [17.31, 12.77];
+
+/** Between two samples the drift moves the field by a fraction of a pixel; a
+ *  wrap moves it by a whole lattice period. Anything past this is a wrap. */
+const WRAP_JUMP_PX = CELL_SIZE / 10;
+
+/** Motion that travels along one axis only, so each axis's wrap can be watched
+ *  on its own. The wave is the steepest the model draws — the biggest phase
+ *  step per cell there is, and so the worst case for a phase that jumps a whole
+ *  cell at a wrap. */
+const driftingAlong = (axis) => ({
+  drift: axis === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 },
+  driftSecondsPerCell: 4,
+  rotationSpeed: 0,
+  wave: { kx: 1.1 * Math.cos(0.6), ky: 1.1 * Math.sin(0.6) },
+  waveFrequency: 0.9,
+  scaleAmplitude: 0.12,
+  alphaAmplitude: 0.35,
+  phase: 0.4,
+});
+
+const driftAt = (tilingName, params, seconds) =>
+  latticeDrift({ tilingName, params, cellSize: CELL_SIZE, seconds });
+
+const wrapped = (one, other) =>
+  Math.abs(one.offsetX - other.offsetX) > WRAP_JUMP_PX ||
+  Math.abs(one.offsetY - other.offsetY) > WRAP_JUMP_PX;
+
+/** The wrap inside a bracketing pair of samples, squeezed down to the last bit
+ *  of double precision. Both returned seconds paint the SAME picture — the
+ *  geometry either side of a wrap is identical — so anything that differs
+ *  between them is something the viewer would see happen. */
+function squeezeWrap(tilingName, params, lowSeconds, highSeconds) {
+  let low = lowSeconds;
+  let high = highSeconds;
+  const atLow = driftAt(tilingName, params, low);
+  for (let index = 0; index < 60; index += 1) {
+    const middle = (low + high) / 2;
+    if (middle <= low || middle >= high) break;
+    if (wrapped(atLow, driftAt(tilingName, params, middle))) high = middle;
+    else low = middle;
+  }
+  return { before: low, after: high };
+}
+
+/** Every wrap the drift makes in the first `toSeconds`, on either axis. */
+function wrapsWithin(tilingName, params, toSeconds, step = 1e-3) {
+  const wraps = [];
+  let previousSeconds = 0;
+  let previous = driftAt(tilingName, params, 0);
+  for (let index = 1; index * step <= toSeconds; index += 1) {
+    const seconds = index * step;
+    const drift = driftAt(tilingName, params, seconds);
+    if (wrapped(previous, drift)) {
+      wraps.push(squeezeWrap(tilingName, params, previousSeconds, seconds));
+    }
+    previousSeconds = seconds;
+    previous = drift;
+  }
+  return wraps;
+}
+
+/** The cell covering the probe point at `seconds`, and the alpha it is drawn
+ *  at — what the viewer is looking at, whatever the cell's index happens to be. */
+function underProbe(tilingName, params, cells, seconds) {
+  const drift = driftAt(tilingName, params, seconds);
+  const probe = [PROBE_POINT[0] - drift.offsetX, PROBE_POINT[1] - drift.offsetY];
+  const cell = cells.find((candidate) => pointInPolygon(probe, candidate.polygon)) || null;
+  return { cell, alpha: cellPhase(params, cell, seconds, drift.wavePhase).alpha };
+}
+
+const fieldOf = (tilingName) =>
+  TILINGS[tilingName](CELL_SIZE, { width: FIELD_SIZE, height: FIELD_SIZE });
+
+describe("the wave across a drift wrap", () => {
+  for (const tilingName of Object.keys(TILINGS)) {
+    for (const axis of ["x", "y"]) {
+      it(`holds ${tilingName} still where the ${axis} drift wraps`, () => {
+        const params = driftingAlong(axis);
+        const cells = fieldOf(tilingName);
+        const [wrap] = wrapsWithin(tilingName, params, 40);
+        expect(wrap).toBeTruthy();
+
+        const before = underProbe(tilingName, params, cells, wrap.before);
+        const after = underProbe(tilingName, params, cells, wrap.after);
+        // The wrap renumbers the cell under the probe. A test that never saw
+        // that happen would be proving nothing.
+        expect([after.cell.col, after.cell.row]).not.toEqual([before.cell.col, before.cell.row]);
+        expect(Math.abs(after.alpha - before.alpha)).toBeLessThan(1e-6);
+      });
+    }
+  }
+
+  it("holds every tiling still through a minute of seeded drift", () => {
+    Object.keys(TILINGS).forEach((tilingName, index) => {
+      const params = motionParams(`agent-wrap-${index}`);
+      const cells = fieldOf(tilingName);
+      const wraps = wrapsWithin(tilingName, params, 60);
+      expect(wraps.length).toBeGreaterThan(0);
+      for (const wrap of wraps) {
+        const before = underProbe(tilingName, params, cells, wrap.before);
+        const after = underProbe(tilingName, params, cells, wrap.after);
+        expect(Math.abs(after.alpha - before.alpha)).toBeLessThan(1e-6);
+      }
+    });
   });
 });

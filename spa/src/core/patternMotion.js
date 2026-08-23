@@ -157,15 +157,21 @@ export function createClock() {
  * fixed moment later. That is what reads as a ripple crossing the pattern rather
  * than as every cell twitching on its own.
  *
+ * `phaseCorrection` is the painter's to add: whatever it has done to the lattice
+ * that the cell indices know nothing about. There is one such thing — wrapping
+ * the drift renumbers the cell under any given point on the screen — and
+ * agentCanvas.js `latticeDrift` is where the number comes from.
+ *
  * Alpha is clamped to [0, 1] for painters that hand it straight to a context;
  * the drawn amplitudes never reach the clamp, so it changes nothing in practice.
  */
-export function cellPhase(params, cell, tSeconds) {
+export function cellPhase(params, cell, tSeconds, phaseCorrection = 0) {
   const angle =
     params.waveFrequency * tSeconds +
     params.wave.kx * cell.col +
     params.wave.ky * cell.row +
-    params.phase;
+    params.phase +
+    phaseCorrection;
   const swing = Math.sin(angle);
   return {
     scale: CELL_SCALE_BASE + params.scaleAmplitude * swing,

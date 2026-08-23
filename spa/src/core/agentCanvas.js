@@ -54,16 +54,37 @@ const CELL_EDGE_FRACTION = {
   octagons: 1 / 6,
 };
 
-/** How far the lattice has to travel, in cell edges, before it lies on top of
- *  itself again. Drift is wrapped to this on each axis, which is what makes the
- *  travel seamless: what is drawn after the wrap differs from what would have
- *  been drawn without it by exactly one lattice step, so nothing moves. */
-const LATTICE_PERIOD = {
-  squares: { x: 1, y: 1 },
-  diamonds: { x: Math.SQRT2, y: Math.SQRT2 },
-  hexagons: { x: Math.sqrt(3), y: 3 }, // odd rows are offset, so y repeats every two
-  triangles: { x: 1, y: Math.sqrt(3) }, // two rows: the alternation flips each row
-  octagons: { x: 1 + Math.SQRT2, y: 1 + Math.SQRT2 },
+/**
+ * What one wrap of the drift is worth on each axis. `edges` is how far the
+ * lattice has to travel, in cell edges, before it lies on top of itself again —
+ * drift is wrapped to that, which is what makes the travel seamless: what is
+ * drawn after the wrap differs from what would have been drawn without it by
+ * exactly one lattice step, so nothing moves.
+ *
+ * `col` and `row` are the lattice INDICES that same step is worth, and they are
+ * here because the wave reads a cell's absolute row and col. After a wrap the
+ * cell covering a given point on the bubble is a different cell, this much
+ * further along, so its phase would step with it — every cell at once, which is
+ * a pop across the whole face. latticeDrift walks the phase back by exactly
+ * this, so the wave stays where the viewer is looking.
+ */
+const LATTICE_WRAP = {
+  squares: { x: { edges: 1, col: 1, row: 0 }, y: { edges: 1, col: 0, row: 1 } },
+  // The rhombi are the square lattice turned 45 degrees, and so are their
+  // indices: a step along one axis is a step along both diagonals at once.
+  diamonds: {
+    x: { edges: Math.SQRT2, col: 1, row: -1 },
+    y: { edges: Math.SQRT2, col: 1, row: 1 },
+  },
+  // Odd rows are offset, so y repeats every two.
+  hexagons: { x: { edges: Math.sqrt(3), col: 1, row: 0 }, y: { edges: 3, col: 0, row: 2 } },
+  // col counts half-edges and the alternation flips each row, so a period is two
+  // indices on either axis.
+  triangles: { x: { edges: 1, col: 2, row: 0 }, y: { edges: Math.sqrt(3), col: 0, row: 2 } },
+  octagons: {
+    x: { edges: 1 + Math.SQRT2, col: 1, row: 0 },
+    y: { edges: 1 + Math.SQRT2, col: 0, row: 1 },
+  },
 };
 
 /** How much of a cell's alpha goes to its interior. The stroke carries the
@@ -173,11 +194,38 @@ function cssBoxOf(canvas) {
   return { width, height };
 }
 
-/** Travel wrapped into one lattice period, keeping the offset small forever
- *  rather than letting it grow with the session. */
-function wrapToPeriod(distance, period) {
-  if (!(period > 0)) return 0;
-  return distance - Math.floor(distance / period) * period;
+/** Travel split into whole lattice periods and what is left over: `offset` is
+ *  what the painter translates by, small forever rather than growing with the
+ *  session, and `wraps` is how many periods were shaved off to keep it that
+ *  way — the count the wave has to be told about. */
+function wrapTravel(distance, period) {
+  if (!(period > 0)) return { offset: 0, wraps: 0 };
+  const wraps = Math.floor(distance / period);
+  return { offset: distance - wraps * period, wraps };
+}
+
+/**
+ * Where the lattice sits at `seconds`, and what putting it there costs the wave.
+ *
+ *   offsetX, offsetY   the drift the painter translates the field by, wrapped
+ *                      into one lattice period so the field lies on itself
+ *   wavePhase          the phase that wrapping owes back, in radians
+ *
+ * Pure, and exported because this is the whole of the wrap: the geometry is
+ * seamless by construction, and the phase is only seamless because of what is
+ * subtracted here. See LATTICE_WRAP for why a cell's index moves at all.
+ */
+export function latticeDrift({ tilingName, params, cellSize, seconds }) {
+  const wrap = LATTICE_WRAP[tilingName] || LATTICE_WRAP.squares;
+  const travel = (seconds / params.driftSecondsPerCell) * cellSize;
+  const across = wrapTravel(params.drift.x * travel, wrap.x.edges * cellSize);
+  const down = wrapTravel(params.drift.y * travel, wrap.y.edges * cellSize);
+  const wrappedCols = across.wraps * wrap.x.col + down.wraps * wrap.y.col;
+  const wrappedRows = across.wraps * wrap.x.row + down.wraps * wrap.y.row;
+  // Modulo a full turn: the correction is worth the same and stays small, however
+  // long the bubble has been at work.
+  const wavePhase = -(params.wave.kx * wrappedCols + params.wave.ky * wrappedRows) % TAU;
+  return { offsetX: across.offset, offsetY: down.offset, wavePhase };
 }
 
 /**
@@ -264,10 +312,12 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
     ctx.arc(centerX, centerY, radius, 0, TAU);
     ctx.clip();
 
-    const travel = (seconds / params.driftSecondsPerCell) * field.cellSize;
-    const period = LATTICE_PERIOD[tilingName];
-    const offsetX = wrapToPeriod(params.drift.x * travel, period.x * field.cellSize);
-    const offsetY = wrapToPeriod(params.drift.y * travel, period.y * field.cellSize);
+    const { offsetX, offsetY, wavePhase } = latticeDrift({
+      tilingName,
+      params,
+      cellSize: field.cellSize,
+      seconds,
+    });
 
     ctx.translate(centerX, centerY);
     ctx.rotate(params.rotationSpeed * seconds);
@@ -285,7 +335,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
       const dx = cell.center[0] + offsetX - field.size / 2;
       const dy = cell.center[1] + offsetY - field.size / 2;
       if (Math.hypot(dx, dy) > reach) continue;
-      const { scale, alpha } = cellPhase(params, cell, seconds);
+      const { scale, alpha } = cellPhase(params, cell, seconds, wavePhase);
       const kindShare =
         tilingName === "octagons" && cell.kind === "square" ? FILLER_ALPHA_SHARE : 1;
       const cellAlpha = alpha * dimShare * kindShare;

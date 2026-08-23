@@ -28085,17 +28085,15 @@ mod tests {
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    if state
-                        .tabs
-                        .get(key)
-                        .is_some_and(|tab| tab.session.has_exited())
-                    {
-                        // The child is gone and nothing is queued: whatever it
-                        // painted is already on the screen.
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10))
                 }
+                // Closed: the reader thread hit EOF and dropped both senders,
+                // so every byte the harness ever painted has already been
+                // handed over. An exited child is NOT the same signal — the
+                // wait can reap it a scheduling slice before the reader has
+                // forwarded its last words, and a loaded machine is where that
+                // slice gets long: a crash's epitaph would go missing exactly
+                // when the whole suite is running.
                 Err(_) => return,
             }
         }

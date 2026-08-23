@@ -7883,12 +7883,16 @@ impl AppState {
             "unread_count": unread.count,
             "unread_reason": unread.reason,
             "working": tab.is_some_and(agent_is_working),
-            // Whether the rail offers this agent a basement. Asked of the live
-            // session, which is the only thing that can answer it — and for an
-            // agent with no session yet the answer is the one that has been
-            // true of every agent Build has ever run, so the attach that opens
-            // a blank screen for it stays on offer.
-            "has_terminal": tab.is_none_or(|tab| tab.session.terminal().is_some()),
+            // Whether the rail offers this agent a basement. The live session
+            // answers for an agent that is running, since it is the only thing
+            // that can; before there is one the PROVIDER answers, because it
+            // knows which carrier its spawn will open. Same authority either
+            // side of the spawn, so the rail never offers a TUI button that the
+            // spawn then refuses.
+            "has_terminal": match tab {
+                Some(tab) => tab.session.terminal().is_some(),
+                None => harness_for(agent.choice.provider).has_terminal(),
+            },
             "created_at": agent.created_at,
         })
     }
@@ -34022,7 +34026,7 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id("idle-agent-owner"),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("idle-agent-owner")),
             root.clone(),
             80,
@@ -34107,10 +34111,18 @@ mod tests {
             listed["result"]["agents"][0].clone()
         };
 
-        // Nothing has started yet. Every agent Build has ever run has had a
-        // terminal and the attach opens a blank screen for one that has not
-        // started, so the basement stays on offer.
+        // Nothing has started yet, so the PROVIDER answers: it knows which
+        // carrier its spawn will open, before there is a session to ask. Every
+        // provider today has a terminal, so the answer is the one this digest
+        // has always given — and the day one does not, the rail stops offering
+        // a basement the spawn would refuse, with no second place to fix.
         let idle = bubble(&mut state);
+        let provider = state.runs[&run_id].model_choice.provider;
+        assert_eq!(
+            idle["has_terminal"],
+            crate::harness::harness_for(provider).has_terminal(),
+            "a session-less agent's answer comes from its provider: {idle:?}"
+        );
         assert_eq!(idle["has_terminal"], true, "{idle:?}");
         assert_eq!(idle["working"], false, "{idle:?}");
 
@@ -34122,7 +34134,7 @@ mod tests {
                 agent_id: agent_id.clone(),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("cat"),
+            &warm_tui_spec(),
             agent_tab_id(&agent_id),
             root.clone(),
             120,

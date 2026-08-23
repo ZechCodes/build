@@ -110,6 +110,22 @@ pub trait Harness: Send + Sync {
         context: &HarnessContext,
     ) -> HarnessSpec;
 
+    /// Whether a session opened for this provider offers a terminal.
+    ///
+    /// The provider answers because it is the only authority that exists BOTH
+    /// before and after a spawn: the rail decides whether to offer an agent a
+    /// basement while that agent is still idle, and the spawn decides which
+    /// carrier to open. One authority, one answer, so the rail never offers a
+    /// TUI button the spawn would then refuse.
+    ///
+    /// True by default, and true for every provider today: a CLI wrapper is
+    /// opaque — Build sees what it launched and what the agent reported, and
+    /// nothing in between — so it needs the escape hatch. A harness that
+    /// reports its own reasoning and tool calls has nothing to escape to.
+    fn has_terminal(&self) -> bool {
+        true
+    }
+
     /// Make `cwd` fit for this provider to open a session in, before one is
     /// spawned there.
     ///
@@ -233,6 +249,17 @@ mod tests {
                 harness_for(provider).model_args(&choice).is_empty(),
                 "{provider:?}"
             );
+        }
+    }
+
+    /// Every provider Build ships today is a CLI wrapper in a full PTY —
+    /// opaque, so every one of them needs the escape hatch. This is the
+    /// equivalence that keeps the provider-sourced answer a refactor: the
+    /// digest of a not-yet-started agent says exactly what it always did.
+    #[test]
+    fn every_provider_today_offers_a_terminal() {
+        for provider in AgentProvider::ALL {
+            assert!(harness_for(provider).has_terminal(), "{provider:?}");
         }
     }
 

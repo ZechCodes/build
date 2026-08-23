@@ -841,6 +841,14 @@ What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
   arrive over the same unix socket. §2's dividend cashes out: the from-agent
   half of the interface needs zero work.
 
+- **The worktree is unconditional** — see §11 q3: a no-terminal agent still
+  gets one, because the worktree is the workspace and the PTY was only ever
+  the way one kind of agent sat in it. Everything that runs before the
+  carrier is chosen — adoption, the primary checkout,
+  `scaffold_agent_worktree`, the transcript probe, the session-token mint —
+  is path-and-provider work that holds unchanged for a headless child with
+  the same cwd, so step 6 adds nothing there.
+
 - **Resume.** `has_transcript` already answers for headless sessions (same
   transcript directory). Sharper than the cwd heuristic: `AdkSession`
   captures the `session_id` from `system/init`, the daemon persists it beside
@@ -935,6 +943,12 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-23, §11 q3 echoed in the body.** A consistency check found q3's
+  conclusion — a no-terminal agent still gets a worktree, unconditionally —
+  living only inside §11 and this changelog, while q4's is restated in §10's
+  step 6 where the idle sweep depends on it. Step 6 now carries the same
+  restatement at the point the headless spawn relies on it. No decision
+  changed.
 - **2026-08-23, the road past step 5 is specified.** §11 q3 answered — a
   no-terminal agent gets a worktree unconditionally, and the adoption /
   `run.adopt` / primary-checkout paths were read to confirm none assumes a

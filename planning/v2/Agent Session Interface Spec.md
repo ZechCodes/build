@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–1 shipped, steps 2–6 not started (see §10)
+**Status:** Draft — steps 0–2 shipped, steps 3–6 not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -64,7 +64,8 @@ takes a turn as a value.
 
 ### Status — inferred, and the inference is wrong for an event stream
 
-`agent_is_working` (`bridge/src/app.rs:893`) is four conjuncts:
+`agent_is_working` (`bridge/src/app.rs:893`) was four conjuncts — step 2 has
+since replaced the last two with `status()`, but the reasoning is why:
 
 ```rust
 matches!(tab.role, TabRole::Agent { .. })
@@ -459,9 +460,21 @@ Each step compiles, ships and is green on its own.
 > constant already in place. And the PTY's `send_turn` is `write_prompt` alone:
 > the readiness check the §3 table names stays at the spawn site, since
 > re-running it per turn would park a caller holding the app-wide state lock
-> behind a mid-turn repaint. **Steps 2–6 have not been started**: every session
-> is still reached as a `HarnessSession`, so a provider with no terminal cannot
-> exist yet.
+> behind a mid-turn repaint.
+>
+> Step 2 shipped in `bf6c730`: `agent_is_working` matches on
+> `AgentStatus::Working` and no longer reads `has_exited` or `idle_for`. The
+> detail that made it landable alone is that `HarnessSession` now **requires**
+> `AgentSession`, so a `Box<dyn HarnessSession>` answers the daemon's question
+> while the byte-stream calls around it are still reachable — the daemon
+> migrates off the wider trait one call at a time instead of in one change, and
+> `Tab.session` keeps its type until step 3 needs it. `PtySession` reports
+> `Working` rather than `Starting` for a fresh spawn, because a spawning agent
+> is stamped as having just painted and today's rule counts that as working;
+> naming the gap is a session protocol's job, not a terminal's, so `Starting`
+> stays unreported here and the wire is unmoved. **Steps 3–6 have not been
+> started**: every session is still reached as a `HarnessSession`, so a provider
+> with no terminal cannot exist yet.
 >
 > Step 4's dependency on the store is discharged — the store migration shipped
 > (`Store Migration Spec.md`), so activity kinds land as ordinary thread rows
@@ -472,8 +485,9 @@ Each step compiles, ships and is green on its own.
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
    behaviour change.~~ **Shipped** — see the note above.
-2. **Move status behind `status()`.** `agent_is_working` reads the enum; the PTY
-   implementation synthesizes it from `idle_for`. The wire is unchanged.
+2. ~~**Move status behind `status()`.** `agent_is_working` reads the enum; the
+   PTY implementation synthesizes it from `idle_for`. The wire is unchanged.~~
+   **Shipped** — see the note above.
 3. **Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest, and
    add the typed refusals to `agent_attach` / `term.input` / `term.resize`. No
    session returns `None` yet — the paths are dead but exercised by tests.
@@ -525,6 +539,13 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, step 2 shipped.** `agent_is_working` reads
+  `AgentStatus::Working` instead of `has_exited` / `idle_for`, and
+  `HarnessSession` gained `AgentSession` as a supertrait so the daemon can move
+  off the wider trait a call at a time. The wire is unchanged and the pulse's
+  existing tests pass unmodified; `working_is_exactly_the_two_conjuncts_it_replaced`
+  in `pty.rs` is the equivalence proof, asserting `Working` iff the old pair in
+  every state a PTY can be in.
 - **2026-08-23, step 1 shipped.** The two traits, `AgentStatus` and `Turn` (a
   struct carrying `text`, answering §11 q2 with the minimal shape) are in, and
   `PtySession` satisfies both. `AGENT_WORKING_WINDOW` moved down into `pty.rs`;

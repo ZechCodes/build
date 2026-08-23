@@ -1,6 +1,6 @@
 # Bridge Store — SQLite Migration Spec
 
-**Status:** Shipped — phases 1, 2 and 3 are in `build/agent-polymorphism`
+**Status:** Shipped — phases 1, 2 and 3 are on `main` (merged as `397f770`)
 **Last updated:** August 21, 2026
 **Relates to:** `Agent Session Interface Spec.md` (§6.2 is superseded by this), `Harness Refactor.md`
 

@@ -2,7 +2,7 @@
 
 **Status:** Draft — step 0 shipped, steps 1–6 not started (see §10)
 **Last updated:** August 22, 2026
-**Branch:** `build/agent-polymorphism`
+**Branch:** off `main`
 
 ---
 
@@ -431,7 +431,8 @@ Each step compiles, ships and is green on its own.
 
 > **Where this stands, 2026-08-22.** Step 0 — the `Harness` trait, one
 > implementation per provider, reached only through `harness_for` — shipped in
-> `a26acd2` and is documented in `Harness Refactor.md`. That is the launch side.
+> `a26acd2` (on `main`) and is documented in `Harness Refactor.md`. That is the
+> launch side.
 > **None of steps 1–6 below have been started**: the session side is still
 > `HarnessSession`, which every implementation must satisfy including the four
 > terminal calls, so a provider with no terminal still cannot exist.

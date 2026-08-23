@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–5 shipped, step 6 not started (see §10)
+**Status:** Draft — steps 0–5 shipped; steps 5a–7 specified, not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -142,6 +142,75 @@ implementation *satisfies* `AgentSession`:
 | `status` | synthesized from `idle_for` (today's 30 s rule, unchanged) | reported turn boundaries |
 | activity | nothing beyond lifecycle — the terminal carries it | reasoning, tool use and messages, posted to the conversation as typed events |
 | `terminal()` | `Some(self)` | `None` |
+
+### What the daemon still could not ask — the exit and quiescence surface
+
+*Added 2026-08-23.* The shipped `AgentSession` covers the turn, the status and
+the end. Reading the daemon's remaining `HarnessSession` call sites (the
+inventory in step 5a) shows three questions it asks of every session that the
+trait cannot answer yet, plus one contract that was never written down. Each
+addition is minimal because a session of either carrier has a true answer of
+its own — none of them re-admits the byte stream.
+
+```rust
+pub trait AgentSession: Send + Sync {
+    // … send_turn, status, end, terminal …
+
+    /// How long since the session last showed evidence of work — bytes
+    /// painted for a PTY, protocol events read for a session protocol.
+    fn quiet_for(&self) -> Duration;
+
+    /// Whether the session ends within `timeout`. A single status poll is
+    /// racy: a dying harness closes its pipes BEFORE its exit status is
+    /// reapable, so a caller deciding whether a failed `send_turn` means
+    /// "crashed" rather than "wedged" waits the lag out here.
+    fn exited_within(&self, timeout: Duration) -> bool;
+
+    /// The session's last words, once it has ended. `None` for a session
+    /// that left none worth repeating.
+    fn epitaph(&self) -> Option<String> {
+        None
+    }
+}
+```
+
+- **`quiet_for`** exists because the idle sweep asks a minutes-scale question
+  that `status()` does not answer. `mark_idle_tasks` (`app.rs:5784`) and
+  `agent_last_painted_at` (`app.rs:13443`) read `idle_for` today — the PTY's
+  paint clock. The name changes because the meaning generalizes: a PTY answers
+  from its last byte (behavior byte-identical to `idle_for`), a protocol
+  session from its last read protocol event. This is not status duplicated:
+  `Working`/`Waiting` is a 30-second-window judgement; the sweep's
+  quiet-for-five-minutes anomaly clock is a different instrument, and both
+  carriers can hold one honestly.
+
+- **`exited_within`** is `deliver`'s crashed-versus-wedged wait
+  (`app.rs:17257`, `PROMPT_WRITE_EXIT_GRACE`): a failed write to a harness
+  that exits within the grace is a crash the sweep will explain, not an error
+  to surface. Both carriers are subprocess-backed today, and any carrier that
+  is not still has a truthful degenerate answer (`status()` already `Ended`).
+
+- **`epitaph`** exists because `HarnessExit` (`app.rs:16364`) explains a crash
+  with the harness's last words, and today those come from the last painted
+  screen (`screen_epitaph`) — a surface a no-terminal session does not have.
+  The split: the PTY implementation returns `None` (its screen belongs to the
+  `Tab`, and the sweep keeps reading `tab.screen` exactly as it does now); a
+  protocol session retains the last error it was *told* — the final `result`
+  line's error text, or the last line of stderr — and hands that back. The
+  sweep asks the screen first and the session second. This honours the
+  no-scraping rule rather than bending it: the protocol epitaph is a reported
+  value, and the screen epitaph stays what it always was — a human-legible
+  crash surface, never parsed for state.
+
+- **May `send_turn` block?** Yes, and the trait doc must say so: the PTY's
+  implementation writes a framed paste and then sleeps `REAL_TUI_SUBMIT_DELAY`
+  (1500 ms) before the submit key, so a call can hold its thread for seconds;
+  a protocol implementation returns as soon as the turn is written to the
+  child's stdin and never waits on the model. The contract: **callers must
+  not hold the app-wide state lock across `send_turn`** — which the daemon
+  already honours, because `deliver_pending_agent_turns` drains the queue
+  after the verbs release the lock. Writing it down is what keeps a future
+  caller from re-learning it from a deadlock.
 
 ---
 
@@ -287,16 +356,72 @@ Two reasons that is the right trade:
    carried by this path anyway.
 
 **Known gap, fix deferred — noted 2026-08-23.** Reason 1 no longer holds for
-outcomes reported through `done`: `post_completion` (`thread.rs:1583`)
+outcomes reported through `done`: `post_completion` (`thread.rs:1604`)
 deliberately posts no message — the event is the only record — and
 `last_completion` is only set when a structured report exists, which a blocked
 `done` does not carry. So a messages-only packet tells a replacement agent
 nothing about why its predecessor blocked. This spec stays a refactor and does
-not fix that here. The fix decided for later: an outcome is a **status attached
-to a message**, not a separate event. A blocked agent sends a message carrying a
-blocked status; the event-only record in `post_completion` is replaced by that
-message, and the messages-only packet then carries outcomes by construction,
-with no event lines re-admitted.
+not fix that here.
+
+**The fix, designed 2026-08-23 — §10 step 7.** An outcome is a **status
+attached to a message**, not a separate event.
+
+- **What changes where it is minted.** `record_report_in_thread`
+  (`app.rs:16301`) stops pushing `Done` / `Blocked` / `RunFailed` for a
+  reported outcome. Instead the report's summary is posted as an ordinary
+  **agent message** carrying an outcome, with the structured completion report
+  attached to the message when the report wrote one. `post_completion` is
+  retired with it; `remember_completion` / `last_completion` are untouched —
+  they are set from the same report, after the same call.
+
+- **Wire shape, additive.** A message's data gains one field:
+  `"outcome": "completed" | "blocked" | "failed"`, absent on every message
+  that is not an outcome. A completed outcome also sets the existing
+  `done: true`, whose meaning does not move — a client that only knows `done`
+  renders a completion exactly as it does today. The `completion_report`
+  envelope the `Done` event carries moves onto the message, additive there
+  too. No field changes meaning; nothing is removed from the wire.
+
+- **Attention needs no new rule.** An outcome message is the agent addressing
+  the human — `Attention` by the rule messages already have. The `Done`
+  event's attention job moves onto the message whole; the count of unread
+  entries per outcome stays exactly one.
+
+- **The events are dropped, not reclassified.** Two reasons. First, keeping
+  `Done`/`Blocked` beside the message as `Status` markers would be two records
+  of one outcome, free to disagree — the flag-standing-beside-the-call shape
+  this spec rejects everywhere else. Second, class is intrinsic to the kind
+  and asked of persisted rows: quieting `Done` from `Attention` to `Status`
+  would rewrite what every already-persisted `Done` row means. So the kinds
+  stay on `ThreadEventKind` and keep their class — old rows deserialize and
+  render unchanged — and nothing new emits them. `RunFailed`,
+  `IdleUnreported` and `Interrupted` remain events: those are **Build's
+  observations** about an agent that said nothing, and there is no agent
+  message to attach them to.
+
+- **The catch-up packet carries outcomes by construction.**
+  `catch_up_markdown`'s message filter currently *excludes* completion
+  messages (`message.done || source == Completion`) — an exclusion that
+  existed because the event was the record and such a message was its
+  duplicate. With the message the only record, the exclusion inverts: outcome
+  messages are included, each line prefixed with its outcome. No event lines
+  are re-admitted; a replacement agent reads why its predecessor blocked from
+  the same packet that carries what the human said.
+
+- **The Issue mirror moves with the record.** `run_outcome_mirrors_to_issue`
+  keys on attention-classed *events*; once outcomes are messages, the mirror
+  onto the Issue conversation must key on the outcome message instead. The
+  step's tests hold the equivalence: every outcome that reached the Issue
+  timeline before reaches it after.
+
+- **Compatibility.** Existing persisted threads need no migration: their
+  `Done`/`Blocked` events remain valid rows and render exactly as today, and
+  an outcome message is an ordinary message row whose new field defaults
+  absent on old records. An older SPA against a newer bridge ignores
+  `outcome`: a completion still renders as a completion via `done`; a blocked
+  outcome renders as a plain agent message stating the reason — strictly more
+  than the nothing its thread shows today between the event it no longer
+  receives and the packet that dropped it.
 
 ### 6.2 Activity cannot live in the aggregate record
 
@@ -572,13 +697,169 @@ Each step compiles, ships and is green on its own.
 5. ~~**SPA: hide the TUI button when `has_terminal` is false**, and render the
    four kinds in the thread, folded by default.~~ **Shipped** — see the note
    above.
-6. **Then, and only then, add a provider with no terminal.** By this point it is
-   a new file, not a migration.
+5a. **Prep: the daemon speaks `AgentSession` only.** `Tab.session` becomes
+   `Box<dyn AgentSession>`, every remaining daemon call on the wider trait
+   moves behind `AgentSession` / `TerminalView` or into `PtySession`, the
+   `HarnessSession: AgentSession` supertrait bridge is dropped, and
+   `has_terminal` for a not-yet-started agent comes from the provider. Pure
+   refactor: the wire is unchanged and every behaviour byte-identical. Detail
+   below.
+6. **Then, and only then, add a provider with no terminal** — the ADK, as
+   `bridge/src/harness/adk.rs`. By this point it is a new file, not a
+   migration. Detail below.
+7. **Outcomes become message statuses** — the §6.1 deferred fix, as designed
+   there. Independent of step 6 (it repairs the catch-up packet for every
+   carrier) and ordered after it only because step 6 is what makes the gap
+   bite daily; it may land first if ADK slips.
 
-Steps 1–5 add no providers and change no behaviour. If ADK slips they are still
-worth having: step 2 alone removes "quiet for 30 seconds" from being the only
-thing Build can say about an agent, and step 4's class fix is a latent bug in the
-catch-up packet regardless of who fills the thread.
+Steps 1–5a add no providers and change no behaviour. If ADK slips they are
+still worth having: step 2 alone removes "quiet for 30 seconds" from being the
+only thing Build can say about an agent, step 4's class fix is a latent bug in
+the catch-up packet regardless of who fills the thread, and step 5a leaves the
+daemon with one vocabulary instead of two.
+
+### Step 5a in detail — the prep refactor
+
+The point of the step: after it, no code above `bridge/src/pty.rs` names
+`HarnessSession`, and adding a carrier means implementing `AgentSession` and
+nothing else. The daemon's real (non-test) call sites on the wider trait,
+inventoried 2026-08-23, and where each one goes:
+
+| Call | Daemon sites | Moves to |
+|---|---|---|
+| `write_prompt` | `deliver` (`app.rs:17249`), `nudge_live_agent_tab` (`app.rs:16009`) | `send_turn(Turn)` — the value the trait has carried since step 1 |
+| `ready_within` | `ensure_agent_tab`, once, after `Tab::spawn` | into the PTY arm of the carrier-choosing spawn (`open_session`, `harness/mod.rs`) — readiness is how a *terminal* opens, still run outside the state lock |
+| `idle_for` | `mark_idle_tasks` (`app.rs:5815`), `agent_last_painted_at` (`app.rs:13450`) | `quiet_for()` (§3) — PTY answer unchanged |
+| `exited_within` | `deliver` (`app.rs:17257`) | `exited_within()` (§3) |
+| `has_exited` | 9 sites (`agent_is_live`, `term_input`/`term_resize` liveness, the idle sweep, `agent_digest`, single-agent guards, the nudge) | `matches!(status(), AgentStatus::Ended { .. })` — the enum already says it |
+| `exit_code` | idle sweep (`app.rs:5810`) | the code inside `AgentStatus::Ended` |
+| `kill_and_reap` | 8 sites (tab close/retire/reap paths, `ensure_agent_tab`'s stale-agent sweep, the shell pump) | `end()` — its doc inherits the reap obligation: killing without releasing the process-table entry leaks a zombie per session |
+| `subscribe` | `Tab::spawn` (pump wiring) | `terminal()`-gated: the byte pump is spawned only for a session that offers one, which is already how `spawn_tab_pump` behaves |
+| `resize` | `ensure_agent_tab`'s two spawn-time screen carries | through the `TerminalView` handed back by `terminal()` |
+| `pid` | none outside tests | stays on `TerminalView`; tests keep it |
+| `backdate_last_output` | tests only | `#[cfg(test)]` hook moves with `quiet_for` |
+
+With the table discharged, `Tab.session` becomes `Box<dyn AgentSession>`, the
+supertrait bound comes off `HarnessSession`, and what is left of the wider
+trait — `write_prompt`, `ready_within`, `idle_for` as paint-clock mechanics —
+either becomes inherent on `PtySession` or disappears into its `AgentSession`
+impl; whether the trait name survives at all is `pty.rs`'s private business.
+`HarnessExit` construction changes shape but not meaning: code from
+`Ended { code }`, epitaph from `tab.screen` first and `session.epitaph()`
+second (§3).
+
+Two things the step must also settle:
+
+- **`has_terminal` before there is a session.** Step 3 answers the digest's
+  `has_terminal` from the live session and defaults a session-less agent to
+  `true` — right when every provider has a terminal, wrong the day one does
+  not: the rail would offer a TUI button that the spawn then refuses. The
+  provider knows before the session exists, so `Harness` (`harness/mod.rs`)
+  gains `fn has_terminal(&self) -> bool { true }`, `agent_digest`
+  (`app.rs:7860`) asks `harness_for(agent.choice.provider)` when there is no
+  tab, and the same answer is what `open_session` branches on to choose the
+  carrier. One authority, asked before and after spawn.
+- **Refactor guarantees.** The wire is unchanged (the digest emits the same
+  fields; `has_terminal` merely gains a truthful pre-spawn source), no
+  constant moves value, and the equivalence proofs follow step 2's precedent:
+  a test per mapping row above asserting the new call answers exactly what
+  the old one did in every state a PTY can be in.
+
+### Step 6 in detail — the ADK provider
+
+The research first, so the step is built on what the protocol actually is.
+`claude -p --input-format stream-json --output-format stream-json` runs the
+full Claude Code harness headless over newline-delimited JSON on
+stdin/stdout: a turn is written as a `{"type": "user", "message": …}` line;
+the process answers with `system` events (`init` carries the `session_id`,
+model, tool and MCP-server roster; `api_retry` carries error categories),
+`assistant` / `user` messages whose content blocks are text, thinking,
+`tool_use` and `tool_result` (subagent traffic marked by
+`parent_tool_use_id`), and one `result` line per turn — the turn boundary,
+carrying the outcome text, cost and `session_id`. The process stays alive for
+turn after turn while stdin is open. `--resume <session_id>` reopens a
+recorded conversation (from any directory since claude 2.1.223) and
+`--continue` the cwd's most recent; headless sessions write the same
+`~/.claude/projects/**/*.jsonl` transcripts the interactive TUI does — the
+format `harness/claude.rs`'s probe already reads. `--mcp-config` /
+`--strict-mcp-config` work as in interactive mode, and since 2.1.221 the
+first turn waits for pending MCP servers, so the `done` socket is live before
+any turn runs.
+
+What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
+
+- **Provider selection is the launch config that already exists.**
+  `AgentProvider` gains a variant (working name `ClaudeAdk`, labelled
+  "Claude Code (headless)"), `harness_for` gains its arm, and the model
+  picker offers it through the same `models()` / `label()` surface — the
+  persisted `ModelChoice.provider` on the entity is the whole launch config,
+  no new wire field. `AdkHarness` reuses `ClaudeHarness`'s catalog,
+  `model_args`, workspace pre-trust and transcript probe; its `spec` swaps
+  the interactive argv for `-p --input-format stream-json --output-format
+  stream-json --verbose`, keeps `--mcp-config` + `--strict-mcp-config` +
+  `--dangerously-skip-permissions` and the `INHERITED_AGENT_MARKERS`
+  clearing, and answers `has_terminal() == false` — which flows through
+  `open_session`'s carrier choice to the digest, so the rail never offers the
+  TUI and the step-3 refusals go live in production for the first time.
+
+- **`AdkSession` implements `AgentSession`.** It owns the child (piped
+  stdio, no PTY) and one reader task over stdout. `send_turn` serializes the
+  turn as a user line and returns when the write is accepted — the protocol
+  column of §3's table, no readiness dance, no submit delay. `status()` is
+  reported, not guessed: `Starting` until `system/init`, `Working` from an
+  accepted turn until its `result` line, `Waiting` after, `Ended { code }`
+  when the child exits. `quiet_for` is time since the last line read;
+  `exited_within` waits on the child; `epitaph` retains the last
+  error-bearing `result` (or last stderr line); `end` kills and reaps;
+  `terminal()` stays the default `None`.
+
+- **Minting activity into the conversation — the pump seam.** The byte pump
+  (`spawn_tab_pump`, `app.rs:17352`) is the precedent: a task spawned beside
+  the tab that owns the session's output and, on stream close, marks the tab
+  dead and closes the conversation's session lineage
+  (`record_agent_session_end`, `app.rs:2888`). Step 6 adds the second pump
+  behind a capability that mirrors `terminal()`:
+  `AgentSession::activity() -> Option<Receiver<AgentActivity>>`, default
+  `None`, `Some` for a session that reports its own events. Where the spawn
+  path starts the byte pump for a terminal, it starts the **activity pump**
+  for an activity stream: the pump owns the receiver, posts the four §5 kinds
+  through the thread under the app lock — thinking summaries as `Reasoning`,
+  `tool_use` as `ToolUse` (summary: tool name plus a one-line input),
+  `tool_result` as `ToolResult`, assistant text as `Narration` — and on
+  close performs exactly the byte pump's death rites. Two deliberate
+  exclusions: `tool_use` of Build's own MCP tools is not minted (the socket
+  already carries `post_thread_message` and `done` as their real selves —
+  minting the call too would tell the timeline everything twice), and
+  subagent-attributed events (`parent_tool_use_id` set) are folded into the
+  spawning tool call rather than minted individually, at least at first —
+  both are additive to revisit.
+
+- **The MCP socket wiring is identical, by construction.** The argv carries
+  the same per-agent `--mcp-config` the orchestrator scaffolds today, the
+  env carries the same `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN`, and `done` /
+  `post_thread_message` / `read_unread_messages` / `search_conversation`
+  arrive over the same unix socket. §2's dividend cashes out: the from-agent
+  half of the interface needs zero work.
+
+- **Resume.** `has_transcript` already answers for headless sessions (same
+  transcript directory). Sharper than the cwd heuristic: `AdkSession`
+  captures the `session_id` from `system/init`, the daemon persists it beside
+  the agent, and a respawn passes `--resume <id>`; when no id was recorded —
+  a Build-adopted worktree whose transcript the human left behind — the
+  existing `continue_session` probe falls back to `--continue`, unchanged.
+
+- **The idle sweep meets a session that cannot lie about working** — see
+  §11 q4: a `Working` status is never demoted, and the quiet clock reads
+  protocol events instead of paint. `done` remains the only completion
+  signal; a `result` line is a turn boundary, never a report.
+
+### Step 7 in detail
+
+Specified in §6.1 ("The fix, designed"). Summary of the moving parts: the
+outcome message with its additive `outcome` field, `post_completion` retired,
+the `Done`/`Blocked` emission dropped (kinds retained for old rows), the
+catch-up filter inverted for outcome messages, the Issue mirror re-keyed, and
+the compatibility story for persisted threads and older clients — all there.
 
 ---
 
@@ -596,22 +877,81 @@ catch-up packet regardless of who fills the thread.
    `Turn` a struct now costs little; making it one later touches every caller of
    `deliver`.
 
-3. **Does a no-terminal agent still get a worktree?** ADK and the app server both
-   operate on files, so yes — but it is worth stating, because "agent" and
-   "worktree with a PTY in it" have been the same thing until now. Adoption,
-   `run.adopt` and the primary-checkout super-worktree all assume an agent can be
-   dropped into.
+3. ~~**Does a no-terminal agent still get a worktree?**~~ **Answered
+   2026-08-23: yes, unconditionally.** ADK and the app server operate on
+   files; the worktree is the workspace, and the PTY was only ever the way
+   one kind of agent sat in it. What matters is that the paths which assume
+   "an agent can be dropped into a checkout" assume nothing about the
+   carrier, and reading them confirms it:
+   - **Adoption** (`run_adopt`, `app.rs:11788` → `Orchestrator::adopt_run`,
+     `orchestrator.rs:2364`; `adopt_implementation`, `orchestrator.rs:1474`)
+     is git and records: checkpoint commit, `.build` scaffold, roster,
+     lifecycle events. No session exists at adoption and none is consulted.
+   - **The primary-checkout super-worktree** (`run_adopt` with
+     `primary: true`, `describe_primary_checkout` in `worktree.rs:595`, the
+     `owns_primary_checkout` / `primary_run_of` guards, `app.rs:6373`) is
+     derived ownership over a directory; its lifecycle guards never touch a
+     session.
+   - **The drop-in itself** (`deliver` → `ensure_agent_tab`,
+     `app.rs:17017`) is the first place a carrier exists, chosen at
+     `open_session` — everything before it (`scaffold_agent_worktree`, the
+     per-provider `has_transcript` probe, the session-token mint) is
+     path-and-provider work that holds for a headless child with the same
+     cwd.
+   The one PTY-flavoured residue found is `agent_last_painted_at`
+   (`app.rs:13443`) reading the paint clock for external worktree cards;
+   step 5a's `quiet_for` makes that carrier-neutral. Adoption's
+   `--continue` pickup holds too: headless claude keeps the same cwd-keyed
+   transcripts the probe reads.
 
-4. **What does `done` mean when the harness reports turn boundaries?** Today
-   `done` is the only completion signal and quiescence is the fallback ("silence
-   is an anomaly, never completion"). With real turn boundaries the fallback
-   could become precise — but `done` carries the structured report, so it should
-   stay the contract and turn boundaries should only sharpen idle detection.
+4. ~~**What does `done` mean when the harness reports turn boundaries?**~~
+   **Answered 2026-08-23: `done` stays the completion contract; turn
+   boundaries only sharpen status and idle detection, and never substitute
+   for it.** `done` carries the structured report and drives the lifecycle;
+   a turn boundary carries neither, so a `result` line is not a completion
+   any more than a quiet PTY was — "silence is an anomaly, never completion"
+   survives with the anomaly clock reading a better instrument. Precisely,
+   for the idle sweep (`mark_idle_tasks`, `app.rs:5784`, threshold
+   `BRIDGE_IDLE_SECONDS`, default 300 s; the demotions land through
+   `on_plan_idle` / `on_run_idle`, `orchestrator.rs:1072` / `1998`):
+   - An exited session is explained as today: code from
+     `AgentStatus::Ended`, epitaph per §3.
+   - A live session is demoted to `IdleUnreported` iff **`status()` is not
+     `Working`** and **`quiet_for() ≥ threshold`** and Build has not
+     delivered a turn within the threshold (`last_delivered_at`,
+     carrier-independent). For the PTY this is byte-identical to today —
+     `quiet_for` is the paint clock and paint-within-30 s is what makes
+     `Working`. For a turn-boundary session, "quiet for N minutes" is
+     replaced by exactly this pair: `Working` short-circuits the sweep, so
+     a model mid-turn for 45 minutes is never demoted; after a `result`
+     with no `done`, the session reports `Waiting` and the quiet clock runs
+     from the last protocol event, so the same five-minute rule fires from
+     the turn's true end rather than from a guess about paint.
+   - Everything downstream is untouched: a question posted mid-work still
+     never blocks, a demoted entity still resumes on reply, and a late
+     `done` from `IdleUnreported` is still honoured.
 
 ---
 
 ## 12. Revision history
 
+- **2026-08-23, the road past step 5 is specified.** §11 q3 answered — a
+  no-terminal agent gets a worktree unconditionally, and the adoption /
+  `run.adopt` / primary-checkout paths were read to confirm none assumes a
+  carrier. §11 q4 answered — `done` stays the completion contract; the idle
+  sweep's "quiet for N minutes" becomes "`status()` not `Working`, quiet
+  past threshold, nothing delivered within threshold", byte-identical for
+  the PTY and precise for a turn-boundary session. §3 gained the exit and
+  quiescence surface (`quiet_for`, `exited_within`, `epitaph`, the
+  send-turn-may-block contract). §10 gained step 5a (the daemon speaks
+  `AgentSession` only, with the real call-site inventory; provider-sourced
+  `has_terminal`), a concrete step 6 for the ADK (`harness/adk.rs`,
+  stream-json protocol, `AdkSession`, the activity pump behind an
+  `activity()` capability, identical MCP wiring, `--resume` by recorded
+  session id), and step 7 for the §6.1 fix, now fully designed there: an
+  outcome is a status attached to a message, the `Done`/`Blocked` emissions
+  are dropped rather than reclassified, and the catch-up packet carries
+  outcomes by construction.
 - **2026-08-23, step 5 shipped.** The SPA reads `has_terminal` and offers the
   TUI button only where there is a terminal — dropped rather than dimmed, and
   absent still means `true` — and no path lets a terminal-less agent's panel

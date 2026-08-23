@@ -377,6 +377,68 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
   });
 
+  // The terminal is a capability, not a guarantee. A harness that reports its
+  // own reasoning and tool calls is not opaque, so it has no basement to drop
+  // into — and the rail is where that shows: no TUI button, and no way to ask
+  // for one.
+  it("offers the terminal only to an agent whose session has one", async () => {
+    payload = branchRow({ agents: [agent({ has_terminal: false })] });
+    await mount();
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
+  // An older bridge does not mention the field at all, and silence is not a
+  // refusal: every agent had a terminal before this question could be asked.
+  it("keeps the terminal for a digest that never mentions one", async () => {
+    await mount();
+    expect(agent().has_terminal).toBe(undefined);
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+  });
+
+  // The face the panel wears is remembered per work item, so opening a
+  // terminal-less agent's bubble arrives with "tui" in hand. It must land on
+  // the conversation anyway, and attach nothing.
+  it("puts the panel back on the conversation when a terminal-less agent is opened", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, has_terminal: false })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+
+    bubbles()[1].click();
+    await flush();
+
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+
+    // …and the choice is not spent: the agent that does have a terminal is
+    // still where it was left.
+    bubbles()[0].click();
+    await flush();
+    expect(panel().querySelector('[data-mode="tui"]')).toBeTruthy();
+    expect(mountAgentTab).toHaveBeenCalledTimes(2);
+  });
+
+  // The digest can change its answer under a panel that is already open — an
+  // agent is replaced by one of another shape on the same bubble. The screen
+  // has to go with it.
+  it("takes the terminal away from a panel standing on one when the agent loses it", async () => {
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBe(null);
+
+    payload = branchRow({ agents: [agent({ has_terminal: false })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector('[data-mode="tui"]')).toBe(null);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
   it("leaves a live screen alone while the rail keeps polling", async () => {
     await mount();
     panel().querySelector('[data-mode="tui"]').click();

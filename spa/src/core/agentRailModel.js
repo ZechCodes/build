@@ -31,6 +31,17 @@ export function agentTitle(agent) {
   return `${providerLabel(agent && agent.provider)} ${(agent && agent.ordinal) || 1}`;
 }
 
+/** Whether this agent has a terminal to drop into.
+ *
+ *  The terminal is a capability, not a guarantee: a harness that reports its own
+ *  reasoning and tool calls is not opaque, so it offers no basement. An older
+ *  bridge does not mention the field at all, and silence is not a refusal —
+ *  every agent had a terminal before the question could be asked — so only an
+ *  explicit `false` takes it away. */
+export function agentHasTerminal(agent) {
+  return !agent || agent.has_terminal !== false;
+}
+
 /** How many faces there are for an agent to wear. Each is a pattern of dots or
  *  lines drawn in CSS (styles/shell.css, .rail-pattern-N), animated while the
  *  agent works and frozen where it stopped when it does not. */

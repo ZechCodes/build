@@ -280,6 +280,18 @@ Two reasons that is the right trade:
    packet (`bridge/src/orchestrator.rs:658`), so the densest of the four is not
    carried by this path anyway.
 
+**Known gap, fix deferred — noted 2026-08-23.** Reason 1 no longer holds for
+outcomes reported through `done`: `post_completion` (`thread.rs:1583`)
+deliberately posts no message — the event is the only record — and
+`last_completion` is only set when a structured report exists, which a blocked
+`done` does not carry. So a messages-only packet tells a replacement agent
+nothing about why its predecessor blocked. This spec stays a refactor and does
+not fix that here. The fix decided for later: an outcome is a **status attached
+to a message**, not a separate event. A blocked agent sends a message carrying a
+blocked status; the event-only record in `post_completion` is replaced by that
+message, and the messages-only packet then carries outcomes by construction,
+with no event lines re-admitted.
+
 ### 6.2 Activity cannot live in the aggregate record
 
 > **Superseded 2026-08-21 by `Store Migration Spec.md`.** The conclusion below —
@@ -502,6 +514,12 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, §6.1 gap accepted, fix deferred.** The messages-only packet
+  loses a blocked agent's reason, because `post_completion` records outcomes as
+  events only and `last_completion` needs a structured report. Accepted for now
+  to keep this spec a refactor. Decided for later: an outcome becomes a status
+  attached to a message — a blocked agent sends a message with a blocked status
+  — which puts outcomes back in the packet by construction.
 - **2026-08-23, aligned with the store migration.** Swept the §6.2
   supersession through the rest of the document: step 4 no longer instructs
   building the withdrawn jsonl log, §7 and §9 describe SQLite paging instead of

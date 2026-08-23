@@ -568,12 +568,17 @@ describe("the issue view", () => {
   it("names a bound again on the read after a bubble switch, which drops the cursor", async () => {
     const selection = createAgentSelection("agent:one");
     const { view, calls } = await mount({ agentSelection: selection, pollMs: 1 });
+    const readsBeforeSwitch = calls.filter(([method]) => method === "issue.get").length;
     selection.set("agent:two");
     await new Promise((resolve) => setTimeout(resolve, 5));
     await flush();
     const reads = calls.filter(([method]) => method === "issue.get");
-    expect(reads.length).toBeGreaterThan(1);
-    const afterSwitch = reads[reads.length - 1][1];
+    expect(reads.length).toBeGreaterThan(readsBeforeSwitch);
+    // The FIRST read after the switch, not the last. The contract is about the
+    // read that follows the switch; polling continues at 1ms, so on a loaded
+    // machine several more land inside the wait — and those legitimately carry
+    // a cursor again, because by then the new agent's conversation is held.
+    const afterSwitch = reads[readsBeforeSwitch][1];
     expect(afterSwitch.agent_id).toBe("agent:two");
     expect(afterSwitch.thread_limit).toBe(1);
     expect(afterSwitch.thread_after_sequence).toBeUndefined();

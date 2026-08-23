@@ -43,6 +43,15 @@ const EVENT_META = {
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },
   abandoned: { label: "Abandoned", icon: "×", tone: "blocked" },
+  // Activity: the agent working, rather than the agent speaking. A harness that
+  // reports its own reasoning and tool calls has no terminal for them to scroll
+  // past in, so they ride the conversation — and they arrive hundreds to a
+  // session, which is why `activity` folds them (see activityHtml). None of the
+  // four carries a tone: not one of them is asking the reader for anything.
+  reasoning: { label: "Agent thought", icon: "◌", activity: true },
+  tool_use: { label: "Agent called a tool", icon: "▸", activity: true },
+  tool_result: { label: "Tool answered", icon: "◂", activity: true },
+  narration: { label: "Agent narrated", icon: "◦", activity: true },
 };
 
 const MINUTE_MS = 60_000;
@@ -653,8 +662,45 @@ function completionReportHtml(report) {
     .join("")}</div>`;
 }
 
+/// The first line of a summary, which is what the fold's head shows.
+///
+/// A row that says only "Agent called a tool" is a row nobody can scan; what
+/// the agent actually did is the line under it, and that is the half worth
+/// having outside the fold.
+function firstLine(summary) {
+  return summary.split("\n").find((line) => line.trim()) || "";
+}
+
+/// Activity, folded.
+///
+/// Reasoning, tool calls, tool results and narration are the agent working, not
+/// the agent addressing anyone — the daemon classes all four as status, so they
+/// move no unread count and pull nobody in, and the timeline says the same
+/// thing in the way it draws them: a dim single line, shut, opening onto the
+/// whole of what was said only when the reader asks.
+///
+/// A row with nothing behind it is not a fold. An event carrying neither a
+/// summary nor links would otherwise offer a disclosure triangle onto an empty
+/// box, which is a worse answer than the plain line it has always been.
+function activityHtml(event, meta, agentLabel) {
+  const label = meta.label.replace(/^Agent\b/, agentLabel);
+  const summary = String(event.summary || "").trim();
+  const head = `<span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
+    <span class="thread-activity-what">${esc(label)}</span>
+    ${summary ? `<span class="thread-activity-preview">${esc(firstLine(summary))}</span>` : ""}
+    ${timeHtml(event.created_at)}`;
+  // renderMarkdown escapes all input before adding its fixed safe tag set.
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
+  if (!body) return `<div class="thread-event thread-activity">${head}</div>`;
+  return `<details class="thread-event thread-activity">
+    <summary class="thread-activity-head">${head}</summary>
+    ${body}
+  </details>`;
+}
+
 function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
+  if (meta.activity) return activityHtml(event, meta, agentLabel);
   const label = meta.label.replace(/^Agent\b/, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`

@@ -1055,6 +1055,24 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-event.blocked .thread-event-icon { border-color:var(--bg); background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
 .thread-event.blocked .thread-event-content strong { color:var(--red); }
 .thread-event.success .thread-event-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
+/* Agent activity — reasoning, tool calls, tool results, narration. The agent
+   working rather than the agent speaking, and it arrives hundreds of items to a
+   session, so the row is shut, smaller and dimmer than the lifecycle events
+   beside it: one line the reader scans past, opening onto the whole of what was
+   said only when they ask for it. The preview is the summary's first line and
+   is dropped once the fold is open, where the detail says it in full. */
+.thread-activity { min-height:24px; padding-top:1px; padding-bottom:1px; font-size:11.5px; }
+.thread-activity-head { display:flex; align-items:baseline; gap:7px; min-width:0; cursor:pointer;
+  list-style:none; }
+.thread-activity-head::-webkit-details-marker { display:none; }
+.thread-activity .thread-event-icon { left:8px; width:22px; height:22px; border-width:2px;
+  background:var(--bg); color:var(--dim); font-size:10px; font-weight:600; }
+.thread-activity-what { flex:none; color:var(--dim); }
+.thread-activity-preview { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
+  color:var(--dim); opacity:.8; }
+.thread-activity-head time { flex:none; }
+.thread-activity[open] .thread-activity-preview { display:none; }
+.thread-activity .thread-event-detail { margin-top:2px; }
 .thread-empty { padding:13px 0; color:var(--dim); font-size:12px; }
 @keyframes working-pulse { 0%,100% { opacity:1; } 50% { opacity:.35; } }
 @media (prefers-reduced-motion: reduce) { }
@@ -1175,6 +1193,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
   .thread-avatar { left:-38px; width:32px; height:32px; border-width:2px; }
   .thread-event { padding-left:38px; }
   .thread-event-icon { left:2px; }
+  .thread-activity .thread-event-icon { left:5px; }
   .thread-message-head { flex-direction:column; gap:4px; }
 }
 

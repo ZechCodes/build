@@ -240,6 +240,16 @@ impl ChangeBus {
 mod tests {
     use super::*;
 
+    /// Move a paused clock forward by `step` and let the flusher act on it.
+    ///
+    /// `advance` wakes the timers it passes; the yield is what gives the task
+    /// they woke a turn to run before the assertion looks. Without it the test
+    /// would race the scheduler instead of the clock — the same race, moved.
+    async fn settle(step: Duration) {
+        tokio::time::advance(step).await;
+        tokio::task::yield_now().await;
+    }
+
     /// Drain everything a subscriber was pushed, decrypted.
     fn drained(
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
@@ -389,7 +399,13 @@ mod tests {
     /// The driver's contract: the first change on an idle bus goes out at once,
     /// and everything noted behind it inside the window is one more flush, not
     /// one per mutation.
-    #[tokio::test]
+    ///
+    /// On a paused clock, not a real one: the assertions are about which side
+    /// of the window a flush falls on, and read against the wall clock they
+    /// were a race — a 30 ms sleep that overran the 150 ms window under a
+    /// loaded machine turned "the storm waits" into a failure about nothing.
+    /// `advance` moves the clock by exactly what the contract talks about.
+    #[tokio::test(start_paused = true)]
     async fn the_flusher_sends_at_most_one_batch_per_window() {
         let bus = ChangeBus::new(Duration::from_millis(150));
         let (sender, mut rx, key) = SessionSender::observable("s-1");
@@ -397,7 +413,7 @@ mod tests {
         ChangeBus::spawn_flusher(Arc::clone(&bus));
 
         bus.note_board();
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        settle(Duration::from_millis(30)).await;
         assert_eq!(
             drained(&mut rx, &key),
             vec![json!({ "type": "board.changed" })],
@@ -408,13 +424,13 @@ mod tests {
             bus.note_board();
             bus.note_entity("run-7");
         }
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        settle(Duration::from_millis(30)).await;
         assert!(
             drained(&mut rx, &key).is_empty(),
             "the window is still open — the storm waits"
         );
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        settle(Duration::from_millis(200)).await;
         assert_eq!(
             drained(&mut rx, &key),
             vec![

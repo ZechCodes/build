@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–2 shipped, steps 3–6 not started (see §10)
+**Status:** Draft — steps 0–3 shipped, steps 4–6 not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -472,9 +472,32 @@ Each step compiles, ships and is green on its own.
 > `Working` rather than `Starting` for a fresh spawn, because a spawning agent
 > is stamped as having just painted and today's rule counts that as working;
 > naming the gap is a session protocol's job, not a terminal's, so `Starting`
-> stays unreported here and the wire is unmoved. **Steps 3–6 have not been
-> started**: every session is still reached as a `HarnessSession`, so a provider
-> with no terminal cannot exist yet.
+> stays unreported here and the wire is unmoved.
+>
+> Step 3 shipped in `a96acba`: `Tab.screen` is an `Option<TermScreen>`, the
+> agent digest carries `has_terminal`, and `agent.attach` / `term.attach` /
+> `term.input` / `term.resize` / `term.ack` refuse a session with no terminal.
+> Four details worth knowing. The refusal is asked through
+> `AgentSession::terminal()` and the call is then made through the
+> `TerminalView` it hands back, so the capability check and the write are one
+> question rather than a flag standing beside a call that could disagree with
+> it; `Tab::require_terminal_and_screen` returns the pair for the same reason,
+> since a terminal and its grid are made together in `Tab::spawn` and a session
+> without one has neither. Two of the five verbs are not in the §7 table:
+> `term.attach` reaches an agent tab by wire id and ends in the same
+> `attach_to_tab` body, so leaving it out would have left open the hole the
+> refusal exists to close, and `term.ack` refuses because a client that was
+> never allowed to attach has nothing to acknowledge. `has_terminal` is asked of
+> the live session — the only thing that can answer it — so an agent with **no**
+> session answers `true`: the attach opens a blank screen for one that has not
+> started, exactly as it always has, and the rail must keep offering it. And
+> `Tab.session` is untouched, contrary to the note above: what step 3 needed was
+> the capability, not the narrower trait bound, so the daemon still holds a
+> `Box<dyn HarnessSession>` and §7's first row waits for the step that removes
+> the last byte-stream call. **Steps 4–6 have not been started**: no session
+> returns `None` from `terminal()`, so every refusal above is dead in
+> production and walked only by tests that build the terminal-free session by
+> hand.
 >
 > Step 4's dependency on the store is discharged — the store migration shipped
 > (`Store Migration Spec.md`), so activity kinds land as ordinary thread rows
@@ -488,9 +511,11 @@ Each step compiles, ships and is green on its own.
 2. ~~**Move status behind `status()`.** `agent_is_working` reads the enum; the
    PTY implementation synthesizes it from `idle_for`. The wire is unchanged.~~
    **Shipped** — see the note above.
-3. **Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest, and
-   add the typed refusals to `agent_attach` / `term.input` / `term.resize`. No
-   session returns `None` yet — the paths are dead but exercised by tests.
+3. ~~**Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest,
+   and add the typed refusals to `agent_attach` / `term.input` /
+   `term.resize`. No session returns `None` yet — the paths are dead but
+   exercised by tests.~~ **Shipped** — see the note above; `term.attach` and
+   `term.ack` refuse too.
 4. **Add the four activity kinds**, classed `Status`, *with* the
    messages-only catch-up packet fix (§6.1) in the same change. Nothing emits
    them yet. Persistence needs no work: an activity item is an ordinary thread
@@ -539,6 +564,15 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, step 3 shipped.** `Tab.screen` is an `Option<TermScreen>`, the
+  agent digest carries `has_terminal` (additive, and `true` for every session
+  today), and the five terminal verbs refuse a session with no terminal in the
+  manner of `require_shell_kind` — a sentence saying where that agent's work
+  actually is, never a fallback. `term.attach` and `term.ack` joined the three
+  the §7 table names, because both reach an agent tab that `agent.attach`
+  would have refused. Nothing returns `None` from `terminal()` yet, so the
+  refusals are exercised only by tests that construct the terminal-free
+  session directly.
 - **2026-08-23, step 2 shipped.** `agent_is_working` reads
   `AgentStatus::Working` instead of `has_exited` / `idle_for`, and
   `HarnessSession` gained `AgentSession` as a supertrait so the daemon can move

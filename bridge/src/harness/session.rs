@@ -112,7 +112,7 @@ pub trait TerminalView: Send + Sync {
     fn pid(&self) -> Option<u32>;
 }
 
-/// One live agent session.
+/// One live agent session, with the terminal vocabulary a PTY answers in.
 ///
 /// The three questions with no transport-free answer are [`ready_within`],
 /// [`write_prompt`] and [`idle_for`]: a PTY answers them by watching the paint
@@ -121,10 +121,16 @@ pub trait TerminalView: Send + Sync {
 /// its own turn boundaries. Keeping them behind this trait is what lets a
 /// second carrier exist without the daemon learning a second vocabulary.
 ///
+/// It requires [`AgentSession`], so a caller holding one of these can ask the
+/// daemon's questions of it without knowing which carrier it has. That is what
+/// lets the daemon migrate off this trait a call at a time rather than in one
+/// change: [`status`](AgentSession::status) is already reachable here, while
+/// the byte-stream calls below still are too.
+///
 /// [`ready_within`]: HarnessSession::ready_within
 /// [`write_prompt`]: HarnessSession::write_prompt
 /// [`idle_for`]: HarnessSession::idle_for
-pub trait HarnessSession: Send + Sync {
+pub trait HarnessSession: AgentSession {
     /// Hand the agent a turn and submit it.
     fn write_prompt(&self, prompt: &str) -> Result<(), HarnessError>;
 

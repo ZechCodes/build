@@ -25,7 +25,7 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
-use crate::harness::{harness_for, open_session, HarnessContext, HarnessSession};
+use crate::harness::{harness_for, open_session, AgentStatus, HarnessContext, HarnessSession};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -38,7 +38,7 @@ use crate::plan::{
     ImplementationActivity, ImplementationIntent, PlanEvent, PlanId, PlanState, StageDoc,
     StageDocState,
 };
-use crate::pty::{HarnessSpec, AGENT_WORKING_WINDOW};
+use crate::pty::HarnessSpec;
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{
@@ -877,15 +877,20 @@ const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 /// Whether a tab holds an agent that is working right now.
 ///
 /// Three things have to be true, and each rules out a different lie: the tab
-/// is an agent's (a shell is the human's own hands, however busy it looks),
-/// its process is still alive (a dead agent's retained screen is not a
-/// heartbeat), and it has painted inside [`AGENT_WORKING_WINDOW`] (an agent
-/// parked at its prompt is waiting for you, not working).
+/// is an agent's (a shell is the human's own hands, however busy it looks), its
+/// stream is still open (a dead agent's retained screen is not a heartbeat),
+/// and the session itself reports [`AgentStatus::Working`].
+///
+/// That last one used to be the age of the last paint, read straight off the
+/// PTY. It is now the session's own answer, because the paint clock is a guess
+/// only a terminal is forced to make — a harness that knows when its turn began
+/// and ended has a better one, and must be able to give it. For a PTY the guess
+/// is unchanged: [`crate::pty::PtySession`] synthesizes `Working` from exactly
+/// the two conjuncts that moved, so this reports what it always has.
 fn agent_is_working(tab: &Tab) -> bool {
     matches!(tab.role, TabRole::Agent { .. })
         && tab.live
-        && !tab.session.has_exited()
-        && tab.session.idle_for() < AGENT_WORKING_WINDOW
+        && matches!(tab.session.status(), AgentStatus::Working)
 }
 
 /// `(agent_working, can_finish)` for one worktree's managed agent tab. Finish
@@ -17423,7 +17428,8 @@ mod tests {
     use std::process::Command;
 
     use crate::harness::claude;
-    use crate::pty::PtySession;
+    use crate::harness::{AgentSession, HarnessError, Turn};
+    use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -31582,6 +31588,119 @@ mod tests {
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
         shell.session.kill_and_reap();
+    }
+
+    /// A session that reports a dictated status while every terminal signal it
+    /// carries says the opposite.
+    ///
+    /// `idle_for` is zero and `has_exited` is false on every instance, so a
+    /// caller still reading the PTY directly would call every tab built on one
+    /// of these "working". Only a caller that asks the session what it is doing
+    /// can tell them apart.
+    struct DictatedStatus(AgentStatus);
+
+    impl AgentSession for DictatedStatus {
+        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            self.0
+        }
+        fn end(&self) {}
+    }
+
+    impl HarnessSession for DictatedStatus {
+        fn write_prompt(&self, _prompt: &str) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn write_input(&self, _bytes: &[u8]) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn ready_within(&self, _timeout: Duration) -> bool {
+            true
+        }
+        fn idle_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+            broadcast::channel(1).1
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
+        fn has_exited(&self) -> bool {
+            false
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
+        fn exit_code(&self) -> Option<i32> {
+            None
+        }
+        fn kill_and_reap(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
+    }
+
+    /// A live tab whose session reports `status`.
+    fn tab_reporting(role: TabRole, status: AgentStatus) -> Tab {
+        Tab {
+            tab_id: "term-status".to_string(),
+            root: PathBuf::from("/nowhere"),
+            role,
+            created_at: now_rfc3339(),
+            session: Box::new(DictatedStatus(status)),
+            screen: TermScreen::new(80, 24),
+            live: true,
+            last_delivered_at: None,
+        }
+    }
+
+    fn agent_role() -> TabRole {
+        TabRole::Agent {
+            owner: "run-status".to_string(),
+            agent_id: "agent-status".to_string(),
+            provider: AgentProvider::Claude,
+        }
+    }
+
+    /// The pulse is whatever the session says it is doing, and the daemon does
+    /// not second-guess it with the terminal's own signals. The age of the last
+    /// paint is how a PTY — which has no better answer — synthesizes its
+    /// status; a harness that knows its own turn boundaries has to be able to
+    /// contradict it.
+    #[test]
+    fn the_pulse_reads_the_session_status_and_nothing_else() {
+        let cases = [
+            (AgentStatus::Working, true),
+            (AgentStatus::Waiting, false),
+            (AgentStatus::Starting, false),
+            (AgentStatus::Ended { code: Some(0) }, false),
+            (AgentStatus::Ended { code: None }, false),
+        ];
+        for (status, working) in cases {
+            assert_eq!(
+                agent_is_working(&tab_reporting(agent_role(), status)),
+                working,
+                "{status:?}"
+            );
+        }
+    }
+
+    /// The two conjuncts the session cannot see survive the move: a shell is
+    /// the human's own hands however busy it looks, and a tab whose stream has
+    /// ended is holding a corpse, not a heartbeat.
+    #[test]
+    fn a_working_status_still_needs_a_live_agent_tab() {
+        assert!(!agent_is_working(&tab_reporting(
+            TabRole::Shell,
+            AgentStatus::Working
+        )));
+        let mut retained = tab_reporting(agent_role(), AgentStatus::Working);
+        retained.live = false;
+        assert!(!agent_is_working(&retained));
     }
 
     /// The board reports it per worktree, so a bare worktree — which has no run

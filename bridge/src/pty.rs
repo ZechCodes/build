@@ -1268,6 +1268,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn working_is_exactly_the_two_conjuncts_it_replaced() {
+        // The daemon's pulse reads `status()` now, so this is what keeps the
+        // wire field `working` meaning what it always did: in every state a
+        // PTY can be in, `Working` must hold precisely when the pair the
+        // daemon used to read off the session directly holds.
+        let old_rule = |s: &PtySession| !s.has_exited() && s.idle_for() < AGENT_WORKING_WINDOW;
+        let agrees = |s: &PtySession, state: &str| {
+            assert_eq!(
+                matches!(s.status(), AgentStatus::Working),
+                old_rule(s),
+                "{state}: status disagrees with the rule it replaced; got {:?}",
+                s.status()
+            );
+        };
+
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'painting'; sleep 30");
+        let live = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = live.subscribe();
+        read_until(&mut rx, "painting").await;
+        agrees(&live, "painting");
+
+        live.backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+        agrees(&live, "quiet past the window");
+        live.end();
+
+        let dead = PtySession::spawn(
+            &HarnessSpec::new("sh").arg("-c").arg("exit 3"),
+            None,
+            small_pty(),
+        )
+        .unwrap();
+        for _ in 0..50 {
+            if dead.has_exited() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        agrees(&dead, "exited");
+    }
+
+    #[tokio::test]
     async fn ending_a_session_reaps_the_harness() {
         // `end` is the whole lifecycle call the daemon gets, so it must reap:
         // killing without reaping leaks a zombie per session on a daemon that

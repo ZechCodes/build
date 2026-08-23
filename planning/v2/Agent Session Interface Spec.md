@@ -1,7 +1,7 @@
 # Agent Session Interface — Spec
 
 **Status:** Draft — step 0 shipped, steps 1–6 not started (see §10)
-**Last updated:** August 22, 2026
+**Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
 ---
@@ -11,7 +11,7 @@
 Build currently has one kind of agent: a CLI wrapper in a full PTY. Claude's ADK
 and Codex's app server are not that. They expose a **session protocol** — an
 event stream of reasoning, tool uses and messages — with no terminal anywhere in
-it.
+it. Pi and OpenCode are the same shape.
 
 The `Harness` / `HarnessSession` split already on this branch made the *launch*
 polymorphic and put the session behind a trait. It did not make the terminal
@@ -21,7 +21,11 @@ has ever been.
 
 This spec defines the interface that sits between the UI and the harness when
 the byte stream is set aside, and says what happens to every surface that
-currently assumes one exists.
+currently assumes one exists. The goal is a polymorphic interface to agent
+wrappers — one set of calls the daemon makes whether the wrapper is a PTY or a
+session protocol — so that ADK, the Codex app server, Pi and OpenCode can each
+be a new implementation rather than a new subsystem. It is not a change in
+functionality: every existing surface behaves exactly as it does today.
 
 **The rule this spec adds to the four in the scope doc:** *the terminal is a
 capability, not a guarantee.* A session either offers one or does not, and every
@@ -51,7 +55,7 @@ all. An ADK session calls the same tools over the same socket.
 
 ### To the agent — one chokepoint, no interface
 
-`deliver` (`bridge/src/app.rs:16800`) is documented as "the one pipe from Build
+`deliver` (`bridge/src/app.rs:17132`) is documented as "the one pipe from Build
 to a worktree's agent", and every turn Build sends goes through it. But it ends
 in `HarnessSession::write_prompt`, which means bracketed-paste framing, a
 sanitised prompt, and a submit key written 1500 ms later
@@ -247,7 +251,7 @@ be fixed in the same change that introduces the new kinds. Both are now decided.
 **Decided 2026-08-20:** the catch-up packet a resumed agent is handed carries
 **only messages to and from the agent** — nothing else on the thread.
 
-`Thread::catch_up_markdown` (`bridge/src/thread.rs:1975`) currently takes the
+`Thread::catch_up_markdown` (`bridge/src/thread.rs:2237`) currently takes the
 last N items by recency, N = 40, filtered only for completion messages:
 
 ```rust
@@ -356,9 +360,8 @@ Everything that must become conditional. This is the actual size of the work.
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
 | `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
-| `catch_up_markdown` (`thread.rs:1975`) | last 40 items by recency, events included | messages only (§6.1) |
-| `Thread::items` (`thread.rs`) | unbounded `Vec`, in the aggregate record | recent window; activity in a per-agent jsonl log (§6.2) |
-| `save_issue_implementation` (`store.rs:615`) | read-modify-write of the whole Issue per append | unchanged — activity never reaches it (§6.2) |
+| `catch_up_markdown` (`thread.rs:2237`) | last 40 items by recency, events included | messages only (§6.1) |
+| `Thread::items` (`thread.rs:1167`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
 
 ### SPA
 
@@ -418,10 +421,11 @@ There is no third protocol. Activity reconnects the way the conversation does
 because it *is* the conversation — no new cursor, no new snapshot, no new flow
 control, and no live-only window a reconnecting client can fall out of.
 
-Paging **older** activity out of the jsonl log (§6.2) is a separate, ordinary
-read — a client asking for history it has scrolled back to, not a client
-resyncing. It has no bearing on reconnect, which only ever needs the recent
-window the thread already carries.
+Paging **older** activity out of the store is a separate, ordinary read — the
+backward paging the store migration already ships (`wire_value_page`,
+`has_more`, `oldest_sequence`) — a client asking for history it has scrolled
+back to, not a client resyncing. It has no bearing on reconnect, which only
+ever needs the resident tail the thread already carries.
 
 ---
 
@@ -451,10 +455,11 @@ Each step compiles, ships and is green on its own.
    add the typed refusals to `agent_attach` / `term.input` / `term.resize`. No
    session returns `None` yet — the paths are dead but exercised by tests.
 4. **Add the four activity kinds**, classed `Status`, *with* the
-   messages-only catch-up packet (§6.1) and the per-agent activity log (§6.2) in
-   the same change. Nothing emits them yet. This is the step that must not be
-   split: both fixes exist precisely because the kinds do, and shipping the kinds
-   without the log ships the write amplification.
+   messages-only catch-up packet fix (§6.1) in the same change. Nothing emits
+   them yet. Persistence needs no work: an activity item is an ordinary thread
+   row, appended as one `INSERT` and paged like every other item — the jsonl
+   log §6.2 designed is superseded by the store migration. The catch-up fix
+   must not be split out: it exists precisely because the kinds do.
 5. **SPA: hide the TUI button when `has_terminal` is false**, and render the four
    kinds in the thread, folded by default.
 6. **Then, and only then, add a provider with no terminal.** By this point it is
@@ -469,11 +474,12 @@ catch-up packet regardless of who fills the thread.
 
 ## 11. Decisions needed before step 1
 
-1. **How large is the thread's recent activity window?** §6.2 settles *where*
-   activity is persisted; it does not settle how much of it the thread carries in
-   memory and on the wire before a client has to page the log. A few hundred
-   items keeps a session's work visible without a snapshot that is expensive to
-   ship. This gates step 4 and nothing else.
+1. ~~**How large is the thread's recent activity window?**~~ Answered by the
+   store migration: a conversation keeps a resident tail of 200 items in memory
+   (`RESIDENT_CONVERSATION_TAIL`, `store.rs:477`), first loads and scroll-back
+   ship 60 items per page (`DEFAULT_THREAD_PAGE`, `thread.rs:961`), and older
+   items are read back from SQLite. Activity rows get the same treatment with
+   no new code. Nothing gates step 4.
 
 2. **Does `Turn` carry structure, or stay a string?** A PTY can only take text.
    ADK can take structured content (attachments, images, tool results). Making
@@ -496,14 +502,14 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
-- **2026-08-20, first draft.** Proposed a separate `AgentEvent` stream with its
-  own ring, cursor and `agent.events` RPC, and a second rail mode named by
-  capability (`TUI` or `Activity`).
-- **2026-08-20, revised.** Activity moves into the conversation as typed
-  `Status` events; the second tab disappears for event-stream harnesses and the
-  terminal becomes purely an escape hatch for opaque CLI wrappers. Removed the
-  event ring, the cursor protocol and the RPC. Added §6 — the catch-up packet
-  and thread-retention consequences the move creates.
+- **2026-08-23, aligned with the store migration.** Swept the §6.2
+  supersession through the rest of the document: step 4 no longer instructs
+  building the withdrawn jsonl log, §7 and §9 describe SQLite paging instead of
+  the log, and §11's window question is answered by shipped constants
+  (resident tail 200, page 60). Named Pi and OpenCode as further
+  session-protocol targets and stated the goal in §1: a polymorphic interface
+  to agent wrappers, with no change in functionality. Refreshed drifted line
+  references.
 - **2026-08-22, restored.** This file was clobbered in `0eb5b5b` by a stray
   write that replaced it with a copy of the store spec, and the loss rode in on
   a `git add -A`. Restored from `97611dd` and brought up to date. The store work
@@ -519,3 +525,11 @@ catch-up packet regardless of who fills the thread.
   no database and rewrites the whole aggregate per append, so activity in the
   record would be O(n²) bytes written per session. The open question narrows from
   "what is the retention rule" to "how large is the in-memory window".
+- **2026-08-20, revised.** Activity moves into the conversation as typed
+  `Status` events; the second tab disappears for event-stream harnesses and the
+  terminal becomes purely an escape hatch for opaque CLI wrappers. Removed the
+  event ring, the cursor protocol and the RPC. Added §6 — the catch-up packet
+  and thread-retention consequences the move creates.
+- **2026-08-20, first draft.** Proposed a separate `AgentEvent` stream with its
+  own ring, cursor and `agent.events` RPC, and a second rail mode named by
+  capability (`TUI` or `Activity`).

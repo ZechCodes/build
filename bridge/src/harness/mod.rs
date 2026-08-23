@@ -8,8 +8,11 @@
 //!   whether the provider already has a conversation for that worktree to
 //!   resume. One implementation per [`AgentProvider`], reached only through
 //!   [`harness_for`].
-//! - [`HarnessSession`] is the running side — the calls the daemon makes on a
-//!   session once it exists.
+//! - [`AgentSession`] is the running side — the calls the daemon makes on a
+//!   session once it exists, with [`TerminalView`] as the capability a session
+//!   offers only when the harness behind it is opaque enough to need an escape
+//!   hatch. [`HarnessSession`] is the wider contract the PTY implementation
+//!   still satisfies underneath.
 //!
 //! Nothing above these traits matches on a provider. Adding one means adding an
 //! `AgentProvider` variant, a module here, and an arm in [`harness_for`]; the
@@ -28,7 +31,7 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
 
-pub use session::{HarnessError, HarnessSession};
+pub use session::{AgentSession, AgentStatus, HarnessError, HarnessSession, TerminalView, Turn};
 
 /// How long a real harness TUI must stop painting before its input is live.
 ///

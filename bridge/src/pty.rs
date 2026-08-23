@@ -1,5 +1,7 @@
 //! Full-PTY harness sessions — the subprocess implementation of
-//! [`HarnessSession`](crate::harness::HarnessSession).
+//! [`AgentSession`](crate::harness::AgentSession), the only one that also
+//! offers the [`TerminalView`](crate::harness::TerminalView) capability, over
+//! the wider [`HarnessSession`](crate::harness::HarnessSession) contract.
 //!
 //! There is no harness SDK behind this one. Dispatching a phase means writing a
 //! prompt into the agent's PTY; the user dropping in means attaching to the
@@ -22,7 +24,7 @@ use std::time::{Duration, Instant};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
-use crate::harness::{HarnessError, HarnessSession};
+use crate::harness::{AgentSession, AgentStatus, HarnessError, HarnessSession, TerminalView, Turn};
 
 /// Resolve `binary` the way a shell would, against the daemon's PATH (or the
 /// spec's own override). We do this rather than leaving it to portable-pty:
@@ -77,6 +79,19 @@ const PASTE_MODE_ENABLED: &[u8] = b"\x1b[?2004h";
 /// scripted harness paints once and stops. Real TUIs override it: see
 /// [`HarnessSpec::settle`].
 const DEFAULT_SETTLE: Duration = Duration::from_millis(50);
+
+/// How recently an agent's PTY must have painted for it to count as WORKING.
+///
+/// Aliveness alone is the wrong signal: an agent tab opened yesterday and left
+/// at its prompt is alive and doing nothing, and a rail that pulses at it
+/// forever teaches you to ignore the pulse. A working agent paints — spinners,
+/// tool output, tokens — so silence means it is waiting for you, which is the
+/// state the dot must NOT claim is progress.
+///
+/// This is the terminal's guess, and it lives here because it is the terminal's:
+/// a harness that reports its own turn boundaries answers
+/// [`AgentSession::status`] from those instead.
+pub const AGENT_WORKING_WINDOW: Duration = Duration::from_secs(30);
 
 /// Remove bracketed-paste markers from prompt text before it enters a TUI.
 /// Prompt text carries reviewer-supplied thread content: an embedded paste-end
@@ -363,13 +378,16 @@ impl PtySession {
     pub fn wait(&self) -> Result<bool, HarnessError> {
         Ok(self.child.lock().unwrap().wait()?.success())
     }
-}
 
-/// The daemon's whole contract with a live agent, carried over a PTY.
-impl HarnessSession for PtySession {
+    // The four calls below are the terminal's, and both
+    // [`HarnessSession`](crate::harness::HarnessSession) and
+    // [`TerminalView`](crate::harness::TerminalView) name them. They are
+    // inherent so the two traits delegate to one body rather than each carrying
+    // its own, and so a call on a concrete `PtySession` has a single meaning.
+
     /// Subscribe to the raw output stream. Each subscriber sees every chunk from
     /// the moment it subscribes, and observes `Closed` once the PTY hits EOF.
-    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
         match self.output_tx.lock().unwrap().as_ref() {
             Some(tx) => tx.subscribe(),
             None => {
@@ -379,6 +397,100 @@ impl HarnessSession for PtySession {
                 rx
             }
         }
+    }
+
+    /// Write raw bytes to the PTY (user keystrokes from an attached terminal).
+    pub fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError> {
+        let mut writer = self.writer.lock().unwrap();
+        writer.write_all(bytes)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Resize the terminal (an attached client changed its viewport).
+    pub fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
+        self.master
+            .lock()
+            .unwrap()
+            .resize(size)
+            .map_err(|e| HarnessError::Session(e.to_string()))
+    }
+
+    /// The harness's OS process id, if it is still running.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().unwrap().process_id()
+    }
+}
+
+/// What Build needs from any agent, answered by a subprocess in a full PTY.
+///
+/// Every answer here is the terminal's: a turn is keystrokes, and the status is
+/// synthesized from the age of the last paint. The session is opaque — Build
+/// sees what it launched and what the agent reported over MCP, and nothing in
+/// between — so it offers the escape hatch.
+impl AgentSession for PtySession {
+    /// Hand the agent one turn, through the harness's own paste framing and
+    /// submit key.
+    ///
+    /// The readiness check the spec's table names is NOT here: it belongs to
+    /// the spawn, which waits out the startup paint once before the first turn
+    /// is written. Re-checking per turn would park a caller holding the
+    /// app-wide state lock behind a mid-turn repaint.
+    fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+        self.write_prompt(&turn.text)
+    }
+
+    /// The four conjuncts of the old `agent_is_working`, minus the two the
+    /// session cannot see (the tab's role and whether it is live): exited is
+    /// over, painting inside [`AGENT_WORKING_WINDOW`] is working, and silence
+    /// past it is waiting for the human.
+    ///
+    /// A fresh PTY reports `Working` rather than `Starting`, because a spawning
+    /// agent is stamped as having just painted and today's rule counts that as
+    /// working. Naming the gap is a session protocol's job, not a terminal's.
+    fn status(&self) -> AgentStatus {
+        match self.exit_code() {
+            Some(code) => AgentStatus::Ended { code: Some(code) },
+            None if self.idle_for() < AGENT_WORKING_WINDOW => AgentStatus::Working,
+            None => AgentStatus::Waiting,
+        }
+    }
+
+    /// Kill the harness and reap it — see [`HarnessSession::kill_and_reap`].
+    fn end(&self) {
+        self.kill_and_reap();
+    }
+
+    /// Always, for a CLI wrapper: it is opaque, so the human needs a way in.
+    fn terminal(&self) -> Option<&dyn TerminalView> {
+        Some(self)
+    }
+}
+
+/// The escape hatch into a harness Build can only see the outside of.
+impl TerminalView for PtySession {
+    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+        PtySession::subscribe(self)
+    }
+
+    fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError> {
+        PtySession::write_input(self, bytes)
+    }
+
+    fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
+        PtySession::resize(self, size)
+    }
+
+    fn pid(&self) -> Option<u32> {
+        PtySession::pid(self)
+    }
+}
+
+/// The daemon's whole contract with a live agent, carried over a PTY.
+impl HarnessSession for PtySession {
+    /// Subscribe to the raw output stream — see [`PtySession::subscribe`].
+    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+        PtySession::subscribe(self)
     }
 
     /// Write a prompt and submit it (per the harness's `SubmitKey`). A
@@ -422,12 +534,9 @@ impl HarnessSession for PtySession {
         Ok(())
     }
 
-    /// Write raw bytes to the PTY (user keystrokes from an attached terminal).
+    /// Write raw bytes to the PTY — see [`PtySession::write_input`].
     fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError> {
-        let mut writer = self.writer.lock().unwrap();
-        writer.write_all(bytes)?;
-        writer.flush()?;
-        Ok(())
+        PtySession::write_input(self, bytes)
     }
 
     /// How long since the PTY last produced output.
@@ -448,13 +557,9 @@ impl HarnessSession for PtySession {
         *last = last.checked_sub(ago).expect("a stamp old enough to age");
     }
 
-    /// Resize the terminal (an attached client changed its viewport).
+    /// Resize the terminal — see [`PtySession::resize`].
     fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
-        self.master
-            .lock()
-            .unwrap()
-            .resize(size)
-            .map_err(|e| HarnessError::Session(e.to_string()))
+        PtySession::resize(self, size)
     }
 
     /// Whether the harness process has exited (crash, completion, kill). Reaps the
@@ -529,9 +634,9 @@ impl HarnessSession for PtySession {
         *cached
     }
 
-    /// The harness's OS process id, if it is still running.
+    /// The harness's OS process id — see [`PtySession::pid`].
     fn pid(&self) -> Option<u32> {
-        self.child.lock().unwrap().process_id()
+        PtySession::pid(self)
     }
 
     /// Kill the harness and reap it. `kill` alone leaves a zombie: portable-pty's
@@ -1057,5 +1162,124 @@ mod tests {
         session.kill().unwrap();
         // A killed process does not exit successfully.
         assert!(!session.wait().unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_pty_session_answers_as_an_agent_session_that_has_a_terminal() {
+        // The capability question has one answer, asked in one place: a CLI
+        // wrapper is opaque, so it offers the escape hatch. Reached through the
+        // trait object the daemon will hold, not the concrete type.
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let spawned = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+        let session: Box<dyn AgentSession> = Box::new(spawned);
+
+        let terminal = session.terminal().expect("a PTY session has a terminal");
+        assert!(
+            terminal.pid().is_some(),
+            "a live PTY session has a process behind it"
+        );
+        terminal
+            .resize(PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+
+        let mut rx = terminal.subscribe();
+        terminal.write_input(b"typed by a human\r").unwrap();
+        let echoed = read_until(&mut rx, "typed by a human").await;
+        assert!(
+            echoed.contains("typed by a human"),
+            "keystrokes reach the PTY through the capability; got: {echoed:?}"
+        );
+        session.end();
+    }
+
+    #[tokio::test]
+    async fn send_turn_frames_and_submits_exactly_as_write_prompt_does() {
+        // The turn is a value at the interface and keystroke mechanics below
+        // it: one bracketed paste, the harness's own submit key, nothing else.
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let session = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+
+        session
+            .send_turn(&Turn::new(
+                "do the task\nBuild conversation protocol:\n- rule",
+            ))
+            .unwrap();
+
+        let captured = capture_containing(&capture, "\u{1b}[201~").await;
+        assert_eq!(
+            captured, "\u{1b}[200~do the task\nBuild conversation protocol:\n- rule\u{1b}[201~\n",
+            "a turn travels the way a prompt does — one paste, submitted once"
+        );
+        session.end();
+    }
+
+    #[tokio::test]
+    async fn status_is_working_while_the_pty_paints_and_waiting_once_it_stops() {
+        // The synthesis is today's 30 s rule and nothing else: an agent that
+        // paints is working, one that has been quiet past the window is
+        // waiting for the human.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'painting'; sleep 30");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+        read_until(&mut rx, "painting").await;
+
+        assert!(
+            matches!(session.status(), AgentStatus::Working),
+            "a painting agent is working; got {:?}",
+            session.status()
+        );
+
+        session.backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
+        assert!(
+            matches!(session.status(), AgentStatus::Waiting),
+            "silence past the window is waiting, not progress; got {:?}",
+            session.status()
+        );
+        session.end();
+    }
+
+    #[tokio::test]
+    async fn status_ends_carrying_the_exit_code() {
+        // A dead agent's retained screen is not a heartbeat, and the crash
+        // message needs the real code.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("exit 3");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        for _ in 0..50 {
+            if matches!(session.status(), AgentStatus::Ended { .. }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            matches!(session.status(), AgentStatus::Ended { code: Some(3) }),
+            "the exit code survives into the status; got {:?}",
+            session.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn ending_a_session_reaps_the_harness() {
+        // `end` is the whole lifecycle call the daemon gets, so it must reap:
+        // killing without reaping leaks a zombie per session on a daemon that
+        // never restarts.
+        let spec = HarnessSpec::new("sh").arg("-c").arg("sleep 30");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+
+        session.end();
+
+        assert!(
+            session.has_exited(),
+            "an ended session is reaped, not merely signalled"
+        );
     }
 }

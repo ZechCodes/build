@@ -38,7 +38,7 @@ use crate::plan::{
     ImplementationActivity, ImplementationIntent, PlanEvent, PlanId, PlanState, StageDoc,
     StageDocState,
 };
-use crate::pty::HarnessSpec;
+use crate::pty::{HarnessSpec, AGENT_WORKING_WINDOW};
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{
@@ -873,15 +873,6 @@ struct Project {
 /// board polls task.list every ~1.6 s and must never trigger a full rescan per
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
-
-/// How recently an agent's PTY must have painted for it to count as WORKING.
-///
-/// Aliveness alone is the wrong signal: an agent tab opened yesterday and left
-/// at its prompt is alive and doing nothing, and a rail that pulses at it
-/// forever teaches you to ignore the pulse. A working agent paints — spinners,
-/// tool output, tokens — so silence means it is waiting for you, which is the
-/// state the dot must NOT claim is progress.
-const AGENT_WORKING_WINDOW: Duration = Duration::from_secs(30);
 
 /// Whether a tab holds an agent that is working right now.
 ///

@@ -52,6 +52,7 @@ pub mod changes;
 pub mod config;
 pub mod diff;
 pub mod gitgui;
+pub mod harness;
 pub mod identity;
 pub mod legacy;
 pub mod mcp;

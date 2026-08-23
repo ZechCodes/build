@@ -41,13 +41,14 @@ use portable_pty::PtySize;
 
 use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
+use crate::harness::HarnessError;
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
     plan_transition, stage_doc_transition, IllegalPlanTransition, IllegalStageDocTransition, Plan,
     PlanEvent, PlanId, PlanState, StageDoc, StageDocEvent, StageDocState, StageManifestEntry,
 };
-use crate::pty::{HarnessSpec, PtyError};
+use crate::pty::HarnessSpec;
 use crate::run::{
     run_transition, IllegalRunTransition, IllegalStageProgressTransition, Run, RunEvent, RunId,
     RunState, StageProgress, StageProgressEvent, StageProgressState,
@@ -65,7 +66,7 @@ pub enum OrchestratorError {
     #[error(transparent)]
     Worktree(#[from] WorktreeError),
     #[error(transparent)]
-    Pty(#[from] PtyError),
+    Harness(#[from] HarnessError),
     #[error(transparent)]
     Diff(#[from] DiffError),
     #[error(transparent)]

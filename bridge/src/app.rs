@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
+use crate::harness::{harness_for, open_session, HarnessContext, HarnessSession};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -37,7 +38,7 @@ use crate::plan::{
     ImplementationActivity, ImplementationIntent, PlanEvent, PlanId, PlanState, StageDoc,
     StageDocState,
 };
-use crate::pty::{HarnessSpec, PtySession};
+use crate::pty::HarnessSpec;
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{
@@ -93,7 +94,10 @@ const SHELL_TAB_KIND: &str = "shell";
 fn require_shell_kind(params: &Value) -> Result<(), String> {
     match params.get("kind").and_then(Value::as_str) {
         None | Some("") | Some(SHELL_TAB_KIND) => Ok(()),
-        Some(named_agent @ ("claude" | "codex")) => Err(format!(
+        // Any provider Build knows how to dispatch, not a list kept here: a
+        // client asking for a harness by name gets the same answer whichever
+        // one it named, including one added after this client shipped.
+        Some(named_agent) if AgentProvider::from_wire(named_agent).is_some() => Err(format!(
             "a user terminal cannot run {named_agent} — an agent is created with \
              agent.add and lives in the agent rail, which is what makes every \
              agent in a worktree Build-owned"
@@ -632,9 +636,12 @@ enum TabRole {
     },
 }
 
-/// A live tab: a real PTY rooted in a worktree, plus the authoritative screen
-/// model that makes reconnect a snapshot (current screen + cursor) rather than
-/// a byte replay.
+/// A live tab: one agent session rooted in a worktree, plus the authoritative
+/// screen model that makes reconnect a snapshot (current screen + cursor)
+/// rather than a byte replay.
+///
+/// The session is held behind [`HarnessSession`], so nothing a tab does knows
+/// which harness — or which kind of harness — is on the other end.
 struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
@@ -642,7 +649,7 @@ struct Tab {
     /// Surfaced by `term.list` so a reloaded client can order the tab row the
     /// way the human opened it.
     created_at: String,
-    session: PtySession,
+    session: Box<dyn HarnessSession>,
     screen: TermScreen,
     /// False once the PTY stream has ended. An agent tab is RETAINED after its
     /// process dies so the tab still shows the last screen; a shell tab is
@@ -687,8 +694,7 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         };
-        let session =
-            PtySession::spawn(spec, Some(root.clone()), size).map_err(|e| e.to_string())?;
+        let session = open_session(spec, root.clone(), size).map_err(|e| e.to_string())?;
         let rx = session.subscribe();
         Ok((
             Tab {
@@ -1624,42 +1630,12 @@ fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, b
     }
 }
 
-/// Build the warm TUI adapter shared by every project's orchestrator. Build is a
-/// UI layer over the agent's PTY: every provider is launched interactively, the
-/// rendered prompt is injected into that PTY, and the same session is streamed
-/// to attached clients. The closure is shared across projects via `Agent: Clone`.
-/// How long a real harness TUI must stop painting before its input is live.
-/// Measured against claude 2.1.219: the largest gap inside its startup burst is
-/// ~400ms (and the alternate-screen clear lands after a 311ms lull), so the
-/// window has to clear that comfortably or the prompt is typed into a screen
-/// that is about to be wiped.
-const REAL_TUI_SETTLE: Duration = Duration::from_millis(750);
-
-/// How long a real TUI's submit key trails the pasted prompt. Written together
-/// they arrive in one stdin read, and claude's editor handles the Enter before
-/// the paste has committed to its composer — the turn sits pasted, never
-/// submitted.
-///
-/// Measured against claude 2.1.223 (PTY probe, idle machine): the composer
-/// echoes the paste ~640ms after the write, and an Enter at +200ms is consumed
-/// without submitting — the turn sat pasted forever. An Enter at +1000ms
-/// submits reliably. The margin over that covers a loaded machine.
-const REAL_TUI_SUBMIT_DELAY: Duration = Duration::from_millis(1500);
-
-/// Session markers a parent agent leaves in the environment. A harness that
-/// finds its own markers treats itself as a nested child of that session rather
-/// than its own — claude disables transcript saving, which breaks the
-/// `--continue` adoption path Build depends on. Build's agents are always their
-/// own sessions.
-const INHERITED_AGENT_MARKERS: [&str; 6] = [
-    "CLAUDECODE",
-    "CLAUDE_CODE_SESSION_ID",
-    "CLAUDE_CODE_CHILD_SESSION",
-    "CLAUDE_CODE_BRIDGE_SESSION_ID",
-    "CLAUDE_CODE_ENTRYPOINT",
-    "CLAUDE_EFFORT",
-];
-
+/// Build the warm agent adapter shared by every project's orchestrator. Build is
+/// a UI layer over an agent session: every provider is launched interactively,
+/// the rendered prompt is injected into that session, and the same session is
+/// streamed to attached clients. The closure is shared across projects via
+/// `Agent: Clone`; which provider it builds for is decided per spawn, by the
+/// `ModelChoice` the entity carries.
 fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
@@ -1677,266 +1653,24 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
                 .arg("printf '\\033[?2004h'; cat >/dev/null"),
         )
     } else {
-        // Real agents are interactive TUIs. The builder configures argv and the
-        // per-entity MCP server; Orchestrator submits the prompt through the PTY.
-        let bridge_exe = std::env::current_exe()
-            .ok()
-            .and_then(|path| path.to_str().map(str::to_string))
-            .unwrap_or_else(|| "build-bridge".to_string());
+        // Real agents are interactive TUIs. The provider's own `Harness` owns
+        // argv, environment and whatever the worktree needs to be prepared
+        // with; Orchestrator submits the prompt through the session.
+        let context = HarnessContext {
+            bridge_exe: std::env::current_exe()
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_string))
+                .unwrap_or_else(|| "build-bridge".to_string()),
+            mcp_socket,
+        };
         Agent::WarmBuilder(Arc::new(
-            move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| match choice.provider
-            {
-                AgentProvider::Claude => {
-                    pre_trust_worktree_for_claude(&options.cwd);
-                    let mut spec = HarnessSpec::new("claude")
-                        .settle(REAL_TUI_SETTLE)
-                        .submit_delay(REAL_TUI_SUBMIT_DELAY)
-                        .unset_all(INHERITED_AGENT_MARKERS)
-                        .arg("--mcp-config")
-                        .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
-                        .arg("--strict-mcp-config")
-                        .arg("--dangerously-skip-permissions");
-                    if options.continue_session {
-                        spec = spec.arg("--continue");
-                    }
-                    for arg in choice.harness_args() {
-                        spec = spec.arg(arg);
-                    }
-                    spec.env("BRIDGE_MCP_SOCKET", &mcp_socket)
-                        .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
-                }
-                AgentProvider::Codex => {
-                    let mut spec = HarnessSpec::new("codex")
-                        .settle(REAL_TUI_SETTLE)
-                        .submit_delay(REAL_TUI_SUBMIT_DELAY)
-                        .unset_all(INHERITED_AGENT_MARKERS)
-                        .arg("--dangerously-bypass-approvals-and-sandbox");
-                    for arg in choice.harness_args() {
-                        spec = spec.arg(arg);
-                    }
-                    let mcp_args =
-                        serde_json::to_string(&vec!["mcp", "--task", options.owner_id.as_str()])
-                            .expect("MCP args serialize");
-                    for override_arg in [
-                        format!(
-                            "mcp_servers.build.command={}",
-                            serde_json::to_string(&bridge_exe).expect("path serializes")
-                        ),
-                        format!("mcp_servers.build.args={mcp_args}"),
-                        format!(
-                            "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
-                            serde_json::to_string(&mcp_socket).expect("socket serializes")
-                        ),
-                        format!(
-                            "mcp_servers.build.env.BRIDGE_MCP_TOKEN={}",
-                            serde_json::to_string(&options.mcp_session_token)
-                                .expect("MCP token serializes")
-                        ),
-                        format!(
-                            "projects.{}.trust_level=\"trusted\"",
-                            serde_json::to_string(&options.cwd.to_string_lossy())
-                                .expect("worktree path serializes")
-                        ),
-                        "mcp_servers.build.required=true".to_string(),
-                        // The tools this session's surface actually has. A
-                        // router allow-listed for a coding agent's tools would
-                        // be a session with nothing it can call.
-                        format!(
-                            "mcp_servers.build.enabled_tools={}",
-                            serde_json::to_string(&mcp_tool_names(&options.owner_id))
-                                .expect("tool names serialize")
-                        ),
-                        "mcp_servers.build.default_tools_approval_mode=\"approve\"".to_string(),
-                        // Build writes prompt bytes and Enter back-to-back. Codex's
-                        // fallback detector otherwise classifies that stream as a
-                        // paste burst and turns Enter into a newline, so the prompt
-                        // remains visible but unsent. This PTY advertises and frames
-                        // real pastes explicitly; the fallback is unnecessary.
-                        "disable_paste_burst=true".to_string(),
-                    ] {
-                        spec = spec.arg("--config").arg(override_arg);
-                    }
-                    if options.continue_session {
-                        spec = spec.arg("resume").arg("--last");
-                    }
-                    spec
-                }
+            move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
+                let harness = harness_for(choice.provider);
+                harness.prepare_workspace(&options.cwd);
+                harness.spec(choice, options, &context)
             },
         ))
     }
-}
-
-/// The tools a session owned by `owner_id` may call, for the harnesses that
-/// want an allow-list up front. One source: the surface the id names.
-fn mcp_tool_names(owner_id: &str) -> Vec<&'static str> {
-    match crate::mcp::McpSurface::for_owner(owner_id) {
-        crate::mcp::McpSurface::Coding => vec![
-            "read_unread_messages",
-            "post_thread_message",
-            "done",
-            "search_conversation",
-        ],
-        crate::mcp::McpSurface::Router => vec![
-            "list_projects",
-            "list_work",
-            "read_conversation",
-            "create_issue",
-            "dispatch_branch",
-            "ask_user",
-            "done",
-        ],
-    }
-}
-
-/// The transcript directory name Claude Code uses for a cwd under
-/// `~/.claude/projects/`: the absolute path with `/` and `.` replaced by `-`.
-/// Heuristic by design — a false negative just means a fresh session.
-pub(crate) fn encode_claude_project_dir(path: &std::path::Path) -> String {
-    path.display()
-        .to_string()
-        .chars()
-        .map(|c| if c == '/' || c == '.' { '-' } else { c })
-        .collect()
-}
-
-/// Record a Build-created worktree as trusted in claude's project registry, so
-/// the interactive session skips its workspace-trust dialog.
-///
-/// Build mints a fresh worktree per run and the dialog fires for any directory
-/// claude has not seen. It owns the keyboard until answered, so the prompt Build
-/// injects lands in the dialog and the trailing Enter answers it — the agent
-/// receives nothing and the run sits in `building` until the idle sweep demotes
-/// it. Codex takes the same grant as a per-invocation `--config`; claude keeps
-/// trust in shared state, so this is the one place Build writes outside its own
-/// tree. It only ever ADDS the flag for a path Build itself created.
-///
-/// Best-effort by design: claude rewrites this file too, so an interleaved write
-/// could drop the insert. Failing the spawn over that would be worse than the
-/// dialog it prevents, so every error here is swallowed — the caller still gets
-/// a session, and the worst case is today's behavior.
-fn pre_trust_worktree_for_claude(cwd: &std::path::Path) {
-    let Some(config) = std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(|dir| std::path::PathBuf::from(dir).join(".claude.json"))
-        .or_else(|| dirs_home().map(|home| home.join(".claude.json")))
-    else {
-        return;
-    };
-    if let Err(error) = record_claude_workspace_trust(&config, cwd) {
-        eprintln!("pre-trust {}: {error}", cwd.display());
-    }
-}
-
-fn dirs_home() -> Option<std::path::PathBuf> {
-    std::env::var_os("HOME").map(std::path::PathBuf::from)
-}
-
-/// The read-modify-write half, split out so tests drive a temp registry instead
-/// of the developer's real one. Writes through a temp file + rename so a crash
-/// mid-write cannot truncate a registry holding every project's state.
-fn record_claude_workspace_trust(
-    config: &std::path::Path,
-    cwd: &std::path::Path,
-) -> Result<(), String> {
-    let key = cwd.to_string_lossy().to_string();
-    let mut registry: Value = match std::fs::read_to_string(config) {
-        Ok(raw) => {
-            serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", config.display()))?
-        }
-        // No registry yet: claude will merge its own defaults into ours.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(error) => return Err(format!("read {}: {error}", config.display())),
-    };
-    let projects = registry
-        .as_object_mut()
-        .ok_or_else(|| format!("{} is not a JSON object", config.display()))?
-        .entry("projects")
-        .or_insert_with(|| json!({}));
-    let project = projects
-        .as_object_mut()
-        .ok_or_else(|| "projects is not a JSON object".to_string())?
-        .entry(key)
-        .or_insert_with(|| json!({}));
-    let project = project
-        .as_object_mut()
-        .ok_or_else(|| "project entry is not a JSON object".to_string())?;
-    if project.get("hasTrustDialogAccepted") == Some(&json!(true)) {
-        return Ok(());
-    }
-    project.insert("hasTrustDialogAccepted".to_string(), json!(true));
-
-    if let Some(parent) = config.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
-    }
-    let staged = config.with_extension("json.build-tmp");
-    std::fs::write(
-        &staged,
-        serde_json::to_vec_pretty(&registry).map_err(|e| format!("serialize: {e}"))?,
-    )
-    .map_err(|e| format!("write {}: {e}", staged.display()))?;
-    std::fs::rename(&staged, config).map_err(|e| format!("rename {}: {e}", config.display()))
-}
-
-/// True iff the encoded directory exists under `root` and holds at least one
-/// `.jsonl` transcript.
-pub(crate) fn claude_transcript_exists(root: &std::path::Path, cwd: &std::path::Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(root.join(encode_claude_project_dir(cwd))) else {
-        return false;
-    };
-    entries
-        .flatten()
-        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
-}
-
-/// Codex stores dated JSONL rollouts. The first line is session metadata with
-/// the canonical cwd; scanning that small header is enough to decide whether
-/// `codex resume --last` has a cwd-scoped conversation to continue.
-pub(crate) fn codex_transcript_exists(root: &std::path::Path, cwd: &std::path::Path) -> bool {
-    use std::io::BufRead;
-
-    let wanted = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let mut dirs = vec![root.to_path_buf()];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            // Never follow a user-created symlink loop while looking through
-            // Codex's dated session directories.
-            if kind.is_symlink() {
-                continue;
-            }
-            if kind.is_dir() {
-                dirs.push(path);
-                continue;
-            }
-            if !kind.is_file() || path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            let Ok(file) = std::fs::File::open(path) else {
-                continue;
-            };
-            let mut first = String::new();
-            if std::io::BufReader::new(file).read_line(&mut first).is_err() {
-                continue;
-            }
-            let session_cwd = serde_json::from_str::<Value>(&first).ok().and_then(|meta| {
-                meta.pointer("/payload/cwd")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
-            if session_cwd.is_some_and(|path| {
-                let path = std::path::PathBuf::from(path);
-                std::fs::canonicalize(&path).unwrap_or(path) == wanted
-            }) {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn default_transcript_probe() -> TranscriptProbe {
@@ -1944,11 +1678,7 @@ fn default_transcript_probe() -> TranscriptProbe {
         let Ok(home) = std::env::var("HOME") else {
             return false;
         };
-        let home = std::path::Path::new(&home);
-        match provider {
-            AgentProvider::Claude => claude_transcript_exists(&home.join(".claude/projects"), cwd),
-            AgentProvider::Codex => codex_transcript_exists(&home.join(".codex/sessions"), cwd),
-        }
+        harness_for(provider).has_transcript(std::path::Path::new(&home), cwd)
     })
 }
 
@@ -5493,10 +5223,12 @@ impl AppState {
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
             "ping" => Ok(json!({ "pong": true, "push_events": true })),
+            // `models`/`efforts` are the default provider's catalog, repeated
+            // at the top level for clients that predate `providers`.
             "models.list" => Ok(json!({
-                "models": models::catalog(),
-                "efforts": models::EFFORT_LEVELS,
-                "default_provider": AgentProvider::Claude,
+                "models": harness_for(AgentProvider::default()).models(),
+                "efforts": harness_for(AgentProvider::default()).effort_levels(),
+                "default_provider": AgentProvider::default(),
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
@@ -14338,9 +14070,9 @@ fn git_default_branch(dir: &std::path::Path) -> Option<String> {
 /// Parse and validate the optional provider/model/effort params of a request.
 fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
     let provider = match params.get("provider").and_then(Value::as_str) {
-        None | Some("") | Some("claude") => AgentProvider::Claude,
-        Some("codex") => AgentProvider::Codex,
-        Some(other) => return Err(format!("unknown agent provider: {other}")),
+        None | Some("") => AgentProvider::default(),
+        Some(named) => AgentProvider::from_wire(named)
+            .ok_or_else(|| format!("unknown agent provider: {named}"))?,
     };
     let choice = ModelChoice {
         provider,
@@ -17367,6 +17099,9 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
 
+    use crate::harness::claude;
+    use crate::pty::PtySession;
+
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
     // --- primary-checkout surface (spec §5) -------------------------------------
@@ -18227,7 +17962,7 @@ mod tests {
         assert!(require_shell_kind(&json!({ "kind": "" })).is_ok());
         assert!(require_shell_kind(&json!({ "kind": "shell" })).is_ok());
 
-        for named_agent in ["claude", "codex"] {
+        for named_agent in AgentProvider::ALL.map(AgentProvider::wire_id) {
             let refused = require_shell_kind(&json!({ "kind": named_agent })).unwrap_err();
             assert!(
                 refused.contains("agent.add"),
@@ -19494,56 +19229,6 @@ mod tests {
         );
     }
 
-    /// Claude keeps workspace trust in a shared registry that also holds every
-    /// other project's state, so the grant must be additive and idempotent.
-    #[test]
-    fn claude_workspace_trust_is_added_without_disturbing_the_registry() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join(".claude.json");
-        std::fs::write(
-            &config,
-            serde_json::to_vec(&json!({
-                "firstStartTime": "2026-01-01",
-                "projects": {
-                    "/Users/someone/other": { "hasTrustDialogAccepted": true, "lastCost": 1.5 }
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-
-        let worktree = std::path::Path::new("/tmp/build worktrees/run-9");
-        record_claude_workspace_trust(&config, worktree).unwrap();
-        record_claude_workspace_trust(&config, worktree).expect("idempotent");
-
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-        assert_eq!(
-            written["projects"]["/tmp/build worktrees/run-9"]["hasTrustDialogAccepted"],
-            json!(true)
-        );
-        // Neighbouring state survives: this file is not Build's to own.
-        assert_eq!(written["firstStartTime"], json!("2026-01-01"));
-        assert_eq!(
-            written["projects"]["/Users/someone/other"]["lastCost"],
-            json!(1.5)
-        );
-        assert!(!dir.path().join(".claude.json.build-tmp").exists());
-    }
-
-    #[test]
-    fn claude_workspace_trust_creates_a_registry_that_does_not_exist_yet() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().join("nested").join(".claude.json");
-        record_claude_workspace_trust(&config, std::path::Path::new("/tmp/wt")).unwrap();
-        let written: Value =
-            serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-        assert_eq!(
-            written["projects"]["/tmp/wt"]["hasTrustDialogAccepted"],
-            json!(true)
-        );
-    }
-
     #[test]
     fn real_tui_argv_includes_the_selected_model_and_effort() {
         let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
@@ -19633,58 +19318,6 @@ mod tests {
             },
         );
         assert!(resumed.args.join(" ").ends_with("resume --last"));
-    }
-
-    #[test]
-    fn encode_claude_project_dir_and_probe() {
-        // Claude Code's transcript dir encoding: '/' and '.' both become '-'.
-        assert_eq!(
-            encode_claude_project_dir(std::path::Path::new("/Users/z/proj.web")),
-            "-Users-z-proj-web"
-        );
-
-        let root = tempfile::tempdir().unwrap();
-        let cwd = std::path::Path::new("/Users/z/proj.web");
-        assert!(
-            !claude_transcript_exists(root.path(), cwd),
-            "no encoded dir → no transcript"
-        );
-        let encoded_dir = root.path().join("-Users-z-proj-web");
-        std::fs::create_dir_all(&encoded_dir).unwrap();
-        assert!(
-            !claude_transcript_exists(root.path(), cwd),
-            "an empty dir holds no transcript"
-        );
-        std::fs::write(encoded_dir.join("notes.txt"), "not a transcript").unwrap();
-        assert!(
-            !claude_transcript_exists(root.path(), cwd),
-            "only .jsonl files count"
-        );
-        std::fs::write(encoded_dir.join("session.jsonl"), "{}\n").unwrap();
-        assert!(claude_transcript_exists(root.path(), cwd));
-    }
-
-    #[test]
-    fn codex_transcript_probe_reads_nested_session_metadata_by_cwd() {
-        let root = tempfile::tempdir().unwrap();
-        let cwd = root.path().join("repo");
-        std::fs::create_dir_all(&cwd).unwrap();
-        let dated = root.path().join("sessions/2026/07/22");
-        std::fs::create_dir_all(&dated).unwrap();
-        std::fs::write(
-            dated.join("rollout.jsonl"),
-            format!(
-                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":{}}}}}\n{{}}\n",
-                serde_json::to_string(&cwd.display().to_string()).unwrap()
-            ),
-        )
-        .unwrap();
-
-        assert!(codex_transcript_exists(&root.path().join("sessions"), &cwd));
-        assert!(!codex_transcript_exists(
-            &root.path().join("sessions"),
-            &root.path().join("other")
-        ));
     }
 
     #[test]
@@ -29074,7 +28707,7 @@ mod tests {
         let encoded =
             transcripts
                 .path()
-                .join(encode_claude_project_dir(&AppState::canonical_root(
+                .join(claude::encode_project_dir(&AppState::canonical_root(
                     &resumed_root,
                 )));
         std::fs::create_dir_all(&encoded).unwrap();
@@ -29093,7 +28726,7 @@ mod tests {
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.transcript_probe = Arc::new(move |cwd, provider| {
-                provider == AgentProvider::Claude && claude_transcript_exists(&projects_dir, cwd)
+                provider == AgentProvider::Claude && claude::transcript_exists(&projects_dir, cwd)
             });
             s.projects[0].orch =
                 Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());

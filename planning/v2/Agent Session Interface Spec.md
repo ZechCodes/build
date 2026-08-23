@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–4 shipped, steps 5–6 not started (see §10)
+**Status:** Draft — steps 0–5 shipped, step 6 not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -385,8 +385,8 @@ Everything that must become conditional. This is the actual size of the work.
 
 | Site | Today | Change |
 |---|---|---|
-| `agentRail.js:177` | Chat / TUI switch | **TUI button shown only when `has_terminal`** |
-| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds; folded by default |
+| `agentRail.js:177` | Chat / TUI switch | **TUI button shown only when `has_terminal`** — shipped |
+| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds; folded by default — shipped |
 | `surfaceTabs.js` | mounts the agent's PTY pane | unchanged — it is simply not reached for a no-terminal agent |
 | `terminal/manager.js` | one shared socket, demuxed by `term_id` | unchanged |
 | `console.js` | the human's own shells | unchanged; the console was never the agent's |
@@ -524,6 +524,21 @@ Each step compiles, ships and is green on its own.
 > empty packet, which is the failure §6.1 exists to prevent, so the filter runs
 > before the take. And nothing emits the kinds — no call site pushes one, and
 > the only exercise they get is the tests that push them by hand.
+>
+> Step 5 shipped in `7240262` and `a3f2d42`, in the SPA. Three details worth
+> knowing. `has_terminal` absent is `true`, so an older bridge's digest behaves
+> exactly as it always has and only an explicit `false` takes the terminal
+> away; the rail overrides the *shown* face rather than the remembered one, so
+> opening a terminal-less agent's bubble lands on the conversation while the
+> sibling that does have a screen is still where the human left it. The four
+> kinds fold as a shut `<details>` carrying the summary's first line in its
+> head — a stack of rows all reading "Agent called a tool" is a stack nobody
+> can scan — and an activity event with neither a summary nor links is not a
+> fold at all. And one thing outside the two the step names had to give way:
+> `domPatch` strips any attribute the render does not carry, and a fold is
+> always rendered shut, so `open` is on the live element only because the
+> reader put it there. Without an exception for it the 1.6 s poll would shut
+> every fold the reader opened.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
@@ -543,8 +558,9 @@ Each step compiles, ships and is green on its own.
    log §6.2 designed is superseded by the store migration. The catch-up fix
    must not be split out: it exists precisely because the kinds do.~~
    **Shipped** — see the note above.
-5. **SPA: hide the TUI button when `has_terminal` is false**, and render the four
-   kinds in the thread, folded by default.
+5. ~~**SPA: hide the TUI button when `has_terminal` is false**, and render the
+   four kinds in the thread, folded by default.~~ **Shipped** — see the note
+   above.
 6. **Then, and only then, add a provider with no terminal.** By this point it is
    a new file, not a migration.
 
@@ -585,6 +601,13 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, step 5 shipped.** The SPA reads `has_terminal` and offers the
+  TUI button only where there is a terminal — dropped rather than dimmed, and
+  absent still means `true` — and no path lets a terminal-less agent's panel
+  enter TUI mode, including the remembered per-work-item face. The four
+  activity kinds render in the timeline as folded, quieter rows; every other
+  event kind, known or not, renders exactly as it did. `domPatch` gained one
+  exception so a fold the reader opened survives the poll under it.
 - **2026-08-23, step 4 shipped.** `Reasoning`, `ToolUse`, `ToolResult` and
   `Narration` are on `ThreadEventKind`, wire tokens `reasoning`, `tool_use`,
   `tool_result`, `narration`, all classed `Status` — so an agent thinking out

@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–3 shipped, steps 4–6 not started (see §10)
+**Status:** Draft — steps 0–4 shipped, steps 5–6 not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -252,8 +252,8 @@ be fixed in the same change that introduces the new kinds. Both are now decided.
 **Decided 2026-08-20:** the catch-up packet a resumed agent is handed carries
 **only messages to and from the agent** — nothing else on the thread.
 
-`Thread::catch_up_markdown` (`bridge/src/thread.rs:2237`) currently takes the
-last N items by recency, N = 40, filtered only for completion messages:
+`Thread::catch_up_markdown` (`bridge/src/thread.rs:2270`) took the last N items
+by recency, N = 40, filtered only for completion messages:
 
 ```rust
 for item in self.items.iter().rev().take(limit).rev() { … }
@@ -264,6 +264,11 @@ would hand its replacement forty tool calls and **none of the human's messages**
 — the exact context the packet exists to carry. Filtering to messages fixes that
 by construction rather than by tuning a ratio, and it does not need revisiting
 when a fifth activity kind is added later.
+
+**Shipped 2026-08-23 with the kinds**, and with one thing the sketch above does
+not say: the filter runs **before** the take, so `limit` counts messages. Taking
+forty items and then dropping the events would have handed that same session an
+empty packet — the same failure in a different shape.
 
 **What this drops, deliberately:** the packet's event branch emits a line for
 every event carrying a summary. In practice that is four places — `Done`,
@@ -373,7 +378,7 @@ Everything that must become conditional. This is the actual size of the work.
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
 | `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
-| `catch_up_markdown` (`thread.rs:2237`) | last 40 items by recency, events included | messages only (§6.1) |
+| `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
 | `Thread::items` (`thread.rs:1167`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
 
 ### SPA
@@ -409,10 +414,17 @@ on a thread.
 ```
 
 ```json
-// thread items — four new event kinds, class "status"
-{ "kind": "event", "event": "tool_use", "class": "status",
-  "sequence": 41, "summary": "Read bridge/src/app.rs" }
+// thread items — four new event kinds, in the envelope every event already has
+{ "type": "event",
+  "data": { "id": "event-41", "sequence": 41, "event": "tool_use",
+            "created_at": "…", "summary": "Read bridge/src/app.rs" } }
 ```
+
+The class is **not** a field. It is intrinsic to the kind and asked for through
+`ThreadEventKind::class` / `ThreadItem::attention_reason`, which is how the
+existing 32 kinds work — serializing it would be a second copy of an answer the
+kind already gives, free to drift from it. What a client reads off the wire is
+the kind; what the kind means for attention is decided in one place.
 
 `agent.attach` gains a typed refusal for a session with no terminal, so an old
 client asking gets a sentence rather than a hang. This follows the precedent set
@@ -499,11 +511,19 @@ Each step compiles, ships and is green on its own.
 > production and walked only by tests that build the terminal-free session by
 > hand.
 >
-> Step 4's dependency on the store is discharged — the store migration shipped
-> (`Store Migration Spec.md`), so activity kinds land as ordinary thread rows
-> and the jsonl log in §6.2 is not needed. Step 4 is also cheaper than specced:
-> paging already exists, so nothing has to be built to keep a long conversation
-> off the wire.
+> Step 4 shipped in `bafdfa6`, and its dependency on the store was already
+> discharged — the store migration landed, so the four kinds are ordinary
+> thread rows and the jsonl log in §6.2 was not built. Three details worth
+> knowing. The class needed no new mechanism and no new field: `class()`
+> answers `Status` for all four, so `attention_reason` returns `None`, the
+> unread count is unmoved, and `run_outcome_mirrors_to_issue` — which is
+> `class() == Attention` and is tested over `ThreadEventKind::ALL` — kept the
+> four off the Issue conversation without being touched. The catch-up packet's
+> `limit` now counts **messages** rather than items: filtering after taking the
+> last 40 items would have left a session that emitted forty tool calls with an
+> empty packet, which is the failure §6.1 exists to prevent, so the filter runs
+> before the take. And nothing emits the kinds — no call site pushes one, and
+> the only exercise they get is the tests that push them by hand.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
@@ -516,12 +536,13 @@ Each step compiles, ships and is green on its own.
    `term.resize`. No session returns `None` yet — the paths are dead but
    exercised by tests.~~ **Shipped** — see the note above; `term.attach` and
    `term.ack` refuse too.
-4. **Add the four activity kinds**, classed `Status`, *with* the
+4. ~~**Add the four activity kinds**, classed `Status`, *with* the
    messages-only catch-up packet fix (§6.1) in the same change. Nothing emits
    them yet. Persistence needs no work: an activity item is an ordinary thread
    row, appended as one `INSERT` and paged like every other item — the jsonl
    log §6.2 designed is superseded by the store migration. The catch-up fix
-   must not be split out: it exists precisely because the kinds do.
+   must not be split out: it exists precisely because the kinds do.~~
+   **Shipped** — see the note above.
 5. **SPA: hide the TUI button when `has_terminal` is false**, and render the four
    kinds in the thread, folded by default.
 6. **Then, and only then, add a provider with no terminal.** By this point it is
@@ -564,6 +585,14 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, step 4 shipped.** `Reasoning`, `ToolUse`, `ToolResult` and
+  `Narration` are on `ThreadEventKind`, wire tokens `reasoning`, `tool_use`,
+  `tool_result`, `narration`, all classed `Status` — so an agent thinking out
+  loud moves no unread count, reaches no Issue conversation and sends no
+  notification, with no new code anywhere those rules live. `catch_up_markdown`
+  is messages-only and its limit counts messages, not items. Nothing emits the
+  four kinds yet; §8's example is corrected to the envelope events actually
+  ship in, and the class stays a property of the kind rather than a field.
 - **2026-08-23, step 3 shipped.** `Tab.screen` is an `Option<TermScreen>`, the
   agent digest carries `has_terminal` (additive, and `true` for every session
   today), and the five terminal verbs refuse a session with no terminal in the

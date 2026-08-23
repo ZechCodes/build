@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — step 0 shipped, steps 1–6 not started (see §10)
+**Status:** Draft — steps 0–1 shipped, steps 2–6 not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -445,12 +445,23 @@ ever needs the resident tail the thread already carries.
 
 Each step compiles, ships and is green on its own.
 
-> **Where this stands, 2026-08-22.** Step 0 — the `Harness` trait, one
+> **Where this stands, 2026-08-23.** Step 0 — the `Harness` trait, one
 > implementation per provider, reached only through `harness_for` — shipped in
 > `a26acd2` and is documented in `Harness Refactor.md`. That is the launch side.
-> **None of steps 1–6 below have been started**: the session side is still
-> `HarnessSession`, which every implementation must satisfy including the four
-> terminal calls, so a provider with no terminal still cannot exist.
+>
+> Step 1 shipped in `f4e7958`: `AgentSession`, `TerminalView`, `AgentStatus` and
+> `Turn` live in `bridge/src/harness/session.rs`, and `PtySession` implements
+> both traits with `terminal()` returning `Some(self)`. Two details worth
+> knowing before step 2. `AGENT_WORKING_WINDOW` moved from `app.rs` into
+> `pty.rs`, because the 30 s paint rule is the terminal's guess and belongs
+> beside the implementation that has no better answer — `agent_is_working` still
+> reads `idle_for` directly, and swapping it for `status()` is step 2 with the
+> constant already in place. And the PTY's `send_turn` is `write_prompt` alone:
+> the readiness check the §3 table names stays at the spawn site, since
+> re-running it per turn would park a caller holding the app-wide state lock
+> behind a mid-turn repaint. **Steps 2–6 have not been started**: every session
+> is still reached as a `HarnessSession`, so a provider with no terminal cannot
+> exist yet.
 >
 > Step 4's dependency on the store is discharged — the store migration shipped
 > (`Store Migration Spec.md`), so activity kinds land as ordinary thread rows
@@ -458,9 +469,9 @@ Each step compiles, ships and is green on its own.
 > paging already exists, so nothing has to be built to keep a long conversation
 > off the wire.
 
-1. **Introduce `AgentSession` + `TerminalView`**; `PtySession` implements both,
-   `terminal()` returns `Some(self)`. Nothing is optional yet. No behaviour
-   change.
+1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
+   both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
+   behaviour change.~~ **Shipped** — see the note above.
 2. **Move status behind `status()`.** `agent_is_working` reads the enum; the PTY
    implementation synthesizes it from `idle_for`. The wire is unchanged.
 3. **Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest, and
@@ -514,6 +525,12 @@ catch-up packet regardless of who fills the thread.
 
 ## 12. Revision history
 
+- **2026-08-23, step 1 shipped.** The two traits, `AgentStatus` and `Turn` (a
+  struct carrying `text`, answering §11 q2 with the minimal shape) are in, and
+  `PtySession` satisfies both. `AGENT_WORKING_WINDOW` moved down into `pty.rs`;
+  the four terminal calls both traits name became inherent on `PtySession` with
+  the traits delegating, so there is one body per call. No call site in the
+  daemon changed and no behaviour moved.
 - **2026-08-23, §6.1 gap accepted, fix deferred.** The messages-only packet
   loses a blocked agent's reason, because `post_completion` records outcomes as
   events only and `last_completion` needs a structured report. Accepted for now

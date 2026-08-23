@@ -539,6 +539,17 @@ Each step compiles, ships and is green on its own.
 > always rendered shut, so `open` is on the live element only because the
 > reader put it there. Without an exception for it the 1.6 s poll would shut
 > every fold the reader opened.
+>
+> Verifying step 5 turned up three failures that were not step 5's, one per
+> suite plus one, and all three were tests reading a clock instead of a
+> behaviour: they waited a fixed stretch of wall clock and then asserted on
+> whatever had happened last, which on a machine running the whole suite is not
+> the thing they meant. `826def1` and `58a4d2e` fix them — the bridge's
+> screen-drain helper now waits for the PTY reader's own end of stream rather
+> than treating a reaped child as proof the reader is finished, the issue view's
+> post-switch read is named rather than taken as the newest, and the socket
+> backoff test moved to fake timers. No assertion was weakened and nothing under
+> test moved.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No

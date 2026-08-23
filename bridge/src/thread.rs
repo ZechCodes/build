@@ -608,12 +608,21 @@ pub enum ThreadEventKind {
     /// A daemon restart killed the session mid-work. The entity is parked and
     /// waiting for the human to restart it.
     Interrupted,
+    /// The agent thought out loud.
+    Reasoning,
+    /// The agent called a tool.
+    ToolUse,
+    /// A tool answered.
+    ToolResult,
+    /// The agent narrated. Distinct from a `post_thread_message`, which is the
+    /// agent deliberately addressing the human.
+    Narration,
 }
 
 impl ThreadEventKind {
     /// Every variant, so the wire-token and class rules can be checked over the
     /// whole enum instead of a sample of it.
-    pub const ALL: [ThreadEventKind; 32] = [
+    pub const ALL: [ThreadEventKind; 36] = [
         ThreadEventKind::SessionStarted,
         ThreadEventKind::SessionEnded,
         ThreadEventKind::RunStarted,
@@ -646,6 +655,10 @@ impl ThreadEventKind {
         ThreadEventKind::Triaged,
         ThreadEventKind::TriageOverridden,
         ThreadEventKind::Interrupted,
+        ThreadEventKind::Reasoning,
+        ThreadEventKind::ToolUse,
+        ThreadEventKind::ToolResult,
+        ThreadEventKind::Narration,
     ];
 
     /// Whether this event needs the human, or merely tells them where things
@@ -654,7 +667,10 @@ impl ThreadEventKind {
     /// Attention is what an agent hands back: it finished, it stopped, it went
     /// quiet, or the work reached an outcome that ends the entry. Status is the
     /// work happening — sessions opening and closing, stages moving, commits
-    /// landing, revisions appearing, checkouts being made and recovered.
+    /// landing, revisions appearing, checkouts being made and recovered, and
+    /// the agent's own reasoning, tool calls and narration. An agent thinking
+    /// out loud is the work happening, so it never marks the entry unread; the
+    /// agent choosing to address the human is a message, which does.
     pub fn class(self) -> EventClass {
         match self {
             ThreadEventKind::Done
@@ -688,6 +704,10 @@ impl ThreadEventKind {
             | ThreadEventKind::Committed
             | ThreadEventKind::Triaged
             | ThreadEventKind::TriageOverridden
+            | ThreadEventKind::Reasoning
+            | ThreadEventKind::ToolUse
+            | ThreadEventKind::ToolResult
+            | ThreadEventKind::Narration
             | ThreadEventKind::Pushed => EventClass::Status,
         }
     }
@@ -728,6 +748,10 @@ impl ThreadEventKind {
             ThreadEventKind::Triaged => "triaged",
             ThreadEventKind::TriageOverridden => "triage_overridden",
             ThreadEventKind::Interrupted => "interrupted",
+            ThreadEventKind::Reasoning => "reasoning",
+            ThreadEventKind::ToolUse => "tool_use",
+            ThreadEventKind::ToolResult => "tool_result",
+            ThreadEventKind::Narration => "narration",
         }
     }
 }
@@ -2234,25 +2258,37 @@ impl Thread {
         })
     }
 
+    /// What a resumed agent is handed to rebuild the conversation: the last
+    /// `limit` **messages** to and from the agent, and nothing else on the
+    /// thread.
+    ///
+    /// Events are left out by construction rather than by tuning a ratio. They
+    /// are Build's observations about the agent, and the limit counts messages
+    /// so that a session which emitted hundreds of tool calls before restarting
+    /// still hands its replacement what the human said — the exact context the
+    /// packet exists to carry.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
-        let mut lines = Vec::new();
-        for item in self.items.iter().rev().take(limit).rev() {
-            match item {
+        let mut lines: Vec<String> = self
+            .items
+            .iter()
+            .rev()
+            .filter_map(|item| match item {
                 ThreadItem::Message(message)
-                    if message.done || message.source == MessageSource::Completion => {}
-                ThreadItem::Message(message) => lines.push(format!(
+                    if message.done || message.source == MessageSource::Completion =>
+                {
+                    None
+                }
+                ThreadItem::Message(message) => Some(format!(
                     "- {}: {}{}",
                     message.role.as_str(),
                     message.body.replace('\n', " "),
                     attachment_note(&message.attachments)
                 )),
-                ThreadItem::Event(event) => {
-                    if let Some(summary) = &event.summary {
-                        lines.push(format!("- event/{:?}: {summary}", event.event));
-                    }
-                }
-            }
-        }
+                ThreadItem::Event(_) => None,
+            })
+            .take(limit)
+            .collect();
+        lines.reverse();
         lines.join("\n")
     }
 }
@@ -2560,6 +2596,143 @@ mod attention_class_tests {
             vec!["2026-08-13T09:00:00Z", "2026-08-14T22:00:00Z"],
             "only what the user said, in the order they said it"
         );
+    }
+}
+
+/// The four kinds an event-stream harness fills a conversation with, and the
+/// packet a resumed agent is handed once they exist.
+#[cfg(test)]
+mod agent_activity_tests {
+    use super::*;
+
+    const ACTIVITY: [ThreadEventKind; 4] = [
+        ThreadEventKind::Reasoning,
+        ThreadEventKind::ToolUse,
+        ThreadEventKind::ToolResult,
+        ThreadEventKind::Narration,
+    ];
+
+    /// The property that makes activity safe to put in the conversation: an
+    /// agent thinking out loud updates the entry underneath the human and
+    /// never marks it unread.
+    #[test]
+    fn agent_activity_is_status_and_moves_no_unread_count() {
+        let mut thread = Thread::new("run-activity");
+        let cursor = thread.last_sequence();
+        for kind in ACTIVITY {
+            assert_eq!(kind.class(), EventClass::Status, "{kind:?}");
+            thread.push_event(
+                kind,
+                Some(format!("{} happened", kind.as_str())),
+                None,
+                None,
+                "2026-08-23T09:00:00Z",
+            );
+        }
+
+        assert_eq!(thread.items.len(), 4);
+        for item in &thread.items {
+            assert_eq!(item.attention_reason(), None, "{item:?}");
+        }
+        assert_eq!(thread.unread_since(cursor), UnreadSummary::default());
+        assert_eq!(thread.last_attention_sequence(), 0);
+    }
+
+    /// Activity rides the wire as an ordinary thread item — no new envelope,
+    /// no new RPC, and a token that matches how the kind serializes.
+    #[test]
+    fn a_tool_use_rides_the_wire_as_an_ordinary_thread_item() {
+        let mut thread = Thread::new("run-activity");
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read bridge/src/app.rs".to_string()),
+            None,
+            None,
+            "2026-08-23T09:00:00Z",
+        );
+
+        let wire = thread.wire_value();
+        assert_eq!(wire["items"][0]["type"], "event");
+        assert_eq!(wire["items"][0]["data"]["event"], "tool_use");
+        assert_eq!(
+            wire["items"][0]["data"]["summary"],
+            "Read bridge/src/app.rs"
+        );
+        assert_eq!(wire["items"][0]["data"]["sequence"], 1);
+    }
+
+    /// The packet exists to carry the conversation across a restart, so it
+    /// carries messages and nothing else: a session that emitted activity all
+    /// afternoon must still hand its replacement what the human said.
+    #[test]
+    fn the_catch_up_packet_carries_messages_and_no_events() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-23T09:00:00Z");
+        for index in 0..3 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                "2026-08-23T09:01:00Z",
+            );
+        }
+        thread.post_agent("renamed it", None, "2026-08-23T09:02:00Z");
+        // Build's own observations about the agent go the same way as activity.
+        thread.push_event(
+            ThreadEventKind::Blocked,
+            Some("the test suite will not build".to_string()),
+            None,
+            None,
+            "2026-08-23T09:03:00Z",
+        );
+
+        let catch_up = thread.catch_up_markdown(40);
+        assert_eq!(
+            catch_up, "- user: please rename the helper\n- agent: renamed it",
+            "{catch_up}"
+        );
+    }
+
+    /// The limit counts messages, not items. An agent that emitted more
+    /// activity than the packet holds must still be handed what the human
+    /// said — the case that made the packet messages-only in the first place.
+    #[test]
+    fn a_session_full_of_activity_still_hands_back_the_humans_words() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-23T09:00:00Z");
+        for index in 0..100 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                "2026-08-23T09:01:00Z",
+            );
+        }
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper"
+        );
+    }
+
+    /// The limit still bounds the packet, and still keeps the newest.
+    #[test]
+    fn the_packet_keeps_the_newest_messages_up_to_its_limit() {
+        let mut thread = Thread::new("run-activity");
+        for index in 0..5 {
+            thread.post_user(format!("ask {index}"), None, "2026-08-23T09:00:00Z");
+            thread.push_event(
+                ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                "2026-08-23T09:00:01Z",
+            );
+        }
+
+        assert_eq!(thread.catch_up_markdown(2), "- user: ask 3\n- user: ask 4");
     }
 }
 

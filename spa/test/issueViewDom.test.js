@@ -77,6 +77,21 @@ const flush = async () => {
   for (let i = 0; i < 30; i++) await Promise.resolve();
 };
 
+/** Every `issue.get` made for `agentId` so far, once at least one has been. The
+ *  poll's own tick is the machine's business — how many times it has come round
+ *  by any given millisecond is not something a test can name — so a test about
+ *  which read carries what waits for the read rather than for a wall clock. */
+const readsForAgent = async (calls, agentId) => {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const reads = calls.filter(([method, params]) => method === "issue.get" && params.agent_id === agentId);
+    if (reads.length) return reads;
+    if (Date.now() > deadline) throw new Error(`the poll never read the issue for ${agentId}`);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    await flush();
+  }
+};
+
 describe("openingStageId", () => {
   const stages = [stage({ id: "a", state: "approved", approval: "approved" }), stage({ id: "b" })];
 
@@ -569,12 +584,10 @@ describe("the issue view", () => {
     const selection = createAgentSelection("agent:one");
     const { view, calls } = await mount({ agentSelection: selection, pollMs: 1 });
     selection.set("agent:two");
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    await flush();
-    const reads = calls.filter(([method]) => method === "issue.get");
-    expect(reads.length).toBeGreaterThan(1);
-    const afterSwitch = reads[reads.length - 1][1];
-    expect(afterSwitch.agent_id).toBe("agent:two");
+    // The FIRST read of the new bubble is the one that owes a bound: every read
+    // after it is riding a cursor into a conversation this view now holds.
+    const afterSwitch = (await readsForAgent(calls, "agent:two"))[0][1];
+    expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(1);
     expect(afterSwitch.thread_limit).toBe(1);
     expect(afterSwitch.thread_after_sequence).toBeUndefined();
     view.dispose();

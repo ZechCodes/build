@@ -897,22 +897,31 @@ describe("a caller waiting on a socket that is lost", () => {
       },
     };
     FakeWebSocket.instances.length = 0;
-    const socket = makeSocket({ transport: brittle });
-    const statuses = [];
-    socket.onStatus((s) => statuses.push(s));
-    const started = socket.start();
-    const waiting = socket.whenConnected();
-    await expect(started).rejects.toThrow(/crypto not ready/);
-    await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
-    expect(statuses).toEqual(["connecting", "disconnected"]);
+    // The retry rides a 400 ms backoff, so this test is about a clock. On real
+    // timers a loaded machine overshoots the wait and the assertions land on
+    // whichever attempt the overshoot reached; fake ones put the backoff where
+    // the rest of the file's timing tests keep it — under the test's control.
+    vi.useFakeTimers();
+    try {
+      const socket = makeSocket({ transport: brittle });
+      const statuses = [];
+      socket.onStatus((s) => statuses.push(s));
+      const started = socket.start();
+      const waiting = socket.whenConnected();
+      await expect(started).rejects.toThrow(/crypto not ready/);
+      await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
+      expect(statuses).toEqual(["connecting", "disconnected"]);
 
-    // …and the socket comes back on its own backoff.
-    await new Promise((r) => setTimeout(r, 600));
-    const ws = FakeWebSocket.instances.at(-1);
-    expect(ws).toBeDefined();
-    await handshake(ws);
-    expect(statuses.at(-1)).toBe("connected");
-    socket.close();
+      // …and the socket comes back on its own backoff.
+      await vi.advanceTimersByTimeAsync(600);
+      const ws = FakeWebSocket.instances.at(-1);
+      expect(ws).toBeDefined();
+      await handshakeOnFakeTimers(ws);
+      expect(statuses.at(-1)).toBe("connected");
+      socket.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

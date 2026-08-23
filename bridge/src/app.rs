@@ -25,7 +25,9 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
-use crate::harness::{harness_for, open_session, AgentStatus, HarnessContext, HarnessSession};
+use crate::harness::{
+    harness_for, open_session, AgentStatus, HarnessContext, HarnessSession, TerminalView,
+};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -106,6 +108,24 @@ fn require_shell_kind(params: &Value) -> Result<(), String> {
             "unknown terminal kind {other:?} — a user terminal is always the shell"
         )),
     }
+}
+
+/// Refuse a terminal call on an agent whose session has no terminal.
+///
+/// The terminal is the escape hatch into a harness Build can only see the
+/// outside of. A harness that reports its own reasoning and tool calls is not
+/// opaque, so it has nothing to escape to and offers no basement to drop into
+/// — and a client that asks anyway is told where that agent's work actually is.
+///
+/// Same precedent as [`require_shell_kind`], for the same reason: falling back
+/// would attach a grid nothing paints into, or answer `ok` to keystrokes no
+/// process will ever read, which is the silent-wrong-thing failure loud
+/// refusals exist to prevent.
+fn no_terminal_here(term_id: &str) -> String {
+    format!(
+        "{term_id} has no terminal — this agent reports its reasoning, tool calls and \
+         messages into its conversation, which is where its work is read"
+    )
 }
 
 /// The harness a shell tab spawns in its worktree root: `-i -l`, so the user
@@ -650,7 +670,12 @@ struct Tab {
     /// way the human opened it.
     created_at: String,
     session: Box<dyn HarnessSession>,
-    screen: TermScreen,
+    /// The grid this tab's terminal paints into — `None` for a session with no
+    /// terminal, because there is no grid without one. The terminal is a
+    /// capability, not a guarantee, and a screen kept for a session that has
+    /// none would be a second answer to a question with one:
+    /// [`AgentSession::terminal`](crate::harness::AgentSession::terminal).
+    screen: Option<TermScreen>,
     /// False once the PTY stream has ended. An agent tab is RETAINED after its
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
@@ -675,6 +700,32 @@ impl Tab {
         match &self.role {
             TabRole::Shell => self.tab_id.clone(),
             TabRole::Agent { agent_id, .. } => agent_tab_id(agent_id),
+        }
+    }
+
+    /// The terminal this tab's session offers, or the reason it has none.
+    fn require_terminal(&self) -> Result<&dyn TerminalView, String> {
+        self.session
+            .terminal()
+            .ok_or_else(|| no_terminal_here(&self.wire_id()))
+    }
+
+    /// The terminal and the grid it paints into.
+    ///
+    /// One question answers for both: they are made together in
+    /// [`Tab::spawn`] and a session with no terminal has neither, so there is
+    /// no state in which a tab has a screen to hand a client and nothing
+    /// behind it.
+    fn require_terminal_and_screen(
+        &mut self,
+    ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
+        let refusal = no_terminal_here(&self.wire_id());
+        let Tab {
+            session, screen, ..
+        } = self;
+        match (session.terminal(), screen.as_mut()) {
+            (Some(terminal), Some(screen)) => Ok((terminal, screen)),
+            _ => Err(refusal),
         }
     }
 
@@ -703,7 +754,7 @@ impl Tab {
                 role,
                 created_at: now_rfc3339(),
                 session,
-                screen: TermScreen::new(cols, rows),
+                screen: Some(TermScreen::new(cols, rows)),
                 live: true,
                 last_delivered_at: None,
             },
@@ -3432,7 +3483,9 @@ impl AppState {
             };
             let wire_id = tab.wire_id();
             tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "closed");
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "closed");
+            }
         }
     }
 
@@ -5521,17 +5574,20 @@ impl AppState {
             .tabs
             .iter()
             .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
-            .map(|(key, tab)| {
-                (
+            .filter_map(|(key, tab)| {
+                // A shell IS its terminal, so the filter above already excluded
+                // the only role that can be without one.
+                let screen = tab.screen.as_ref()?;
+                Some((
                     term_id_suffix(&key.tab_id),
                     json!({
                         "term_id": tab.tab_id,
                         "kind": SHELL_TAB_KIND,
-                        "cols": tab.screen.cols,
-                        "rows": tab.screen.rows,
+                        "cols": screen.cols,
+                        "rows": screen.rows,
                         "created_at": tab.created_at,
                     }),
-                )
+                ))
             })
             .collect();
         terminals.sort_by_key(|(suffix, _)| *suffix);
@@ -5551,7 +5607,9 @@ impl AppState {
         }
         let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
         tab.session.kill_and_reap();
-        tab.screen.push_closed(&term_id, "closed");
+        if let Some(screen) = &tab.screen {
+            screen.push_closed(&term_id, "closed");
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -5560,21 +5618,30 @@ impl AppState {
     /// user's machine and the terminal is the basement — and an agent whose
     /// process has ended surfaces "no active agent session" rather than
     /// swallowing the keystrokes.
+    ///
+    /// An agent with no terminal has no basement to type into, and hears about
+    /// it ([`no_terminal_here`]) before its state is consulted: that is a
+    /// property of the session, not of whether it happens to be running.
     fn term_input(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let data = b64decode(&require_str(params, "data")?)?;
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
+        let terminal = tab.require_terminal()?;
         if !tab.live || tab.session.has_exited() {
             return Err("no active agent session".to_string());
         }
-        tab.session.write_input(&data).map_err(|e| e.to_string())?;
+        terminal.write_input(&data).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": true }))
     }
 
     /// Resize a tab's PTY and screen model, by id. The resize only applies
     /// while the session is live; a dead resize is a no-op `live: false` so a
     /// retained last screen is never garbled.
+    ///
+    /// A session with no terminal refuses instead, live or not: a viewport
+    /// means nothing to a session with no grid, so `live: false` there would be
+    /// a quiet "nothing to do" in place of a reason.
     fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
@@ -5588,9 +5655,10 @@ impl AppState {
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
         let live = tab.live && !tab.session.has_exited();
+        let (terminal, screen) = tab.require_terminal_and_screen()?;
         if live {
-            tab.session.resize(size).map_err(|e| e.to_string())?;
-            tab.screen.set_size(cols, rows);
+            terminal.resize(size).map_err(|e| e.to_string())?;
+            screen.set_size(cols, rows);
         }
         Ok(json!({ "ok": true, "live": live }))
     }
@@ -5606,9 +5674,11 @@ impl AppState {
     /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
         for tab in self.tabs.values_mut() {
-            tab.screen
-                .attached
-                .retain(|client| client.sender.session_id() != session_id);
+            if let Some(screen) = &mut tab.screen {
+                screen
+                    .attached
+                    .retain(|client| client.sender.session_id() != session_id);
+            }
         }
         self.agent_screens_awaiting_spawn.retain(|_, screen| {
             screen
@@ -5654,7 +5724,9 @@ impl AppState {
                 killed_agents.push((owner.clone(), agent_id.clone()));
             }
             tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "reaped");
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "reaped");
+            }
             reaped.push(wire_id);
         }
         // The kill above is one the pump can never report: the tab left the
@@ -5733,8 +5805,10 @@ impl AppState {
             };
             if tab.session.has_exited() {
                 return Some(Some(HarnessExit {
+                    // Last words are the terminal's: a session with no screen
+                    // painted none, and its crash is reported by code alone.
                     code: tab.session.exit_code().unwrap_or(-1),
-                    epitaph: screen_epitaph(&tab.screen),
+                    epitaph: tab.screen.as_ref().and_then(screen_epitaph),
                 }));
             }
             let quiet_for = quiet_threshold;
@@ -7695,7 +7769,9 @@ impl AppState {
         if let Some(tab) = self.tabs.remove(&key) {
             let wire_id = tab.wire_id();
             tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "closed");
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "closed");
+            }
         }
         if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
             screen.push_closed(&key.tab_id, "closed");
@@ -7776,6 +7852,12 @@ impl AppState {
             "unread_count": unread.count,
             "unread_reason": unread.reason,
             "working": tab.is_some_and(agent_is_working),
+            // Whether the rail offers this agent a basement. Asked of the live
+            // session, which is the only thing that can answer it — and for an
+            // agent with no session yet the answer is the one that has been
+            // true of every agent Build has ever run, so the attach that opens
+            // a blank screen for it stays on offer.
+            "has_terminal": tab.is_none_or(|tab| tab.session.terminal().is_some()),
             "created_at": agent.created_at,
         })
     }
@@ -8834,7 +8916,9 @@ impl AppState {
         if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
             let wire_id = tab.wire_id();
             tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "agent_session_ended");
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "agent_session_ended");
+            }
         }
         self.mcp_session_tokens.remove(&session.agent_id);
         self.entity_project.remove(capture_id);
@@ -16621,7 +16705,7 @@ fn term_attach(
     // dupe across a reconnect.
     let mut s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(&term_id)?;
-    Ok(attach_to_tab(&mut s, &key, sender, cols, rows))
+    attach_to_tab(&mut s, &key, sender, cols, rows)
 }
 
 /// Report how far this client has applied a tab's output — the client half of
@@ -16644,7 +16728,11 @@ fn term_ack(
     let mut s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(&term_id)?;
     let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
-    tab.screen.ack(&term_id, sender.session_id(), cursor);
+    // A client that was never allowed to attach has nothing to acknowledge, so
+    // it hears the same refusal rather than acking into a screen that is not
+    // there.
+    let (_, screen) = tab.require_terminal_and_screen()?;
+    screen.ack(&term_id, sender.session_id(), cursor);
     Ok(json!({ "ok": true }))
 }
 
@@ -16670,6 +16758,10 @@ fn term_ack(
 /// entity or scope errors, and so does an entity with no worktree (an approved
 /// or abandoned plan): its disposable worktree is gone, so there is no worktree
 /// to host an agent and the surface renders its empty state instead.
+///
+/// It errors for an agent whose session has no terminal ([`no_terminal_here`]).
+/// A client that reads `has_terminal` never asks, and one that predates the
+/// field gets a sentence rather than a blank grid it will sit in forever.
 fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
@@ -16742,7 +16834,7 @@ fn agent_attach(
             "provider": Value::Null,
         }));
     }
-    Ok(attach_to_tab(s, &key, sender, cols, rows))
+    attach_to_tab(s, &key, sender, cols, rows)
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start
@@ -16871,21 +16963,13 @@ fn attach_to_tab(
     sender: &SessionSender,
     cols: u16,
     rows: u16,
-) -> Value {
+) -> Result<Value, String> {
     let tab = state
         .tabs
         .get_mut(key)
         .expect("the key came from the registry");
-    if tab.live && (tab.screen.cols != cols || tab.screen.rows != rows) {
-        let _ = tab.session.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        tab.screen.set_size(cols, rows);
-    }
-    tab.screen.register(sender);
+    let live = tab.live;
+    let wire_id = tab.wire_id();
     // Which harness is behind this screen. Null for a shell, and null from the
     // no-tab-yet branch above — a worktree nothing has run in has no answer, and
     // the client leads its start offer with its own default there instead.
@@ -16893,15 +16977,28 @@ fn attach_to_tab(
         TabRole::Agent { provider, .. } => Some(provider),
         TabRole::Shell => None,
     };
-    json!({
-        "term_id": tab.wire_id(),
-        "live": tab.live,
+    // Both verbs refuse here, because both end here: a session with no terminal
+    // has no snapshot to hand back and no viewport to be told about.
+    let (terminal, screen) = tab.require_terminal_and_screen()?;
+    if live && (screen.cols != cols || screen.rows != rows) {
+        let _ = terminal.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        screen.set_size(cols, rows);
+    }
+    screen.register(sender);
+    Ok(json!({
+        "term_id": wire_id,
+        "live": live,
         "provider": provider,
-        "snapshot": tab.screen.snapshot(),
-        "cursor": tab.screen.total,
-        "cols": tab.screen.cols,
-        "rows": tab.screen.rows,
-    })
+        "snapshot": screen.snapshot(),
+        "cursor": screen.total,
+        "cols": screen.cols,
+        "rows": screen.rows,
+    }))
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
@@ -16946,7 +17043,7 @@ fn ensure_agent_tab(
             if s.agent_spawns_in_flight.contains(&key) {
                 None
             } else {
-                let carried = s.tabs.remove(&key).map(|dead| {
+                let carried = s.tabs.remove(&key).and_then(|dead| {
                     dead.session.kill_and_reap();
                     dead.screen
                 });
@@ -16971,7 +17068,9 @@ fn ensure_agent_tab(
                     if let Some(tab) = s.tabs.remove(&other) {
                         let wire_id = tab.wire_id();
                         tab.session.kill_and_reap();
-                        tab.screen.push_closed(&wire_id, "closed");
+                        if let Some(screen) = &tab.screen {
+                            screen.push_closed(&wire_id, "closed");
+                        }
                     }
                 }
                 // A router session belongs to no project — deciding which one
@@ -17060,7 +17159,7 @@ fn ensure_agent_tab(
                 pixel_width: 0,
                 pixel_height: 0,
             });
-            tab.screen = screen;
+            tab.screen = Some(screen);
         }
         // An interactive TUI must be servicing its PTY before a turn is written
         // into it, or the prompt lands on a startup screen.
@@ -17100,9 +17199,11 @@ fn ensure_agent_tab(
                     pixel_width: 0,
                     pixel_height: 0,
                 });
-                tab.screen.set_size(waiting.cols, waiting.rows);
-                for client in &waiting.attached {
-                    tab.screen.register(&client.sender);
+                if let Some(screen) = &mut tab.screen {
+                    screen.set_size(waiting.cols, waiting.rows);
+                    for client in &waiting.attached {
+                        screen.register(&client.sender);
+                    }
                 }
             }
             s.tabs.insert(key.clone(), tab);
@@ -17262,18 +17363,23 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                 return;
             };
             let term_id = tab.wire_id();
-            tab.screen.parser = vt100::Parser::new(tab.screen.rows, tab.screen.cols, 2000);
-            tab.screen.pending.clear();
+            // A session with no terminal produces no bytes, so there is nothing
+            // to pump: the pump is only ever spawned beside a PTY.
+            let Some(screen) = tab.screen.as_mut() else {
+                return;
+            };
+            screen.parser = vt100::Parser::new(screen.rows, screen.cols, 2000);
+            screen.pending.clear();
             // This reset resyncs every attached client, so a snapshot a previous
             // session's flood left owing is already paid.
-            tab.screen.snapshot_due = false;
+            screen.snapshot_due = false;
             let payload = json!({
                 "type": "term.reset",
                 "term_id": term_id,
-                "data": tab.screen.snapshot(),
-                "cursor": tab.screen.total,
+                "data": screen.snapshot(),
+                "cursor": screen.total,
             });
-            tab.screen.push_to_keeping_up(payload);
+            screen.push_to_keeping_up(payload);
             term_id
         };
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
@@ -17284,7 +17390,8 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     Ok(chunk) => {
                         let mut s = state.lock().unwrap();
                         let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        tab.screen.process(&chunk);
+                        let Some(screen) = tab.screen.as_mut() else { return; };
+                        screen.process(&chunk);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
@@ -17299,8 +17406,10 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                         match ended_agent {
                             Some((owner, agent_id)) => {
                                 tab.live = false;
-                                tab.screen.flush(&term_id);
-                                tab.screen.push_closed(&term_id, "agent_session_ended");
+                                if let Some(screen) = tab.screen.as_mut() {
+                                    screen.flush(&term_id);
+                                    screen.push_closed(&term_id, "agent_session_ended");
+                                }
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -17310,7 +17419,9 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                             None => {
                                 let Some(tab) = s.tabs.remove(&key) else { return; };
                                 tab.session.kill_and_reap();
-                                tab.screen.push_closed(&term_id, "exited");
+                                if let Some(screen) = &tab.screen {
+                                    screen.push_closed(&term_id, "exited");
+                                }
                             }
                         }
                         return;
@@ -17319,7 +17430,8 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                 _ = flush.tick() => {
                     let mut s = state.lock().unwrap();
                     let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                    tab.screen.flush(&term_id);
+                    let Some(screen) = tab.screen.as_mut() else { return; };
+                    screen.flush(&term_id);
                 }
             }
         }
@@ -17515,6 +17627,15 @@ mod tests {
             capture_login_path("/nonexistent-shell-for-test", Duration::from_secs(5)),
             None
         );
+    }
+
+    /// The grid a tab's terminal paints into. Every tab a test spawns has one:
+    /// only a hand-built terminal-free session does not, and no test that
+    /// speaks about a screen owns one of those.
+    fn screen_of(tab: &Tab) -> &TermScreen {
+        tab.screen
+            .as_ref()
+            .expect("a tab spawned in a PTY has a screen")
     }
 
     fn req(method: &str, params: Value) -> Frame {
@@ -18437,7 +18558,7 @@ mod tests {
         else {
             return String::new();
         };
-        String::from_utf8_lossy(&b64decode(&tab.screen.snapshot()).unwrap()).into_owned()
+        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot()).unwrap()).into_owned()
     }
 
     /// Poll the agent tab's screen until it shows `needle` (the pump feeds it),
@@ -19459,8 +19580,8 @@ mod tests {
             s.tabs
                 .values()
                 .find(|tab| tab.wire_id() == wire_id)
+                .map(screen_of)
                 .expect("the tab is still registered")
-                .screen
                 .attached
                 .iter()
                 .map(|client| client.sender.session_id().to_string())
@@ -27957,8 +28078,10 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    if let Some(tab) = state.tabs.get_mut(key) {
-                        tab.screen.process(&chunk);
+                    if let Some(screen) =
+                        state.tabs.get_mut(key).and_then(|tab| tab.screen.as_mut())
+                    {
+                        screen.process(&chunk);
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
@@ -30195,8 +30318,9 @@ mod tests {
         );
 
         let s = state.lock().unwrap();
-        let screen =
-            &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-waited-for")].screen;
+        let screen = screen_of(
+            &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
+        );
         assert_eq!(
             (screen.cols, screen.rows),
             (100, 30),
@@ -30237,7 +30361,7 @@ mod tests {
                 let s = state.lock().unwrap();
                 let tab = &s.tabs[&key];
                 if !tab.live {
-                    break tab.screen.total;
+                    break screen_of(tab).total;
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -30836,11 +30960,11 @@ mod tests {
         let s = state.lock().unwrap();
         let tab = &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
         assert!(
-            tab.screen.attached.is_empty(),
+            screen_of(tab).attached.is_empty(),
             "a session that ended is never carried onto the agent it waited for"
         );
         assert_eq!(
-            (tab.screen.cols, tab.screen.rows),
+            (screen_of(tab).cols, screen_of(tab).rows),
             (120, 40),
             "with nobody left waiting, the spawn keeps the size Build chose"
         );
@@ -31652,10 +31776,125 @@ mod tests {
             role,
             created_at: now_rfc3339(),
             session: Box::new(DictatedStatus(status)),
-            screen: TermScreen::new(80, 24),
+            // `DictatedStatus` says nothing about terminals, so it has none —
+            // and a tab with no terminal has no grid, because the two are made
+            // together. A screen here would be the flag that disagrees with
+            // reality.
+            screen: None,
             live: true,
             last_delivered_at: None,
         }
+    }
+
+    /// An agent tab rooted at `root` whose session has no terminal — the shape
+    /// a session protocol has.
+    ///
+    /// Built by hand because no provider produces one yet: until one does,
+    /// these tests are the only thing that walks the refusal paths, and a path
+    /// nothing walks is a path that has not been written.
+    fn terminal_free_agent_tab(root: &std::path::Path, owner: &str, agent_id: &str) -> Tab {
+        Tab {
+            tab_id: agent_tab_id(agent_id),
+            root: root.to_path_buf(),
+            role: TabRole::Agent {
+                owner: owner.to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            created_at: now_rfc3339(),
+            session: Box::new(DictatedStatus(AgentStatus::Working)),
+            screen: None,
+            live: true,
+            last_delivered_at: None,
+        }
+    }
+
+    /// The terminal verbs refuse an agent whose session has no terminal, and
+    /// say where that agent's work actually is.
+    ///
+    /// Following `require_shell_kind`: never fall back. Swallowing keystrokes
+    /// no process will read, or answering `ok` to a resize of a grid that does
+    /// not exist, is the same silent-wrong-program failure that refusal exists
+    /// to prevent — and here it would leave a human typing into a void.
+    #[test]
+    fn the_terminal_verbs_refuse_an_agent_with_no_terminal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-protocol";
+        state.tabs.insert(
+            TabKey::agent(&root, agent_id),
+            terminal_free_agent_tab(&root, "run-protocol", agent_id),
+        );
+        let term_id = agent_tab_id(agent_id);
+
+        let typed = state.handle(req(
+            "term.input",
+            json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
+        ));
+        assert_eq!(typed["ok"], false, "{typed:?}");
+        let refusal = typed["error"].as_str().unwrap().to_string();
+        assert!(
+            refusal.contains(&term_id) && refusal.contains("conversation"),
+            "the refusal names the agent and where its work is read: {refusal}"
+        );
+
+        let resized = state.handle(req(
+            "term.resize",
+            json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
+        ));
+        assert_eq!(
+            resized["ok"], false,
+            "a viewport means nothing to a session with no grid: {resized:?}"
+        );
+        assert_eq!(resized["error"], json!(refusal));
+    }
+
+    /// Attaching to a terminal-free agent refuses the same way, whichever verb
+    /// asks — `agent.attach` by what a surface holds, `term.attach` by wire id.
+    /// One capability, one question, one answer.
+    #[tokio::test]
+    async fn agent_attach_refuses_an_agent_with_no_terminal() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-protocol";
+        let project_id = {
+            let mut s = state.lock().unwrap();
+            s.tabs.insert(
+                TabKey::agent(&root, agent_id),
+                terminal_free_agent_tab(&root, "run-protocol", agent_id),
+            );
+            s.projects[0].id.clone()
+        };
+
+        let attached = call(
+            &handler,
+            "agent.attach",
+            json!({ "project_id": project_id }),
+        );
+        assert_eq!(attached["ok"], false, "{attached:?}");
+        assert!(
+            attached["error"].as_str().unwrap().contains("conversation"),
+            "{attached:?}"
+        );
+
+        let by_wire = call(
+            &handler,
+            "term.attach",
+            json!({ "term_id": agent_tab_id(agent_id) }),
+        );
+        assert_eq!(by_wire["error"], attached["error"], "{by_wire:?}");
+
+        // A client that was never allowed to attach has nothing to acknowledge
+        // either, and hears why rather than acking into a screen that does not
+        // exist.
+        let acked = call(
+            &handler,
+            "term.ack",
+            json!({ "term_id": agent_tab_id(agent_id), "cursor": 0 }),
+        );
+        assert_eq!(acked["error"], attached["error"], "{acked:?}");
     }
 
     fn agent_role() -> TabRole {
@@ -33532,6 +33771,69 @@ mod tests {
     }
 
     // ==== Agents: one entity, several conversations ==========================
+
+    /// The rail needs to know whether an agent has a basement to offer, so the
+    /// digest says it. It is a different question from `working` — one asks
+    /// what the session can do, the other what it is doing — and the answer to
+    /// the second must not move when the first is added.
+    #[test]
+    fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        let root = state
+            .entity_agent_root(&run_id)
+            .expect("the adopted worktree");
+        let bubble = |state: &mut AppState| -> Value {
+            let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+            listed["result"]["agents"][0].clone()
+        };
+
+        // Nothing has started yet. Every agent Build has ever run has had a
+        // terminal and the attach opens a blank screen for one that has not
+        // started, so the basement stays on offer.
+        let idle = bubble(&mut state);
+        assert_eq!(idle["has_terminal"], true, "{idle:?}");
+        assert_eq!(idle["working"], false, "{idle:?}");
+
+        // A PTY session answers for itself, and answers yes: today every
+        // session does.
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &HarnessSpec::new("cat"),
+            agent_tab_id(&agent_id),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        state.tabs.insert(TabKey::agent(&root, &agent_id), tab);
+        let running = bubble(&mut state);
+        assert_eq!(running["has_terminal"], true, "{running:?}");
+
+        // And a session with no terminal answers no, while still reporting the
+        // status it is in — `working` keeps its exact meaning.
+        state
+            .tabs
+            .insert(
+                TabKey::agent(&root, &agent_id),
+                terminal_free_agent_tab(&root, &run_id, &agent_id),
+            )
+            .expect("the PTY tab it replaces")
+            .session
+            .kill_and_reap();
+        let protocol = bubble(&mut state);
+        assert_eq!(protocol["has_terminal"], false, "{protocol:?}");
+        assert_eq!(
+            protocol["working"], true,
+            "a session with no terminal still says what it is doing: {protocol:?}"
+        );
+    }
 
     /// A branch can carry more than one agent, and each gets its own
     /// conversation. Nothing an agent says lands in another agent's thread —

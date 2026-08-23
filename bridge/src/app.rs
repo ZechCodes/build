@@ -31728,7 +31728,14 @@ mod tests {
         fn status(&self) -> AgentStatus {
             self.0
         }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
         fn end(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
     }
 
     impl HarnessSession for DictatedStatus {
@@ -31756,14 +31763,10 @@ mod tests {
         fn has_exited(&self) -> bool {
             false
         }
-        fn exited_within(&self, _timeout: Duration) -> bool {
-            false
-        }
         fn exit_code(&self) -> Option<i32> {
             None
         }
         fn kill_and_reap(&self) {}
-        fn backdate_last_output(&self, _ago: Duration) {}
     }
 
     /// A live tab whose session reports `status`.

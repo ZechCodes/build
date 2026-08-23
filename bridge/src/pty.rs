@@ -420,6 +420,38 @@ impl PtySession {
     pub fn pid(&self) -> Option<u32> {
         self.child.lock().unwrap().process_id()
     }
+
+    /// Whether the child exits within `timeout`. `has_exited` is a single
+    /// racy poll: a dying harness closes its side of the PTY (so writes fail
+    /// with EIO) *before* the OS makes its exit status reapable, so one poll
+    /// can report a harness that is already gone as still running. Callers
+    /// deciding whether a PTY write error means "crashed" (benign) rather
+    /// than "wedged" (fatal) wait out that reap lag here instead.
+    pub fn exited_within(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.has_exited() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Test-only: age the last-output stamp by `ago`, so a live PTY reports the
+    /// silence of one that has been sitting at its prompt for that long.
+    ///
+    /// The windows this feeds (an agent counts as working for 30 s after it
+    /// paints; quiescence demotes after minutes) are far longer than any test
+    /// may sleep, and the alternative — a real wait — would make the suite
+    /// unrunnable. The process stays genuinely alive; only the clock moves.
+    #[cfg(test)]
+    pub fn backdate_last_output(&self, ago: Duration) {
+        let mut last = self.last_activity.lock().unwrap();
+        *last = last.checked_sub(ago).expect("a stamp old enough to age");
+    }
 }
 
 /// What Build needs from any agent, answered by a subprocess in a full PTY.
@@ -456,6 +488,19 @@ impl AgentSession for PtySession {
         }
     }
 
+    /// The age of the last byte painted. A terminal has no other evidence that
+    /// work is happening, so the paint clock is the whole answer — the same
+    /// measurement `idle_for` has always made, under the name the daemon asks
+    /// every carrier by.
+    fn quiet_for(&self) -> Duration {
+        self.idle_for()
+    }
+
+    /// Wait out the reap lag — see [`PtySession::exited_within`].
+    fn exited_within(&self, timeout: Duration) -> bool {
+        PtySession::exited_within(self, timeout)
+    }
+
     /// Kill the harness and reap it — see [`HarnessSession::kill_and_reap`].
     fn end(&self) {
         self.kill_and_reap();
@@ -464,6 +509,13 @@ impl AgentSession for PtySession {
     /// Always, for a CLI wrapper: it is opaque, so the human needs a way in.
     fn terminal(&self) -> Option<&dyn TerminalView> {
         Some(self)
+    }
+
+    /// Test-only: age the paint clock — see
+    /// [`PtySession::backdate_last_output`].
+    #[cfg(test)]
+    fn backdate_last_output(&self, ago: Duration) {
+        PtySession::backdate_last_output(self, ago);
     }
 }
 
@@ -544,19 +596,6 @@ impl HarnessSession for PtySession {
         Instant::now().saturating_duration_since(*self.last_activity.lock().unwrap())
     }
 
-    /// Test-only: age the last-output stamp by `ago`, so a live PTY reports the
-    /// silence of one that has been sitting at its prompt for that long.
-    ///
-    /// The windows this feeds (an agent counts as working for 30 s after it
-    /// paints; quiescence demotes after minutes) are far longer than any test
-    /// may sleep, and the alternative — a real wait — would make the suite
-    /// unrunnable. The process stays genuinely alive; only the clock moves.
-    #[cfg(test)]
-    fn backdate_last_output(&self, ago: Duration) {
-        let mut last = self.last_activity.lock().unwrap();
-        *last = last.checked_sub(ago).expect("a stamp old enough to age");
-    }
-
     /// Resize the terminal — see [`PtySession::resize`].
     fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
         PtySession::resize(self, size)
@@ -595,25 +634,6 @@ impl HarnessSession for PtySession {
                 return true;
             }
             if self.has_exited() || Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    /// Whether the child exits within `timeout`. `has_exited` is a single
-    /// racy poll: a dying harness closes its side of the PTY (so writes fail
-    /// with EIO) *before* the OS makes its exit status reapable, so one poll
-    /// can report a harness that is already gone as still running. Callers
-    /// deciding whether a PTY write error means "crashed" (benign) rather
-    /// than "wedged" (fatal) wait out that reap lag here instead.
-    fn exited_within(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if self.has_exited() {
-                return true;
-            }
-            if Instant::now() >= deadline {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -1308,6 +1328,99 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         agrees(&dead, "exited");
+    }
+
+    #[tokio::test]
+    async fn quiet_for_is_exactly_the_paint_clock_it_replaced() {
+        // The idle sweep and the worktree cards asked `idle_for` directly. They
+        // ask `quiet_for` now, and for a PTY the answer must still come off the
+        // last byte — the name generalizes, the measurement does not move.
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("printf 'painting'; sleep 30");
+        let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
+        let mut rx = session.subscribe();
+        read_until(&mut rx, "painting").await;
+
+        let asked: Box<dyn AgentSession> = Box::new(session);
+        // Both clocks run, so they are compared with the tolerance of the gap
+        // between the two reads rather than for equality.
+        let close_enough = |state: &str, session: &dyn AgentSession, painted: Duration| {
+            let quiet = session.quiet_for();
+            assert!(
+                quiet.abs_diff(painted) < Duration::from_millis(250),
+                "{state}: quiet_for {quiet:?} is not the paint clock's {painted:?}"
+            );
+        };
+        close_enough("painting", asked.as_ref(), Duration::ZERO);
+
+        asked.backdate_last_output(Duration::from_secs(600));
+        close_enough(
+            "quiet for ten minutes",
+            asked.as_ref(),
+            Duration::from_secs(600),
+        );
+        asked.end();
+    }
+
+    #[tokio::test]
+    async fn exited_within_waits_out_the_reap_lag_through_the_trait() {
+        // `deliver` decides whether a failed turn means "crashed" (benign) or
+        // "wedged" (fatal) here, and it asks the trait now. A harness that dies
+        // during the grace must still be reported as exited — the single poll
+        // this replaces races the kernel's reap.
+        let dying: Box<dyn AgentSession> = Box::new(
+            PtySession::spawn(
+                &HarnessSpec::new("sh").arg("-c").arg("sleep 0.2; exit 3"),
+                None,
+                small_pty(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            dying.exited_within(Duration::from_secs(5)),
+            "a harness that dies inside the grace is a crash, not a wedge"
+        );
+        assert_eq!(dying.status(), AgentStatus::Ended { code: Some(3) });
+
+        let live: Box<dyn AgentSession> = Box::new(
+            PtySession::spawn(
+                &HarnessSpec::new("sh").arg("-c").arg("sleep 30"),
+                None,
+                small_pty(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            !live.exited_within(Duration::from_millis(50)),
+            "a session that outlives the grace is wedged, and its error is real"
+        );
+        live.end();
+    }
+
+    #[tokio::test]
+    async fn a_pty_leaves_no_epitaph_of_its_own() {
+        // Last words are the terminal's, and a terminal's screen belongs to the
+        // tab: the idle sweep reads `tab.screen` for a PTY exactly as it always
+        // has. Answering here too would be a second copy of one crash, free to
+        // disagree with the first.
+        let session: Box<dyn AgentSession> = Box::new(
+            PtySession::spawn(
+                &HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("printf 'out of quota'; exit 3"),
+                None,
+                small_pty(),
+            )
+            .unwrap(),
+        );
+        for _ in 0..50 {
+            if matches!(session.status(), AgentStatus::Ended { .. }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(session.epitaph(), None);
     }
 
     #[tokio::test]

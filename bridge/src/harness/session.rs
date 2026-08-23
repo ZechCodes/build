@@ -72,13 +72,57 @@ pub enum AgentStatus {
 pub trait AgentSession: Send + Sync {
     /// Hand the agent one turn. Returns when the turn is accepted, not when it
     /// is finished.
+    ///
+    /// **May block, and callers must not hold the app-wide state lock across
+    /// it.** The PTY implementation writes a framed paste and the harness's
+    /// submit key trails it by [`REAL_TUI_SUBMIT_DELAY`], so a call can hold
+    /// its thread for seconds; a protocol implementation returns as soon as
+    /// the turn is written and never waits on the model. The daemon already
+    /// honours this — the verbs queue turns and
+    /// `deliver_pending_agent_turns` drains the queue once the lock is free —
+    /// and it is written down here so a future caller does not re-learn it
+    /// from a deadlock.
+    ///
+    /// [`REAL_TUI_SUBMIT_DELAY`]: crate::harness::REAL_TUI_SUBMIT_DELAY
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError>;
 
     /// What the agent is doing right now.
     fn status(&self) -> AgentStatus;
 
+    /// How long since the session last showed evidence of work — bytes painted
+    /// for a PTY, protocol events read for a session protocol.
+    ///
+    /// Not [`status`](AgentSession::status) restated: that is a 30-second
+    /// judgement about whether to pulse a rail dot, while this is the
+    /// minutes-scale anomaly clock the idle sweep demotes on. Both carriers
+    /// can hold one honestly.
+    fn quiet_for(&self) -> Duration;
+
+    /// Whether the session ends within `timeout`. A single status poll is
+    /// racy: a dying harness closes its pipes BEFORE its exit status is
+    /// reapable, so a caller deciding whether a failed [`send_turn`] means
+    /// "crashed" rather than "wedged" waits the lag out here.
+    ///
+    /// [`send_turn`]: AgentSession::send_turn
+    fn exited_within(&self, timeout: Duration) -> bool;
+
     /// End the session and release whatever it holds.
+    ///
+    /// For a subprocess carrier that includes the process-table entry: killing
+    /// without reaping leaks a zombie per session on a daemon that never
+    /// restarts.
     fn end(&self);
+
+    /// The session's last words, once it has ended. `None` for a session that
+    /// left none worth repeating.
+    ///
+    /// A PTY answers `None`: its last words are on the screen, which belongs to
+    /// the tab and is read there. A session protocol has no screen and answers
+    /// with the last error it was *told* — the final result's error text, or
+    /// the last line of stderr. Reported, never scraped.
+    fn epitaph(&self) -> Option<String> {
+        None
+    }
 
     /// The terminal, if this session has one. `None` is a normal answer.
     ///
@@ -88,6 +132,15 @@ pub trait AgentSession: Send + Sync {
     fn terminal(&self) -> Option<&dyn TerminalView> {
         None
     }
+
+    /// Age the evidence-of-work stamp, so a live session reports the silence of
+    /// one that has been sitting idle for `ago`.
+    ///
+    /// Test-only, and it travels with [`quiet_for`](AgentSession::quiet_for):
+    /// the windows that clock feeds are minutes long, and a suite that waited
+    /// them out in real time would be unrunnable.
+    #[cfg(test)]
+    fn backdate_last_output(&self, ago: Duration);
 }
 
 /// Full access to a harness Build can only see the outside of.
@@ -158,14 +211,6 @@ pub trait HarnessSession: AgentSession {
     /// Whether the session has ended (crash, completion, kill).
     fn has_exited(&self) -> bool;
 
-    /// Whether the session ends within `timeout`. A single [`has_exited`] poll
-    /// is racy — a dying harness closes its end before its status is reapable —
-    /// so a caller deciding whether a failed write means "crashed" rather than
-    /// "wedged" waits the lag out here.
-    ///
-    /// [`has_exited`]: HarnessSession::has_exited
-    fn exited_within(&self, timeout: Duration) -> bool;
-
     /// The exit code once the session has ended. Stable across repeated calls:
     /// the status is reapable exactly once, so an implementation must cache it.
     fn exit_code(&self) -> Option<i32>;
@@ -173,14 +218,6 @@ pub trait HarnessSession: AgentSession {
     /// End the session and release its process-table entry. Killing without
     /// reaping leaks a zombie per session on a daemon that never restarts.
     fn kill_and_reap(&self);
-
-    /// Age the last-output stamp, so a live session reports the silence of one
-    /// that has been sitting idle for `ago`.
-    ///
-    /// Test-only. The windows this feeds are minutes long, and a suite that
-    /// waited them out in real time would be unrunnable.
-    #[cfg(test)]
-    fn backdate_last_output(&self, ago: Duration);
 }
 
 #[cfg(test)]
@@ -198,7 +235,14 @@ mod tests {
         fn status(&self) -> AgentStatus {
             AgentStatus::Working
         }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
         fn end(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

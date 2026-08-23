@@ -5,9 +5,11 @@
 //
 // Two properties drive the whole module:
 //
-//  * An agent always moves the same way. The parameters are drawn from a seeded
-//    PRNG keyed on the agent's id, so a reload, a repaint, or a second device
-//    shows the same drift, the same tilt, the same ripple. Nothing is stored.
+//  * The same seed always moves the same way. The parameters are drawn from a
+//    seeded PRNG, so a repaint replays the same drift, the same tilt, the same
+//    ripple — nothing is stored. What the seed MEANS is the caller's choice:
+//    core/agentRail.js salts the agent's id once per page load, so an agent is
+//    itself all session and something new tomorrow.
 //
 //  * A paused bubble holds its frame. Time comes from createClock, which only
 //    accumulates while it is running — so an idle agent's pattern stops where it

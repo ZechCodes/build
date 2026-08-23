@@ -51,7 +51,7 @@ all. An ADK session calls the same tools over the same socket.
 
 ### To the agent — one chokepoint, no interface
 
-`deliver` (`bridge/src/app.rs:16800`) is documented as "the one pipe from Build
+`deliver` (`bridge/src/app.rs:17132`) is documented as "the one pipe from Build
 to a worktree's agent", and every turn Build sends goes through it. But it ends
 in `HarnessSession::write_prompt`, which means bracketed-paste framing, a
 sanitised prompt, and a submit key written 1500 ms later
@@ -237,113 +237,84 @@ Two mechanical consequences follow, and neither is optional. They are §6.
 
 ---
 
-## 6. The two things this breaks
+## 6. What activity in the conversation costs
 
-Both are in code that predates agent activity being conversational, and both must
-be fixed in the same change that introduces the new kinds. Both are now decided.
+Rewritten 2026-08-23. This section said "the two things this breaks" and named
+the catch-up packet and an unbounded thread. The store work answered the second
+and changed the shape of the first — and created a third that could not have
+been foreseen when a conversation was a `Vec` that was always entirely present.
 
-### 6.1 The catch-up packet is messages only
+### 6.1 Activity floods the resident tail — the new one
 
-**Decided 2026-08-20:** the catch-up packet a resumed agent is handed carries
-**only messages to and from the agent** — nothing else on the thread.
+A conversation is no longer fully resident. A boot reads the newest
+`RESIDENT_CONVERSATION_TAIL` items (200, `store.rs:477`) and remembers how many
+it left behind; everything older is read back from the database on demand.
 
-`Thread::catch_up_markdown` (`bridge/src/thread.rs:1975`) currently takes the
-last N items by recency, N = 40, filtered only for completion messages:
+Lifecycle events arrive a handful per run, so a 200-item tail is comfortably a
+conversation's working set today. **Activity is not like that.** A single build
+session emits hundreds of tool calls. Put those in the conversation and the
+resident tail becomes *entirely activity* — every message the human and the
+agent exchanged pushed out of memory by the agent narrating its own tool use.
 
-```rust
-for item in self.items.iter().rev().take(limit).rev() { … }
-```
+Two things break the moment that happens, and both are silent:
 
-Nothing about class. A session that emitted forty tool calls before restarting
-would hand its replacement forty tool calls and **none of the human's messages**
-— the exact context the packet exists to carry. Filtering to messages fixes that
-by construction rather than by tuning a ratio, and it does not need revisiting
-when a fifth activity kind is added later.
+- **The catch-up packet empties.** `catch_up_markdown` (`thread.rs:2237`) reads
+  `self.items` — the tail. §6.2 below filters it to messages, which is right,
+  but filtering a tail that holds no messages yields **nothing**. A resumed
+  agent would be handed an empty conversation and told to carry on.
+- **The first page shows no conversation.** `DEFAULT_THREAD_PAGE` is 60
+  (`thread.rs:961`). Opening a conversation would paint 60 tool calls, with the
+  last thing anyone actually said somewhere below them.
 
-**What this drops, deliberately:** the packet's event branch emits a line for
-every event carrying a summary. In practice that is four places — `Done`,
-`Blocked` / `ReviewBlocked`, `RunFailed` / `IdleUnreported` / crash reasons, and
-revision/approval events. So a resumed agent stops being told "you went quiet
-without reporting done" or "the reviewer approved revision 3".
+**So activity must not be counted against either bound.** Concretely:
 
-Two reasons that is the right trade:
+1. The catch-up packet is built from a **store query for messages**, not from
+   the resident tail. The database already distinguishes them —
+   `thread_items.attention` is set at write time, and every activity kind is
+   `Status` — so this is a `WHERE`, not a scan.
+2. The page the client opens on is measured in **conversation**, not items:
+   activity between two messages travels with them and is folded, rather than
+   consuming the budget that decides how far back the human can see.
 
-1. Those are **Build's observations about the agent**, not the conversation. An
-   agent that blocked said why in a message; the event is Build restating it for
-   the human's timeline.
-2. The structured completion report survives regardless —
-   `conversation_prompt` appends `thread.last_completion` separately, after the
-   packet (`bridge/src/orchestrator.rs:658`), so the densest of the four is not
-   carried by this path anyway.
+This is the one genuinely new requirement the store work creates, and it is why
+step 4 is bigger than "add four enum variants".
 
-### 6.2 Activity cannot live in the aggregate record
+### 6.2 The catch-up packet is messages only
 
-> **Superseded 2026-08-21 by `Store Migration Spec.md`.** The conclusion below —
-> that activity needs a per-agent jsonl log — was reasoning around a JSON store
-> that rewrites a whole aggregate per append. That store is being replaced with
-> SQLite, where a thread item is a row, appending is one `INSERT`, and paging is
-> a `LIMIT`. The jsonl log is not needed and should not be built. The *diagnosis*
-> below still stands and is why the store is changing; only the remedy is
-> withdrawn.
+**Decided 2026-08-20. Not implemented** — `catch_up_markdown` still takes the
+last 40 items by recency and includes any event carrying a summary. It is part
+of step 4, not a regression.
 
-This is the part the storage layer decides, not the design.
+The packet a resumed agent is handed carries **only messages to and from the
+agent**. Filtering by class would have worked and needed revisiting the next
+time a kind was added; filtering to messages is right by construction.
 
-**There is no database.** The store is one `record.json` per Issue under
-`~/.build/tasks/issues/<id>/`, holding the Issue *and every implementation
-inside it*, each with its own thread. Records are written atomically — tmp file,
-fsync, rename — and `save_issue_implementation` (`bridge/src/store.rs:615`) is a
-read-modify-write of the whole aggregate:
+What it drops, deliberately: in practice four places attach a summary to an
+event — `Done`, `Blocked`/`ReviewBlocked`, `RunFailed`/`IdleUnreported`/crash
+reasons, and revision/approval. Those are Build's observations *about* the
+agent rather than the conversation, and the structured completion report is
+appended separately by `conversation_prompt` (`orchestrator.rs:644`), so the
+densest of them survives regardless.
 
-```rust
-let mut aggregate: PersistedIssue = read_record(&path)?;   // the entire Issue
-… replace one implementation …
-let json = serde_json::to_string_pretty(&aggregate)?;      // re-serialize all of it
-write_record_atomically(&path, &json)                      // + fsync
-```
+Read with §6.1: messages-only is necessary and not sufficient. The filter has
+to run over a query, not over the tail.
 
-So appending one thread item costs a full read, a full pretty-print
-serialization, and an fsync **of every thread on that Issue**.
+### 6.3 Storage — answered by the store work
 
-That is correct and cheap for what the thread holds today: messages and
-lifecycle events, a handful per run. It is quadratic for activity. Tool events
-arrive hundreds per session, and each one would rewrite a file that each previous
-one made bigger — **O(n²) bytes written and fsynced over a session**, against a
-disk, with the app mutex in the neighbourhood.
+This section argued a per-agent jsonl log, because appending to the JSON store
+rewrote every conversation on the Issue. That store is gone. A thread item is a
+row, an append is one `INSERT`, a page is a `LIMIT`, and the unread badge is a
+`COUNT` over an indexed `attention` column. See `Store Migration Spec.md`.
 
-The problem is not that the file gets big. It is write amplification.
-
-**So activity does not go in the aggregate record at all.** It goes in an
-append-only log beside it:
-
-```text
-issues/<issue_id>/record.json              messages + lifecycle  (unchanged)
-issues/<issue_id>/activity/<agent_id>.jsonl   reasoning, tool use, narration
-```
-
-- **Appending is O(1)** — one write, no read, no re-serialization of anything
-  else. This is the whole point.
-- `Thread::items` holds a **recent window** in memory and on the wire; older
-  activity is read back from the log on demand.
-- The log is per agent, so two agents on one checkout never contend, and
-  deleting one agent's history never touches another's.
-
-This is also a format Build already reads: claude keeps transcripts as
-`~/.claude/projects/**/*.jsonl` and codex keeps dated JSONL rollouts, and the
-transcript probes in `harness/claude.rs` and `harness/codex.rs` parse both today.
-The activity log is the same shape, owned by Build.
-
-**The alternative considered and rejected for now:** an embedded database
-(sqlite, redb). It solves paging properly and would let the thread be queried
-rather than loaded whole. But there is no database dependency in the bridge
-today and the entire store is file-per-entity JSON, so introducing one for a
-single subsystem is an architectural move that should be made deliberately and on
-its own — not smuggled in behind an activity feed. The jsonl log can be migrated
-into a database later; it cannot be un-migrated out of the aggregate record once
-the write amplification has been shipped.
+**Nothing extra is needed to store activity.** It is rows, like everything else
+on a conversation, and the badge is already correct for it: activity is `Status`
+class, so it writes `attention = 0` and never counts toward what the human is
+being called to. That much of step 4 is free.
 
 ## 7. Terminal-coupled surfaces — the inventory
 
-Everything that must become conditional. This is the actual size of the work.
+Everything that must become conditional. Line numbers re-checked 2026-08-23
+against `main`.
 
 ### Bridge
 
@@ -352,34 +323,29 @@ Everything that must become conditional. This is the actual size of the work.
 | `Tab.session` (`app.rs:652`) | `Box<dyn HarnessSession>` | `Box<dyn AgentSession>` |
 | `Tab.screen` (`app.rs:653`) | always a `TermScreen` | `Option<TermScreen>` — no grid without a terminal |
 | `agent_is_working` (`app.rs:893`) | reads `idle_for` | reads `status()` |
+| `deliver` (`app.rs:17132`) | ends in `write_prompt` | ends in `send_turn` |
 | `agent_attach` (`app.rs`) | attaches a grid, defaults 40×120 | refuses, with a reason, for a session with no terminal |
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
-| `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
-| `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
-| `catch_up_markdown` (`thread.rs:1975`) | last 40 items by recency, events included | messages only (§6.1) |
-| `Thread::items` (`thread.rs`) | unbounded `Vec`, in the aggregate record | recent window; activity in a per-agent jsonl log (§6.2) |
-| `save_issue_implementation` (`store.rs:615`) | read-modify-write of the whole Issue per append | unchanged — activity never reaches it (§6.2) |
+| `spawn_tab_pump` | pumps bytes into `TermScreen` | with no terminal, posts activity to the conversation instead |
+| `agent_digest` (`app.rs:7751`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
+| `catch_up_markdown` (`thread.rs:2237`) | last 40 items of the tail, events included | messages, from a store query (§6.1, §6.2) |
+| `DEFAULT_THREAD_PAGE` (`thread.rs:961`) | 60 items | 60 units of conversation; activity rides along (§6.1) |
 
 ### SPA
 
 | Site | Today | Change |
 |---|---|---|
-| `agentRail.js:177` | Chat / TUI switch | **TUI button shown only when `has_terminal`** |
-| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds; folded by default |
-| `surfaceTabs.js` | mounts the agent's PTY pane | unchanged — it is simply not reached for a no-terminal agent |
+| `agentRail.js:185` | Chat / TUI switch | **TUI button shown only when `has_terminal`** |
+| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds, folded by default |
+| `surfaceTabs.js` | mounts the agent's PTY pane | unchanged — simply not reached for a no-terminal agent |
 | `terminal/manager.js` | one shared socket, demuxed by `term_id` | unchanged |
 | `console.js` | the human's own shells | unchanged; the console was never the agent's |
 
-Two of these deserve calling out as **explicitly unchanged**, because the first
-draft of this spec had them changing:
-
-- **`surfaceTabs.js` needs no work.** It mounts a PTY pane. A no-terminal agent
-  never asks it to, so there is nothing to make conditional — the rail just does
-  not offer the button.
-- **The console is not the agent's.** It hosts the human's own shells in the
-  checkout. A worktree still has terminals even when its agent does not.
-
----
+Two are **explicitly unchanged**, because the first draft of this spec had them
+changing: `surfaceTabs.js` mounts a PTY pane and a no-terminal agent never asks
+it to, so there is nothing to make conditional — the rail just does not offer
+the button. And the console hosts the human's own shells in the checkout; a
+worktree still has terminals even when its agent does not.
 
 ## 8. Wire contract
 
@@ -451,11 +417,15 @@ Each step compiles, ships and is green on its own.
 3. **Make `Tab.screen` an `Option`**, add `has_terminal` to the agent digest, and
    add the typed refusals to `agent_attach` / `term.input` / `term.resize`. No
    session returns `None` yet — the paths are dead but exercised by tests.
-4. **Add the four activity kinds**, classed `Status`, *with* the
-   messages-only catch-up packet (§6.1) and the per-agent activity log (§6.2) in
-   the same change. Nothing emits them yet. This is the step that must not be
-   split: both fixes exist precisely because the kinds do, and shipping the kinds
-   without the log ships the write amplification.
+4. **Add the four activity kinds**, classed `Status`. Storage is free (§6.3),
+   but two things must land in the same change or the kinds break what is
+   already working:
+   - the catch-up packet becomes a **store query for messages** (§6.1, §6.2) —
+     filtering the resident tail is not enough once activity can fill it;
+   - the page the client opens on stops counting activity against its budget
+     (§6.1), or opening a conversation paints tool calls instead of it.
+
+   Nothing emits the kinds yet. This is the step that must not be split.
 5. **SPA: hide the TUI button when `has_terminal` is false**, and render the four
    kinds in the thread, folded by default.
 6. **Then, and only then, add a provider with no terminal.** By this point it is
@@ -468,32 +438,40 @@ catch-up packet regardless of who fills the thread.
 
 ---
 
-## 11. Decisions needed before step 1
+## 11. Decisions still open
 
-1. **How large is the thread's recent activity window?** §6.2 settles *where*
-   activity is persisted; it does not settle how much of it the thread carries in
-   memory and on the wire before a client has to page the log. A few hundred
-   items keeps a session's work visible without a snapshot that is expensive to
-   ship. This gates step 4 and nothing else.
+Re-checked 2026-08-23. The storage question is answered; three remain, and one
+is new.
 
-2. **Does `Turn` carry structure, or stay a string?** A PTY can only take text.
-   ADK can take structured content (attachments, images, tool results). Making
+1. **Does `Turn` carry structure, or stay a string?** A PTY can only take text.
+   ADK can take structured content — attachments, images, tool results. Making
    `Turn` a struct now costs little; making it one later touches every caller of
-   `deliver`.
+   `deliver`. **Gates step 1.**
 
-3. **Does a no-terminal agent still get a worktree?** ADK and the app server both
-   operate on files, so yes — but it is worth stating, because "agent" and
+2. **How is a page measured once activity is in it?** §6.1 says activity must
+   not consume the budget that decides how far back a human can see, but not
+   what replaces it — 60 messages with their activity folded beneath, or a
+   separate activity budget per message. **Gates step 4**, and it is the one
+   with a visible consequence: get it wrong and opening a conversation shows
+   tool calls where the conversation should be. *(New — the resident tail and
+   the 60-item page did not exist when this spec was written.)*
+
+3. **Does a no-terminal agent still get a worktree?** ADK and the app server
+   both operate on files, so yes — but it is worth stating, because "agent" and
    "worktree with a PTY in it" have been the same thing until now. Adoption,
-   `run.adopt` and the primary-checkout super-worktree all assume an agent can be
-   dropped into.
+   `run.adopt` and the primary-checkout super-worktree all assume an agent can
+   be dropped into. **Gates step 6.**
 
 4. **What does `done` mean when the harness reports turn boundaries?** Today
    `done` is the only completion signal and quiescence is the fallback ("silence
    is an anomaly, never completion"). With real turn boundaries the fallback
    could become precise — but `done` carries the structured report, so it should
    stay the contract and turn boundaries should only sharpen idle detection.
+   **Gates step 6.**
 
----
+**Answered, and recorded so it is not reopened:** activity storage. It is rows
+on `thread_items` like everything else, the badge is already correct because
+activity is `Status` class, and no second store is needed. See §6.3.
 
 ## 12. Revision history
 
@@ -505,6 +483,12 @@ catch-up packet regardless of who fills the thread.
   terminal becomes purely an escape hatch for opaque CLI wrappers. Removed the
   event ring, the cursor protocol and the RPC. Added §6 — the catch-up packet
   and thread-retention consequences the move creates.
+- **2026-08-23, reconciled with the shipped store.** §6 rewritten: the storage
+  problem is answered, the catch-up decision is unimplemented rather than done,
+  and a new one appeared that this spec could not have foreseen — a conversation
+  is no longer fully resident, so activity can flood the 200-item tail and empty
+  both the catch-up packet and the first page. §7 line numbers re-checked
+  against `main`. §11 went from four open decisions to three plus one new.
 - **2026-08-22, restored.** This file was clobbered in `0eb5b5b` by a stray
   write that replaced it with a copy of the store spec, and the loss rode in on
   a `git add -A`. Restored from `97611dd` and brought up to date. The store work

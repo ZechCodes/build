@@ -26,7 +26,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentStatus, HarnessContext, HarnessSession, TerminalView,
+    harness_for, open_session, AgentSession, AgentStatus, HarnessContext, SessionOutput,
+    TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -660,8 +661,8 @@ enum TabRole {
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
 ///
-/// The session is held behind [`HarnessSession`], so nothing a tab does knows
-/// which harness — or which kind of harness — is on the other end.
+/// The session is held behind [`AgentSession`], so nothing a tab does knows
+/// which harness — or which kind of carrier — is on the other end.
 struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
@@ -669,7 +670,7 @@ struct Tab {
     /// Surfaced by `term.list` so a reloaded client can order the tab row the
     /// way the human opened it.
     created_at: String,
-    session: Box<dyn HarnessSession>,
+    session: Box<dyn AgentSession>,
     /// The grid this tab's terminal paints into — `None` for a session with no
     /// terminal, because there is no grid without one. The terminal is a
     /// capability, not a guarantee, and a screen kept for a session that has
@@ -703,6 +704,18 @@ impl Tab {
         }
     }
 
+    /// Whether this tab's agent session is still running.
+    ///
+    /// Two conjuncts, each ruling out a different corpse. An agent tab is
+    /// RETAINED after its stream ends so the human still sees the last screen,
+    /// so `live` is the tab's own answer; and a session that reports `Ended` is
+    /// over whatever the tab still holds. `has_exited` was how a terminal asked
+    /// the second — a process poll — and [`AgentStatus::Ended`] is how every
+    /// carrier does.
+    fn session_is_live(&self) -> bool {
+        self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
+    }
+
     /// The terminal this tab's session offers, or the reason it has none.
     fn require_terminal(&self) -> Result<&dyn TerminalView, String> {
         self.session
@@ -729,8 +742,13 @@ impl Tab {
         }
     }
 
-    /// Spawn `role`'s program in a PTY at `root`, returning the tab and a
-    /// receiver subscribed before the first byte can be missed.
+    /// Spawn `role`'s program at `root`, returning the tab and — when the
+    /// session offers a terminal — a receiver subscribed before the first byte
+    /// can be missed.
+    ///
+    /// The grid and the receiver are made together with the terminal, or not at
+    /// all: a session with no terminal paints nothing, so there is no screen to
+    /// hold and no pump to run.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -738,23 +756,30 @@ impl Tab {
         root: std::path::PathBuf,
         cols: u16,
         rows: u16,
-    ) -> Result<(Tab, broadcast::Receiver<Vec<u8>>), String> {
+    ) -> Result<(Tab, SessionOutput), String> {
         let size = PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         };
-        let session = open_session(spec, root.clone(), size).map_err(|e| e.to_string())?;
-        let rx = session.subscribe();
+        // Only an agent is ever handed a turn. The human's own shell is not, so
+        // it is not waited on: a login shell may never announce a line editor
+        // at all, and `term.create` holds the state lock across this.
+        let turn_ready_grace = match role {
+            TabRole::Agent { .. } => Some(crate::orchestrator::HARNESS_READY_GRACE),
+            TabRole::Shell => None,
+        };
+        let (session, rx) =
+            open_session(spec, root.clone(), size, turn_ready_grace).map_err(|e| e.to_string())?;
         Ok((
             Tab {
                 tab_id,
                 root,
                 role,
                 created_at: now_rfc3339(),
+                screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
                 session,
-                screen: Some(TermScreen::new(cols, rows)),
                 live: true,
                 last_delivered_at: None,
             },
@@ -3417,7 +3442,7 @@ impl AppState {
     fn agent_is_live(&self, root: &std::path::Path, agent_id: &str) -> bool {
         self.tabs
             .get(&TabKey::agent(root, agent_id))
-            .is_some_and(|tab| tab.live && !tab.session.has_exited())
+            .is_some_and(Tab::session_is_live)
     }
 
     /// Point an entity's agents at a different provider/model. The persisted
@@ -3482,7 +3507,7 @@ impl AppState {
                 continue;
             };
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
+            tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "closed");
             }
@@ -5606,7 +5631,7 @@ impl AppState {
             return Err("cannot close an agent terminal".to_string());
         }
         let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
-        tab.session.kill_and_reap();
+        tab.session.end();
         if let Some(screen) = &tab.screen {
             screen.push_closed(&term_id, "closed");
         }
@@ -5628,7 +5653,7 @@ impl AppState {
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
         let terminal = tab.require_terminal()?;
-        if !tab.live || tab.session.has_exited() {
+        if !tab.session_is_live() {
             return Err("no active agent session".to_string());
         }
         terminal.write_input(&data).map_err(|e| e.to_string())?;
@@ -5654,7 +5679,7 @@ impl AppState {
         };
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
-        let live = tab.live && !tab.session.has_exited();
+        let live = tab.session_is_live();
         let (terminal, screen) = tab.require_terminal_and_screen()?;
         if live {
             terminal.resize(size).map_err(|e| e.to_string())?;
@@ -5723,7 +5748,7 @@ impl AppState {
             {
                 killed_agents.push((owner.clone(), agent_id.clone()));
             }
-            tab.session.kill_and_reap();
+            tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "reaped");
             }
@@ -5803,20 +5828,26 @@ impl AppState {
             let Some(tab) = tab else {
                 return if turn_undelivered { None } else { Some(None) };
             };
-            if tab.session.has_exited() {
+            if let AgentStatus::Ended { code } = tab.session.status() {
                 return Some(Some(HarnessExit {
-                    // Last words are the terminal's: a session with no screen
-                    // painted none, and its crash is reported by code alone.
-                    code: tab.session.exit_code().unwrap_or(-1),
-                    epitaph: tab.screen.as_ref().and_then(screen_epitaph),
+                    code: code.unwrap_or(-1),
+                    // The screen first, the session second. A retained screen is
+                    // the last words of a harness Build could only see the
+                    // outside of; a session that reports its own errors was told
+                    // them, and hands back what it was told.
+                    epitaph: tab
+                        .screen
+                        .as_ref()
+                        .and_then(screen_epitaph)
+                        .or_else(|| tab.session.epitaph()),
                 }));
             }
             let quiet_for = quiet_threshold;
-            let painted_recently = tab.session.idle_for() < quiet_for;
+            let heard_from_recently = tab.session.quiet_for() < quiet_for;
             let spoken_to_recently = tab
                 .last_delivered_at
                 .is_some_and(|at| at.elapsed() < quiet_for);
-            if painted_recently || spoken_to_recently {
+            if heard_from_recently || spoken_to_recently {
                 None
             } else {
                 Some(None)
@@ -7768,7 +7799,7 @@ impl AppState {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         if let Some(tab) = self.tabs.remove(&key) {
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
+            tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "closed");
             }
@@ -7837,7 +7868,7 @@ impl AppState {
         let unread = self.agent_unread(entity_id, agent, thread);
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
         let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
-        let live = tab.is_some_and(|tab| tab.live && !tab.session.has_exited());
+        let live = tab.is_some_and(|tab| tab.session_is_live());
         json!({
             "id": agent.id,
             "ordinal": agent.ordinal,
@@ -8915,7 +8946,7 @@ impl AppState {
         let root = Self::canonical_root(&session.scratch_dir);
         if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
+            tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "agent_session_ended");
             }
@@ -10764,11 +10795,7 @@ impl AppState {
     ) {
         let root = Self::canonical_root(root);
         let key = TabKey::agent(&root, agent_id);
-        if self
-            .tabs
-            .get(&key)
-            .is_some_and(|tab| tab.live && !tab.session.has_exited())
-        {
+        if self.tabs.get(&key).is_some_and(Tab::session_is_live) {
             nudge_live_agent_tab(&self.tabs, &root, agent_id, owner);
             return;
         }
@@ -13438,18 +13465,23 @@ impl AppState {
             .max()
     }
 
-    /// When the agent working in this checkout last painted, or `None` when no
-    /// agent has ever run there. Read off the PTY's own idle clock, which is
-    /// the only record of it.
+    /// When the agent working in this checkout was last heard from, or `None`
+    /// when no agent has ever run there. Read off the session's own quiet
+    /// clock, which is the only record of it — bytes painted for a terminal,
+    /// protocol events read for a carrier that has none.
     fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
         let root = Self::canonical_root(root);
-        let idle = self
+        let quiet = self
             .tabs
             .iter()
-            .filter(|(key, tab)| key.root == root && key.is_agent() && !tab.session.has_exited())
-            .map(|(_, tab)| tab.session.idle_for())
+            .filter(|(key, tab)| {
+                key.root == root
+                    && key.is_agent()
+                    && !matches!(tab.session.status(), AgentStatus::Ended { .. })
+            })
+            .map(|(_, tab)| tab.session.quiet_for())
             .min()?;
-        let painted = time::OffsetDateTime::now_utc() - idle;
+        let painted = time::OffsetDateTime::now_utc() - quiet;
         painted
             .format(&time::format_description::well_known::Rfc3339)
             .ok()
@@ -15998,15 +16030,18 @@ fn nudge_live_agent_tab(
     let Some(tab) = tabs.get(&TabKey::agent(&AppState::canonical_root(root), agent_id)) else {
         return;
     };
-    if !tab.live || tab.session.has_exited() {
+    if !tab.session_is_live() {
         return;
     }
-    // Through write_prompt, not a raw write with a hardcoded Enter: the nudge is
-    // a turn, so it must honor the harness's SubmitKey and paste framing exactly
-    // as a dispatched prompt does. Hardcoding \r submits into a SubmitKey::None
-    // harness that never asked for it, and leaves the notification unframed —
-    // safe today only because it happens to be one line.
-    if let Err(error) = tab.session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
+    // As a turn, not a raw write with a hardcoded Enter: the nudge is one of
+    // Build's turns, so it travels the way every other one does and the carrier
+    // decides what that means. Hardcoding \r submits into a SubmitKey::None
+    // harness that never asked for it, leaves the notification unframed — and
+    // says nothing at all to a carrier with no keyboard.
+    if let Err(error) = tab
+        .session
+        .send_turn(&Turn::new(NEW_THREAD_MESSAGES_PROMPT))
+    {
         eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }
 }
@@ -17036,7 +17071,7 @@ fn ensure_agent_tab(
                     &tab.role,
                     TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
                 );
-                if same_owner && tab.live && !tab.session.has_exited() {
+                if same_owner && tab.session_is_live() {
                     return Ok((tab.wire_id(), Spawned::Warm));
                 }
             }
@@ -17044,7 +17079,7 @@ fn ensure_agent_tab(
                 None
             } else {
                 let carried = s.tabs.remove(&key).and_then(|dead| {
-                    dead.session.kill_and_reap();
+                    dead.session.end();
                     dead.screen
                 });
                 // A checkout outlives the entity that owned it — a planning
@@ -17067,7 +17102,7 @@ fn ensure_agent_tab(
                 for other in stale {
                     if let Some(tab) = s.tabs.remove(&other) {
                         let wire_id = tab.wire_id();
-                        tab.session.kill_and_reap();
+                        tab.session.end();
                         if let Some(screen) = &tab.screen {
                             screen.push_closed(&wire_id, "closed");
                         }
@@ -17153,19 +17188,16 @@ fn ensure_agent_tab(
             // Reconnect is snapshot + cursor: a replacement process must never
             // rewind that cursor, and clients already attached stay attached.
             // The new PTY takes the retained screen's grid so the two agree.
-            let _ = tab.session.resize(PtySize {
-                rows: screen.rows,
-                cols: screen.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+            if let Some(terminal) = tab.session.terminal() {
+                let _ = terminal.resize(PtySize {
+                    rows: screen.rows,
+                    cols: screen.cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                });
+            }
             tab.screen = Some(screen);
         }
-        // An interactive TUI must be servicing its PTY before a turn is written
-        // into it, or the prompt lands on a startup screen.
-        tab.session
-            .ready_within(crate::orchestrator::HARNESS_READY_GRACE);
-
         let wire_id = tab.wire_id();
         {
             let mut s = state.lock().unwrap();
@@ -17193,12 +17225,14 @@ fn ensure_agent_tab(
                 })?
             });
             if let Some(waiting) = waiting {
-                let _ = tab.session.resize(PtySize {
-                    rows: waiting.rows,
-                    cols: waiting.cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
+                if let Some(terminal) = tab.session.terminal() {
+                    let _ = terminal.resize(PtySize {
+                        rows: waiting.rows,
+                        cols: waiting.cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                }
                 if let Some(screen) = &mut tab.screen {
                     screen.set_size(waiting.cols, waiting.rows);
                     for client in &waiting.attached {
@@ -17216,9 +17250,10 @@ fn ensure_agent_tab(
 
 /// The one pipe from Build to a worktree's agent.
 ///
-/// Ensures the tab exists, then submits exactly one turn through
-/// [`PtySession::write_prompt`] — the harness's own submit key and bracketed
-/// paste framing, never a raw write with a hardcoded `\r`. Which text travels
+/// Ensures the tab exists, then hands the agent exactly one turn — a value the
+/// carrier decides how to say, which for a PTY is the harness's own submit key
+/// and bracketed paste framing and never a raw write with a hardcoded `\r`.
+/// Which text travels
 /// is decided by whether the tab had to be spawned: `cold` for an agent with no
 /// context to read messages into, `warm` for one already in the conversation,
 /// whose messages are already durable in the thread for `read_unread_messages`
@@ -17246,11 +17281,11 @@ fn deliver(
         .tabs
         .get_mut(&key)
         .ok_or("the agent tab closed before its turn could be delivered")?;
-    if let Err(error) = tab.session.write_prompt(prompt) {
+    if let Err(error) = tab.session.send_turn(&Turn::new(prompt)) {
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the
-        // kernel. The bounded wait covers that lag; a genuinely wedged PTY
+        // kernel. The bounded wait covers that lag; a genuinely wedged session
         // (live but unwritable) still surfaces its error.
         if !tab
             .session
@@ -17349,7 +17384,12 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
 /// One pump per tab for the tab's whole life: with one PTY per worktree there
 /// is no phase boundary to generation-guard against — a missing tab is the
 /// only stop condition.
-fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::Receiver<Vec<u8>>) {
+fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, rx: SessionOutput) {
+    // No terminal, no bytes: the pump exists to paint a stream into a grid, and
+    // a session that offers neither has nothing for it to do.
+    let Some(mut rx) = rx else {
+        return;
+    };
     if tokio::runtime::Handle::try_current().is_err() {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto and nothing attached to feed.
@@ -17418,7 +17458,7 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                             }
                             None => {
                                 let Some(tab) = s.tabs.remove(&key) else { return; };
-                                tab.session.kill_and_reap();
+                                tab.session.end();
                                 if let Some(screen) = &tab.screen {
                                     screen.push_closed(&term_id, "exited");
                                 }
@@ -17973,7 +18013,7 @@ mod tests {
     fn tab_pid(state: &Arc<Mutex<AppState>>, wire_id: &str) -> Option<u32> {
         let s = state.lock().unwrap();
         let key = s.tab_key_of_wire_id(wire_id).ok()?;
-        s.tabs[&key].session.pid()
+        agent_pid(&s.tabs[&key])
     }
 
     /// True once `pid` is fully gone from the process table (killed AND reaped —
@@ -18382,7 +18422,7 @@ mod tests {
         let key = first_agent_key(&AppState::canonical_root(&root), "run-unclosable");
         let tab = s.tabs.get(&key).expect("the agent tab is still registered");
         assert!(tab.live, "and its session was never killed");
-        assert!(!tab.session.has_exited());
+        assert!(tab.session_is_live());
     }
 
     /// A user terminal is the user's own login shell and nothing else. The
@@ -18838,7 +18878,7 @@ mod tests {
             });
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while open_session_count(&state, "run-eof") > 0 {
@@ -18924,7 +18964,7 @@ mod tests {
             "a turn in flight is the row working"
         );
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let row = loop {
@@ -18977,7 +19017,7 @@ mod tests {
                 agent_id: agent_id.clone(),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            &warm_tui_spec(),
             agent_tab_id(&agent_id),
             root.clone(),
             120,
@@ -19011,9 +19051,7 @@ mod tests {
             second.thread.read_unread("2026-08-15T10:00:03Z");
         }
 
-        state.lock().unwrap().tabs[&second_key]
-            .session
-            .kill_and_reap();
+        state.lock().unwrap().tabs[&second_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -19073,7 +19111,7 @@ mod tests {
             assert_eq!(run.agents.working_since(), None, "the reply hands back");
         }
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while state.lock().unwrap().tabs[&tab_key].live {
@@ -19227,7 +19265,7 @@ mod tests {
 
     /// The prompt-write race, end to end: a harness that exits instantly closes
     /// its PTY (the write fails with EIO) *before* the OS makes its exit status
-    /// reapable, so a single `has_exited` poll says "running". That must not
+    /// reapable, so a single status poll says "running". That must not
     /// fail the delivery — the tab is still the agent's tab, and the crash is
     /// the idle monitor's to report, not the delivery's.
     #[tokio::test]
@@ -21339,6 +21377,21 @@ mod tests {
     /// predates the rail means, and the one whose id is derived from its owner.
     fn first_agent_key(root: &std::path::Path, entity_id: &str) -> TabKey {
         TabKey::agent(root, &crate::agent::derived_agent_id(entity_id))
+    }
+
+    /// The terminal a tab's session offers. Tests are the only place that
+    /// reaches for one without a client asking: the daemon goes through
+    /// [`Tab::require_terminal`], which says why when there is none.
+    fn agent_terminal(tab: &Tab) -> &dyn TerminalView {
+        tab.session
+            .terminal()
+            .expect("a PTY session offers a terminal")
+    }
+
+    /// The OS process behind a tab, asked through the terminal that owns it —
+    /// a process id is the basement's, and no other carrier has one to give.
+    fn agent_pid(tab: &Tab) -> Option<u32> {
+        tab.session.terminal().and_then(TerminalView::pid)
     }
 
     /// [`planned_run_in_review`] over the frame handler — the entry point that
@@ -24084,12 +24137,12 @@ mod tests {
         let key = first_agent_key(&root, &run_id);
         let first_stage_pid = {
             let s = state.lock().unwrap();
-            s.tabs
-                .get(&key)
-                .expect("the first stage's turns opened the worktree's agent")
-                .session
-                .pid()
-                .expect("a live harness has a pid")
+            agent_pid(
+                s.tabs
+                    .get(&key)
+                    .expect("the first stage's turns opened the worktree's agent"),
+            )
+            .expect("a live harness has a pid")
         };
 
         let armed = call(
@@ -24111,7 +24164,7 @@ mod tests {
             "the run is building the stage run-all dispatched"
         );
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_stage_pid),
             "the agent that built stage one is the one asked to build stage two"
         );
@@ -24152,11 +24205,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("dispatching a run opens the worktree's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
 
         let next = call(
@@ -24167,7 +24217,7 @@ mod tests {
         assert_eq!(next["ok"], true, "{next:?}");
         let s = state.lock().unwrap();
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_pid),
             "every phase must reach the process the dispatch woke"
         );
@@ -24218,11 +24268,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("a change request opens the worktree's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
 
         let second = call(
@@ -24236,7 +24283,7 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_pid),
             "the second request must reach the process the first one woke"
         );
@@ -25063,7 +25110,7 @@ mod tests {
                 .expect("dispatching a stage opens the worktree's agent");
             let agent_id = &s.runs[&run_id].agents.first().id;
             (
-                tab.session.pid().expect("a live harness has a pid"),
+                agent_pid(tab).expect("a live harness has a pid"),
                 // The capability is minted per AGENT: that is who reports.
                 s.mcp_session_tokens[agent_id].clone(),
             )
@@ -25107,7 +25154,7 @@ mod tests {
             StageProgressState::Validating
         );
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(build_pid),
             "the agent that built the stage is the one asked to validate it"
         );
@@ -25303,11 +25350,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("authoring a plan opens the primary checkout's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the plan's agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the plan's agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
         // The scripted agent would answer each verb itself and drive the plan
         // straight back to its gate; from here it must stay where a verb puts it.
@@ -25327,7 +25371,7 @@ mod tests {
             assert_eq!(done["ok"], true, "{method}: {done:?}");
             let s = state.lock().unwrap();
             assert_eq!(
-                s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+                s.tabs.get(&key).and_then(agent_pid),
                 Some(drafting_pid),
                 "{method} must reach the process that authored the plan"
             );
@@ -27181,8 +27225,8 @@ mod tests {
             RunState::Review,
             warm_tui_spec(),
         );
-        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
-        let mut output = state.tabs[&key].session.subscribe();
+        let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27194,7 +27238,7 @@ mod tests {
             "the gate does not move"
         );
         assert_eq!(
-            state.tabs[&key].session.pid(),
+            agent_pid(&state.tabs[&key]),
             Some(pid_before),
             "a post talks to the agent, it never replaces it"
         );
@@ -27273,7 +27317,7 @@ mod tests {
             40,
         )
         .expect("implementation agent tab spawns");
-        let mut output = tab.session.subscribe();
+        let mut output = agent_terminal(&tab).subscribe();
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         let posted = state.handle(req(
@@ -27446,8 +27490,8 @@ mod tests {
             RunState::Building,
             warm_tui_spec(),
         );
-        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
-        let mut output = state.tabs[&key].session.subscribe();
+        let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27458,12 +27502,12 @@ mod tests {
         let active = state.runs.get(&run_id).unwrap();
         assert_eq!(active.run.state, RunState::Building, "no state transition");
         assert_eq!(
-            state.tabs[&key].session.pid(),
+            agent_pid(&state.tabs[&key]),
             Some(pid_before),
             "the worktree's agent must not be respawned"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "the worktree's agent must not be ended"
         );
 
@@ -27583,7 +27627,9 @@ mod tests {
         // guards against fires precisely because the directory is brand new.
         let spec = build(prompt, &choice, &options);
 
-        // The three lines under test, mirroring ensure_agent_tab + deliver.
+        // The three lines under test, mirroring what `open_session` waits out
+        // and what `deliver` then hands over — spelled out against the concrete
+        // PTY, because what is under test here is the terminal mechanics.
         let session = PtySession::spawn(
             &spec,
             Some(workspace.clone()),
@@ -27686,10 +27732,10 @@ mod tests {
             warm_tui_spec(),
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "precondition: the agent is still live at the gate"
         );
-        let mut output = state.tabs[&key].session.subscribe();
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27718,7 +27764,7 @@ mod tests {
             "hearing a message is not a state transition"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "the agent is talked to, never replaced"
         );
         // Durable regardless: the next session's catch-up carries it.
@@ -27747,14 +27793,14 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id(&run_id),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("cat"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
             120,
             40,
         )
         .expect("the agent tab spawns");
-        let agent_pid = tab.session.pid().expect("the agent has a pid");
+        let agent_pid = agent_pid(&tab).expect("the agent has a pid");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
         state.runs.get_mut(&run_id).unwrap().agents.start_session(
             "claude",
@@ -28047,7 +28093,7 @@ mod tests {
         spec: HarnessSpec,
     ) -> TabKey {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, mut rx) = Tab::spawn(
+        let (tab, rx) = Tab::spawn(
             TabRole::Agent {
                 owner: run_id.to_string(),
                 agent_id: crate::agent::derived_agent_id(run_id),
@@ -28062,7 +28108,7 @@ mod tests {
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
         state.tabs.insert(key.clone(), tab);
-        drain_pty_into_screen(state, &key, &mut rx);
+        drain_pty_into_screen(state, &key, &mut rx.expect("a PTY session paints"));
         key
     }
 
@@ -28230,7 +28276,7 @@ mod tests {
     async fn wait_for_pty_quiet(state: &Arc<Mutex<AppState>>, key: &TabKey, quiet: Duration) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let idle = state.lock().unwrap().tabs[key].session.idle_for();
+            let idle = state.lock().unwrap().tabs[key].session.quiet_for();
             if idle >= quiet {
                 return;
             }
@@ -28338,7 +28384,7 @@ mod tests {
             "the quiet agent's entity is demoted"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "this test is only meaningful while the agent is still alive"
         );
         let thread = &state.runs["run-still-there"].agents;
@@ -28839,7 +28885,7 @@ mod tests {
             40,
         )
         .unwrap();
-        let agent_pid = tab.session.pid().expect("a live agent");
+        let agent_pid = agent_pid(&tab).expect("a live agent");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         // Release drops the record, keeps the files.
@@ -29050,7 +29096,7 @@ mod tests {
             40,
         )
         .unwrap();
-        let agent_pid = tab.session.pid().expect("a live agent");
+        let agent_pid = agent_pid(&tab).expect("a live agent");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -29495,11 +29541,7 @@ mod tests {
         );
         let pid = {
             let s = state.lock().unwrap();
-            s.tabs
-                .get(&key)
-                .expect("the agent tab exists")
-                .session
-                .pid()
+            agent_pid(s.tabs.get(&key).expect("the agent tab exists"))
         };
 
         let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
@@ -29509,7 +29551,7 @@ mod tests {
             "a second start addresses the same tab"
         );
         assert_eq!(
-            state.lock().unwrap().tabs.get(&key).unwrap().session.pid(),
+            agent_pid(state.lock().unwrap().tabs.get(&key).unwrap()),
             pid,
             "starting an agent that is already running must not spawn a second one"
         );
@@ -29529,7 +29571,7 @@ mod tests {
         assert_eq!(first["ok"], true, "{first:?}");
         let first_pid = {
             let s = state.lock().unwrap();
-            s.tabs.get(&key).unwrap().session.pid()
+            agent_pid(s.tabs.get(&key).unwrap())
         };
 
         // The harness dies the way a real one does, and the tab is RETAINED so
@@ -29537,7 +29579,7 @@ mod tests {
         {
             let mut s = state.lock().unwrap();
             let tab = s.tabs.get_mut(&key).unwrap();
-            tab.session.kill_and_reap();
+            tab.session.end();
             tab.live = false;
         }
 
@@ -29552,7 +29594,7 @@ mod tests {
         let tab = s.tabs.get(&key).expect("the tab came back");
         assert!(tab.live, "the restarted agent is live");
         assert_ne!(
-            tab.session.pid(),
+            agent_pid(tab),
             first_pid,
             "restart means a NEW process, not the corpse reported as alive"
         );
@@ -29572,14 +29614,14 @@ mod tests {
         let key = first_agent_key(&root, "run-revive");
         let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
         assert_eq!(started["ok"], true, "{started:?}");
-        let dead_pid = state.lock().unwrap().tabs[&key].session.pid();
+        let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
 
         // The harness dies the way a real one does, and the tab is RETAINED so
         // the human can still read the last screen.
         {
             let mut s = state.lock().unwrap();
             let tab = s.tabs.get_mut(&key).unwrap();
-            tab.session.kill_and_reap();
+            tab.session.end();
             tab.live = false;
         }
         // Let the old pump see its own EOF before the revival, so the tab it
@@ -29597,11 +29639,11 @@ mod tests {
             let s = state.lock().unwrap();
             let tab = s.tabs.get(&key).expect("the agent came back");
             assert!(
-                tab.live && !tab.session.has_exited(),
+                tab.session_is_live(),
                 "a message to a dead agent brings it back running"
             );
             assert_ne!(
-                tab.session.pid(),
+                agent_pid(tab),
                 dead_pid,
                 "revival is a NEW process, not the corpse reported as alive"
             );
@@ -30055,7 +30097,7 @@ mod tests {
 
         // The agent's process ends → clients hear agent_session_ended and the
         // tab keeps showing the last screen.
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
         wait_for_push(&mut pushes, &key, |p| {
             p["type"] == "term.closed"
                 && p["term_id"] == wire_id
@@ -30138,7 +30180,7 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id("run-x"),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("cat"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("run-x")),
             root.clone(),
             120,
@@ -30353,7 +30395,7 @@ mod tests {
         )
         .expect("the first delivery spawns");
         wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
         let retained_total = loop {
             {
                 let s = state.lock().unwrap();
@@ -31689,7 +31731,10 @@ mod tests {
                 .session
                 .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
             assert!(agent.live, "the tab is live");
-            assert!(!agent.session.has_exited(), "and its process still running");
+            assert!(
+                !matches!(agent.session.status(), AgentStatus::Ended { .. }),
+                "and its process still running"
+            );
             agent_is_working(agent)
         };
         assert!(
@@ -31709,75 +31754,102 @@ mod tests {
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
-        shell.session.kill_and_reap();
+        shell.session.end();
     }
 
-    /// A session that reports a dictated status while every terminal signal it
-    /// carries says the opposite.
-    ///
-    /// `idle_for` is zero and `has_exited` is false on every instance, so a
-    /// caller still reading the PTY directly would call every tab built on one
-    /// of these "working". Only a caller that asks the session what it is doing
-    /// can tell them apart.
-    struct DictatedStatus(AgentStatus);
+    /// What a dictated session was asked to do, still readable once the daemon
+    /// owns the session itself — a `Box<dyn AgentSession>` in a tab cannot be
+    /// looked inside, so the record lives beside it.
+    #[derive(Clone, Default)]
+    struct SessionLog {
+        turns: Arc<Mutex<Vec<String>>>,
+        ended: Arc<std::sync::atomic::AtomicBool>,
+    }
 
-    impl AgentSession for DictatedStatus {
-        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+    impl SessionLog {
+        /// Every turn the daemon has handed this session, in order.
+        fn turns(&self) -> Vec<String> {
+            self.turns.lock().unwrap().clone()
+        }
+
+        /// Whether the daemon has ended this session.
+        fn ended(&self) -> bool {
+            self.ended.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// A session that reports what it is told to, and remembers what was asked
+    /// of it.
+    ///
+    /// It has no terminal and no process, so nothing about it can be inferred
+    /// from paint or from a wait — a caller reading a PTY would find no answer
+    /// here at all. Only a caller that asks the session gets one.
+    struct DictatedSession {
+        status: AgentStatus,
+        quiet: Duration,
+        log: SessionLog,
+    }
+
+    impl DictatedSession {
+        /// A session reporting `status`, silent for no time at all.
+        fn reporting(status: AgentStatus) -> DictatedSession {
+            DictatedSession {
+                status,
+                quiet: Duration::ZERO,
+                log: SessionLog::default(),
+            }
+        }
+
+        /// The same session, with nothing heard from it for `quiet` — the
+        /// anomaly clock the idle sweep demotes on.
+        fn silent_for(mut self, quiet: Duration) -> DictatedSession {
+            self.quiet = quiet;
+            self
+        }
+
+        /// The same session, recording what it is asked into `log`.
+        fn recording_into(mut self, log: &SessionLog) -> DictatedSession {
+            self.log = log.clone();
+            self
+        }
+    }
+
+    impl AgentSession for DictatedSession {
+        fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+            self.log.turns.lock().unwrap().push(turn.text.clone());
             Ok(())
         }
         fn status(&self) -> AgentStatus {
-            self.0
+            self.status
         }
         fn quiet_for(&self) -> Duration {
-            Duration::ZERO
+            self.quiet
         }
         fn exited_within(&self, _timeout: Duration) -> bool {
-            false
+            matches!(self.status, AgentStatus::Ended { .. })
         }
-        fn end(&self) {}
+        fn end(&self) {
+            self.log
+                .ended
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         fn backdate_last_output(&self, _ago: Duration) {}
-    }
-
-    impl HarnessSession for DictatedStatus {
-        fn write_prompt(&self, _prompt: &str) -> Result<(), HarnessError> {
-            Ok(())
-        }
-        fn write_input(&self, _bytes: &[u8]) -> Result<(), HarnessError> {
-            Ok(())
-        }
-        fn ready_within(&self, _timeout: Duration) -> bool {
-            true
-        }
-        fn idle_for(&self) -> Duration {
-            Duration::ZERO
-        }
-        fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
-            broadcast::channel(1).1
-        }
-        fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
-            Ok(())
-        }
-        fn pid(&self) -> Option<u32> {
-            None
-        }
-        fn has_exited(&self) -> bool {
-            false
-        }
-        fn exit_code(&self) -> Option<i32> {
-            None
-        }
-        fn kill_and_reap(&self) {}
     }
 
     /// A live tab whose session reports `status`.
     fn tab_reporting(role: TabRole, status: AgentStatus) -> Tab {
+        tab_running(role, DictatedSession::reporting(status))
+    }
+
+    /// A live tab carrying `session`, rooted nowhere in particular.
+    fn tab_running(role: TabRole, session: DictatedSession) -> Tab {
         Tab {
             tab_id: "term-status".to_string(),
             root: PathBuf::from("/nowhere"),
             role,
             created_at: now_rfc3339(),
-            session: Box::new(DictatedStatus(status)),
-            // `DictatedStatus` says nothing about terminals, so it has none —
+            session: Box::new(session),
+            // `DictatedSession` says nothing about terminals, so it has none —
             // and a tab with no terminal has no grid, because the two are made
             // together. A screen here would be the flag that disagrees with
             // reality.
@@ -31803,7 +31875,7 @@ mod tests {
                 provider: AgentProvider::default(),
             },
             created_at: now_rfc3339(),
-            session: Box::new(DictatedStatus(AgentStatus::Working)),
+            session: Box::new(DictatedSession::reporting(AgentStatus::Working)),
             screen: None,
             live: true,
             last_delivered_at: None,
@@ -31943,6 +32015,250 @@ mod tests {
         assert!(!agent_is_working(&retained));
     }
 
+    /// An agent tab whose session reports `status`, rooted where the daemon
+    /// will look for it.
+    fn insert_dictated_agent_tab(
+        state: &mut AppState,
+        root: &std::path::Path,
+        owner: &str,
+        session: DictatedSession,
+    ) -> TabKey {
+        let agent_id = crate::agent::derived_agent_id(owner);
+        let key = TabKey::agent(root, &agent_id);
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: owner.to_string(),
+                agent_id,
+                provider: AgentProvider::default(),
+            },
+            session,
+        );
+        tab.root = root.to_path_buf();
+        tab.tab_id = key.tab_id.clone();
+        state.tabs.insert(key.clone(), tab);
+        key
+    }
+
+    /// Whether an agent is live is the same question the pulse asks, one state
+    /// further out, and it is now asked the same way: a session that reports
+    /// `Ended` is over, whatever a process table would have said about it.
+    ///
+    /// `has_exited` was how a terminal answered this. A carrier with no process
+    /// behind it has no such question to poll, and it must still be able to say
+    /// its session is over.
+    #[test]
+    fn liveness_is_read_off_the_reported_status() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-liveness",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-liveness");
+
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-liveness",
+            DictatedSession::reporting(AgentStatus::Waiting),
+        );
+        assert!(
+            state.agent_is_live(&root, &agent_id),
+            "a session waiting at its prompt is live"
+        );
+        assert_eq!(state.agent_digests("run-liveness")[0]["state"], "live");
+
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-liveness",
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(1) }),
+        );
+        assert!(
+            !state.agent_is_live(&root, &agent_id),
+            "a session that reports it is over is not live"
+        );
+        assert_ne!(state.agent_digests("run-liveness")[0]["state"], "live");
+    }
+
+    /// The idle sweep's two clocks come off the session: the exit it explains a
+    /// crash with is the code inside `Ended`, and the silence it demotes on is
+    /// `quiet_for`.
+    ///
+    /// Both used to be the PTY's — `has_exited` + `exit_code`, and the age of
+    /// the last paint. A session protocol has neither a screen nor a wait, and
+    /// has to be able to answer both.
+    #[test]
+    fn the_idle_sweep_reads_the_exit_and_the_quiet_off_the_session() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-swept",
+            RunState::Building,
+        );
+
+        // Live, and heard from inside the threshold: nothing to explain.
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(10)),
+        );
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(300)).is_empty(),
+            "a session heard from inside the threshold is not an anomaly"
+        );
+
+        // Live, and quiet past it: demoted, and no exit code is invented.
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(600)),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-swept".to_string()],
+            "silence past the threshold is the anomaly the sweep exists for"
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+        assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
+        assert!(
+            got["result"]["last_error"].is_null(),
+            "nothing exited, so nothing claims an exit code: {got:?}"
+        );
+
+        // Ended: the code inside the status is what the crash is explained by.
+        state.runs.get_mut("run-swept").unwrap().run.state = RunState::Building;
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(9) }),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-swept".to_string()],
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+        assert!(
+            got["result"]["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exit code 9"),
+            "the code the session reported explains the crash: {got:?}"
+        );
+    }
+
+    /// A worktree card's "last active" reads the same quiet clock. It was the
+    /// PTY's paint clock and the comment said so; the measurement has not
+    /// moved, but the question is now one every carrier can answer.
+    #[test]
+    fn a_worktree_card_reads_the_sessions_quiet_clock() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-card",
+            RunState::Building,
+        );
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-card",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(3600)),
+        );
+
+        let active = state
+            .agent_last_painted_at(&root)
+            .expect("an agent has run here");
+        let active =
+            time::OffsetDateTime::parse(&active, &time::format_description::well_known::Rfc3339)
+                .expect("an rfc3339 stamp");
+        let quiet = time::OffsetDateTime::now_utc() - active;
+        assert!(
+            (quiet - time::Duration::hours(1)).abs() < time::Duration::seconds(30),
+            "the card reads the session's own hour of silence, got {quiet}"
+        );
+    }
+
+    /// The nudge is a turn, and it travels as one. It used to be a `write_prompt`
+    /// — keystroke mechanics — and the whole point of a value is that a carrier
+    /// with no keyboard can still be told what to say.
+    #[test]
+    fn the_nudge_hands_the_agent_a_turn() {
+        let root = AppState::canonical_root(&PathBuf::from("/nowhere"));
+        let agent_id = "agent-nudged";
+        let mut tabs: HashMap<TabKey, Tab> = HashMap::new();
+        let log = SessionLog::default();
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: "run-nudge".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            DictatedSession::reporting(AgentStatus::Waiting).recording_into(&log),
+        );
+        tab.root = root.clone();
+        tabs.insert(TabKey::agent(&root, agent_id), tab);
+
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge");
+        assert_eq!(
+            log.turns(),
+            vec![NEW_THREAD_MESSAGES_PROMPT.to_string()],
+            "the waiting agent is told a message arrived, as one turn"
+        );
+
+        // A session that reports it is over is not told anything: the message
+        // is durable on the thread, and its replacement reads it there.
+        let over = SessionLog::default();
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: "run-nudge".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(0) }).recording_into(&over),
+        );
+        tab.root = root.clone();
+        tabs.insert(TabKey::agent(&root, agent_id), tab);
+
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge");
+        assert!(over.turns().is_empty(), "a dead agent hears nothing");
+    }
+
+    /// Closing a worktree's agents ends their sessions — through `end`, which
+    /// carries the reap obligation the kill-and-reap pair used to name.
+    #[test]
+    fn closing_a_worktrees_agents_ends_their_sessions() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let log = SessionLog::default();
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-closed",
+            DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
+        );
+
+        state.close_agent_tab(&root);
+
+        assert!(
+            log.ended(),
+            "an agent whose owner is gone must be ended, not merely forgotten"
+        );
+        assert!(state.tabs.is_empty(), "and forgotten too");
+    }
+
     /// The board reports it per worktree, so a bare worktree — which has no run
     /// state to read — can still say whether something is happening in it.
     #[tokio::test]
@@ -32030,7 +32346,7 @@ mod tests {
             true,
             "a managed agent that has stopped working makes finish advisable"
         );
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
     }
 
     /// A worktree Build never touched — no run, no adoption — is not the
@@ -32095,7 +32411,7 @@ mod tests {
             "an agent happening to be live in it is not the same as Build having adopted it"
         );
         let key = first_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
 
         let adopted = state.lock().unwrap().handle(req(
             "run.adopt",
@@ -33727,7 +34043,7 @@ mod tests {
             .unwrap();
         assert_eq!(entry["agent_working"], false, "{entry:?}");
         assert_eq!(entry["can_finish"], true, "{entry:?}");
-        state.tabs.remove(&key).unwrap().session.kill_and_reap();
+        state.tabs.remove(&key).unwrap().session.end();
     }
 
     #[tokio::test]
@@ -33752,7 +34068,7 @@ mod tests {
         let (term_key, pid) = {
             let app = state.lock().unwrap();
             let term_key = app.tab_key_of_wire_id(&term_id).unwrap();
-            let pid = app.tabs[&term_key].session.pid().unwrap();
+            let pid = agent_pid(&app.tabs[&term_key]).unwrap();
             (term_key, pid)
         };
 
@@ -33827,7 +34143,7 @@ mod tests {
             )
             .expect("the PTY tab it replaces")
             .session
-            .kill_and_reap();
+            .end();
         let protocol = bubble(&mut state);
         assert_eq!(protocol["has_terminal"], false, "{protocol:?}");
         assert_eq!(
@@ -34107,10 +34423,8 @@ mod tests {
             );
             assert_eq!(started["ok"], true, "{started:?}");
         }
-        let pid = state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]
-            .session
-            .pid()
-            .unwrap();
+        let pid =
+            agent_pid(&state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]).unwrap();
 
         let removed = call(
             &handler,

@@ -29,8 +29,10 @@
 //! entity's read-only view or `&mut` handle as a parameter rather than reaching
 //! into any app-level map.
 //!
-//! The two pipes from the scope are both here: Build → agent is `write_prompt`
-//! into the warm PTY; agent → Build is [`on_plan_done`](Orchestrator::on_plan_done)
+//! The two pipes from the scope are both here: Build → agent is one turn handed
+//! to the session ([`AgentSession::send_turn`](crate::harness::AgentSession::send_turn),
+//! a framed paste into the warm PTY when that is the carrier); agent → Build is
+//! [`on_plan_done`](Orchestrator::on_plan_done)
 //! / [`on_run_done`](Orchestrator::on_run_done), the typed events the MCP server
 //! forwards (the caller routes each report by owner lookup).
 

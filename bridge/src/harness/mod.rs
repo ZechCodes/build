@@ -11,8 +11,8 @@
 //! - [`AgentSession`] is the running side — the calls the daemon makes on a
 //!   session once it exists, with [`TerminalView`] as the capability a session
 //!   offers only when the harness behind it is opaque enough to need an escape
-//!   hatch. [`HarnessSession`] is the wider contract the PTY implementation
-//!   still satisfies underneath.
+//!   hatch. It is the whole vocabulary: nothing above [`crate::pty`] knows
+//!   what a session is carried over.
 //!
 //! Nothing above these traits matches on a provider. Adding one means adding an
 //! `AgentProvider` variant, a module here, and an arm in [`harness_for`]; the
@@ -31,7 +31,7 @@ pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
 
-pub use session::{AgentSession, AgentStatus, HarnessError, HarnessSession, TerminalView, Turn};
+pub use session::{AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView, Turn};
 
 /// How long a real harness TUI must stop painting before its input is live.
 ///
@@ -132,17 +132,40 @@ pub trait Harness: Send + Sync {
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool;
 }
 
-/// Open a live session for `spec`, rooted at `root`.
+/// Open a live session for `spec`, rooted at `root`, waiting up to
+/// `turn_ready_grace` for it to be able to take a turn. Returns the session
+/// and its output, subscribed before the first byte can be missed.
 ///
 /// The one place a launch description becomes a running agent. Every spec names
 /// a binary today, so every session is a subprocess in a full PTY; a carrier
 /// that is not a subprocess is chosen here and nowhere else has to notice.
+///
+/// The readiness wait is the PTY arm's alone, because readiness is how a
+/// *terminal* opens: an interactive TUI paints a banner — or a modal
+/// workspace-trust dialog — long before its line editor will accept a turn, so
+/// a prompt written on first byte lands in whatever owns the keyboard. A
+/// carrier that takes a turn as a value has nothing to wait for. `None` is for
+/// a session Build will never hand a turn to (the human's own shell): waiting
+/// on a login shell for a signal it may never send would stall the caller for
+/// the whole grace.
+///
+/// The subscribe happens BEFORE that wait, and the order is not incidental: a
+/// harness paints its entire startup while readiness is being waited out — and
+/// a harness that dies there paints its last words — so a stream subscribed
+/// afterwards would open blank on a live agent and lose the epitaph of a dead
+/// one.
 pub fn open_session(
     spec: &HarnessSpec,
     root: PathBuf,
     size: PtySize,
-) -> Result<Box<dyn HarnessSession>, HarnessError> {
-    Ok(Box::new(PtySession::spawn(spec, Some(root), size)?))
+    turn_ready_grace: Option<Duration>,
+) -> Result<(Box<dyn AgentSession>, SessionOutput), HarnessError> {
+    let session = PtySession::spawn(spec, Some(root), size)?;
+    let output = session.terminal().map(TerminalView::subscribe);
+    if let Some(grace) = turn_ready_grace {
+        session.ready_within(grace);
+    }
+    Ok((Box::new(session), output))
 }
 
 /// The implementation for `provider`. The only way to reach one.
@@ -211,6 +234,74 @@ mod tests {
                 "{provider:?}"
             );
         }
+    }
+
+    /// A harness that announces its line editor only after a pause, the way a
+    /// real TUI does.
+    fn slow_to_open_spec() -> HarnessSpec {
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("sleep 0.3; printf '\\033[?2004h'; cat >/dev/null")
+    }
+
+    fn one_pty() -> PtySize {
+        PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+
+    /// A session Build will hand a turn to is opened READY.
+    ///
+    /// An interactive TUI paints its banner — or a modal workspace-trust dialog
+    /// — long before its line editor will take a turn, so a prompt written on
+    /// first byte lands in whatever owns the keyboard and the submit key
+    /// answers it. Waiting that out is how a terminal opens, so it happens
+    /// where the carrier is chosen rather than at the caller.
+    #[test]
+    fn a_session_that_will_be_handed_a_turn_opens_ready() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let started = std::time::Instant::now();
+        let (session, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            one_pty(),
+            Some(Duration::from_secs(5)),
+        )
+        .expect("the session opens");
+        let waited = started.elapsed();
+        session.end();
+        assert!(
+            waited >= Duration::from_millis(300),
+            "the open returned before the harness would take a turn, after {waited:?}"
+        );
+    }
+
+    /// And a session no turn is coming for is NOT waited on.
+    ///
+    /// The human's own shell is opened this way: it may never announce a line
+    /// editor at all, and `term.create` holds the app-wide state lock across
+    /// the open — so a wait for a signal that never comes would stall every
+    /// project for the whole grace.
+    #[test]
+    fn a_session_with_no_turn_coming_is_not_waited_on() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let started = std::time::Instant::now();
+        let (session, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            one_pty(),
+            None,
+        )
+        .expect("the session opens");
+        let waited = started.elapsed();
+        session.end();
+        assert!(
+            waited < Duration::from_millis(200),
+            "opening a session nobody will speak to waited {waited:?} for readiness"
+        );
     }
 
     /// A worktree Build has never opened has no conversation to resume, on any

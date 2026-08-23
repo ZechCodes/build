@@ -1,7 +1,6 @@
 //! Full-PTY harness sessions — the subprocess implementation of
-//! [`AgentSession`](crate::harness::AgentSession), the only one that also
-//! offers the [`TerminalView`](crate::harness::TerminalView) capability, over
-//! the wider [`HarnessSession`](crate::harness::HarnessSession) contract.
+//! [`AgentSession`](crate::harness::AgentSession), and the only one that also
+//! offers the [`TerminalView`](crate::harness::TerminalView) capability.
 //!
 //! There is no harness SDK behind this one. Dispatching a phase means writing a
 //! prompt into the agent's PTY; the user dropping in means attaching to the
@@ -24,7 +23,7 @@ use std::time::{Duration, Instant};
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::broadcast;
 
-use crate::harness::{AgentSession, AgentStatus, HarnessError, HarnessSession, TerminalView, Turn};
+use crate::harness::{AgentSession, AgentStatus, HarnessError, TerminalView, Turn};
 
 /// Resolve `binary` the way a shell would, against the daemon's PATH (or the
 /// spec's own override). We do this rather than leaving it to portable-pty:
@@ -379,11 +378,10 @@ impl PtySession {
         Ok(self.child.lock().unwrap().wait()?.success())
     }
 
-    // The four calls below are the terminal's, and both
-    // [`HarnessSession`](crate::harness::HarnessSession) and
-    // [`TerminalView`](crate::harness::TerminalView) name them. They are
-    // inherent so the two traits delegate to one body rather than each carrying
-    // its own, and so a call on a concrete `PtySession` has a single meaning.
+    // The four calls below are the terminal's, and
+    // [`TerminalView`](crate::harness::TerminalView) names them. They are
+    // inherent so the trait delegates to one body rather than carrying its own,
+    // and so a call on a concrete `PtySession` has a single meaning.
 
     /// Subscribe to the raw output stream. Each subscriber sees every chunk from
     /// the moment it subscribes, and observes `Closed` once the PTY hits EOF.
@@ -501,7 +499,7 @@ impl AgentSession for PtySession {
         PtySession::exited_within(self, timeout)
     }
 
-    /// Kill the harness and reap it — see [`HarnessSession::kill_and_reap`].
+    /// Kill the harness and reap it — see [`PtySession::kill_and_reap`].
     fn end(&self) {
         self.kill_and_reap();
     }
@@ -538,20 +536,22 @@ impl TerminalView for PtySession {
     }
 }
 
-/// The daemon's whole contract with a live agent, carried over a PTY.
-impl HarnessSession for PtySession {
-    /// Subscribe to the raw output stream — see [`PtySession::subscribe`].
-    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
-        PtySession::subscribe(self)
-    }
-
+/// The terminal mechanics behind the PTY's [`AgentSession`] answers.
+///
+/// Nothing above this module calls any of them: a turn arrives as a value and
+/// leaves here as a framed paste, readiness is waited out where the session is
+/// opened, and the paint clock is what `quiet_for` reports. They are inherent
+/// rather than a second trait because there is one carrier that speaks this
+/// vocabulary, and a trait with one implementation is a name standing in front
+/// of a body.
+impl PtySession {
     /// Write a prompt and submit it (per the harness's `SubmitKey`). A
     /// multi-line prompt bound for an Enter-submitting TUI travels as ONE
     /// bracketed paste: written raw, the TUI would read every embedded newline
     /// as the Enter key and submit the prompt as fragmented turns. Prompts
     /// written verbatim (`SubmitKey::None`) are never framed — that contract
     /// promises the harness the exact bytes.
-    fn write_prompt(&self, prompt: &str) -> Result<(), HarnessError> {
+    pub fn write_prompt(&self, prompt: &str) -> Result<(), HarnessError> {
         let sanitized = strip_bracketed_paste_markers(prompt);
         {
             let mut writer = self.writer.lock().unwrap();
@@ -586,25 +586,15 @@ impl HarnessSession for PtySession {
         Ok(())
     }
 
-    /// Write raw bytes to the PTY — see [`PtySession::write_input`].
-    fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError> {
-        PtySession::write_input(self, bytes)
-    }
-
     /// How long since the PTY last produced output.
-    fn idle_for(&self) -> Duration {
+    pub fn idle_for(&self) -> Duration {
         Instant::now().saturating_duration_since(*self.last_activity.lock().unwrap())
-    }
-
-    /// Resize the terminal — see [`PtySession::resize`].
-    fn resize(&self, size: PtySize) -> Result<(), HarnessError> {
-        PtySession::resize(self, size)
     }
 
     /// Whether the harness process has exited (crash, completion, kill). Reaps the
     /// child if it has — `try_wait` collects the exit status — so polling this
     /// never leaves a zombie behind.
-    fn has_exited(&self) -> bool {
+    pub fn has_exited(&self) -> bool {
         self.exit_code().is_some()
     }
 
@@ -620,7 +610,7 @@ impl HarnessSession for PtySession {
     /// honored". Returns `false` (promptly, not at the deadline) for a child
     /// that exits first: it will never become ready, and the caller's exit-race
     /// guard should see the write failure without extra delay.
-    fn ready_within(&self, timeout: Duration) -> bool {
+    pub fn ready_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
             // Paste mode alone is necessary but NOT sufficient: a real TUI
@@ -644,7 +634,7 @@ impl HarnessSession for PtySession {
     /// running. Caches the first observed status: `try_wait` reaps the child once,
     /// so a later poll would otherwise lose the code (contract: the crash message
     /// carries the real exit code).
-    fn exit_code(&self) -> Option<i32> {
+    pub fn exit_code(&self) -> Option<i32> {
         let mut cached = self.exit_code.lock().unwrap();
         if cached.is_none() {
             if let Ok(Some(status)) = self.child.lock().unwrap().try_wait() {
@@ -654,15 +644,10 @@ impl HarnessSession for PtySession {
         *cached
     }
 
-    /// The harness's OS process id — see [`PtySession::pid`].
-    fn pid(&self) -> Option<u32> {
-        PtySession::pid(self)
-    }
-
     /// Kill the harness and reap it. `kill` alone leaves a zombie: portable-pty's
     /// unix child does not reap on drop, so every phase transition on a long-lived
     /// daemon would otherwise leak one process-table entry.
-    fn kill_and_reap(&self) {
+    pub fn kill_and_reap(&self) {
         let mut child = self.child.lock().unwrap();
         let _ = child.kill();
         let _ = child.wait();

@@ -7,12 +7,11 @@
 //! "does this agent have a basement?" is asked. **The terminal is a capability,
 //! not a guarantee.**
 //!
-//! [`HarnessSession`] is the older, wider contract: it requires a byte stream, a
-//! resize and an OS pid of every implementation, because a subprocess in a full
-//! PTY ([`crate::pty::PtySession`]) has been the only carrier there has ever
-//! been. It is on its way to being that implementation's own business — its
-//! terminal vocabulary is how the PTY *satisfies* [`AgentSession`], not the
-//! daemon's.
+//! Together they are the daemon's whole vocabulary for a running agent. The
+//! terminal mechanics a full PTY ([`crate::pty::PtySession`]) answers in —
+//! paint-settled readiness, a framed paste plus a trailing submit key, the age
+//! of the last byte — are that implementation's own business: they are how the
+//! PTY *satisfies* [`AgentSession`], and no caller above it names them.
 
 use std::time::Duration;
 
@@ -143,6 +142,12 @@ pub trait AgentSession: Send + Sync {
     fn backdate_last_output(&self, ago: Duration);
 }
 
+/// A session's byte stream, subscribed at the moment it opened.
+///
+/// `None` for a session with no terminal: it paints nothing, so there is no
+/// stream to carry and nothing to pump it into.
+pub type SessionOutput = Option<broadcast::Receiver<Vec<u8>>>;
+
 /// Full access to a harness Build can only see the outside of.
 ///
 /// A CLI wrapper is opaque: Build knows what it launched and what it reported,
@@ -163,61 +168,6 @@ pub trait TerminalView: Send + Sync {
 
     /// The OS process id behind the session, while it is still running.
     fn pid(&self) -> Option<u32>;
-}
-
-/// One live agent session, with the terminal vocabulary a PTY answers in.
-///
-/// The three questions with no transport-free answer are [`ready_within`],
-/// [`write_prompt`] and [`idle_for`]: a PTY answers them by watching the paint
-/// (a bracketed-paste announcement, a framed paste plus a trailing submit key,
-/// the age of the last byte), while a session protocol would answer them from
-/// its own turn boundaries. Keeping them behind this trait is what lets a
-/// second carrier exist without the daemon learning a second vocabulary.
-///
-/// It requires [`AgentSession`], so a caller holding one of these can ask the
-/// daemon's questions of it without knowing which carrier it has. That is what
-/// lets the daemon migrate off this trait a call at a time rather than in one
-/// change: [`status`](AgentSession::status) is already reachable here, while
-/// the byte-stream calls below still are too.
-///
-/// [`ready_within`]: HarnessSession::ready_within
-/// [`write_prompt`]: HarnessSession::write_prompt
-/// [`idle_for`]: HarnessSession::idle_for
-pub trait HarnessSession: AgentSession {
-    /// Hand the agent a turn and submit it.
-    fn write_prompt(&self, prompt: &str) -> Result<(), HarnessError>;
-
-    /// Forward raw bytes from a human at an attached terminal, untouched.
-    fn write_input(&self, bytes: &[u8]) -> Result<(), HarnessError>;
-
-    /// Whether the session will accept a turn within `timeout`. False for a
-    /// session that dies first, and false — not a panic — at the deadline.
-    fn ready_within(&self, timeout: Duration) -> bool;
-
-    /// How long the session has produced nothing. What "working" is measured
-    /// against.
-    fn idle_for(&self) -> Duration;
-
-    /// Subscribe to the session's output. Every subscriber sees each chunk from
-    /// the moment it subscribes and observes `Closed` once the session ends.
-    fn subscribe(&self) -> broadcast::Receiver<Vec<u8>>;
-
-    /// Tell the session the human's viewport changed.
-    fn resize(&self, size: PtySize) -> Result<(), HarnessError>;
-
-    /// The OS process id behind the session, while it is still running.
-    fn pid(&self) -> Option<u32>;
-
-    /// Whether the session has ended (crash, completion, kill).
-    fn has_exited(&self) -> bool;
-
-    /// The exit code once the session has ended. Stable across repeated calls:
-    /// the status is reapable exactly once, so an implementation must cache it.
-    fn exit_code(&self) -> Option<i32>;
-
-    /// End the session and release its process-table entry. Killing without
-    /// reaping leaks a zombie per session on a daemon that never restarts.
-    fn kill_and_reap(&self);
 }
 
 #[cfg(test)]

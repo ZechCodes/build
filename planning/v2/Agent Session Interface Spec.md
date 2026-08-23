@@ -1,6 +1,6 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–5 shipped; steps 5a–7 specified, not started (see §10)
+**Status:** Draft — steps 0–5a shipped; steps 6–7 specified, not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -496,13 +496,13 @@ Everything that must become conditional. This is the actual size of the work.
 
 | Site | Today | Change |
 |---|---|---|
-| `Tab.session` (`app.rs:652`) | `Box<dyn HarnessSession>` | `Box<dyn AgentSession>` |
+| `Tab.session` (`app.rs:652`) | `Box<dyn HarnessSession>` | `Box<dyn AgentSession>` — **shipped** |
 | `Tab.screen` (`app.rs:653`) | always a `TermScreen` | `Option<TermScreen>` — no grid without a terminal |
 | `agent_is_working` (`app.rs:893`) | reads `idle_for` | reads `status()` |
 | `agent_attach` (`app.rs`) | attaches a grid, defaults 40×120 | refuses, with a reason, for a session with no terminal |
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
-| `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` |
+| `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
 | `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
 | `Thread::items` (`thread.rs:1167`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
 
@@ -675,6 +675,51 @@ Each step compiles, ships and is green on its own.
 > post-switch read is named rather than taken as the newest, and the socket
 > backoff test moved to fake timers. No assertion was weakened and nothing under
 > test moved.
+>
+> Step 5a shipped in `af19486`, `aff5ea6` and `ad9755c`. After it, nothing
+> above `pty.rs` names a terminal call, `Tab.session` is a
+> `Box<dyn AgentSession>`, and adding a carrier means implementing one trait.
+> Five details worth knowing.
+>
+> `HarnessSession` is **deleted**, not shrunk. What was left of it once the
+> table was discharged — the framed paste, the paint-settled readiness wait,
+> the paint clock, the reap — is inherent on `PtySession`: a trait with one
+> implementation is a name standing in front of a body, and the daemon can no
+> longer reach any of it. The clearest evidence the step did what it set out
+> to do is a test double: `DictatedSession` used to need an
+> `impl HarnessSession` — twelve terminal answers it has none of — merely to
+> sit in a `Tab`, and now implements the six calls it actually has answers
+> for.
+>
+> `open_session` returns the session **and its output**, and the subscribe
+> happens BEFORE the readiness wait. This is the one thing the table above
+> did not anticipate. `Tab::spawn` used to subscribe the instant the PTY was
+> spawned and `ensure_agent_tab` waited for readiness afterwards; moving the
+> wait into `open_session` without moving the subscribe with it would have put
+> a harness's whole startup paint — up to `HARNESS_READY_GRACE` of it — on the
+> floor, opening the human's terminal blank and losing the epitaph of a
+> harness that died during the wait. The crash test caught it.
+>
+> Readiness is asked for only when Build will hand the session a turn, so
+> `Tab::spawn` passes the grace for an agent and `None` for a shell. An
+> unconditional wait would have been a serious regression rather than a
+> refactor: a login shell need never announce a line editor, and
+> `term.create` holds the app-wide state lock across the open — so every
+> `term.create` would have stalled every project for twenty seconds.
+>
+> Nine `has_exited` sites became one question. Six of them read
+> `tab.live && !tab.session.has_exited()`, so the enum arrived as
+> `Tab::session_is_live`: the tab's own retention rule and the session's
+> report, asked together in the one place that knows both. `HarnessExit`
+> takes its code from inside `Ended` and its epitaph from `tab.screen` first
+> and `session.epitaph()` second — and the PTY's `epitaph` is `None`, so the
+> sweep reads exactly the screen it always did.
+>
+> And `has_terminal` for a session-less agent comes from `Harness`, which
+> defaults `true` — so the digest is byte-identical for every provider that
+> exists. `open_session` does not branch on it yet, because there is still
+> only one carrier to choose; that arm is step 6's, and the authority it will
+> ask is already in place.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
@@ -697,13 +742,13 @@ Each step compiles, ships and is green on its own.
 5. ~~**SPA: hide the TUI button when `has_terminal` is false**, and render the
    four kinds in the thread, folded by default.~~ **Shipped** — see the note
    above.
-5a. **Prep: the daemon speaks `AgentSession` only.** `Tab.session` becomes
+5a. ~~**Prep: the daemon speaks `AgentSession` only.** `Tab.session` becomes
    `Box<dyn AgentSession>`, every remaining daemon call on the wider trait
    moves behind `AgentSession` / `TerminalView` or into `PtySession`, the
    `HarnessSession: AgentSession` supertrait bridge is dropped, and
    `has_terminal` for a not-yet-started agent comes from the provider. Pure
-   refactor: the wire is unchanged and every behaviour byte-identical. Detail
-   below.
+   refactor: the wire is unchanged and every behaviour byte-identical.~~
+   **Shipped** — see the note above; `HarnessSession` is deleted outright.
 6. **Then, and only then, add a provider with no terminal** — the ADK, as
    `bridge/src/harness/adk.rs`. By this point it is a new file, not a
    migration. Detail below.
@@ -943,6 +988,18 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-23, step 5a shipped.** The daemon holds a `Box<dyn AgentSession>`
+  and names no terminal call: liveness and the crash code are
+  `AgentStatus::Ended`, silence is `quiet_for`, a turn is `send_turn`, the
+  teardown is `end`, and `subscribe` / `resize` / `pid` go through
+  `terminal()`. `HarnessSession` is gone rather than shrunk — its remains are
+  inherent on `PtySession`. Readiness moved into `open_session`, which now
+  hands back the session's stream subscribed *before* that wait (a harness
+  paints its whole startup, or its last words, while readiness is waited out)
+  and asks for it only where Build will hand a turn, since `term.create`
+  holds the state lock across a shell's open. `Harness::has_terminal` answers
+  the digest before a session exists and defaults true, so no provider's
+  digest moves. The wire is unchanged and no existing test was weakened.
 - **2026-08-23, §11 q3 echoed in the body.** A consistency check found q3's
   conclusion — a no-terminal agent still gets a worktree, unconditionally —
   living only inside §11 and this changelog, while q4's is restated in §10's

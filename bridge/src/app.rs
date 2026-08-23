@@ -670,7 +670,10 @@ struct Tab {
     /// Surfaced by `term.list` so a reloaded client can order the tab row the
     /// way the human opened it.
     created_at: String,
-    session: Box<dyn AgentSession>,
+    /// Shared rather than owned outright: a turn is handed over with the
+    /// app-wide state lock RELEASED, so the delivery takes a handle out of the
+    /// registry instead of holding the registry open across the turn.
+    session: Arc<dyn AgentSession>,
     /// The grid this tab's terminal paints into — `None` for a session with no
     /// terminal, because there is no grid without one. The terminal is a
     /// capability, not a guarantee, and a screen kept for a session that has
@@ -16025,6 +16028,11 @@ fn parse_message_anchor(
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
 /// durable either way.
+///
+/// Unlike [`deliver`], this speaks from under the app-wide state lock — it
+/// reads the caller's own tab registry — which is why
+/// [`AgentSession::send_turn`] must return promptly. A carrier that blocked
+/// there would stall every RPC and every terminal pump behind one nudge.
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
     root: &std::path::Path,
@@ -17252,6 +17260,9 @@ fn ensure_agent_tab(
     }
 }
 
+/// What a delivery reports when the tab it just ensured is already gone.
+const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
+
 /// The one pipe from Build to a worktree's agent.
 ///
 /// Ensures the tab exists, then hands the agent exactly one turn — a value the
@@ -17280,27 +17291,33 @@ fn deliver(
         Spawned::Warm => warm,
     };
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
-    let mut s = state.lock().unwrap();
-    let tab = s
-        .tabs
-        .get_mut(&key)
-        .ok_or("the agent tab closed before its turn could be delivered")?;
-    if let Err(error) = tab.session.send_turn(&Turn::new(prompt)) {
+    // The handle comes out of the registry so the turn travels with the
+    // app-wide state lock RELEASED: every RPC, every terminal pump and the idle
+    // sweep wait on that lock, and how long a carrier takes to accept a turn is
+    // its own business — a protocol write to a full pipe, an ack a harness
+    // answers late, the exit-race wait below.
+    let session = {
+        let s = state.lock().unwrap();
+        let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
+        Arc::clone(&tab.session)
+    };
+    if let Err(error) = session.send_turn(&Turn::new(prompt)) {
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the
         // kernel. The bounded wait covers that lag; a genuinely wedged session
         // (live but unwritable) still surfaces its error.
-        if !tab
-            .session
-            .exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE)
-        {
+        if !session.exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE) {
             return Err(error.to_string());
         }
     }
     // The quiescence clock restarts here: whatever the agent was silent about
-    // before, it now has something to answer for.
-    tab.last_delivered_at = Some(std::time::Instant::now());
+    // before, it now has something to answer for. A tab that closed while the
+    // turn was in flight has no clock left to restart — and the turn still
+    // travelled, so that is not a delivery failure to report.
+    if let Some(tab) = state.lock().unwrap().tabs.get_mut(&key) {
+        tab.last_delivered_at = Some(std::time::Instant::now());
+    }
     Ok((wire_id, spawned))
 }
 
@@ -18770,6 +18787,91 @@ mod tests {
             "a warm tab hears the nudge: {warm_screen:?}"
         );
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
+    }
+
+    /// A session that answers what the app-wide state lock was doing at the
+    /// moment its turn arrived.
+    ///
+    /// It cannot own the state — the state owns the tab that owns the session —
+    /// so it holds a `Weak` and upgrades it for the one question it asks.
+    struct LockProbingSession {
+        state: std::sync::Weak<Mutex<AppState>>,
+        state_was_free: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl AgentSession for LockProbingSession {
+        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+            let state = self.state.upgrade().expect("the daemon outlives the turn");
+            // `try_lock` on a std mutex fails for the thread that already holds
+            // it, so this reads the DELIVERY's own lock, not a race with some
+            // other caller's.
+            self.state_was_free.store(
+                state.try_lock().is_ok(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
+    }
+
+    /// The turn travels with the app-wide state lock RELEASED.
+    ///
+    /// Every RPC, every terminal pump and the idle sweep wait on that lock, so
+    /// a carrier that takes its time accepting a turn — a protocol write to a
+    /// full pipe, an ack the harness answers late — would stall the whole
+    /// daemon if the turn were handed over under it. `AgentSession::send_turn`
+    /// promises callers they may take that time; this is where the promise is
+    /// kept, and it is kept for the exit-race wait on the failure path too.
+    #[test]
+    fn a_turn_travels_with_the_state_lock_released() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-lock");
+        let agent_id = crate::agent::derived_agent_id("run-lock");
+        let canonical = AppState::canonical_root(&root);
+        let state_was_free = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut tab = terminal_free_agent_tab(&canonical, "run-lock", &agent_id);
+            tab.session = Arc::new(LockProbingSession {
+                state: Arc::downgrade(&state),
+                state_was_free: Arc::clone(&state_was_free),
+            });
+            let mut s = state.lock().unwrap();
+            s.tabs.insert(TabKey::agent(&canonical, &agent_id), tab);
+        }
+
+        let (_, spawned) = deliver(
+            &state,
+            &root,
+            "run-lock",
+            &agent_id,
+            &ModelChoice::default(),
+            "COLD-CONTEXT-PROMPT",
+            "WARM-NUDGE-PROMPT",
+        )
+        .expect("the live tab takes the turn");
+
+        assert_eq!(spawned, Spawned::Warm, "the tab was already alive");
+        assert!(
+            state_was_free.load(std::sync::atomic::Ordering::Relaxed),
+            "a delivery must not hold the app-wide state lock across send_turn"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&TabKey::agent(&canonical, &agent_id)]
+                .last_delivered_at
+                .is_some(),
+            "the quiescence clock still restarts on the delivered turn"
+        );
     }
 
     /// The conversation's open session for `owner`, if it has one.
@@ -31762,7 +31864,7 @@ mod tests {
     }
 
     /// What a dictated session was asked to do, still readable once the daemon
-    /// owns the session itself — a `Box<dyn AgentSession>` in a tab cannot be
+    /// owns the session itself — an `Arc<dyn AgentSession>` in a tab cannot be
     /// looked inside, so the record lives beside it.
     #[derive(Clone, Default)]
     struct SessionLog {
@@ -31852,7 +31954,7 @@ mod tests {
             root: PathBuf::from("/nowhere"),
             role,
             created_at: now_rfc3339(),
-            session: Box::new(session),
+            session: Arc::new(session),
             // `DictatedSession` says nothing about terminals, so it has none —
             // and a tab with no terminal has no grid, because the two are made
             // together. A screen here would be the flag that disagrees with
@@ -31879,7 +31981,7 @@ mod tests {
                 provider: AgentProvider::default(),
             },
             created_at: now_rfc3339(),
-            session: Box::new(DictatedSession::reporting(AgentStatus::Working)),
+            session: Arc::new(DictatedSession::reporting(AgentStatus::Working)),
             screen: None,
             live: true,
             last_delivered_at: None,

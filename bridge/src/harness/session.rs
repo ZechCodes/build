@@ -72,15 +72,20 @@ pub trait AgentSession: Send + Sync {
     /// Hand the agent one turn. Returns when the turn is accepted, not when it
     /// is finished.
     ///
-    /// **May block, and callers must not hold the app-wide state lock across
-    /// it.** The PTY implementation writes a framed paste and the harness's
-    /// submit key trails it by [`REAL_TUI_SUBMIT_DELAY`], so a call can hold
-    /// its thread for seconds; a protocol implementation returns as soon as
-    /// the turn is written and never waits on the model. The daemon already
-    /// honours this — the verbs queue turns and
-    /// `deliver_pending_agent_turns` drains the queue once the lock is free —
-    /// and it is written down here so a future caller does not re-learn it
-    /// from a deadlock.
+    /// **Must return promptly: an implementation writes the turn out and
+    /// returns, never sleeping out a delay and never waiting on the model.**
+    /// Build's main delivery path (`deliver`) takes the session handle out of
+    /// the tab registry and hands the turn over with the app-wide state lock
+    /// released, but the in-place nudge (`nudge_live_agent_tab`) speaks to a
+    /// live tab from under it — so a carrier that blocks here stalls every RPC,
+    /// every terminal pump and the idle sweep along with it.
+    ///
+    /// Both carriers can hold that honestly. The PTY implementation writes the
+    /// framed paste and returns, leaving the harness's submit key to be written
+    /// off-thread [`REAL_TUI_SUBMIT_DELAY`] later; a protocol implementation
+    /// returns as soon as the turn is written to the child's stdin. It is
+    /// written down here so an implementer does not learn it from a daemon that
+    /// has gone quiet.
     ///
     /// [`REAL_TUI_SUBMIT_DELAY`]: crate::harness::REAL_TUI_SUBMIT_DELAY
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError>;

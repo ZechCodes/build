@@ -15,9 +15,10 @@ it. Pi and OpenCode are the same shape.
 
 The `Harness` / `HarnessSession` split already on this branch made the *launch*
 polymorphic and put the session behind a trait. It did not make the terminal
-optional: `HarnessSession` still requires `subscribe() -> bytes`, `resize`,
-`write_input` and `pid`, because `PtySession` was the only implementation there
-has ever been.
+optional: `HarnessSession` required `subscribe() -> bytes`, `resize`,
+`write_input` and `pid` of every session, because `PtySession` was the only
+implementation there had ever been. Step 5a deleted that trait — `AgentSession`
+is what a session is now — and §10 records what each of its calls became.
 
 This spec defines the interface that sits between the UI and the harness when
 the byte stream is set aside, and says what happens to every surface that
@@ -55,7 +56,7 @@ all. An ADK session calls the same tools over the same socket.
 
 ### To the agent — one chokepoint, no interface
 
-`deliver` (`bridge/src/app.rs:17132`) is documented as "the one pipe from Build
+`deliver` (`bridge/src/app.rs:17279`) is documented as "the one pipe from Build
 to a worktree's agent", and every turn Build sends goes through it. But it ends
 in `HarnessSession::write_prompt`, which means bracketed-paste framing, a
 sanitised prompt, and a submit key written 1500 ms later
@@ -64,7 +65,7 @@ takes a turn as a value.
 
 ### Status — inferred, and the inference is wrong for an event stream
 
-`agent_is_working` (`bridge/src/app.rs:893`) was four conjuncts — step 2 has
+`agent_is_working` (`bridge/src/app.rs:969`) was four conjuncts — step 2 has
 since replaced the last two with `status()`, but the reasoning is why:
 
 ```rust
@@ -175,8 +176,8 @@ pub trait AgentSession: Send + Sync {
 ```
 
 - **`quiet_for`** exists because the idle sweep asks a minutes-scale question
-  that `status()` does not answer. `mark_idle_tasks` (`app.rs:5784`) and
-  `agent_last_painted_at` (`app.rs:13443`) read `idle_for` today — the PTY's
+  that `status()` does not answer. `mark_idle_tasks` (`app.rs:5812`) and
+  `agent_last_painted_at` (`app.rs:13479`) read `idle_for` today — the PTY's
   paint clock. The name changes because the meaning generalizes: a PTY answers
   from its last byte (behavior byte-identical to `idle_for`), a protocol
   session from its last read protocol event. This is not status duplicated:
@@ -185,12 +186,12 @@ pub trait AgentSession: Send + Sync {
   carriers can hold one honestly.
 
 - **`exited_within`** is `deliver`'s crashed-versus-wedged wait
-  (`app.rs:17257`, `PROMPT_WRITE_EXIT_GRACE`): a failed write to a harness
+  (`app.rs:17310`, `PROMPT_WRITE_EXIT_GRACE`): a failed write to a harness
   that exits within the grace is a crash the sweep will explain, not an error
   to surface. Both carriers are subprocess-backed today, and any carrier that
   is not still has a truthful degenerate answer (`status()` already `Ended`).
 
-- **`epitaph`** exists because `HarnessExit` (`app.rs:16364`) explains a crash
+- **`epitaph`** exists because `HarnessExit` (`app.rs:16411`) explains a crash
   with the harness's last words, and today those come from the last painted
   screen (`screen_epitaph`) — a surface a no-terminal session does not have.
   The split: the PTY implementation returns `None` (its screen belongs to the
@@ -202,15 +203,28 @@ pub trait AgentSession: Send + Sync {
   value, and the screen epitaph stays what it always was — a human-legible
   crash surface, never parsed for state.
 
-- **May `send_turn` block?** Yes, and the trait doc must say so: the PTY's
-  implementation writes a framed paste and then sleeps `REAL_TUI_SUBMIT_DELAY`
-  (1500 ms) before the submit key, so a call can hold its thread for seconds;
-  a protocol implementation returns as soon as the turn is written to the
-  child's stdin and never waits on the model. The contract: **callers must
-  not hold the app-wide state lock across `send_turn`** — which the daemon
-  already honours, because `deliver_pending_agent_turns` drains the queue
-  after the verbs release the lock. Writing it down is what keeps a future
-  caller from re-learning it from a deadlock.
+- **May `send_turn` block?** No, and the trait doc says so: **an
+  implementation writes the turn out and returns — it never sleeps out a delay
+  and never waits on the model.** The reason is where the turn is handed over.
+  `deliver` takes the session handle out of the tab registry and calls
+  `send_turn` (and the `exited_within` grace on the failure path) with the
+  app-wide state lock RELEASED, so the main pipe imposes nothing; but
+  `nudge_live_agent_tab` reads its caller's tab registry, so the in-place nudge
+  speaks from *under* that lock, and every RPC, every terminal pump and the
+  idle sweep queue behind it. Both carriers can hold the contract honestly: the
+  PTY writes the framed paste and returns, leaving the submit key to be written
+  off-thread `REAL_TUI_SUBMIT_DELAY` (1500 ms) later, and a protocol session
+  returns as soon as the turn is written to the child's stdin. Writing it down
+  is what keeps an implementer from learning it from a daemon that has gone
+  quiet.
+
+  This is the one thing the shipped code and this section disagreed about, and
+  the disagreement was the wrong way round: the doc read "callers must not hold
+  the state lock, and the daemon already honours it" while `deliver` held it
+  across both the write and the 250 ms exit-race wait. Fixed on both sides —
+  `Tab.session` is an `Arc<dyn AgentSession>` so a delivery can take the handle
+  out of the registry, and `a_turn_travels_with_the_state_lock_released` keeps
+  it that way.
 
 ---
 
@@ -367,7 +381,7 @@ not fix that here.
 attached to a message**, not a separate event.
 
 - **What changes where it is minted.** `record_report_in_thread`
-  (`app.rs:16301`) stops pushing `Done` / `Blocked` / `RunFailed` for a
+  (`app.rs:16348`) stops pushing `Done` / `Blocked` / `RunFailed` for a
   reported outcome. Instead the report's summary is posted as an ordinary
   **agent message** carrying an outcome, with the structured completion report
   attached to the message when the report wrote one. `post_completion` is
@@ -496,13 +510,13 @@ Everything that must become conditional. This is the actual size of the work.
 
 | Site | Today | Change |
 |---|---|---|
-| `Tab.session` (`app.rs:652`) | `Box<dyn HarnessSession>` | `Box<dyn AgentSession>` — **shipped** |
-| `Tab.screen` (`app.rs:653`) | always a `TermScreen` | `Option<TermScreen>` — no grid without a terminal |
-| `agent_is_working` (`app.rs:893`) | reads `idle_for` | reads `status()` |
+| `Tab.session` (`app.rs:676`) | `Box<dyn HarnessSession>` | `Arc<dyn AgentSession>` — **shipped**; shared so a turn travels with the state lock released |
+| `Tab.screen` (`app.rs:682`) | always a `TermScreen` | `Option<TermScreen>` — no grid without a terminal |
+| `agent_is_working` (`app.rs:969`) | reads `idle_for` | reads `status()` |
 | `agent_attach` (`app.rs`) | attaches a grid, defaults 40×120 | refuses, with a reason, for a session with no terminal |
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
-| `agent_digest` (`app.rs:7601`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
+| `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
 | `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
 | `Thread::items` (`thread.rs:1167`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
 
@@ -553,7 +567,7 @@ the kind; what the kind means for attention is decided in one place.
 
 `agent.attach` gains a typed refusal for a session with no terminal, so an old
 client asking gets a sentence rather than a hang. This follows the precedent set
-by `require_shell_kind` (`app.rs:94`): refuse loudly and say where the thing
+by `require_shell_kind` (`app.rs:97`): refuse loudly and say where the thing
 actually lives, never fall back to something different.
 
 ---
@@ -720,6 +734,18 @@ Each step compiles, ships and is green on its own.
 > exists. `open_session` does not branch on it yet, because there is still
 > only one carrier to choose; that arm is step 6's, and the authority it will
 > ask is already in place.
+>
+> **Corrected after review.** The `send_turn` contract in §3 was written the
+> wrong way round — it said callers must not hold the app-wide state lock and
+> that the daemon already honoured it, while `deliver` held that lock across
+> both the write and the 250 ms `exited_within` grace. A provider implementer
+> reading it would have felt free to block in `send_turn` and stalled every
+> RPC and pump in the daemon. Both sides are now true: `Tab.session` is an
+> `Arc<dyn AgentSession>`, so `deliver` takes the handle out of the registry
+> and hands the turn over with the lock released, and the contract reads as
+> what it has to be — **`send_turn` returns promptly** — because
+> `nudge_live_agent_tab` still speaks to a live tab from under the lock, by
+> construction: it reads its caller's own tab registry.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
@@ -772,12 +798,12 @@ inventoried 2026-08-23, and where each one goes:
 
 | Call | Daemon sites | Moves to |
 |---|---|---|
-| `write_prompt` | `deliver` (`app.rs:17249`), `nudge_live_agent_tab` (`app.rs:16009`) | `send_turn(Turn)` — the value the trait has carried since step 1 |
+| `write_prompt` | `deliver` (`app.rs:17304`), `nudge_live_agent_tab` (`app.rs:16036`) | `send_turn(Turn)` — the value the trait has carried since step 1 |
 | `ready_within` | `ensure_agent_tab`, once, after `Tab::spawn` | into the PTY arm of the carrier-choosing spawn (`open_session`, `harness/mod.rs`) — readiness is how a *terminal* opens, still run outside the state lock |
-| `idle_for` | `mark_idle_tasks` (`app.rs:5815`), `agent_last_painted_at` (`app.rs:13450`) | `quiet_for()` (§3) — PTY answer unchanged |
-| `exited_within` | `deliver` (`app.rs:17257`) | `exited_within()` (§3) |
+| `idle_for` | `mark_idle_tasks` (`app.rs:5849`), `agent_last_painted_at` (`app.rs:13489`) | `quiet_for()` (§3) — PTY answer unchanged |
+| `exited_within` | `deliver` (`app.rs:17310`) | `exited_within()` (§3) |
 | `has_exited` | 9 sites (`agent_is_live`, `term_input`/`term_resize` liveness, the idle sweep, `agent_digest`, single-agent guards, the nudge) | `matches!(status(), AgentStatus::Ended { .. })` — the enum already says it |
-| `exit_code` | idle sweep (`app.rs:5810`) | the code inside `AgentStatus::Ended` |
+| `exit_code` | idle sweep (`app.rs:5835`) | the code inside `AgentStatus::Ended` |
 | `kill_and_reap` | 8 sites (tab close/retire/reap paths, `ensure_agent_tab`'s stale-agent sweep, the shell pump) | `end()` — its doc inherits the reap obligation: killing without releasing the process-table entry leaks a zombie per session |
 | `subscribe` | `Tab::spawn` (pump wiring) | `terminal()`-gated: the byte pump is spawned only for a session that offers one, which is already how `spawn_tab_pump` behaves |
 | `resize` | `ensure_agent_tab`'s two spawn-time screen carries | through the `TerminalView` handed back by `terminal()` |
@@ -801,7 +827,7 @@ Two things the step must also settle:
   not: the rail would offer a TUI button that the spawn then refuses. The
   provider knows before the session exists, so `Harness` (`harness/mod.rs`)
   gains `fn has_terminal(&self) -> bool { true }`, `agent_digest`
-  (`app.rs:7860`) asks `harness_for(agent.choice.provider)` when there is no
+  (`app.rs:7897`) asks `harness_for(agent.choice.provider)` when there is no
   tab, and the same answer is what `open_session` branches on to choose the
   carrier. One authority, asked before and after spawn.
 - **Refactor guarantees.** The wire is unchanged (the digest emits the same
@@ -859,10 +885,10 @@ What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
   `terminal()` stays the default `None`.
 
 - **Minting activity into the conversation — the pump seam.** The byte pump
-  (`spawn_tab_pump`, `app.rs:17352`) is the precedent: a task spawned beside
+  (`spawn_tab_pump`, `app.rs:17408`) is the precedent: a task spawned beside
   the tab that owns the session's output and, on stream close, marks the tab
   dead and closes the conversation's session lineage
-  (`record_agent_session_end`, `app.rs:2888`). Step 6 adds the second pump
+  (`record_agent_session_end`, `app.rs:2916`). Step 6 adds the second pump
   behind a capability that mirrors `terminal()`:
   `AgentSession::activity() -> Option<Receiver<AgentActivity>>`, default
   `None`, `Some` for a session that reports its own events. Where the spawn
@@ -936,23 +962,23 @@ the compatibility story for persisted threads and older clients — all there.
    one kind of agent sat in it. What matters is that the paths which assume
    "an agent can be dropped into a checkout" assume nothing about the
    carrier, and reading them confirms it:
-   - **Adoption** (`run_adopt`, `app.rs:11788` → `Orchestrator::adopt_run`,
+   - **Adoption** (`run_adopt`, `app.rs:11822` → `Orchestrator::adopt_run`,
      `orchestrator.rs:2364`; `adopt_implementation`, `orchestrator.rs:1474`)
      is git and records: checkpoint commit, `.build` scaffold, roster,
      lifecycle events. No session exists at adoption and none is consulted.
    - **The primary-checkout super-worktree** (`run_adopt` with
      `primary: true`, `describe_primary_checkout` in `worktree.rs:595`, the
-     `owns_primary_checkout` / `primary_run_of` guards, `app.rs:6373`) is
+     `owns_primary_checkout` / `primary_run_of` guards, `app.rs:6407`) is
      derived ownership over a directory; its lifecycle guards never touch a
      session.
    - **The drop-in itself** (`deliver` → `ensure_agent_tab`,
-     `app.rs:17017`) is the first place a carrier exists, chosen at
+     `app.rs:17064`) is the first place a carrier exists, chosen at
      `open_session` — everything before it (`scaffold_agent_worktree`, the
      per-provider `has_transcript` probe, the session-token mint) is
      path-and-provider work that holds for a headless child with the same
      cwd.
    The one PTY-flavoured residue found is `agent_last_painted_at`
-   (`app.rs:13443`) reading the paint clock for external worktree cards;
+   (`app.rs:13479`) reading the paint clock for external worktree cards;
    step 5a's `quiet_for` makes that carrier-neutral. Adoption's
    `--continue` pickup holds too: headless claude keeps the same cwd-keyed
    transcripts the probe reads.
@@ -964,7 +990,7 @@ the compatibility story for persisted threads and older clients — all there.
    a turn boundary carries neither, so a `result` line is not a completion
    any more than a quiet PTY was — "silence is an anomaly, never completion"
    survives with the anomaly clock reading a better instrument. Precisely,
-   for the idle sweep (`mark_idle_tasks`, `app.rs:5784`, threshold
+   for the idle sweep (`mark_idle_tasks`, `app.rs:5812`, threshold
    `BRIDGE_IDLE_SECONDS`, default 300 s; the demotions land through
    `on_plan_idle` / `on_run_idle`, `orchestrator.rs:1072` / `1998`):
    - An exited session is explained as today: code from
@@ -988,6 +1014,17 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-23, the `send_turn` concurrency contract corrected.** §3 and the
+  trait doc claimed callers must not hold the app-wide state lock across
+  `send_turn`; `deliver` did exactly that, across the write and the 250 ms
+  exit-race grace. `Tab.session` became an `Arc<dyn AgentSession>` so the
+  delivery takes the handle out of the registry and speaks with the lock
+  released, and the contract is now stated as the invariant every caller can
+  hold: `send_turn` writes the turn out and returns, because
+  `nudge_live_agent_tab` reaches a live tab from under the lock. Guarded by
+  `a_turn_travels_with_the_state_lock_released`. Behaviour otherwise unchanged
+  — a tab that closes while a turn is in flight no longer fails the delivery it
+  already completed, it only has no quiescence clock left to restart.
 - **2026-08-23, step 5a shipped.** The daemon holds a `Box<dyn AgentSession>`
   and names no terminal call: liveness and the crash code are
   `AgentStatus::Ended`, silence is `quiet_for`, a turn is `send_turn`, the

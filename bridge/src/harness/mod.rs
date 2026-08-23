@@ -19,6 +19,7 @@
 //! compiler finds the rest.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use portable_pty::PtySize;
@@ -152,6 +153,12 @@ pub trait Harness: Send + Sync {
 /// `turn_ready_grace` for it to be able to take a turn. Returns the session
 /// and its output, subscribed before the first byte can be missed.
 ///
+/// The session comes back behind an [`Arc`] because the daemon keeps it inside
+/// the state it locks, and hands turns to it with that lock RELEASED — see
+/// [`AgentSession::send_turn`]. A shared handle is what lets a caller take the
+/// session out of the registry without holding the registry open across the
+/// turn.
+///
 /// The one place a launch description becomes a running agent. Every spec names
 /// a binary today, so every session is a subprocess in a full PTY; a carrier
 /// that is not a subprocess is chosen here and nowhere else has to notice.
@@ -175,13 +182,13 @@ pub fn open_session(
     root: PathBuf,
     size: PtySize,
     turn_ready_grace: Option<Duration>,
-) -> Result<(Box<dyn AgentSession>, SessionOutput), HarnessError> {
+) -> Result<(Arc<dyn AgentSession>, SessionOutput), HarnessError> {
     let session = PtySession::spawn(spec, Some(root), size)?;
     let output = session.terminal().map(TerminalView::subscribe);
     if let Some(grace) = turn_ready_grace {
         session.ready_within(grace);
     }
-    Ok((Box::new(session), output))
+    Ok((Arc::new(session), output))
 }
 
 /// The implementation for `provider`. The only way to reach one.

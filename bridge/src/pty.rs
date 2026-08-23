@@ -464,8 +464,8 @@ impl AgentSession for PtySession {
     ///
     /// The readiness check the spec's table names is NOT here: it belongs to
     /// the spawn, which waits out the startup paint once before the first turn
-    /// is written. Re-checking per turn would park a caller holding the
-    /// app-wide state lock behind a mid-turn repaint.
+    /// is written. Re-checking per turn would park the caller behind a mid-turn
+    /// repaint, and this call must return promptly — see the trait doc.
     fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
         self.write_prompt(&turn.text)
     }
@@ -570,10 +570,11 @@ impl PtySession {
             writer.flush()?;
         }
         // The submit trails the text by the spec's declared delay (see
-        // `HarnessSpec::submit_delay`), written off-thread: a delivery may hold
-        // the app-wide state lock, and sleeping under it would stall every
-        // pump. A failed write here is the child exiting under us — the same
-        // race the caller's exit guard already covers for the text write.
+        // `HarnessSpec::submit_delay`), written off-thread: a turn can be
+        // handed over from under the app-wide state lock (the in-place nudge
+        // does), and sleeping under it would stall every pump. A failed write
+        // here is the child exiting under us — the same race the caller's exit
+        // guard already covers for the text write.
         let writer = Arc::clone(&self.writer);
         let delay = self.submit_delay;
         let submit = self.submit.bytes();
@@ -805,8 +806,8 @@ mod tests {
             .unwrap();
         assert!(
             written_at.elapsed() < Duration::from_millis(200),
-            "write_prompt must not sleep out the delay itself — a delivery can \
-             hold the app-wide state lock across it"
+            "write_prompt must not sleep out the delay itself — a turn can be \
+             handed over from under the app-wide state lock"
         );
 
         capture_containing(&capture, "\u{1b}[201~\n").await;

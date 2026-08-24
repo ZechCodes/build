@@ -366,7 +366,7 @@ Two reasons that is the right trade:
    the human's timeline.
 2. The structured completion report survives regardless —
    `conversation_prompt` appends `thread.last_completion` separately, after the
-   packet (`bridge/src/orchestrator.rs:658`), so the densest of the four is not
+   packet (`bridge/src/orchestrator.rs:660`), so the densest of the four is not
    carried by this path anyway.
 
 **Known gap, fix deferred — noted 2026-08-23.** Reason 1 no longer holds for
@@ -452,7 +452,7 @@ This is the part the storage layer decides, not the design.
 **There is no database.** The store is one `record.json` per Issue under
 `~/.build/tasks/issues/<id>/`, holding the Issue *and every implementation
 inside it*, each with its own thread. Records are written atomically — tmp file,
-fsync, rename — and `save_issue_implementation` (`bridge/src/store.rs:615`) is a
+fsync, rename — and `save_issue_implementation` (the JSON store's, since removed) is a
 read-modify-write of the whole aggregate:
 
 ```rust
@@ -518,7 +518,7 @@ Everything that must become conditional. This is the actual size of the work.
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
 | `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
 | `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
-| `Thread::items` (`thread.rs:1167`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
+| `Thread::items` (`thread.rs:1191`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
 
 ### SPA
 
@@ -905,6 +905,56 @@ What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
   spawning tool call rather than minted individually, at least at first —
   both are additive to revisit.
 
+- **Three requirements the step must hold, flagged in review 2026-08-23.**
+  Each is an edge a PTY holds up by accident and a no-terminal carrier falls
+  through. They are normative, not advisory.
+
+  - **A session with no terminal MUST report activity.** `terminal()` and
+    `activity()` may not both be `None`, and `open_session` refuses a carrier
+    that answers `None` to both rather than spawning it. The death rites hang
+    off the activity pump exactly the way they hang off the byte pump: the
+    byte pump performs them when the broadcast closes (`app.rs:17458`) —
+    marks the tab not live, pushes `term.closed` through the screen, calls
+    `record_agent_session_end`. A session with neither stream has no close to
+    hang them on, so its tab would keep reading as live and its
+    conversation's session lineage would stay open until the idle sweep
+    noticed minutes later and explained an exit as silence. The activity
+    pump owes the two rites that are not the terminal's: the tab goes not
+    live and `record_agent_session_end` runs. The `term.closed` push is the
+    screen's half and there is no screen — the refusals of step 3 already
+    kept every client off it.
+
+  - **§11 q4's `Working` short-circuit lands in this step.**
+    `mark_idle_tasks` (`app.rs:5812`) today demotes on `quiet_for` and
+    `last_delivered_at` alone. Step 5a deliberately did not add the `status()`
+    test, because it is behaviour design for a turn-boundary carrier rather
+    than part of a refactor: for a PTY it is a no-op, since paint inside 30 s
+    is what makes `Working` and a tab quiet past the 300 s threshold cannot
+    be `Working`. It stops being a no-op the day a carrier reports its own
+    turn boundaries — a model reasoning for forty minutes is `Working` and
+    silent, and without the short-circuit the sweep demotes it mid-turn. So
+    the demotion condition becomes `status()` is not `Working` **and**
+    `quiet_for() >= threshold` **and** nothing delivered within the
+    threshold. It must be tested from both sides: byte-identical for the PTY
+    (the existing sweep tests stand unmodified, plus one asserting a PTY past
+    the threshold is never `Working`, so the new conjunct can never spare
+    one), and a fake turn-boundary session mid-turn past the threshold is not
+    demoted.
+
+  - **A no-terminal spawn MUST close the screens waiting on it.** Clients
+    that mount an Agent tab before its worktree has an agent are held on a
+    screen with no PTY (`agent_screens_awaiting_spawn`, `app.rs:1909`), and
+    the spawn carries them onto the real screen under the same lock
+    acquisition that publishes the tab (`app.rs:17228`). A session with no
+    terminal has no real screen to carry them to, so that carry silently
+    drops them and they sit attached to a grid nothing will ever paint. The
+    spawn instead pushes `term.closed` through the waiting screen — the way
+    `retire_agent` (`app.rs:7810`) and the orphan reaper (`app.rs:5783`)
+    already end one — so the client is told, and the rail, which by then
+    reads `has_terminal: false` off the digest, stops offering the TUI.
+    Refusing the attach outright is the same answer said earlier; what is
+    forbidden is leaving the client attached to nothing.
+
 - **The MCP socket wiring is identical, by construction.** The argv carries
   the same per-agent `--mcp-config` the orchestrator scaffolds today, the
   env carries the same `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN`, and `done` /
@@ -947,7 +997,7 @@ the compatibility story for persisted threads and older clients — all there.
 1. ~~**How large is the thread's recent activity window?**~~ Answered by the
    store migration: a conversation keeps a resident tail of 200 items in memory
    (`RESIDENT_CONVERSATION_TAIL`, `store.rs:477`), first loads and scroll-back
-   ship 60 items per page (`DEFAULT_THREAD_PAGE`, `thread.rs:961`), and older
+   ship 60 items per page (`DEFAULT_THREAD_PAGE`, `thread.rs:985`), and older
    items are read back from SQLite. Activity rows get the same treatment with
    no new code. Nothing gates step 4.
 
@@ -963,7 +1013,7 @@ the compatibility story for persisted threads and older clients — all there.
    "an agent can be dropped into a checkout" assume nothing about the
    carrier, and reading them confirms it:
    - **Adoption** (`run_adopt`, `app.rs:11822` → `Orchestrator::adopt_run`,
-     `orchestrator.rs:2364`; `adopt_implementation`, `orchestrator.rs:1474`)
+     `orchestrator.rs:2366`; `adopt_implementation`, `orchestrator.rs:1476`)
      is git and records: checkpoint commit, `.build` scaffold, roster,
      lifecycle events. No session exists at adoption and none is consulted.
    - **The primary-checkout super-worktree** (`run_adopt` with
@@ -992,7 +1042,7 @@ the compatibility story for persisted threads and older clients — all there.
    survives with the anomaly clock reading a better instrument. Precisely,
    for the idle sweep (`mark_idle_tasks`, `app.rs:5812`, threshold
    `BRIDGE_IDLE_SECONDS`, default 300 s; the demotions land through
-   `on_plan_idle` / `on_run_idle`, `orchestrator.rs:1072` / `1998`):
+   `on_plan_idle` / `on_run_idle`, `orchestrator.rs:1074` / `2000`):
    - An exited session is explained as today: code from
      `AgentStatus::Ended`, epitaph per §3.
    - A live session is demoted to `IdleUnreported` iff **`status()` is not
@@ -1014,6 +1064,20 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-23, step 6's edges made normative.** Review of the step-5a
+  revision flagged three ways a no-terminal carrier falls through a path the
+  PTY holds up by accident, and they are now requirements in §10 step 6
+  rather than things an implementer would find out at runtime. A session
+  whose `terminal()` is `None` must return `Some` from `activity()`, because
+  the death rites hang off a stream closing and a carrier with neither stream
+  would keep a dead tab reading as live until the idle sweep explained the
+  exit as silence. §11 q4's `Working` short-circuit lands in this step, not
+  earlier: it is behaviour design for a turn-boundary carrier, a no-op for
+  the PTY, and must be tested as both. And a no-terminal spawn must close the
+  screens waiting on it (`agent_screens_awaiting_spawn`) instead of dropping
+  their clients onto a grid nothing will ever paint. Drifted line references
+  refreshed against the tree (`thread.rs`, `orchestrator.rs`); the removed
+  JSON store's `save_issue_implementation` no longer cites a line.
 - **2026-08-23, the `send_turn` concurrency contract corrected.** §3 and the
   trait doc claimed callers must not hold the app-wide state lock across
   `send_turn`; `deliver` did exactly that, across the write and the 250 ms

@@ -1,7 +1,8 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–6 shipped: the ADK is a provider and the first
-carrier with no terminal. Step 7 specified, not started (see §10)
+**Status:** Draft — steps 0–7 shipped: the ADK is a provider and the first
+carrier with no terminal, and an outcome is a status on the agent's own
+message (see §10)
 **Last updated:** August 24, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -376,7 +377,7 @@ Two reasons that is the right trade:
    packet (`bridge/src/orchestrator.rs:660`), so the densest of the four is not
    carried by this path anyway.
 
-**Known gap, fix deferred — noted 2026-08-23.** Reason 1 no longer holds for
+**Known gap, closed by step 7 — noted 2026-08-23, fixed 2026-08-24.** Reason 1 no longer holds for
 outcomes reported through `done`: `post_completion` (`thread.rs:1604`)
 deliberately posts no message — the event is the only record — and
 `last_completion` is only set when a structured report exists, which a blocked
@@ -566,6 +567,21 @@ on a thread.
   "data": { "id": "event-41", "sequence": 41, "event": "tool_use",
             "created_at": "…", "summary": "Read bridge/src/app.rs" } }
 ```
+
+```json
+// an outcome — an ordinary agent message with two more fields, both absent
+// on every message that is not one (step 7)
+{ "type": "message",
+  "data": { "id": "message-42", "sequence": 42, "role": "agent",
+            "body": "Needs production credentials", "created_at": "…",
+            "outcome": "blocked" } }
+```
+
+`outcome` is `completed` | `blocked` | `failed`; a completed outcome also sets
+the existing `done`, whose meaning does not move, and the `completion_report`
+envelope the `Done` event carried rides the message when the agent wrote one.
+No field changes meaning and nothing is removed, so a client that knows only
+`done` renders a completion exactly as it did.
 
 The class is **not** a field. It is intrinsic to the kind and asked for through
 `ThreadEventKind::class` / `ThreadItem::attention_reason`, which is how the
@@ -917,10 +933,11 @@ Each step compiles, ships and is green on its own.
    `bridge/src/harness/adk.rs`. By this point it is a new file, not a
    migration. Detail below.~~ **Shipped** — see the note above; resume by
    recorded session id is the one bullet still open.
-7. **Outcomes become message statuses** — the §6.1 deferred fix, as designed
+7. ~~**Outcomes become message statuses** — the §6.1 deferred fix, as designed
    there. Independent of step 6 (it repairs the catch-up packet for every
    carrier) and ordered after it only because step 6 is what makes the gap
-   bite daily; it may land first if ADK slips.
+   bite daily; it may land first if ADK slips.~~ **Shipped** — see the detail
+   below.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -1129,6 +1146,52 @@ the `Done`/`Blocked` emission dropped (kinds retained for old rows), the
 catch-up filter inverted for outcome messages, the Issue mirror re-keyed, and
 the compatibility story for persisted threads and older clients — all there.
 
+> **Shipped in `4f2c4d0` and `02dd6df`.** `Thread::post_outcome` is the one
+> place an outcome is written down, `record_report_in_thread` is its only
+> caller, and `post_completion` is gone. Five details worth knowing.
+>
+> **The outcome names itself with the token of the event it replaced.**
+> `MessageOutcome::{Completed, Blocked, Failed}` answers `done` / `blocked` /
+> `run_failed` when the unread rule asks a message why it needs the human, so
+> the inbox line, the push kind and `unread_reason` on the wire are unmoved —
+> the equivalence §6.1 asks for is held by the reason token rather than by a
+> second copy of the rule. `done` is the completed arm and nothing else sets
+> it: the parameter every other post threaded through is deleted, so the flag
+> cannot come apart from the outcome it stands for.
+>
+> **Only a REPORTED outcome stops being an event.** The other three arms of
+> `record_report_in_thread` are Build's own reading rather than the agent's
+> report, and they have no message to attach to: a triage pass (`Triaged` —
+> nothing waits on it), a validation Build judged (`ReviewBlocked`, which is
+> also outside the three-value outcome vocabulary and would have had to change
+> what its row means to fit), and every `RunFailed` raised where no report was
+> made. A report Build could not APPLY is still the agent's report, so it is a
+> `Failed` outcome carrying Build's note in the same body — which is what keeps
+> `run_failed` on that row.
+>
+> **The Issue mirror needed no re-keying, and the tests say why.** A planned
+> implementation's report is written straight onto the Issue's conversation by
+> `record_report_in_thread`'s caller — `run_outcome_mirrors_to_issue` never
+> carried it — so the outcome reaches the same timeline as the same one unread
+> entry, now with the packet carrying it too. The helper still keys on event
+> class for the one thing that does travel through it (an abandoned branch),
+> and its doc says so rather than leaving the next reader to work it out.
+>
+> **The report is boxed on the message.** Four vectors on the rarest field of
+> the largest thread item made `ThreadItem::Message` 600 bytes against the
+> event's 328, which is a clippy error before it is a design question, and the
+> answer is the same either way: ordinary messages should not carry a
+> completion report's bulk through every conversation the daemon holds.
+>
+> **Nothing changed in the SPA, because this step names nothing there.** The
+> compatibility bullet in §6.1 is exactly what the shipped client now is: a
+> completion still renders as an agent message, and a blocked outcome renders
+> as one stating the reason. Two things it will want, when a step asks for
+> them: the completion-report card is drawn from `event.completion_report`
+> only, so a new completion's report has no card until the message half is
+> rendered, and the "Agent reported done" event row no longer appears on new
+> work.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -1203,6 +1266,27 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-24, step 7 shipped.** An outcome is a status on the agent's own
+  message: `Thread::post_outcome` writes the summary the agent reported as an
+  ordinary agent message carrying `completed` / `blocked` / `failed`, with the
+  structured report attached to it, and `post_completion` and the
+  `Done`/`Blocked`/`RunFailed` emissions behind a report are gone. The kinds
+  and their classes stay, so every persisted row still means what it meant —
+  held by a test that loads a pre-step-7 thread. Attention needed no new rule
+  and no new copy of one: an outcome answers the unread question with the token
+  of the event it replaced, so the reason on the wire, the inbox line and the
+  push kind are unmoved, and the count per outcome is still exactly one. The
+  catch-up exclusion inverts — outcome messages are carried, each prefixed with
+  its outcome — which closes the §6.1 gap: a replacement agent now reads why
+  its predecessor blocked out of the packet that carries what the human said.
+  The Issue mirror needed no re-keying (a planned implementation's report is
+  written onto the Issue's conversation directly, and never travelled through
+  `run_outcome_mirrors_to_issue`), and the equivalence is held end to end by a
+  test rather than by the helper's signature. What stays an event is what Build
+  observed for itself: `Triaged`, `ReviewBlocked`, `IdleUnreported`,
+  `Interrupted`, and every `RunFailed` raised where no report was made. Nothing
+  in the SPA changed, because the step names nothing there — it is now exactly
+  the older client §6.1's compatibility bullet describes.
 - **2026-08-24, step 6 shipped.** `AgentProvider::ClaudeAdk` is a provider like
   any other and the first with no terminal, so every refusal and every
   conditional the earlier steps built is live in production rather than walked

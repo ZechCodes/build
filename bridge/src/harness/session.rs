@@ -137,6 +137,23 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    /// The session's own account of what it is doing, if it keeps one. `None`
+    /// is a normal answer.
+    ///
+    /// The mirror of [`terminal`](AgentSession::terminal), and the two are
+    /// alternatives rather than extras: a CLI wrapper is opaque and offers the
+    /// escape hatch, a session protocol reports its reasoning and tool calls
+    /// and offers this. A session that answers `None` to BOTH is refused at
+    /// the spawn — Build would have no way to see it working and, worse, no
+    /// stream whose close performs the death rites, so its tab would read as
+    /// live until the idle sweep explained the exit as silence.
+    ///
+    /// Every subscriber sees each event from the moment it subscribes and
+    /// observes `Closed` once the session's stream ends.
+    fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+        None
+    }
+
     /// Age the evidence-of-work stamp, so a live session reports the silence of
     /// one that has been sitting idle for `ago`.
     ///
@@ -145,6 +162,42 @@ pub trait AgentSession: Send + Sync {
     /// them out in real time would be unrunnable.
     #[cfg(test)]
     fn backdate_last_output(&self, ago: Duration);
+}
+
+/// One thing an agent reported doing, on its way to the conversation.
+///
+/// The four kinds are `ThreadEventKind`'s four activity kinds and nothing else:
+/// a session that reports its own work has no second tab, no second scrollback
+/// and no second input path — its reasoning, tool calls and narration are
+/// conversation, classed `Status`, so none of them pulls the human in.
+///
+/// Each carries the summary the timeline shows. What it costs to build one is
+/// the reporting session's business: a protocol carrier renders a tool call as
+/// its name plus a one-line input, and never mints the call a human would then
+/// read twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentActivity {
+    /// The agent thought out loud.
+    Reasoning { summary: String },
+    /// The agent called a tool.
+    ToolUse { summary: String },
+    /// A tool answered.
+    ToolResult { summary: String },
+    /// The agent narrated. Distinct from a `post_thread_message`, which is the
+    /// agent deliberately addressing the human.
+    Narration { summary: String },
+}
+
+impl AgentActivity {
+    /// The line the timeline shows for this event.
+    pub fn summary(&self) -> &str {
+        match self {
+            AgentActivity::Reasoning { summary }
+            | AgentActivity::ToolUse { summary }
+            | AgentActivity::ToolResult { summary }
+            | AgentActivity::Narration { summary } => summary,
+        }
+    }
 }
 
 /// A session's byte stream, subscribed at the moment it opened.
@@ -198,6 +251,16 @@ mod tests {
         }
         fn end(&self) {}
         fn backdate_last_output(&self, _ago: Duration) {}
+    }
+
+    /// Both capabilities default to absent, so each carrier declares only the
+    /// one it has: an opaque CLI wrapper offers the terminal, a session that
+    /// reports its own reasoning and tool calls offers the activity stream.
+    #[test]
+    fn a_session_that_says_nothing_about_its_capabilities_offers_neither() {
+        let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
+        assert!(session.terminal().is_none());
+        assert!(session.activity().is_none());
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

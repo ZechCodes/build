@@ -760,6 +760,13 @@ pub(crate) mod fake {
         harness_replaying(per_turn, true)
     }
 
+    /// The same child, for one turn only: it answers, then leaves the way a
+    /// real one does when its work is over. That departure closes its stream,
+    /// which is what a no-terminal session's death rites hang off.
+    pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec {
+        harness_replaying(per_turn, false)
+    }
+
     fn harness_replaying(per_turn: &[&str], turn_after_turn: bool) -> HarnessSpec {
         let mut script = format!("sleep 0.2\nprintf '%s\\n' '{INIT}'\n");
         script.push_str(match turn_after_turn {

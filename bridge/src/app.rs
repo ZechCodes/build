@@ -32450,9 +32450,12 @@ mod tests {
     /// An agent tab rooted at `root` whose session has no terminal — the shape
     /// a session protocol has.
     ///
-    /// Built by hand because no provider produces one yet: until one does,
-    /// these tests are the only thing that walks the refusal paths, and a path
-    /// nothing walks is a path that has not been written.
+    /// Built by hand so a test can put a session in a state it chooses. The
+    /// headless provider produces the real thing —
+    /// `the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned` walks
+    /// the refusals against a child the daemon spawned — and this stays for the
+    /// tests that need a session reporting a dictated status rather than
+    /// whatever a real one happens to be doing.
     fn terminal_free_agent_tab(root: &std::path::Path, owner: &str, agent_id: &str) -> Tab {
         dictated_agent_tab(
             root,
@@ -32665,6 +32668,198 @@ mod tests {
             s.tabs.contains_key(&key),
             "the tab is RETAINED, exactly as an agent tab whose PTY ended is"
         );
+    }
+
+    /// Put `run_id` on the headless provider, running `spec`.
+    ///
+    /// Both the launch config a delivery reads (the entity's model choice) and
+    /// the one the rail reads before there is a session (the agent's own) are
+    /// set, because a real provider change sets both and a test that moved only
+    /// one would prove the daemon agrees with itself when it does not.
+    fn run_on_a_headless_provider(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        run_id: &str,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        let choice = a_headless_provider_running(state, repo, spec);
+        let mut s = state.lock().unwrap();
+        let run = s.runs.get_mut(run_id).expect("the run");
+        run.model_choice = choice.clone();
+        run.agents.resolve_mut(None).expect("its agent").choice = choice.clone();
+        choice
+    }
+
+    /// The whole path, end to end: a human says something to a run whose
+    /// provider has no terminal, and what comes back is a conversation.
+    ///
+    /// Nothing here is hand-built — the daemon picks the carrier off the
+    /// provider, opens a real child, hands it the turn as a value, and the
+    /// activity pump posts what the child reported into the thread the human
+    /// reads. The child is a fake stream-json harness replaying a recording of
+    /// what claude says; no model turn is ever run.
+    ///
+    /// Then it leaves, the way a real one does when its work is over, and the
+    /// death rites the byte pump owes a PTY are owed here too.
+    #[tokio::test]
+    async fn a_headless_agent_turns_a_message_into_activity_and_leaves() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-headless");
+        let key = first_agent_key(&root, "run-headless");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-headless",
+            fake::stream_json_harness_that_leaves(&[
+                fake::THINKING,
+                fake::TOOL_USE,
+                fake::TOOL_RESULT,
+                fake::NARRATION,
+                fake::RESULT,
+            ]),
+        );
+        // Everything said so far has been read, so an unread entry after this
+        // is the activity's doing.
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-headless", "body": "drop the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        call(
+            &handler,
+            "entity.seen",
+            json!({ "entity_id": "run-headless" }),
+        );
+
+        let reported = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let reported = activity_of(&s.runs["run-headless"].agents);
+            (reported.len() == 4).then_some(reported)
+        })
+        .await
+        .expect("the turn's work reaches the conversation");
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    "the index is unused".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    "Read bridge/src/app.rs".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolResult,
+                    "Read: fn main() {}".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    "dropped the index".to_string()
+                ),
+            ],
+            "in the order the child reported them, and saying what it said"
+        );
+
+        // The child answered its one turn and left. Both rites the byte pump
+        // performs on PTY EOF are owed here, and nothing else in the daemon
+        // learns a harness died on its own.
+        wait_for(Duration::from_secs(10), || {
+            (open_session_count(&state, "run-headless") == 0).then_some(())
+        })
+        .await
+        .expect("the session lineage closes when the child's stream does");
+        let listed = call(
+            &handler,
+            "agent.list",
+            json!({ "entity_id": "run-headless" }),
+        );
+        let bubble = &listed["result"]["agents"][0];
+        assert_eq!(
+            bubble["has_terminal"], false,
+            "the rail never offers a basement this provider has none of: {bubble:?}"
+        );
+        assert_eq!(
+            bubble["working"], false,
+            "and an agent that has left is not working: {bubble:?}"
+        );
+        let view = call(&handler, "run.get", json!({ "run_id": "run-headless" }));
+        assert_eq!(
+            view["result"]["unread_count"], 0,
+            "an agent working is not an agent addressing anyone: {view:?}"
+        );
+
+        let s = state.lock().unwrap();
+        assert!(!s.tabs[&key].live, "the tab stops reading as live");
+        assert!(
+            s.tabs[&key].screen.is_none(),
+            "and never had a grid to be retained"
+        );
+    }
+
+    /// Step 3's refusals, live in production for the first time.
+    ///
+    /// Until a provider answered `has_terminal` false, every terminal verb's
+    /// refusal was walked only by tests that built the terminal-free session by
+    /// hand. This drives the real one: a headless agent the daemon spawned, and
+    /// every verb a client could reach its basement through.
+    #[tokio::test]
+    async fn the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refused");
+        let key = first_agent_key(&root, "run-refused");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-refused",
+            fake::stream_json_harness(&[fake::RESULT]),
+        );
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-refused", "body": "have a look" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.tabs
+                .get(&key)
+                .filter(|tab| tab.session_is_live())
+                .map(|_| ())
+        })
+        .await
+        .expect("the headless agent is running");
+        let term_id = key.tab_id.clone();
+
+        let attached = call(&handler, "agent.attach", json!({ "id": "run-refused" }));
+        assert_eq!(attached["ok"], false, "{attached:?}");
+        let refusal = attached["error"].as_str().unwrap().to_string();
+        assert!(
+            refusal.contains(&term_id) && refusal.contains("conversation"),
+            "the refusal names the agent and where its work is read: {refusal}"
+        );
+        for (method, params) in [
+            ("term.attach", json!({ "term_id": term_id })),
+            (
+                "term.input",
+                json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
+            ),
+            (
+                "term.resize",
+                json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
+            ),
+            ("term.ack", json!({ "term_id": term_id, "cursor": 0 })),
+        ] {
+            let refused = call(&handler, method, params);
+            assert_eq!(refused["error"], json!(refusal), "{method}: {refused:?}");
+        }
+
+        state.lock().unwrap().tabs[&key].session.end();
     }
 
     /// The terminal verbs refuse an agent whose session has no terminal, and
@@ -34906,6 +35101,30 @@ mod tests {
         );
         assert_eq!(idle["has_terminal"], true, "{idle:?}");
         assert_eq!(idle["working"], false, "{idle:?}");
+
+        // And on the headless provider the same question answers no before
+        // anything has started — which is the whole point of asking the
+        // provider: the rail stops offering the basement while there is still
+        // no session to ask, so it never offers one the spawn would refuse.
+        state
+            .runs
+            .get_mut(&run_id)
+            .expect("the run")
+            .agents
+            .resolve_mut(None)
+            .expect("its agent")
+            .choice
+            .provider = AgentProvider::ClaudeAdk;
+        assert_eq!(bubble(&mut state)["has_terminal"], false);
+        state
+            .runs
+            .get_mut(&run_id)
+            .expect("the run")
+            .agents
+            .resolve_mut(None)
+            .expect("its agent")
+            .choice
+            .provider = AgentProvider::default();
 
         // A PTY session answers for itself, and answers yes: today every
         // session does.

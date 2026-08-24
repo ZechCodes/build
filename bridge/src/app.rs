@@ -17263,18 +17263,24 @@ fn ensure_agent_tab(
             }
         };
         if let Some(screen) = carried {
-            // Reconnect is snapshot + cursor: a replacement process must never
-            // rewind that cursor, and clients already attached stay attached.
-            // The new PTY takes the retained screen's grid so the two agree.
-            if let Some(terminal) = tab.session.terminal() {
-                let _ = terminal.resize(PtySize {
-                    rows: screen.rows,
-                    cols: screen.cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
+            match tab.session.terminal() {
+                // Reconnect is snapshot + cursor: a replacement process must
+                // never rewind that cursor, and clients already attached stay
+                // attached. The new PTY takes the retained screen's grid so the
+                // two agree.
+                Some(terminal) => {
+                    let _ = terminal.resize(PtySize {
+                        rows: screen.rows,
+                        cols: screen.cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                    tab.screen = Some(screen);
+                }
+                // The replacement paints nothing, so the retained grid has
+                // nothing to become — see [`close_a_screen_with_no_terminal`].
+                None => close_a_screen_with_no_terminal(&screen, &key.tab_id),
             }
-            tab.screen = Some(screen);
         }
         let wire_id = tab.wire_id();
         {
@@ -17303,19 +17309,22 @@ fn ensure_agent_tab(
                 })?
             });
             if let Some(waiting) = waiting {
-                if let Some(terminal) = tab.session.terminal() {
-                    let _ = terminal.resize(PtySize {
-                        rows: waiting.rows,
-                        cols: waiting.cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                }
-                if let Some(screen) = &mut tab.screen {
-                    screen.set_size(waiting.cols, waiting.rows);
-                    for client in &waiting.attached {
-                        screen.register(&client.sender);
+                match tab.require_terminal_and_screen() {
+                    Ok((terminal, screen)) => {
+                        let _ = terminal.resize(PtySize {
+                            rows: waiting.rows,
+                            cols: waiting.cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                        screen.set_size(waiting.cols, waiting.rows);
+                        for client in &waiting.attached {
+                            screen.register(&client.sender);
+                        }
                     }
+                    // There is no real screen to carry them onto — see
+                    // [`close_a_screen_with_no_terminal`].
+                    Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
                 }
             }
             s.tabs.insert(key.clone(), tab);
@@ -17328,6 +17337,23 @@ fn ensure_agent_tab(
 
 /// What a delivery reports when the tab it just ensured is already gone.
 const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
+
+/// End a screen the spawn that was supposed to fill it can never fill.
+///
+/// Both screens `ensure_agent_tab` may be holding — the retained grid of the
+/// session being replaced, and the one clients that mounted the Agent tab early
+/// are waiting on — exist to be carried onto the new session's screen. A
+/// session with no terminal has none, so there is nothing to carry them to and
+/// the carry would drop their clients silently: attached to a grid nothing will
+/// ever paint, waiting on a basement that is never coming.
+///
+/// So they are told, the way [`AppState::retire_agent`] and the orphan reaper
+/// tell one. The rail reads `has_terminal: false` off the digest by then and
+/// stops offering the terminal; this is what closes the door for a client that
+/// was already through it.
+fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
+    screen.push_closed(term_id, "no_terminal");
+}
 
 /// The one pipe from Build to a worktree's agent.
 ///
@@ -17863,6 +17889,13 @@ mod tests {
     fn screen_of(tab: &Tab) -> &TermScreen {
         tab.screen
             .as_ref()
+            .expect("a tab spawned in a PTY has a screen")
+    }
+
+    /// The same grid, for a test that attaches a client to it.
+    fn screen_of_mut(tab: &mut Tab) -> &mut TermScreen {
+        tab.screen
+            .as_mut()
             .expect("a tab spawned in a PTY has a screen")
     }
 
@@ -30832,6 +30865,171 @@ mod tests {
             "the retained cursor is carried forward, never rewound to the \
              waiting screen's zero: {seen:?}"
         );
+    }
+
+    /// Point a fixture's project at a headless provider running `spec`, and
+    /// hand back the model choice that opens it.
+    ///
+    /// The provider on the choice is the whole launch config — it is what
+    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
+    /// without swapping the provider would run a stream-json child inside a
+    /// PTY and prove nothing.
+    fn a_headless_provider_running(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        let mut s = state.lock().unwrap();
+        let worktrees = s.worktrees_root.clone();
+        let agent = Agent::WarmBuilder(Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| spec.clone(),
+        ));
+        s.projects[0].orch =
+            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        ModelChoice {
+            provider: AgentProvider::ClaudeAdk,
+            ..ModelChoice::default()
+        }
+    }
+
+    /// A spawn with no terminal closes the screens waiting on it.
+    ///
+    /// Clients that mount the Agent tab before a worktree has an agent are held
+    /// on a screen with no PTY, and a spawn carries them onto the real one. A
+    /// session with no terminal has no real screen to carry them to, so the
+    /// carry would drop them silently and leave them attached to a grid nothing
+    /// will ever paint. They are told instead — the way the reaper and
+    /// `retire_agent` tell one — and the rail, which reads `has_terminal: false`
+    /// off the digest, stops offering the basement they were waiting for.
+    #[tokio::test]
+    async fn a_headless_spawn_closes_the_screens_that_were_waiting_for_a_terminal() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-headless-wait");
+        let choice = a_headless_provider_running(
+            &state,
+            &repo,
+            crate::harness::adk::fake::stream_json_harness(&[crate::harness::adk::fake::RESULT]),
+        );
+        let agent_id = crate::agent::derived_agent_id("run-headless-wait");
+        let key = first_agent_key(&AppState::canonical_root(&root), "run-headless-wait");
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("waiting");
+        {
+            let mut s = state.lock().unwrap();
+            let mut waiting = TermScreen::new(90, 25);
+            waiting.register(&sender);
+            s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
+        }
+
+        deliver(
+            &state,
+            &root,
+            "run-headless-wait",
+            &agent_id,
+            &choice,
+            "cold",
+            "warm",
+        )
+        .expect("the headless agent spawns");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["type"] == "term.closed")
+        })
+        .await;
+        let closed = seen
+            .iter()
+            .find(|push| push["type"] == "term.closed")
+            .expect("the waiting client is told, rather than left on a dead grid");
+        assert_eq!(closed["term_id"], key.tab_id, "{closed:?}");
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.agent_screens_awaiting_spawn.is_empty(),
+            "and the screen is not left behind for some later spawn to inherit"
+        );
+        let tab = &s.tabs[&key];
+        assert!(
+            tab.screen.is_none(),
+            "a session with no terminal has no grid, so there is none to hand anyone"
+        );
+        assert!(
+            tab.live,
+            "the agent itself is running — it just has no basement"
+        );
+        s.tabs[&key].session.end();
+    }
+
+    /// The same rule for the other screen a spawn can be holding: the grid the
+    /// session being replaced left behind.
+    ///
+    /// A retained screen is carried onto the replacement so the cursor never
+    /// rewinds — but a replacement with no terminal has nothing to carry it to,
+    /// and a human who changed this agent's provider between the two sessions
+    /// would otherwise be left watching the dead one's last frame forever.
+    #[tokio::test]
+    async fn a_headless_respawn_closes_the_grid_the_terminal_left_behind() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-carrier-swap");
+        let agent_id = crate::agent::derived_agent_id("run-carrier-swap");
+        let key = first_agent_key(&AppState::canonical_root(&root), "run-carrier-swap");
+
+        // A terminal session, watched by a client, that then dies.
+        deliver(
+            &state,
+            &root,
+            "run-carrier-swap",
+            &agent_id,
+            &ModelChoice::default(),
+            "FIRST-SESSION",
+            "warm",
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        {
+            let mut s = state.lock().unwrap();
+            screen_of_mut(s.tabs.get_mut(&key).expect("the agent tab")).register(&sender);
+        }
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+
+        // The human changed this agent's provider while it was down, so its
+        // replacement reports itself instead of painting.
+        let choice = a_headless_provider_running(
+            &state,
+            &repo,
+            crate::harness::adk::fake::stream_json_harness(&[crate::harness::adk::fake::RESULT]),
+        );
+        deliver(
+            &state,
+            &root,
+            "run-carrier-swap",
+            &agent_id,
+            &choice,
+            "SECOND-SESSION",
+            "warm",
+        )
+        .expect("the headless replacement spawns");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter()
+                .any(|push| push["type"] == "term.closed" && push["reason"] == "no_terminal")
+        })
+        .await;
+        assert!(
+            seen.iter().any(|push| push["term_id"] == key.tab_id),
+            "the client watching the old grid is told which tab closed: {seen:?}"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].screen.is_none(),
+            "and the retained grid is not hung on a session that cannot paint it"
+        );
+        s.tabs[&key].session.end();
     }
 
     /// A client can be waiting on the Agent tab of a worktree that is then

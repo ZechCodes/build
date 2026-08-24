@@ -723,33 +723,49 @@ fn one_line(text: &str, limit: usize) -> String {
     clipped
 }
 
+/// A headless child that says what claude says, without a model behind it.
+///
+/// It lives beside the reader it exercises rather than inside one test module
+/// because two suites need the same child: this module's tests, which read one
+/// session's protocol, and the daemon's, which drive a headless agent through
+/// the whole spawn path. One recording, so what the daemon is tested against
+/// cannot drift from what the session is tested against — and a real model turn
+/// is never run in either.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod fake {
+    use crate::pty::HarnessSpec;
 
     /// The protocol lines a real headless session emits, recorded so the fake
     /// harness below replays exactly what claude would say. Single quotes are
     /// forbidden inside them: the fake is a `sh -c` script that quotes each
     /// line, and a stray quote would rewrite the protocol rather than fail.
-    const INIT: &str =
+    pub(crate) const INIT: &str =
         r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5"}"#;
-    const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
-    const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
-    const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
-    const NARRATION: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"dropped the index"}]},"parent_tool_use_id":null}"#;
-    const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"dropped the index","session_id":"sess-adk"}"#;
-    const DONE_CALL: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_done","name":"mcp__build__done","input":{"phase":"build","status":"completed"}}]},"parent_tool_use_id":null}"#;
-    const DONE_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_done","content":"recorded"}]},"parent_tool_use_id":null}"#;
-    const SUBAGENT_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"parent_tool_use_id":"toolu_1"}"#;
-    const FAILED_RESULT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the tool call was refused","session_id":"sess-adk"}"#;
+    pub(crate) const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
+    pub(crate) const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
+    pub(crate) const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
+    pub(crate) const NARRATION: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"dropped the index"}]},"parent_tool_use_id":null}"#;
+    pub(crate) const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"dropped the index","session_id":"sess-adk"}"#;
+    pub(crate) const DONE_CALL: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_done","name":"mcp__build__done","input":{"phase":"build","status":"completed"}}]},"parent_tool_use_id":null}"#;
+    pub(crate) const DONE_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_done","content":"recorded"}]},"parent_tool_use_id":null}"#;
+    pub(crate) const SUBAGENT_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"parent_tool_use_id":"toolu_1"}"#;
+    pub(crate) const FAILED_RESULT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the tool call was refused","session_id":"sess-adk"}"#;
 
     /// A fake stream-json harness: it announces its session after a beat, then
-    /// replays `per_turn` for every turn written to its stdin. The beat is what
-    /// makes `Starting` observable — a real child's init line does not arrive
-    /// the instant it is forked either.
-    fn fake_harness(per_turn: &[&str]) -> HarnessSpec {
+    /// replays `per_turn` for every turn written to its stdin, turn after turn
+    /// for as long as that stdin is open. The beat is what makes `Starting`
+    /// observable — a real child's init line does not arrive the instant it is
+    /// forked either.
+    pub(crate) fn stream_json_harness(per_turn: &[&str]) -> HarnessSpec {
+        harness_replaying(per_turn, true)
+    }
+
+    fn harness_replaying(per_turn: &[&str], turn_after_turn: bool) -> HarnessSpec {
         let mut script = format!("sleep 0.2\nprintf '%s\\n' '{INIT}'\n");
-        script.push_str("while IFS= read -r turn; do\n");
+        script.push_str(match turn_after_turn {
+            true => "while IFS= read -r turn; do\n",
+            false => "if IFS= read -r turn; then\n",
+        });
         for line in per_turn {
             assert!(
                 !line.contains('\''),
@@ -757,9 +773,18 @@ mod tests {
             );
             script.push_str(&format!("printf '%s\\n' '{line}'\n"));
         }
-        script.push_str("done\n");
+        script.push_str(match turn_after_turn {
+            true => "done\n",
+            false => "fi\n",
+        });
         HarnessSpec::new("sh").arg("-c").arg(script)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::*;
+    use super::*;
 
     fn open(spec: &HarnessSpec) -> AdkSession {
         AdkSession::spawn(spec, None)
@@ -933,7 +958,7 @@ mod tests {
     /// a human to escape to.
     #[test]
     fn a_reporting_session_has_no_terminal_and_offers_its_activity() {
-        let session = open(&fake_harness(&[RESULT]));
+        let session = open(&stream_json_harness(&[RESULT]));
         assert!(session.terminal().is_none());
         assert!(session.activity().is_some());
         session.end();
@@ -944,7 +969,7 @@ mod tests {
     /// PTY could never report is exactly what this carrier reads off the wire.
     #[test]
     fn status_is_starting_until_the_session_reports_init() {
-        let session = open(&fake_harness(&[RESULT]));
+        let session = open(&stream_json_harness(&[RESULT]));
         assert_eq!(
             session.status(),
             AgentStatus::Starting,
@@ -1015,7 +1040,7 @@ mod tests {
     /// child reported it — the timeline reads as the turn happened.
     #[tokio::test]
     async fn activity_is_minted_in_the_order_the_protocol_reported_it() {
-        let session = open(&fake_harness(&[
+        let session = open(&stream_json_harness(&[
             THINKING,
             TOOL_USE,
             TOOL_RESULT,
@@ -1059,7 +1084,12 @@ mod tests {
     /// the call nor the answer to it is minted.
     #[tokio::test]
     async fn builds_own_tool_calls_are_not_minted() {
-        let session = open(&fake_harness(&[DONE_CALL, DONE_RESULT, NARRATION, RESULT]));
+        let session = open(&stream_json_harness(&[
+            DONE_CALL,
+            DONE_RESULT,
+            NARRATION,
+            RESULT,
+        ]));
         let mut activity = session.activity().expect("a reporting session");
         wait_for_status(&session, AgentStatus::Waiting);
         session.send_turn(&Turn::new("finish up")).unwrap();
@@ -1079,7 +1109,7 @@ mod tests {
     /// conversation interleaved with the first.
     #[tokio::test]
     async fn subagent_events_are_folded_into_the_call_that_spawned_them() {
-        let session = open(&fake_harness(&[SUBAGENT_TEXT, NARRATION, RESULT]));
+        let session = open(&stream_json_harness(&[SUBAGENT_TEXT, NARRATION, RESULT]));
         let mut activity = session.activity().expect("a reporting session");
         wait_for_status(&session, AgentStatus::Waiting);
         session.send_turn(&Turn::new("delegate it")).unwrap();
@@ -1112,7 +1142,7 @@ mod tests {
     /// out loud is what explains the crash, because there is no screen to read.
     #[test]
     fn the_epitaph_is_the_error_the_session_reported() {
-        let session = open(&fake_harness(&[FAILED_RESULT]));
+        let session = open(&stream_json_harness(&[FAILED_RESULT]));
         wait_for_status(&session, AgentStatus::Waiting);
         session.send_turn(&Turn::new("try it")).unwrap();
         wait_for_status(&session, AgentStatus::Waiting);
@@ -1171,7 +1201,7 @@ mod tests {
     /// And a harness that keeps running is not declared dead by waiting.
     #[test]
     fn exited_within_gives_up_on_a_harness_that_keeps_running() {
-        let session = open(&fake_harness(&[RESULT]));
+        let session = open(&stream_json_harness(&[RESULT]));
         assert!(!session.exited_within(Duration::from_millis(50)));
         session.end();
     }
@@ -1180,7 +1210,7 @@ mod tests {
     /// session on a daemon that never restarts.
     #[test]
     fn ending_a_session_reaps_the_child() {
-        let session = open(&fake_harness(&[RESULT]));
+        let session = open(&stream_json_harness(&[RESULT]));
         wait_for_status(&session, AgentStatus::Waiting);
         session.end();
         assert!(
@@ -1224,7 +1254,7 @@ mod tests {
     /// paint — the last thing the session actually said.
     #[test]
     fn quiet_for_reads_the_age_of_the_last_protocol_line() {
-        let session = open(&fake_harness(&[RESULT]));
+        let session = open(&stream_json_harness(&[RESULT]));
         wait_for_status(&session, AgentStatus::Waiting);
         assert!(
             session.quiet_for() < Duration::from_secs(1),

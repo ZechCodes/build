@@ -1191,6 +1191,14 @@ the compatibility story for persisted threads and older clients — all there.
 > only, so a new completion's report has no card until the message half is
 > rendered, and the "Agent reported done" event row no longer appears on new
 > work.
+>
+> **Both are closed now (SPA, 2026-08-24).** `messageHtml`
+> (`spa/src/core/thread.js`) draws a marker from `message.outcome` in the
+> vocabulary of the event each outcome replaced — the same icon, words and tone
+> for `completed` / `blocked` / `failed` — and the same `completionReportHtml`
+> card from `message.completion_report`. Nothing keys on `done`, so a
+> pre-step-7 thread still renders its `Done` / `Blocked` rows and their
+> event-attached cards exactly as before.
 
 ---
 

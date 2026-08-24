@@ -1031,6 +1031,21 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-message-head { display:flex; justify-content:space-between; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); background:color-mix(in srgb, var(--bg) 55%, var(--panel)); color:var(--dim); font-size:12px; }
 .thread-message-head strong { color:var(--ink); }
 .thread-message-head time, .thread-event time { color:var(--dim); }
+/* A reported outcome is a status on the agent's own message, so its marker
+   rides the card under the head — same tick, same tone and the same two colors
+   the done and blocked event rows carry, at the size of a line inside a card
+   rather than a node on the timeline's spine. */
+.thread-outcome { display:flex; align-items:center; gap:8px; padding:7px 12px;
+  border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+.thread-outcome strong { color:var(--ink2); }
+.thread-outcome-icon { flex:none; display:grid; place-items:center; width:20px; height:20px;
+  border-radius:50%; background:var(--panel2); color:var(--dim); font-size:10px; font-weight:800; }
+.thread-outcome.success .thread-outcome-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
+.thread-outcome.blocked .thread-outcome-icon { background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
+.thread-outcome.blocked strong { color:var(--red); }
+/* The handoff on an outcome message sits inside the card the agent posted, so
+   it keeps the body's gutter instead of the margin it takes under an event. */
+.thread-comment-card .completion-report { margin:0 12px 12px; }
 .thread-status, .thread-anchor { color:var(--dim); font-size:11px; }
 .thread-anchor { padding:7px 12px 0; font-family:var(--mono); overflow-wrap:anywhere; }
 .thread-body { padding:12px; color:var(--ink2); font-size:13px; line-height:1.5; overflow-wrap:anywhere; }

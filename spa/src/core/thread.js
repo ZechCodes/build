@@ -622,20 +622,52 @@ function optionsHtml(message, live, key) {
   </div>`;
 }
 
+/// What an agent reported through `done`, in the vocabulary of the event each
+/// outcome replaced — so a completion reads as "reported done" with the same
+/// tick and the same tone it always did, and a blocker as the blocker it always
+/// was. Keyed by the wire token (`bridge/src/thread.rs`, `MessageOutcome`).
+const OUTCOME_META = {
+  completed: EVENT_META.done,
+  blocked: EVENT_META.blocked,
+  failed: EVENT_META.run_failed,
+};
+
+/// The outcome a message reports, as a marker on the message that reports it.
+///
+/// An outcome is a status the agent attached to its own words, so the marker
+/// rides the card rather than standing beside it as a second record. A token
+/// this client has no meta for still marks the message — the reader learns an
+/// outcome was reported, in the agent's own token, rather than reading the
+/// message as an ordinary reply.
+function outcomeMarkerHtml(outcome, agentLabel) {
+  if (!outcome) return "";
+  const meta = OUTCOME_META[outcome] || { label: String(outcome).replaceAll("_", " "), icon: "•" };
+  const label = meta.label.replace(/^Agent\b/, agentLabel);
+  return `<div class="thread-outcome ${meta.tone || ""}" data-outcome="${esc(outcome)}">
+    <span class="thread-outcome-icon" aria-hidden="true">${esc(meta.icon)}</span>
+    <strong>${esc(label)}</strong>
+  </div>`;
+}
+
 function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
   const user = message.role === "user";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
     : "";
-  // `done` is message metadata, not a presentation type. A done-flagged send
-  // follows the timeline's done event and otherwise renders like every message.
+  // `done` is message metadata, not a presentation type: on a thread written
+  // before outcomes were message statuses it flags the send that followed the
+  // timeline's done event, and such a message renders like every other one.
+  // What marks a message is `outcome` — the whole record of a reported outcome,
+  // carrying the structured handoff the done event used to.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}">
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
+      ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${anchorLabel(message.anchor)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
+      ${completionReportHtml(message.completion_report)}
       ${attachmentsHtml(message.attachments)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer)}
@@ -645,11 +677,12 @@ function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer =
 
 /// The agent's handoff, as a card.
 ///
-/// `done` is asked for a completion report and the event is the whole record of
-/// it (there is no companion message any more), so the report renders where the
-/// event does: the critical files, the decisions a reviewer would otherwise
-/// reverse-engineer, the risks, and what was deliberately left alone. Every
-/// line is the agent's words — escaped.
+/// `done` is asked for a completion report, and the report renders wherever the
+/// record of that completion is: on the outcome message that reports it, and on
+/// the `Done` event of a thread written before outcomes were message statuses.
+/// Either way it is the same card — the critical files, the decisions a
+/// reviewer would otherwise reverse-engineer, the risks, and what was
+/// deliberately left alone. Every line is the agent's words — escaped.
 function completionReportHtml(report) {
   const sections = completionReportSections(report);
   if (!sections.length) return "";

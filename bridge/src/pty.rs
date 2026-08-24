@@ -30,7 +30,7 @@ use crate::harness::{AgentSession, AgentStatus, HarnessError, TerminalView, Turn
 /// portable-pty searches the *CommandBuilder's* environment, which falls back to
 /// confstr `_CS_PATH` ("/usr/bin:/bin:/usr/sbin:/sbin") and produces an opaque
 /// "No viable candidates" error that names neither the harness nor the fix.
-fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, HarnessError> {
+pub(crate) fn resolve_binary(spec: &HarnessSpec) -> Result<PathBuf, HarnessError> {
     if spec.binary.contains('/') {
         return Ok(PathBuf::from(&spec.binary));
     }

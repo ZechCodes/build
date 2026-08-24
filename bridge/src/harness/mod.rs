@@ -28,6 +28,12 @@ use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
 use crate::pty::{HarnessSpec, PtySession};
 
+// The headless carrier compiles and is tested, but nothing chooses it yet:
+// naming it is the provider half of step 6 (`AdkHarness`, and `open_session`'s
+// arm for a harness with no terminal). Until that lands the daemon cannot reach
+// a single call in it, and the allow comes off with the arm that does.
+#[allow(dead_code)]
+pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;

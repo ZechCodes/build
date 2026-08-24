@@ -47,6 +47,40 @@ impl MessageSource {
     }
 }
 
+/// What an agent reported through `done`, as a status on the message it posted.
+///
+/// The message is the whole record of an outcome — there is no companion event
+/// — so this is what tells an outcome from an ordinary reply, both on the wire
+/// and in the catch-up packet a replacement agent is handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOutcome {
+    Completed,
+    Blocked,
+    Failed,
+}
+
+impl MessageOutcome {
+    /// The stable wire token, byte-identical to how it serializes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageOutcome::Completed => "completed",
+            MessageOutcome::Blocked => "blocked",
+            MessageOutcome::Failed => "failed",
+        }
+    }
+
+    /// Why this outcome needs the human, as the same token the event it
+    /// replaced used to answer with — so an inbox row reads exactly as it did.
+    fn attention_reason(self) -> &'static str {
+        match self {
+            MessageOutcome::Completed => ThreadEventKind::Done.as_str(),
+            MessageOutcome::Blocked => ThreadEventKind::Blocked.as_str(),
+            MessageOutcome::Failed => ThreadEventKind::RunFailed.as_str(),
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -392,10 +426,26 @@ pub struct ThreadMessage {
     #[serde(default)]
     pub updated_sequence: u64,
     pub role: MessageRole,
-    /// Completion is metadata on an otherwise ordinary message. The timeline
-    /// renders it like any other send after the separate `done` event.
+    /// Completion is metadata on an otherwise ordinary message. Set by a
+    /// completed [`outcome`](Self::outcome) and by nothing else, so a client
+    /// that knows only this field renders a completion exactly as it always
+    /// has.
     #[serde(default, skip_serializing_if = "is_false")]
     pub done: bool,
+    /// The outcome this message reports, when the agent's `done` is what wrote
+    /// it. Absent on every ordinary message, and on every message written
+    /// before outcomes were message statuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MessageOutcome>,
+    /// The agent's structured handoff, on the message reporting the outcome it
+    /// came with. Only an outcome carries one, and only when the agent wrote
+    /// one — every other message omits the field entirely.
+    ///
+    /// Boxed: a report is four vectors and the rarest field on the largest kind
+    /// of thread item, so every ordinary message would otherwise carry its bulk
+    /// through every conversation the daemon holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_report: Option<Box<CompletionReport>>,
     /// Deprecated persisted shape. New completion sends use `done`; retaining
     /// this field lets older thread records deserialize without migration.
     #[serde(default, skip_serializing_if = "MessageSource::is_chat")]
@@ -836,6 +886,16 @@ fn count_serialized_items(count: usize) {
 #[cfg(not(test))]
 fn count_serialized_items(_count: usize) {}
 
+impl ThreadMessage {
+    /// The outcome this message reports, reading a record written before the
+    /// field existed too: such a record set `done` alone, which is a completion
+    /// and has always been one.
+    pub fn reported_outcome(&self) -> Option<MessageOutcome> {
+        self.outcome
+            .or_else(|| self.done.then_some(MessageOutcome::Completed))
+    }
+}
+
 impl ThreadItem {
     pub fn sequence(&self) -> u64 {
         match self {
@@ -858,7 +918,10 @@ impl ThreadItem {
     ///
     /// An agent message is the agent handing the turn back, so it needs
     /// reading; a progress note explicitly keeps the turn, so it does not. A
-    /// message the human wrote themselves never needs their attention.
+    /// message the human wrote themselves never needs their attention. A
+    /// message reporting an outcome names it with the token the event it
+    /// replaced answered with, so an entry says why it needs reading in the
+    /// same words it always did.
     pub fn attention_reason(&self) -> Option<&'static str> {
         match self {
             ThreadItem::Event(event) => match event.event.class() {
@@ -869,10 +932,9 @@ impl ThreadItem {
                 if message.role != MessageRole::Agent || message.still_working {
                     return None;
                 }
-                Some(if message.done {
-                    ThreadEventKind::Done.as_str()
-                } else {
-                    AGENT_MESSAGE_REASON
+                Some(match message.reported_outcome() {
+                    Some(outcome) => outcome.attention_reason(),
+                    None => AGENT_MESSAGE_REASON,
                 })
             }
         }
@@ -897,7 +959,9 @@ impl ThreadItem {
     /// about the work.
     pub fn searchable_text(&self) -> String {
         match self {
-            ThreadItem::Message(message) => message.body.clone(),
+            ThreadItem::Message(message) => {
+                completion_text(&message.body, message.completion_report.as_deref())
+            }
             ThreadItem::Event(event) => completion_text(
                 event.summary.as_deref().unwrap_or_default(),
                 event.completion_report.as_ref(),
@@ -1595,6 +1659,38 @@ impl Thread {
         self.last_completion = Some(report.clone());
     }
 
+    /// Record an outcome the agent reported: its summary as an ordinary agent
+    /// message carrying the outcome as a status, and the structured report
+    /// attached when the agent wrote one.
+    ///
+    /// The message IS the record — no companion event stands beside it, free to
+    /// disagree with it. An outcome is the agent addressing the human, so it
+    /// needs reading exactly once, and a replacement agent reads why its
+    /// predecessor stopped out of the same catch-up packet that carries what
+    /// the human said.
+    pub fn post_outcome(
+        &mut self,
+        outcome: MessageOutcome,
+        summary: impl Into<String>,
+        report: Option<&CompletionReport>,
+        now: impl Into<String>,
+    ) -> String {
+        let summary = summary.into();
+        // The report is the densest statement of what the change touched, so it
+        // is indexed with the summary rather than beside it. Derived before the
+        // post, which reads the scope this borrows.
+        let metadata =
+            ItemMetadata::derive(&completion_text(&summary, report), &[], None, &self.scope);
+        let id = self.post_agent(summary, None, now);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.outcome = Some(outcome);
+            message.done = outcome == MessageOutcome::Completed;
+            message.completion_report = report.cloned().map(Box::new);
+            message.metadata = metadata;
+        }
+        id
+    }
+
     /// Record a completion: one `Done` event carrying the agent's summary and,
     /// when it wrote one, its structured report.
     ///
@@ -1661,6 +1757,8 @@ impl Thread {
             updated_sequence: sequence,
             role,
             done,
+            outcome: None,
+            completion_report: None,
             source: MessageSource::Chat,
             body,
             created_at: now,
@@ -2267,20 +2365,23 @@ impl Thread {
     /// so that a session which emitted hundreds of tool calls before restarting
     /// still hands its replacement what the human said — the exact context the
     /// packet exists to carry.
+    ///
+    /// An outcome is not one of those observations: it is the agent's own
+    /// report, so it is a message, and it is carried with the outcome named on
+    /// its line. That is what tells a replacement why its predecessor blocked.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
         let mut lines: Vec<String> = self
             .items
             .iter()
             .rev()
             .filter_map(|item| match item {
-                ThreadItem::Message(message)
-                    if message.done || message.source == MessageSource::Completion =>
-                {
-                    None
-                }
                 ThreadItem::Message(message) => Some(format!(
-                    "- {}: {}{}",
+                    "- {}{}: {}{}",
                     message.role.as_str(),
+                    match message.reported_outcome() {
+                        Some(outcome) => format!(" [{}]", outcome.as_str()),
+                        None => String::new(),
+                    },
                     message.body.replace('\n', " "),
                     attachment_note(&message.attachments)
                 )),
@@ -2733,6 +2834,291 @@ mod agent_activity_tests {
         }
 
         assert_eq!(thread.catch_up_markdown(2), "- user: ask 3\n- user: ask 4");
+    }
+}
+
+/// What an agent reported through `done`, as a status on the message it
+/// posted. The message is the whole record: there is no companion event, so
+/// the outcome needs the human once and a resumed agent reads it out of the
+/// same packet that carries what the human said.
+#[cfg(test)]
+mod outcome_message_tests {
+    use super::*;
+
+    fn report() -> CompletionReport {
+        CompletionReport {
+            critical_files: vec!["src/render.rs — the new draw path".to_string()],
+            risk_notes: vec!["untested on the legacy screen".to_string()],
+            decisions: vec!["kept the old entry point".to_string()],
+            skips: vec!["no perf pass".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_completion_is_one_agent_message_carrying_its_outcome() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let ThreadItem::Message(message) = &thread.items[0] else {
+            panic!("the outcome is a message: {:?}", thread.items);
+        };
+        assert_eq!(message.role, MessageRole::Agent);
+        assert_eq!(message.body, "implemented the change");
+        assert_eq!(message.outcome, Some(MessageOutcome::Completed));
+        assert!(
+            message.done,
+            "a completed outcome keeps the flag an older client reads"
+        );
+        assert_eq!(message.completion_report.as_deref(), Some(&report()));
+        assert!(!message.still_working, "an outcome hands the turn back");
+    }
+
+    /// The attention job the `Done` and `Blocked` events used to do, moved onto
+    /// the message whole: one unread entry per outcome, naming which it was.
+    #[test]
+    fn every_outcome_needs_the_human_once_and_says_which_it_was() {
+        for (outcome, reason) in [
+            (MessageOutcome::Completed, "done"),
+            (MessageOutcome::Blocked, "blocked"),
+            (MessageOutcome::Failed, "run_failed"),
+        ] {
+            let mut thread = Thread::new("run-outcome");
+            thread.post_user("do the thing", None, "2026-08-24T09:00:00Z");
+            thread.read_unread("2026-08-24T09:00:01Z");
+            let cursor = thread.last_sequence();
+            thread.post_outcome(
+                outcome,
+                "the agent's own words",
+                None,
+                "2026-08-24T09:01:00Z",
+            );
+
+            let unread = thread.unread_since(cursor);
+            assert_eq!(unread.count, 1, "{outcome:?}");
+            assert_eq!(unread.reason, Some(reason), "{outcome:?}");
+            assert_eq!(
+                thread.working_since(),
+                None,
+                "an outcome ends the turn: {outcome:?}"
+            );
+        }
+    }
+
+    /// Additive: `outcome` is new, `done` keeps its exact meaning, and the
+    /// report the `Done` event carried rides the message instead.
+    #[test]
+    fn the_outcome_and_its_report_ride_the_message_on_the_wire() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            None,
+            "2026-08-24T09:02:00Z",
+        );
+
+        let wire = thread.wire_value();
+        let blocked = &wire["items"][0];
+        assert_eq!(blocked["type"], "message");
+        assert_eq!(blocked["data"]["outcome"], "blocked");
+        assert_eq!(blocked["data"]["role"], "agent");
+        assert!(
+            blocked["data"].get("done").is_none(),
+            "only a completion sets done: {wire:?}"
+        );
+        assert_eq!(
+            blocked["data"]["completion_report"]["risk_notes"][0],
+            "untested on the legacy screen"
+        );
+        let completed = &wire["items"][1];
+        assert_eq!(completed["data"]["outcome"], "completed");
+        assert_eq!(completed["data"]["done"], true);
+        assert!(
+            completed["data"].get("completion_report").is_none(),
+            "an outcome with no report omits the field: {wire:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_message_carries_neither_field() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_agent("here is what I found", None, "2026-08-24T09:00:00Z");
+
+        let wire = thread.wire_value();
+        assert!(
+            wire["items"][0]["data"].get("outcome").is_none(),
+            "{wire:?}"
+        );
+        assert!(
+            wire["items"][0]["data"].get("completion_report").is_none(),
+            "{wire:?}"
+        );
+        assert_eq!(
+            thread.items[0].attention_reason(),
+            Some(AGENT_MESSAGE_REASON)
+        );
+    }
+
+    /// The report is the densest statement of what a change touched, so a
+    /// search reads it with the summary — as it did off the `Done` event.
+    #[test]
+    fn a_search_reads_the_report_with_the_summary() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+
+        let text = thread.items[0].searchable_text();
+        assert!(text.contains("implemented the change"), "{text}");
+        assert!(text.contains("src/render.rs — the new draw path"), "{text}");
+    }
+
+    /// The gap this exists to close: a replacement agent is told why its
+    /// predecessor blocked, out of the packet that carries the human's words.
+    #[test]
+    fn the_catch_up_packet_carries_the_outcome_a_predecessor_reported() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_user("please rename the helper", None, "2026-08-24T09:00:00Z");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            None,
+            "2026-08-24T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read src/app.rs".to_string()),
+            None,
+            None,
+            "2026-08-24T09:02:00Z",
+        );
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper\n- agent [blocked]: needs production credentials",
+        );
+    }
+
+    /// Every outcome is in the packet, each prefixed with which it was — and no
+    /// event line is re-admitted with them.
+    #[test]
+    fn the_packet_names_each_outcome_and_still_carries_no_events() {
+        let mut thread = Thread::new("run-outcome");
+        for (outcome, summary) in [
+            (MessageOutcome::Completed, "implemented the change"),
+            (MessageOutcome::Blocked, "needs production credentials"),
+            (MessageOutcome::Failed, "the migration will not run"),
+        ] {
+            thread.post_outcome(outcome, summary, None, "2026-08-24T09:00:00Z");
+        }
+        thread.push_event(
+            ThreadEventKind::IdleUnreported,
+            Some("Agent went quiet without reporting done".to_string()),
+            None,
+            None,
+            "2026-08-24T09:03:00Z",
+        );
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- agent [completed]: implemented the change\n\
+             - agent [blocked]: needs production credentials\n\
+             - agent [failed]: the migration will not run",
+        );
+    }
+
+    /// A thread persisted before outcomes existed: a `Done` event carrying the
+    /// report, and the companion completion message an older bridge wrote
+    /// beside it. It loads, it still needs the human where it did, and the
+    /// event still carries what it always carried — no migration.
+    fn pre_step_7_thread() -> Thread {
+        let raw = serde_json::json!({
+            "id": "thread:run-old",
+            "agent": { "id": "agent:run-old" },
+            "items": [
+                { "type": "message", "data": {
+                    "id": "message-1", "sequence": 1, "role": "user",
+                    "body": "please rename the helper",
+                    "created_at": "2026-07-24T12:00:00Z", "seen_at": "2026-07-24T12:00:30Z" } },
+                { "type": "message", "data": {
+                    "id": "message-2", "sequence": 2, "role": "agent", "done": true,
+                    "source": "completion", "body": "Implemented the change",
+                    "created_at": "2026-07-24T12:01:00Z" } },
+                { "type": "event", "data": {
+                    "id": "event-3", "sequence": 3, "event": "done",
+                    "created_at": "2026-07-24T12:01:00Z",
+                    "summary": "Implemented the change",
+                    "completion_report": { "critical_files": ["src/render.rs"] } } },
+                { "type": "event", "data": {
+                    "id": "event-4", "sequence": 4, "event": "blocked",
+                    "created_at": "2026-07-24T12:02:00Z",
+                    "summary": "needs production credentials" } }
+            ],
+            "next_sequence": 4
+        });
+        serde_json::from_value(raw).expect("a pre-outcome thread loads")
+    }
+
+    #[test]
+    fn a_thread_written_before_outcomes_loads_and_reads_as_it_did() {
+        let thread = pre_step_7_thread();
+
+        let reasons: Vec<Option<&str>> = thread
+            .items
+            .iter()
+            .map(ThreadItem::attention_reason)
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![None, Some("done"), Some("done"), Some("blocked")],
+            "{:?}",
+            thread.items
+        );
+        let ThreadItem::Message(completion) = &thread.items[1] else {
+            panic!("{:?}", thread.items);
+        };
+        assert_eq!(
+            completion.outcome, None,
+            "an old record carries no outcome field"
+        );
+        assert_eq!(completion.source, MessageSource::Completion);
+        let ThreadItem::Event(done) = &thread.items[2] else {
+            panic!("{:?}", thread.items);
+        };
+        assert_eq!(
+            done.completion_report
+                .as_ref()
+                .map(|report| report.critical_files.clone()),
+            Some(vec!["src/render.rs".to_string()]),
+            "the old event still carries the report it was written with"
+        );
+        assert_eq!(thread.unread_since(0).count, 3);
+    }
+
+    /// The packet reads an old completion message as the completion it was:
+    /// `done` without an `outcome` is a completed outcome.
+    #[test]
+    fn an_old_completion_message_reads_as_a_completed_outcome() {
+        let thread = pre_step_7_thread();
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper\n- agent [completed]: Implemented the change",
+        );
     }
 }
 

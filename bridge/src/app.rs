@@ -5880,7 +5880,10 @@ impl AppState {
             let Some(tab) = tab else {
                 return if turn_undelivered { None } else { Some(None) };
             };
-            if let AgentStatus::Ended { code } = tab.session.status() {
+            // Asked once, so the two questions below cannot be answered by two
+            // different moments of the same session.
+            let status = tab.session.status();
+            if let AgentStatus::Ended { code } = status {
                 return Some(Some(HarnessExit {
                     code: code.unwrap_or(-1),
                     // The screen first, the session second. A retained screen is
@@ -5893,6 +5896,15 @@ impl AppState {
                         .and_then(screen_epitaph)
                         .or_else(|| tab.session.epitaph()),
                 }));
+            }
+            // A session that reports its own turn boundaries cannot be
+            // demoted mid-turn: a model reasoning for forty minutes is working
+            // and silent, and silence is the only instrument the two clocks
+            // below own. For a PTY this changes nothing — paint inside 30s is
+            // what makes one `Working`, so a tab quiet past a threshold minutes
+            // long can never claim it.
+            if matches!(status, AgentStatus::Working) {
+                return None;
             }
             let quiet_for = quiet_threshold;
             let heard_from_recently = tab.session.quiet_for() < quiet_for;
@@ -28414,6 +28426,13 @@ mod tests {
             .arg("printf '\\033[?2004h'; cat >/dev/null")
     }
 
+    /// The sweep threshold these tests speak in — the shape of the real one
+    /// (`BRIDGE_IDLE_SECONDS`, 300s by default): minutes, and so comfortably
+    /// past the 30s window inside which a PTY's paint makes it `Working`. A
+    /// threshold shorter than that window would be asking whether an agent that
+    /// painted a moment ago is quiet, which is a question no deployment asks.
+    const QUIET_THRESHOLD: Duration = Duration::from_secs(300);
+
     /// Silence is an anomaly only when measured from the last thing Build
     /// asked. A tab's agent outlives every phase and idles at a prompt between
     /// them, so raw PTY silence would demote a run the instant it is
@@ -28431,22 +28450,130 @@ mod tests {
             RunState::Building,
             warm_tui_spec(),
         );
-        // Long enough that the PTY has been silent past the threshold below.
-        std::thread::sleep(Duration::from_millis(200));
+        // The PTY has painted nothing for ten minutes: silent by the paint
+        // clock, and — since that is minutes past the 30s window — not claiming
+        // to be working either. Aged rather than waited out, so the test reads
+        // the behaviour instead of a wall clock.
+        state.tabs[&key]
+            .session
+            .backdate_last_output(Duration::from_secs(600));
 
         state.tabs.get_mut(&key).unwrap().last_delivered_at = Some(std::time::Instant::now());
         assert!(
-            state.mark_idle_tasks(Duration::from_millis(50)).is_empty(),
+            state.mark_idle_tasks(QUIET_THRESHOLD).is_empty(),
             "an agent that was just given a turn is working, not quiet"
         );
         assert_eq!(state.runs["run-quiet"].run.state, RunState::Building);
 
         state.tabs.get_mut(&key).unwrap().last_delivered_at =
-            Some(std::time::Instant::now() - Duration::from_secs(1));
+            Some(std::time::Instant::now() - QUIET_THRESHOLD);
         assert_eq!(
-            state.mark_idle_tasks(Duration::from_millis(50)),
+            state.mark_idle_tasks(QUIET_THRESHOLD),
             vec!["run-quiet".to_string()],
             "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
+    /// A carrier that knows when its turn began is never demoted mid-turn.
+    ///
+    /// The sweep's whole instrument used to be silence, and silence is exactly
+    /// what a model reasoning for forty minutes produces. A PTY could only
+    /// guess at the difference; a session that reports its own turn boundaries
+    /// can say it, so `Working` short-circuits the demotion and the anomaly
+    /// clock is only consulted for a session that is not in a turn.
+    #[test]
+    fn a_session_that_reports_a_turn_in_flight_is_never_demoted_for_silence() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-mid-turn",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-mid-turn");
+        let key = first_agent_key(&root, "run-mid-turn");
+        let quiet = Duration::from_secs(2400);
+        state.tabs.insert(
+            key.clone(),
+            dictated_agent_tab(
+                &root,
+                "run-mid-turn",
+                &agent_id,
+                DictatedSession::reporting(AgentStatus::Working).silent_for(quiet),
+            ),
+        );
+        // Build spoke long ago and has heard nothing since: every other
+        // instrument the sweep owns reads this as an anomaly.
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - quiet);
+
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(300)).is_empty(),
+            "a model mid-turn is working, however long it has been thinking"
+        );
+        assert_eq!(state.runs["run-mid-turn"].run.state, RunState::Building);
+
+        // Control: the same silence, one status later. The turn ended without a
+        // `done`, and THAT is the anomaly the sweep exists for.
+        state.tabs.insert(
+            key,
+            dictated_agent_tab(
+                &root,
+                "run-mid-turn",
+                &agent_id,
+                DictatedSession::reporting(AgentStatus::Waiting).silent_for(quiet),
+            ),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-mid-turn".to_string()],
+            "a turn that ended in silence rather than a report is still demoted"
+        );
+    }
+
+    /// And for a PTY the short-circuit is a no-op, by construction: paint
+    /// inside thirty seconds is the only thing that makes one `Working`, so a
+    /// tab quiet past a threshold minutes long can never be. The new conjunct
+    /// cannot spare a single agent the sweep used to demote.
+    #[test]
+    fn a_pty_quiet_past_the_threshold_is_never_working() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-painting",
+            RunState::Building,
+            warm_tui_spec(),
+        );
+        let tab = &state.tabs[&key];
+        assert_eq!(
+            tab.session.status(),
+            AgentStatus::Working,
+            "a freshly spawned harness has just painted"
+        );
+
+        for quiet in [
+            AGENT_WORKING_WINDOW + Duration::from_secs(1),
+            Duration::from_secs(300),
+            Duration::from_secs(2400),
+        ] {
+            state.tabs[&key].session.backdate_last_output(quiet);
+            assert_ne!(
+                state.tabs[&key].session.status(),
+                AgentStatus::Working,
+                "a PTY silent for {quiet:?} cannot claim to be working"
+            );
+        }
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(600));
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-painting".to_string()],
+            "so the demotion the sweep has always made is unmoved"
         );
     }
 
@@ -28634,13 +28761,15 @@ mod tests {
             .unwrap()
             .agents
             .start_session("claude", None, None, "build", &now_rfc3339());
-        // Long enough that the PTY has been silent past the threshold below.
-        std::thread::sleep(Duration::from_millis(200));
+        // Silent past the threshold, aged rather than waited out.
+        state.tabs[&key]
+            .session
+            .backdate_last_output(Duration::from_secs(600));
         state.tabs.get_mut(&key).unwrap().last_delivered_at =
-            Some(std::time::Instant::now() - Duration::from_secs(1));
+            Some(std::time::Instant::now() - QUIET_THRESHOLD);
 
         assert_eq!(
-            state.mark_idle_tasks(Duration::from_millis(50)),
+            state.mark_idle_tasks(QUIET_THRESHOLD),
             vec!["run-still-there".to_string()],
             "the quiet agent's entity is demoted"
         );
@@ -32127,6 +32256,23 @@ mod tests {
     /// these tests are the only thing that walks the refusal paths, and a path
     /// nothing walks is a path that has not been written.
     fn terminal_free_agent_tab(root: &std::path::Path, owner: &str, agent_id: &str) -> Tab {
+        dictated_agent_tab(
+            root,
+            owner,
+            agent_id,
+            DictatedSession::reporting(AgentStatus::Working),
+        )
+    }
+
+    /// A live agent tab at `root` carrying a session that reports exactly what
+    /// it was told — the only way a test can put a turn-boundary carrier where
+    /// the daemon expects one, since a PTY can only be asked about paint.
+    fn dictated_agent_tab(
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        session: DictatedSession,
+    ) -> Tab {
         Tab {
             tab_id: agent_tab_id(agent_id),
             root: root.to_path_buf(),
@@ -32136,7 +32282,7 @@ mod tests {
                 provider: AgentProvider::default(),
             },
             created_at: now_rfc3339(),
-            session: Arc::new(DictatedSession::reporting(AgentStatus::Working)),
+            session: Arc::new(session),
             screen: None,
             live: true,
             last_delivered_at: None,

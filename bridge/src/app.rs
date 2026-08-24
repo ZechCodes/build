@@ -32768,10 +32768,16 @@ mod tests {
         // performs on PTY EOF are owed here, and nothing else in the daemon
         // learns a harness died on its own.
         wait_for(Duration::from_secs(10), || {
-            (open_session_count(&state, "run-headless") == 0).then_some(())
+            let s = state.lock().unwrap();
+            let lineage = &s.runs["run-headless"].agents.sessions;
+            // Opened by the cold delivery and closed by the pump — asserted as
+            // one thing, because a lineage that was never opened would satisfy
+            // "nothing is open" without a rite having been performed.
+            (lineage.len() == 1 && lineage[0].ended_at.is_some()).then_some(())
         })
         .await
-        .expect("the session lineage closes when the child's stream does");
+        .expect("the session Build opened is closed when the child's stream ends");
+        assert_eq!(open_session_count(&state, "run-headless"), 0);
         let listed = call(
             &handler,
             "agent.list",

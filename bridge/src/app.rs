@@ -16346,9 +16346,6 @@ fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
         .map(|session| session.id.clone())
 }
 
-/// Whether one of an implementation's events travels to the Issue that owns
-/// it. Exactly the attention class: what needs the human is news wherever they
-/// are watching from, what merely reports progress belongs to the run.
 /// What an issue's conversation says when the branch implementing it is gone
 /// and nothing was merged out of it. `how` is the way it went: abandoned by the
 /// user, deleted outside Build, finished off the board.
@@ -16359,6 +16356,16 @@ fn abandoned_branch_summary(branch: &str, how: &str) -> String {
     )
 }
 
+/// Whether one of an implementation's events travels to the Issue that owns
+/// it. Exactly the attention class: what needs the human is news wherever they
+/// are watching from, what merely reports progress belongs to the run.
+///
+/// Events only, because an outcome is no longer one: a report the agent made on
+/// a planned implementation is written straight onto the Issue's conversation
+/// as the agent's own message (`record_report_in_thread`, whose caller picks
+/// that conversation), which is the same timeline this mirror copies onto and
+/// the same one unread entry. What still travels this way is what Build
+/// observed about the implementation itself — an abandoned branch.
 fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
 }
@@ -16411,33 +16418,46 @@ fn triage_override_summary(
     lines.join("\n\n")
 }
 
+/// How a report is written down.
+///
+/// An outcome the agent reported is a status on the agent's own message: it
+/// said this, so there is one record of it and the conversation carries it.
+/// An event is Build's own reading of the report — a triage pass nobody has to
+/// answer, a validation Build judged — which has no agent message to hang on.
+enum ReportRecord {
+    Outcome(crate::thread::MessageOutcome, String),
+    Event(crate::thread::ThreadEventKind, String),
+}
+
 fn record_report_in_thread(
     thread: &mut crate::thread::Thread,
     report: &DoneReport,
     orchestration_error: Option<&str>,
 ) {
     let now = now_rfc3339();
-    let (event, summary) = match orchestration_error {
-        Some(error) => (
-            crate::thread::ThreadEventKind::RunFailed,
+    let recorded = match orchestration_error {
+        // Still the agent's report, and still its outcome: Build's note about
+        // why it could not be applied rides the same body.
+        Some(error) => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Failed,
             format!(
                 "{}\n\nBuild could not apply the report: {error}",
                 report.summary
             ),
         ),
-        None if report.status == DoneStatus::Blocked => (
-            crate::thread::ThreadEventKind::Blocked,
+        None if report.status == DoneStatus::Blocked => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Blocked,
             report.summary.clone(),
         ),
         // A finished triage pass is not an agent handing work back: nothing
         // waits on it and nobody has to answer it. It updates the review
         // surface, and says so quietly.
-        None if report.phase == DonePhase::Triage => (
+        None if report.phase == DonePhase::Triage => ReportRecord::Event(
             crate::thread::ThreadEventKind::Triaged,
             report.summary.clone(),
         ),
-        None if report.status == DoneStatus::Failed => (
-            crate::thread::ThreadEventKind::RunFailed,
+        None if report.status == DoneStatus::Failed => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Failed,
             report.summary.clone(),
         ),
         None if report
@@ -16446,7 +16466,7 @@ fn record_report_in_thread(
             .as_ref()
             .is_some_and(|validation| !validation.passed) =>
         {
-            (
+            ReportRecord::Event(
                 crate::thread::ThreadEventKind::ReviewBlocked,
                 report
                     .outputs
@@ -16456,15 +16476,21 @@ fn record_report_in_thread(
                     .unwrap_or_else(|| report.summary.clone()),
             )
         }
-        _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
+        _ => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Completed,
+            report.summary.clone(),
+        ),
     };
-    match event {
-        crate::thread::ThreadEventKind::Done => {
-            thread.post_completion(summary, report.outputs.completion_report.as_ref(), &now)
+    let completion = report.outputs.completion_report.as_ref();
+    match recorded {
+        ReportRecord::Outcome(outcome, summary) => {
+            thread.post_outcome(outcome, summary, completion, &now);
         }
-        _ => thread.push_event(event, Some(summary), None, None, &now),
+        ReportRecord::Event(event, summary) => {
+            thread.push_event(event, Some(summary), None, None, &now)
+        }
     }
-    if let Some(completion) = &report.outputs.completion_report {
+    if let Some(completion) = completion {
         thread.remember_completion(completion);
     }
 }
@@ -24621,22 +24647,21 @@ mod tests {
             got["result"]["state"], "review",
             "an out-of-phase report moves nothing: {got:?}"
         );
-        let events: Vec<&Value> = got["result"]["thread"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|item| item["type"] == "event")
-            .collect();
+        let items = got["result"]["thread"]["items"].as_array().unwrap();
         assert!(
-            events.iter().any(|e| {
-                e["data"]["event"] == "done"
-                    && e["data"]["summary"] == "Tidied the imports you mentioned"
+            items.iter().any(|item| {
+                item["type"] == "message"
+                    && item["data"]["outcome"] == "completed"
+                    && item["data"]["body"] == "Tidied the imports you mentioned"
             }),
-            "the report is recorded: {events:?}"
+            "the report is recorded: {items:?}"
         );
         assert!(
-            !events.iter().any(|e| e["data"]["event"] == "run_failed"),
-            "a report Build cannot apply is not a failure: {events:?}"
+            !items
+                .iter()
+                .any(|item| item["data"]["event"] == "run_failed"
+                    || item["data"]["outcome"] == "failed"),
+            "a report Build cannot apply is not a failure: {items:?}"
         );
     }
 
@@ -25762,8 +25787,11 @@ mod tests {
         );
     }
 
+    /// The record of a reported completion is the agent's own message: the
+    /// summary it wrote, the outcome it reported, and the structured report
+    /// riding the message that carries them.
     #[test]
-    fn a_completed_build_report_is_one_done_event_carrying_the_completion_report() {
+    fn a_completed_build_report_is_one_agent_message_carrying_the_completion_report() {
         let mut thread = crate::thread::Thread::new("run-completion");
         record_report_in_thread(
             &mut thread,
@@ -25785,18 +25813,23 @@ mod tests {
         );
 
         assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
-        let crate::thread::ThreadItem::Event(done) = &thread.items[0] else {
-            panic!("the completion is an event: {:?}", thread.items);
+        let crate::thread::ThreadItem::Message(completion) = &thread.items[0] else {
+            panic!("the completion is a message: {:?}", thread.items);
         };
-        assert_eq!(done.event, crate::thread::ThreadEventKind::Done);
+        assert_eq!(completion.role, crate::thread::MessageRole::Agent);
         assert_eq!(
-            done.summary.as_deref(),
-            Some("Fixed and deployed the renderer.")
+            completion.outcome,
+            Some(crate::thread::MessageOutcome::Completed)
         );
-        let carried = done
+        assert!(
+            completion.done,
+            "the flag an older client reads keeps its meaning"
+        );
+        assert_eq!(completion.body, "Fixed and deployed the renderer.");
+        let carried = completion
             .completion_report
-            .as_ref()
-            .expect("the report rides the event");
+            .as_deref()
+            .expect("the report rides the message");
         assert_eq!(
             carried.critical_files,
             vec!["src/render.rs — the new draw path"]
@@ -25807,10 +25840,14 @@ mod tests {
             Some(carried),
             "a cold session still finds the newest report on the thread"
         );
+        assert_eq!(thread.items[0].attention_reason(), Some("done"));
     }
 
+    /// Every outcome an agent reports lands on its own message. What stays an
+    /// event is what Build read for itself — a triage pass nobody has to
+    /// answer, and a validation report Build judged.
     #[test]
-    fn conversation_records_every_report_outcome_as_its_own_event() {
+    fn conversation_records_every_reported_outcome_on_the_agents_message() {
         let mut thread = crate::thread::Thread::new("run-activity");
         record_report_in_thread(
             &mut thread,
@@ -25822,12 +25859,38 @@ mod tests {
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Blocked
-                    && event.summary.as_deref() == Some("Needs production credentials")
-        )));
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.outcome == Some(crate::thread::MessageOutcome::Blocked)
+                        && message.body == "Needs production credentials"
+                        && !message.done
+            )),
+            "{:?}",
+            thread.items
+        );
+
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Failed,
+                summary: "The migration will not run".into(),
+                outputs: DoneOutputs::default(),
+            },
+            None,
+        );
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.outcome == Some(crate::thread::MessageOutcome::Failed)
+                        && message.body == "The migration will not run"
+            )),
+            "{:?}",
+            thread.items
+        );
 
         record_report_in_thread(
             &mut thread,
@@ -25850,17 +25913,16 @@ mod tests {
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::ReviewBlocked
-                    && event.summary.as_deref() == Some("The migration is not reversible")
-        )));
-        assert!(!thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Message(message)
-                if message.role == crate::thread::MessageRole::Agent && message.done
-        )));
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::ReviewBlocked
+                        && event.summary.as_deref() == Some("The migration is not reversible")
+            )),
+            "Build's own reading of a validation report stays an event: {:?}",
+            thread.items
+        );
         assert_eq!(
             thread.last_completion.as_ref().unwrap().critical_files,
             vec!["src/app.rs"]
@@ -25869,27 +25931,107 @@ mod tests {
         record_report_in_thread(
             &mut thread,
             &DoneReport {
-                phase: DonePhase::Build,
+                phase: DonePhase::Triage,
                 status: DoneStatus::Completed,
-                summary: "Fixed and deployed the renderer.".into(),
+                summary: "Classified 12 hunks".into(),
                 outputs: DoneOutputs::default(),
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Done
-                    && event.summary.as_deref() == Some("Fixed and deployed the renderer.")
-        )));
         assert!(
-            !thread
-                .items
-                .iter()
-                .any(|item| matches!(item, crate::thread::ThreadItem::Message(_))),
-            "a done never writes a companion message: {:?}",
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::Triaged
+            )),
+            "a triage pass asks nothing of anyone and stays quiet: {:?}",
             thread.items
         );
+        assert!(
+            !thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if matches!(
+                        event.event,
+                        crate::thread::ThreadEventKind::Done
+                            | crate::thread::ThreadEventKind::Blocked
+                            | crate::thread::ThreadEventKind::RunFailed
+                    )
+            )),
+            "nothing emits the outcome events any more: {:?}",
+            thread.items
+        );
+    }
+
+    /// A report Build could not apply is still the agent's report: the outcome
+    /// is a failure on its message, and Build's note rides the same body.
+    #[test]
+    fn a_report_build_cannot_apply_fails_on_the_agents_message() {
+        let mut thread = crate::thread::Thread::new("run-unapplied");
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Implemented the change".into(),
+                outputs: DoneOutputs::default(),
+            },
+            Some("the worktree is gone"),
+        );
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let crate::thread::ThreadItem::Message(failed) = &thread.items[0] else {
+            panic!("the outcome is a message: {:?}", thread.items);
+        };
+        assert_eq!(
+            failed.outcome,
+            Some(crate::thread::MessageOutcome::Failed),
+            "{failed:?}"
+        );
+        assert!(
+            failed.body.starts_with("Implemented the change"),
+            "{failed:?}"
+        );
+        assert!(
+            failed
+                .body
+                .contains("Build could not apply the report: the worktree is gone"),
+            "{failed:?}"
+        );
+        assert_eq!(thread.items[0].attention_reason(), Some("run_failed"));
+    }
+
+    /// What Build observed for itself has no agent message to hang on, so it
+    /// stays an event: an agent that went quiet, and one whose process died.
+    #[test]
+    fn builds_own_observations_about_a_silent_agent_stay_events() {
+        let mut quiet = crate::thread::Thread::new("run-quiet");
+        record_idle_in_thread(&mut quiet, None);
+        let mut crashed = crate::thread::Thread::new("run-crashed");
+        record_idle_in_thread(
+            &mut crashed,
+            Some(&HarnessExit {
+                code: 1,
+                epitaph: Some("out of quota".into()),
+            }),
+        );
+        let mut killed = crate::thread::Thread::new("run-killed");
+        record_session_death_in_thread(&mut killed, &now_rfc3339());
+
+        for (thread, kind) in [
+            (&quiet, crate::thread::ThreadEventKind::IdleUnreported),
+            (&crashed, crate::thread::ThreadEventKind::RunFailed),
+            (&killed, crate::thread::ThreadEventKind::Interrupted),
+        ] {
+            assert!(
+                thread.items.iter().any(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Event(event) if event.event == kind
+                )),
+                "{kind:?}: {:?}",
+                thread.items
+            );
+        }
     }
 
     #[test]
@@ -32078,6 +32220,60 @@ mod tests {
         ] {
             assert!(!run_outcome_mirrors_to_issue(progress), "{progress:?}");
         }
+    }
+
+    /// The Issue is where a planned implementation's outcomes have always
+    /// landed, and they still land there — as the agent's own message now,
+    /// needing the human exactly once and saying which outcome it was.
+    #[test]
+    fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "outcome on the issue");
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Blocked,
+                summary: "Needs production credentials".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let issue_thread = &state.plans[&issue_id].agents;
+        let outcomes: Vec<&crate::thread::ThreadMessage> = issue_thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Message(message) if message.outcome.is_some() => {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "one report, one record: {:?}",
+            issue_thread.items
+        );
+        assert_eq!(
+            outcomes[0].outcome,
+            Some(crate::thread::MessageOutcome::Blocked)
+        );
+        assert_eq!(outcomes[0].body, "Needs production credentials");
+        let packet = issue_thread.catch_up_markdown(40);
+        assert!(
+            packet.contains("- agent [blocked]: Needs production credentials"),
+            "the packet says why the predecessor stopped: {packet}"
+        );
+
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], true, "{entry:?}");
+        assert_eq!(entry["unread_reason"], "blocked", "{entry:?}");
     }
 
     /// The Issue's conversation is where the human follows the work they asked

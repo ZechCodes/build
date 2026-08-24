@@ -1385,7 +1385,6 @@ impl Thread {
         }
         self.post_message(
             MessageRole::User,
-            false,
             body.into(),
             anchor,
             Vec::new(),
@@ -1445,7 +1444,6 @@ impl Thread {
         }];
         self.post_message(
             MessageRole::User,
-            false,
             body.into(),
             Some(message_anchor),
             links,
@@ -1552,7 +1550,6 @@ impl Thread {
     ) -> String {
         self.post_message_working(
             MessageRole::Agent,
-            false,
             body.into(),
             anchor,
             links,
@@ -1691,55 +1688,23 @@ impl Thread {
         id
     }
 
-    /// Record a completion: one `Done` event carrying the agent's summary and,
-    /// when it wrote one, its structured report.
-    ///
-    /// The event IS the record. A completion used to also post an agent
-    /// message repeating the summary, which put one hand-back on the
-    /// conversation twice and made the entry unread twice for it.
-    pub fn post_completion(
-        &mut self,
-        summary: impl Into<String>,
-        report: Option<&CompletionReport>,
-        now: impl Into<String>,
-    ) {
-        let summary = summary.into();
-        // The report is the densest statement of what the change touched, so it
-        // is indexed with the summary rather than beside it.
-        let metadata =
-            ItemMetadata::derive(&completion_text(&summary, report), &[], None, &self.scope);
-        let sequence = self.next();
-        self.items.push(ThreadItem::Event(ThreadEvent {
-            id: format!("event-{sequence}"),
-            sequence,
-            event: ThreadEventKind::Done,
-            created_at: now.into(),
-            summary: Some(summary),
-            session_id: None,
-            revision_id: None,
-            links: Vec::new(),
-            completion_report: report.cloned(),
-            metadata,
-        }));
-    }
-
     fn post_message(
         &mut self,
         role: MessageRole,
-        done: bool,
         body: String,
         anchor: Option<MessageAnchor>,
         links: Vec<ThreadLink>,
         now: String,
     ) -> String {
-        self.post_message_working(role, done, body, anchor, links, now, false)
+        self.post_message_working(role, body, anchor, links, now, false)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Every message is posted here, and none of them is a completion: `done`
+    /// is set by [`post_outcome`](Self::post_outcome) and by nothing else, so
+    /// the flag cannot come apart from the outcome it stands for.
     fn post_message_working(
         &mut self,
         role: MessageRole,
-        done: bool,
         body: String,
         anchor: Option<MessageAnchor>,
         links: Vec<ThreadLink>,
@@ -1756,7 +1721,7 @@ impl Thread {
             sequence,
             updated_sequence: sequence,
             role,
-            done,
+            done: false,
             outcome: None,
             completion_report: None,
             source: MessageSource::Chat,
@@ -2499,60 +2464,21 @@ mod attention_class_tests {
     }
 
     #[test]
-    fn a_completion_is_one_done_event_and_no_companion_message() {
-        let mut thread = Thread::new("run-1");
-        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
-
-        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
-        assert!(matches!(
-            &thread.items[0],
-            ThreadItem::Event(event)
-                if event.event == ThreadEventKind::Done
-                    && event.summary.as_deref() == Some("implemented the change")
-        ));
-        assert_eq!(thread.items[0].attention_reason(), Some("done"));
-    }
-
-    #[test]
-    fn the_done_event_carries_the_completion_report_onto_the_wire() {
-        let mut thread = Thread::new("run-report");
-        let report = CompletionReport {
-            critical_files: vec!["src/thread.rs — the event now carries the report".to_string()],
-            risk_notes: vec!["older records have no report".to_string()],
-            decisions: vec!["kept last_completion for cold sessions".to_string()],
-            skips: vec!["no SPA card yet".to_string()],
-        };
-
-        thread.post_completion(
-            "implemented the change",
-            Some(&report),
-            "2026-08-13T09:00:00Z",
-        );
-
-        let wire = thread.wire_value();
-        let carried = &wire["items"][0]["data"]["completion_report"];
-        assert_eq!(
-            carried["critical_files"][0],
-            "src/thread.rs — the event now carries the report"
-        );
-        assert_eq!(carried["risk_notes"][0], "older records have no report");
-        assert_eq!(
-            carried["decisions"][0],
-            "kept last_completion for cold sessions"
-        );
-        assert_eq!(carried["skips"][0], "no SPA card yet");
-    }
-
-    #[test]
     fn an_event_without_a_report_omits_the_field() {
         let mut thread = Thread::new("run-plain");
-        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
         thread.push_event(
             ThreadEventKind::RunStarted,
             None,
             None,
             None,
             "2026-08-13T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::IdleUnreported,
+            Some("Agent went quiet without reporting done".to_string()),
+            None,
+            None,
+            "2026-08-13T09:02:00Z",
         );
 
         let wire = thread.wire_value();
@@ -3376,7 +3302,8 @@ mod findability_tests {
     fn a_completion_report_makes_its_critical_files_findable() {
         let dir = checkout(&["src/parser.rs"]);
         let mut thread = thread_in(&dir);
-        thread.post_completion(
+        thread.post_outcome(
+            MessageOutcome::Completed,
             "rewrote the parser",
             Some(&CompletionReport {
                 critical_files: vec!["src/parser.rs — now streams tokens".to_string()],
@@ -3950,20 +3877,23 @@ mod tests {
     }
 
     #[test]
-    fn the_done_event_is_the_whole_wire_record_of_a_completion() {
+    fn the_outcome_message_is_the_whole_wire_record_of_a_completion() {
         let mut thread = Thread::new("run-done");
         thread.post_agent("here is what I found", None, "2026-07-24T11:00:00Z");
-        thread.post_completion("Implemented the change", None, "2026-07-24T12:00:00Z");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "Implemented the change",
+            None,
+            "2026-07-24T12:00:00Z",
+        );
 
         let wire = thread.wire_value();
         assert_eq!(wire["items"][0]["type"], "message");
         assert!(wire["items"][0]["data"].get("source").is_none(), "{wire:?}");
-        assert_eq!(wire["items"][1]["type"], "event");
-        assert_eq!(wire["items"][1]["data"]["event"], "done");
-        assert_eq!(
-            wire["items"][1]["data"]["summary"],
-            "Implemented the change"
-        );
+        assert_eq!(wire["items"][1]["type"], "message");
+        assert_eq!(wire["items"][1]["data"]["outcome"], "completed");
+        assert_eq!(wire["items"][1]["data"]["done"], true);
+        assert_eq!(wire["items"][1]["data"]["body"], "Implemented the change");
         assert_eq!(wire["items"].as_array().unwrap().len(), 2, "{wire:?}");
     }
 

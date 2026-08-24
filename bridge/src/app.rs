@@ -26,7 +26,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentSession, AgentStatus, HarnessContext, SessionOutput,
+    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
@@ -745,13 +745,13 @@ impl Tab {
         }
     }
 
-    /// Spawn `role`'s program at `root`, returning the tab and — when the
-    /// session offers a terminal — a receiver subscribed before the first byte
-    /// can be missed.
+    /// Spawn `role`'s program at `root`, returning the tab and whichever stream
+    /// its session offers, subscribed before its first word can be missed.
     ///
-    /// The grid and the receiver are made together with the terminal, or not at
-    /// all: a session with no terminal paints nothing, so there is no screen to
-    /// hold and no pump to run.
+    /// The grid is made together with the terminal, or not at all: a session
+    /// with no terminal paints nothing, so there is no screen to hold and no
+    /// byte pump to run — its work reaches the conversation through the
+    /// activity pump instead.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -766,15 +766,26 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         };
-        // Only an agent is ever handed a turn. The human's own shell is not, so
-        // it is not waited on: a login shell may never announce a line editor
-        // at all, and `term.create` holds the state lock across this.
-        let turn_ready_grace = match role {
-            TabRole::Agent { .. } => Some(crate::orchestrator::HARNESS_READY_GRACE),
-            TabRole::Shell => None,
+        // Which carrier opens is the PROVIDER's answer, asked here and asked by
+        // the rail before there is a session — one authority, so the rail never
+        // offers a basement this spawn would refuse. The human's own shell is
+        // always a terminal, and is the one session never handed a turn: it is
+        // not waited on, because a login shell may never announce a line editor
+        // at all and `term.create` holds the state lock across this.
+        let carrier = match &role {
+            TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
+                Carrier::Protocol
+            }
+            TabRole::Agent { .. } => Carrier::Terminal {
+                size,
+                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+            },
+            TabRole::Shell => Carrier::Terminal {
+                size,
+                turn_ready_grace: None,
+            },
         };
-        let (session, rx) =
-            open_session(spec, root.clone(), size, turn_ready_grace).map_err(|e| e.to_string())?;
+        let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
         Ok((
             Tab {
                 tab_id,
@@ -3012,6 +3023,94 @@ impl AppState {
         }
     }
 
+    /// Post one thing the agent reported doing into the conversation it speaks
+    /// in.
+    ///
+    /// Activity is conversation: an event-stream harness has no second tab and
+    /// no second scrollback, so its reasoning, tool calls and narration ride the
+    /// timeline the human already reads, told apart from what the agent SAID by
+    /// class rather than by living somewhere else.
+    ///
+    /// Quiet about an owner it cannot find, for the reason
+    /// [`edit_owner_thread`](Self::edit_owner_thread) is: a router owns no
+    /// conversation, and an entity whose record was deleted with its tab has
+    /// none left to speak in. Neither is worth a line per tool call.
+    fn record_agent_activity(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        activity: &crate::harness::AgentActivity,
+    ) {
+        let event = activity_event_kind(activity);
+        let summary = activity.summary().to_string();
+        let now = now_rfc3339();
+        let _ = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            let session_id = open_session_id(thread);
+            thread.push_event(event, Some(summary), session_id, None, now);
+            Ok(())
+        });
+    }
+
+    /// Edit the conversation `agent_id` speaks in, and persist the entity that
+    /// owns it.
+    ///
+    /// Which conversation that is has one rule and this is where it lives: an
+    /// implementation's FIRST agent speaks in its Issue's conversation — the one
+    /// every Issue surface renders — and an agent added to the branch beside it
+    /// owns its own, because aliasing it would put two agents' words in one
+    /// place. The artifact that conversation is about travels with it, since a
+    /// plan's links resolve against a document and a run's against a diff.
+    ///
+    /// The record is persisted whether the edit succeeded or not, and the
+    /// edit's own error is what the caller hears: a rejected action must not
+    /// take the writes made before it down with it.
+    fn edit_agent_conversation<T>(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        edit: impl FnOnce(&mut crate::thread::Thread, crate::thread::ArtifactKind) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let speaks_for_the_entity = self.entity_agents(entity_id)?.first().id == agent_id;
+        if self.plans.contains_key(entity_id) {
+            let mut active = self.take_plan(entity_id)?;
+            let result = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Plan));
+            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if let Some(issue_id) = self
+            .runs
+            .get(entity_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.clone())
+            .filter(|issue_id| self.plans.contains_key(issue_id))
+            .filter(|_| speaks_for_the_entity)
+        {
+            let mut issue = self.take_plan(&issue_id)?;
+            let result = edit(&mut issue.agents, crate::thread::ArtifactKind::Diff);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if self.runs.contains_key(entity_id) {
+            let mut active = self.take_run(entity_id)?;
+            let result = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Diff));
+            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        Err(format!("unknown conversation owner: {entity_id}"))
+    }
+
     /// A turn never reached an agent: record why on the entity and persist it,
     /// so the surface says what happened instead of showing a working task with
     /// nobody working.
@@ -4164,63 +4263,13 @@ impl AppState {
         if let BridgeAction::PostThreadMessage { links, .. } = &action {
             self.validate_thread_links_for_owner(entity_id, links)?;
         }
-        // An implementation's FIRST agent speaks in its Issue's conversation —
-        // the one every Issue surface renders. An agent added to the branch
-        // beside it owns its own, and aliasing it would put two agents' words
-        // in one place.
-        let speaks_for_the_entity = self.entity_agents(entity_id)?.first().id == agent_id;
+        // Where an agent speaks — its own conversation, or its Issue's when it
+        // is the implementation's first — is one rule, and it is
+        // `edit_agent_conversation`'s.
         let now = now_rfc3339();
-        if self.plans.contains_key(entity_id) {
-            let mut active = self.take_plan(entity_id)?;
-            let result = active.agents.resolve_mut(Some(agent_id)).and_then(|agent| {
-                apply_thread_action(
-                    &mut agent.thread,
-                    crate::thread::ArtifactKind::Plan,
-                    action,
-                    &now,
-                )
-            });
-            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        if let Some(issue_id) = self
-            .runs
-            .get(entity_id)
-            .and_then(|run| run.run.plan_id.as_ref())
-            .map(|id| id.0.clone())
-            .filter(|issue_id| self.plans.contains_key(issue_id))
-            .filter(|_| speaks_for_the_entity)
-        {
-            let mut issue = self.take_plan(&issue_id)?;
-            let result = apply_thread_action(
-                &mut issue.agents,
-                crate::thread::ArtifactKind::Diff,
-                action,
-                &now,
-            );
-            let persisted = self.finish_plan_mutation(issue_id, issue);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        if self.runs.contains_key(entity_id) {
-            let mut active = self.take_run(entity_id)?;
-            let result = active.agents.resolve_mut(Some(agent_id)).and_then(|agent| {
-                apply_thread_action(
-                    &mut agent.thread,
-                    crate::thread::ArtifactKind::Diff,
-                    action,
-                    &now,
-                )
-            });
-            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        Err(format!("unknown conversation owner: {entity_id}"))
+        self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
+            apply_thread_action(thread, artifact, action, &now)
+        })
     }
 
     /// Answer a history query out of the conversations this agent may read.
@@ -16268,16 +16317,21 @@ fn record_current_stage_started(
 /// does (the tab pump's EOF) or when Build kills it — never when the agent
 /// merely finishes a turn.
 fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
-    let Some(session_id) = thread
+    let Some(session_id) = open_session_id(thread) else {
+        return;
+    };
+    thread.finish_session(&session_id, now);
+}
+
+/// The conversation's open session, if one is open — the agent process
+/// speaking right now, which is what an event it produces belongs to.
+fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
+    thread
         .sessions
         .iter()
         .rev()
         .find(|session| session.ended_at.is_none())
         .map(|session| session.id.clone())
-    else {
-        return;
-    };
-    thread.finish_session(&session_id, now);
 }
 
 /// Whether one of an implementation's events travels to the Issue that owns
@@ -16722,7 +16776,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         s.tabs.insert(key.clone(), tab);
         (key, rx)
     };
-    spawn_tab_pump(state, key.clone(), rx);
+    spawn_tab_pumps(state, key.clone(), rx);
     Ok(json!({
         "term_id": key.tab_id,
         "kind": SHELL_TAB_KIND,
@@ -17255,7 +17309,7 @@ fn ensure_agent_tab(
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
         }
-        spawn_tab_pump(state, key, rx);
+        spawn_tab_pumps(state, key, rx);
         return Ok((wire_id, Spawned::Fresh));
     }
 }
@@ -17391,6 +17445,17 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     }
 }
 
+/// Start whichever pump this tab's session needs: the byte pump for a terminal,
+/// the activity pump for a session that reports its own work.
+///
+/// One or the other and never both, because the two capabilities are
+/// alternatives — and never neither, because the death rites hang off a stream
+/// closing ([`open_session`] refuses a session with no stream at all).
+fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, output: SessionOutput) {
+    spawn_tab_pump(state, key.clone(), output.bytes);
+    spawn_activity_pump(state, key, output.activity);
+}
+
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
@@ -17405,9 +17470,13 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
 /// One pump per tab for the tab's whole life: with one PTY per worktree there
 /// is no phase boundary to generation-guard against — a missing tab is the
 /// only stop condition.
-fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, rx: SessionOutput) {
+fn spawn_tab_pump(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    rx: Option<broadcast::Receiver<Vec<u8>>>,
+) {
     // No terminal, no bytes: the pump exists to paint a stream into a grid, and
-    // a session that offers neither has nothing for it to do.
+    // a session that offers none has nothing for it to do.
     let Some(mut rx) = rx else {
         return;
     };
@@ -17497,6 +17566,92 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, rx: SessionOutput) 
             }
         }
     });
+}
+
+/// Pump one session's reported activity into the conversation it speaks in.
+///
+/// The mirror of [`spawn_tab_pump`] for a carrier that has no bytes. Where the
+/// byte pump paints a stream into a grid, this one posts what the agent
+/// reported doing as the four activity kinds — reasoning, tool calls, tool
+/// results and narration — which are conversation, classed `Status`: they move
+/// no unread count, reach no Issue conversation and pull nobody in.
+///
+/// It owes the same death rites, minus the screen's half: on close the tab goes
+/// not live and the conversation's session lineage ends. There is no
+/// `term.closed` to push because there is no screen — the step-3 refusals
+/// already keep every client off one — and the tab is RETAINED for the same
+/// reason the byte pump retains an agent's, so the rail still shows the agent
+/// that was here.
+fn spawn_activity_pump(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    rx: Option<broadcast::Receiver<crate::harness::AgentActivity>>,
+) {
+    let Some(mut rx) = rx else {
+        return;
+    };
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Sync unit tests drive the registry without a runtime; there is
+        // nothing to spawn the pump onto.
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(activity) => {
+                    let mut s = state.lock().unwrap();
+                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                        return;
+                    };
+                    s.record_agent_activity(&owner, &agent_id, &activity);
+                }
+                // A turn that called forty tools while the lock was busy is a
+                // reader problem, not a reason to stop reading: what is lost is
+                // lost, and the events after it still belong in the timeline.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => {
+                    let mut s = state.lock().unwrap();
+                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                        return;
+                    };
+                    if let Some(tab) = s.tabs.get_mut(&key) {
+                        tab.live = false;
+                    }
+                    // The process is what a session IS, so this is where the
+                    // conversation's lineage closes — and where a turn the dead
+                    // process was holding is closed, so the row stops reading as
+                    // working.
+                    s.record_agent_session_end(&owner, &agent_id);
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
+/// the tab is gone or was never an agent's.
+fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
+    match &state.tabs.get(key)?.role {
+        TabRole::Agent {
+            owner, agent_id, ..
+        } => Some((owner.clone(), agent_id.clone())),
+        TabRole::Shell => None,
+    }
+}
+
+/// The conversation event one reported activity becomes. The four kinds are the
+/// same four, named once here so the mapping cannot drift.
+fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::thread::ThreadEventKind {
+    use crate::harness::AgentActivity;
+    use crate::thread::ThreadEventKind;
+    match activity {
+        AgentActivity::Reasoning { .. } => ThreadEventKind::Reasoning,
+        AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
+        AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
+        AgentActivity::Narration { .. } => ThreadEventKind::Narration,
+    }
 }
 
 /// Start a deterministic agent output stream: register it, then spawn a background
@@ -19132,7 +19287,7 @@ mod tests {
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(state, key.clone(), rx);
+        spawn_tab_pumps(state, key.clone(), rx);
         (agent_id, key)
     }
 
@@ -28214,7 +28369,7 @@ mod tests {
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
         state.tabs.insert(key.clone(), tab);
-        drain_pty_into_screen(state, &key, &mut rx.expect("a PTY session paints"));
+        drain_pty_into_screen(state, &key, &mut rx.bytes.expect("a PTY session paints"));
         key
     }
 
@@ -29576,7 +29731,7 @@ mod tests {
             s.runs.insert(run_id.to_string(), active);
             s.tabs.insert(key.clone(), tab);
         }
-        spawn_tab_pump(state, key.clone(), rx);
+        spawn_tab_pumps(state, key.clone(), rx);
         (key, wire_id)
     }
 
@@ -30296,7 +30451,7 @@ mod tests {
         let wire_id = tab.wire_id();
         let key = first_agent_key(&root, "run-x");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(&state, key.clone(), rx);
+        spawn_tab_pumps(&state, key.clone(), rx);
 
         let live = handler(
             SessionSender::detached("s2"),
@@ -30350,7 +30505,7 @@ mod tests {
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, "run-codex");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(&state, key.clone(), rx);
+        spawn_tab_pumps(&state, key.clone(), rx);
 
         let ran = handler(
             SessionSender::detached("s2"),
@@ -31986,6 +32141,186 @@ mod tests {
             live: true,
             last_delivered_at: None,
         }
+    }
+
+    /// Poll `look` until it answers, or give up after `budget`.
+    ///
+    /// A pump runs on its own task, so a test speaks about what it did by
+    /// waiting for the thing itself — never by sleeping a guess and asserting
+    /// on whatever had happened by then.
+    async fn wait_for<T>(budget: Duration, mut look: impl FnMut() -> Option<T>) -> Option<T> {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if let Some(found) = look() {
+                return Some(found);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Every activity event on a conversation, as (kind, summary).
+    fn activity_of(
+        thread: &crate::thread::Thread,
+    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+        thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if event.event.class() == crate::thread::EventClass::Status =>
+                {
+                    Some((event.event, event.summary.clone().unwrap_or_default()))
+                }
+                _ => None,
+            })
+            .filter(|(kind, _)| {
+                matches!(
+                    kind,
+                    crate::thread::ThreadEventKind::Reasoning
+                        | crate::thread::ThreadEventKind::ToolUse
+                        | crate::thread::ThreadEventKind::ToolResult
+                        | crate::thread::ThreadEventKind::Narration
+                )
+            })
+            .collect()
+    }
+
+    /// What a session with no terminal has instead of a screen: its reasoning,
+    /// tool calls and narration, landing in the conversation the human already
+    /// reads.
+    ///
+    /// The four kinds are `Status`, so an agent thinking out loud moves no
+    /// unread count — that is the property that makes putting activity in the
+    /// conversation safe, and it is asserted here rather than assumed.
+    #[tokio::test]
+    async fn a_reporting_session_pumps_its_work_into_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-activity",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-activity");
+        let key = first_agent_key(&root, "run-activity");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-activity", &agent_id),
+        );
+        // Everything on the conversation so far has been read, so anything the
+        // badge shows after this is the activity's doing.
+        app.handle(req("entity.seen", json!({ "entity_id": "run-activity" })));
+        let state = app.shared();
+
+        let (activity, subscribed) = broadcast::channel(16);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        for reported in [
+            crate::harness::AgentActivity::Reasoning {
+                summary: "the index is unused".into(),
+            },
+            crate::harness::AgentActivity::ToolUse {
+                summary: "Read bridge/src/app.rs".into(),
+            },
+            crate::harness::AgentActivity::ToolResult {
+                summary: "Read: fn main() {}".into(),
+            },
+            crate::harness::AgentActivity::Narration {
+                summary: "dropped the index".into(),
+            },
+        ] {
+            activity.send(reported).expect("the pump is listening");
+        }
+
+        let reported = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let reported = activity_of(&s.runs["run-activity"].agents);
+            (reported.len() == 4).then_some(reported)
+        })
+        .await
+        .expect("the four events reach the conversation");
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    "the index is unused".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    "Read bridge/src/app.rs".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolResult,
+                    "Read: fn main() {}".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    "dropped the index".to_string()
+                ),
+            ],
+            "in the order the agent did them"
+        );
+
+        let mut s = state.lock().unwrap();
+        let view = s.handle(req("run.get", json!({ "run_id": "run-activity" })));
+        assert_eq!(
+            view["result"]["unread_count"], 0,
+            "an agent working is not an agent addressing anyone: {view:?}"
+        );
+    }
+
+    /// The death rites a no-terminal carrier would otherwise fall through.
+    ///
+    /// The byte pump performs them when the PTY closes — the tab stops being
+    /// live, the conversation's session lineage ends. A session that paints
+    /// nothing has no PTY to close, so its activity stream ending is the same
+    /// moment, and the same two things have to happen: without them a dead
+    /// agent's tab reads as live and its run stays in session until the idle
+    /// sweep explains the exit as silence.
+    #[tokio::test]
+    async fn the_activity_stream_closing_ends_the_session_the_way_a_pty_eof_does() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(&mut app, &repo, dir.path(), "run-rites", RunState::Building);
+        let agent_id = crate::agent::derived_agent_id("run-rites");
+        let key = first_agent_key(&root, "run-rites");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-rites", &agent_id),
+        );
+        app.runs.get_mut("run-rites").unwrap().agents.start_session(
+            "claude",
+            None,
+            None,
+            "build",
+            &now_rfc3339(),
+        );
+        let state = app.shared();
+        assert_eq!(open_session_count(&state, "run-rites"), 1);
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        drop(activity);
+
+        wait_for(Duration::from_secs(5), || {
+            (open_session_count(&state, "run-rites") == 0).then_some(())
+        })
+        .await
+        .expect("the session lineage closes when the stream does");
+        let s = state.lock().unwrap();
+        assert!(
+            !s.tabs[&key].live,
+            "and the tab stops reading as live, so nothing else has to guess"
+        );
+        assert!(
+            s.tabs.contains_key(&key),
+            "the tab is RETAINED, exactly as an agent tab whose PTY ended is"
+        );
     }
 
     /// The terminal verbs refuse an agent whose session has no terminal, and

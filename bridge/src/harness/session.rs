@@ -200,11 +200,45 @@ impl AgentActivity {
     }
 }
 
-/// A session's byte stream, subscribed at the moment it opened.
+/// What a session says about itself, subscribed at the moment it opened.
 ///
-/// `None` for a session with no terminal: it paints nothing, so there is no
-/// stream to carry and nothing to pump it into.
-pub type SessionOutput = Option<broadcast::Receiver<Vec<u8>>>;
+/// One stream per capability and never both: an opaque CLI wrapper paints
+/// bytes, and a session protocol reports activity. Subscribed at the open
+/// rather than at the pump because a harness's first words — its startup paint,
+/// or a protocol child's `init` — can arrive before the pump is ever spawned.
+pub struct SessionOutput {
+    /// The terminal's bytes, for a session that offers one.
+    pub bytes: Option<broadcast::Receiver<Vec<u8>>>,
+    /// The session's own account of its work, for one that keeps it.
+    pub activity: Option<broadcast::Receiver<AgentActivity>>,
+}
+
+impl SessionOutput {
+    /// The output of a session that paints.
+    pub fn painting(bytes: broadcast::Receiver<Vec<u8>>) -> SessionOutput {
+        SessionOutput {
+            bytes: Some(bytes),
+            activity: None,
+        }
+    }
+
+    /// The output of a session that reports what it is doing.
+    pub fn reporting(activity: broadcast::Receiver<AgentActivity>) -> SessionOutput {
+        SessionOutput {
+            bytes: None,
+            activity: Some(activity),
+        }
+    }
+
+    /// Neither stream — what a session Build cannot watch at all would hand
+    /// back. [`open_session`](crate::harness::open_session) refuses one.
+    pub fn silent() -> SessionOutput {
+        SessionOutput {
+            bytes: None,
+            activity: None,
+        }
+    }
+}
 
 /// Full access to a harness Build can only see the outside of.
 ///

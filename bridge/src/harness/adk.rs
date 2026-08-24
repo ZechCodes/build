@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -32,8 +32,109 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
-use crate::harness::{AgentActivity, AgentSession, AgentStatus, HarnessError, Turn};
+use crate::harness::claude::ClaudeHarness;
+use crate::harness::{
+    AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError, Turn,
+    INHERITED_AGENT_MARKERS,
+};
+use crate::models::{AgentProvider, ModelChoice, ModelOption};
+use crate::orchestrator::SpawnOptions;
 use crate::pty::HarnessSpec;
+
+/// Claude Code, run headless over its session protocol.
+///
+/// The same binary, the same account, the same model catalog and the same
+/// transcripts on disk as [`ClaudeHarness`] — which is why every one of those
+/// answers is delegated to it rather than copied. What this provider decides is
+/// the argv, and the one answer that follows from it: `-p` with stream-json on
+/// both ends is not a terminal, so there is no basement to offer.
+pub struct AdkHarness;
+
+impl Harness for AdkHarness {
+    fn provider(&self) -> AgentProvider {
+        AgentProvider::ClaudeAdk
+    }
+
+    fn label(&self) -> &'static str {
+        "Claude Code (headless)"
+    }
+
+    fn models(&self) -> Vec<ModelOption> {
+        ClaudeHarness.models()
+    }
+
+    fn effort_levels(&self) -> &'static [&'static str] {
+        ClaudeHarness.effort_levels()
+    }
+
+    fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
+        ClaudeHarness.model_args(choice)
+    }
+
+    /// The interactive argv with the TUI swapped for the protocol, and nothing
+    /// else moved.
+    ///
+    /// The MCP half is identical on purpose — the same per-agent
+    /// `--mcp-config`, the same `--strict-mcp-config`, the same
+    /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because `done`,
+    /// `post_thread_message`, `read_unread_messages` and `search_conversation`
+    /// arrive over the same unix socket whichever carrier is running. No
+    /// settle window and no submit delay: those are how a prompt is typed into
+    /// a line editor, and this harness is handed a turn as a value.
+    fn spec(
+        &self,
+        choice: &ModelChoice,
+        options: &SpawnOptions,
+        context: &HarnessContext,
+    ) -> HarnessSpec {
+        let mut spec = HarnessSpec::new("claude")
+            .unset_all(INHERITED_AGENT_MARKERS)
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            // Without it the child emits only the final result of each turn,
+            // and the conversation would learn what the agent did after it had
+            // finished doing it.
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions");
+        if options.continue_session {
+            spec = spec.arg("--continue");
+        }
+        for arg in self.model_args(choice) {
+            spec = spec.arg(arg);
+        }
+        spec.env("BRIDGE_MCP_SOCKET", &context.mcp_socket)
+            .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
+    }
+
+    /// No terminal, and this is the first provider to say so. A session that
+    /// reports its own reasoning and tool calls is not opaque, so there is
+    /// nothing for a human to escape to — the rail offers no TUI button and the
+    /// terminal verbs refuse.
+    fn has_terminal(&self) -> bool {
+        false
+    }
+
+    /// The trust registry is the CLI's, not the TUI's: a headless session in an
+    /// untrusted directory is refused the same way, and the refusal is worse
+    /// here because there is no screen to show it on.
+    fn prepare_workspace(&self, cwd: &Path) {
+        ClaudeHarness.prepare_workspace(cwd)
+    }
+
+    /// Headless sessions write the same `~/.claude/projects/**/*.jsonl`
+    /// transcripts the TUI does, so the resume question has the same answer —
+    /// and a worktree the human left a conversation in is picked up whichever
+    /// carrier ran there.
+    fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
+        ClaudeHarness.has_transcript(home, cwd)
+    }
+}
 
 /// How Build's own MCP tools are named once the harness has loaded them.
 ///
@@ -146,13 +247,21 @@ pub struct AdkSession {
 
 impl AdkSession {
     /// Spawn `spec` with piped stdio — no PTY — rooted at `cwd`, and start
-    /// reading its protocol.
+    /// reading its protocol. Hands back the session and its activity, already
+    /// subscribed.
+    ///
+    /// The stream is subscribed here rather than by the caller for the reason
+    /// the PTY's is: the child starts talking the moment it is forked, and an
+    /// event minted before anyone subscribed is an event nobody sees.
     ///
     /// There is no readiness dance: a session protocol takes a turn as a value,
     /// so the only thing a caller waits for is the child's own `init` line,
     /// which [`status`](AgentSession::status) reports as `Starting` until it
     /// arrives.
-    pub fn spawn(spec: &HarnessSpec, cwd: Option<PathBuf>) -> Result<AdkSession, HarnessError> {
+    pub fn spawn(
+        spec: &HarnessSpec,
+        cwd: Option<PathBuf>,
+    ) -> Result<(AdkSession, broadcast::Receiver<AgentActivity>), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
         command.args(&spec.args);
         for key in &spec.unset {
@@ -171,7 +280,7 @@ impl AdkSession {
             .spawn()?;
 
         let state = Arc::new(Mutex::new(ProtocolState::new()));
-        let (sender, _) = broadcast::channel(ACTIVITY_BACKLOG);
+        let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
 
         if let Some(stdout) = child.stdout.take() {
@@ -212,13 +321,16 @@ impl AdkSession {
         }
 
         let stdin = child.stdin.take();
-        Ok(AdkSession {
-            child: Mutex::new(child),
-            stdin: Mutex::new(stdin),
-            state,
-            activity,
-            exit_code: Mutex::new(None),
-        })
+        Ok((
+            AdkSession {
+                child: Mutex::new(child),
+                stdin: Mutex::new(stdin),
+                state,
+                activity,
+                exit_code: Mutex::new(None),
+            },
+            subscribed,
+        ))
     }
 
     /// The id the child gave this conversation, once it has announced one.
@@ -227,6 +339,12 @@ impl AdkSession {
     /// than the cwd heuristic the transcript probe falls back to: it names the
     /// exact conversation Build was speaking to rather than the newest one in
     /// the directory.
+    ///
+    /// Read only by this module's tests so far: the daemon still resumes the
+    /// way it always has — the transcript probe answers, and the spec carries
+    /// `--continue` — and persisting the id beside the agent is the sharper
+    /// resume this makes possible, not something the provider half needed.
+    #[allow(dead_code)]
     pub fn session_id(&self) -> Option<String> {
         self.state.lock().unwrap().session_id.clone()
     }
@@ -644,7 +762,9 @@ mod tests {
     }
 
     fn open(spec: &HarnessSpec) -> AdkSession {
-        AdkSession::spawn(spec, None).expect("the fake harness spawns")
+        AdkSession::spawn(spec, None)
+            .expect("the fake harness spawns")
+            .0
     }
 
     /// Wait for the session to report `want`, or fail saying what it reported
@@ -670,6 +790,142 @@ mod tests {
             Ok(Err(err)) => panic!("the activity stream ended before it reported: {err}"),
             Err(_) => panic!("no activity arrived within five seconds"),
         }
+    }
+
+    fn spawn_options() -> SpawnOptions {
+        SpawnOptions {
+            continue_session: false,
+            owner_id: "agent-01J".to_string(),
+            mcp_session_token: "token-42".to_string(),
+            cwd: PathBuf::from("/tmp/worktree"),
+        }
+    }
+
+    fn context() -> HarnessContext {
+        HarnessContext {
+            bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+            mcp_socket: "/tmp/build-mcp.sock".to_string(),
+        }
+    }
+
+    /// The launch config is the interactive one with the TUI swapped for the
+    /// protocol: the same binary, the same permission grant, the same model
+    /// flags, and the stream-json argv that makes a turn a value.
+    #[test]
+    fn the_headless_spec_runs_claude_over_stream_json_on_both_ends() {
+        let choice = ModelChoice {
+            provider: AgentProvider::ClaudeAdk,
+            model: Some("claude-fable-5".to_string()),
+            effort: Some("high".to_string()),
+        };
+        let spec = AdkHarness.spec(&choice, &spawn_options(), &context());
+
+        assert_eq!(spec.binary, "claude");
+        let args = spec.args.join(" ");
+        assert!(
+            args.contains("-p --input-format stream-json --output-format stream-json --verbose"),
+            "the protocol argv, whole and in order: {args}"
+        );
+        assert!(
+            args.contains("--model claude-fable-5 --effort high"),
+            "a model selection reaches the same flags claude has always taken: {args}"
+        );
+        assert!(args.contains("--dangerously-skip-permissions"), "{args}");
+        assert!(
+            !args.contains("--continue"),
+            "nothing to continue was asked for: {args}"
+        );
+        assert_eq!(
+            spec.submit_delay,
+            Duration::ZERO,
+            "a submit key is how a prompt is typed into a line editor, and there is none here"
+        );
+
+        let resumed = AdkHarness.spec(
+            &choice,
+            &SpawnOptions {
+                continue_session: true,
+                ..spawn_options()
+            },
+            &context(),
+        );
+        assert!(
+            resumed.args.contains(&"--continue".to_string()),
+            "a headless session picks the worktree's conversation back up: {:?}",
+            resumed.args
+        );
+    }
+
+    /// §2's dividend, held to: everything an agent says to Build arrives over
+    /// the MCP socket, so the from-agent half of the interface needs zero work
+    /// for a new carrier — provided the wiring really is identical. This is
+    /// what checks that it is.
+    #[test]
+    fn the_headless_spec_carries_exactly_the_interactive_mcp_wiring() {
+        let choice = ModelChoice {
+            provider: AgentProvider::ClaudeAdk,
+            ..ModelChoice::default()
+        };
+        let options = spawn_options();
+        let headless = AdkHarness.spec(&choice, &options, &context());
+        let interactive = ClaudeHarness.spec(&ModelChoice::default(), &options, &context());
+
+        assert_eq!(
+            headless.env, interactive.env,
+            "the same socket and the same per-process capability"
+        );
+        assert_eq!(
+            headless.unset, interactive.unset,
+            "an agent Build spawns is its own session on either carrier"
+        );
+        let mcp_args = |spec: &HarnessSpec| -> Vec<String> {
+            spec.args
+                .iter()
+                .skip_while(|arg| *arg != "--mcp-config")
+                .take(3)
+                .cloned()
+                .collect()
+        };
+        assert_eq!(
+            mcp_args(&headless),
+            mcp_args(&interactive),
+            "the same per-agent config, loaded the same strict way"
+        );
+        assert!(
+            mcp_args(&headless).contains(&crate::orchestrator::mcp_config_path(&options.owner_id))
+        );
+    }
+
+    /// The catalog, the trust registry and the transcripts belong to the CLI,
+    /// not to the carrier — it is the same claude, the same account and the
+    /// same `~/.claude/projects`. Only the terminal answer differs.
+    #[test]
+    fn the_headless_provider_is_claude_in_every_way_but_its_carrier() {
+        assert_eq!(
+            AdkHarness.models().len(),
+            ClaudeHarness.models().len(),
+            "one catalog, one place to add a model"
+        );
+        assert_eq!(AdkHarness.effort_levels(), ClaudeHarness.effort_levels());
+
+        let home = tempfile::tempdir().expect("temp home");
+        let cwd = std::path::Path::new("/Users/z/proj");
+        assert!(!AdkHarness.has_transcript(home.path(), cwd));
+        let encoded = home
+            .path()
+            .join(".claude/projects")
+            .join(crate::harness::claude::encode_project_dir(cwd));
+        std::fs::create_dir_all(&encoded).expect("the transcript dir");
+        std::fs::write(encoded.join("session.jsonl"), "{}\n").expect("a transcript");
+        assert!(
+            AdkHarness.has_transcript(home.path(), cwd),
+            "a headless session writes the transcripts the TUI does, so a resume finds them"
+        );
+
+        assert!(
+            !AdkHarness.has_terminal(),
+            "and the one thing that does differ: no basement"
+        );
     }
 
     /// The two capabilities are alternatives, and this carrier takes the second

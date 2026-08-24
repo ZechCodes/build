@@ -1,8 +1,8 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–5a shipped, step 6's session half shipped; the
-provider half and step 7 specified, not started (see §10)
-**Last updated:** August 23, 2026
+**Status:** Draft — steps 0–6 shipped: the ADK is a provider and the first
+carrier with no terminal. Step 7 specified, not started (see §10)
+**Last updated:** August 24, 2026
 **Branch:** `build/agent-polymorphism`
 
 ---
@@ -522,7 +522,8 @@ Everything that must become conditional. This is the actual size of the work.
 | `agent_is_working` (`app.rs:969`) | reads `idle_for` | reads `status()` |
 | `agent_attach` (`app.rs`) | attaches a grid, defaults 40×120 | refuses, with a reason, for a session with no terminal |
 | `term.input` / `term.resize` | assume a PTY | refuse for an agent tab with no terminal |
-| `spawn_tab_pump` | pumps bytes into `TermScreen` | when there is no terminal, posts activity into the conversation instead |
+| `spawn_tab_pump` | pumps bytes into `TermScreen` | one pump per capability — **shipped**: `spawn_tab_pumps` starts the byte pump for a terminal and the activity pump for a session that reports itself |
+| `mark_idle_tasks` (`app.rs:5860`) | demotes on `quiet_for` + `last_delivered_at` | **shipped**: `status()` not `Working` is the first conjunct, a no-op for the PTY |
 | `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
 | `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
 | `Thread::items` (`thread.rs:1191`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
@@ -815,6 +816,75 @@ Each step compiles, ships and is green on its own.
 > `end`'s reap, the stream closing when the child's stdout does, and
 > `send_turn` returning on the write to a child that never answers.
 
+> **Step 6's provider half shipped in `06bb399`, `357225c`, `a1bc0d3` and
+> `5f9c06d`.** `AgentProvider::ClaudeAdk` is a provider like any other —
+> `harness_for` has its arm, `provider_catalogs` offers it, and the persisted
+> `ModelChoice.provider` is the whole launch config — and it is the first one
+> that answers `has_terminal` false. From there the answer flows on its own:
+> the digest reads it before a session exists and off the session after, the
+> rail never offers the basement, and `open_session` opens `Carrier::Protocol`
+> instead of a PTY. The step-3 refusals are live in production for the first
+> time, and `the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned`
+> walks all five against a child the daemon spawned rather than a session built
+> by hand.
+>
+> Six things worth knowing.
+>
+> **The carrier is a parameter, not a flag.** `open_session` takes a `Carrier`
+> — `Terminal { size, turn_ready_grace }` or `Protocol` — so each arm
+> carries only what its own carrier has an answer for: a grid and a readiness
+> wait belong to a terminal, and a session protocol has neither. Above that
+> call a session is a session.
+>
+> **A session offering neither stream is refused rather than opened.** Not
+> because Build could not watch it work: the death rites hang off a stream
+> CLOSING, so a session with no stream would leave a dead agent's tab reading
+> as live until the idle sweep explained the exit as silence.
+> `SessionOutput` carries whichever stream the session has, subscribed at the
+> open — the protocol arm subscribes inside `AdkSession::spawn` for the reason
+> the PTY arm subscribes before its readiness wait: a child starts talking the
+> moment it is forked.
+>
+> **The activity pump is the byte pump's mirror.** It posts the four kinds into
+> the conversation the agent speaks in — which is now one rule
+> (`edit_agent_conversation`), read by the MCP action path too instead of
+> carrying its own copy — and on close performs the two rites that are not the
+> terminal's: the tab goes not live and `record_agent_session_end` runs. The
+> tab is RETAINED, exactly as an agent tab whose PTY ended is.
+>
+> **The `Working` short-circuit landed with it, and is a no-op for the PTY by
+> construction.** `a_pty_quiet_past_the_threshold_is_never_working` asserts
+> that a PTY silent past the threshold can never claim `Working`, so the new
+> conjunct cannot spare an agent the sweep used to demote; the mid-turn side is
+> a dictated session past the threshold that is not demoted. Two of the sweep's
+> existing tests stopped sleeping out a wall clock and age the paint clock
+> instead — they were asserting on whatever had happened after 200 ms, which
+> on a loaded machine is not the thing they meant.
+>
+> **Both screens a spawn can be holding are closed when it has no terminal**,
+> not just the one §10 named. The screen clients wait on before a worktree has
+> an agent is the case the review flagged; the grid the session being replaced
+> retained is the same failure one respawn later, and a human who changes an
+> agent's provider between two sessions would otherwise be left watching the
+> dead one's last frame. Both hear `term.closed` with reason `no_terminal`.
+>
+> **The fake stream-json harness moved out of the session's test module** into
+> `adk::fake`, beside the reader it exercises, because two suites need the same
+> child: the session's tests, which read one session's protocol, and the
+> daemon's, which drive a headless agent through the whole spawn path — a
+> message posted on a run, a real child, the four activity kinds landing in the
+> thread in order, and the child leaving. No test runs a model-backed turn.
+>
+> **The one bullet of step 6 that did not ship: resume by recorded session id.**
+> `AdkSession::session_id` captures the id from `system/init`, but the daemon
+> still resumes the way it always has — the transcript probe answers and the
+> argv carries `--continue`, which for a Build-owned worktree picks up the same
+> conversation. Persisting the id beside the agent needs an `AgentSession` call
+> to read it, a persisted field on the agent record and a capture point after
+> the child announces itself; it is the sharper resume this makes possible
+> rather than something the carrier needs, and the fallback this spec already
+> keeps is what runs until it lands.
+
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
    behaviour change.~~ **Shipped** — see the note above.
@@ -843,9 +913,10 @@ Each step compiles, ships and is green on its own.
    `has_terminal` for a not-yet-started agent comes from the provider. Pure
    refactor: the wire is unchanged and every behaviour byte-identical.~~
    **Shipped** — see the note above; `HarnessSession` is deleted outright.
-6. **Then, and only then, add a provider with no terminal** — the ADK, as
+6. ~~**Then, and only then, add a provider with no terminal** — the ADK, as
    `bridge/src/harness/adk.rs`. By this point it is a new file, not a
-   migration. Detail below.
+   migration. Detail below.~~ **Shipped** — see the note above; resume by
+   recorded session id is the one bullet still open.
 7. **Outcomes become message statuses** — the §6.1 deferred fix, as designed
    there. Independent of step 6 (it repairs the catch-up packet for every
    carrier) and ordered after it only because step 6 is what makes the gap
@@ -1132,6 +1203,18 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-24, step 6 shipped.** `AgentProvider::ClaudeAdk` is a provider like
+  any other and the first with no terminal, so every refusal and every
+  conditional the earlier steps built is live in production rather than walked
+  only by tests. `open_session` takes a `Carrier` and refuses a session that
+  offers neither a terminal nor an activity stream; the activity pump posts the
+  four kinds into the conversation and performs the two death rites that are
+  not the terminal's; the idle sweep's `Working` short-circuit landed, tested
+  from both sides; and a no-terminal spawn closes both screens it could be
+  holding — the one clients wait on before a worktree has an agent, and the
+  grid the session being replaced retained. Tested end to end against a
+  recorded stream-json child, never a model turn. Resume by recorded session id
+  is the one step-6 bullet still open; `--continue` carries it meanwhile.
 - **2026-08-23, step 6's session half shipped.** `AdkSession`
   (`bridge/src/harness/adk.rs`) is the first carrier with no terminal, and
   `AgentSession::activity()` is the capability that stands in for the one it

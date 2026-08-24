@@ -1,6 +1,7 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–5a shipped; steps 6–7 specified, not started (see §10)
+**Status:** Draft — steps 0–5a shipped, step 6's session half shipped; the
+provider half and step 7 specified, not started (see §10)
 **Last updated:** August 23, 2026
 **Branch:** `build/agent-polymorphism`
 
@@ -170,6 +171,12 @@ pub trait AgentSession: Send + Sync {
     /// The session's last words, once it has ended. `None` for a session
     /// that left none worth repeating.
     fn epitaph(&self) -> Option<String> {
+        None
+    }
+
+    /// The session's own account of what it is doing. `None` is a normal
+    /// answer, and the mirror of `terminal()` — the two are alternatives.
+    fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
         None
     }
 }
@@ -747,6 +754,67 @@ Each step compiles, ships and is green on its own.
 > `nudge_live_agent_tab` still speaks to a live tab from under the lock, by
 > construction: it reads its caller's own tab registry.
 
+> **Step 6, the session half, shipped in `1fbb76d`** (with the `activity()`
+> capability in `3d36b71`). `bridge/src/harness/adk.rs` holds `AdkSession`: a
+> child running `claude -p --input-format stream-json --output-format
+> stream-json` over piped stdio, read line by line, answering every trait call
+> from a value it was told. Nothing chooses it yet — `AdkHarness`,
+> `AgentProvider`'s arm and `open_session`'s carrier choice are the provider
+> half — so the module carries an `allow(dead_code)` that comes off with them.
+>
+> **The protocol was verified against the installed CLI before a line was
+> written: claude 2.1.231, and nothing the step assumed is missing.** `-p`,
+> `--input-format stream-json`, `--output-format stream-json`, `--verbose`,
+> `--resume`, `--mcp-config` and `--strict-mcp-config` are all there, so the
+> argv the provider half will build is exactly the one step 6's detail below
+> specifies. Three
+> flags worth knowing about that the spec had not named:
+> `--include-partial-messages` (not used — Build wants whole events, not token
+> deltas), `--forward-subagent-text` (not used, and its default is what makes
+> the subagent fold below cheap), and `--fork-session`, which a resume that
+> must not overwrite its predecessor's transcript may want later.
+>
+> Four things the implementation decided that the step did not say.
+>
+> **An open turn is a flag, not a count.** The obvious reading of "`Working`
+> from an accepted turn until its `result`" is to count turns against results,
+> and it wedges: a message written while the child is mid-turn is absorbed into
+> the running turn, which still ends in ONE result, so a counting session would
+> report `Working` for the rest of its life. Since `Working` short-circuits the
+> idle sweep (§11 q4), that is not a cosmetic error — it is an agent that
+> quietly stopped and is never explained. The test that holds the line hands
+> over two turns, gets one result back, and requires the session to be waiting
+> after it.
+>
+> **A successful result clears the reported error.** `epitaph` is the last
+> error the session was *told*, and an epitaph explains how a session ENDED —
+> so a turn that failed and a later turn that succeeded leave nothing worth
+> repeating, and the stderr fallback carries a child that died before it could
+> report anything at all.
+>
+> **The voice decides what a content block can be.** Text and thinking are
+> minted only off an `assistant` message: a `user` message carrying text is
+> Build's own turn echoed back, and minting it would put the human's words in
+> the timeline a second time as narration. `tool_result` is read only off a
+> `user` message, which is where the protocol puts it.
+>
+> **A tool result is named by the call it answers.** The protocol pairs them by
+> id and nothing else, so the reader remembers each call until its answer
+> arrives — which is also how the exclusion holds for both halves: a
+> `mcp__build__*` call is recorded as Build's own and neither it nor its answer
+> is minted. Tool inputs and results are clipped to one line (240 chars); what
+> the agent itself said — reasoning, narration — is carried whole, because the
+> conversation carries what an agent says whole.
+>
+> Tested entirely against a fake stream-json harness (a `sh -c` script
+> replaying recorded protocol lines and reading stdin for turns), never a real
+> model turn: `init` → `Waiting` with the session id recorded for `--resume`,
+> the turn's status flips including a silent mid-turn stretch, activity minted
+> in order, the MCP and subagent exclusions, the epitaph from a reported error
+> and from a child that died mid-turn on stderr, `exited_within`'s reap lag,
+> `end`'s reap, the stream closing when the child's stdout does, and
+> `send_turn` returning on the write to a child that never answers.
+
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
    behaviour change.~~ **Shipped** — see the note above.
@@ -1064,6 +1132,21 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-23, step 6's session half shipped.** `AdkSession`
+  (`bridge/src/harness/adk.rs`) is the first carrier with no terminal, and
+  `AgentSession::activity()` is the capability that stands in for the one it
+  does not have — the two are alternatives, and both default to absent. The
+  stream-json protocol was verified against claude 2.1.231 first and no flag
+  the step assumed is missing, so the argv the provider half will build is
+  unchanged from what §10 specifies. Four implementation decisions are recorded
+  in the step note: an open turn is a flag rather than a count (a mid-turn
+  message is absorbed and still ends in one `result`, so counting would report
+  `Working` forever and the idle sweep would never explain a stopped agent), a
+  successful result clears the reported error, only an `assistant` message's
+  text is narration, and a tool result is named by the call it answers — which
+  is what makes the `mcp__build__*` exclusion cover the answer as well as the
+  call. Nothing chooses the carrier yet; `AdkHarness` and `open_session`'s arm
+  are the provider half.
 - **2026-08-23, step 6's edges made normative.** Review of the step-5a
   revision flagged three ways a no-terminal carrier falls through a path the
   PTY holds up by accident, and they are now requirements in §10 step 6

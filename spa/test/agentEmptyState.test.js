@@ -80,11 +80,11 @@ describe("a worktree whose agent has never run", () => {
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toBe("No agent is currently running");
     // Which harness runs here has no answer yet, so the offer IS the question.
-    expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "codex"]);
-    expect(cards(el).map(labelOf)).toEqual(["Claude Code", "Codex"]);
+    expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "claude_adk", "codex"]);
+    expect(cards(el).map(labelOf)).toEqual(["Claude Code", "Claude Code (headless)", "Codex"]);
     // Real buttons: reachable, pressable and labelled without a pointer.
     expect(cards(el).every((c) => c.tagName)).toBe(true);
-    expect(cards(el).map((c) => c.tagName)).toEqual(["BUTTON", "BUTTON"]);
+    expect(cards(el).map((c) => c.tagName)).toEqual(["BUTTON", "BUTTON", "BUTTON"]);
     // With nothing to go on, the wide button leads with the default — still a
     // named harness, so pressing it is never a mystery.
     expect(lead(el).tagName).toBe("BUTTON");
@@ -125,7 +125,7 @@ describe("a worktree whose agent has never run", () => {
     expect(onStart).toHaveBeenCalledWith("codex");
     // Every control goes inert: a second press while the first is in flight
     // would start a race between two harnesses over one worktree.
-    expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
+    expect(cards(el).map((c) => c.disabled)).toEqual([true, true, true]);
     expect(lead(el).disabled).toBe(true);
     expect(cardLabel(el, "codex")).toBe("Starting…");
 
@@ -176,7 +176,7 @@ describe("a worktree whose agent has never run", () => {
     paneSpy.lastOpts.onExit("agent_session_ended"); // the old session dies under the press
 
     expect(cardLabel(el, "codex")).toBe("Starting…");
-    expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
+    expect(cards(el).map((c) => c.disabled)).toEqual([true, true, true]);
 
     release();
     await tick();
@@ -196,7 +196,7 @@ describe("a worktree whose agent has never run", () => {
     await tick();
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toContain("no worktree to adopt");
-    expect(cards(el).map((c) => c.disabled)).toEqual([false, false]);
+    expect(cards(el).map((c) => c.disabled)).toEqual([false, false, false]);
     expect(cardLabel(el, "codex")).toBe("Codex");
     expect(lead(el).disabled).toBe(false);
     expect(labelOf(lead(el))).toBe("Claude Code");
@@ -228,7 +228,7 @@ describe("an agent that exited", () => {
     expect(lead(el).dataset.provider).toBe("codex");
     expect(labelOf(lead(el))).toBe("Codex");
     expect(lead(el).textContent).toContain("ran here last");
-    expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "codex"]);
+    expect(cards(el).map((c) => c.dataset.provider)).toEqual(["claude", "claude_adk", "codex"]);
     // No unnamed "Restart agent": every offer here says what it will run.
     expect(el.querySelector("#agentStart")).toBeNull();
     expect(el.textContent).not.toContain("Restart");
@@ -256,7 +256,7 @@ describe("an agent that exited", () => {
     expect(onStart).toHaveBeenCalledWith("codex");
     expect(lead(el).disabled).toBe(true);
     expect(labelOf(lead(el))).toBe("Starting…");
-    expect(cards(el).map((c) => c.disabled)).toEqual([true, true]);
+    expect(cards(el).map((c) => c.disabled)).toEqual([true, true, true]);
 
     release();
     await tick();

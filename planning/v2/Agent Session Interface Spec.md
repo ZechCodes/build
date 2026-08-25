@@ -900,6 +900,14 @@ Each step compiles, ships and is green on its own.
 > the child announces itself; it is the sharper resume this makes possible
 > rather than something the carrier needs, and the fallback this spec already
 > keeps is what runs until it lands.
+>
+> **The SPA's start cards offer the headless carrier (2026-08-24).** The idle
+> agent panel's picker draws from a list the UI ships (`STARTABLE_PROVIDERS`,
+> `spa/src/core/modelPicker.js`) rather than the catalog RPC, so the new
+> provider had to be added there: `claude_adk`, under the bridge's own label
+> "Claude Code (headless)". The full PTY harness stays the default start, and
+> `providerLabel` now names a headless agent's bubble properly instead of
+> echoing the wire token.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No

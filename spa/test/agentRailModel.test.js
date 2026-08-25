@@ -36,6 +36,7 @@ describe("who an agent is", () => {
   it("names the harness and which one of it this is", () => {
     expect(providerLabel("claude")).toBe("Claude Code");
     expect(providerLabel("codex")).toBe("Codex");
+    expect(providerLabel("claude_adk")).toBe("Claude Code (headless)");
     expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex 2");
   });
 

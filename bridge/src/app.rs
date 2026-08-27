@@ -5038,6 +5038,32 @@ impl AppState {
             .collect()
     }
 
+    /// Where each of an entity's conversations stands, as
+    /// `(agent_id, last_attention_sequence)` in roster order — the lines a
+    /// dismissal draws, and the lines it is judged against afterwards.
+    ///
+    /// The entity-level conversation of a planned run is its Issue's, so the
+    /// first agent's line is drawn in THAT thread; every other agent's in its
+    /// own. The first pair is the roster's first agent — the only one the
+    /// pre-agent dismissal folds onto.
+    fn dismissal_lines(&self, entity_id: &str) -> Vec<(String, u64)> {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return Vec::new();
+        };
+        let entity_thread = self.entity_conversation(entity_id);
+        roster
+            .iter()
+            .map(|agent| {
+                let thread = if agent.id == roster.first().id {
+                    entity_thread.unwrap_or(&agent.thread)
+                } else {
+                    &agent.thread
+                };
+                (agent.id.clone(), thread.last_attention_sequence())
+            })
+            .collect()
+    }
+
     /// The conversation an entity's own surfaces render: its Issue's for a
     /// planned run, its first agent's otherwise.
     fn entity_conversation(&self, entity_id: &str) -> Option<&crate::thread::Thread> {
@@ -7229,14 +7255,16 @@ impl AppState {
             self.clear_row(&row);
             return Ok(json!({ "entity_id": entity_id, "dismissed": true }));
         }
-        let dismissed_through = self
-            .entity_conversation(&entity_id)
-            .map(crate::thread::Thread::last_sequence)
-            .unwrap_or(0);
-        self.attention
-            .entry(entity_id.clone())
-            .or_default()
-            .dismiss_through(dismissed_through);
+        // Every agent on the row gets its own line, drawn where its own
+        // conversation stands right now — clearing the row IS reading it, and
+        // the client relies on that. One line could never speak for the rest:
+        // each agent numbers its conversation from 1, so a sequence taken off
+        // the first agent says nothing about where the second one has got to.
+        let lines = self.dismissal_lines(&entity_id);
+        let attention = self.attention.entry(entity_id.clone()).or_default();
+        for (agent_id, last_attention_sequence) in lines {
+            attention.dismiss_agent_through(&agent_id, last_attention_sequence);
+        }
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "dismissed": true }))
     }
@@ -12156,7 +12184,7 @@ impl AppState {
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the work speaks again. The client
             // hides the row on it; nothing here changes because of it.
-            "dismissed": self.is_dismissed(run_id, thread, &unread),
+            "dismissed": self.is_dismissed(run_id, &unread),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
@@ -12360,7 +12388,7 @@ impl AppState {
             ) },
             "muted": self.is_muted(issue_id),
             // See the branch row: dismissed until its conversation asks again.
-            "dismissed": self.is_dismissed(issue_id, &active.agents, &unread),
+            "dismissed": self.is_dismissed(issue_id, &unread),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
@@ -12408,22 +12436,33 @@ impl AppState {
     }
 
     /// Whether this row has been cleared out of the inbox: the human dismissed
-    /// it, and its conversation has not needed them since.
+    /// it, and NO agent on it has needed them since.
+    ///
+    /// Every agent has to still be cleared, which is the complement of the
+    /// badge above it: `unread_for` unions unread across the roster, so a row
+    /// is out of the list only while nothing anywhere on it has spoken past
+    /// the line the human drew.
     ///
     /// Unread beats dismissed. News the human has not read is news, however
     /// quiet they told the row to be — and it is the same fact that revives a
     /// dismissed row the moment an agent hands its turn back.
-    fn is_dismissed(
-        &self,
-        entity_id: &str,
-        thread: &crate::thread::Thread,
-        unread: &crate::thread::UnreadSummary,
-    ) -> bool {
-        !unread.is_unread()
-            && self
-                .attention
-                .get(entity_id)
-                .is_some_and(|attention| attention.is_dismissed(thread.last_attention_sequence()))
+    fn is_dismissed(&self, entity_id: &str, unread: &crate::thread::UnreadSummary) -> bool {
+        if unread.is_unread() {
+            return false;
+        }
+        let Some(attention) = self.attention.get(entity_id) else {
+            return false;
+        };
+        let lines = self.dismissal_lines(entity_id);
+        // A row with no roster behind it holds no conversation to have been
+        // cleared: it is dismissed at a commit instead, by `row_is_dismissed`.
+        !lines.is_empty()
+            && lines
+                .iter()
+                .enumerate()
+                .all(|(position, (agent_id, latest_attention_sequence))| {
+                    attention.is_dismissed_for(agent_id, position == 0, *latest_attention_sequence)
+                })
     }
 
     /// When this work item's oldest turn still in flight started — how long the
@@ -13453,7 +13492,7 @@ impl AppState {
             "unread_reason": unread.reason,
             // See `run_view`.
             "muted": self.is_muted(plan_id),
-            "dismissed": self.is_dismissed(plan_id, &active.agents, &unread),
+            "dismissed": self.is_dismissed(plan_id, &unread),
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -13581,7 +13620,7 @@ impl AppState {
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the conversation asks again. Mute
             // silences a row that stays; this one is not in the list at all.
-            "dismissed": self.is_dismissed(run_id, self.conversation_thread_for_run(active), &unread),
+            "dismissed": self.is_dismissed(run_id, &unread),
             "attention": self.attention_json(run_id),
             "branch": active.worktree.branch,
             "base_branch": active.worktree.base_branch,
@@ -32038,6 +32077,110 @@ mod tests {
             row["dismissed"], false,
             "reading is not dismissing: {row:?}"
         );
+    }
+
+    /// Write into one agent's own conversation — the second voice on a branch,
+    /// which numbers its items from 1 in a sequence space of its own.
+    fn push_to_agent_conversation(
+        state: &mut AppState,
+        run_id: &str,
+        agent_id: &str,
+        write: impl FnOnce(&mut crate::thread::Thread),
+    ) {
+        let run = state.runs.get_mut(run_id).expect("the run exists");
+        let agent = run
+            .agents
+            .by_id_mut(agent_id)
+            .expect("the agent is on the roster");
+        write(&mut agent.thread);
+    }
+
+    /// The regression: a row is cleared against every agent on it, not just the
+    /// first. Thread sequences are per-agent, so one scalar drawn off agent one
+    /// says nothing about agent two — and a row cleared before agent two ever
+    /// spoke used to vanish again the moment the human read what it said.
+    #[test]
+    fn clearing_a_row_draws_a_line_under_every_agent_on_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "two voices");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // A second agent joins the branch and asks for something of its own.
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        push_to_agent_conversation(&mut state, &run_id, &second_agent, |thread| {
+            thread.post_agent("and this one — which way?", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "unread beats dismissed: {row:?}");
+
+        // Reading what the second agent said is not clearing the row away:
+        // nothing the human did draws a line under a conversation they never
+        // dismissed, and the first agent's line cannot speak for it.
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], false, "{row:?}");
+        assert_eq!(
+            row["dismissed"], false,
+            "the row stays on the list until the human clears it again: {row:?}"
+        );
+
+        // Clearing it again draws a line under BOTH agents, and now it sticks.
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // And the second agent speaking again brings the row back on its own,
+        // exactly as the first agent's would.
+        push_to_agent_conversation(&mut state, &run_id, &second_agent, |thread| {
+            thread.post_agent("still waiting on you", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// A row cleared before dismissal was per-agent carries one scalar and no
+    /// map. It belongs to the agent that inherited the entity's conversation,
+    /// and that row must still be cleared after this ships.
+    #[test]
+    fn an_old_style_dismissal_still_clears_a_single_agent_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "written before agents");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        // What the old code wrote: the end of the entity's conversation, in one
+        // number, with no agent named.
+        let line = state.plans[&issue_id].agents.last_sequence();
+        state
+            .attention
+            .entry(run_id.clone())
+            .or_default()
+            .dismissed_through = line;
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // And it comes back the same way it always did.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("done — take a look", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], false, "{row:?}");
     }
 
     /// News the human has not read keeps the row on the list, whatever they

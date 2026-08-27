@@ -484,7 +484,7 @@ impl ActiveRun {
             worktree: Worktree {
                 name: record.worktree_name.clone(),
                 path: PathBuf::from(&record.worktree_path),
-                branch: record.branch.clone(),
+                recorded_branch: record.branch.clone(),
                 base_branch: record.base_branch.clone(),
             },
             base_sha: record.base_sha.clone(),
@@ -2398,7 +2398,7 @@ impl Orchestrator {
         let worktree = Worktree {
             name: checkout.name.clone(),
             path: checkout.path.clone(),
-            branch: branch.clone(),
+            recorded_branch: branch.clone(),
             base_branch: base_branch.to_string(),
         };
         self.scaffold_build_dir(&worktree, &id.0)?;
@@ -2447,7 +2447,7 @@ impl Orchestrator {
         run_transition(&active.run.state, RunEvent::ApproveMerge)?;
         self.commit_all(&active.worktree.path, &active.run.goal)
             .map_err(as_merge_failure)?;
-        self.merge_into_base(&active.worktree.branch, &active.worktree.base_branch)
+        self.merge_into_base(&active.worktree.branch(), &active.worktree.base_branch)
             .map_err(as_merge_failure)?;
         active.run.apply(RunEvent::ApproveMerge)?;
         active.last_error = None;
@@ -2466,12 +2466,12 @@ impl Orchestrator {
         self.commit_all(&active.worktree.path, &active.run.goal)?;
         let repo = git2::Repository::discover(&active.worktree.path)
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
-        let remote = configured_remote_for_branch(&repo, &active.worktree.branch)
+        let remote = configured_remote_for_branch(&repo, &active.worktree.branch())
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
         self.git(
             &active.worktree.path,
             // `--` stops option parsing so option-shaped names remain opaque.
-            &["push", "-u", &remote, "--", &active.worktree.branch],
+            &["push", "-u", &remote, "--", &active.worktree.branch()],
         )?;
         Ok(())
     }
@@ -3977,7 +3977,7 @@ mod tests {
             Some("plan-1")
         );
         assert_eq!(active.run.state, RunState::Interrupted);
-        assert_eq!(active.worktree.branch, "build/add-a-greeting");
+        assert_eq!(active.worktree.branch(), "build/add-a-greeting");
         assert_eq!(active.base_sha.as_deref(), Some("deadbeef"));
         assert_eq!(active.plan_path, ".build/plan.md");
         assert_eq!(active.stages.len(), 1);
@@ -4005,7 +4005,7 @@ mod tests {
             run.base_sha.is_some(),
             "the materialized plan doc baselines the review diff"
         );
-        assert!(run.worktree.branch.starts_with("build/"));
+        assert!(run.worktree.branch().starts_with("build/"));
         assert!(run.worktree.path.join(mcp_config_path("run-1")).exists());
 
         std::fs::write(run.worktree.path.join("fix.txt"), "fixed\n").unwrap();
@@ -5461,7 +5461,7 @@ mod tests {
         let orch = orchestrator(&dir, &repo);
         let store = split_store(&dir);
         let mut run = dispatch_single_stage_run(&orch, &store, "run-1", "single stage work");
-        let branch = run.worktree.branch.clone();
+        let branch = run.worktree.branch();
         let path = run.worktree.path.clone();
 
         orch.abandon_run(&mut run).unwrap();

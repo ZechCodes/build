@@ -31,10 +31,36 @@ pub struct Worktree {
     pub name: String,
     /// Absolute path to the working directory.
     pub path: PathBuf,
-    /// The task branch, e.g. `build/fix-the-typo`.
-    pub branch: String,
+    /// The branch this checkout was on when Build cut or adopted it. A
+    /// breadcrumb, not the truth: the checkout itself decides what branch it
+    /// is on (see [`Worktree::branch`]), and this name only answers when the
+    /// checkout cannot — gone from disk, or detached. Restore and teardown
+    /// read it deliberately: they act on the branch Build was given, not on
+    /// wherever HEAD wandered since.
+    pub recorded_branch: String,
     /// The branch this worktree was created from.
     pub base_branch: String,
+}
+
+impl Worktree {
+    /// The branch this checkout has checked out right now, read from the
+    /// working directory — the source of truth. Falls back to
+    /// [`recorded_branch`](Self::recorded_branch) only when the checkout
+    /// cannot answer (missing from disk, detached HEAD).
+    pub fn branch(&self) -> String {
+        checked_out_branch(&self.path).unwrap_or_else(|| self.recorded_branch.clone())
+    }
+}
+
+/// The branch `path` has checked out, read from the checkout itself. `None`
+/// when the path is not a repository or HEAD is detached.
+pub fn checked_out_branch(path: &Path) -> Option<String> {
+    let repo = git2::Repository::open(path).ok()?;
+    let head = repo.head().ok()?;
+    if !head.is_branch() {
+        return None;
+    }
+    head.shorthand().map(str::to_string)
 }
 
 /// Derive a filesystem- and branch-safe slug from a free-text goal.
@@ -144,7 +170,7 @@ impl WorktreeManager {
         Ok(Worktree {
             name,
             path,
-            branch,
+            recorded_branch: branch,
             base_branch: base_branch.to_string(),
         })
     }
@@ -196,7 +222,7 @@ impl WorktreeManager {
             worktree: Worktree {
                 name,
                 path,
-                branch: branch.to_string(),
+                recorded_branch: branch.to_string(),
                 base_branch: base_branch.to_string(),
             },
             branch_was_cut,
@@ -247,12 +273,12 @@ impl WorktreeManager {
         if worktree.path.exists() {
             return self.verify_existing_worktree(worktree, &expected_path);
         }
-        let local_ref = format!("refs/heads/{}", worktree.branch);
-        let remote_ref = format!("refs/heads/{}", worktree.branch);
+        let local_ref = format!("refs/heads/{}", worktree.recorded_branch);
+        let remote_ref = format!("refs/heads/{}", worktree.recorded_branch);
         if !git2::Reference::is_valid_name(&local_ref) {
             return Err(WorktreeError::Command(format!(
                 "invalid persisted branch: {:?}",
-                worktree.branch
+                worktree.recorded_branch
             )));
         }
         let repo = git2::Repository::open(&self.repo_path)?;
@@ -263,13 +289,13 @@ impl WorktreeManager {
         }
         if repo.find_reference(&local_ref).is_err() {
             let refspec = format!("+{remote_ref}:{local_ref}");
-            let remote = configured_remote_for_branch(&repo, &worktree.branch)
+            let remote = configured_remote_for_branch(&repo, &worktree.recorded_branch)
                 .unwrap_or_else(|| "origin".to_string());
             let output = bounded_git_fetch(&self.repo_path, &remote, &refspec)?;
             if !output.status.success() {
                 return Err(WorktreeError::Command(format!(
                     "branch {:?} was not found locally or on configured remote: {}",
-                    worktree.branch,
+                    worktree.recorded_branch,
                     String::from_utf8_lossy(&output.stderr).trim()
                 )));
             }
@@ -315,17 +341,17 @@ impl WorktreeManager {
             ));
         }
         let head = checkout.head()?;
-        if !head.is_branch() || head.shorthand() != Some(worktree.branch.as_str()) {
+        if !head.is_branch() || head.shorthand() != Some(worktree.recorded_branch.as_str()) {
             return Err(WorktreeError::Command(format!(
                 "worktree is not on the exact persisted branch {:?}",
-                worktree.branch
+                worktree.recorded_branch
             )));
         }
         let head_oid = head.target().ok_or_else(|| {
             WorktreeError::Command("worktree HEAD has no direct commit".to_string())
         })?;
         let branch_oid = primary
-            .find_reference(&format!("refs/heads/{}", worktree.branch))?
+            .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
             .target()
             .ok_or_else(|| WorktreeError::Command("persisted branch has no commit".to_string()))?;
         if head_oid != branch_oid {
@@ -374,7 +400,7 @@ impl WorktreeManager {
 
         // The branch is only deletable once it is no longer checked out.
         if !keep_branch {
-            match repo.find_branch(&worktree.branch, git2::BranchType::Local) {
+            match repo.find_branch(&worktree.recorded_branch, git2::BranchType::Local) {
                 Ok(mut branch) => branch.delete()?,
                 Err(error) if error.code() == git2::ErrorCode::NotFound => {}
                 Err(error) => return Err(error.into()),
@@ -975,7 +1001,7 @@ mod tests {
         let mgr = manager(&dir, &repo);
 
         let prefixed = mgr.create_on_branch("build/csv-export", "main").unwrap();
-        assert_eq!(prefixed.worktree.branch, "build/csv-export");
+        assert_eq!(prefixed.worktree.recorded_branch, "build/csv-export");
         assert_eq!(prefixed.worktree.name, "csv-export");
         assert!(prefixed.branch_was_cut, "nothing was on that name before");
         assert!(prefixed.worktree.path.join("README.md").exists());
@@ -983,13 +1009,13 @@ mod tests {
         // A name with no namespace stays with no namespace: nothing is added to
         // what the caller asked for.
         let plain = mgr.create_on_branch("hotfix", "main").unwrap();
-        assert_eq!(plain.worktree.branch, "hotfix");
+        assert_eq!(plain.worktree.recorded_branch, "hotfix");
         assert_eq!(plain.worktree.name, "hotfix");
 
         // A namespace that is not this manager's is kept whole in the directory
         // name, so two branches never share one directory.
         let foreign = mgr.create_on_branch("feature/csv-export", "main").unwrap();
-        assert_eq!(foreign.worktree.branch, "feature/csv-export");
+        assert_eq!(foreign.worktree.recorded_branch, "feature/csv-export");
         assert_eq!(foreign.worktree.name, "feature-csv-export");
 
         let r = git2::Repository::open(&repo).unwrap();
@@ -1015,7 +1041,7 @@ mod tests {
             .create_on_branch("build/started-by-hand", "main")
             .unwrap();
 
-        assert_eq!(added.worktree.branch, "build/started-by-hand");
+        assert_eq!(added.worktree.recorded_branch, "build/started-by-hand");
         assert!(
             !added.branch_was_cut,
             "the branch was already there, and removing this checkout must not take it"
@@ -1061,7 +1087,7 @@ mod tests {
 
         let wt = mgr.create("fix-typo", "main").unwrap();
 
-        assert_eq!(wt.branch, "build/fix-typo");
+        assert_eq!(wt.recorded_branch, "build/fix-typo");
         assert_eq!(wt.base_branch, "main");
         assert!(wt.path.join("README.md").exists(), "worktree has the files");
 
@@ -1101,7 +1127,7 @@ mod tests {
         assert_eq!(a.name, "dup");
         assert_eq!(b.name, "dup-2");
         assert_eq!(c.name, "dup-3");
-        assert_eq!(b.branch, "build/dup-2");
+        assert_eq!(b.recorded_branch, "build/dup-2");
         assert!(b.path.join("README.md").exists());
     }
 
@@ -1166,7 +1192,7 @@ mod tests {
         let forged = Worktree {
             name: "forged".into(),
             path,
-            branch: "build/forged".into(),
+            recorded_branch: "build/forged".into(),
             base_branch: "main".into(),
         };
 
@@ -1196,15 +1222,15 @@ mod tests {
         std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
         git_in(&wt.path, &["add", "remote-stage.txt"]);
         git_in(&wt.path, &["commit", "-m", "remote stage"]);
-        git_in(&wt.path, &["push", "-u", "origin", &wt.branch]);
+        git_in(&wt.path, &["push", "-u", "origin", &wt.recorded_branch]);
         mgr.remove(&wt, true).unwrap();
-        git_in(&repo, &["branch", "-D", &wt.branch]);
+        git_in(&repo, &["branch", "-D", &wt.recorded_branch]);
         git_in(
             &repo,
             &[
                 "update-ref",
                 "-d",
-                &format!("refs/remotes/origin/{}", wt.branch),
+                &format!("refs/remotes/origin/{}", wt.recorded_branch),
             ],
         );
 
@@ -1524,7 +1550,10 @@ mod vanished_worktree_removal {
     /// bookkeeping pruned, branch deleted.
     fn fully_vanished(repo: &Path, wt: &Worktree) {
         std::fs::remove_dir_all(&wt.path).unwrap();
-        for args in [vec!["worktree", "prune"], vec!["branch", "-D", &wt.branch]] {
+        for args in [
+            vec!["worktree", "prune"],
+            vec!["branch", "-D", &wt.recorded_branch],
+        ] {
             let out = std::process::Command::new("git")
                 .args(&args)
                 .current_dir(repo)
@@ -1569,7 +1598,7 @@ mod vanished_worktree_removal {
             .expect("carcass cleanup succeeds");
         let repo = git2::Repository::open(&repo).unwrap();
         assert!(
-            repo.find_branch(&wt.branch, git2::BranchType::Local)
+            repo.find_branch(&wt.recorded_branch, git2::BranchType::Local)
                 .is_err(),
             "the surviving branch is deleted, not skipped"
         );

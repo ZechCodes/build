@@ -234,6 +234,80 @@ pub trait AgentSession: Send + Sync {
   out of the registry, and `a_turn_travels_with_the_state_lock_released` keeps
   it that way.
 
+### Stopping a turn, and naming the conversation
+
+*Added 2026-08-28, from the live probes recorded in §10 step 6.* A carrier that
+reports its own turn boundaries can also be told to end one, and it names the
+conversation it is having. Two calls, both defaulting to "no", and neither
+re-admits the byte stream.
+
+```rust
+pub trait AgentSession: Send + Sync {
+    // … send_turn, status, quiet_for, exited_within, end, epitaph,
+    //   terminal, activity …
+
+    /// Whether this session can be told to stop the turn it is running.
+    ///
+    /// Asked without performing it: the agent digest answers the SPA with it
+    /// before anyone presses anything. An implementation must answer from the
+    /// same value `interrupt` refuses on, so the two cannot disagree.
+    fn can_interrupt(&self) -> bool {
+        false
+    }
+
+    /// Stop the turn the agent is running now, and return.
+    ///
+    /// **Never kills.** `end` is the kill and it is a different verb with a
+    /// different lifetime: a session that answered `interrupt` is the same
+    /// session afterwards, still holding its conversation, ready for the turn
+    /// Build hands it next. A carrier that cannot stop a turn says so in a
+    /// sentence rather than reaching for the kill.
+    ///
+    /// Returns promptly, for the same reason `send_turn` does: the in-place
+    /// nudge speaks from under the app-wide state lock.
+    fn interrupt(&self) -> Result<(), HarnessError> {
+        Err(HarnessError::Unsupported(
+            "this agent has no interrupt — open its terminal and press Esc".to_string(),
+        ))
+    }
+
+    /// The id the harness gave the conversation this session is having, once it
+    /// has announced one. What a respawn resumes BY NAME.
+    ///
+    /// `None` for a carrier that names no conversation, and for one that has
+    /// not announced yet. Reported, never scraped: it is read off the protocol
+    /// line the child sent, never out of a transcript directory.
+    fn session_id(&self) -> Option<String> {
+        None
+    }
+}
+```
+
+- **Why a defaulted method rather than `terminal()`'s `Option` capability.**
+  The terminal is a property of the carrier, so `Option<&dyn TerminalView>`
+  makes the question one answer asked in one place. An interrupt is not: it is
+  announced at runtime, in the `capabilities` array of the child's own `init`
+  line, so the same provider can answer differently on two versions of the same
+  CLI. And a refusal here has something to say — the PTY's is "open its terminal
+  and press Esc" — which a bare `None` cannot carry. So it is a call with a
+  refusal, in the manner of `require_shell_kind`: refuse loudly and say where
+  the thing actually lives, never fall back to something different.
+  `can_interrupt` is the flag `terminal()` avoided, and it is safe here only
+  because the implementation answers both from ONE value, held to it by a test
+  asserting `interrupt()` refuses exactly when `can_interrupt()` is false.
+
+- **The PTY stays unsupported, and does not map interrupt to ESC bytes.** Three
+  reasons, in the order that decides it. ESC is a keystroke whose meaning
+  belongs to the harness, not to Build: claude reads it as "stop", another
+  harness closes a picker with it, a third clears the composer, and Build has
+  no way to know which harness is on the other end of a `SubmitKey`. Enforcement
+  is by observation, and a PTY reports no turn boundary — so Build could write
+  the bytes and never learn whether anything stopped, which is exactly the state
+  where the SPA would claim it stopped an agent that is still working. And the
+  terminal is the basement and always accessible: the human who wants a full
+  harness stopped drops in and presses Esc with the screen in front of them,
+  which is a better outcome than Build pressing it blind. The refusal says so.
+
 ---
 
 ## 4. `AgentStatus`
@@ -586,9 +660,24 @@ conversation's existing `thread.revision` carries activity like everything else
 on a thread.
 
 ```json
-// agent digest — one new field
-{ "id": "agent-…", "working": true, "has_terminal": true, … }
+// agent digest — two new fields, one per step
+{ "id": "agent-…", "working": true, "has_terminal": true,
+  "can_interrupt": false, … }
 ```
+
+```json
+// thread.post — one new flag (step 8), absent on every post that is not one
+{ "entity_id": "run-…", "agent_id": "agent-…", "body": "stop, do X instead",
+  "interrupt": true }
+```
+
+The two digest booleans read their absence differently, and deliberately.
+`has_terminal` absent is `true`: every agent had a basement before the question
+could be asked, so silence is not a refusal. `can_interrupt` absent is `false`:
+a bridge that does not send the field cannot stop a turn, and a client that
+guessed `true` would offer a control whose flag the bridge drops — the human
+would be told the turn was stopped while it ran on. Absence means "no" for a
+capability that is new, and "yes" for one that predates the question.
 
 ```json
 // thread items — four new event kinds, in the envelope every event already has
@@ -928,7 +1017,9 @@ Each step compiles, ships and is green on its own.
 > to read it, a persisted field on the agent record and a capture point after
 > the child announces itself; it is the sharper resume this makes possible
 > rather than something the carrier needs, and the fallback this spec already
-> keeps is what runs until it lands.
+> keeps is what runs until it lands. It is now **step 8's second half**,
+> specified there down to the record field, the capture point and the crash
+> window.
 >
 > **Live-verified against claude 2.1.236 (2026-08-28)** — the first real
 > model-backed runs of this carrier, via the ignored test
@@ -958,6 +1049,13 @@ Each step compiles, ships and is green on its own.
 >   the same session. Stop-and-redirect is a wire message, not a kill — the
 >   kill-and-resteer design is the fallback for a CLI that does not advertise
 >   the capability, not the mechanism.
+>
+> **Both of the above are step 8**, designed from these findings: the interrupt
+> as a capability-gated `AgentSession` call with a flag on `thread.post` above
+> it, and the recorded session id persisted for `--resume`. Step 8 also retires
+> the kill-and-resteer fallback named in the last bullet — the probes showed a
+> plain queued message reaches the running turn anyway, so a carrier that
+> cannot interrupt degrades to an ordinary send rather than to a kill.
 >
 > **The SPA's start cards offer the headless carrier (2026-08-24).** The idle
 > agent panel's picker draws from a list the UI ships (`STARTABLE_PROVIDERS`,
@@ -1004,6 +1102,14 @@ Each step compiles, ships and is green on its own.
    carrier) and ordered after it only because step 6 is what makes the gap
    bite daily; it may land first if ADK slips.~~ **Shipped** — see the detail
    below.
+8. **The turn can be stopped, and the conversation resumed by name.** The two
+   things step 6's live probes made possible: `AgentSession::interrupt`
+   (capability-gated, never a kill) with `thread.post`'s `interrupt` flag and
+   the composer's split send above it, and `AgentSession::session_id` persisted
+   on the agent record so a respawn carries `--resume <id>` instead of
+   `--continue` — the one step-6 bullet that did not ship. Detail below. The
+   two halves are independent and the resume half may land first, but they
+   share one capture point and one test child, so they are one step.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -1266,9 +1372,316 @@ the compatibility story for persisted threads and older clients — all there.
 > pre-step-7 thread still renders its `Done` / `Blocked` rows and their
 > event-attached cards exactly as before.
 
+### Step 8 in detail — stopping a turn, and resuming by name
+
+Grounded in the step-6 probes above, not in a guess about the protocol: the
+native interrupt exists and is advertised, a mid-turn message is delivered at
+the next step boundary, `init` carries the session id and arrives only after
+the first stdin message. Everything below follows from those four facts.
+
+#### 8.1 The carrier's interrupt
+
+`AdkSession` gains the two calls §3 adds, both answered from the protocol.
+
+- **The capability comes from `init`, not from the provider.** `ProtocolState`
+  records the `capabilities` array the child announced, and `can_interrupt()`
+  is `capabilities` containing `interrupt_receipt_v1`. A session that has not
+  announced yet answers `false` — it has no turn to stop either — and a CLI
+  built before the feature landed answers `false` forever, which is the whole
+  point of asking the child rather than the version number.
+
+- **`interrupt()` writes one line and returns.**
+  `{"type":"control_request","request_id":"<uuid>","request":{"subtype":"interrupt"}}`,
+  with a fresh id per request (`uuid::Uuid::new_v4`, the mint the daemon already
+  uses for MCP session tokens). No wait for the ack: the contract is
+  `send_turn`'s, for `send_turn`'s reason — the in-place nudge speaks from under
+  the app-wide state lock.
+
+- **What the reader does with the ack.** `ProtocolState` holds at most one
+  outstanding interrupt:
+
+  ```rust
+  /// The interrupt Build asked for, until the result that closes the turn it
+  /// ended arrives.
+  struct PendingInterrupt {
+      request_id: String,
+      /// The child answered `control_response` for this id.
+      acked: bool,
+      /// A turn was handed over behind the interrupt — the steering turn,
+      /// which the child runs once the interrupted one is closed.
+      steered: bool,
+  }
+  ```
+
+  A `control_response` whose `request_id` matches sets `acked`; one that does
+  not is noise and is ignored. A second `interrupt()` while one is outstanding
+  replaces it: asking twice to stop the same turn is one ask. The pending
+  interrupt is dropped when the turn's result arrives, acked or not, so it can
+  never leak into the turn after it.
+
+- **The interrupted result must read as interrupted.** This is the rule the
+  whole step exists to hold. `read_result` today records a failing result's
+  text as `reported_error`, which `epitaph()` hands to `HarnessExit` — so an
+  interrupt that changed nothing else would end the human's own stop with a
+  crash notice quoting `error_during_execution`. When an interrupt is
+  outstanding, `read_result` instead takes the pending interrupt and:
+  - clears `reported_error` when the interrupt was **acked** — a turn the human
+    stopped leaves no epitaph, whatever subtype the result carried. The ack is
+    what makes that true rather than a guess: the child answers the
+    `control_response` before it emits the result (probe, 2.1.236), so an
+    interrupt still unacked at the result is one the child never acted on, and
+    the failure the result reports is the turn's own and keeps its epitaph;
+  - sets `turn_open = steered` rather than `false`.
+
+  The second half is subtler than it looks and is why the flag is not enough on
+  its own. The sequence is: turn A open, `interrupt()`, `send_turn(B)` (which
+  sets `turn_open`, already true), then the child emits the ack, then A's
+  `error_during_execution` result, then it starts running B. Clearing
+  `turn_open` on A's result would leave a session that is actively working
+  reporting `Waiting` — and B is exactly the kind of turn that then goes silent
+  for minutes inside one tool call, so the idle sweep would demote a steered
+  agent to `IdleUnreported` mid-work. There is no second result to reopen the
+  flag, because B ends in its own single result. So the result that closes an
+  interrupted turn hands the flag on to the turn queued behind it.
+
+- **`error_during_execution` is not a failure anywhere else**, and nothing has
+  to be taught that. A `result` line is a turn boundary and never a report
+  (§11 q4): the only path by which its error text reaches a human is the
+  epitaph, and the epitaph is what the interrupt clears. No `RunFailed`, no
+  `Blocked`, no `Interrupted` event, no `failed` outcome — outcomes are minted
+  by `record_report_in_thread` from an agent's `done` call and by nothing else
+  (step 7). `Interrupted` in particular stays what it means: a session that is
+  GONE. An interrupted session is the same session, holding the same
+  conversation, and it is about to answer.
+
+- **What `interrupt()` does when the capability is absent: it refuses, and it
+  never kills.** `HarnessError::Unsupported(String)` is the new variant, and
+  the refusal carries the sentence that says where the thing actually lives —
+  the PTY's names the terminal and Esc, the headless one says its CLI does not
+  advertise an interrupt. The kill-and-resteer fallback named in step 6 —
+  `end()`, respawn with `--resume <id>`, steering turn first — is **not built**,
+  for reasons that got stronger as the probes came in:
+  - A kill throws away everything the turn had done, including a tool call
+    halfway through a write, and costs a full startup plus a catch-up packet to
+    get back to a worse position than the one it left.
+  - `--resume` needs the persisted id, which §8.2's crash window says may not
+    exist — so the fallback would itself need a fallback, and the one it would
+    fall back to is a fresh agent that has lost the turn.
+  - The probes made it unnecessary. A plain queued message is delivered at the
+    next step boundary and DECIDES the same turn's outcome. That is most of
+    what the human wanted, at none of the cost — so where Build cannot
+    interrupt, the right degradation is the ordinary send, not the kill.
+  - A session-level call that ended and respawned the session would be lying
+    about its own lifetime: the object the caller holds would be dead on
+    return. Respawning is the daemon's business — it owns the tab registry, the
+    spawn lock, the MCP token mint and the lineage record — and the human's
+    handle on it is `agent.start`, which already stops and starts a session
+    deliberately.
+
+#### 8.2 The persisted session id
+
+- **The record.** `Agent` (`bridge/src/agent.rs:55`) gains
+  `#[serde(default)] pub resume_session_id: Option<String>`.
+
+- **The store change is no schema change.** The `agents` table
+  (`store.rs:407`) keeps the whole `Agent` serde shape in its `record` column,
+  so the field rides in that JSON and a row written before this step loads as
+  `None`. Nothing like `add_attention_column` is needed — that migration exists
+  because `attention` is a COLUMN, hoisted out of the JSON so the database
+  could count it. Nothing counts or sorts by a resume id; it is read only when
+  its own agent respawns. The write is the roster upsert that already runs
+  (`save_*_agents`, `store.rs:880`).
+
+- **The capture point is the activity pump** (`spawn_activity_pump`,
+  `app.rs:17689`). It is the only task that wakes on this carrier's own events,
+  it already resolves `(owner, agent_id)` and takes the state lock, and it
+  already runs the other rites of a session's life. On every wake — each event
+  and the close — it reads `session.session_id()` and, when that differs from
+  what the record carries, writes it through the agent's own roster (a
+  `record_agent_resume_id` beside `record_agent_activity`; NOT
+  `edit_agent_conversation`, which edits the conversation an agent SPEAKS in
+  and for an implementation's first agent that is the Issue's thread, not the
+  agent's record). The compare runs per event; the write runs once per session.
+
+- **The argv.** `SpawnOptions` gains `resume_session_id: Option<String>`,
+  filled at the spawn reservation beside `continue_session`
+  (`app.rs:17274`) from the agent's record. `AdkHarness::spec` prefers it:
+  `--resume <id>` when there is one, `--continue` when there is not and the
+  transcript probe said yes, neither otherwise. The two are alternatives and
+  never both — `--resume` names the exact conversation and `--continue` guesses
+  the newest one in the cwd, so passing both would be asking for two different
+  conversations. `ClaudeHarness` and `CodexHarness` are untouched: a PTY session
+  answers `None` to `session_id()`, so the field is always empty for them, and
+  the option is carrier-neutral in shape only.
+
+- **The crash window: `--continue` stands, unchanged.** An id is captured only
+  after the child announces `init`, and `init` arrives only after the first
+  stdin message (probe, 2.1.236). So an agent that spawns and dies before its
+  first turn, or whose daemon is killed between `init` and the pump's next
+  wake, has no persisted id — and the shipped fallback runs exactly as it does
+  today: the transcript probe answers, the argv carries `--continue`, and for a
+  Build-owned worktree that picks up the same conversation. `--resume` is a
+  sharpening of a path that already works, never a requirement, and no code
+  path may treat a missing id as an error.
+
+- **A bad id must not poison every respawn.** A session spawned with
+  `--resume <id>` whose id no longer resolves exits without announcing itself.
+  So the pump's close arm clears the record's id when the session that just
+  ended never announced one of its own: the next spawn falls back to
+  `--continue`, and one dead id costs one restart rather than every restart.
+  The same clearing covers a child that died at startup for an unrelated reason
+  (auth, a missing binary), where clearing is harmless because the fallback is
+  what would have run anyway.
+
+#### 8.3 The daemon's steering flow
+
+**The one pipe stays `deliver`.** Interrupt is a flag on a delivery, not a
+second way to reach an agent.
+
+- **The wire choice: `thread.post` accepts `interrupt: true`, and there is no
+  `agent.interrupt` RPC.** Three reasons, against the existing wire's grain:
+  - The precedent is already in `thread_post` (`app.rs:10635`) and written down
+    there: a press on the agent's suggested actions comes in through
+    `thread.post` "rather than through a verb of its own: it IS a reviewer
+    message, so everything that follows one — waking the agent, resuming a
+    parked entity, the inbox anchor — has to happen exactly as it does for a
+    typed one". An interrupt-and-steer is a reviewer message with one more
+    thing to say about how urgently it should land.
+  - Build never interrupts without a turn to follow (§8.4: the SPA only offers
+    "Interrupt & send"). A verb of its own would therefore always be followed
+    by a `thread.post` a moment later, and the gap between the two round trips
+    is a window in which the child starts a fresh turn, or the agent calls
+    `done` — so the flag on the message is not merely tidier, it is the only
+    ordering that cannot come apart.
+  - `thread.post` already owns the fan-out an interrupt needs and an RPC would
+    have to copy: which agent of the roster is addressed, the Issue-to-live
+    implementation redirection, the parked-entity `Reply`, the inbox anchor.
+
+- **Where the flag travels.** `thread_post` parses it once
+  (absent is `false`), passes it to `tell_the_agent_a_message_is_waiting`
+  (`app.rs:10885`, four call sites, all in `thread_post`), which hands it to
+  `nudge_live_agent_tab` (`app.rs:16137`). There, and only there:
+  `session.interrupt()` then `session.send_turn(…)`, in that order, from under
+  the state lock exactly as the nudge already speaks — both calls return
+  promptly by contract.
+
+- **The flag is dropped, without an error, on the cold path.** A message that
+  has to SPAWN an agent has no turn to stop, so `PendingAgentTurn` does not
+  carry the flag: an interrupt of nothing is not a failure, it is a stronger
+  form of what was asked for. The same holds when the tab exists but the
+  session is not live.
+
+- **A refused interrupt does not fail the post.** Where `interrupt()` returns
+  `Unsupported` — a capability lost between the digest the client read and the
+  post it sent — the daemon logs it and delivers the message as an ordinary
+  queued turn, which the probes verified is delivered at the next step boundary
+  anyway. The alternative is an error the human must read for a difference they
+  cannot act on and did not cause.
+
+- **Status and attention move by exactly one step: the human's message.**
+  Everything `thread.post` does today happens unchanged (the message is durable
+  on the thread, a parked entity takes its `Reply`, the anchor gets its one
+  chance to move, `last_delivered_at` restarts the quiescence clock). And
+  nothing else is minted: no `Blocked`, no `RunFailed`, no `Interrupted`, no
+  outcome, no new event kind, and no state transition of any kind that the same
+  message without the flag would not have made. The record of why the turn
+  stopped is the human's own message sitting in the timeline after the agent's
+  last tool call — which is enough precisely because Build never interrupts
+  without one.
+
+#### 8.4 The SPA affordance
+
+Per the standing principle (`user-agency-at-the-trigger`: split-button
+dropdowns for multi-behavior verbs), the composer's send becomes a split
+control where — and only where — there are two behaviours to choose between.
+
+- **The digest field is `can_interrupt`** (additive; absent is `false`, per §8).
+  Answered in `agent_digest` (`app.rs:7964`) from the live session
+  (`tab.session.can_interrupt()`) and `false` when there is no session — unlike
+  `has_terminal`, the provider cannot answer this one, because the capability is
+  announced by the child at `init` rather than decided by the argv.
+
+- **The condition is `working && can_interrupt`.** A reader in
+  `agentRailModel.js` beside `agentHasTerminal` (`agentCanInterrupt(agent)`,
+  strict `=== true`). Headlessness is not tested separately: only a carrier
+  with no terminal can answer `can_interrupt` true today, and if a future one
+  could, the control should be offered there too — one condition, one source of
+  truth. Not working means no turn to stop, so the plain button stands.
+
+- **The control.** `splitButtonMarkup` (`spa/src/core/splitButton.js`,
+  `variant: "primary"`) with `Send` first — so the default press is unchanged,
+  queued, and lands at the next step boundary — and `Interrupt & send` as the
+  menu alternative, described as "Stop what the agent is doing now and hand it
+  this message". The destructive-ish half is never the default press; that is
+  the principle, and it is also what the probes support, since the queued send
+  usually gets there anyway.
+
+- **The composer is not rebuilt to swap it.** `composerHtml` gains a
+  `canInterrupt` option, and the poll moves the control the way it already
+  moves the placeholder (`syncComposerPlaceholder`, `agentRail.js`): the send
+  control is re-rendered in place only when the condition changes. Rebuilding
+  the composer would take the draft and the focus with it, mid-sentence, every
+  time an agent started or finished a turn.
+
+- **The send carries the flag.** Choosing the alternative calls `thread.post`
+  with `interrupt: true` and the same body and attachments the plain send would
+  have carried. One send path, one flag.
+
+#### 8.5 The fake harness learns the control protocol
+
+Everything above is testable without a model turn, which is the rule this
+carrier has been built under from the start. `adk::fake` (`adk.rs:735`) grows:
+
+- `INIT` carries the `capabilities` array the live CLI sends
+  (`msg_lifecycle_v1`, `interrupt_receipt_v1`, `interrupt_cancel_queued_v1`),
+  and a second `INIT_WITHOUT_INTERRUPT` announces none — the child a refusal is
+  tested against.
+- The replay loop reads each stdin line and branches on it: a
+  `control_request` line is answered with a `control_response` **echoing the
+  request id back** (so the reader's matching is exercised rather than
+  assumed), followed by an `error_during_execution` result closing the
+  interrupted turn; then the loop continues, and the next queued user line is
+  replayed as an ordinary turn. That is the live sequence, in order.
+- The existing single-quote rule still holds for the recorded lines; the
+  control branch is the one place the script interpolates, since it has to
+  quote a value it read at runtime.
+
+The tests the step is written first as, all against that child:
+
+1. an interrupt is a `control_request` the child acks, and the session's
+   pending request is cleared by the matching id;
+2. an interrupted turn leaves no epitaph — an `error_during_execution` result
+   under an ACKED interrupt reports `None`, while the same result with no
+   interrupt outstanding, and the same result under an interrupt the child
+   never acked, both still report the error (the equivalence, from all three
+   sides);
+3. a steering turn written behind an interrupt keeps the session `Working`
+   across the interrupted turn's result — the `turn_open = steered` rule, which
+   is what keeps the idle sweep off a steered agent;
+4. a session whose `init` advertised no interrupt refuses, says where to go
+   instead, and is still alive afterwards (the refusal is not a kill);
+5. `can_interrupt()` is false exactly when `interrupt()` refuses;
+6. the PTY refuses and names the terminal;
+7. through the daemon: a `thread.post` with `interrupt: true` on a live
+   headless agent stops the turn and delivers the message, and the thread has
+   the human's message and NO `Blocked` / `RunFailed` / `Interrupted` event, no
+   outcome, and the entity's state unmoved;
+8. through the daemon: an interrupt the carrier refuses still delivers the
+   message;
+9. the session id is persisted once and the next spawn's argv carries
+   `--resume sess-adk` and no `--continue`;
+10. a session that ends having never announced clears the persisted id;
+11. in the SPA: `can_interrupt` absent renders the plain Send; `working` plus
+    `can_interrupt` renders the split with Send as the default; choosing the
+    alternative posts `interrupt: true`.
+
 ---
 
 ## 11. Decisions needed before step 1
+
+The first four gated step 1; q5 is a later question kept here because this is
+where this document records what was decided and why, and the numbering other
+sections cite (§11 q3, §11 q4) must not move.
 
 1. ~~**How large is the thread's recent activity window?**~~ Answered by the
    store migration: a conversation keeps a resident tail of 200 items in memory
@@ -1336,10 +1749,59 @@ the compatibility story for persisted threads and older clients — all there.
      never blocks, a demoted entity still resumes on reply, and a late
      `done` from `IdleUnreported` is still honoured.
 
+5. ~~**What does Build do when a human wants a working agent stopped and
+   pointed somewhere else?**~~ **Answered 2026-08-28, from the live probes,
+   and specified as §10 step 8.** Three decisions, each of which could have
+   gone the other way:
+   - **An interrupt is a message, not a kill.** `AgentSession::interrupt`
+     stops the turn and leaves the session alive, holding the same
+     conversation; a carrier that cannot do it REFUSES with a sentence
+     (`HarnessError::Unsupported`) and the daemon degrades to an ordinary
+     queued send, which the probes showed reaches the running turn at its next
+     step boundary anyway. The kill-and-resteer fallback step 6 named is not
+     built: it costs the turn's work and a full restart to reach a worse
+     position, and it needs a persisted session id that the crash window says
+     may not exist.
+   - **The PTY does not map it to ESC bytes.** ESC means what the harness on
+     the other end decides it means, and a PTY reports no turn boundary — so
+     Build would be pressing a key blind and telling the human it worked. The
+     human drops into the basement and presses it themselves, which is what
+     the refusal's sentence says.
+   - **The turn it ends is not a failure.** The interrupted turn's
+     `error_during_execution` result clears rather than records the reported
+     error, so there is no epitaph, no `RunFailed`, no `Blocked`, no
+     `Interrupted` and no failed outcome. What the timeline carries is the
+     human's own message, which is always there because Build never
+     interrupts without one.
+
 ---
 
 ## 12. Revision history
 
+- **2026-08-28, step 8 specified — the interrupt and the persisted session
+  id.** The two things the live probes of step 6 made possible, designed
+  against what the wire was actually observed doing. `AgentSession` gains
+  `interrupt` (defaulting to a refusal that says where to go instead),
+  `can_interrupt` (the same answer asked without performing it, from one value)
+  and `session_id`. The interrupt is capability-gated on the `init` line's
+  `capabilities` array, never kills, and its result is read as interrupted
+  rather than as a crash — the epitaph is cleared and the open-turn flag is
+  handed to the steering turn queued behind it, so a steered agent is still
+  `Working` and the idle sweep leaves it alone. The wire stays one pipe:
+  `thread.post` gains `interrupt: true` (the precedent is `option_reply` — a
+  press on the agent's actions is a reviewer message, not a verb of its own),
+  and the flag reaches `nudge_live_agent_tab` as `interrupt()` then
+  `send_turn()`. The digest gains `can_interrupt`, whose absence means `false`
+  where `has_terminal`'s means `true`, and the SPA turns the composer's send
+  into a split control — default Send, alternative "Interrupt & send" — for a
+  working agent that advertises it. The session id is persisted as an additive
+  `Agent` field needing no schema change (the `agents` table keeps the whole
+  serde record in one column), captured by the activity pump, spent as
+  `--resume <id>` instead of `--continue`, cleared when a session ends having
+  never announced one, and absent whenever the crash window swallowed it — in
+  which case today's `--continue` fallback stands untouched. The fake
+  stream-json child learns the control protocol, so all of it is testable
+  without a model turn. §11 q5 records the three decisions.
 - **2026-08-28, merged main.** Main had independently reconciled its older
   copy of this spec with the store migration; that copy's one insight this
   branch lacked — activity flooding the resident tail and the two bounds it

@@ -19,8 +19,39 @@ export function railStartsCollapsed(stored, viewportWidth) {
 }
 
 export function setInboxCollapsed(on) {
+  setInboxPeek(false);
+  if (on) collapsedAt = Date.now();
   document.body.classList.toggle("inbox-collapsed", on);
   localStorage.setItem(COLLAPSED_KEY, on ? "1" : "");
+}
+
+/* The hover peek: the pointer resting on the reopen toggle lays the collapsed
+   rail over the view; leaving both the toggle and the rail puts it away. The
+   close waits a beat because the rail, appearing over the toggle, hands the
+   pointer from one to the other as a leave-then-enter pair. */
+const PEEK_CLOSE_DELAY_MS = 150;
+let peekCloseTimer = null;
+
+/* Collapsing puts the floating toggle where the head toggle was — under the
+   pointer that just clicked. The browser re-hit-tests and fires mouseenter on
+   it, which would peek the rail right back open; a hover that soon after a
+   collapse is that artifact, not a request. */
+const PEEK_AFTER_COLLAPSE_MS = 300;
+let collapsedAt = 0;
+
+function peekWanted() {
+  return Date.now() - collapsedAt > PEEK_AFTER_COLLAPSE_MS;
+}
+
+function setInboxPeek(on) {
+  clearTimeout(peekCloseTimer);
+  peekCloseTimer = null;
+  document.body.classList.toggle("inbox-peek", on);
+}
+
+function schedulePeekClose() {
+  clearTimeout(peekCloseTimer);
+  peekCloseTimer = setTimeout(() => setInboxPeek(false), PEEK_CLOSE_DELAY_MS);
 }
 
 /** Navigating from the rail on a narrow viewport puts the rail away, so the
@@ -41,8 +72,23 @@ export function initInboxRail() {
   }
   mounted = true;
   setInboxCollapsed(railStartsCollapsed(localStorage.getItem(COLLAPSED_KEY), window.innerWidth));
-  $("#inbox-collapse").onclick = () => setInboxCollapsed(true);
-  $("#inbox-open").onclick = () => setInboxCollapsed(false);
+  // One toggle in two places: the head button docks or puts the rail away, and
+  // the floating one — at the same spot, while the rail is away — docks it.
+  $("#inbox-collapse").onclick = () =>
+    setInboxCollapsed(!document.body.classList.contains("inbox-collapsed"));
+  const open = $("#inbox-open");
+  open.onclick = () => setInboxCollapsed(false);
+  open.onmouseenter = () => {
+    if (peekWanted()) setInboxPeek(true);
+  };
+  open.onmouseleave = schedulePeekClose;
+  const rail = $("#inbox-rail");
+  rail.onmouseenter = () => {
+    if (document.body.classList.contains("inbox-peek")) setInboxPeek(true);
+  };
+  rail.onmouseleave = () => {
+    if (document.body.classList.contains("inbox-peek")) schedulePeekClose();
+  };
   $("#inbox-scrim").onclick = () => setInboxCollapsed(true);
   mountInboxList();
   inboxRouteChanged();

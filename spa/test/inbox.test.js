@@ -501,6 +501,30 @@ describe("what a row says", () => {
     expect(inboxRowHtml(entry, {})).toMatch(/class="splitmenu inbox-menu" hidden>/);
   });
 
+  // The reviewer's screenshot: Done and ⋯ sat apart, and the menu read as the
+  // row's own thing. The git verbs already say it right — a primary with a
+  // caret joined to its side — so a finishable row wears the same split button.
+  it("joins the menu to Done as a caret, the way the git verbs wear theirs", () => {
+    const [entry] = listed([branch()]);
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain('class="splitbtn"');
+    expect(html).toMatch(/<button class="btn mini caret" data-menu="run-1"[^>]*>▾<\/button>/);
+    expect(html).not.toContain("inbox-more");
+    expect(html).not.toContain("⋯");
+    // The menu itself is unchanged: Clear, mute, and Done with its cost.
+    expect(html).toContain('data-dismiss="run-1"');
+    expect(html).toContain('data-mute="run-1"');
+    expect(html).toMatch(/splitmenu inbox-menu[^>]*>[\s\S]*data-done="run-1"/);
+  });
+
+  it("keeps the ⋯ on a row with no Done to join it to", () => {
+    const [entry] = listed([branch({ can_finish: false })]);
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("inbox-more");
+    expect(html).toContain("⋯");
+    expect(html).not.toContain('class="splitbtn"');
+  });
+
   it("escapes everything the repo named", () => {
     const [entry] = listed([branch({ branch: '<img src=x onerror="alert(1)">' })]);
     const html = inboxRowHtml(entry, {});

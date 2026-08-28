@@ -257,12 +257,12 @@ main#root.surface { max-width:none;
    stand on (--pane-gutter, see the toolbar), and the rail bleeds back through it
    to meet the frame. content-box keeps that one number measuring the same as
    the padded body's.
-   RIGHT is the seam with the conversation, and the pane owns it: the rail's
-   divider, a diff card, the toolbar's rule all run to the agent rail's border
-   instead of stopping a gutter short of it, which read as a dead strip between
-   the work and the chat. The controls inside — the toolbar's buttons, the
-   commit box, an actionbar — state that inset themselves, so a BUTTON still
-   keeps its distance from the seam while the surface it sits on does not.
+   RIGHT is the seam with the conversation, and the split itself pays nothing
+   there: the rail's divider, the toolbar's rule, a banner's fill still run to
+   the agent rail's border. The READING columns inside (.cdetail-host, the
+   issue viewer) pay the gutter on that side themselves — a diff pressed
+   against the chat's border had no room to breathe — and the control rows
+   (the git bar, the commit box) state the same inset they always did.
    TOP is the seam with the nav bar, and it goes for the same reason: the rail's
    selected row and the toolbar's rule now meet the bar that names where you are,
    and the reading column below still pays its own top gutter (.cdetail-host).
@@ -505,7 +505,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
    buttons, an actionbar's controls, the tray's boxes — keeps its distance. */
 .cdetail { flex:1; min-width:0; display:flex; flex-direction:column; min-height:0; }
 .cdetail-host { flex:1; min-height:0; overflow-y:auto;
-  padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter); }
 .gp-toolbar:empty, .gp-banner:empty { display:none; }
 /* Rows of controls, not surfaces: their box still spans to the seam (the
    toolbar's rule is the pane's own line) while the buttons and boxes on them
@@ -513,10 +513,11 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .gp-toolbar { padding:12px var(--pane-gutter) 12px var(--pane-gutter); border-bottom:1px solid var(--line); }
 .gp-banner { padding:16px var(--pane-gutter) 0 var(--pane-gutter); }
 /* Below the stacking width there is no divider to clear — the rail floats over
-   this column instead of sitting beside it — and a gutter paid on one side only
-   leaves the diffs off centre in a frame they now have to themselves. The
-   split's own inset is all either side needs. (Below the base rules, not up
-   with the drawer: same specificity, so the later block is the one that wins.) */
+   this column instead of sitting beside it — so the column's own left gutter
+   goes, and the split's left inset with the column's right gutter leave the
+   diffs an even margin in the frame they now have to themselves. (Below the
+   base rules, not up with the drawer: same specificity, so the later block is
+   the one that wins.) */
 @media (max-width: 900px) {
   .cdetail-host, .gp-toolbar, .gp-banner { padding-left:0; }
 }
@@ -605,6 +606,9 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* A destructive option (force push) is named in red where it is READ — in the
    list, next to the ones it is being chosen over — never on the button chrome. */
 .splitmenu .mi.danger .mt { color:var(--red); }
+/* The git bar sits at the top of its pane: a menu opening upward from it runs
+   under the navigation bar and is cut off, so its menus open downward. */
+.gp-toolbar .splitmenu { top:calc(100% + 6px); bottom:auto; }
 tr.add td { background:var(--green-bg); } tr.add td.code { color:var(--add-ink); }
 tr.del td { background:var(--red-bg); } tr.del td.code { color:var(--del-ink); }
 tr.hunk td { background:var(--hunk-bg); color:var(--accent); }

@@ -11,9 +11,12 @@
   --console-bar:34px;   /* the collapsed console bar, and the open one's head */
   --console-half:38vh;  /* the console at half the view */
   --toolbar-h:38px;     /* the view column's top row — what a full console clears */
-  --inbox-open-clear:56px; /* the floating reopen toggle's own footprint (its
-    10px offset plus its box plus a gap), so the collapsed toolbar's first
-    button never sits under it */
+  --inbox-toggle:28px;  /* both rail toggles' width — the head's and the floating one */
+  /* What the collapsed toolbar clears: the floating toggle's 10px offset, its
+     box, and the head's own 8px gap — less the name button's inset, so the
+     project name starts the same gap from the toggle that "Build" does when
+     the rail is docked. */
+  --inbox-open-clear:calc(10px + var(--inbox-toggle) + 8px - var(--tbsel-inset));
 }
 
 /* The frame is viewport-locked (styles.css body): the page never scrolls, each
@@ -44,6 +47,9 @@
 }
 body.inbox-collapsed #inbox-rail { display:none; }
 .inbox-head { display:flex; align-items:center; gap:8px; margin:0 2px 10px; }
+/* One width for the toggle wherever it stands — it is what the collapsed
+   toolbar's clearance is derived from. */
+#inbox-open, #inbox-collapse { width:var(--inbox-toggle); }
 .inbox-head .logo { font-weight:800; font-size:15px; letter-spacing:-.02em; cursor:pointer; }
 #inbox-list { flex:1 1 auto; min-height:0; overflow-y:auto; padding-bottom:12px; }
 .inbox-foot { border-top:1px solid var(--line); padding-top:8px; display:flex;
@@ -481,6 +487,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-size:11.5px; color:var(--dim); }
 .rail-status[hidden] { display:none; }
 .rail-status-working { color:var(--accent); }
+/* Right-anchored, so the ticking timer never shoves the git facts around. */
+.rail-status-git { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .rail-status-sync, .rail-status-stat { color:var(--dim); }
 
 @media (max-width: 760px) {

@@ -824,6 +824,26 @@ describe("the pinned status line above the composer", () => {
     expect(railStatus().textContent).not.toContain("↓");
   });
 
+  it("holds the git facts in one right-anchored group, clear of the timer's wobble", async () => {
+    // The reviewer's screenshot: the sync and diffstat sat right after the
+    // timer, so every tick that widened it ("9m 59s" → "10m 0s") shoved them
+    // around. One group carries both, and the sheet anchors it to the row's end.
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 },
+        stat: { insertions: 104, deletions: 38, ahead: 0, behind: 1 },
+      }],
+      projects: [],
+    });
+    await mount();
+    const git = railStatus().querySelector(".rail-status-git");
+    expect(git).toBeTruthy();
+    expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
+    expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
+    expect(git.previousElementSibling.className).toBe("rail-status-working");
+  });
+
   it("ticks the elapsed time between feed reads", async () => {
     // The ticker's Date.now() has to move with the fake clock for this one, so
     // this test fakes Date too — the others read `since` off the real clock at

@@ -228,7 +228,10 @@ export function railStatusHtml(status) {
     : "";
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  return working + sync + stat;
+  // The git facts ride one group anchored to the row's end, so the ticking
+  // timer widens into open space instead of shoving them along.
+  const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
+  return working + git;
 }
 
 /** Pure: the panel's header — who you are talking to, the two controls that are

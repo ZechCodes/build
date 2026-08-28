@@ -584,27 +584,27 @@ describe("tab layout primitives", () => {
     }
   });
 
-  it("hands the seam with the conversation to the surfaces and keeps the controls off it", () => {
-    // The scrolling column pays nothing on the right: a diff card, a rule, a
-    // banner's fill run to the agent rail's border rather than stopping a gutter
-    // short of it — the strip of page between the work and the chat was the
-    // reviewer's gap. The rows of CONTROLS pay it instead, so a button never
-    // sits on another surface's border.
+  it("pays the seam gutter on the reading columns, and their boxes pay it once", () => {
+    // The reviewer's screenshot: diffs ran to the agent rail's border with no
+    // room on their right. The reading column pays the gutter on the seam side
+    // now — and the boxes inside it that used to state that inset themselves
+    // (the sticky bar, the comment tray) no longer do, or they would sit a
+    // double gutter short of the seam.
     const rightOf = (token) => {
       const [rule] = rulesMentioning(token).filter((rule) => declaration(rule.body, "padding"));
       return declaration(rule.body, "padding").split(/\s+/)[1];
     };
-    expect(rightOf(".cdetail-host")).toBe("0");
+    expect(rightOf(".cdetail-host")).toBe("var(--pane-gutter)");
     for (const controls of [".gp-toolbar", ".gp-banner"]) {
       expect(rightOf(controls)).toBe("var(--pane-gutter)");
     }
-    // The sticky bar and the comment tray live in the surfaces sheet, and state
-    // the same inset there.
     const surfaceRules = rulesIn(strippedSurfaces);
+    const viewer = surfaceRules.find((rule) => rule.selector.trim() === ".ivviewer");
+    expect(declaration(viewer.body, "padding").split(/\s+/)[1]).toBe("var(--pane-gutter)");
     const bar = surfaceRules.find((rule) => rule.selector.includes("> .actionbar"));
-    expect(declaration(bar.body, "padding-right")).toBe("var(--pane-gutter)");
+    expect(declaration(bar.body, "padding-right")).toBeNull();
     const tray = surfaceRules.find((rule) => rule.selector.trim() === ".csfeedback");
-    expect(declaration(tray.body, "padding-right")).toBe("var(--pane-gutter)");
+    expect(declaration(tray.body, "padding-right")).toBeNull();
   });
 
   it("drops that gutter where the divider is a drawer", () => {
@@ -1026,6 +1026,45 @@ describe("the view column's seam with the agent rail", () => {
     expect(stylesSource.match(/--agent-strip:/g) || []).toHaveLength(1);
     expect(declaration(baseRule(".rail-strip").body, "width")).toBe("var(--agent-strip)");
     expect(cssRules().find((rule) => rule.selector === "*" && declaration(rule.body, "box-sizing"))).toBeTruthy();
+  });
+});
+
+describe("the collapsed toolbar's clearance", () => {
+  // The reviewer's screenshots: docked, "Build" sits 8px from the toggle;
+  // collapsed, the project name sat far from the same toggle. One token for
+  // the toggle's width and a clearance derived from it keep the two gaps the
+  // same — whatever is right of the toggle always starts one head-gap away.
+  it("derives the clearance from the toggle, so both states share one gap", () => {
+    expect(strippedSource).toMatch(/--inbox-toggle:28px/);
+    expect(strippedSource).toMatch(
+      /--inbox-open-clear:calc\(10px \+ var\(--inbox-toggle\) \+ 8px - var\(--tbsel-inset\)\)/,
+    );
+    // Both toggles wear the width the clearance is derived from…
+    const toggles = cssRules().find((rule) => rule.selector.includes("#inbox-open") && rule.selector.includes("#inbox-collapse"));
+    expect(toggles).toBeTruthy();
+    expect(declaration(toggles.body, "width")).toBe("var(--inbox-toggle)");
+    // …and the head's gap is the 8px the calc pays.
+    expect(declaration(rulesFor(".inbox-head")[0].body, "gap")).toBe("8px");
+  });
+});
+
+describe("the rail status line", () => {
+  it("anchors the git group to the row's right, so the timer widens into space", () => {
+    const git = rulesFor(".rail-status-git")[0];
+    expect(git).toBeTruthy();
+    expect(declaration(git.body, "margin-left")).toBe("auto");
+  });
+});
+
+describe("the git toolbar's menus", () => {
+  // The reviewer's screenshot: the Push menu opened upward from the git bar and
+  // the navigation bar above cut it off. The bar sits at the top of its pane,
+  // so its menus have all the room below and none above.
+  it("open downward, out from under the navigation bar", () => {
+    const rule = rulesFor(".gp-toolbar .splitmenu")[0];
+    expect(rule).toBeTruthy();
+    expect(declaration(rule.body, "top")).toBe("calc(100% + 6px)");
+    expect(declaration(rule.body, "bottom")).toBe("auto");
   });
 });
 

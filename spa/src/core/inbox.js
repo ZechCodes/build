@@ -346,8 +346,9 @@ export function activeEntryKey(route, entries) {
   return match ? match.key : null;
 }
 
-/** The row's own menu: clear, mute, and Done, one step behind the row itself.
- *  Reuses the split button's menu markup.
+/** The row's action cluster: Done, where there is something to finish, with
+ *  the row's menu — clear, mute, and Done — one caret away, in the same split
+ *  button the git verbs wear. Rows with no Done keep the menu behind a ⋯.
  *
  *  Clear leads, and every row has it, because it is the one verb that costs
  *  nothing: the row leaves and comes back the moment something new needs the
@@ -376,8 +377,13 @@ function menuHtml(entry, open) {
       }</span></div>`,
     );
   }
+  const menu = `<div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
+  // A finishable row wears the git verbs' split button: Done with the menu's
+  // caret joined to its side. A row with no Done keeps the ⋯ on its own.
+  if (entry.canFinish)
+    return `<div class="splitbtn"><button class="btn mini" data-done="${esc(entry.key)}" type="button" aria-label="Done with ${esc(entry.name)}">Done</button><button class="btn mini caret" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">▾</button>${menu}</div>`;
   return `<button class="iconbtn inbox-more" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">⋯</button>
-    <div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
+    ${menu}`;
 }
 
 /** Everything the two lines leave out, on the row itself: what the work is for,
@@ -396,9 +402,6 @@ export function inboxRowHtml(entry, ui = {}) {
   // fact it cannot go without, so it leads line one — two rows both named
   // "main" must never read as the same thing.
   const projectTag = `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
-  const done = entry.canFinish
-    ? `<button class="btn mini" data-done="${esc(entry.key)}" type="button" aria-label="Done with ${esc(entry.name)}">Done</button>`
-    : "";
   const classes = [
     "srow",
     "inbox-entry",
@@ -417,7 +420,7 @@ export function inboxRowHtml(entry, ui = {}) {
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
-    <div class="inbox-actions">${done}${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }
 

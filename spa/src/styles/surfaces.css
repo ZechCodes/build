@@ -103,7 +103,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    It pays the seam's gutter its column no longer does (see .pane-split): a diff
    card runs to the agent rail's border, but a box you type into stops short of
    it the way every other control does. */
-.csfeedback { margin-top:18px; padding-right:var(--pane-gutter); }
+.csfeedback { margin-top:18px; }
 .csgeneral { min-height:62px; }
 .csfeedback .cslist:empty { display:none; }
 
@@ -121,12 +121,10 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    a stage's heading — stops with the target clear of the bar rather than
    underneath it. It is the bar's height plus the room the column already pays
    at its foot. */
-/* The bar's own right inset is the seam's: the column runs to the agent rail's
-   border now, and a Send button sitting on that border would be the only
-   control in the app touching another surface. */
+/* The reading column pays the seam gutter itself now, so the bar states no
+   right inset of its own — it would stand a double gutter short of the seam. */
 .gitpane .cdetail-host > .actionbar, .issueview .ivviewer > .actionbar {
   background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
-  padding-right:var(--pane-gutter);
 }
 /* A sticky box cannot travel past its parent's content box, so a column that
    pays its scroll-end room as bottom padding pins the bar that many pixels
@@ -149,7 +147,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .ivstages { flex:0 0 320px; overflow-y:auto; border-right:1px solid var(--line);
   padding:0 0 var(--pane-bottom); }
 .ivviewer { flex:1; min-width:0; overflow-y:auto;
-  padding:var(--pane-top) 0 var(--pane-bottom) var(--pane-gutter); }
+  padding:var(--pane-top) var(--pane-gutter) var(--pane-bottom) var(--pane-gutter); }
 @media (max-width: 900px) { .ivviewer { padding-left:0; } }
 
 /* The issue's own head: where it stands and its gate. What the issue asks for

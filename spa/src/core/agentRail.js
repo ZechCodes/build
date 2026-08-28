@@ -18,6 +18,8 @@
 // comes off that payload's agents[].
 
 import { App, go } from "../app.js";
+import { createPatternRenderer } from "./agentCanvas.js";
+import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
@@ -69,6 +71,43 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 
+// What makes this page's faces this page's own. An agent's pattern is drawn
+// from its id, so without a salt every agent would move exactly the same way on
+// every load, forever. One salt per page load, shared by every rail on it: the
+// same agent looks like itself all session and like something else tomorrow.
+const PATTERN_SEED_SALT = Math.floor(Math.random() * 0x100000000);
+
+/** The seed the painter moves an agent's pattern by. */
+const patternSeed = (agentId) => (hashString(agentId) ^ PATTERN_SEED_SALT) >>> 0;
+
+/** Amber for a dark theme, the value the sheet's `--amber` carries. Read only
+ *  where there is no cascade to read the token off — a canvas needs a colour it
+ *  can actually paint in, and `var(--amber)` is not one. */
+const UNREAD_INK = "#ffd447";
+
+const computedStyleOf = (element) =>
+  element && typeof globalThis.getComputedStyle === "function" ? globalThis.getComputedStyle(element) : null;
+
+/** The colour a bubble's pattern paints in while nothing is waiting on it: the
+ *  bubble's own ink, so the palette stays stated in the sheet — dim for a ghost,
+ *  accent for the conversation that is open. */
+const restingInk = (button) => {
+  const computed = computedStyleOf(button);
+  return (computed && computed.color) || "";
+};
+
+/** The colour of something waiting to be read, the same token the count above
+ *  it is drawn in. */
+const unreadInk = () => {
+  const computed = computedStyleOf(document.documentElement);
+  const token = computed ? String(computed.getPropertyValue("--amber") || "").trim() : "";
+  return token || UNREAD_INK;
+};
+
+/** Which painter belongs to which bubble. An agent's is its id; a ghost has no
+ *  id and there is only ever one of it. */
+const faceKey = (type, agentId) => (type === "agent" ? `agent:${agentId || ""}` : type);
+
 // What survives a remount. The rail is rebuilt whenever the view under it is
 // (a tab switch re-renders the surface), so the human's choices — which agent
 // is open, whether the panel is out, chat or TUI, and anything typed but not
@@ -113,33 +152,41 @@ const writeExpanded = (on) => {
  *  what it is waiting on — is written onto the live buttons by syncStripState,
  *  so this string changes only when the AGENTS do.
  *
- *  That is not a micro-optimisation. A bubble's pattern animation is paused
- *  while its agent is idle, and it holds the frame it stopped on; replacing the
- *  element would restart it from the beginning every time the agent's news
- *  changed. (It is also what keeps a press that lands mid-repaint from being
- *  swallowed by a swapped button.) */
+ *  That is not a micro-optimisation. A bubble's pattern is painted by a renderer
+ *  whose clock only runs while its agent works, and an idle bubble holds the
+ *  frame it stopped on; replacing the element would take the renderer with it
+ *  and start the pattern over every time the agent's news changed. (It is also
+ *  what keeps a press that lands mid-repaint from being swallowed by a swapped
+ *  button.) */
 export function stripHtml(bubbles) {
   return bubbles
     .map((bubble) => {
       const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
-      if (bubble.pattern) classes.push(`rail-pattern-${bubble.pattern}`);
-      // A pattern IS the bubble's face, so it takes the label's place. The `+`
-      // and anything else that speaks in a glyph keeps one.
+      // A pattern IS the bubble's face, so it takes the label's place: a canvas
+      // for core/agentCanvas.js to paint into, named by the ordinal it wears.
+      // The `+` and anything else that speaks in a glyph keeps a label.
       const face = bubble.pattern
-        ? `<span class="rail-glyph" aria-hidden="true"></span>`
+        ? `<canvas class="rail-glyph" aria-hidden="true"></canvas><span class="rail-count" hidden></span>`
         : `<span class="rail-bubble-label">${esc(bubble.label)}</span>`;
+      const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
       return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
-        data-agent="${esc(bubble.id)}">
-        ${face}<span class="rail-badge" hidden></span></button>`;
+        data-agent="${esc(bubble.id)}"${pattern}>${face}</button>`;
     })
     .join("");
 }
 
-/** Write the moving half onto a strip that is already painted: which bubble is
- *  open, which is working, its unread count, and the tooltip that says why.
- *  Positional — the strip's own HTML is rebuilt whenever the bubbles themselves
- *  change, so index N here is always bubble N there. */
-export function syncStripState(strip, bubbles) {
+/**
+ * Write the moving half onto a strip that is already painted: which bubble is
+ * open, which is working, its unread count, and the tooltip that says why.
+ * Positional — the strip's own HTML is rebuilt whenever the bubbles themselves
+ * change, so index N here is always bubble N there.
+ *
+ * `faces` are the painters behind the patterns, keyed by `faceKey` — each held
+ * with the ink and dimming it was last told, because setting either repaints the
+ * held frame, and a poll saying nothing new must not repaint at all. Omitting
+ * them syncs the markup alone.
+ */
+export function syncStripState(strip, bubbles, faces = null) {
   const buttons = strip.querySelectorAll("[data-bubble]");
   bubbles.forEach((bubble, index) => {
     const button = buttons[index];
@@ -148,10 +195,26 @@ export function syncStripState(strip, bubbles) {
     button.classList.toggle("working", !!bubble.working);
     button.title = bubble.title;
     button.setAttribute("aria-label", bubble.title);
-    const badge = button.querySelector(".rail-badge");
-    if (!badge) return;
-    badge.textContent = bubble.unread ? String(bubble.unread) : "";
-    badge.hidden = !bubble.unread;
+    const count = button.querySelector(".rail-count");
+    if (count) {
+      count.textContent = bubble.unread ? String(bubble.unread) : "";
+      count.hidden = !bubble.unread;
+    }
+    const face = faces && faces.get(faceKey(bubble.type, bubble.id));
+    if (!face) return;
+    face.renderer.setWorking(!!bubble.working);
+    // An unread count sits centred on the face, so the face gets out of its
+    // way: dimmed, and in the same amber the number is drawn in.
+    const unread = bubble.unread > 0;
+    const ink = unread ? unreadInk() : restingInk(button);
+    if (face.ink !== ink) {
+      face.ink = ink;
+      face.renderer.setInk(ink);
+    }
+    if (face.dimmed !== unread) {
+      face.dimmed = unread;
+      face.renderer.setDimmed(unread);
+    }
   });
 }
 
@@ -166,7 +229,10 @@ export function railStatusHtml(status) {
     : "";
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  return working + sync + stat;
+  // The git facts ride one group anchored to the row's end, so the ticking
+  // timer widens into open space instead of shoving them along.
+  const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
+  return working + git;
 }
 
 /** Pure: the panel's header — who you are talking to, the controls that go with
@@ -235,6 +301,10 @@ export function mountAgentRail(host, context) {
   let adopting = null;
   let sending = false; // a first message is adopting/starting — do not repaint over it
   let paintedStrip = null; // the markup the bubble strip currently stands on
+  // The painter behind each bubble's face, keyed by `faceKey`, carrying the ink
+  // and dimming it was last told. Lives exactly as long as the canvas it paints
+  // into — see rebuildFaces.
+  const faces = new Map();
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
   let feedRow = null; // this work item's row off the shared feed, for the pinned status line
   let statusTicker = null;
@@ -382,6 +452,32 @@ export function mountAgentRail(host, context) {
   /// terminal down and re-attach it every second and a half. So the panel is
   /// created when the human opens it, removed when they shut it, and otherwise
   /// left alone.
+  /// One painter per canvas on the strip that was just written, and none left
+  /// over from the one it replaced.
+  ///
+  /// The canvases are new elements, so the painters have to be new too — a
+  /// renderer holds the context of the canvas it was made for. That is why the
+  /// strip's markup is rewritten only when the AGENTS change: every rewrite is a
+  /// pattern starting over, and a poll must never cause one.
+  const rebuildFaces = (strip) => {
+    faces.forEach((face) => face.renderer.destroy());
+    faces.clear();
+    strip.querySelectorAll("[data-pattern]").forEach((button) => {
+      const canvas = button.querySelector("canvas.rail-glyph");
+      if (!canvas) return;
+      const renderer = createPatternRenderer({
+        canvas,
+        patternIndex: Number(button.dataset.pattern),
+        seed: patternSeed(button.dataset.agent || ""),
+      });
+      faces.set(faceKey(button.dataset.bubble, button.dataset.agent), {
+        renderer,
+        ink: null,
+        dimmed: false,
+      });
+    });
+  };
+
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".rail-strip")) {
@@ -397,9 +493,10 @@ export function mountAgentRail(host, context) {
       strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
         bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
       });
+      rebuildFaces(strip);
     }
     // The news goes onto the buttons that are there — see stripHtml.
-    syncStripState(strip, bubbles);
+    syncStripState(strip, bubbles, faces);
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");
@@ -870,6 +967,8 @@ export function mountAgentRail(host, context) {
       statusTicker = null;
       unsubscribeFeed();
       disposeTui();
+      faces.forEach((face) => face.renderer.destroy());
+      faces.clear();
       host.innerHTML = "";
     },
   };

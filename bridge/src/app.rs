@@ -2366,7 +2366,7 @@ impl AppState {
         if let Some(attempt) = active.publication_attempt.clone() {
             let publication = classify_stage_publication(
                 &repo_path,
-                &active.worktree.branch,
+                &active.worktree.branch(),
                 &active.worktree.base_branch,
                 &attempt.candidate_sha,
             );
@@ -2428,7 +2428,7 @@ impl AppState {
                         crate::thread::ThreadEventKind::WorktreeRecreated,
                         format!(
                             "Recreated the Issue worktree from branch {}",
-                            active.worktree.branch
+                            active.worktree.branch()
                         ),
                     ));
                     state_changed = true;
@@ -2478,7 +2478,7 @@ impl AppState {
                         active.recovery = Some(crate::run::RecoveryAttempt {
                             id: recovery_id.clone(),
                             requested_stage_id: requested_stage_id.clone(),
-                            branch: active.worktree.branch.clone(),
+                            branch: active.worktree.recorded_branch.clone(),
                             state: crate::run::RecoveryState::Started,
                             report: None,
                             started_at: started_at.clone(),
@@ -2754,7 +2754,7 @@ impl AppState {
             project_path,
             base_branch: active.worktree.base_branch.clone(),
             state: active.run.state,
-            branch: active.worktree.branch.clone(),
+            branch: active.worktree.branch(),
             worktree_name: active.worktree.name.clone(),
             worktree_path: active.worktree.path.display().to_string(),
             base_sha: active.base_sha.clone(),
@@ -3919,7 +3919,7 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && active.worktree.branch == branch
+                    && active.worktree.branch() == branch
                     && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
             })
             .map(|(run_id, _)| run_id.clone())
@@ -4816,7 +4816,7 @@ impl AppState {
                     reported.findings
                 ));
             }
-            if reported.branch != active.worktree.branch {
+            if reported.branch != active.worktree.recorded_branch {
                 return Err("recovery report names a different branch".to_string());
             }
             let project_id = self.project_of(run_id)?;
@@ -5160,6 +5160,32 @@ impl AppState {
                     thread.unread_attention_below(floor, self.read_cursor(entity_id, &agent.id))
                 });
                 (!hidden_below).then(|| (agent.id.clone(), thread.last_sequence()))
+            })
+            .collect()
+    }
+
+    /// Where each of an entity's conversations stands, as
+    /// `(agent_id, last_attention_sequence)` in roster order — the lines a
+    /// dismissal draws, and the lines it is judged against afterwards.
+    ///
+    /// The entity-level conversation of a planned run is its Issue's, so the
+    /// first agent's line is drawn in THAT thread; every other agent's in its
+    /// own. The first pair is the roster's first agent — the only one the
+    /// pre-agent dismissal folds onto.
+    fn dismissal_lines(&self, entity_id: &str) -> Vec<(String, u64)> {
+        let Ok(roster) = self.entity_agents(entity_id) else {
+            return Vec::new();
+        };
+        let entity_thread = self.entity_conversation(entity_id);
+        roster
+            .iter()
+            .map(|agent| {
+                let thread = if agent.id == roster.first().id {
+                    entity_thread.unwrap_or(&agent.thread)
+                } else {
+                    &agent.thread
+                };
+                (agent.id.clone(), thread.last_attention_sequence())
             })
             .collect()
     }
@@ -7152,7 +7178,7 @@ impl AppState {
         Ok(json!({
             "project_id": project_id,
             "worktree_id": crate::worktree::external_worktree_id(&canonical),
-            "branch": worktree.branch,
+            "branch": worktree.branch(),
             "name": worktree.name,
             "path": canonical.display().to_string(),
         }))
@@ -7394,14 +7420,16 @@ impl AppState {
             self.clear_row(&row);
             return Ok(json!({ "entity_id": entity_id, "dismissed": true }));
         }
-        let dismissed_through = self
-            .entity_conversation(&entity_id)
-            .map(crate::thread::Thread::last_sequence)
-            .unwrap_or(0);
-        self.attention
-            .entry(entity_id.clone())
-            .or_default()
-            .dismiss_through(dismissed_through);
+        // Every agent on the row gets its own line, drawn where its own
+        // conversation stands right now — clearing the row IS reading it, and
+        // the client relies on that. One line could never speak for the rest:
+        // each agent numbers its conversation from 1, so a sequence taken off
+        // the first agent says nothing about where the second one has got to.
+        let lines = self.dismissal_lines(&entity_id);
+        let attention = self.attention.entry(entity_id.clone()).or_default();
+        for (agent_id, last_attention_sequence) in lines {
+            attention.dismiss_agent_through(&agent_id, last_attention_sequence);
+        }
         self.persist_attention();
         Ok(json!({ "entity_id": entity_id, "dismissed": true }))
     }
@@ -7555,7 +7583,7 @@ impl AppState {
             .iter()
             .find(|(run_id, active)| {
                 active.run.state != RunState::Archived
-                    && active.worktree.branch == branch
+                    && active.worktree.branch() == branch
                     && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
             })
             .map(|(run_id, _)| run_id.clone())
@@ -9552,7 +9580,7 @@ impl AppState {
                 active.recovery = Some(crate::run::RecoveryAttempt {
                     id: recovery_id.clone(),
                     requested_stage_id: requested_stage_id.clone(),
-                    branch: active.worktree.branch.clone(),
+                    branch: active.worktree.recorded_branch.clone(),
                     state: crate::run::RecoveryState::Started,
                     report: None,
                     started_at: started_at.clone(),
@@ -10306,7 +10334,8 @@ impl AppState {
                     return Err(format!(
                         "cannot implement into {}: it is already implementing Issue {} — finish \
                          or abandon that implementation first",
-                        self.runs[&run_id].worktree.branch, other.0
+                        self.runs[&run_id].worktree.branch(),
+                        other.0
                     ));
                 }
                 run_id
@@ -10358,7 +10387,7 @@ impl AppState {
                 return Err(error);
             }
         };
-        let branch = active.worktree.branch.clone();
+        let branch = active.worktree.branch();
         self.open_implementation_run(
             run_id,
             project_id,
@@ -11700,7 +11729,7 @@ impl AppState {
         let project_id = self.project_of(&run_id)?;
         let mut active = self.take_run(&run_id)?;
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-        let branch = active.worktree.branch.clone();
+        let branch = active.worktree.branch();
         // Reconcile publication while the checkout and refs are still
         // inspectable. Every Build-owned removal path must decide completion
         // before deleting the evidence it needs to decide it.
@@ -12281,7 +12310,7 @@ impl AppState {
         stat: &Value,
     ) -> crate::branch::WorkItemCandidate {
         let active = self.runs.get(run_id).expect("caller listed this run");
-        let branch = active.worktree.branch.clone();
+        let branch = active.worktree.branch();
         let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
         let sync = WorkItemStat::from_run_stat(stat);
         let thread = self.conversation_thread_for_run(active);
@@ -12326,12 +12355,12 @@ impl AppState {
             "finish": { "warnings": if primary {
                 json!([])
             } else {
-                sync.finish_warnings_json(&active.worktree.branch)
+                sync.finish_warnings_json(&active.worktree.branch())
             } },
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the work speaks again. The client
             // hides the row on it; nothing here changes because of it.
-            "dismissed": self.is_dismissed(run_id, thread, &unread),
+            "dismissed": self.is_dismissed(run_id, &unread),
             "worktree_path": active.worktree.path.display().to_string(),
             "worktree_id": crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path)),
             "run_id": run_id,
@@ -12342,7 +12371,7 @@ impl AppState {
             kind: crate::branch::WorkItemKind::Branch,
             key: crate::branch::WorkItemKey::Branch {
                 project_id: self.entity_project.get(run_id).cloned().unwrap_or_default(),
-                branch: active.worktree.branch.clone(),
+                branch: active.worktree.branch(),
             },
             source: Some(crate::branch::BranchSource::Run),
             issue_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
@@ -12535,7 +12564,7 @@ impl AppState {
             ) },
             "muted": self.is_muted(issue_id),
             // See the branch row: dismissed until its conversation asks again.
-            "dismissed": self.is_dismissed(issue_id, &active.agents, &unread),
+            "dismissed": self.is_dismissed(issue_id, &unread),
             "worktree_path": Value::Null,
             "worktree_id": Value::Null,
             "run_id": implementation.map(|run| run.run.id.0.clone()),
@@ -12543,7 +12572,7 @@ impl AppState {
             // Whether a branch is implementing this issue RIGHT NOW — the same
             // fact that hides the issue's row behind that branch's, said out
             // loud so a surface holding an issue can explain where it went.
-            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch()),
             "implementation_active": live_implementation.is_some(),
             "primary": false,
         });
@@ -12583,22 +12612,33 @@ impl AppState {
     }
 
     /// Whether this row has been cleared out of the inbox: the human dismissed
-    /// it, and its conversation has not needed them since.
+    /// it, and NO agent on it has needed them since.
+    ///
+    /// Every agent has to still be cleared, which is the complement of the
+    /// badge above it: `unread_for` unions unread across the roster, so a row
+    /// is out of the list only while nothing anywhere on it has spoken past
+    /// the line the human drew.
     ///
     /// Unread beats dismissed. News the human has not read is news, however
     /// quiet they told the row to be — and it is the same fact that revives a
     /// dismissed row the moment an agent hands its turn back.
-    fn is_dismissed(
-        &self,
-        entity_id: &str,
-        thread: &crate::thread::Thread,
-        unread: &crate::thread::UnreadSummary,
-    ) -> bool {
-        !unread.is_unread()
-            && self
-                .attention
-                .get(entity_id)
-                .is_some_and(|attention| attention.is_dismissed(thread.last_attention_sequence()))
+    fn is_dismissed(&self, entity_id: &str, unread: &crate::thread::UnreadSummary) -> bool {
+        if unread.is_unread() {
+            return false;
+        }
+        let Some(attention) = self.attention.get(entity_id) else {
+            return false;
+        };
+        let lines = self.dismissal_lines(entity_id);
+        // A row with no roster behind it holds no conversation to have been
+        // cleared: it is dismissed at a commit instead, by `row_is_dismissed`.
+        !lines.is_empty()
+            && lines
+                .iter()
+                .enumerate()
+                .all(|(position, (agent_id, latest_attention_sequence))| {
+                    attention.is_dismissed_for(agent_id, position == 0, *latest_attention_sequence)
+                })
     }
 
     /// When this work item's oldest turn still in flight started — how long the
@@ -12947,7 +12987,7 @@ impl AppState {
         } else {
             active.agents.add(&run_id, choice, &now).id.clone()
         };
-        let branch = active.worktree.branch.clone();
+        let branch = active.worktree.branch();
         let root = Self::canonical_root(&active.worktree.path);
         let agent = active
             .agents
@@ -13141,7 +13181,7 @@ impl AppState {
             if active.run.state != RunState::Archived {
                 continue;
             }
-            let branch = active.worktree.branch.clone();
+            let branch = active.worktree.branch();
             let project_path = self.project_path_for(run_id);
             let record = self.archived_worktrees.values().find(|record| {
                 record.status == WorktreeFinishStatus::Archived
@@ -13261,7 +13301,7 @@ impl AppState {
             let publication = match (&repo_path, progress.completion_sha.as_deref()) {
                 (Some(repo_path), Some(completion_sha)) => classify_stage_publication(
                     repo_path,
-                    &active.worktree.branch,
+                    &active.worktree.branch(),
                     &active.worktree.base_branch,
                     completion_sha,
                 ),
@@ -13300,7 +13340,7 @@ impl AppState {
                 continue;
             };
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-            let branch = active.worktree.branch.clone();
+            let branch = active.worktree.branch();
             let affected_stages = self.reconcile_missing_run_worktree(&run_id, &mut active);
             let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
             match active.run.apply(RunEvent::Archive) {
@@ -13606,7 +13646,7 @@ impl AppState {
                     "implementation_id": run.run.id.0,
                     "run_id": run.run.id.0,
                     "state": run_state_str(&run.run.state),
-                    "branch": run.worktree.branch,
+                    "branch": run.worktree.branch(),
                     "worktree_path": run.worktree.path.display().to_string(),
                     "recovery": run.recovery,
                     "created_at": self.entity_created_at.get(&run.run.id.0),
@@ -13633,7 +13673,7 @@ impl AppState {
             "unread_reason": unread.reason,
             // See `run_view`.
             "muted": self.is_muted(plan_id),
-            "dismissed": self.is_dismissed(plan_id, &active.agents, &unread),
+            "dismissed": self.is_dismissed(plan_id, &unread),
             "attention": self.attention_json(plan_id),
             "summary": active.last_summary,
             "last_error": active.last_error,
@@ -13660,13 +13700,13 @@ impl AppState {
             // because something is being built for it must be able to say so
             // rather than simply vanish.
             "implementation_active": live_implementation.is_some(),
-            "implementing_branch": live_implementation.map(|run| run.worktree.branch.clone()),
+            "implementing_branch": live_implementation.map(|run| run.worktree.branch()),
             "current_implementation_id": current_implementation.map(|run| run.run.id.0.clone()),
             "current_implementation": current_implementation.map(|run| json!({
                 "implementation_id": run.run.id.0,
                 "run_id": run.run.id.0,
                 "state": run_state_str(&run.run.state),
-                "branch": run.worktree.branch,
+                "branch": run.worktree.branch(),
                 "worktree_path": run.worktree.path.display().to_string(),
                 "recovery": run.recovery,
             })),
@@ -13761,9 +13801,9 @@ impl AppState {
             "muted": self.is_muted(run_id),
             // Cleared out of the inbox until the conversation asks again. Mute
             // silences a row that stays; this one is not in the list at all.
-            "dismissed": self.is_dismissed(run_id, self.conversation_thread_for_run(active), &unread),
+            "dismissed": self.is_dismissed(run_id, &unread),
             "attention": self.attention_json(run_id),
-            "branch": active.worktree.branch,
+            "branch": active.worktree.branch(),
             "base_branch": active.worktree.base_branch,
             "base_sha": active.base_sha,
             "worktree_path": active.worktree.path.display().to_string(),
@@ -16280,9 +16320,9 @@ fn recovery_agent_prompt(
     };
     format!(
         "You are a RECOVERY agent for an Issue implementation. Work read-only except for restoring the exact persisted branch ref and its registered worktree.\n\nRecovery nonce: {recovery_id}\nIssue: {issue_id}\nImplementation: {run_id}\nRequested stage: {requested_stage_id}\nExact branch: {}\nExpected worktree path: {}\nInitial restore error: {restore_error}\n\nOrdered Issue stage-plan catalog (authoritative order):\n{catalog}\n\nInspect local refs, configured remotes, reflogs, and reachable commits. Never recreate from the moving base. If you can restore the exact branch lineage, do so, then call `done` with phase=\"recover\", status=\"completed\", outputs.recovery={{\"recovery_id\":\"{recovery_id}\",\"recovered\":true,\"branch\":\"{}\",\"head_sha\":\"<40 lowercase hex>\",\"findings\":\"verified evidence\"}}. If exact lineage cannot be recovered, report recovered=false with the same nonce and verified findings.",
-        worktree.branch,
+        worktree.recorded_branch,
         worktree.path.display(),
-        worktree.branch,
+        worktree.recorded_branch,
     )
 }
 
@@ -22165,7 +22205,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "quick change");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         git_in_dir(&worktree_path, &["push", "-u", "origin", &branch]);
         std::fs::write(worktree_path.join("uncommitted.txt"), "one\ntwo\n").unwrap();
         let res = state.handle(req("run.get", json!({ "run_id": run_id })));
@@ -22246,7 +22286,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (_, run_id) = planned_run_in_review(&mut state, "renamed branch");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
-        let original_branch = state.runs[&run_id].worktree.branch.clone();
+        let original_branch = state.runs[&run_id].worktree.branch();
         git_in_dir(&worktree_path, &["push", "-u", "origin", &original_branch]);
         git_in_dir(
             &worktree_path,
@@ -22547,7 +22587,7 @@ mod tests {
             Some(issue_id.as_str()),
             "the branch's run adopted the implementation"
         );
-        assert_eq!(active.worktree.branch, "feature-target");
+        assert_eq!(active.worktree.branch(), "feature-target");
         assert!(
             active.base_sha.is_some(),
             "the stage docs pin the review baseline"
@@ -22684,7 +22724,7 @@ mod tests {
         assert_eq!(implemented["ok"], true, "{implemented:?}");
         assert_eq!(state.runs.len(), 1, "{:?}", state.runs.keys());
         let active = state.runs.values().next().unwrap();
-        assert_eq!(active.worktree.branch, "feature-unadopted");
+        assert_eq!(active.worktree.branch(), "feature-unadopted");
         assert_eq!(
             active.run.plan_id.as_ref().map(|id| id.0.as_str()),
             Some(issue_id.as_str())
@@ -22817,7 +22857,7 @@ mod tests {
         state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
         let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
         let run_id = run_id_of(&run);
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
         assert!(Command::new("git")
             .args([
@@ -22910,7 +22950,7 @@ mod tests {
         state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
         let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
         let run_id = run_id_of(&run);
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
         Command::new("git")
             .args([
@@ -23002,7 +23042,7 @@ mod tests {
             state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
             let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
             run_id = run_id_of(&run);
-            let branch = state.runs[&run_id].worktree.branch.clone();
+            let branch = state.runs[&run_id].worktree.branch();
             let worktree = state.runs[&run_id].worktree.path.clone();
             git_in_dir(
                 &repo,
@@ -23090,7 +23130,7 @@ mod tests {
         state.handle(req("issue.approve", json!({ "issue_id": issue_id })));
         let run = state.handle(req("run.create", json!({ "plan_id": issue_id })));
         let run_id = run_id_of(&run);
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
         let head_sha = String::from_utf8(
             Command::new("git")
@@ -23422,7 +23462,7 @@ mod tests {
         let last_sequence = conversation.last_sequence();
 
         // The branch surface polls by project and branch rather than by id.
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let project_id = state.projects[0].id.clone();
         let polls = [
             ("run.get", json!({ "run_id": run_id })),
@@ -29712,6 +29752,37 @@ mod tests {
         );
     }
 
+    /// The checkout is the source of truth for a run's branch. Adoption saw
+    /// whatever the primary checkout had checked out that day; when the user
+    /// later switches it, the run must answer with the branch checked out NOW
+    /// — one row named by the live branch, never a phantom row named by a
+    /// branch nobody is on.
+    #[test]
+    fn a_primary_runs_branch_follows_the_checkout() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        git_in(&repo, &["checkout", "-b", "feature-era"]).unwrap();
+        let run_id = adopted_primary_run(&mut state);
+        git_in(&repo, &["checkout", "main"]).unwrap();
+
+        assert_eq!(state.runs[&run_id].worktree.branch(), "main");
+
+        let board = state.handle(req("board.list", json!({})));
+        let branch_rows: Vec<&Value> = board["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == "branch")
+            .collect();
+        assert_eq!(
+            branch_rows.len(),
+            1,
+            "one checkout, one row: {branch_rows:?}"
+        );
+        assert_eq!(branch_rows[0]["branch"], "main", "{branch_rows:?}");
+        assert_eq!(branch_rows[0]["run_id"], json!(run_id), "{branch_rows:?}");
+    }
+
     /// A primary run is an owner like any other: the surfaces that make an
     /// owner useful reach it through the same verbs.
     #[test]
@@ -33888,6 +33959,110 @@ mod tests {
         );
     }
 
+    /// Write into one agent's own conversation — the second voice on a branch,
+    /// which numbers its items from 1 in a sequence space of its own.
+    fn push_to_agent_conversation(
+        state: &mut AppState,
+        run_id: &str,
+        agent_id: &str,
+        write: impl FnOnce(&mut crate::thread::Thread),
+    ) {
+        let run = state.runs.get_mut(run_id).expect("the run exists");
+        let agent = run
+            .agents
+            .by_id_mut(agent_id)
+            .expect("the agent is on the roster");
+        write(&mut agent.thread);
+    }
+
+    /// The regression: a row is cleared against every agent on it, not just the
+    /// first. Thread sequences are per-agent, so one scalar drawn off agent one
+    /// says nothing about agent two — and a row cleared before agent two ever
+    /// spoke used to vanish again the moment the human read what it said.
+    #[test]
+    fn clearing_a_row_draws_a_line_under_every_agent_on_it() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "two voices");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // A second agent joins the branch and asks for something of its own.
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        push_to_agent_conversation(&mut state, &run_id, &second_agent, |thread| {
+            thread.post_agent("and this one — which way?", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "unread beats dismissed: {row:?}");
+
+        // Reading what the second agent said is not clearing the row away:
+        // nothing the human did draws a line under a conversation they never
+        // dismissed, and the first agent's line cannot speak for it.
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], false, "{row:?}");
+        assert_eq!(
+            row["dismissed"], false,
+            "the row stays on the list until the human clears it again: {row:?}"
+        );
+
+        // Clearing it again draws a line under BOTH agents, and now it sticks.
+        let cleared = state.handle(req("entity.dismiss", json!({ "entity_id": run_id })));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // And the second agent speaking again brings the row back on its own,
+        // exactly as the first agent's would.
+        push_to_agent_conversation(&mut state, &run_id, &second_agent, |thread| {
+            thread.post_agent("still waiting on you", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["unread"], true, "{row:?}");
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
+    /// A row cleared before dismissal was per-agent carries one scalar and no
+    /// map. It belongs to the agent that inherited the entity's conversation,
+    /// and that row must still be cleared after this ships.
+    #[test]
+    fn an_old_style_dismissal_still_clears_a_single_agent_row() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "written before agents");
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("which name did you want?", None, now_rfc3339());
+        });
+        state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+
+        // What the old code wrote: the end of the entity's conversation, in one
+        // number, with no agent named.
+        let line = state.plans[&issue_id].agents.last_sequence();
+        state
+            .attention
+            .entry(run_id.clone())
+            .or_default()
+            .dismissed_through = line;
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], true, "{row:?}");
+
+        // And it comes back the same way it always did.
+        push_to_issue_conversation(&mut state, &issue_id, |thread| {
+            thread.post_agent("done — take a look", None, now_rfc3339());
+        });
+        let row = work_item_row_for(&mut state, &run_id);
+        assert_eq!(row["dismissed"], false, "{row:?}");
+    }
+
     /// News the human has not read keeps the row on the list, whatever they
     /// told the inbox. Dismissing is not a read cursor and must not act like
     /// one.
@@ -34922,7 +35097,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
 
         let (issue_id, run_id) = planned_run_in_review(&mut state, "finished work");
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
         git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
         let finished = state.handle(req(
@@ -36757,7 +36932,7 @@ mod tests {
             .find(|issue| issue["issue_id"] == json!(implemented_id.clone()))
             .expect("the issue is still an issue")
             .clone();
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         assert_eq!(issue["implementation_active"], true, "{issue:?}");
         assert_eq!(issue["implementing_branch"], json!(branch), "{issue:?}");
         assert!(
@@ -36805,7 +36980,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
         assert_eq!(abandoned["ok"], true, "{abandoned:?}");
@@ -36831,7 +37006,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "implement me");
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
 
         std::fs::remove_dir_all(&worktree).expect("the user deleted their worktree");
@@ -37069,7 +37244,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
 
         let (merged_issue, merged_run) = planned_run_in_review(&mut state, "merged done");
-        let merged_branch = state.runs[&merged_run].worktree.branch.clone();
+        let merged_branch = state.runs[&merged_run].worktree.branch();
         let finished = state.handle(req(
             "branch.finish",
             json!({ "project_id": project_id, "branch": merged_branch, "action": "merge" }),
@@ -37085,7 +37260,7 @@ mod tests {
 
         // Deleted instead: the issue is waiting for work again, and says so.
         let (kept_issue, kept_run) = planned_run_in_review(&mut state, "deleted branch");
-        let kept_branch = state.runs[&kept_run].worktree.branch.clone();
+        let kept_branch = state.runs[&kept_run].worktree.branch();
         let deleted = state.handle(req(
             "branch.finish",
             json!({ "project_id": project_id, "branch": kept_branch, "action": "delete" }),
@@ -37119,7 +37294,7 @@ mod tests {
 
         // …and unlink is the control that leaves the issue out of it entirely.
         let (unlinked_issue, unlinked_run) = planned_run_in_review(&mut state, "unlinked done");
-        let unlinked_branch = state.runs[&unlinked_run].worktree.branch.clone();
+        let unlinked_branch = state.runs[&unlinked_run].worktree.branch();
         let unlinked = state.handle(req(
             "branch.finish",
             json!({
@@ -37143,7 +37318,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let (issue_id, run_id) = planned_run_in_review(&mut state, "never pushed");
-        let branch = state.runs[&run_id].worktree.branch.clone();
+        let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
 
         // The preflight the confirm dialog reads, before anything is touched.
@@ -37232,7 +37407,7 @@ mod tests {
 
         let active = state.runs.get(&run_id).expect("the branch has a run");
         assert!(active.worktree.path.is_dir(), "{:?}", active.worktree.path);
-        assert_eq!(active.worktree.branch, branch);
+        assert_eq!(active.worktree.branch(), branch);
         assert!(active.adopted, "the checkout it cut is one Build owns");
         assert_eq!(
             active.agents.len(),

@@ -29,6 +29,27 @@ const fakeTransport = {
 };
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** Wait for the reconnect to open a socket beyond the ones already made.
+ *
+ * The backoff runs on real time, so sleeping a guess at it was a race: under a
+ * loaded machine the retry had not fired yet, `instances.at(-1)` was still the
+ * dead socket, and the test failed about the clock rather than about the code.
+ * This waits for the socket itself, and gives up with a sentence rather than
+ * hanging until the runner's timeout says nothing.
+ *
+ * `seen` is how many sockets existed BEFORE whatever is being waited on — take
+ * it before the drop, not after. */
+async function reconnected(seen, within = 4000) {
+  const deadline = Date.now() + within;
+  while (FakeWebSocket.instances.length <= seen) {
+    if (Date.now() > deadline) {
+      throw new Error(`no reconnect within ${within}ms (still ${FakeWebSocket.instances.length} socket(s))`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  return FakeWebSocket.instances.at(-1);
+}
 const b64 = (s) => btoa(s);
 const dec = (bytes) => new TextDecoder().decode(bytes);
 
@@ -324,9 +345,9 @@ describe("TerminalSocket", () => {
     expect(lives).toEqual([true]);
 
     // Drop → the socket reconnects with backoff and re-attaches every term.
+    const beforeDrop = FakeWebSocket.instances.length;
     socket.simulateDrop();
-    await new Promise((r) => setTimeout(r, 600));
-    const ws2 = FakeWebSocket.instances.at(-1);
+    const ws2 = await reconnected(beforeDrop);
     expect(ws2).not.toBe(ws);
     const init2 = await handshake(ws2);
 
@@ -522,9 +543,9 @@ describe("TerminalSocket", () => {
     push(ws, init, { type: "term.output", term_id: "term-8", cursor: 3, data: b64("ghost") });
     await tick();
     expect(outputs).toEqual([]);
+    const beforeDrop = FakeWebSocket.instances.length;
     socket.simulateDrop();
-    await new Promise((r) => setTimeout(r, 600));
-    const ws2 = FakeWebSocket.instances.at(-1);
+    const ws2 = await reconnected(beforeDrop);
     await handshake(ws2);
     await tick();
     const reattaches = ws2.sent
@@ -545,9 +566,9 @@ describe("TerminalSocket", () => {
     await at;
 
     // The task is deleted while we are away; the re-attach is rejected.
+    const beforeDrop = FakeWebSocket.instances.length;
     socket.simulateDrop();
-    await new Promise((r) => setTimeout(r, 600));
-    const ws2 = FakeWebSocket.instances.at(-1);
+    const ws2 = await reconnected(beforeDrop);
     const init2 = await handshake(ws2);
     const p = lastPayload(ws2);
     expect(p.method).toBe("agent.attach");
@@ -556,9 +577,9 @@ describe("TerminalSocket", () => {
     expect(closed).toEqual(["reaped"]);
 
     // Deregistered: the next reconnect does not retry it.
+    const beforeSecondDrop = FakeWebSocket.instances.length;
     socket.simulateDrop();
-    await new Promise((r) => setTimeout(r, 900));
-    const ws3 = FakeWebSocket.instances.at(-1);
+    const ws3 = await reconnected(beforeSecondDrop);
     await handshake(ws3);
     await tick();
     const retries = ws3.sent
@@ -866,11 +887,12 @@ describe("a caller waiting on a socket that is lost", () => {
 
   it("rejects again on the next failed connect, rather than swallowing a later waiter", async () => {
     const { socket, ws } = await connecting();
+    const beforeClose = FakeWebSocket.instances.length;
     ws.close();
     await tick();
     const waiting = socket.whenConnected(); // asked while the reconnect is in flight
-    await new Promise((r) => setTimeout(r, 600));
-    FakeWebSocket.instances.at(-1).close(); // …and that attempt dies too
+    const retry = await reconnected(beforeClose);
+    retry.close(); // …and that attempt dies too
     await expect(waiting).rejects.toMatchObject({ name: "TerminalSocketLost", reason: "disconnected" });
     socket.close();
   });

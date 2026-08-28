@@ -1,6 +1,6 @@
 # Harness Refactor — what shipped
 
-**Status:** Shipped in `a26acd2` (`build/agent-polymorphism`)
+**Status:** Shipped — on `main` (`a26acd2`, merged as `d2c3242`)
 **Last updated:** August 22, 2026
 **Next:** `Agent Session Interface Spec.md` — the session side, not started
 

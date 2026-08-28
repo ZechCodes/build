@@ -140,13 +140,27 @@ pub struct Attention {
     /// no notification.
     #[serde(default, skip_serializing_if = "is_false")]
     pub muted: bool,
-    /// How far into this entity's conversation the human has told the inbox to
-    /// stop showing the row. It stays out of the list until something
-    /// attention-class arrives past this line — which is why there is no
-    /// un-dismiss: the work speaking again is what brings it back. 0 = never
-    /// dismissed, which is every record written before dismissal existed.
+    /// How far into the ENTITY's conversation the human had told the inbox to
+    /// stop showing the row, before dismissal belonged to agents. Read as the
+    /// first agent's line by
+    /// [`dismissed_line_for`](Self::dismissed_line_for) and written by nothing:
+    /// records on disk carry it, and it is the only thing that keeps a row
+    /// cleared before this existed cleared now. 0 = never dismissed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub dismissed_through: u64,
+    /// How far into each AGENT's conversation the human has told the inbox to
+    /// stop showing the row. The row stays out of the list until something
+    /// attention-class arrives past one of these lines — which is why there is
+    /// no un-dismiss: the work speaking again is what brings it back.
+    ///
+    /// Per agent because sequences are: every agent numbers its own
+    /// conversation from 1, so one number could never say where the human had
+    /// got to in another's. A missing agent = never dismissed for that agent,
+    /// the same rule the read cursor above follows — and an agent that had
+    /// nothing to say when the row was cleared is recorded at 0 rather than
+    /// left out, because clearing the row IS drawing its line.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub agent_dismissed_through: HashMap<String, u64>,
     /// The commit a row with no conversation was sitting on when the human
     /// cleared it. A bare checkout and a project's primary checkout hold no
     /// conversation to draw a line in, so their line is drawn in git instead:
@@ -330,25 +344,59 @@ impl Attention {
         }
     }
 
-    /// Take this row out of the inbox until its conversation gets past
-    /// `last_sequence` — the whole of what dismissing does.
+    /// Take this row out of the inbox until ONE agent's conversation gets past
+    /// `last_attention_sequence` — where that agent had got to when the human
+    /// cleared the row. Every agent on the entity gets its own line, and the
+    /// row is out of the list only while all of them hold.
     ///
     /// Never rewinds, for the same reason the read cursor does not: a second
     /// tab dismissing with the sequence it loaded with would otherwise put back
     /// a row the human had already cleared past.
-    pub fn dismiss_through(&mut self, last_sequence: u64) {
-        self.dismissed_through = self.dismissed_through.max(last_sequence);
+    pub fn dismiss_agent_through(&mut self, agent_id: &str, last_attention_sequence: u64) {
+        let line = self
+            .agent_dismissed_through
+            .entry(agent_id.to_string())
+            .or_default();
+        *line = (*line).max(last_attention_sequence);
     }
 
-    /// Whether the row is still cleared: the human dismissed it and nothing has
-    /// needed them since. `latest_attention_sequence` is 0 for a conversation
-    /// that has never asked for anything.
+    /// The line one agent's conversation was cleared through, or `None` for an
+    /// agent nobody has cleared — which is what a record written before agents
+    /// existed says about every agent but the first.
     ///
-    /// A record that was never dismissed says no, whatever its conversation
-    /// holds — 0 means "never dismissed" and must not read as "dismissed
-    /// through the beginning of time".
-    pub fn is_dismissed(&self, latest_attention_sequence: u64) -> bool {
-        self.dismissed_through > 0 && self.dismissed_through >= latest_attention_sequence
+    /// `first_agent` folds the pre-agent, entity-wide line onto the agent that
+    /// inherited that conversation, exactly as the read cursor does, and never
+    /// onto any other: their conversations have sequence spaces that scalar
+    /// never saw. The two are maxed rather than replaced, so neither can rewind
+    /// the other.
+    pub fn dismissed_line_for(&self, agent_id: &str, first_agent: bool) -> Option<u64> {
+        let inherited =
+            (first_agent && self.dismissed_through > 0).then_some(self.dismissed_through);
+        match (
+            self.agent_dismissed_through.get(agent_id).copied(),
+            inherited,
+        ) {
+            (Some(line), Some(legacy)) => Some(line.max(legacy)),
+            (line, legacy) => line.or(legacy),
+        }
+    }
+
+    /// Whether one agent's conversation is still cleared: the human dismissed
+    /// the row and this agent has not needed them since.
+    /// `latest_attention_sequence` is 0 for a conversation that has never asked
+    /// for anything.
+    ///
+    /// An agent nobody cleared says no, whatever its conversation holds —
+    /// "never dismissed" must not read as "dismissed through the beginning of
+    /// time".
+    pub fn is_dismissed_for(
+        &self,
+        agent_id: &str,
+        first_agent: bool,
+        latest_attention_sequence: u64,
+    ) -> bool {
+        self.dismissed_line_for(agent_id, first_agent)
+            .is_some_and(|line| line >= latest_attention_sequence)
     }
 
     /// Take a row with no conversation out of the inbox until its history moves
@@ -362,8 +410,9 @@ impl Attention {
 
     /// Whether that row is still cleared: the human dismissed it, and it is
     /// sitting on the commit they left it on. A new commit brings it back on
-    /// its own — the same rule [`is_dismissed`](Self::is_dismissed) applies to
-    /// a conversation, said in the only language a bare checkout speaks.
+    /// its own — the same rule [`is_dismissed_for`](Self::is_dismissed_for)
+    /// applies to a conversation, said in the only language a bare checkout
+    /// speaks.
     pub fn is_dismissed_at_head(&self, head: Option<&str>) -> bool {
         self.dismissed_at_head.as_deref() == Some(head.unwrap_or_default())
     }
@@ -568,23 +617,34 @@ mod tests {
 
     // ================== Dismissal ==================
 
+    /// Whether the agent under test is the roster's first — the one that
+    /// inherited the entity's own conversation, and the only one the pre-agent
+    /// line folds onto.
+    const FIRST: bool = true;
+
     /// The feature in one test: a dismissed row is gone until the work speaks
     /// past the line it was dismissed at, and then it is back on its own.
     #[test]
     fn a_dismissed_row_comes_back_when_the_conversation_passes_the_line() {
         let mut attention = Attention::default();
-        assert!(!attention.is_dismissed(7), "nobody dismissed it");
-
-        attention.dismiss_through(7);
-        assert!(attention.is_dismissed(7), "nothing has arrived since");
         assert!(
-            !attention.is_dismissed(8),
+            !attention.is_dismissed_for("agent-one", FIRST, 7),
+            "nobody dismissed it"
+        );
+
+        attention.dismiss_agent_through("agent-one", 7);
+        assert!(
+            attention.is_dismissed_for("agent-one", FIRST, 7),
+            "nothing has arrived since"
+        );
+        assert!(
+            !attention.is_dismissed_for("agent-one", FIRST, 8),
             "an attention item past the line brings the row back"
         );
 
-        attention.dismiss_through(8);
+        attention.dismiss_agent_through("agent-one", 8);
         assert!(
-            attention.is_dismissed(8),
+            attention.is_dismissed_for("agent-one", FIRST, 8),
             "dismissed again, past the new one"
         );
     }
@@ -594,8 +654,8 @@ mod tests {
     #[test]
     fn dismissing_a_conversation_that_never_asked_for_anything_hides_it() {
         let mut attention = Attention::default();
-        attention.dismiss_through(4);
-        assert!(attention.is_dismissed(0));
+        attention.dismiss_agent_through("agent-one", 0);
+        assert!(attention.is_dismissed_for("agent-one", FIRST, 0));
     }
 
     /// A stale dismissal — a second tab acting on the sequence it loaded with —
@@ -603,9 +663,83 @@ mod tests {
     #[test]
     fn dismissing_never_rewinds_the_line() {
         let mut attention = Attention::default();
-        attention.dismiss_through(12);
-        attention.dismiss_through(5);
-        assert_eq!(attention.dismissed_through, 12);
+        attention.dismiss_agent_through("agent-one", 12);
+        attention.dismiss_agent_through("agent-one", 5);
+        assert_eq!(attention.dismissed_line_for("agent-one", FIRST), Some(12));
+    }
+
+    /// Each agent numbers its own conversation from 1, so one agent's line says
+    /// nothing about another's: an agent nobody has cleared is not cleared,
+    /// whatever was done to the agent beside it. This is the whole of the
+    /// multi-agent bug — a row cleared off agent one used to stay cleared while
+    /// agent two was still talking.
+    #[test]
+    fn each_agent_carries_its_own_dismissal_line() {
+        let mut attention = Attention::default();
+        attention.dismiss_agent_through("agent-one", 9);
+        assert!(attention.is_dismissed_for("agent-one", FIRST, 9));
+        assert_eq!(
+            attention.dismissed_line_for("agent-two", !FIRST),
+            None,
+            "nobody cleared agent two"
+        );
+        assert!(
+            !attention.is_dismissed_for("agent-two", !FIRST, 3),
+            "and an agent nobody cleared is on the list"
+        );
+        assert!(
+            !attention.is_dismissed_for("agent-two", !FIRST, 0),
+            "even with nothing to say for itself"
+        );
+    }
+
+    /// The pre-agent line belongs to the agent that inherited the entity's
+    /// conversation — and to no one else, exactly like the read cursor it is
+    /// modelled on. A row cleared before agents existed stays cleared for its
+    /// first agent after this ships.
+    #[test]
+    fn the_pre_agent_dismissal_folds_onto_the_first_agent_only() {
+        let stored = serde_json::json!({ "dismissed_through": 24 });
+        let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
+        assert_eq!(attention.dismissed_line_for("agent-first", FIRST), Some(24));
+        assert!(attention.is_dismissed_for("agent-first", FIRST, 24));
+        assert!(
+            !attention.is_dismissed_for("agent-first", FIRST, 25),
+            "an attention item past the line brings the row back"
+        );
+        assert_eq!(
+            attention.dismissed_line_for("agent-second", !FIRST),
+            None,
+            "the second agent's own sequences were never in that scalar"
+        );
+        assert!(!attention.is_dismissed_for("agent-second", !FIRST, 3));
+    }
+
+    /// 0 in the legacy scalar means "never dismissed", and must not read as
+    /// "dismissed through the beginning of time".
+    #[test]
+    fn a_zero_legacy_line_is_never_dismissed() {
+        let attention = Attention::default();
+        assert_eq!(attention.dismissed_line_for("agent-first", FIRST), None);
+        assert!(!attention.is_dismissed_for("agent-first", FIRST, 0));
+    }
+
+    /// The line the human draws today wins over the one they drew before agents
+    /// existed, and neither can rewind the other.
+    #[test]
+    fn the_per_agent_line_and_the_legacy_line_are_maxed_not_replaced() {
+        let mut attention = Attention {
+            dismissed_through: 24,
+            ..Default::default()
+        };
+        attention.dismiss_agent_through("agent-first", 7);
+        assert_eq!(
+            attention.dismissed_line_for("agent-first", FIRST),
+            Some(24),
+            "the older, higher line still holds"
+        );
+        attention.dismiss_agent_through("agent-first", 30);
+        assert_eq!(attention.dismissed_line_for("agent-first", FIRST), Some(30));
     }
 
     /// Mute and dismiss are two different things the human can do to one row:
@@ -614,7 +748,7 @@ mod tests {
     fn dismissing_says_nothing_about_mute_or_what_has_been_read() {
         let mut attention = Attention::default();
         attention.read_through("agent-one", 4);
-        attention.dismiss_through(9);
+        attention.dismiss_agent_through("agent-one", 9);
         assert!(!attention.muted, "dismissing does not silence");
         assert_eq!(
             attention.cursor_for("agent-one"),
@@ -627,22 +761,25 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            !silenced.is_dismissed(0),
+            !silenced.is_dismissed_for("agent-one", FIRST, 0),
             "muting does not take the row out of the list"
         );
     }
 
     /// Dismissal is new: every record on disk predates it, must load, and a row
-    /// nobody cleared must not pay for the field.
+    /// nobody cleared must not pay for either field.
     #[test]
     fn a_record_written_before_dismissal_existed_reads_as_never_dismissed() {
         let stored = serde_json::json!({ "last_interaction_at": MON_09 });
         let attention: Attention = serde_json::from_value(stored).expect("an old record loads");
         assert_eq!(attention.dismissed_through, 0);
-        assert!(!attention.is_dismissed(0));
+        assert!(!attention.is_dismissed_for("agent-one", FIRST, 0));
         let wire = serde_json::to_value(&attention).unwrap();
         assert!(wire.get("dismissed_through").is_none(), "{wire:?}");
+        assert!(wire.get("agent_dismissed_through").is_none(), "{wire:?}");
 
+        // The legacy scalar is still written by nobody and read by everybody:
+        // records on disk carry it, and they have to load unchanged.
         let cleared = Attention {
             dismissed_through: 9,
             ..attention
@@ -652,6 +789,21 @@ mod tests {
         let reloaded: Attention =
             serde_json::from_value(wire).expect("a dismissed record loads back");
         assert_eq!(reloaded, cleared);
+    }
+
+    /// A per-agent dismissal round-trips, including the silent agent whose line
+    /// is 0 — a record that dropped it would put the row back on every poll.
+    #[test]
+    fn a_per_agent_dismissal_round_trips() {
+        let mut attention = Attention::default();
+        attention.dismiss_agent_through("agent-one", 9);
+        attention.dismiss_agent_through("agent-two", 0);
+        let wire = serde_json::to_value(&attention).unwrap();
+        assert_eq!(wire["agent_dismissed_through"]["agent-one"], 9, "{wire:?}");
+        assert_eq!(wire["agent_dismissed_through"]["agent-two"], 0, "{wire:?}");
+        let reloaded: Attention = serde_json::from_value(wire).expect("it loads back");
+        assert_eq!(reloaded, attention);
+        assert!(reloaded.is_dismissed_for("agent-two", !FIRST, 0));
     }
 
     // ================== Dismissing a row with no conversation ==================
@@ -695,10 +847,13 @@ mod tests {
     fn the_conversation_line_and_the_commit_line_are_independent() {
         let mut cleared_row = Attention::default();
         cleared_row.dismiss_at_head(Some("abc123"));
-        assert!(!cleared_row.is_dismissed(0), "no conversation was cleared");
+        assert!(
+            !cleared_row.is_dismissed_for("agent-one", FIRST, 0),
+            "no conversation was cleared"
+        );
 
         let mut cleared_entity = Attention::default();
-        cleared_entity.dismiss_through(4);
+        cleared_entity.dismiss_agent_through("agent-one", 4);
         assert!(
             !cleared_entity.is_dismissed_at_head(Some("abc123")),
             "no row was cleared"

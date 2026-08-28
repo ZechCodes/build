@@ -42,9 +42,10 @@ export function agentHasTerminal(agent) {
   return !agent || agent.has_terminal !== false;
 }
 
-/** How many faces there are for an agent to wear. Each is a pattern of dots or
- *  lines drawn in CSS (styles/shell.css, .rail-pattern-N), animated while the
- *  agent works and frozen where it stopped when it does not. */
+/** How many faces there are for an agent to wear. Each is one of the five
+ *  tilings in core/tilings.js, painted into the bubble's canvas by
+ *  core/agentCanvas.js — moving while the agent works, frozen on the frame it
+ *  stopped at when it does not. */
 export const AGENT_PATTERN_COUNT = 5;
 
 /** Which face this agent wears, from its place on the work item: the agents

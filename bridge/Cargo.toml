@@ -38,6 +38,10 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"
+# `test-util` only here: it brings tokio's controllable clock, which lets the
+# timing tests assert which side of a window something falls on instead of
+# racing a real one. Never compiled into the daemon.
+tokio = { version = "1", features = ["test-util"] }
 wiremock = "0.6.5"
 # wss integration test: self-signed cert + local TLS WebSocket server.
 rcgen = "0.13"

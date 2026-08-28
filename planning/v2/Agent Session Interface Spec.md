@@ -510,6 +510,35 @@ its own — not smuggled in behind an activity feed. The jsonl log can be migrat
 into a database later; it cannot be un-migrated out of the aggregate record once
 the write amplification has been shipped.
 
+### 6.3 Activity must not flood the resident tail — open
+
+> **Merged from main's reconciliation of this spec (written 2026-08-23, merged
+> 2026-08-28). Not implemented** — steps 4 and 6 shipped without it, so this is
+> the one §6 obligation still open now that a headless carrier is live.
+
+A conversation is no longer fully resident: a boot reads the newest
+`RESIDENT_CONVERSATION_TAIL` items (200, `store.rs:477`) and pages the rest
+from the store. Lifecycle events arrive a handful per run, so that tail is
+comfortably a conversation's working set — but a single session emits hundreds
+of activity rows, and counted against the same bounds they push every message
+the human and the agent exchanged out of the tail. Two silent failures follow:
+
+- **The catch-up packet starves after a restart.** `catch_up_markdown` reads
+  `self.items` — the tail. Its messages-only filter (§6.1) is right, but
+  filtering a tail that holds no messages yields nothing, and the resumed
+  agent the packet exists for is exactly the one that boots onto a tail an
+  activity-heavy predecessor filled.
+- **The first page shows no conversation.** `DEFAULT_THREAD_PAGE` is 60
+  items; opening a conversation mid-session paints tool calls with the last
+  thing anyone said somewhere below them.
+
+So activity must not be counted against either bound: the catch-up packet is
+built from a store query for messages rather than the resident tail (the store
+already tells the kinds apart — a `WHERE`, not a scan), and the page a client
+opens on is measured in conversation, with the activity between two messages
+travelling folded beside them instead of consuming the budget that decides how
+far back the human can see.
+
 ## 7. Terminal-coupled surfaces — the inventory
 
 Everything that must become conditional. This is the actual size of the work.
@@ -1282,6 +1311,11 @@ the compatibility story for persisted threads and older clients — all there.
 
 ## 12. Revision history
 
+- **2026-08-28, merged main.** Main had independently reconciled its older
+  copy of this spec with the store migration; that copy's one insight this
+  branch lacked — activity flooding the resident tail and the two bounds it
+  starves — is ported as §6.3, open. Everything else in this document remains
+  the shipped record.
 - **2026-08-24, step 7 shipped.** An outcome is a status on the agent's own
   message: `Thread::post_outcome` writes the summary the agent reported as an
   ordinary agent message carrying `completed` / `blocked` / `failed`, with the

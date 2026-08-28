@@ -583,11 +583,12 @@ describe("the issue view", () => {
   it("names a bound again on the read after a bubble switch, which drops the cursor", async () => {
     const selection = createAgentSelection("agent:one");
     const { view, calls } = await mount({ agentSelection: selection, pollMs: 1 });
+    const readsBeforeSwitch = calls.filter(([method]) => method === "issue.get").length;
     selection.set("agent:two");
     // The FIRST read of the new bubble is the one that owes a bound: every read
     // after it is riding a cursor into a conversation this view now holds.
     const afterSwitch = (await readsForAgent(calls, "agent:two"))[0][1];
-    expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(1);
+    expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(readsBeforeSwitch);
     expect(afterSwitch.thread_limit).toBe(1);
     expect(afterSwitch.thread_after_sequence).toBeUndefined();
     view.dispose();

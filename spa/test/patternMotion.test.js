@@ -10,11 +10,14 @@ import {
   motionParams,
   createClock,
   cellPhase,
+  cellFill,
   CELL_SCALE_BASE,
   CELL_ALPHA_BASE,
 } from "../src/core/patternMotion.js";
 
 const drawSequence = (random, count) => Array.from({ length: count }, () => random());
+
+const mean = (numbers) => numbers.reduce((total, value) => total + value, 0) / numbers.length;
 
 describe("mulberry32", () => {
   it("replays the same sequence for the same seed", () => {
@@ -83,19 +86,19 @@ describe("motionParams", () => {
     }
   });
 
-  it("crosses one lattice cell in 4 to 8 seconds, so travel tiles seamlessly", () => {
+  it("crosses one lattice cell in 1.5 to 3.5 seconds, so travel tiles seamlessly", () => {
     for (const seed of seeds) {
       const { driftSecondsPerCell } = motionParams(seed);
-      expect(driftSecondsPerCell).toBeGreaterThanOrEqual(4);
-      expect(driftSecondsPerCell).toBeLessThanOrEqual(8);
+      expect(driftSecondsPerCell).toBeGreaterThanOrEqual(1.5);
+      expect(driftSecondsPerCell).toBeLessThanOrEqual(3.5);
     }
   });
 
   it("rotates slowly in either direction, and sometimes barely at all", () => {
     const speeds = seeds.map((seed) => motionParams(seed).rotationSpeed);
     for (const speed of speeds) {
-      expect(speed).toBeGreaterThanOrEqual(-0.03);
-      expect(speed).toBeLessThanOrEqual(0.03);
+      expect(speed).toBeGreaterThanOrEqual(-0.08);
+      expect(speed).toBeLessThanOrEqual(0.08);
     }
     expect(speeds.some((speed) => speed > 0)).toBe(true);
     expect(speeds.some((speed) => speed < 0)).toBe(true);
@@ -106,9 +109,22 @@ describe("motionParams", () => {
     for (const seed of seeds) {
       const { wave, waveFrequency } = motionParams(seed);
       expect(Math.hypot(wave.kx, wave.ky)).toBeGreaterThan(0.2);
-      expect(Math.hypot(wave.kx, wave.ky)).toBeLessThanOrEqual(1.2);
-      expect(waveFrequency).toBeGreaterThan(0);
-      expect(waveFrequency).toBeLessThanOrEqual(1);
+      expect(waveFrequency).toBeGreaterThanOrEqual(0.9);
+      expect(waveFrequency).toBeLessThanOrEqual(2.2);
+    }
+  });
+
+  it("steepens the wave for the wavefill face and leaves the grid face alone", () => {
+    for (const seed of seeds) {
+      const { wave, style } = motionParams(seed);
+      const waveNumber = Math.hypot(wave.kx, wave.ky);
+      if (style === "wavefill") {
+        expect(waveNumber).toBeGreaterThanOrEqual(1.6);
+        expect(waveNumber).toBeLessThanOrEqual(2.4);
+      } else {
+        expect(waveNumber).toBeGreaterThanOrEqual(0.35);
+        expect(waveNumber).toBeLessThanOrEqual(1.1);
+      }
     }
   });
 
@@ -119,6 +135,29 @@ describe("motionParams", () => {
       expect(scaleAmplitude).toBeLessThanOrEqual(0.12);
       expect(alphaAmplitude).toBeGreaterThanOrEqual(0.15);
       expect(alphaAmplitude).toBeLessThanOrEqual(0.35);
+    }
+  });
+
+  it("gives an agent one of the two faces, and hands out both across the rail", () => {
+    const styles = seeds.map((seed) => motionParams(seed).style);
+    for (const style of styles) expect(["grid", "wavefill"]).toContain(style);
+    const wavefills = styles.filter((style) => style === "wavefill").length;
+    expect(wavefills).toBeGreaterThan(seeds.length / 4);
+    expect(wavefills).toBeLessThan((seeds.length * 3) / 4);
+  });
+
+  it("wears the same face every time the same agent is drawn", () => {
+    for (const seed of seeds.slice(0, 20)) {
+      expect(motionParams(seed).style).toBe(motionParams(seed).style);
+    }
+    expect(motionParams("agent-7").style).toBe(motionParams(hashString("agent-7")).style);
+  });
+
+  it("sharpens the fill crest within 2.5 to 5, whichever face it wears", () => {
+    for (const seed of seeds) {
+      const { fillSharpness } = motionParams(seed);
+      expect(fillSharpness).toBeGreaterThanOrEqual(2.5);
+      expect(fillSharpness).toBeLessThanOrEqual(5);
     }
   });
 
@@ -244,5 +283,118 @@ describe("cellPhase", () => {
     const before = JSON.stringify({ params, cell });
     cellPhase(params, cell, 3);
     expect(JSON.stringify({ params, cell })).toBe(before);
+  });
+});
+
+describe("cellFill", () => {
+  const params = {
+    waveFrequency: 2,
+    wave: { kx: 0.5, ky: 0.25 },
+    phase: 0,
+    fillSharpness: 3,
+  };
+
+  it("is the same wave as cellPhase, shaped into a crest", () => {
+    // angle = 2*0.5 + 0.5*1 + 0.25*2 = 2
+    expect(cellFill(params, { col: 1, row: 2 }, 0.5)).toBeCloseTo(
+      ((Math.sin(2) + 1) / 2) ** 3,
+      12,
+    );
+  });
+
+  it("carries the global phase and the painter's correction into the angle", () => {
+    const offset = { ...params, phase: Math.PI / 3 };
+    expect(cellFill(offset, { col: 0, row: 0 }, 0, 0.2)).toBeCloseTo(
+      ((Math.sin(Math.PI / 3 + 0.2) + 1) / 2) ** 3,
+      12,
+    );
+  });
+
+  it("separates neighbours by the spatial phase term alone — a ripple, not jitter", () => {
+    const here = cellFill(params, { col: 3, row: 4 }, 1.25);
+    const rightNeighbour = cellFill(params, { col: 4, row: 4 }, 1.25);
+    const shiftedInTime = cellFill(
+      params,
+      { col: 3, row: 4 },
+      1.25 + params.wave.kx / params.waveFrequency,
+    );
+    expect(rightNeighbour).toBeCloseTo(shiftedInTime, 12);
+
+    const belowNeighbour = cellFill(params, { col: 3, row: 5 }, 1.25);
+    const shiftedByRow = cellFill(
+      params,
+      { col: 3, row: 4 },
+      1.25 + params.wave.ky / params.waveFrequency,
+    );
+    expect(belowNeighbour).toBeCloseTo(shiftedByRow, 12);
+
+    expect(rightNeighbour).not.toBeCloseTo(here, 6);
+  });
+
+  it("stays paintable across a whole lattice and a whole loop", () => {
+    for (const seed of [1, 2, 3, 101, 6007]) {
+      const drawn = motionParams(seed);
+      for (let step = 0; step < 60; step++) {
+        for (let col = -3; col <= 3; col++) {
+          for (let row = -3; row <= 3; row++) {
+            const alpha = cellFill(drawn, { col, row }, step * 0.25);
+            expect(alpha).toBeGreaterThanOrEqual(0);
+            expect(alpha).toBeLessThanOrEqual(1);
+          }
+        }
+      }
+    }
+  });
+
+  it("leaves the cell blank for most of the loop and fills it solid at the crest", () => {
+    for (const fillSharpness of [2.5, 3, 4, 5]) {
+      const shaped = { ...params, fillSharpness };
+      const cycle = Array.from({ length: 720 }, (_, index) =>
+        cellFill(shaped, { col: 0, row: 0 }, (index / 720) * (Math.PI / params.waveFrequency) * 2),
+      );
+      const blank = cycle.filter((alpha) => alpha < 0.1).length / cycle.length;
+      expect(blank).toBeGreaterThan(0.4);
+      expect(Math.max(...cycle)).toBeGreaterThan(0.99);
+      expect(mean(cycle)).toBeLessThan(0.35);
+    }
+  });
+
+  it("touches neither the params nor the cell it was handed", () => {
+    const cell = { col: 2, row: 2 };
+    const before = JSON.stringify({ params, cell });
+    cellFill(params, cell, 3);
+    expect(JSON.stringify({ params, cell })).toBe(before);
+  });
+
+  // A bubble is 32px and holds four or five cells across. If the wave is
+  // shallower than one full cycle over that many cells, there are stretches of
+  // the loop with every visible cell in the trough at once — and with the crest
+  // shaping, a trough is nothing at all. The face reads as empty and static,
+  // which is the whole complaint the wavefill style exists to answer.
+  it("never leaves a wavefill face blank: some cell is always at the crest", () => {
+    const wavefillSeeds = Array.from({ length: 400 }, (_, index) => index * 7919 + 13)
+      .filter((seed) => motionParams(seed).style === "wavefill")
+      .slice(0, 60);
+    expect(wavefillSeeds.length).toBeGreaterThan(20);
+
+    for (const seed of wavefillSeeds) {
+      const drawn = motionParams(seed);
+      const cycleSeconds = (Math.PI * 2) / drawn.waveFrequency;
+      const brightestOverTime = [];
+      for (let step = 0; step < 90; step += 1) {
+        const seconds = (step / 90) * cycleSeconds;
+        let brightest = 0;
+        for (let col = 0; col < 5; col += 1) {
+          for (let row = 0; row < 5; row += 1) {
+            brightest = Math.max(brightest, cellFill(drawn, { col, row }, seconds));
+          }
+        }
+        brightestOverTime.push(brightest);
+      }
+      // Never blank, and lit outright for most of the loop.
+      expect(Math.min(...brightestOverTime)).toBeGreaterThan(0.25);
+      const lit = brightestOverTime.filter((alpha) => alpha > 0.5).length;
+      expect(lit / brightestOverTime.length).toBeGreaterThan(0.7);
+    }
   });
 });

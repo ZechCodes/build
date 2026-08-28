@@ -14,7 +14,7 @@ import {
   animatingRendererCount,
   latticeDrift,
 } from "../src/core/agentCanvas.js";
-import { cellPhase, motionParams } from "../src/core/patternMotion.js";
+import { cellFill, cellPhase, motionParams } from "../src/core/patternMotion.js";
 import { TILINGS, pointInPolygon } from "../src/core/tilings.js";
 
 /** A 2D context that remembers what it was told to do. Style assignments are
@@ -104,9 +104,10 @@ function alphasOf(context) {
 
 const mean = (numbers) => numbers.reduce((total, value) => total + value, 0) / numbers.length;
 
-/** The alpha each outline was STROKED at, filed under how many vertices it had
- *  — which is how an octagon is told from the filler square beside it. */
-function strokeAlphasByVertexCount(context) {
+/** The alpha each outline was drawn at by `paintOp`, filed under how many
+ *  vertices it had — which is how an octagon is told from the filler square
+ *  beside it. */
+function alphasByVertexCount(context, paintOp) {
   const byVertices = new Map();
   let vertices = 0;
   let alpha = 0;
@@ -114,13 +115,27 @@ function strokeAlphasByVertexCount(context) {
     if (op === "beginPath") vertices = 0;
     else if (op === "moveTo" || op === "lineTo") vertices += 1;
     else if (op === "globalAlpha") alpha = args[0];
-    else if (op === "stroke" && vertices) {
+    else if (op === paintOp && vertices) {
       if (!byVertices.has(vertices)) byVertices.set(vertices, []);
       byVertices.get(vertices).push(alpha);
     }
   }
   return byVertices;
 }
+
+/** Seeds wearing the face a test is about. Which of the two an agent gets is
+ *  the seed's business alone, so a test that needs one goes looking. */
+function seedsWearing(style, count = 1) {
+  const found = [];
+  for (let index = 0; index < 500 && found.length < count; index += 1) {
+    const seed = `agent-${style}-${index}`;
+    if (motionParams(seed).style === style) found.push(seed);
+  }
+  if (found.length < count) throw new Error(`only ${found.length} seeds drew the ${style} face`);
+  return found;
+}
+
+const seedWearing = (style) => seedsWearing(style, 1)[0];
 
 /** How many vertices each traced outline had — the fingerprint of the tiling
  *  underneath, since the clip path traces an arc and no vertices at all. */
@@ -348,7 +363,7 @@ describe("ink and dimming", () => {
 
   it("lowers every cell's alpha when dimmed, without moving the pattern", () => {
     const { canvas, context } = fakeCanvas();
-    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: "agent-dim" });
+    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: seedWearing("grid") });
     context.ops.length = 0;
     renderer.setInk("#fff");
     const bright = alphasOf(context);
@@ -369,20 +384,153 @@ describe("ink and dimming", () => {
 
   it("paints the truncated tiling's filler squares fainter than its octagons", () => {
     const { canvas, context } = fakeCanvas();
-    const renderer = createPatternRenderer({ canvas, patternIndex: 5, seed: "agent-fill" });
+    const renderer = createPatternRenderer({
+      canvas,
+      patternIndex: 5,
+      seed: seedWearing("grid"),
+    });
     context.ops.length = 0;
     renderer.setInk("#fff");
 
     // The wave puts every cell at its own point in the breath, so no single
     // filler is bound to be fainter than every octagon. Averaged over the field
     // the breath cancels and only the holding-back is left.
-    const byVertices = strokeAlphasByVertexCount(context);
+    const byVertices = alphasByVertexCount(context, "stroke");
     const octagons = byVertices.get(8) || [];
     const fillers = byVertices.get(4) || [];
     expect(octagons.length).toBeGreaterThan(3);
     expect(fillers.length).toBeGreaterThan(3);
     expect(mean(fillers)).toBeLessThan(mean(octagons) / 2);
     renderer.destroy();
+  });
+});
+
+// Half the rail wears the other face: no lattice at all, just a band of solid
+// cells sweeping over an empty circle. Same tiling, same one wave — the only
+// difference is the shaping, so most cells sit at nothing and the crest fills in.
+
+describe("the wavefill face", () => {
+  const wavefillSeed = seedWearing("wavefill");
+  const gridSeed = seedWearing("grid");
+
+  it("never strokes: there is no lattice to see, only what the wave fills in", () => {
+    const { canvas, context } = fakeCanvas();
+    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: wavefillSeed });
+    renderer.setWorking(true);
+    frames.run(0);
+    frames.run(900);
+    expect(context.ops.some(({ op }) => op === "fill")).toBe(true);
+    expect(context.ops.some(({ op }) => op === "stroke")).toBe(false);
+    renderer.destroy();
+  });
+
+  it("leaves the grid face stroking exactly as it did", () => {
+    const { canvas, context } = fakeCanvas();
+    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: gridSeed });
+    expect(context.ops.some(({ op }) => op === "stroke")).toBe(true);
+    renderer.destroy();
+  });
+
+  it("holds most of the face at nothing while the crest goes to solid", () => {
+    const { canvas, context } = fakeCanvas();
+    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: wavefillSeed });
+    renderer.setWorking(true);
+    frames.run(0);
+
+    const blank = [];
+    let seenSolid = false;
+    for (let step = 1; step <= 40; step += 1) {
+      context.ops.length = 0;
+      frames.run(step * 40);
+      const alphas = alphasOf(context);
+      expect(alphas.length).toBeGreaterThan(3);
+      blank.push(alphas.filter((alpha) => alpha < 0.1).length / alphas.length);
+      if (alphas.some((alpha) => alpha > 0.9)) seenSolid = true;
+    }
+    expect(mean(blank)).toBeGreaterThan(0.35);
+    expect(seenSolid).toBe(true);
+    renderer.destroy();
+  });
+
+  it("puts something on the face on every frame, never an empty circle", () => {
+    // The bubble is a few cells across. A wave too shallow to span it leaves
+    // every visible cell in the trough together, and a shaped trough is
+    // nothing — seconds of blank circle, which reads as a stopped agent.
+    seedsWearing("wavefill", 6).forEach((seed, index) => {
+      const { canvas, context } = fakeCanvas({ width: 32, height: 32 });
+      const renderer = createPatternRenderer({ canvas, patternIndex: (index % 5) + 1, seed });
+      renderer.setWorking(true);
+      frames.run(0);
+      for (let step = 1; step <= 40; step += 1) {
+        context.ops.length = 0;
+        frames.run(step * 40);
+        expect(Math.max(...alphasOf(context))).toBeGreaterThan(0.25);
+      }
+      renderer.destroy();
+    });
+  });
+
+  it("takes the dimming multiplier the same way the grid face does", () => {
+    const { canvas, context } = fakeCanvas();
+    const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: wavefillSeed });
+    context.ops.length = 0;
+    renderer.setInk("#fff");
+    const bright = alphasOf(context);
+
+    context.ops.length = 0;
+    renderer.setDimmed(true);
+    const dimmed = alphasOf(context);
+    expect(dimmed).toHaveLength(bright.length);
+    const share = bright.map((alpha, index) => (alpha > 0 ? dimmed[index] / alpha : null));
+    for (const ratio of share.filter((value) => value !== null)) {
+      expect(ratio).toBeCloseTo(share.find((value) => value !== null), 12);
+    }
+    expect(share.some((value) => value !== null && value < 1)).toBe(true);
+    renderer.destroy();
+  });
+
+  it("keeps the truncated tiling's filler squares on their fainter share", () => {
+    const { canvas, context } = fakeCanvas();
+    const renderer = createPatternRenderer({ canvas, patternIndex: 5, seed: wavefillSeed });
+    renderer.setWorking(true);
+    frames.run(0);
+
+    const octagons = [];
+    const fillers = [];
+    for (let step = 1; step <= 20; step += 1) {
+      context.ops.length = 0;
+      frames.run(step * 60);
+      const byVertices = alphasByVertexCount(context, "fill");
+      octagons.push(...(byVertices.get(8) || []));
+      fillers.push(...(byVertices.get(4) || []));
+    }
+    expect(octagons.length).toBeGreaterThan(20);
+    expect(fillers.length).toBeGreaterThan(20);
+    expect(mean(fillers)).toBeLessThan(mean(octagons) / 2);
+    renderer.destroy();
+  });
+
+  it("does not jiggle the cells: the fill carries the motion on its own", () => {
+    // A cell traced at rest scale lands on the same vertices every frame; one
+    // that breathes lands somewhere new each time. Cells drift in and out of
+    // the cull between frames, so this asks how much of the field held still,
+    // not that all of it did.
+    const heldStill = (seed) => {
+      const { canvas, context } = fakeCanvas();
+      const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed });
+      renderer.setWorking(true);
+      frames.run(0);
+      context.ops.length = 0;
+      frames.run(200);
+      const early = new Set(opsOf(context, ["moveTo", "lineTo"]).map(String));
+      context.ops.length = 0;
+      frames.run(400);
+      const later = opsOf(context, ["moveTo", "lineTo"]).map(String);
+      renderer.destroy();
+      return later.filter((vertex) => early.has(vertex)).length / later.length;
+    };
+    expect(heldStill(wavefillSeed)).toBeGreaterThan(0.9);
+    expect(heldStill(gridSeed)).toBeLessThan(0.1);
   });
 });
 
@@ -469,13 +617,15 @@ const WRAP_JUMP_PX = CELL_SIZE / 10;
  *  cell at a wrap. */
 const driftingAlong = (axis) => ({
   drift: axis === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 },
-  driftSecondsPerCell: 4,
+  driftSecondsPerCell: 1.5,
   rotationSpeed: 0,
-  wave: { kx: 1.1 * Math.cos(0.6), ky: 1.1 * Math.sin(0.6) },
-  waveFrequency: 0.9,
+  wave: { kx: 2.4 * Math.cos(0.6), ky: 2.4 * Math.sin(0.6) },
+  waveFrequency: 2.2,
   scaleAmplitude: 0.12,
   alphaAmplitude: 0.35,
   phase: 0.4,
+  style: "wavefill",
+  fillSharpness: 5,
 });
 
 const driftAt = (tilingName, params, seconds) =>
@@ -525,7 +675,12 @@ function underProbe(tilingName, params, cells, seconds) {
   const drift = driftAt(tilingName, params, seconds);
   const probe = [PROBE_POINT[0] - drift.offsetX, PROBE_POINT[1] - drift.offsetY];
   const cell = cells.find((candidate) => pointInPolygon(probe, candidate.polygon)) || null;
-  return { cell, alpha: cellPhase(params, cell, seconds, drift.wavePhase).alpha };
+  return {
+    cell,
+    alpha: cellPhase(params, cell, seconds, drift.wavePhase).alpha,
+    // The other face rides the same wave, so it owes the same debt at a wrap.
+    fill: cellFill(params, cell, seconds, drift.wavePhase),
+  };
 }
 
 const fieldOf = (tilingName) =>
@@ -546,6 +701,7 @@ describe("the wave across a drift wrap", () => {
         // that happen would be proving nothing.
         expect([after.cell.col, after.cell.row]).not.toEqual([before.cell.col, before.cell.row]);
         expect(Math.abs(after.alpha - before.alpha)).toBeLessThan(1e-6);
+        expect(Math.abs(after.fill - before.fill)).toBeLessThan(1e-6);
       });
     }
   }
@@ -560,6 +716,7 @@ describe("the wave across a drift wrap", () => {
         const before = underProbe(tilingName, params, cells, wrap.before);
         const after = underProbe(tilingName, params, cells, wrap.after);
         expect(Math.abs(after.alpha - before.alpha)).toBeLessThan(1e-6);
+        expect(Math.abs(after.fill - before.fill)).toBeLessThan(1e-6);
       }
     });
   });

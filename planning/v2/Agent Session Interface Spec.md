@@ -930,6 +930,35 @@ Each step compiles, ships and is green on its own.
 > rather than something the carrier needs, and the fallback this spec already
 > keeps is what runs until it lands.
 >
+> **Live-verified against claude 2.1.236 (2026-08-28)** — the first real
+> model-backed runs of this carrier, via the ignored test
+> `real_adk_session_steers_mid_turn` (`cargo test --lib real_adk -- --ignored
+> --nocapture`, one small haiku turn) and hand probes. What the wire actually
+> does:
+>
+> - **Mid-turn steering works.** A user message written to stdin while a turn
+>   runs — including during active tool execution — is delivered at the next
+>   step boundary and decides the same turn's outcome. Verified through the
+>   real carrier end to end.
+> - **`init` arrives only after the first stdin message**, not at spawn. The
+>   fake emits it at spawn, which is why the daemon must never wait for init
+>   before delivering (it does not; the test originally did and deadlocked).
+>   A headless agent spawned without a first turn reports `Starting` until one
+>   is delivered.
+> - **A narrow loss window exists**: a message written within ~100ms of a
+>   `tool_use` event was observed silently dropped once; the same message
+>   seconds later is reliable. Human follow-ups are seconds-scale. The init
+>   `capabilities` array advertises `msg_lifecycle_v1` (receipts), the future
+>   hardening if confirmation is ever needed.
+> - **The native interrupt landed upstream.** `capabilities` advertises
+>   `interrupt_receipt_v1` / `interrupt_cancel_queued_v1`, and a raw
+>   `{"type":"control_request","request_id":…,"request":{"subtype":"interrupt"}}`
+>   is acknowledged with a `control_response`, ends the in-flight turn with
+>   `result: error_during_execution`, and the next queued user message runs in
+>   the same session. Stop-and-redirect is a wire message, not a kill — the
+>   kill-and-resteer design is the fallback for a CLI that does not advertise
+>   the capability, not the mechanism.
+>
 > **The SPA's start cards offer the headless carrier (2026-08-24).** The idle
 > agent panel's picker draws from a list the UI ships (`STARTABLE_PROVIDERS`,
 > `spa/src/core/modelPicker.js`) rather than the catalog RPC, so the new

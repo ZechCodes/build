@@ -1275,4 +1275,151 @@ mod tests {
         );
         session.end();
     }
+
+    /// The one claim the fake cannot prove: the live protocol's mid-turn
+    /// semantics. Spawns the REAL `claude` binary with the REAL argv shape and
+    /// hands it a turn that runs a slow tool; while that tool runs, a second
+    /// turn is written. If streaming input delivers at the next step boundary
+    /// — the way the interactive TUI queues a message typed mid-run — the
+    /// agent's final answer obeys the follow-up inside the same turn. If the
+    /// follow-up instead waits for the first result, a second Working phase
+    /// appears and the answer still converges, but the printout says which
+    /// world we are in.
+    ///
+    /// Ignored by default: it needs `claude` installed, authenticated, and a
+    /// real (small, haiku) model turn. Run by hand:
+    ///
+    /// ```text
+    /// cargo test --lib real_adk -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    fn real_adk_session_steers_mid_turn() {
+        use crate::harness::Harness;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("fresh-worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mcp = workspace.join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        AdkHarness.prepare_workspace(&workspace);
+
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+
+        let (session, mut activity) =
+            AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                while let Ok(event) = activity.blocking_recv() {
+                    let line = match &event {
+                        AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
+                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                    };
+                    eprintln!("[activity] {line}");
+                    seen.lock().unwrap().push(line);
+                }
+            });
+        }
+
+        let wait_until = |what: &str, deadline: Duration, test: &dyn Fn() -> bool| {
+            let started = Instant::now();
+            while !test() {
+                assert!(started.elapsed() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+
+        // The real CLI announces itself only after the first stdin message
+        // arrives (verified against 2.1.236), so the turn is written first and
+        // init is awaited after — the same order the daemon's deliver uses.
+        session
+            .send_turn(&Turn::new(concat!(
+                "You are being driven by an automated test. Do exactly this and nothing ",
+                "else, then stop. First, use the Bash tool to run exactly: sleep 10\n",
+                "After the sleep finishes, write a file named answer.txt in the current ",
+                "directory whose entire contents are exactly the single word: APPLE",
+            )))
+            .unwrap();
+        wait_until("init", Duration::from_secs(30), &|| {
+            !matches!(session.status(), AgentStatus::Starting)
+        });
+        wait_until("the sleep tool to start", Duration::from_secs(90), &|| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.starts_with("tool_use") && line.contains("sleep"))
+        });
+
+        // Not immediately on the tool_use line: the probes show a message
+        // written within ~100ms of the tool_use event can be lost in the CLI's
+        // loop transition, while one written seconds later — any human
+        // follow-up — is delivered at the next step boundary.
+        std::thread::sleep(Duration::from_secs(3));
+        let steered_at = Instant::now();
+        session
+            .send_turn(&Turn::new(concat!(
+                "Change of plan: answer.txt must contain exactly the single word BANANA ",
+                "instead of APPLE. This message supersedes the previous instruction.",
+            )))
+            .unwrap();
+        eprintln!("[steer] follow-up written while the sleep tool runs");
+
+        wait_until("the turn to end", Duration::from_secs(240), &|| {
+            matches!(session.status(), AgentStatus::Waiting)
+        });
+        let first_result_after = steered_at.elapsed();
+
+        // A second Working phase here would mean the follow-up was NOT absorbed
+        // into the running turn and ran as its own turn after the first result.
+        let mut second_turn = false;
+        let settled = Instant::now();
+        while settled.elapsed() < Duration::from_secs(20) {
+            if matches!(session.status(), AgentStatus::Working) {
+                second_turn = true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        wait_until("any second turn to end", Duration::from_secs(240), &|| {
+            matches!(session.status(), AgentStatus::Waiting)
+        });
+
+        let answer = std::fs::read_to_string(workspace.join("answer.txt"))
+            .expect("the agent should have written answer.txt");
+        eprintln!(
+            "[verdict] answer.txt = {:?}; first result {}ms after steering; second turn: {}",
+            answer.trim(),
+            first_result_after.as_millis(),
+            second_turn,
+        );
+        assert_eq!(
+            answer.trim(),
+            "BANANA",
+            "the mid-turn follow-up must decide the answer (same turn or the very next)"
+        );
+        assert!(
+            !second_turn,
+            "the follow-up ran as a separate turn after the first result — mid-turn steering does NOT reach the running loop; the spec's claim needs revising"
+        );
+        session.end();
+    }
 }

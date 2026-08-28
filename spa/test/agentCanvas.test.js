@@ -123,15 +123,19 @@ function alphasByVertexCount(context, paintOp) {
   return byVertices;
 }
 
-/** A seed wearing the face a test is about. Which of the two an agent gets is
+/** Seeds wearing the face a test is about. Which of the two an agent gets is
  *  the seed's business alone, so a test that needs one goes looking. */
-function seedWearing(style) {
-  for (let index = 0; index < 500; index += 1) {
+function seedsWearing(style, count = 1) {
+  const found = [];
+  for (let index = 0; index < 500 && found.length < count; index += 1) {
     const seed = `agent-${style}-${index}`;
-    if (motionParams(seed).style === style) return seed;
+    if (motionParams(seed).style === style) found.push(seed);
   }
-  throw new Error(`no seed drew the ${style} face`);
+  if (found.length < count) throw new Error(`only ${found.length} seeds drew the ${style} face`);
+  return found;
 }
+
+const seedWearing = (style) => seedsWearing(style, 1)[0];
 
 /** How many vertices each traced outline had — the fingerprint of the tiling
  *  underneath, since the clip path traces an arc and no vertices at all. */
@@ -448,6 +452,24 @@ describe("the wavefill face", () => {
     renderer.destroy();
   });
 
+  it("puts something on the face on every frame, never an empty circle", () => {
+    // The bubble is a few cells across. A wave too shallow to span it leaves
+    // every visible cell in the trough together, and a shaped trough is
+    // nothing — seconds of blank circle, which reads as a stopped agent.
+    seedsWearing("wavefill", 6).forEach((seed, index) => {
+      const { canvas, context } = fakeCanvas({ width: 32, height: 32 });
+      const renderer = createPatternRenderer({ canvas, patternIndex: (index % 5) + 1, seed });
+      renderer.setWorking(true);
+      frames.run(0);
+      for (let step = 1; step <= 40; step += 1) {
+        context.ops.length = 0;
+        frames.run(step * 40);
+        expect(Math.max(...alphasOf(context))).toBeGreaterThan(0.25);
+      }
+      renderer.destroy();
+    });
+  });
+
   it("takes the dimming multiplier the same way the grid face does", () => {
     const { canvas, context } = fakeCanvas();
     const renderer = createPatternRenderer({ canvas, patternIndex: 1, seed: wavefillSeed });
@@ -597,12 +619,12 @@ const driftingAlong = (axis) => ({
   drift: axis === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 },
   driftSecondsPerCell: 1.5,
   rotationSpeed: 0,
-  wave: { kx: 1.1 * Math.cos(0.6), ky: 1.1 * Math.sin(0.6) },
+  wave: { kx: 2.4 * Math.cos(0.6), ky: 2.4 * Math.sin(0.6) },
   waveFrequency: 2.2,
   scaleAmplitude: 0.12,
   alphaAmplitude: 0.35,
   phase: 0.4,
-  style: "grid",
+  style: "wavefill",
   fillSharpness: 5,
 });
 

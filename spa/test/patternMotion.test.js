@@ -109,9 +109,22 @@ describe("motionParams", () => {
     for (const seed of seeds) {
       const { wave, waveFrequency } = motionParams(seed);
       expect(Math.hypot(wave.kx, wave.ky)).toBeGreaterThan(0.2);
-      expect(Math.hypot(wave.kx, wave.ky)).toBeLessThanOrEqual(1.2);
       expect(waveFrequency).toBeGreaterThanOrEqual(0.9);
       expect(waveFrequency).toBeLessThanOrEqual(2.2);
+    }
+  });
+
+  it("steepens the wave for the wavefill face and leaves the grid face alone", () => {
+    for (const seed of seeds) {
+      const { wave, style } = motionParams(seed);
+      const waveNumber = Math.hypot(wave.kx, wave.ky);
+      if (style === "wavefill") {
+        expect(waveNumber).toBeGreaterThanOrEqual(1.6);
+        expect(waveNumber).toBeLessThanOrEqual(2.4);
+      } else {
+        expect(waveNumber).toBeGreaterThanOrEqual(0.35);
+        expect(waveNumber).toBeLessThanOrEqual(1.1);
+      }
     }
   });
 
@@ -351,5 +364,37 @@ describe("cellFill", () => {
     const before = JSON.stringify({ params, cell });
     cellFill(params, cell, 3);
     expect(JSON.stringify({ params, cell })).toBe(before);
+  });
+
+  // A bubble is 32px and holds four or five cells across. If the wave is
+  // shallower than one full cycle over that many cells, there are stretches of
+  // the loop with every visible cell in the trough at once — and with the crest
+  // shaping, a trough is nothing at all. The face reads as empty and static,
+  // which is the whole complaint the wavefill style exists to answer.
+  it("never leaves a wavefill face blank: some cell is always at the crest", () => {
+    const wavefillSeeds = Array.from({ length: 400 }, (_, index) => index * 7919 + 13)
+      .filter((seed) => motionParams(seed).style === "wavefill")
+      .slice(0, 60);
+    expect(wavefillSeeds.length).toBeGreaterThan(20);
+
+    for (const seed of wavefillSeeds) {
+      const drawn = motionParams(seed);
+      const cycleSeconds = (Math.PI * 2) / drawn.waveFrequency;
+      const brightestOverTime = [];
+      for (let step = 0; step < 90; step += 1) {
+        const seconds = (step / 90) * cycleSeconds;
+        let brightest = 0;
+        for (let col = 0; col < 5; col += 1) {
+          for (let row = 0; row < 5; row += 1) {
+            brightest = Math.max(brightest, cellFill(drawn, { col, row }, seconds));
+          }
+        }
+        brightestOverTime.push(brightest);
+      }
+      // Never blank, and lit outright for most of the loop.
+      expect(Math.min(...brightestOverTime)).toBeGreaterThan(0.25);
+      const lit = brightestOverTime.filter((alpha) => alpha > 0.5).length;
+      expect(lit / brightestOverTime.length).toBeGreaterThan(0.7);
+    }
   });
 });

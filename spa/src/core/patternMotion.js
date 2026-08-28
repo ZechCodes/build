@@ -41,6 +41,14 @@ const ALPHA_AMPLITUDE = { min: 0.15, max: 0.35 };
  *  the crest is gone before the eye finds it. */
 const FILL_SHARPNESS = { min: 2.5, max: 5 };
 
+/** The wavefill face wants a steeper wave than the grid face, and it is the
+ *  crest shaping that demands it: a bubble holds four or five cells across, so
+ *  a shallow wave puts every visible cell in the trough at once for stretches
+ *  of the loop — and a trough, once shaped, is nothing at all. At this many
+ *  radians per cell the face spans a full cycle or more, so a crest band is
+ *  always somewhere on it. */
+const WAVEFILL_WAVE_NUMBER = { min: 1.6, max: 2.4 };
+
 const between = (random, range) => range.min + random() * (range.max - range.min);
 
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
@@ -85,7 +93,8 @@ export function hashString(s) {
  *   driftSecondsPerCell     one cell per loop, so the travel tiles seamlessly
  *   rotationSpeed           rad/s, signed, and freely near zero (some agents
  *                           simply do not tilt — that is a face too)
- *   wave: { kx, ky }        radians of phase added per column / per row
+ *   wave: { kx, ky }        radians of phase added per column / per row, and
+ *                           steeper on a wavefill face than on a grid one
  *   waveFrequency           rad/s the same phase advances in time
  *   scaleAmplitude          how far a cell breathes, as a fraction of its size
  *   alphaAmplitude          how far it brightens and dims
@@ -115,12 +124,22 @@ export function motionParams(seed) {
   // as the seed does.
   const style = random() < 0.5 ? "grid" : "wavefill";
   const fillSharpness = between(random, FILL_SHARPNESS);
+  const wavefillWaveNumber = between(random, WAVEFILL_WAVE_NUMBER);
+
+  // The wavefill face keeps the direction it drew and trades the magnitude. It
+  // is done here, at the source, because everything downstream reads
+  // params.wave — including agentCanvas's wrap compensation, which has to be
+  // walking back the same wave the cells are riding.
+  const spatialWaveNumber = style === "wavefill" ? wavefillWaveNumber : waveNumber;
 
   return {
     drift: { x: Math.cos(driftAngle), y: Math.sin(driftAngle) },
     driftSecondsPerCell,
     rotationSpeed,
-    wave: { kx: waveNumber * Math.cos(waveAngle), ky: waveNumber * Math.sin(waveAngle) },
+    wave: {
+      kx: spatialWaveNumber * Math.cos(waveAngle),
+      ky: spatialWaveNumber * Math.sin(waveAngle),
+    },
     waveFrequency,
     scaleAmplitude,
     alphaAmplitude,

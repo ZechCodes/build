@@ -23,12 +23,23 @@
 //    place on it. Nothing is drawn per-cell-random: the motion has to read as one
 //    surface breathing, not as a swarm.
 //
+// There are two faces, and the seed picks one. A 'grid' bubble draws its lattice
+// and breathes it; a 'wavefill' bubble draws no lattice at all and lets a band of
+// solid cells sweep across an empty circle. Everything above the per-cell paint —
+// the tiling, the drift, the wrap, the one wave — is the same either way.
+//
 // jsdom has no 2D context — `getContext("2d")` is null there — so every paint
 // path returns quietly rather than throwing. A bubble in a test still keeps its
 // state; it just has nowhere to put pixels.
 
 import { TILINGS, tilingForPattern } from "./tilings.js";
-import { cellPhase, createClock, motionParams } from "./patternMotion.js";
+import {
+  CELL_SCALE_BASE,
+  cellFill,
+  cellPhase,
+  createClock,
+  motionParams,
+} from "./patternMotion.js";
 
 const TAU = Math.PI * 2;
 
@@ -328,6 +339,7 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
     ctx.lineWidth = STROKE_WIDTH_PX;
 
     const dimShare = dimmed ? DIMMED_ALPHA_SHARE : 1;
+    const wavefill = params.style === "wavefill";
     // Rotation keeps a cell's distance from the field's centre, so culling on
     // that distance is exact whatever the tilt.
     const reach = radius + field.cellSize * 2;
@@ -335,9 +347,17 @@ export function createPatternRenderer({ canvas, patternIndex = 1, seed = "" } = 
       const dx = cell.center[0] + offsetX - field.size / 2;
       const dy = cell.center[1] + offsetY - field.size / 2;
       if (Math.hypot(dx, dy) > reach) continue;
-      const { scale, alpha } = cellPhase(params, cell, seconds, wavePhase);
       const kindShare =
         tilingName === "octagons" && cell.kind === "square" ? FILLER_ALPHA_SHARE : 1;
+      if (wavefill) {
+        // No stroke and no breathing: the lattice is invisible, and the only
+        // thing that moves is which cells the crest has reached.
+        tracePolygon(ctx, cell, CELL_SCALE_BASE);
+        ctx.globalAlpha = cellFill(params, cell, seconds, wavePhase) * dimShare * kindShare;
+        ctx.fill();
+        continue;
+      }
+      const { scale, alpha } = cellPhase(params, cell, seconds, wavePhase);
       const cellAlpha = alpha * dimShare * kindShare;
       tracePolygon(ctx, cell, scale);
       ctx.globalAlpha = cellAlpha * FILL_ALPHA_SHARE;

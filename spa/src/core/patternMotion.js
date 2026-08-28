@@ -29,12 +29,17 @@ export const CELL_ALPHA_BASE = 0.6;
 
 const TAU = Math.PI * 2;
 
-const DRIFT_SECONDS_PER_CELL = { min: 4, max: 8 };
-const ROTATION_SPEED_LIMIT = 0.03; // rad/s, either direction — a slow tilt, not a spin
+const DRIFT_SECONDS_PER_CELL = { min: 1.5, max: 3.5 };
+const ROTATION_SPEED_LIMIT = 0.08; // rad/s, either direction — a slow tilt, not a spin
 const WAVE_NUMBER = { min: 0.35, max: 1.1 }; // radians of phase per cell of travel
-const WAVE_FREQUENCY = { min: 0.3, max: 0.9 }; // rad/s: a 7-to-21 second breath
+const WAVE_FREQUENCY = { min: 0.9, max: 2.2 }; // rad/s: a 3-to-7 second breath
 const SCALE_AMPLITUDE = { min: 0.04, max: 0.12 };
 const ALPHA_AMPLITUDE = { min: 0.15, max: 0.35 };
+
+/** How hard the wavefill face pinches its wave into a crest. Below this the
+ *  band is a haze over the whole circle rather than a few solid cells; above it
+ *  the crest is gone before the eye finds it. */
+const FILL_SHARPNESS = { min: 2.5, max: 5 };
 
 const between = (random, range) => range.min + random() * (range.max - range.min);
 
@@ -85,6 +90,9 @@ export function hashString(s) {
  *   scaleAmplitude          how far a cell breathes, as a fraction of its size
  *   alphaAmplitude          how far it brightens and dims
  *   phase                   where in the loop this agent starts
+ *   style                   'grid' — a drawn lattice breathing — or 'wavefill',
+ *                           a blank face with solid cells sweeping over it
+ *   fillSharpness           how tight the wavefill crest is (see cellFill)
  */
 export function motionParams(seed) {
   const random = mulberry32(typeof seed === "number" ? seed : hashString(seed));
@@ -102,6 +110,11 @@ export function motionParams(seed) {
   const scaleAmplitude = between(random, SCALE_AMPLITUDE);
   const alphaAmplitude = between(random, ALPHA_AMPLITUDE);
   const phase = random() * TAU;
+  // Appended, and the two faces split evenly: an agent is as likely to wear a
+  // lattice as a band of solid cells, and which it is stays its own for as long
+  // as the seed does.
+  const style = random() < 0.5 ? "grid" : "wavefill";
+  const fillSharpness = between(random, FILL_SHARPNESS);
 
   return {
     drift: { x: Math.cos(driftAngle), y: Math.sin(driftAngle) },
@@ -112,6 +125,8 @@ export function motionParams(seed) {
     scaleAmplitude,
     alphaAmplitude,
     phase,
+    style,
+    fillSharpness,
   };
 }
 
@@ -166,15 +181,39 @@ export function createClock() {
  * the drawn amplitudes never reach the clamp, so it changes nothing in practice.
  */
 export function cellPhase(params, cell, tSeconds, phaseCorrection = 0) {
-  const angle =
-    params.waveFrequency * tSeconds +
-    params.wave.kx * cell.col +
-    params.wave.ky * cell.row +
-    params.phase +
-    phaseCorrection;
-  const swing = Math.sin(angle);
+  const swing = Math.sin(waveAngleAt(params, cell, tSeconds, phaseCorrection));
   return {
     scale: CELL_SCALE_BASE + params.scaleAmplitude * swing,
     alpha: clamp(CELL_ALPHA_BASE + params.alphaAmplitude * swing, 0, 1),
   };
+}
+
+/**
+ * One cell's fill alpha for the wavefill face, on the SAME wave cellPhase reads
+ * — same angle, same `phaseCorrection` from the painter, so the two faces are
+ * one motion shown two ways.
+ *
+ * What differs is the shaping. The swing is mapped into [0, 1] and raised to
+ * `fillSharpness`, which flattens everything away from the peak towards nothing
+ * and leaves only a narrow crest near 1. The face is blank; what crosses it is
+ * a band of cells that happen to be at the crest right now.
+ *
+ * The cell's scale is not this function's business: a wavefill cell is drawn at
+ * rest size always. The band travelling is the motion, and a cell resizing under
+ * it would only read as jitter.
+ */
+export function cellFill(params, cell, tSeconds, phaseCorrection = 0) {
+  const swing = Math.sin(waveAngleAt(params, cell, tSeconds, phaseCorrection));
+  return clamp(((swing + 1) / 2) ** params.fillSharpness, 0, 1);
+}
+
+/** The one wave, sampled at this cell at this moment. Both faces read it. */
+function waveAngleAt(params, cell, tSeconds, phaseCorrection) {
+  return (
+    params.waveFrequency * tSeconds +
+    params.wave.kx * cell.col +
+    params.wave.ky * cell.row +
+    params.phase +
+    phaseCorrection
+  );
 }

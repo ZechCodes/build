@@ -1204,6 +1204,39 @@ mod tests {
         session.end();
     }
 
+    /// The PTY does not map "stop this turn" onto ESC bytes, and says so.
+    ///
+    /// ESC is a keystroke whose meaning belongs to the harness — claude reads
+    /// it as stop, another closes a picker with it — and a terminal reports no
+    /// turn boundary, so Build could write the bytes and never learn whether
+    /// anything stopped. The basement is always accessible, so the refusal
+    /// sends the human there rather than pressing it blind. And a refusal is
+    /// not a kill: the session is the same session afterwards.
+    #[tokio::test]
+    async fn a_pty_refuses_to_stop_a_turn_and_names_the_terminal() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let spawned = PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap();
+        let session: Box<dyn AgentSession> = Box::new(spawned);
+
+        assert!(!session.can_interrupt(), "a terminal stops no turn");
+        let refused = session.interrupt().expect_err("the PTY refuses");
+        assert!(
+            matches!(&refused, HarnessError::Unsupported(said) if said.contains("terminal")
+                && said.contains("Esc")),
+            "the refusal says where the thing actually lives: {refused}"
+        );
+        assert!(
+            !matches!(session.status(), AgentStatus::Ended { .. }),
+            "and it is a refusal, not a kill — the harness is still running"
+        );
+        assert!(
+            session.session_id().is_none(),
+            "a terminal names no conversation: what it resumes is a transcript on disk"
+        );
+        session.end();
+    }
+
     #[tokio::test]
     async fn send_turn_frames_and_submits_exactly_as_write_prompt_does() {
         // The turn is a value at the interface and keystroke mechanics below

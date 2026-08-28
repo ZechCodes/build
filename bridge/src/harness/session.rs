@@ -27,6 +27,12 @@ pub enum HarnessError {
     Io(#[from] std::io::Error),
     #[error("harness {binary:?} not found in PATH {path:?} — install it, or restart the daemon from a shell that can see it")]
     NotFound { binary: String, path: String },
+    /// This carrier cannot do the thing that was asked, and the sentence says
+    /// where the thing actually lives. Never a fallback to something different
+    /// — the `require_shell_kind` manner: refuse loudly, point at the real
+    /// door.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 /// One turn handed to an agent.
@@ -151,6 +157,54 @@ pub trait AgentSession: Send + Sync {
     /// Every subscriber sees each event from the moment it subscribes and
     /// observes `Closed` once the session's stream ends.
     fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+        None
+    }
+
+    /// Whether this session can be told to stop the turn it is running.
+    ///
+    /// Asked without performing it: the agent digest answers the SPA with this
+    /// before anyone presses anything. An implementation must answer it from
+    /// the same value [`interrupt`](AgentSession::interrupt) refuses on, so the
+    /// two cannot disagree — a control the client offers and the session then
+    /// refuses is worse than no control at all.
+    ///
+    /// A defaulted method rather than [`terminal`](AgentSession::terminal)'s
+    /// `Option` capability, because this one is announced at RUNTIME — a
+    /// protocol carrier learns it from the child's own `init` line, so the same
+    /// provider answers differently on two versions of the same CLI.
+    fn can_interrupt(&self) -> bool {
+        false
+    }
+
+    /// Stop the turn the agent is running now, and return.
+    ///
+    /// **Never kills.** [`end`](AgentSession::end) is the kill and it is a
+    /// different verb with a different lifetime: a session that answered
+    /// `interrupt` is the SAME session afterwards, still holding its
+    /// conversation, ready for the turn Build hands it next.
+    ///
+    /// Returns promptly, for the reason [`send_turn`](AgentSession::send_turn)
+    /// does: the in-place nudge speaks from under the app-wide state lock.
+    ///
+    /// The default is the terminal carrier's answer, and it is a refusal. ESC
+    /// is a keystroke whose meaning belongs to the harness rather than to
+    /// Build, a terminal reports no turn boundary — so Build could write the
+    /// bytes and never learn whether anything stopped — and the basement is
+    /// always accessible, so the human who wants a full harness stopped drops
+    /// in and presses Esc with the screen in front of them.
+    fn interrupt(&self) -> Result<(), HarnessError> {
+        Err(HarnessError::Unsupported(
+            "this agent has no interrupt — open its terminal and press Esc".to_string(),
+        ))
+    }
+
+    /// The id the harness gave the conversation this session is having, once it
+    /// has announced one. What a respawn resumes BY NAME.
+    ///
+    /// `None` for a carrier that names no conversation, and for one that has
+    /// not announced yet. Reported, never scraped: it is read off the protocol
+    /// line the child sent, never out of a transcript directory.
+    fn session_id(&self) -> Option<String> {
         None
     }
 
@@ -295,6 +349,32 @@ mod tests {
         let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
         assert!(session.terminal().is_none());
         assert!(session.activity().is_none());
+    }
+
+    /// Stopping a turn defaults to "no", and the refusal says where the thing
+    /// actually lives instead of falling back to something different — the
+    /// `require_shell_kind` manner. Naming the conversation defaults to "no"
+    /// the same way.
+    #[test]
+    fn a_session_that_says_nothing_about_stopping_a_turn_refuses_and_says_where_to_go() {
+        let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
+        assert!(!session.can_interrupt());
+        assert!(session.session_id().is_none());
+
+        let refused = session.interrupt().expect_err("the default is a refusal");
+        assert!(
+            matches!(&refused, HarnessError::Unsupported(said) if said.contains("terminal")
+                && said.contains("Esc")),
+            "the refusal carries the sentence a bare `None` could not: {refused}"
+        );
+    }
+
+    /// The flag and the call answer from ONE value, so the SPA can never offer
+    /// a control the session then refuses.
+    #[test]
+    fn a_session_can_interrupt_exactly_when_its_interrupt_does_not_refuse() {
+        let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
+        assert_eq!(session.can_interrupt(), session.interrupt().is_ok());
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

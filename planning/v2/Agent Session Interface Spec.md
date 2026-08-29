@@ -1876,6 +1876,11 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-28, the stale press.** The final review's one defect, fixed in
+  `7e6c0d5`: `interrupt()` recorded its pending request without asking whether a
+  turn was open, so a press that landed after the turn's own result had closed
+  it leaked into the turn queued behind it — which then reported `Working` with
+  nothing running and lost its own error. §8.1 gains the guard and §8.5 test 12.
 - **2026-08-28, step 8 complete — the composer's split send.** §8.4 as
   designed, in `07980b3` (`agentCanInterrupt`, the whole condition in one
   reader), `8d114b4` (the send control's two shapes, and `primaryId` so it

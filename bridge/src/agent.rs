@@ -68,6 +68,17 @@ pub struct Agent {
     /// The agent's own conversation. `thread:<agent_id>`, always.
     #[serde(default)]
     pub thread: Thread,
+    /// The name the agent's last session gave the conversation it was having,
+    /// for a respawn to resume BY NAME rather than by guessing the newest
+    /// transcript in the checkout.
+    ///
+    /// `None` for a carrier that names no conversation, for an agent that has
+    /// never run, and for one whose session died before it could announce
+    /// itself — all three of which fall back to the transcript probe, which is
+    /// what shipped before this and still works. Never an error: this is a
+    /// sharpening of a path that already answers.
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
 }
 
 impl Agent {
@@ -88,6 +99,7 @@ impl Agent {
             ordinal,
             created_at: created_at.into(),
             state: AgentLifecycle::Idle,
+            resume_session_id: None,
         }
     }
 }

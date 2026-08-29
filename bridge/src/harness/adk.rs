@@ -102,8 +102,15 @@ impl Harness for AdkHarness {
             .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
             .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions");
-        if options.continue_session {
-            spec = spec.arg("--continue");
+        // The two are alternatives and never both: `--resume` names the exact
+        // conversation this agent was having, `--continue` guesses the newest
+        // one in the checkout, and passing both would ask for two different
+        // conversations. The name wins where there is one; the guess is what
+        // answers for a session that died before it could say its own.
+        match options.resume_session_id.as_deref() {
+            Some(named) => spec = spec.arg("--resume").arg(named),
+            None if options.continue_session => spec = spec.arg("--continue"),
+            None => {}
         }
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
@@ -160,6 +167,27 @@ const TOOL_SUMMARY_LIMIT: usize = 240;
 /// child.
 const ACTIVITY_BACKLOG: usize = 1024;
 
+/// The capability a child announces in its `init` line when the turn it is
+/// running can be stopped over the wire.
+///
+/// Asked of the child rather than of a version number, because the same CLI
+/// answers differently on two releases — and a Build that guessed from the
+/// version would offer a control the session then refused.
+const INTERRUPT_CAPABILITY: &str = "interrupt_receipt_v1";
+
+/// The interrupt Build asked for, until the result that closes the turn it
+/// ended arrives.
+struct PendingInterrupt {
+    request_id: String,
+    /// The child answered `control_response` for this id — which it does before
+    /// it emits the result, so an interrupt still unacked when the result lands
+    /// is one the child never acted on.
+    acked: bool,
+    /// A turn was handed over behind the interrupt — the steering turn, which
+    /// the child runs once the interrupted one is closed.
+    steered: bool,
+}
+
 /// Everything the protocol has told this session so far.
 ///
 /// Every field is reported rather than inferred, which is the whole difference
@@ -183,6 +211,11 @@ struct ProtocolState {
     last_line: Instant,
     /// The id the child gave this conversation, for `--resume`.
     session_id: Option<String>,
+    /// What the child announced it can do, verbatim from its `init` line.
+    capabilities: Vec<String>,
+    /// The interrupt Build is waiting on, if any. At most one: asking twice to
+    /// stop the same turn is one ask.
+    pending_interrupt: Option<PendingInterrupt>,
     /// The last error the child REPORTED, from a result line that carried one.
     reported_error: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
@@ -196,6 +229,8 @@ impl ProtocolState {
             turn_open: false,
             last_line: Instant::now(),
             session_id: None,
+            capabilities: Vec::new(),
+            pending_interrupt: None,
             reported_error: None,
             last_stderr_line: None,
         }
@@ -333,20 +368,21 @@ impl AdkSession {
         ))
     }
 
-    /// The id the child gave this conversation, once it has announced one.
+    /// Write one protocol line to the child's stdin, and return.
     ///
-    /// This is what a respawn resumes by (`--resume <id>`), and it is sharper
-    /// than the cwd heuristic the transcript probe falls back to: it names the
-    /// exact conversation Build was speaking to rather than the newest one in
-    /// the directory.
-    ///
-    /// Read only by this module's tests so far: the daemon still resumes the
-    /// way it always has — the transcript probe answers, and the spec carries
-    /// `--continue` — and persisting the id beside the agent is the sharper
-    /// resume this makes possible, not something the provider half needed.
-    #[allow(dead_code)]
-    pub fn session_id(&self) -> Option<String> {
-        self.state.lock().unwrap().session_id.clone()
+    /// The whole of what this carrier says to its child — a turn, an interrupt
+    /// — is one line on the same pipe, and both callers return on the write for
+    /// the same reason: the daemon speaks to a session from under the app-wide
+    /// state lock.
+    fn write_line(&self, line: &str) -> Result<(), HarnessError> {
+        let mut stdin = self.stdin.lock().unwrap();
+        let pipe = stdin.as_mut().ok_or_else(|| {
+            HarnessError::Session("this session has ended — it takes no more turns".to_string())
+        })?;
+        pipe.write_all(line.as_bytes())?;
+        pipe.write_all(b"\n")?;
+        pipe.flush()?;
+        Ok(())
     }
 
     /// The child's exit code once it has exited, cached on first sight.
@@ -390,17 +426,73 @@ impl AgentSession for AdkSession {
             },
         })
         .to_string();
-        {
-            let mut stdin = self.stdin.lock().unwrap();
-            let pipe = stdin.as_mut().ok_or_else(|| {
-                HarnessError::Session("this session has ended — it takes no more turns".to_string())
-            })?;
-            pipe.write_all(line.as_bytes())?;
-            pipe.write_all(b"\n")?;
-            pipe.flush()?;
+        self.write_line(&line)?;
+        let mut state = self.state.lock().unwrap();
+        state.turn_open = true;
+        // A turn handed over behind an outstanding interrupt is the steering
+        // turn: the child runs it once the interrupted one is closed, so the
+        // result that closes that one must hand `Working` on to this rather
+        // than report a session that is actively working as waiting.
+        if let Some(pending) = state.pending_interrupt.as_mut() {
+            pending.steered = true;
         }
-        self.state.lock().unwrap().turn_open = true;
         Ok(())
+    }
+
+    /// Announced by the child in its own `init` line, so the same provider
+    /// answers differently on two versions of the same CLI — and a session that
+    /// has not announced yet answers no, which is also true: it has no turn to
+    /// stop.
+    fn can_interrupt(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .capabilities
+            .iter()
+            .any(|announced| announced == INTERRUPT_CAPABILITY)
+    }
+
+    /// One `control_request` line on the same pipe the turns go down, and back.
+    ///
+    /// No wait for the ack — the contract is `send_turn`'s, for `send_turn`'s
+    /// reason. What the ack decides is read later, by the reader thread, when
+    /// the result that closes the stopped turn arrives.
+    ///
+    /// A second ask while one is outstanding replaces it: asking twice to stop
+    /// the same turn is one ask.
+    fn interrupt(&self) -> Result<(), HarnessError> {
+        if !self.can_interrupt() {
+            return Err(HarnessError::Unsupported(
+                "this claude advertises no interrupt — send the message instead: it reaches the running turn at its next step boundary".to_string(),
+            ));
+        }
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let line = json!({
+            "type": "control_request",
+            "request_id": request_id,
+            "request": { "subtype": "interrupt" },
+        })
+        .to_string();
+        // Recorded before the write rather than after it: the child can answer
+        // faster than this thread reaches its next lock, and an ack that
+        // arrived before the record existed would read as somebody else's.
+        self.state.lock().unwrap().pending_interrupt = Some(PendingInterrupt {
+            request_id,
+            acked: false,
+            steered: false,
+        });
+        if let Err(refused) = self.write_line(&line) {
+            self.state.lock().unwrap().pending_interrupt = None;
+            return Err(refused);
+        }
+        Ok(())
+    }
+
+    /// The name the child gave this conversation in its `init` line — what a
+    /// respawn resumes BY NAME, sharper than the cwd heuristic the transcript
+    /// probe falls back to.
+    fn session_id(&self) -> Option<String> {
+        self.state.lock().unwrap().session_id.clone()
     }
 
     /// Reported, never guessed — the difference this carrier exists for. A model
@@ -525,6 +617,7 @@ impl ProtocolReader {
             Some("assistant") => self.read_message(&event, Voice::Assistant),
             Some("user") => self.read_message(&event, Voice::User),
             Some("result") => self.read_result(&event),
+            Some("control_response") => self.read_control_response(&event),
             _ => {}
         }
     }
@@ -540,22 +633,60 @@ impl ProtocolReader {
         if let Some(id) = event["session_id"].as_str() {
             state.session_id = Some(id.to_string());
         }
+        if let Some(announced) = event["capabilities"].as_array() {
+            state.capabilities = announced
+                .iter()
+                .filter_map(|entry| entry.as_str().map(str::to_string))
+                .collect();
+        }
+    }
+
+    /// The child's answer to a `control_request`. Only the outstanding
+    /// interrupt's own id counts: a response naming another request is noise,
+    /// and a session that took it as its own would swallow a real crash.
+    fn read_control_response(&mut self, event: &Value) {
+        let Some(answered) = event["response"]["request_id"]
+            .as_str()
+            .or_else(|| event["request_id"].as_str())
+        else {
+            return;
+        };
+        let mut state = self.state.lock().unwrap();
+        if let Some(pending) = state.pending_interrupt.as_mut() {
+            if pending.request_id == answered {
+                pending.acked = true;
+            }
+        }
     }
 
     /// The turn boundary. A result is never a completion — `done` is still the
     /// only completion contract — so this closes the turn and, when it carried
     /// an error, records the session's last words.
+    ///
+    /// Unless the human stopped it. An interrupted turn ends in an
+    /// `error_during_execution` result, and reporting that as a crash would end
+    /// the human's own stop with a crash notice quoting it. The ACK is what
+    /// makes the clearing safe rather than a blanket amnesty: the child answers
+    /// the control request before it emits the result, so an interrupt still
+    /// unanswered here is one the child never acted on, and the failure the
+    /// result reports is the turn's own.
     fn read_result(&mut self, event: &Value) {
         let failed = event["is_error"].as_bool().unwrap_or(false)
             || event["subtype"]
                 .as_str()
                 .is_some_and(|kind| kind != "success");
         let mut state = self.state.lock().unwrap();
-        state.turn_open = false;
-        state.reported_error = match failed {
-            true => Some(result_error_text(event)),
-            false => None,
-        };
+        // Taken, acked or not, so an interrupt can never leak into the turn
+        // after the one it ended.
+        let stopped = state.pending_interrupt.take();
+        // The turn queued behind an interrupt is running the moment this result
+        // lands, so the flag is handed to it rather than cleared.
+        state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
+        state.reported_error =
+            match failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
+                true => Some(result_error_text(event)),
+                false => None,
+            };
     }
 
     /// One message's content blocks, minted in the order the child reported
@@ -739,8 +870,12 @@ pub(crate) mod fake {
     /// harness below replays exactly what claude would say. Single quotes are
     /// forbidden inside them: the fake is a `sh -c` script that quotes each
     /// line, and a stray quote would rewrite the protocol rather than fail.
-    pub(crate) const INIT: &str =
-        r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5"}"#;
+    pub(crate) const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5","capabilities":["msg_lifecycle_v1","interrupt_receipt_v1","interrupt_cancel_queued_v1"]}"#;
+    /// The same child on a CLI built before the interrupt landed: it announces
+    /// itself and names no capabilities at all. What a refusal is tested
+    /// against, and the reason the question is asked of the child rather than
+    /// of a version number.
+    pub(crate) const INIT_WITHOUT_INTERRUPT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5","capabilities":["msg_lifecycle_v1"]}"#;
     pub(crate) const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
@@ -751,35 +886,93 @@ pub(crate) mod fake {
     pub(crate) const SUBAGENT_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"parent_tool_use_id":"toolu_1"}"#;
     pub(crate) const FAILED_RESULT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the tool call was refused","session_id":"sess-adk"}"#;
 
+    /// Which request the child names in the `control_response` it answers an
+    /// interrupt with.
+    enum Acknowledged {
+        /// The request it was actually asked — what the live child does.
+        TheOneAsked,
+        /// Somebody else's, so the reader's matching is exercised rather than
+        /// assumed: a response naming another request is noise, and the turn's
+        /// own failure keeps its epitaph.
+        AnotherRequest,
+    }
+
     /// A fake stream-json harness: it announces its session after a beat, then
     /// replays `per_turn` for every turn written to its stdin, turn after turn
     /// for as long as that stdin is open. The beat is what makes `Starting`
     /// observable — a real child's init line does not arrive the instant it is
     /// forked either.
+    ///
+    /// It also speaks the control protocol, in the order the live wire does: a
+    /// `control_request` is answered with a `control_response`, then with the
+    /// `error_during_execution` result that closes the turn it stopped, and
+    /// only then does the loop read the next queued turn.
     pub(crate) fn stream_json_harness(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(per_turn, true)
+        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked)
     }
 
     /// The same child, for one turn only: it answers, then leaves the way a
     /// real one does when its work is over. That departure closes its stream,
     /// which is what a no-terminal session's death rites hang off.
     pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(per_turn, false)
+        harness_replaying(INIT, per_turn, false, Acknowledged::TheOneAsked)
     }
 
-    fn harness_replaying(per_turn: &[&str], turn_after_turn: bool) -> HarnessSpec {
-        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{INIT}'\n");
-        script.push_str(match turn_after_turn {
-            true => "while IFS= read -r turn; do\n",
-            false => "if IFS= read -r turn; then\n",
-        });
+    /// A CLI that announces no interrupt. Build never sends it a
+    /// `control_request`, because [`AdkSession::can_interrupt`] reads the same
+    /// announcement the refusal does.
+    pub(crate) fn stream_json_harness_without_interrupt(per_turn: &[&str]) -> HarnessSpec {
+        harness_replaying(
+            INIT_WITHOUT_INTERRUPT,
+            per_turn,
+            true,
+            Acknowledged::TheOneAsked,
+        )
+    }
+
+    /// A child that answers an interrupt by naming a request nobody made, and
+    /// then fails the turn on its own account.
+    pub(crate) fn stream_json_harness_answering_another_request(per_turn: &[&str]) -> HarnessSpec {
+        harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest)
+    }
+
+    fn harness_replaying(
+        init: &str,
+        per_turn: &[&str],
+        turn_after_turn: bool,
+        acknowledged: Acknowledged,
+    ) -> HarnessSpec {
+        let mut replay = String::new();
         for line in per_turn {
             assert!(
                 !line.contains('\''),
                 "a recorded protocol line may not carry a single quote: {line}"
             );
-            script.push_str(&format!("printf '%s\\n' '{line}'\n"));
+            replay.push_str(&format!("printf '%s\\n' '{line}'\n"));
         }
+        // The one place the script interpolates rather than quoting a recording:
+        // the id it echoes is a value it read at runtime.
+        let echoed = match acknowledged {
+            Acknowledged::TheOneAsked => "\"$asked\"",
+            Acknowledged::AnotherRequest => "nobody-asked-this",
+        };
+        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n");
+        script.push_str(match turn_after_turn {
+            true => "while IFS= read -r turn; do\n",
+            false => "if IFS= read -r turn; then\n",
+        });
+        script.push_str(&format!(
+            "case \"$turn\" in\n\
+             *control_request*)\n\
+             asked=$(printf '%s' \"$turn\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
+             printf '{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"%s\"}}}}\\n' {echoed}\n\
+             printf '%s\\n' '{FAILED_RESULT}'\n\
+             ;;\n\
+             *)\n\
+             {replay}\
+             ;;\n\
+             esac\n"
+        ));
         script.push_str(match turn_after_turn {
             true => "done\n",
             false => "fi\n",
@@ -827,6 +1020,7 @@ mod tests {
     fn spawn_options() -> SpawnOptions {
         SpawnOptions {
             continue_session: false,
+            resume_session_id: None,
             owner_id: "agent-01J".to_string(),
             mcp_session_token: "token-42".to_string(),
             cwd: PathBuf::from("/tmp/worktree"),
@@ -886,6 +1080,48 @@ mod tests {
             "a headless session picks the worktree's conversation back up: {:?}",
             resumed.args
         );
+    }
+
+    /// A conversation the last session NAMED is resumed by that name, and the
+    /// cwd guess is not passed beside it: `--resume` names the exact
+    /// conversation and `--continue` names the newest one in the directory, so
+    /// asking for both is asking for two different conversations.
+    #[test]
+    fn a_recorded_session_id_is_resumed_by_name_instead_of_by_the_cwd_guess() {
+        let by_name = AdkHarness.spec(
+            &ModelChoice::default(),
+            &SpawnOptions {
+                // Both offered, exactly as the daemon offers them: the probe
+                // answers for every Build-owned checkout, and the record
+                // answers for an agent that has run before.
+                continue_session: true,
+                resume_session_id: Some("sess-adk".to_string()),
+                ..spawn_options()
+            },
+            &context(),
+        );
+        let args = by_name.args.join(" ");
+        assert!(args.contains("--resume sess-adk"), "{args}");
+        assert!(
+            !args.contains("--continue"),
+            "the name wins, and it wins alone: {args}"
+        );
+
+        // And nothing recorded leaves the shipped fallback exactly as it was:
+        // an agent whose session died before announcing itself must not be a
+        // spawn that fails.
+        let by_guess = AdkHarness.spec(
+            &ModelChoice::default(),
+            &SpawnOptions {
+                continue_session: true,
+                resume_session_id: None,
+                ..spawn_options()
+            },
+            &context(),
+        );
+        let args = by_guess.args.join(" ");
+        assert!(args.contains("--continue"), "{args}");
+        assert!(!args.contains("--resume"), "{args}");
     }
 
     /// §2's dividend, held to: everything an agent says to Build arrives over
@@ -1253,6 +1489,198 @@ mod tests {
             AgentStatus::Working,
             "an unanswered turn is still a turn in progress"
         );
+        session.end();
+    }
+
+    /// The capability is the CHILD's answer, not the provider's: the same CLI
+    /// advertises an interrupt on one version and not on the next, so the
+    /// question is asked of the `init` line rather than of a version number.
+    /// A session that has not announced yet answers no — it has no turn to stop
+    /// either.
+    #[test]
+    fn stopping_a_turn_is_offered_exactly_when_the_child_announced_it() {
+        let announced = open(&stream_json_harness(&[THINKING]));
+        assert!(
+            !announced.can_interrupt(),
+            "a child that has said nothing has announced nothing"
+        );
+        assert!(
+            matches!(announced.interrupt(), Err(HarnessError::Unsupported(_))),
+            "and the flag and the call answer from the same value"
+        );
+
+        wait_for_status(&announced, AgentStatus::Waiting);
+        assert!(announced.can_interrupt());
+        assert!(announced.interrupt().is_ok());
+        announced.end();
+
+        let silent = open(&stream_json_harness_without_interrupt(&[THINKING]));
+        wait_for_status(&silent, AgentStatus::Waiting);
+        assert!(!silent.can_interrupt());
+        assert!(matches!(
+            silent.interrupt(),
+            Err(HarnessError::Unsupported(_))
+        ));
+        silent.end();
+    }
+
+    /// What an interrupt IS on the wire: one `control_request` line down the
+    /// same pipe the turns go down, carrying a fresh id per ask — which is what
+    /// lets the reader tell this session's ack from somebody else's.
+    #[test]
+    fn an_interrupt_is_one_control_request_line_with_an_id_of_its_own() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let capture = dir.path().join("stdin.jsonl");
+        let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
+            "printf '%s\\n' '{INIT}'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> {}; done\n",
+            capture.display()
+        )));
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        session.interrupt().expect("this child advertised one");
+        session.interrupt().expect("asking twice is allowed");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut written = Vec::new();
+        while Instant::now() < deadline && written.len() < 2 {
+            written = std::fs::read_to_string(&capture)
+                .unwrap_or_default()
+                .lines()
+                .map(|line| serde_json::from_str::<Value>(line).expect("a protocol line"))
+                .collect();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        assert_eq!(written.len(), 2, "one line per ask: {written:?}");
+        for asked in &written {
+            assert_eq!(asked["type"], "control_request");
+            assert_eq!(asked["request"]["subtype"], "interrupt");
+            assert!(
+                asked["request_id"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty()),
+                "an ack can only be matched to a request that named itself: {asked}"
+            );
+        }
+        assert_ne!(
+            written[0]["request_id"], written[1]["request_id"],
+            "a fresh id per request, so one ask's ack cannot close another's"
+        );
+        session.end();
+    }
+
+    /// A CLI built before the interrupt landed refuses, says what to do
+    /// instead — the probes showed an ordinary message reaches the running turn
+    /// at its next step boundary — and is the SAME session afterwards. A
+    /// refusal is not a kill.
+    #[test]
+    fn a_child_that_advertises_no_interrupt_refuses_and_keeps_working() {
+        let session = open(&stream_json_harness_without_interrupt(&[THINKING]));
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        let refused = session
+            .interrupt()
+            .expect_err("this child cannot be stopped");
+        let said = refused.to_string();
+        assert!(
+            said.contains("interrupt") && said.contains("message"),
+            "the refusal names what is missing and where the human's words still land: {said}"
+        );
+        assert!(
+            !said.contains("Esc"),
+            "and never sends anyone to a terminal this carrier does not have: {said}"
+        );
+
+        session
+            .send_turn(&Turn::new("carry on then"))
+            .expect("the refusal left the session alive");
+        assert_eq!(session.status(), AgentStatus::Working);
+        session.end();
+    }
+
+    /// The rule the whole step exists to hold: a turn the human stopped leaves
+    /// no epitaph. `error_during_execution` is what an interrupted turn's
+    /// result carries, and reported as a crash it would end the human's own
+    /// stop with a crash notice quoting it.
+    #[test]
+    fn an_acked_interrupt_leaves_the_turn_it_stopped_no_epitaph() {
+        let session = open(&stream_json_harness(&[THINKING]));
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("rewrite everything")).unwrap();
+        wait_for_status(&session, AgentStatus::Working);
+
+        session.interrupt().expect("this child advertised one");
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        assert_eq!(
+            session.epitaph(),
+            None,
+            "the human stopped it — there is nothing to explain"
+        );
+        session.end();
+    }
+
+    /// The other two sides of the same equivalence, so the clearing can never
+    /// be a blanket amnesty on `error_during_execution`.
+    ///
+    /// The ack is what makes an interrupt one the child ACTED on: it answers
+    /// the control request before it emits the result, so an interrupt still
+    /// unanswered at the result is one the child never acted on, and the
+    /// failure the result reports is the turn's own. A `control_response`
+    /// carrying somebody else's request id is noise, and a session that treated
+    /// it as its own would swallow a real crash.
+    #[test]
+    fn an_interrupt_the_child_never_answered_leaves_the_turns_own_error() {
+        let session = open(&stream_json_harness_answering_another_request(&[THINKING]));
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("rewrite everything")).unwrap();
+        wait_for_status(&session, AgentStatus::Working);
+
+        session.interrupt().expect("this child advertised one");
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        assert_eq!(
+            session.epitaph().as_deref(),
+            Some("the tool call was refused"),
+            "an interrupt the child never acted on does not excuse the turn's own failure"
+        );
+        session.end();
+    }
+
+    /// The subtler half of the rule: the result that closes an interrupted turn
+    /// hands `Working` on to the turn queued behind it.
+    ///
+    /// Clearing the flag on that result would leave a session that is actively
+    /// running the steering turn reporting `Waiting` — and a steering turn is
+    /// exactly the kind that goes silent for minutes inside one tool call, so
+    /// the idle sweep would demote a working agent. There is no second result
+    /// to reopen it: the steering turn ends in its own single result.
+    #[tokio::test]
+    async fn a_steering_turn_behind_an_interrupt_keeps_the_session_working() {
+        let session = open(&stream_json_harness(&[THINKING]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        session.send_turn(&Turn::new("rewrite everything")).unwrap();
+        next_activity(&mut activity).await;
+
+        // In the order the daemon's steering flow speaks them, both from under
+        // the state lock: stop the turn, then hand over the message.
+        session.interrupt().expect("this child advertised one");
+        session
+            .send_turn(&Turn::new("actually, just the index"))
+            .unwrap();
+
+        // The child answers the interrupt, ends the stopped turn with
+        // `error_during_execution`, and only then reads the steering turn — so
+        // this second event can only arrive after that result was read.
+        next_activity(&mut activity).await;
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "the steered turn is running; a session reporting Waiting here would be swept"
+        );
+        assert_eq!(session.epitaph(), None, "and the stop left no epitaph");
         session.end();
     }
 

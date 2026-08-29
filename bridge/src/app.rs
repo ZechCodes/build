@@ -3023,6 +3023,71 @@ impl AppState {
         }
     }
 
+    /// Apply `edit` to `agent_id`'s own RECORD — what the agent IS, not what it
+    /// said — and persist the entity that owns it.
+    ///
+    /// Beside [`edit_owner_thread`](Self::edit_owner_thread) rather than
+    /// [`edit_agent_conversation`](Self::edit_agent_conversation), which edits
+    /// the conversation an agent SPEAKS in: for a planned implementation's
+    /// first agent that is the Issue's thread, which is not the agent.
+    ///
+    /// Quiet about an owner or an agent it cannot find, for the reason
+    /// `edit_owner_thread` is: an entity whose record was deleted with its tab
+    /// has no roster left to write onto.
+    fn edit_agent_record(
+        &mut self,
+        context: &str,
+        owner: &str,
+        agent_id: &str,
+        edit: impl FnOnce(&mut crate::agent::Agent),
+    ) {
+        if self.plans.contains_key(owner) {
+            let Ok(mut active) = self.take_plan(owner) else {
+                return;
+            };
+            if let Some(agent) = active.agents.by_id_mut(agent_id) {
+                edit(agent);
+            }
+            if let Err(error) = self.finish_plan_mutation(owner.to_string(), active) {
+                eprintln!("{context} {owner}: {error}");
+            }
+            return;
+        }
+        let Ok(mut active) = self.take_run(owner) else {
+            return;
+        };
+        if let Some(agent) = active.agents.by_id_mut(agent_id) {
+            edit(agent);
+        }
+        if let Err(error) = self.finish_run_mutation(owner.to_string(), active) {
+            eprintln!("{context} {owner}: {error}");
+        }
+    }
+
+    /// The name the agent's record says its conversation has — `None` for one
+    /// no session of its has ever announced.
+    fn recorded_resume_id(&self, owner: &str, agent_id: &str) -> Option<String> {
+        self.entity_agents(owner)
+            .ok()?
+            .by_id(agent_id)?
+            .resume_session_id
+            .clone()
+    }
+
+    /// Write down the name the agent's live session gave its conversation, so
+    /// the next spawn resumes it BY NAME instead of guessing the newest
+    /// transcript in the checkout.
+    ///
+    /// `None` clears it, which is what a session that ended having never
+    /// announced one asks for: that is the shape of a spawn whose `--resume`
+    /// id no longer resolved, and clearing costs one restart where keeping it
+    /// would cost every restart.
+    fn record_agent_resume_id(&mut self, owner: &str, agent_id: &str, named: Option<String>) {
+        self.edit_agent_record("record_agent_resume_id", owner, agent_id, |agent| {
+            agent.resume_session_id = named;
+        });
+    }
+
     /// Post one thing the agent reported doing into the conversation it speaks
     /// in.
     ///
@@ -17272,12 +17337,19 @@ fn ensure_agent_tab(
                 // A Build-owned tab respawned after a crash should always pick
                 // its own transcript back up, so the probe is unconditional too.
                 let continue_session = (s.transcript_probe)(&root, model_choice.provider);
+                // Sharper than the probe where the agent's last session left a
+                // name: `--resume <id>` reopens the exact conversation Build
+                // was speaking to, where `--continue` reopens the newest one in
+                // the checkout. Absent is never an error — the probe is what
+                // answers then, exactly as it did before this existed.
+                let resume_session_id = s.recorded_resume_id(owner, agent_id);
                 let session_token = uuid::Uuid::new_v4().to_string();
                 let spec = orch.agent_harness_spec(
                     agent_id,
                     &root,
                     model_choice,
                     continue_session,
+                    resume_session_id,
                     &session_token,
                 );
                 let size = orch.pty_size();
@@ -17708,6 +17780,7 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
+                    note_announced_conversation(&mut s, &key, &owner, &agent_id);
                     s.record_agent_activity(&owner, &agent_id, &activity);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -17722,6 +17795,18 @@ fn spawn_activity_pump(
                     if let Some(tab) = s.tabs.get_mut(&key) {
                         tab.live = false;
                     }
+                    match announced_conversation(&s, &key) {
+                        Some(_) => note_announced_conversation(&mut s, &key, &owner, &agent_id),
+                        // A session that ended having never announced a
+                        // conversation of its own is the shape of one spawned
+                        // with an id that no longer resolves: the child exits
+                        // without an init line. Clearing sends the next spawn
+                        // back to the transcript probe, so one dead id costs
+                        // one restart rather than every restart — and where the
+                        // child died at startup for an unrelated reason, the
+                        // probe is what would have answered anyway.
+                        None => s.record_agent_resume_id(&owner, &agent_id, None),
+                    }
                     // The process is what a session IS, so this is where the
                     // conversation's lineage closes — and where a turn the dead
                     // process was holding is closed, so the row stops reading as
@@ -17732,6 +17817,33 @@ fn spawn_activity_pump(
             }
         }
     });
+}
+
+/// The name the session in `key`'s tab has given its conversation, or `None`
+/// for a carrier that names none and for one that has not announced yet.
+fn announced_conversation(state: &AppState, key: &TabKey) -> Option<String> {
+    state.tabs.get(key)?.session.session_id()
+}
+
+/// Keep the agent's record naming the conversation its live session is having.
+///
+/// The activity pump is the capture point because it is the only task that
+/// wakes on this carrier's own events, and it already resolves the agent and
+/// holds the state lock. Compared on every wake and written only when it moved,
+/// so a session that announces once costs one write however many events it goes
+/// on to report.
+///
+/// An announcement that has not arrived leaves the record alone: what it
+/// carries is the last session's name, which is exactly what `--resume` should
+/// use if this one dies before saying its own.
+fn note_announced_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(announced) = announced_conversation(state, key) else {
+        return;
+    };
+    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(announced.as_str()) {
+        return;
+    }
+    state.record_agent_resume_id(owner, agent_id, Some(announced));
 }
 
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
@@ -19806,7 +19918,7 @@ mod tests {
             effort: None,
         };
 
-        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, "token-42");
+        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, None, "token-42");
         assert_eq!(spec.binary, "claude");
         let args = spec.args.join(" ");
         assert!(
@@ -19822,10 +19934,10 @@ mod tests {
             spec.env
         );
         // A replaced tab picks its own conversation back up.
-        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, "token-43");
+        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, None, "token-43");
         assert!(resumed.args.join(" ").contains("--continue"));
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, "token-42");
+        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, None, "token-42");
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
         assert!(
@@ -19841,7 +19953,7 @@ mod tests {
             "{args}"
         );
         assert!(!args.ends_with("resume --last"), "{args}");
-        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, "token-43");
+        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, None, "token-43");
         assert!(resumed.args.join(" ").ends_with("resume --last"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -28107,6 +28219,7 @@ mod tests {
         };
         let options = SpawnOptions {
             continue_session: false,
+            resume_session_id: None,
             owner_id: "e2e".into(),
             mcp_session_token: "e2e-session-token".into(),
             cwd: workspace.clone(),
@@ -33071,6 +33184,191 @@ mod tests {
             s.tabs[&key].screen.is_none(),
             "and never had a grid to be retained"
         );
+    }
+
+    /// Put `run_id` on the headless provider running `spec`, and keep every
+    /// [`SpawnOptions`] the daemon built a spawn from.
+    ///
+    /// What a respawn picks back up is decided there and nowhere else, so the
+    /// recording is where a test reads the daemon's answer without a real
+    /// claude on the other end of it.
+    fn run_on_a_headless_provider_recording_spawns(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        run_id: &str,
+        spec: HarnessSpec,
+    ) -> Arc<Mutex<Vec<SpawnOptions>>> {
+        let spawns: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&spawns);
+        let choice = {
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorded.lock().unwrap().push(options.clone());
+                    spec.clone()
+                },
+            ));
+            s.projects[0].orch =
+                Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+            ModelChoice {
+                provider: AgentProvider::ClaudeAdk,
+                ..ModelChoice::default()
+            }
+        };
+        let mut s = state.lock().unwrap();
+        let run = s.runs.get_mut(run_id).expect("the run");
+        run.model_choice = choice.clone();
+        run.agents.resolve_mut(None).expect("its agent").choice = choice;
+        spawns
+    }
+
+    /// The argv the headless provider builds from one recorded spawn.
+    fn headless_argv(options: &SpawnOptions) -> String {
+        use crate::harness::Harness;
+        crate::harness::adk::AdkHarness
+            .spec(
+                &ModelChoice {
+                    provider: AgentProvider::ClaudeAdk,
+                    ..ModelChoice::default()
+                },
+                options,
+                &crate::harness::HarnessContext {
+                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                },
+            )
+            .args
+            .join(" ")
+    }
+
+    /// A respawn resumes the conversation the last session NAMED.
+    ///
+    /// The child announces its session id in its own `init` line, the activity
+    /// pump writes it onto the agent's record, and the next spawn carries
+    /// `--resume <id>` instead of the transcript probe's `--continue` — which
+    /// names the newest conversation in the checkout and not necessarily the
+    /// one Build was speaking to.
+    #[tokio::test]
+    async fn a_respawn_resumes_the_conversation_the_last_session_named() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-resume");
+        let agent_id = crate::agent::derived_agent_id("run-resume");
+        use crate::harness::adk::fake;
+        // It answers its one turn and leaves, the way a real one does when its
+        // work is over — which is what makes the next message a respawn.
+        let spawns = run_on_a_headless_provider_recording_spawns(
+            &state,
+            &repo,
+            "run-resume",
+            fake::stream_json_harness_that_leaves(&[fake::NARRATION, fake::RESULT]),
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-resume", "body": "drop the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let named = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-resume", &agent_id)
+        })
+        .await
+        .expect("the name the child gave its conversation reaches the agent's record");
+        assert_eq!(named, "sess-adk");
+
+        let again = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-resume", "body": "and the trigger" }),
+        );
+        assert_eq!(again["ok"], true, "{again:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            let spawns = spawns.lock().unwrap();
+            (spawns.len() == 2).then(|| spawns.clone())
+        })
+        .await
+        .expect("a message to an agent that has left starts it again");
+
+        assert_eq!(
+            spawned[0].resume_session_id, None,
+            "the first spawn had no conversation to name: {:?}",
+            spawned[0]
+        );
+        assert_eq!(
+            spawned[1].resume_session_id.as_deref(),
+            Some("sess-adk"),
+            "and the second carries the one the first announced: {:?}",
+            spawned[1]
+        );
+        let argv = headless_argv(&spawned[1]);
+        assert!(argv.contains("--resume sess-adk"), "{argv}");
+        assert!(
+            !argv.contains("--continue"),
+            "the name and the cwd guess are alternatives, never both: {argv}"
+        );
+    }
+
+    /// One dead id costs one restart, not every restart.
+    ///
+    /// A session spawned with a `--resume` id that no longer resolves exits
+    /// without ever announcing itself. So a session that ends having announced
+    /// nothing clears the record: the next spawn falls back to the transcript
+    /// probe, which is the path that shipped before any of this and still
+    /// answers. The same clearing covers a child that died at startup for an
+    /// unrelated reason, where the fallback is what would have run anyway.
+    #[tokio::test]
+    async fn a_session_that_never_announced_clears_the_name_it_was_spawned_with() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-stale");
+        let agent_id = crate::agent::derived_agent_id("run-stale");
+        // A child that leaves without a word — the shape of one handed an id
+        // its harness cannot find.
+        let spawns = run_on_a_headless_provider_recording_spawns(
+            &state,
+            &repo,
+            "run-stale",
+            HarnessSpec::new("sh").arg("-c").arg("exit 1"),
+        );
+        {
+            let mut s = state.lock().unwrap();
+            s.runs
+                .get_mut("run-stale")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-gone".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-stale", "body": "are you still there" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            spawns.lock().unwrap().first().cloned()
+        })
+        .await
+        .expect("the message starts the agent");
+        assert_eq!(
+            spawned.resume_session_id.as_deref(),
+            Some("sess-gone"),
+            "the spawn carried the recorded name — which is how it becomes a dead spawn"
+        );
+
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-stale", &agent_id)
+                .is_none()
+                .then_some(())
+        })
+        .await
+        .expect("a session that announced nothing takes the name it was spawned with with it");
     }
 
     /// Step 3's refusals, live in production for the first time.

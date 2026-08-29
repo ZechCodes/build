@@ -570,6 +570,14 @@ pub struct SpawnOptions {
     /// Resume the harness's own most-recent conversation for this cwd
     /// (claude: `--continue`). Set only for the first session after adoption.
     pub continue_session: bool,
+    /// Resume the conversation the agent's last session NAMED (claude:
+    /// `--resume <id>`), when one was recorded.
+    ///
+    /// An alternative to `continue_session`, never a companion: this names the
+    /// exact conversation Build was speaking to, and `--continue` guesses the
+    /// newest one in the cwd. A carrier that names no conversation — every PTY
+    /// one — leaves it empty, so the field is carrier-neutral in shape only.
+    pub resume_session_id: Option<String>,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
     /// Unlogged capability for this exact harness process. The daemon rotates it
@@ -804,10 +812,12 @@ impl Orchestrator {
         cwd: &Path,
         model_choice: &ModelChoice,
         continue_session: bool,
+        resume_session_id: Option<String>,
         mcp_session_token: &str,
     ) -> HarnessSpec {
         let options = SpawnOptions {
             continue_session,
+            resume_session_id,
             owner_id: owner_id.to_string(),
             mcp_session_token: mcp_session_token.to_string(),
             cwd: cwd.to_path_buf(),

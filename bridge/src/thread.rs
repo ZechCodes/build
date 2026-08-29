@@ -2352,28 +2352,77 @@ impl Thread {
     /// report, so it is a message, and it is carried with the outcome named on
     /// its line. That is what tells a replacement why its predecessor blocked.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
-        let mut lines: Vec<String> = self
-            .items
-            .iter()
-            .rev()
-            .filter_map(|item| match item {
-                ThreadItem::Message(message) => Some(format!(
-                    "- {}{}: {}{}",
-                    message.role.as_str(),
-                    match message.reported_outcome() {
-                        Some(outcome) => format!(" [{}]", outcome.as_str()),
-                        None => String::new(),
-                    },
-                    message.body.replace('\n', " "),
-                    attachment_note(&message.attachments)
-                )),
-                ThreadItem::Event(_) => None,
-            })
-            .take(limit)
-            .collect();
-        lines.reverse();
-        lines.join("\n")
+        catch_up_lines(self.items.iter(), limit)
     }
+
+    /// Whether the packet has to be read from the store rather than off the
+    /// tail — the sibling of [`page_reaches_stored_history`](Self::page_reaches_stored_history).
+    ///
+    /// True only when there is history under the tail AND the tail itself does
+    /// not hold the packet's worth of messages. Both halves are answered off
+    /// integers this process already has, so a conversation held whole — the
+    /// common small case, and every storeless test daemon — hands a packet at
+    /// today's speed and touches no SQL. The starved tail is the one that pays
+    /// the read, and it is the one the packet exists for.
+    pub fn catch_up_reaches_stored_history(&self, limit: usize) -> bool {
+        self.earlier_item_count > 0
+            && self
+                .items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::Message(_)))
+                .count()
+                < limit
+    }
+
+    /// The same packet, completed with messages read back out of the store —
+    /// the conversation under the tail an activity-heavy session left behind.
+    ///
+    /// Stored rows are admitted only below `resident_from_sequence`, the way
+    /// the forward cursor admits them: the tail is the fresher copy of
+    /// everything it still holds, so a message in both is carried once, from
+    /// memory. The chain then runs exactly the filter-take-reverse the
+    /// tail-only packet runs, so the limit still counts messages and still
+    /// keeps the newest of them.
+    pub fn catch_up_markdown_including_history(
+        &self,
+        history: &[ThreadItem],
+        limit: usize,
+    ) -> String {
+        catch_up_lines(
+            history
+                .iter()
+                .filter(|item| item.sequence() < self.resident_from_sequence)
+                .chain(self.items.iter()),
+            limit,
+        )
+    }
+}
+
+/// The packet's lines, off whatever conversation the caller assembled: the
+/// newest `limit` messages, oldest-first.
+fn catch_up_lines<'a>(
+    items: impl DoubleEndedIterator<Item = &'a ThreadItem>,
+    limit: usize,
+) -> String {
+    let mut lines: Vec<String> = items
+        .rev()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(format!(
+                "- {}{}: {}{}",
+                message.role.as_str(),
+                match message.reported_outcome() {
+                    Some(outcome) => format!(" [{}]", outcome.as_str()),
+                    None => String::new(),
+                },
+                message.body.replace('\n', " "),
+                attachment_note(&message.attachments)
+            )),
+            ThreadItem::Event(_) => None,
+        })
+        .take(limit)
+        .collect();
+    lines.reverse();
+    lines.join("\n")
 }
 
 /// The trailer that names a message's files in prose form. The catch-up packet
@@ -2777,6 +2826,123 @@ mod agent_activity_tests {
         }
 
         assert_eq!(thread.catch_up_markdown(2), "- user: ask 3\n- user: ask 4");
+    }
+}
+
+/// The packet a resumed agent is handed when the tail it booted onto holds no
+/// conversation — the failure §6.3 names first, and the one the messages-only
+/// filter cannot fix on its own.
+#[cfg(test)]
+mod catch_up_history_tests {
+    use super::*;
+
+    const NOW: &str = "2026-08-29T09:00:00Z";
+
+    /// A conversation stored whole, and the process that booted onto the last
+    /// `tail` items of it — which is where an activity-heavy session leaves
+    /// its replacement.
+    fn stored_and_booted(tail: usize) -> (Vec<ThreadItem>, Thread) {
+        let mut whole = Thread::new("run-restart");
+        whole.post_user("please rename the helper", None, NOW);
+        whole.post_agent("on it", None, NOW);
+        for index in 0..8 {
+            whole.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        let stored = whole.items.clone();
+        let mut booted = Thread::new("run-restart");
+        booted.adopt_stored_tail(
+            stored[stored.len() - tail..].to_vec(),
+            (stored.len() - tail) as u64,
+            whole.last_sequence(),
+        );
+        (stored, booted)
+    }
+
+    /// What the store hands the packet back: the conversation's messages,
+    /// oldest-first.
+    fn stored_messages(stored: &[ThreadItem]) -> Vec<ThreadItem> {
+        stored
+            .iter()
+            .filter(|item| matches!(item, ThreadItem::Message(_)))
+            .cloned()
+            .collect()
+    }
+
+    /// The gate: only a starved tail pays a read. A conversation held whole,
+    /// and a long one whose tail still holds the packet's worth of messages,
+    /// are both answered out of memory.
+    #[test]
+    fn only_a_tail_short_of_its_messages_reaches_for_the_store() {
+        let (_, booted) = stored_and_booted(5);
+        assert!(
+            booted.catch_up_reaches_stored_history(40),
+            "a tail of pure activity has to read the store"
+        );
+        assert!(
+            !booted.catch_up_reaches_stored_history(0),
+            "a packet that asks for nothing needs nothing"
+        );
+
+        let mut whole = Thread::new("run-whole");
+        whole.post_user("please rename the helper", None, NOW);
+        assert!(
+            !whole.catch_up_reaches_stored_history(40),
+            "a conversation with no history under it never reads the store"
+        );
+
+        let (_, rich_tail) = stored_and_booted(10);
+        assert!(
+            !rich_tail.catch_up_reaches_stored_history(2),
+            "a tail holding the packet's worth of messages answers from memory"
+        );
+    }
+
+    /// The failure this exists for: the tail holds nothing but tool calls, so
+    /// the messages-only filter over it yields an empty packet. Read through
+    /// the store, the same packet carries what the human said.
+    #[test]
+    fn a_starved_tail_still_hands_over_the_conversation() {
+        let (stored, booted) = stored_and_booted(5);
+        assert_eq!(
+            booted.catch_up_markdown(40),
+            "",
+            "the tail alone is the starved packet this replaces"
+        );
+
+        assert_eq!(
+            booted.catch_up_markdown_including_history(&stored_messages(&stored), 40),
+            "- user: please rename the helper\n- agent: on it"
+        );
+    }
+
+    /// The merge rule, held to the precedent the forward cursor set: a stored
+    /// row is admitted only below what this process read, so a message the
+    /// tail still holds is carried once, from the tail.
+    #[test]
+    fn a_message_the_tail_still_holds_is_not_repeated() {
+        let (stored, booted) = stored_and_booted(9);
+
+        let packet = booted.catch_up_markdown_including_history(&stored_messages(&stored), 40);
+        assert_eq!(packet, "- user: please rename the helper\n- agent: on it");
+        assert_eq!(packet.matches("on it").count(), 1, "{packet}");
+    }
+
+    /// The limit still counts messages and still keeps the newest of them,
+    /// across the join.
+    #[test]
+    fn the_merged_packet_keeps_the_newest_messages_up_to_its_limit() {
+        let (stored, booted) = stored_and_booted(5);
+
+        assert_eq!(
+            booted.catch_up_markdown_including_history(&stored_messages(&stored), 1),
+            "- agent: on it"
+        );
     }
 }
 

@@ -861,6 +861,14 @@ struct PendingAgentTurn {
     /// The phase recorded on the conversation's session lineage if the turn
     /// turns out to be cold — a cold delivery is a new agent process.
     phase: &'static str,
+    /// Whether `cold` is closed with the durable conversation — the catch-up
+    /// packet and the previous completion report — when the turn is handed
+    /// over.
+    ///
+    /// True for every turn addressed to an entity's conversation, false for
+    /// the router's: a router is one decision long, works no conversation, and
+    /// its prompt deliberately carries none.
+    wants_catch_up: bool,
 }
 
 /// The live implementation an Issue's conversation actually speaks to: the
@@ -896,6 +904,7 @@ impl PendingAgentTurn {
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
+            wants_catch_up: true,
         }
     }
 
@@ -913,6 +922,7 @@ impl PendingAgentTurn {
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
+            wants_catch_up: true,
         })
     }
 
@@ -921,14 +931,17 @@ impl PendingAgentTurn {
         active: &ActiveRun,
         project_root: &std::path::Path,
         prompt: String,
-        issue_thread: &crate::thread::Thread,
     ) -> Self {
         // A recovery may replace a dead process or take over a warm
         // implementation tab. In either case it is a distinct Issue agent and
         // must re-establish the durable conversation protocol before touching
         // refs. Wrapping both variants also gives a warm recovery the unread
         // pull instruction instead of assuming an earlier phase primed it.
-        let primed = crate::orchestrator::conversation_prompt(&prompt, issue_thread);
+        //
+        // Only the cold half is closed with the catch-up packet at delivery: a
+        // warm recovery is a live process that lived this conversation, and
+        // the protocol block it keeps already tells it to read what it missed.
+        let primed = crate::orchestrator::conversation_prompt(&prompt);
         PendingAgentTurn {
             root: AppState::canonical_root(project_root),
             owner: owner.to_string(),
@@ -937,6 +950,7 @@ impl PendingAgentTurn {
             cold: primed.clone(),
             warm: primed,
             phase: "recover",
+            wants_catch_up: true,
         }
     }
 }
@@ -2492,20 +2506,11 @@ impl AppState {
                     active.last_error = Some(format!(
                         "automatic branch restoration failed: {error}; verified recovery {recovery_id} is running"
                     ));
-                    let (stages, issue_thread) = self
+                    let stages = self
                         .plans
                         .get(&issue_id)
-                        .map(|issue| (issue.stages.clone(), issue.agents.clone()))
-                        .unwrap_or_else(|| {
-                            (
-                                Vec::new(),
-                                crate::agent::AgentRoster::with_first(
-                                    &issue_id,
-                                    active.model_choice.clone(),
-                                    &now_rfc3339(),
-                                ),
-                            )
-                        });
+                        .map(|issue| issue.stages.clone())
+                        .unwrap_or_default();
                     let prompt = recovery_agent_prompt(
                         &recovery_id,
                         &issue_id,
@@ -2517,11 +2522,7 @@ impl AppState {
                     );
                     self.pending_agent_turns
                         .push(PendingAgentTurn::for_recovery(
-                            &run_id,
-                            &active,
-                            &repo_path,
-                            prompt,
-                            &issue_thread,
+                            &run_id, &active, &repo_path, prompt,
                         ));
                     state_changed = true;
                 }
@@ -8662,10 +8663,12 @@ impl AppState {
             agent_id: session.agent_id.clone(),
             model_choice: session.choice.clone(),
             // A router is one decision long, so there is no warm half: every
-            // turn it ever hears is the whole job.
+            // turn it ever hears is the whole job — and no conversation, so no
+            // catch-up packet either.
             cold: prompt.clone(),
             warm: prompt,
             phase: "route",
+            wants_catch_up: false,
         });
         self.router_sessions.insert(capture_id.to_string(), session);
         Ok(())
@@ -8777,6 +8780,10 @@ impl AppState {
     /// One work item's conversation, as the catch-up the agents themselves are
     /// given. Read-only: the router has no way to post here, by design — it
     /// hands work over, it does not join it.
+    ///
+    /// Read through the same door the packet is: a router deciding where work
+    /// belongs must not be handed an empty transcript because the agent it is
+    /// reading spent the afternoon calling tools.
     fn router_read_conversation(
         &self,
         entity_id: &str,
@@ -8787,8 +8794,56 @@ impl AppState {
         Ok(json!({
             "entity_id": entity_id,
             "agent_id": agent.id,
-            "transcript": agent.thread.catch_up_markdown(limit),
+            "transcript": self.catch_up_packet(&agent.thread, limit),
         }))
+    }
+
+    /// The catch-up packet for one conversation: the last `limit` messages to
+    /// and from the agent, read out of the store when the tail this process
+    /// booted onto does not hold them.
+    ///
+    /// The gate is answered off two integers, so a conversation held whole —
+    /// the common case, and every storeless test daemon — is byte-identical to
+    /// what the tail alone said and touches no SQL. A store that cannot answer
+    /// falls back to the tail-built packet: a starved packet is today's
+    /// behaviour, and it is a far smaller loss than dropping the turn.
+    fn catch_up_packet(&self, thread: &crate::thread::Thread, limit: usize) -> String {
+        if !thread.catch_up_reaches_stored_history(limit) {
+            return thread.catch_up_markdown(limit);
+        }
+        let Some(store) = self.store.as_ref() else {
+            return thread.catch_up_markdown(limit);
+        };
+        match store.thread_message_page(&thread.agent.id, limit) {
+            Ok(history) => thread.catch_up_markdown_including_history(&history, limit),
+            Err(error) => {
+                eprintln!(
+                    "catch-up packet for {}: {error}; the resident tail is what it carries",
+                    thread.agent.id
+                );
+                thread.catch_up_markdown(limit)
+            }
+        }
+    }
+
+    /// The cold prompt a turn is actually handed over with: the prompt and its
+    /// protocol block, closed with the durable conversation.
+    ///
+    /// Composed here, at the drain, rather than where the turn was built:
+    /// transitions hold a conversation and no store, and a packet baked when
+    /// the turn was queued would miss whatever was said while it waited for
+    /// the lock. An owner whose conversation has gone (an entity closed under
+    /// a queued turn) is handed the prompt as it stands — the delivery gate
+    /// above has the last word on whether it travels at all.
+    fn cold_prompt_with_catch_up(&self, owner: &str, agent_id: &str, cold: &str) -> String {
+        let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
+            return cold.to_string();
+        };
+        crate::orchestrator::append_durable_conversation(
+            cold.to_string(),
+            &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
+            thread,
+        )
     }
 
     /// The default destination: an issue on the best-guess project, with its
@@ -9681,7 +9736,6 @@ impl AppState {
                         &active,
                         &project_root,
                         prompt,
-                        &issue.agents,
                     ));
                 let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
@@ -10802,12 +10856,15 @@ impl AppState {
                 // must therefore wake that implementation agent — and the same
                 // reply rule applies to the run it wakes.
                 let run_id = implementation.run_id;
+                // The named agent has to be on this roster; the message was
+                // just appended to its conversation and the turn is addressed
+                // to it.
+                active.agents.resolve(Some(&agent_id))?;
                 self.tell_the_agent_a_message_is_waiting(
                     &implementation.worktree_path,
                     &implementation.agent_id,
                     &run_id,
                     implementation.model_choice,
-                    &active.agents.resolve(Some(&agent_id))?.thread,
                     interrupt,
                 );
                 parked_implementation = self
@@ -10827,7 +10884,6 @@ impl AppState {
                     &agent_id,
                     &entity_id,
                     agent.choice.clone(),
-                    &agent.thread,
                     interrupt,
                 );
             }
@@ -10901,7 +10957,6 @@ impl AppState {
                     &agent_id,
                     &entity_id,
                     agent_choice,
-                    &issue.agents,
                     interrupt,
                 );
                 let persisted = self.finish_plan_mutation(issue_id, issue);
@@ -10933,13 +10988,13 @@ impl AppState {
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
             }
-            let agent = active.agents.resolve(Some(&agent_id))?;
+            // As above: the agent named is the one the message was appended to.
+            active.agents.resolve(Some(&agent_id))?;
             self.tell_the_agent_a_message_is_waiting(
                 &active.worktree.path,
                 &agent_id,
                 &entity_id,
                 agent_choice,
-                &agent.thread,
                 interrupt,
             );
             let (view, persisted) =
@@ -10978,7 +11033,6 @@ impl AppState {
         agent_id: &str,
         owner: &str,
         model_choice: ModelChoice,
-        thread: &crate::thread::Thread,
         interrupt: bool,
     ) {
         let root = Self::canonical_root(root);
@@ -11010,9 +11064,10 @@ impl AppState {
             // already durable on the thread, so the harness is told to read
             // them — wrapped, when it is a new process, in the catch-up packet
             // it has no other way to reconstruct.
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "revive",
+            wants_catch_up: true,
         });
     }
 
@@ -13099,12 +13154,10 @@ impl AppState {
             owner: run_id.clone(),
             agent_id: agent_id.clone(),
             model_choice,
-            cold: crate::orchestrator::conversation_prompt(
-                NEW_THREAD_MESSAGES_PROMPT,
-                &agent.thread,
-            ),
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "dispatch",
+            wants_catch_up: true,
         });
         let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
@@ -17182,9 +17235,10 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
                 // Only sent when something is actually waiting (below). A hand-
                 // started agent has no context, so it gets the cold form: the
                 // conversation protocol and the catch-up packet around the nudge.
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 phase: "start",
+                wants_catch_up: true,
             },
             thread.has_unread(),
         )
@@ -17625,6 +17679,15 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
             *s.agent_turns_in_flight
                 .entry(turn.owner.clone())
                 .or_default() += 1;
+        }
+        // The one door every cold prompt passes: the conversation is read and
+        // closed onto the prompt HERE, so the packet carries what the store
+        // holds under the tail and what was said while the turn waited.
+        let mut queued = queued;
+        for turn in &mut queued {
+            if turn.wants_catch_up {
+                turn.cold = s.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &turn.cold);
+            }
         }
         queued
     };
@@ -19335,6 +19398,7 @@ mod tests {
                     cold: "COLD-TURN".into(),
                     warm: "WARM-TURN".into(),
                     phase: "build",
+                    wants_catch_up: false,
                 });
         };
 
@@ -19403,6 +19467,7 @@ mod tests {
                 cold: String::new(),
                 warm: String::new(),
                 phase: "build",
+                wants_catch_up: false,
             });
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
@@ -22186,10 +22251,11 @@ mod tests {
         );
         let queued = &state.pending_agent_turns[0];
         assert_eq!(queued.owner, issue_id);
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Start with the endpoint."),
-            "the message that started the session is in its prompt: {}",
-            queued.cold
+            delivered.contains("Start with the endpoint."),
+            "the message that started the session is in the prompt it is handed: {delivered}"
         );
 
         // A second message steers the session it already has; it never mints a
@@ -23076,6 +23142,19 @@ mod tests {
             .unwrap();
         assert!(catalog.find("first-half") < catalog.find("second-half"));
         assert!(recovery_turn.warm.contains("read_unread_messages"));
+        // A warm recovery is a live process that lived this conversation, and
+        // the protocol block it keeps tells it to read what it missed — so the
+        // packet is the cold half's alone, and is composed at delivery.
+        assert!(
+            !recovery_turn.warm.contains("Catch-up packet"),
+            "{}",
+            recovery_turn.warm
+        );
+        assert!(
+            !recovery_turn.cold.contains("Catch-up packet"),
+            "{}",
+            recovery_turn.cold
+        );
         assert!(issue_view["result"]["thread"]["items"]
             .as_array()
             .unwrap()
@@ -24241,14 +24320,15 @@ mod tests {
             queued.warm, NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("rename the symbol")
-                && queued.cold.contains("Ordered Issue stage-plan catalog")
-                && queued.cold.find("\n- first-half").unwrap()
-                    < queued.cold.find("\n- second-half").unwrap(),
-            "a cold agent gets the run context, ordered stage catalog, AND the reviewer's words: {}",
-            queued.cold
+            delivered.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && delivered.contains("rename the symbol")
+                && delivered.contains("Ordered Issue stage-plan catalog")
+                && delivered.find("\n- first-half").unwrap()
+                    < delivered.find("\n- second-half").unwrap(),
+            "a cold agent gets the run context, ordered stage catalog, AND the reviewer's              words: {delivered}"
         );
         let structured = state.handle(req(
             "run.request_changes",
@@ -29193,6 +29273,7 @@ mod tests {
             cold: "cold turn".into(),
             warm: "warm turn".into(),
             phase: "build",
+            wants_catch_up: false,
         }
     }
 
@@ -30500,10 +30581,14 @@ mod tests {
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, root);
         assert_eq!(queued.owner, run_id);
+        // The words travel in the catch-up packet, which is composed when the
+        // turn is handed over — so this is the prompt the revived agent opens
+        // on, not the one the queue is holding.
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("still there?"),
-            "the revived agent opens on what was said to it: {}",
-            queued.cold
+            delivered.contains("still there?"),
+            "the revived agent opens on what was said to it: {delivered}"
         );
     }
 
@@ -32502,6 +32587,127 @@ mod tests {
         let entry = board_entry(&mut state, &run_id);
         assert_eq!(entry["unread"], true, "{entry:?}");
         assert_eq!(entry["unread_reason"], "blocked", "{entry:?}");
+    }
+
+    /// An issue whose conversation is buried under a session's worth of
+    /// activity, booted again: the tail the daemon reads holds nothing but
+    /// tool calls, so the packet has to come from the store or the replacement
+    /// agent is handed nothing at all.
+    fn issue_buried_in_activity(state: &mut AppState, goal: &str, said: &str) -> String {
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": goal, "dispatch": false }),
+        )));
+        let agent_id = state.plans[&issue_id].agents.first().id.clone();
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                thread.post_user(said, None, "2026-08-29T09:00:00Z");
+                for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
+                    thread.push_event(
+                        crate::thread::ThreadEventKind::ToolUse,
+                        Some(format!("Read file-{index}.rs")),
+                        None,
+                        None,
+                        "2026-08-29T09:01:00Z",
+                    );
+                }
+                Ok(())
+            })
+            .expect("the conversation is written");
+        issue_id
+    }
+
+    /// §6.3's first failure. A conversation is loaded as its newest 200 items,
+    /// and one session emits hundreds of tool calls — so the agent that boots
+    /// onto that tail is exactly the one whose messages-only packet finds no
+    /// messages in it. The words come out of the store instead.
+    #[test]
+    fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(
+                &mut state,
+                "fix the login redirect",
+                "the redirect drops the query string",
+            )
+        };
+
+        let state = qa_state(&repo, dir.path());
+        let thread = state
+            .agent_conversation(&issue_id, None)
+            .expect("the issue's conversation");
+        assert!(
+            thread
+                .items
+                .iter()
+                .all(|item| matches!(item, crate::thread::ThreadItem::Event(_))),
+            "the fixture did not starve the tail: {:?}",
+            thread.items.first()
+        );
+        assert_eq!(
+            thread.catch_up_markdown(crate::orchestrator::CATCH_UP_MESSAGES),
+            "",
+            "the tail alone is the empty packet this fixes"
+        );
+
+        let packet = state.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES);
+        assert_eq!(
+            packet, "- user: fix the login redirect\n- user: the redirect drops the query string",
+            "the packet reads the store when the tail holds no conversation"
+        );
+    }
+
+    /// Where the packet is composed: at the door every cold prompt passes, not
+    /// where the turn was built. A queued turn carries the prompt and the
+    /// protocol; the conversation is added when it is handed over — which is
+    /// also why a message posted while the turn waited for the lock is in it.
+    #[test]
+    fn the_catch_up_packet_is_composed_when_the_turn_is_delivered() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(&mut state, "fix the redirect", "keep the query string")
+        };
+        let mut state = qa_state(&repo, dir.path());
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start with the router" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("the message queued a turn");
+        assert!(
+            queued.wants_catch_up,
+            "a cold prompt wants the conversation"
+        );
+        assert!(
+            !queued.cold.contains("Catch-up packet"),
+            "the packet is not baked in at queue time: {}",
+            queued.cold
+        );
+
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+        assert!(
+            delivered.contains("Catch-up packet from the durable conversation"),
+            "{delivered}"
+        );
+        assert!(
+            delivered.contains("- user: keep the query string"),
+            "the words under the tail travel with the turn: {delivered}"
+        );
+        assert!(
+            delivered.contains("- user: start with the router"),
+            "so do the words posted while it waited: {delivered}"
+        );
+        assert!(
+            delivered.contains("Build conversation protocol"),
+            "the protocol block is still the prompt's own: {delivered}"
+        );
     }
 
     /// The Issue's conversation is where the human follows the work they asked
@@ -36924,10 +37130,11 @@ mod tests {
             .expect("a change request is a turn");
         assert_eq!(queued.agent_id, second_agent);
         assert_ne!(queued.agent_id, first_agent);
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("second-agent-comment"),
-            "a cold spawn catches up on ITS conversation: {}",
-            queued.cold
+            delivered.contains("second-agent-comment"),
+            "a cold spawn catches up on ITS conversation: {delivered}"
         );
 
         // Named nothing, the comments still land where every surface before the
@@ -38006,10 +38213,11 @@ mod tests {
         assert_eq!(queued.owner, run_id);
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Add a health endpoint"),
-            "a cold agent reads the instruction out of its packet: {}",
-            queued.cold
+            delivered.contains("Add a health endpoint"),
+            "a cold agent reads the instruction out of the packet composed at delivery: {delivered}"
         );
         assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
 
@@ -38140,10 +38348,11 @@ mod tests {
             AgentProvider::Codex,
             "the harness it spawns is the one this agent was dispatched on"
         );
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Also cover the empty case"),
-            "{}",
-            queued.cold
+            delivered.contains("Also cover the empty case"),
+            "{delivered}"
         );
     }
 

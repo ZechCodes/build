@@ -947,6 +947,23 @@ impl ThreadItem {
         }
     }
 
+    /// Whether the human reads this item as conversation — the one predicate
+    /// the two bounds count with.
+    ///
+    /// A message is conversation whoever wrote it, an outcome included since
+    /// an outcome is a message. An event counts only when it is Build calling
+    /// the human. Everything else rides free: the four activity kinds, and the
+    /// quiet lifecycle markers with them. So a page's limit buys conversation,
+    /// and a catch-up packet's limit buys what was said, however much work
+    /// happened between two words.
+    ///
+    /// The store filters the same rule as `message = 1 OR attention = 1` over
+    /// two hoisted columns, and a test holds the two readings equal across
+    /// every kind.
+    pub fn counted(&self) -> bool {
+        matches!(self, ThreadItem::Message(_)) || self.attention_reason().is_some()
+    }
+
     /// What this item referenced, as derived when it was written.
     pub fn metadata(&self) -> &ItemMetadata {
         match self {
@@ -2760,6 +2777,80 @@ mod agent_activity_tests {
         }
 
         assert_eq!(thread.catch_up_markdown(2), "- user: ask 3\n- user: ask 4");
+    }
+}
+
+/// The one predicate both bounds count with: an item is counted when the human
+/// reads it as conversation. Everything else — the four activity kinds and the
+/// quiet lifecycle markers with them — rides free.
+#[cfg(test)]
+mod counted_item_tests {
+    use super::*;
+
+    /// The two readings of the rule, held equal over every kind there is: the
+    /// Rust one here, and the `message = 1 OR attention = 1` the store filters
+    /// with. A kind added later cannot make them disagree without failing
+    /// here.
+    #[test]
+    fn a_counted_item_is_a_message_or_a_call_for_the_human() {
+        let mut thread = Thread::new("run-counted");
+        for kind in ThreadEventKind::ALL {
+            thread.push_event(
+                kind,
+                Some(format!("{} happened", kind.as_str())),
+                None,
+                None,
+                "2026-08-29T09:00:00Z",
+            );
+        }
+        thread.post_user("please rename the helper", None, "2026-08-29T09:01:00Z");
+        thread.post_agent("renamed it", None, "2026-08-29T09:02:00Z");
+        thread.post_agent_progress("still going", None, "2026-08-29T09:03:00Z");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            None,
+            "2026-08-29T09:04:00Z",
+        );
+
+        for item in &thread.items {
+            let expected =
+                matches!(item, ThreadItem::Message(_)) || item.attention_reason().is_some();
+            assert_eq!(item.counted(), expected, "{item:?}");
+        }
+    }
+
+    /// Both halves of the rule, said out loud rather than only as an
+    /// equivalence: a progress note is conversation even though it asks
+    /// nothing, and activity is not even though it is the agent talking.
+    #[test]
+    fn every_message_counts_and_no_activity_does() {
+        let mut thread = Thread::new("run-counted");
+        thread.post_agent_progress("still going", None, "2026-08-29T09:00:00Z");
+        for kind in [
+            ThreadEventKind::Reasoning,
+            ThreadEventKind::ToolUse,
+            ThreadEventKind::ToolResult,
+            ThreadEventKind::Narration,
+            ThreadEventKind::Triaged,
+        ] {
+            thread.push_event(kind, None, None, None, "2026-08-29T09:01:00Z");
+        }
+        thread.push_event(
+            ThreadEventKind::Interrupted,
+            None,
+            None,
+            None,
+            "2026-08-29T09:02:00Z",
+        );
+
+        let counted: Vec<bool> = thread.items.iter().map(ThreadItem::counted).collect();
+        assert_eq!(
+            counted,
+            vec![true, false, false, false, false, false, true],
+            "{:?}",
+            thread.items
+        );
     }
 }
 

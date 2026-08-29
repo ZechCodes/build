@@ -728,6 +728,143 @@ describe("thread cache paging (the window over a long conversation)", () => {
   });
 });
 
+// The daemon's page stopped being measured in items: a page's `thread_limit`
+// buys CONVERSATION — messages and the events that call the human — and the
+// activity a headless session emits between them rides along uncounted, under
+// a hard ceiling of ten items per unit of budget. So a page routinely carries
+// far more items than it was asked for, which is a shape the merge here had
+// never been handed. No field changed meaning and none was added, so nothing
+// in the cache needed changing; these are what holds that claim.
+describe("thread cache paging over an activity-heavy conversation", () => {
+  // The daemon's own bound: at most `limit * THREAD_PAGE_SPAN_FACTOR` items,
+  // factor 10 (bridge/src/thread.rs).
+  const PAGE_SPAN_FACTOR = 10;
+  // `readOlderItems` names no bound, so the daemon's default page is what
+  // answers a scroll back — the same 60 the first load asks for.
+  const DAEMON_PAGE = FIRST_PAGE_ITEMS;
+
+  const message = (sequence, body) => ({ type: "message", data: { sequence, role: "agent", body } });
+  const toolCall = (sequence) => ({
+    type: "event",
+    data: { sequence, event: "tool_use", summary: `Read src/a${sequence}.js` },
+  });
+
+  // What a headless agent's turn leaves in the conversation: what it said,
+  // then the tools it called saying it.
+  const sessionTranscript = (turns, toolCallsPerTurn) => {
+    const items = [];
+    for (let turn = 1; turn <= turns; turn += 1) {
+      items.push(message(items.length + 1, `turn ${turn}`));
+      for (let call = 0; call < toolCallsPerTurn; call += 1) items.push(toolCall(items.length + 1));
+    }
+    return items;
+  };
+
+  // The daemon's page rule, mirrored: walking newest→older from the seek,
+  // every item ships and the walk stops at the `limit`-th counted item or at
+  // the ceiling, whichever comes first. Only messages are counted here —
+  // activity is Status-classed, and Status-classed events ride free.
+  const conversationPage = (conversation, { before = Infinity, limit }) => {
+    const older = conversation.filter((entry) => entry.data.sequence < before);
+    const ceiling = limit * PAGE_SPAN_FACTOR;
+    let taken = 0;
+    let counted = 0;
+    for (const entry of [...older].reverse()) {
+      if (taken === ceiling || counted === limit) break;
+      taken += 1;
+      if (entry.type === "message") counted += 1;
+    }
+    const items = older.slice(older.length - taken);
+    return {
+      id: "thread:run-1",
+      items,
+      revisions: [],
+      thread_total: conversation.length,
+      thread_last_sequence: conversation.at(-1).data.sequence,
+      oldest_sequence: items[0]?.data.sequence ?? null,
+      has_more: older.length > taken,
+    };
+  };
+
+  const sequencesOf = (items) => items.map((entry) => entry.data.sequence);
+
+  it("holds a page carrying far more items than the limit it asked for", () => {
+    const cache = createThreadCache();
+    // Sixty turns of five tool calls each: the page buys sixty messages and
+    // three hundred tool calls travel with them, 360 items against a limit of
+    // 60. Before §6.3 the same ask answered with sixty items, of which ten
+    // were conversation.
+    const conversation = sessionTranscript(80, 5);
+    const opened = cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    expect(opened.items).toHaveLength(FIRST_PAGE_ITEMS * 6);
+    expect(opened.items.filter((entry) => entry.type === "message")).toHaveLength(FIRST_PAGE_ITEMS);
+    // The window is sound: an oversized page is not a loss, and the forward
+    // cursor engages off the newest item it shipped.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.at(-1).data.sequence });
+    expect(cache.hasOlderItems()).toBe(true);
+    expect(cache.olderPageParam()).toEqual({ before_sequence: opened.items[0].data.sequence });
+  });
+
+  it("walks an oversized window back to the start, seeing every item exactly once", () => {
+    const cache = createThreadCache();
+    // Fifteen tool calls a turn, which is where the ceiling bites: sixty units
+    // of budget may ship six hundred items, and six hundred items of this
+    // conversation hold thirty-seven messages, not sixty. The page ends higher
+    // than the budget asked for, `has_more` says so, and the reader scrolls
+    // again — the design working, not a page that lost something.
+    const conversation = sessionTranscript(40, 15);
+    const first = conversationPage(conversation, { limit: FIRST_PAGE_ITEMS });
+    expect(first.items).toHaveLength(FIRST_PAGE_ITEMS * PAGE_SPAN_FACTOR);
+    expect(first.items.filter((entry) => entry.type === "message").length).toBeLessThan(FIRST_PAGE_ITEMS);
+
+    cache.absorb(first);
+    let widened = first;
+    let pagesRead = 1;
+    while (cache.hasOlderItems()) {
+      const seek = cache.olderPageParam();
+      widened = cache.absorbOlderPage(
+        conversationPage(conversation, { before: seek.before_sequence, limit: DAEMON_PAGE }),
+        seek,
+      );
+      expect(widened).not.toBeNull();
+      pagesRead += 1;
+    }
+
+    expect(pagesRead).toBeGreaterThan(1);
+    // Pages abut at their seeks, so the walk covers the conversation with no
+    // item shipped twice and none skipped.
+    expect(sequencesOf(widened.items)).toEqual(sequencesOf(conversation));
+    expect(cache.olderPageParam()).toEqual({ before_sequence: 1 });
+    // Scrolling back never moves the forward cursor: history arriving late is
+    // not news.
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: conversation.length });
+  });
+
+  it("keeps the window through a poll that delivers a turn's worth of activity", () => {
+    const cache = createThreadCache();
+    const conversation = sessionTranscript(20, 5);
+    cache.absorb(conversationPage(conversation, { limit: FIRST_PAGE_ITEMS }));
+
+    // The gap check reads `thread_total`, which still counts every item on the
+    // thread — activity included. A turn that says one thing and calls five
+    // tools makes the conversation six items longer, and the delta carries all
+    // six: the prediction has to hold, or the window resets every time the
+    // agent picks up a tool.
+    const turn = [message(conversation.length + 1, "turn 21")];
+    for (let call = 0; call < 5; call += 1) turn.push(toolCall(conversation.length + 1 + turn.length));
+    const polled = cache.absorb({
+      items: turn,
+      thread_total: conversation.length + turn.length,
+      thread_last_sequence: turn.at(-1).data.sequence,
+    });
+
+    expect(sequencesOf(polled.items)).toEqual(sequencesOf([...conversation, ...turn]));
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: turn.at(-1).data.sequence });
+    expect(cache.hasOlderItems()).toBe(false);
+  });
+});
+
 describe("structured review messages", () => {
   it("preserves diff anchors instead of flattening them into a prompt", () => {
     expect(diffThreadMessages([{ file: "src/a.js", lnA: 2, lnB: 4, snippet: "old()", comment: "rename" }], "ship safely", "diff-r1"))

@@ -8050,6 +8050,12 @@ impl AppState {
                 Some(tab) => tab.session.terminal().is_some(),
                 None => harness_for(agent.choice.provider).has_terminal(),
             },
+            // Whether the composer offers "Interrupt & send". Unlike
+            // `has_terminal` the PROVIDER cannot answer this one: the capability
+            // is announced by the child in its own `init` line rather than
+            // decided by the argv, so the same provider answers differently on
+            // two versions of the same CLI. No session, no turn to stop.
+            "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
             "created_at": agent.created_at,
         })
     }
@@ -10716,6 +10722,15 @@ impl AppState {
         // that follows one — waking the agent, resuming a parked entity, the
         // inbox anchor — has to happen exactly as it does for a typed one.
         let choice = parse_option_choice(params)?;
+        // And an interrupt is a flag on the message rather than a verb of its
+        // own, for the same reason: Build never interrupts without a turn to
+        // follow, so a separate call would always be followed by this one a
+        // moment later — with a window between the two in which the child
+        // starts a fresh turn or the agent calls `done`. Absent is false.
+        let interrupt = params
+            .get("interrupt")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if let Some(active) = self.plans.get(&entity_id) {
             if active.plan.state.is_terminal() {
                 return Err(format!(
@@ -10793,6 +10808,7 @@ impl AppState {
                     &run_id,
                     implementation.model_choice,
                     &active.agents.resolve(Some(&agent_id))?.thread,
+                    interrupt,
                 );
                 parked_implementation = self
                     .runs
@@ -10812,6 +10828,7 @@ impl AppState {
                     &entity_id,
                     agent.choice.clone(),
                     &agent.thread,
+                    interrupt,
                 );
             }
             let (view, persisted) =
@@ -10885,6 +10902,7 @@ impl AppState {
                     &entity_id,
                     agent_choice,
                     &issue.agents,
+                    interrupt,
                 );
                 let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
@@ -10922,6 +10940,7 @@ impl AppState {
                 &entity_id,
                 agent_choice,
                 &agent.thread,
+                interrupt,
             );
             let (view, persisted) =
                 self.answer_run_mutation(entity_id, active, thread_detail(params));
@@ -10947,6 +10966,12 @@ impl AppState {
     /// Before this, a message to an agent whose TUI had exited sat on the
     /// thread forever — the entity read as idle, the human waited, and nothing
     /// was listening.
+    ///
+    /// `interrupt` asks the live session to stop the turn it is running before
+    /// this message is handed over. It is dropped without an error on the cold
+    /// path: a message that has to SPAWN an agent has no turn to stop, and an
+    /// interrupt of nothing is not a failure but a stronger form of what was
+    /// asked for.
     fn tell_the_agent_a_message_is_waiting(
         &mut self,
         root: &std::path::Path,
@@ -10954,11 +10979,12 @@ impl AppState {
         owner: &str,
         model_choice: ModelChoice,
         thread: &crate::thread::Thread,
+        interrupt: bool,
     ) {
         let root = Self::canonical_root(root);
         let key = TabKey::agent(&root, agent_id);
         if self.tabs.get(&key).is_some_and(Tab::session_is_live) {
-            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner);
+            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner, interrupt);
             return;
         }
         // Two harnesses in one checkout would both report `done` for the same
@@ -16204,12 +16230,30 @@ fn nudge_live_agent_tab(
     root: &std::path::Path,
     agent_id: &str,
     entity_id: &str,
+    interrupt: bool,
 ) {
     let Some(tab) = tabs.get(&TabKey::agent(&AppState::canonical_root(root), agent_id)) else {
         return;
     };
     if !tab.session_is_live() {
         return;
+    }
+    // Stop first, then hand over — the order is the whole point of the flag
+    // riding the message rather than arriving as a verb of its own, which would
+    // leave a window in which the child starts a fresh turn or the agent calls
+    // `done`. Both calls return promptly by contract, which is what lets them
+    // speak from under the state lock.
+    //
+    // A refusal is not a failed post. Where the carrier cannot stop a turn —
+    // a capability lost between the digest the client read and the post it sent
+    // — the message is delivered as an ordinary queued turn, which reaches the
+    // running turn at its next step boundary anyway. The alternative is an
+    // error the human must read for a difference they cannot act on and did not
+    // cause.
+    if interrupt {
+        if let Err(refused) = tab.session.interrupt() {
+            eprintln!("thread.post {entity_id}: interrupt refused: {refused}");
+        }
     }
     // As a turn, not a raw write with a hardcoded Enter: the nudge is one of
     // Build's turns, so it travels the way every other one does and the carrier
@@ -33186,6 +33230,242 @@ mod tests {
         );
     }
 
+    /// How many times this agent has reasoned out loud — the evidence a turn
+    /// was delivered and started, one per turn for the fakes below.
+    fn reasoning_count(state: &Arc<Mutex<AppState>>, run_id: &str) -> usize {
+        let s = state.lock().unwrap();
+        activity_of(&s.runs[run_id].agents)
+            .iter()
+            .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::Reasoning)
+            .count()
+    }
+
+    /// Everything the conversation says happened, so a test can assert what did
+    /// NOT happen over the whole vocabulary rather than a sample of it.
+    fn event_kinds(
+        state: &Arc<Mutex<AppState>>,
+        run_id: &str,
+    ) -> Vec<crate::thread::ThreadEventKind> {
+        let s = state.lock().unwrap();
+        s.runs[run_id]
+            .agents
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event) => Some(event.event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A live headless agent mid-turn, on `spec`, with one turn already
+    /// delivered and running.
+    ///
+    /// The fakes below never emit a `result`, so the turn stays open and the
+    /// session keeps reporting `Working` — which is the state an interrupt is
+    /// for and the only one the composer offers it in.
+    async fn a_headless_agent_mid_turn(
+        state: &Arc<Mutex<AppState>>,
+        handler: &FrameHandler,
+        run_id: &str,
+        spec: HarnessSpec,
+        repo: &std::path::Path,
+    ) {
+        run_on_a_headless_provider(state, repo, run_id, spec);
+        let posted = call(
+            handler,
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "start on the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(state, run_id) == 1).then_some(())
+        })
+        .await
+        .expect("the first turn reaches the agent and it starts working");
+    }
+
+    /// The steering flow, end to end: a message that stops the turn it lands in.
+    ///
+    /// The wire is `thread.post` with `interrupt: true` and there is no
+    /// `agent.interrupt` verb — Build never interrupts without a turn to follow,
+    /// so a verb of its own would always be followed by this post a moment
+    /// later, with a window between them in which the child starts a fresh turn
+    /// or the agent calls `done`.
+    ///
+    /// And status moves by exactly one step: the human's message. Nothing else
+    /// is minted — an interrupted turn's `error_during_execution` result is a
+    /// turn boundary, never a report, and the only path by which its text could
+    /// have reached a human was the epitaph the carrier clears.
+    #[tokio::test]
+    async fn a_post_that_interrupts_stops_the_turn_and_hands_over_the_message() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-steer");
+        use crate::harness::adk::fake;
+        // Everything Build says to this agent is kept, because the steering
+        // flow IS two writes in one order and what comes back cannot tell them
+        // apart from an ordinary send.
+        let heard = dir.path().join("heard.jsonl");
+        a_headless_agent_mid_turn(
+            &state,
+            &handler,
+            "run-steer",
+            fake::stream_json_harness_recording_stdin(&[fake::THINKING], &heard),
+            &repo,
+        )
+        .await;
+
+        let bubble = call(&handler, "agent.list", json!({ "entity_id": "run-steer" }))["result"]
+            ["agents"][0]
+            .clone();
+        assert_eq!(bubble["working"], true, "{bubble:?}");
+        assert_eq!(
+            bubble["can_interrupt"], true,
+            "the child announced an interrupt in its init line: {bubble:?}"
+        );
+
+        let steered = call(
+            &handler,
+            "thread.post",
+            json!({
+                "entity_id": "run-steer",
+                "body": "stop — just the trigger",
+                "interrupt": true,
+            }),
+        );
+        assert_eq!(steered["ok"], true, "{steered:?}");
+
+        // The child acks, closes the stopped turn with `error_during_execution`,
+        // and only then reads the steering turn — so a second reasoning event
+        // can only mean the message was handed over behind the interrupt.
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(&state, "run-steer") == 2).then_some(())
+        })
+        .await
+        .expect("the message the interrupt cleared the way for is delivered");
+
+        // The wire, in order: the child heard the first turn, then a
+        // `control_request` to stop it, and only then the turn that replaces it.
+        let said: Vec<Value> = std::fs::read_to_string(&heard)
+            .expect("the child kept what it heard")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a protocol line"))
+            .collect();
+        let kinds: Vec<&str> = said
+            .iter()
+            .map(|line| line["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "control_request", "user"],
+            "stop first, then hand over — the order the flag on the message exists to hold: {said:?}"
+        );
+        assert_eq!(said[1]["request"]["subtype"], "interrupt", "{said:?}");
+
+        let s = state.lock().unwrap();
+        let said: Vec<String> = s.runs["run-steer"]
+            .agents
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Message(message) => {
+                    assert_eq!(
+                        message.outcome, None,
+                        "nothing here is an outcome: {message:?}"
+                    );
+                    assert!(
+                        !message.done,
+                        "and nothing here is a completion: {message:?}"
+                    );
+                    Some(message.body.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|body| body.contains("stop — just the trigger")),
+            "the human's own message is the record of why the turn stopped: {said:?}"
+        );
+        assert_eq!(
+            s.runs["run-steer"].run.state,
+            RunState::Building,
+            "an interrupt moves no state of any kind"
+        );
+        drop(s);
+
+        use crate::thread::ThreadEventKind;
+        let happened = event_kinds(&state, "run-steer");
+        for never in [
+            ThreadEventKind::Blocked,
+            ThreadEventKind::RunFailed,
+            // `Interrupted` means a session that is GONE. This one is the same
+            // session, holding the same conversation, and it is about to answer.
+            ThreadEventKind::Interrupted,
+            ThreadEventKind::SessionEnded,
+        ] {
+            assert!(
+                !happened.contains(&never),
+                "a stopped turn is not a failure: {never:?} in {happened:?}"
+            );
+        }
+    }
+
+    /// A refused interrupt does not fail the post.
+    ///
+    /// Where the carrier cannot stop a turn — a CLI built before the capability
+    /// landed, or one lost between the digest the client read and the post it
+    /// sent — the message is delivered as an ordinary queued turn, which the
+    /// probes verified reaches the running turn at its next step boundary
+    /// anyway. The alternative is an error the human must read for a difference
+    /// they cannot act on and did not cause.
+    #[tokio::test]
+    async fn an_interrupt_the_carrier_refuses_still_hands_over_the_message() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refuses");
+        use crate::harness::adk::fake;
+        a_headless_agent_mid_turn(
+            &state,
+            &handler,
+            "run-refuses",
+            fake::stream_json_harness_without_interrupt(&[fake::THINKING]),
+            &repo,
+        )
+        .await;
+
+        let bubble = call(
+            &handler,
+            "agent.list",
+            json!({ "entity_id": "run-refuses" }),
+        )["result"]["agents"][0]
+            .clone();
+        assert_eq!(
+            bubble["can_interrupt"], false,
+            "this child announced none, so the composer never offers the control: {bubble:?}"
+        );
+
+        let steered = call(
+            &handler,
+            "thread.post",
+            json!({
+                "entity_id": "run-refuses",
+                "body": "stop — just the trigger",
+                "interrupt": true,
+            }),
+        );
+        assert_eq!(
+            steered["ok"], true,
+            "a capability the carrier lacks is not the human's mistake: {steered:?}"
+        );
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(&state, "run-refuses") == 2).then_some(())
+        })
+        .await
+        .expect("the message is delivered as an ordinary queued turn");
+    }
+
     /// Put `run_id` on the headless provider running `spec`, and keep every
     /// [`SpawnOptions`] the daemon built a spawn from.
     ///
@@ -33761,7 +34041,7 @@ mod tests {
         tab.root = root.clone();
         tabs.insert(TabKey::agent(&root, agent_id), tab);
 
-        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge");
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge", false);
         assert_eq!(
             log.turns(),
             vec![NEW_THREAD_MESSAGES_PROMPT.to_string()],
@@ -33782,7 +34062,7 @@ mod tests {
         tab.root = root.clone();
         tabs.insert(TabKey::agent(&root, agent_id), tab);
 
-        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge");
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge", false);
         assert!(over.turns().is_empty(), "a dead agent hears nothing");
     }
 

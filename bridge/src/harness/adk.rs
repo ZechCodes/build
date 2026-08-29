@@ -908,14 +908,27 @@ pub(crate) mod fake {
     /// `error_during_execution` result that closes the turn it stopped, and
     /// only then does the loop read the next queued turn.
     pub(crate) fn stream_json_harness(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked)
+        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, None)
+    }
+
+    /// The same child, appending every line written to its stdin to `heard`.
+    ///
+    /// What Build SAID is otherwise invisible from outside the session, and the
+    /// steering flow IS two writes in one order — so a test watching only what
+    /// came back could not tell an interrupt that was sent from one that was
+    /// not.
+    pub(crate) fn stream_json_harness_recording_stdin(
+        per_turn: &[&str],
+        heard: &std::path::Path,
+    ) -> HarnessSpec {
+        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, Some(heard))
     }
 
     /// The same child, for one turn only: it answers, then leaves the way a
     /// real one does when its work is over. That departure closes its stream,
     /// which is what a no-terminal session's death rites hang off.
     pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, false, Acknowledged::TheOneAsked)
+        harness_replaying(INIT, per_turn, false, Acknowledged::TheOneAsked, None)
     }
 
     /// A CLI that announces no interrupt. Build never sends it a
@@ -927,13 +940,14 @@ pub(crate) mod fake {
             per_turn,
             true,
             Acknowledged::TheOneAsked,
+            None,
         )
     }
 
     /// A child that answers an interrupt by naming a request nobody made, and
     /// then fails the turn on its own account.
     pub(crate) fn stream_json_harness_answering_another_request(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest)
+        harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest, None)
     }
 
     fn harness_replaying(
@@ -941,6 +955,7 @@ pub(crate) mod fake {
         per_turn: &[&str],
         turn_after_turn: bool,
         acknowledged: Acknowledged,
+        heard: Option<&std::path::Path>,
     ) -> HarnessSpec {
         let mut replay = String::new();
         for line in per_turn {
@@ -961,6 +976,12 @@ pub(crate) mod fake {
             true => "while IFS= read -r turn; do\n",
             false => "if IFS= read -r turn; then\n",
         });
+        if let Some(heard) = heard {
+            script.push_str(&format!(
+                "printf '%s\\n' \"$turn\" >> \"{}\"\n",
+                heard.display()
+            ));
+        }
         script.push_str(&format!(
             "case \"$turn\" in\n\
              *control_request*)\n\

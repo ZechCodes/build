@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   AGENT_PATTERN_COUNT,
+  agentCanInterrupt,
   agentPattern,
   agentTitle,
   aheadBehindText,
@@ -50,6 +51,27 @@ describe("who an agent is", () => {
     expect(bubbleTip(agent({ unread_count: 3, unread_reason: "done" })))
       .toBe("Claude Code 1 — The agent finished — review the work");
     expect(bubbleTip(agent())).toBe("Claude Code 1");
+  });
+});
+
+describe("whether the turn in flight can be stopped", () => {
+  it("is yes only for an agent that is working and announced the interrupt", () => {
+    expect(agentCanInterrupt(agent({ working: true, can_interrupt: true }))).toBe(true);
+  });
+
+  it("is no when there is no turn to stop", () => {
+    expect(agentCanInterrupt(agent({ working: false, can_interrupt: true }))).toBe(false);
+  });
+
+  // Unlike the terminal — which every carrier had before the question could be
+  // asked — an interrupt is a capability the child announces at startup. So a
+  // bridge that never mentions it, and a child that never announced it, both
+  // mean the same thing: the plain Send stands.
+  it("is no when the digest does not mention it", () => {
+    expect(agentCanInterrupt(agent({ working: true }))).toBe(false);
+    expect(agentCanInterrupt(agent({ working: true, can_interrupt: false }))).toBe(false);
+    expect(agentCanInterrupt(agent({ working: true, can_interrupt: "yes" }))).toBe(false);
+    expect(agentCanInterrupt(null)).toBe(false);
   });
 });
 

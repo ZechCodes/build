@@ -42,6 +42,23 @@ export function agentHasTerminal(agent) {
   return !agent || agent.has_terminal !== false;
 }
 
+/** Whether the turn this agent is running can be stopped and re-steered right
+ *  now — which is two things at once, and the composer offers the interrupting
+ *  send only where both hold: there is a turn in flight, and the child running
+ *  it announced the interrupt at startup.
+ *
+ *  Absent is NO, the opposite of the terminal above: every carrier had a
+ *  terminal before the question could be asked, while an interrupt is a
+ *  capability a child announces — so an older bridge, and a CLI built before
+ *  the feature landed, both leave the plain Send standing.
+ *
+ *  Headlessness is not asked separately. Only a carrier with no terminal can
+ *  answer this true today, and if one with a terminal ever could, the control
+ *  belongs there too. */
+export function agentCanInterrupt(agent) {
+  return !!(agent && agent.working) && agent.can_interrupt === true;
+}
+
 /** How many faces there are for an agent to wear. Each is one of the five
  *  tilings in core/tilings.js, painted into the bubble's canvas by
  *  core/agentCanvas.js — moving while the agent works, frozen on the frame it

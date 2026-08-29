@@ -1102,7 +1102,7 @@ Each step compiles, ships and is green on its own.
    carrier) and ordered after it only because step 6 is what makes the gap
    bite daily; it may land first if ADK slips.~~ **Shipped** — see the detail
    below.
-8. **The turn can be stopped, and the conversation resumed by name.** The two
+8. ~~**The turn can be stopped, and the conversation resumed by name.**~~ The two
    things step 6's live probes made possible: `AgentSession::interrupt`
    (capability-gated, never a kill) with `thread.post`'s `interrupt` flag and
    the composer's split send above it, and `AgentSession::session_id` persisted
@@ -1110,8 +1110,8 @@ Each step compiles, ships and is green on its own.
    `--continue` — the one step-6 bullet that did not ship. Detail below. The
    two halves are independent and the resume half may land first, but they
    share one capture point and one test child, so they are one step.
-   **The bridge half is shipped** (`66ad2ac`, `defa1be`, `f3ec04b`); §8.4, the
-   composer's split send, is what remains.
+   **Shipped**: the bridge half in `66ad2ac`, `defa1be` and `f3ec04b`, §8.4 —
+   the composer's split send — in `07980b3`, `8d114b4` and `7eb0398`.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -1616,6 +1616,45 @@ second way to reach an agent.
 
 #### 8.4 The SPA affordance
 
+> **Shipped in `07980b3`, `8d114b4` and `7eb0398`**, as designed: the condition,
+> the two shapes of the control, the in-place swap and the flag on the post.
+> Test 11 of §8.5's list is six tests in `agentRailDom.test.js` — the plain send
+> for an agent with nothing to stop and for one that is not working, the split
+> for one that is both, the flag on the alternative, no flag on the default
+> press, and the swap that keeps the box and the words in it. Four things the
+> implementation decided that the step did not say.
+>
+> **The control is `splitButtonMarkup`, and the menu came out of
+> `mountSplitButton` to meet it.** Mounting the whole split button would have
+> been the obvious reading and it breaks the composer: `mountSplitButton` is a
+> single-flight latch that leaves the primary DISABLED when the action resolves,
+> because its callers repaint or navigate — a composer wired that way could be
+> sent from exactly once. The composer's press is a submit that restores its own
+> button, before any repaint, and has been since the plan and diff composers
+> drifted apart over it. So `mountSplitMenu` — the caret, the toggle, the
+> outside-press watch armed in the same event cycle, the choice — is now shared
+> by both, and `wireThreadComposer` keeps the press.
+>
+> **The send keeps its id in both shapes.** `splitButtonMarkup` gained
+> `primaryId` so one lookup (`#railsend`) finds the button whether it is the
+> plain one or the primary half of a split, which is what lets the submit path,
+> the Cmd+Enter path and the tests stay as they were. What the split shape drops
+> is the arrow icon and the label span it wrapped — the caret stands where the
+> arrow was — and `sendLabel`'s existing fallback already drives a button
+> without one.
+>
+> **The swap is refused mid-press.** `setCanInterrupt` returns without doing
+> anything while a send is in flight (the button's word is "sending…" and
+> belongs to that press) or while the menu is open (a choice is being made). The
+> poll comes round 1.6 s later, by which time the press has landed. This is the
+> same rule `mountSplitButton` holds for its own remount, for the same reason.
+>
+> **The condition is asked of the agent whose conversation is open**, not of the
+> work item's feed row. The rail reads two sources — the pinned status line
+> clocks the row's `working_time`, the bubbles read each agent's own digest —
+> and an interrupt stops ONE session's turn, so the composer reads the digest of
+> the agent it is writing to.
+
 Per the standing principle (`user-agency-at-the-trigger`: split-button
 dropdowns for multi-behavior verbs), the composer's send becomes a split
 control where — and only where — there are two behaviours to choose between.
@@ -1803,6 +1842,13 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-28, step 8 complete — the composer's split send.** §8.4 as
+  designed, in `07980b3` (`agentCanInterrupt`, the whole condition in one
+  reader), `8d114b4` (the send control's two shapes, and `primaryId` so it
+  keeps its id in both) and `7eb0398` (the wiring: the flag on the post, the
+  in-place swap, and `mountSplitMenu` shared out of `mountSplitButton` because
+  the composer's press restores its own button rather than leaving it
+  disabled). Step 8, and with it the migration order, is done.
 - **2026-08-28, step 8's bridge half shipped.** §8.1, §8.2, §8.3 and §8.5 as
   designed, in `66ad2ac` (the trait's two calls and the PTY's refusal),
   `defa1be` (the carrier: capability from `init`, the interrupted result read

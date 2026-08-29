@@ -10680,8 +10680,10 @@ impl AppState {
 
     /// One page of the history no load read, straight off the store.
     ///
-    /// Asks for one item more than the page, which is how it knows whether
-    /// there is anything above without counting the conversation.
+    /// Measured in conversation exactly as a resident page is — the limit buys
+    /// messages and the events that call the human, the activity between them
+    /// rides along — and the store answers `has_more` for items of any kind
+    /// below what it shipped, so a client's backward walk still abuts.
     fn stored_thread_page(
         &self,
         thread: &crate::thread::Thread,
@@ -10692,13 +10694,9 @@ impl AppState {
             .store
             .as_ref()
             .ok_or("this conversation's history is not stored")?;
-        let mut page = store
-            .thread_page(&thread.agent.id, before_sequence, limit + 1)
+        let (page, has_more) = store
+            .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
-        let has_more = page.len() > limit;
-        if has_more {
-            page.remove(0);
-        }
         Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
     }
 
@@ -32708,6 +32706,106 @@ mod tests {
             delivered.contains("Build conversation protocol"),
             "the protocol block is still the prompt's own: {delivered}"
         );
+    }
+
+    /// §6.3's second failure, over the wire. A reviewer opening a conversation
+    /// mid-session used to be handed sixty tool calls with the last thing
+    /// anyone said somewhere below them. The page's limit buys conversation
+    /// now — and `has_more` / `oldest_sequence` still mean exactly what a
+    /// client walking back by sequence needs them to mean, across the seam
+    /// between the resident tail and the history under it.
+    #[test]
+    fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let issue_id = plan_id_of(&state.handle(req(
+                "issue.create",
+                json!({ "goal": "trim the retry loop", "dispatch": false }),
+            )));
+            let agent_id = state.plans[&issue_id].agents.first().id.clone();
+            state
+                .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                    for turn in 0..40 {
+                        thread.post_user(format!("ask {turn}"), None, "2026-08-29T09:00:00Z");
+                        for index in 0..6 {
+                            thread.push_event(
+                                crate::thread::ThreadEventKind::ToolUse,
+                                Some(format!("Read file-{turn}-{index}.rs")),
+                                None,
+                                None,
+                                "2026-08-29T09:01:00Z",
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+                .expect("the conversation is written");
+            issue_id
+        };
+        let mut state = qa_state(&repo, dir.path());
+        let held = state
+            .agent_conversation(&issue_id, None)
+            .expect("the conversation")
+            .total_item_count();
+        assert!(
+            held > crate::store::RESIDENT_CONVERSATION_TAIL as u64,
+            "the fixture has to reach under the tail: {held}"
+        );
+
+        let first = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": issue_id, "limit": 5 }),
+        ));
+        let page = &first["result"];
+        let said: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .map(|item| item["data"]["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            said.len(),
+            5,
+            "the page a reviewer opens on is five turns of conversation: {said:?}"
+        );
+        assert_eq!(said.last(), Some(&"ask 39"), "{said:?}");
+
+        // And the walk back is whole: every item exactly once, in order, over
+        // the seam between the tail and the stored history under it.
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let mut params = json!({ "entity_id": issue_id, "limit": 5 });
+            if let Some(seek) = before {
+                params["before_sequence"] = json!(seek);
+            }
+            let answer = state.handle(req("thread.page", params));
+            let page = &answer["result"];
+            let shipped: Vec<u64> = page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["data"]["sequence"].as_u64().unwrap())
+                .collect();
+            assert!(
+                !shipped.is_empty(),
+                "an empty page below {before:?}: {page}"
+            );
+            assert_eq!(
+                page["oldest_sequence"].as_u64(),
+                shipped.first().copied(),
+                "oldest_sequence is the oldest item shipped, rider or not"
+            );
+            assert_eq!(page["thread_total"], json!(held));
+            walked.splice(0..0, shipped);
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = walked.first().copied();
+        }
+        assert_eq!(walked, (1..=held).collect::<Vec<u64>>());
     }
 
     /// The Issue's conversation is where the human follows the work they asked

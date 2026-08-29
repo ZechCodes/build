@@ -480,6 +480,21 @@ const THREAD_MESSAGE_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND message = 1 \
      ORDER BY sequence DESC LIMIT ?2";
 
+/// Where a page of conversation reaches back to: the sequence of the
+/// `limit`-th counted item below the seek, found by one seek down the partial
+/// index. Nothing found means the conversation runs out above the page, and
+/// the floor is the bottom.
+const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
+     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND sequence < ?2 \
+     ORDER BY sequence DESC LIMIT 1 OFFSET ?3";
+
+/// The page itself: every item in that span, newest-first under the ceiling —
+/// so the activity between two messages travels with them, and an
+/// all-activity stretch ends the page early instead of reading without bound.
+const THREAD_CONVERSATION_PAGE_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND sequence < ?2 AND sequence >= ?3 \
+     ORDER BY sequence DESC LIMIT ?4";
+
 /// How much of a conversation a load reads and the daemon then holds.
 ///
 /// The tail, never the whole: a conversation costs this process a constant
@@ -1065,6 +1080,70 @@ impl Store {
         let connection = self.connection();
         let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
         read_thread_page(&mut statement, agent_id, before, limit)
+    }
+
+    /// One page of a conversation, measured in conversation: the items down to
+    /// and including the `limit`-th counted one below `before_sequence`,
+    /// oldest-first, with whether anything at all remains below it.
+    ///
+    /// Three seeks and no scan. One finds where the page reaches back to, one
+    /// reads that span under the ceiling, and one asks whether anything is
+    /// left below what was shipped — which is what `has_more` means, for items
+    /// of any kind, so a client walking `before_sequence = oldest_sequence`
+    /// sees every row exactly once.
+    pub fn thread_conversation_page(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<ThreadItem>, bool), StoreError> {
+        let before = before_sequence
+            .and_then(|sequence| i64::try_from(sequence).ok())
+            .unwrap_or(i64::MAX);
+        // A page of nothing is not a page; the callers clamp to at least one.
+        let limit = limit.max(1);
+        let connection = self.connection();
+        let floor: i64 = connection
+            .query_row(
+                THREAD_CONVERSATION_FLOOR_SQL,
+                rusqlite::params![agent_id, before, (limit - 1) as i64],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let mut page = {
+            let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
+            let span = decode_thread_items(
+                agent_id,
+                statement.query_map(
+                    rusqlite::params![
+                        agent_id,
+                        before,
+                        floor,
+                        crate::thread::page_span_ceiling(limit) as i64
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?,
+            )?;
+            span
+        };
+        page.reverse();
+        // Off the page's own oldest item, never off the floor: the ceiling may
+        // have stopped the read above it, and a page that claimed to reach the
+        // floor it asked for would tell a client to skip what it never sent.
+        let shipped_floor = match page.first() {
+            Some(oldest) => oldest.sequence() as i64,
+            None => return Ok((page, false)),
+        };
+        let has_more = connection
+            .query_row(
+                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
+                rusqlite::params![agent_id, shipped_floor],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok((page, has_more))
     }
 
     /// The newest `limit` **messages** of a conversation, oldest-first — what
@@ -2386,7 +2465,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
-        for statement in [THREAD_PAGE_SQL, THREAD_CURSOR_SQL, THREAD_MESSAGE_PAGE_SQL] {
+        for statement in [
+            THREAD_PAGE_SQL,
+            THREAD_CURSOR_SQL,
+            THREAD_MESSAGE_PAGE_SQL,
+            THREAD_CONVERSATION_FLOOR_SQL,
+            THREAD_CONVERSATION_PAGE_SQL,
+        ] {
             let mut explain = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
                 .expect("the statement prepares");
@@ -2498,6 +2583,27 @@ mod tests {
             plan.iter()
                 .any(|step| step.contains("thread_items_conversation")),
             "the message page does not use thread_items_conversation: {plan:?}"
+        );
+
+        // The same for the seek that finds where a page reaches back to: on
+        // the primary key it would count every tool call on the way down.
+        let mut explain = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {THREAD_CONVERSATION_FLOOR_SQL}"
+            ))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan: Vec<String> = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("thread_items_conversation")),
+            "the page floor does not use thread_items_conversation: {plan:?}"
         );
     }
 
@@ -2802,6 +2908,98 @@ mod tests {
 
         assert!(!counted_in_rust.is_empty(), "the fixture counts nothing");
         assert_eq!(counted_in_sql, counted_in_rust);
+    }
+
+    /// A stored page is measured the same way a resident one is: its limit
+    /// buys conversation, the activity between two messages travels with them,
+    /// and `has_more` answers for items of any kind below what was shipped.
+    #[test]
+    fn a_stored_page_is_measured_in_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for turn in 0..10 {
+            record.agents[0]
+                .thread
+                .post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..5 {
+                record.agents[0].thread.push_event(
+                    crate::thread::ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+        }
+        store.save_run(&record).expect("the conversation saves");
+        let agent_id = record.agents[0].id.clone();
+
+        let (page, has_more) = store
+            .thread_conversation_page(&agent_id, None, 3)
+            .expect("a page reads");
+        let shipped = sequences(&page);
+        assert_eq!(
+            page.iter().filter(|item| item.counted()).count(),
+            3,
+            "the limit counts conversation: {shipped:?}"
+        );
+        assert!(
+            shipped.len() > 3,
+            "the activity between the messages rides with them: {shipped:?}"
+        );
+        assert_eq!(
+            shipped,
+            (*shipped.first().unwrap()..=60).collect::<Vec<u64>>(),
+            "a page is one contiguous run, oldest-first"
+        );
+        assert!(has_more, "there is history below this page");
+
+        // Pages abut at their seeks: the walk sees every item exactly once.
+        let mut walked = shipped;
+        let mut before = walked.first().copied();
+        loop {
+            let (page, has_more) = store
+                .thread_conversation_page(&agent_id, before, 3)
+                .expect("a page reads");
+            let shipped = sequences(&page);
+            assert!(
+                !shipped.is_empty(),
+                "a page below {before:?} came back empty"
+            );
+            walked.splice(0..0, shipped);
+            if !has_more {
+                break;
+            }
+            before = walked.first().copied();
+        }
+        assert_eq!(walked, (1..=60).collect::<Vec<u64>>());
+    }
+
+    /// The ceiling holds in SQL too: an all-activity stretch ends the page
+    /// early rather than reading an unbounded span of it.
+    #[test]
+    fn a_stored_page_of_pure_activity_stops_at_the_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("rename it", None, NOW);
+        for index in 0..500 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+
+        let (page, has_more) = store
+            .thread_conversation_page(&record.agents[0].id, None, 4)
+            .expect("a page reads");
+        assert_eq!(page.len(), 4 * crate::thread::THREAD_PAGE_SPAN_FACTOR);
+        assert!(has_more, "the walk stopped early and says so");
     }
 
     /// A v2 database gains the message column and is classified in place, the

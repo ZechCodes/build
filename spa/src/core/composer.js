@@ -14,6 +14,7 @@
 
 import { esc } from "./text.js";
 import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
+import { splitButtonMarkup } from "./splitButton.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -114,11 +115,44 @@ export const composerPartIds = (inputId) => ({
   tray: `${inputId}tray`,
   attach: `${inputId}attach`,
   file: `${inputId}file`,
+  sendControl: `${inputId}sendcontrol`,
 });
 
+/// The two ways one message can reach an agent that is already working.
+///
+/// The default is the send it has always been: the message is queued and the
+/// agent takes it at the next step of the turn it is running — which, for a
+/// carrier that can be steered mid-turn, usually decides that turn's outcome.
+/// The alternative stops the turn first. It is never the default press: the
+/// queued send costs nothing and mostly gets there anyway, so the human reaches
+/// for the interrupt deliberately or not at all.
+export const SEND_OPTION = {
+  id: "send",
+  label: "Send",
+  description: "Hand this message to the agent at its next step",
+  busyLabel: "sending…",
+};
+export const INTERRUPT_SEND_OPTION = {
+  id: "interrupt_send",
+  menuLabel: "Interrupt & send",
+  description: "Stop what the agent is doing now and hand it this message",
+  busyLabel: "sending…",
+};
+
+/// The send control in its two shapes, keyed by whether there is a turn to
+/// stop. The button is named `sendId` in both, so one lookup wires either.
+export function sendControlHtml({ sendId, canInterrupt = false }) {
+  if (!canInterrupt) {
+    return `<button class="btn primary composer-send" id="${esc(sendId)}"><span class="composer-send-label">Send</span>${ICON_ARROW_RIGHT}</button>`;
+  }
+  return splitButtonMarkup([SEND_OPTION, INTERRUPT_SEND_OPTION], { variant: "primary", primaryId: sendId });
+}
+
 /// The composer's markup. `attachable` adds the paperclip and the tray; a
-/// surface with no upload path renders the plain box.
-export function composerHtml({ inputId, sendId, hintId, placeholder, attachable = false }) {
+/// surface with no upload path renders the plain box. `canInterrupt` is what
+/// the send control is showing right now — a poll moves it in place rather
+/// than rebuilding the box around it.
+export function composerHtml({ inputId, sendId, hintId, placeholder, attachable = false, canInterrupt = false }) {
   const parts = composerPartIds(inputId);
   const attachControls = attachable
     ? `<input type="file" id="${esc(parts.file)}" class="composer-file" multiple hidden>
@@ -133,7 +167,7 @@ export function composerHtml({ inputId, sendId, hintId, placeholder, attachable 
         <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
           ${attachControls}
-          <button class="btn primary composer-send" id="${esc(sendId)}"><span class="composer-send-label">Send</span>${ICON_ARROW_RIGHT}</button>
+          <div class="composer-send-control" id="${esc(parts.sendControl)}">${sendControlHtml({ sendId, canInterrupt })}</div>
         </div>
       </div>
       ${attachable ? '<div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>' : ""}

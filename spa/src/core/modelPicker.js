@@ -9,6 +9,7 @@ import { esc } from "./text.js";
  *  renders with the pane, not after a round trip. */
 export const STARTABLE_PROVIDERS = [
   { id: "claude", label: "Claude Code" },
+  { id: "claude_adk", label: "Claude Code (headless)" },
   { id: "codex", label: "Codex" },
 ];
 

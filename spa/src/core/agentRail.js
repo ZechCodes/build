@@ -24,6 +24,8 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  agentCanInterrupt,
+  agentHasTerminal,
   agentTitle,
   canRemoveAgent,
   providerLabel,
@@ -234,22 +236,28 @@ export function railStatusHtml(status) {
   return working + git;
 }
 
-/** Pure: the panel's header — who you are talking to, the two controls that are
- *  always there (which face of the agent you are looking at, and the way out),
- *  and, on an agent that can be taken back off, the `−` that mirrors the strip's
- *  `+`. */
-export function panelHeadHtml(who, mode, { removable = false } = {}) {
+/** Pure: the panel's header — who you are talking to, the controls that go with
+ *  it (which face of the agent you are looking at, and the way out), and, on an
+ *  agent that can be taken back off, the `−` that mirrors the strip's `+`.
+ *
+ *  `hasTerminal` false drops the TUI button rather than dimming it: an agent
+ *  that reports its own work has no basement, so there is nothing behind that
+ *  control to offer. The switch is then one button, which still says which face
+ *  you are on. */
+export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
         aria-label="${esc(removeTitle)}">−</button>`
     : "";
+  const tui = hasTerminal
+    ? `<button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>`
+    : "";
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
     <div class="rail-modes" role="group" aria-label="Conversation or terminal">
       <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
-      <button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>
-    </div>
+      ${tui}</div>
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
@@ -305,6 +313,10 @@ export function mountAgentRail(host, context) {
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
   // must not keep yanking focus back while the human is doing something else.
   let autofocusComposerPending = context.autofocusComposer === true;
+  // The pinned box's controller, for the one thing on it a poll can move: which
+  // shape the send control is wearing. Null whenever the panel is not showing
+  // the conversation.
+  let composerControl = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -509,21 +521,30 @@ export function mountAgentRail(host, context) {
     const agent = agentOf(selectedId);
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
     const removable = canRemoveAgent({ agents: entity.agents, agentId: selectedId, kind: entity.kind });
-    // The head is rewritten only when what it SAYS changed: the name, and
-    // whether this agent can be taken back off.
-    const wantedHead = `${who}:${removable ? "removable" : "kept"}`;
+    const hasTerminal = agentHasTerminal(agent);
+    // Which face this agent can actually wear. `mode` is remembered per work
+    // item, so opening a terminal-less agent's bubble — or one whose digest
+    // stopped offering a terminal under an open panel — arrives holding "tui"
+    // for a screen that does not exist. The remembered choice is kept rather
+    // than rewritten, so the agent beside it that does have a terminal is still
+    // where the human left it.
+    const shownMode = hasTerminal ? mode : "chat";
+    // The head is rewritten only when what it SAYS changed: the name, whether
+    // this agent can be taken back off, and whether it has a basement.
+    const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
-    const wantedBody = `${mode}:${selectedId || "ghost"}`;
+    const wantedBody = `${shownMode}:${selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
-      panel.innerHTML = `${panelHeadHtml(who, mode, { removable })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
         <div class="rail-body" id="rail-body"></div>
-        ${mode === "chat" ? composerRowHtml() : ""}`;
+        ${shownMode === "chat" ? composerRowHtml() : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
-      if (mode === "tui") mountTui();
+      composerControl = null;
+      if (shownMode === "tui") mountTui();
       else {
         wireComposer(panel);
         if (autofocusComposerPending) {
@@ -536,11 +557,11 @@ export function mountAgentRail(host, context) {
       // after the fact), or the last agent beside this one went away. Nothing
       // else in the head can move on a poll, and rewriting it every tick would
       // eat a press that landed mid-repaint.
-      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, mode, { removable });
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, { removable, hasTerminal });
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
-    if (mode === "chat") {
+    if (shownMode === "chat") {
       paintChat();
       paintRailStatus();
     }
@@ -549,6 +570,9 @@ export function mountAgentRail(host, context) {
   const wireHead = (panel) => {
     panel.querySelectorAll("[data-mode]").forEach((control) => {
       control.onclick = () => {
+        // The terminal is asked for through a button the head only draws for an
+        // agent that has one, so a press cannot name a face this agent cannot
+        // wear — paintPanel decides that, and this only records the choice.
         if (mode === control.dataset.mode) return;
         mode = control.dataset.mode;
         panelModes.set(key, mode);
@@ -639,7 +663,7 @@ export function mountAgentRail(host, context) {
     body.onscroll = () => {
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
     };
-    syncComposerPlaceholder();
+    syncComposer();
     reportRead(body);
   };
 
@@ -663,14 +687,18 @@ export function mountAgentRail(host, context) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
+        canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>`;
 
-  /// The placeholder is the only thing on the composer a poll can change — a
-  /// checkout Build owned nothing in a second ago now has an agent to talk to.
-  /// The element itself is never rebuilt, so the words are moved onto it.
-  const syncComposerPlaceholder = () => {
+  /// The two things on the composer a poll can change: the placeholder — a
+  /// checkout Build owned nothing in a second ago now has an agent to talk to —
+  /// and whether the send offers to stop the turn in flight, which moves every
+  /// time an agent starts or finishes one. The box itself is never rebuilt for
+  /// either: a rebuild would take the draft and the focus with it, mid-sentence.
+  const syncComposer = () => {
     const input = host.querySelector(`#${COMPOSER_IDS.input}`);
     if (input) input.placeholder = composerPlaceholder();
+    if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentOf(selectedId)));
   };
 
   const wireTimeline = (body) => {
@@ -689,7 +717,7 @@ export function mountAgentRail(host, context) {
   /// dropped anywhere on the conversation lands in the tray — the gesture aims
   /// at the agent, not at a 40px strip.
   const wireComposer = (panel) => {
-    wireThreadComposer(panel, {
+    composerControl = wireThreadComposer(panel, {
       ids: COMPOSER_IDS,
       readDraft: () => draftOf().body,
       writeDraft: (value) => writeDraft({ body: value }),
@@ -703,7 +731,7 @@ export function mountAgentRail(host, context) {
         const entityId = await ensureEntity();
         return App.call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
       },
-      onSubmit: (message, attachments) => send(message, attachments),
+      onSubmit: (message, attachments, options) => send(message, attachments, options),
       onError: (error) => notifyError("Message failed", error.message),
     });
   };
@@ -787,7 +815,12 @@ export function mountAgentRail(host, context) {
     await refresh();
   };
 
-  const send = (body, attachments) => post({ body, attachments });
+  /** A typed message. `interrupt` rides on the post rather than travelling as a
+   *  verb of its own: Build never stops a turn without one to put in its place,
+   *  and a second round trip is a window in which the agent starts a fresh turn
+   *  or finishes. One send path, one flag. */
+  const send = (body, attachments, { interrupt = false } = {}) =>
+    post({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
 
   /** A press on the actions the agent suggested. It goes out as the message it
    *  is — same adoption, same waking, same refresh — and the daemon composes

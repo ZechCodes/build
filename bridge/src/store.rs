@@ -425,6 +425,11 @@ CREATE TABLE IF NOT EXISTS thread_items (
     -- items under it can only be counted by the database — and counting them
     -- by deserializing every one would undo the tail.
     attention        INTEGER NOT NULL DEFAULT 0,
+    -- 1 when this item is a message, either role. Hoisted for the same reason
+    -- `attention` is: what a page's limit buys and what a catch-up packet
+    -- carries is conversation, and a conversation buried in activity can only
+    -- be found under the tail by the database.
+    message          INTEGER NOT NULL DEFAULT 0,
     item             TEXT NOT NULL,
     PRIMARY KEY (agent_id, sequence)
 );
@@ -432,6 +437,11 @@ CREATE INDEX IF NOT EXISTS thread_items_attention
     ON thread_items(agent_id, attention, sequence);
 CREATE INDEX IF NOT EXISTS thread_items_cursor
     ON thread_items(agent_id, updated_sequence);
+-- The counted rule, indexed: an item the human reads as conversation. Partial,
+-- so the index holds the conversation and not the activity between it, and
+-- every statement that seeks down it repeats the predicate verbatim.
+CREATE INDEX IF NOT EXISTS thread_items_conversation
+    ON thread_items(agent_id, sequence) WHERE message = 1 OR attention = 1;
 
 CREATE TABLE IF NOT EXISTS captures (
     id     TEXT PRIMARY KEY,
@@ -458,6 +468,32 @@ CREATE TABLE IF NOT EXISTS archived_worktrees (
 const THREAD_PAGE_SQL: &str = "SELECT item FROM thread_items \
      WHERE agent_id = ?1 AND sequence < ?2 \
      ORDER BY sequence DESC LIMIT ?3";
+
+/// The messages of a conversation, newest-first from the end — what a resumed
+/// agent's catch-up packet is built from when the tail it booted onto holds
+/// only activity.
+///
+/// The partial index's predicate is repeated verbatim as a conjunct so the
+/// planner's implication check is trivial, and `message = 1` then narrows the
+/// seek to the words themselves.
+const THREAD_MESSAGE_PAGE_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND message = 1 \
+     ORDER BY sequence DESC LIMIT ?2";
+
+/// Where a page of conversation reaches back to: the sequence of the
+/// `limit`-th counted item below the seek, found by one seek down the partial
+/// index. Nothing found means the conversation runs out above the page, and
+/// the floor is the bottom.
+const THREAD_CONVERSATION_FLOOR_SQL: &str = "SELECT sequence FROM thread_items \
+     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) AND sequence < ?2 \
+     ORDER BY sequence DESC LIMIT 1 OFFSET ?3";
+
+/// The page itself: every item in that span, newest-first under the ceiling —
+/// so the activity between two messages travels with them, and an
+/// all-activity stretch ends the page early instead of reading without bound.
+const THREAD_CONVERSATION_PAGE_SQL: &str = "SELECT item FROM thread_items \
+     WHERE agent_id = ?1 AND sequence < ?2 AND sequence >= ?3 \
+     ORDER BY sequence DESC LIMIT ?4";
 
 /// How much of a conversation a load reads and the daemon then holds.
 ///
@@ -500,7 +536,7 @@ const THREAD_LAST_SEQUENCE_SQL: &str =
 /// The schema this build writes. A stored value ahead of this one means the
 /// database was written by a newer bridge; opening it read-write would corrupt
 /// what that build knows, so the daemon refuses rather than guessing.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// The database file, inside the store directory beside the docs it does not
 /// hold.
@@ -577,16 +613,20 @@ impl Store {
         // Store share one connection, but the daemon is not the only process
         // that may ever open the file (a backup, a shell).
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        // The column BEFORE the schema batch: `SCHEMA` indexes `attention`,
-        // and a v1 table has no such column for the index to name.
+        // The columns BEFORE the schema batch: `SCHEMA` indexes both of them,
+        // and an older table has no such column for an index to name. A v1
+        // database arrives here needing both, and reaches v3 in one open.
         if stored == Some(1) {
             Store::add_attention_column(&conn)?;
         }
+        if matches!(stored, Some(1 | 2)) {
+            Store::add_message_column(&conn)?;
+        }
         conn.execute_batch(SCHEMA)?;
-        if stored == Some(1) {
+        if matches!(stored, Some(1 | 2)) {
             Store::classify_stored_items(&conn)?;
         }
-        if stored.is_none() || stored == Some(1) {
+        if stored.unwrap_or(0) < SCHEMA_VERSION {
             conn.execute(
                 "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)
                  ON CONFLICT(key) DO UPDATE SET value = ?1",
@@ -636,11 +676,32 @@ impl Store {
         Ok(())
     }
 
-    /// Classify every stored item for the freshly added column.
+    /// Add the v3 `message` column to an older table.
+    ///
+    /// The v1→v2 precedent exactly: `CREATE TABLE IF NOT EXISTS` does not alter
+    /// a table that already exists, and the column has to be there before the
+    /// schema batch, whose partial index names it.
+    fn add_message_column(conn: &Connection) -> Result<(), StoreError> {
+        if conn
+            .prepare("SELECT message FROM thread_items LIMIT 1")
+            .is_ok()
+        {
+            return Ok(());
+        }
+        conn.execute(
+            "ALTER TABLE thread_items ADD COLUMN message INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Classify every stored item for the freshly added columns.
     ///
     /// The one place Build reads whole conversations on purpose: it runs once,
     /// on the upgrade, because a column added with a default says nothing about
-    /// the items already under it.
+    /// the items already under it. Both columns are written on every upgrade
+    /// path — a v1 database gains them together, and rewriting `attention` with
+    /// the value it already holds is what makes one classifier serve both.
     fn classify_stored_items(conn: &Connection) -> Result<(), StoreError> {
         let rows: Vec<(String, i64, String)> = {
             let mut statement =
@@ -651,7 +712,8 @@ impl Store {
             read.collect::<Result<_, _>>()?
         };
         let mut set = conn.prepare(
-            "UPDATE thread_items SET attention = ?3 WHERE agent_id = ?1 AND sequence = ?2",
+            "UPDATE thread_items SET attention = ?3, message = ?4 \
+             WHERE agent_id = ?1 AND sequence = ?2",
         )?;
         for (agent_id, sequence, raw) in rows {
             let Ok(item) = serde_json::from_str::<ThreadItem>(&raw) else {
@@ -660,7 +722,8 @@ impl Store {
             set.execute(rusqlite::params![
                 agent_id,
                 sequence,
-                i64::from(item.attention_reason().is_some())
+                i64::from(item.attention_reason().is_some()),
+                i64::from(matches!(item, ThreadItem::Message(_)))
             ])?;
         }
         Ok(())
@@ -745,17 +808,31 @@ impl Store {
         Ok(())
     }
 
-    /// Test-only: strip the v2 column and stamp the version back, so the
+    /// Test-only: strip the hoisted columns and stamp the version back, so the
     /// upgrade path can be exercised against a database this build wrote.
     #[cfg(test)]
     pub fn pretend_to_be_v1(&self) {
         let conn = self.connection();
         conn.execute_batch(
             "DROP INDEX IF EXISTS thread_items_attention;
+             DROP INDEX IF EXISTS thread_items_conversation;
              ALTER TABLE thread_items DROP COLUMN attention;
+             ALTER TABLE thread_items DROP COLUMN message;
              UPDATE meta SET value = '1' WHERE key = 'schema_version';",
         )
         .expect("the v1 shape is staged");
+    }
+
+    /// Test-only: the same for the v2 shape — attention hoisted, message not.
+    #[cfg(test)]
+    pub fn pretend_to_be_v2(&self) {
+        let conn = self.connection();
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS thread_items_conversation;
+             ALTER TABLE thread_items DROP COLUMN message;
+             UPDATE meta SET value = '2' WHERE key = 'schema_version';",
+        )
+        .expect("the v2 shape is staged");
     }
 
     /// Test-only: make the next write fail once, then behave normally.
@@ -881,10 +958,10 @@ impl Store {
              ON CONFLICT(id) DO UPDATE SET owner_id = ?2, ordinal = ?3, record = ?4",
         )?;
         let mut upsert_item = tx.prepare(
-            "INSERT INTO thread_items (agent_id, sequence, updated_sequence, attention, item)
-             VALUES (?1, ?2, ?3, ?4, ?5)
+            "INSERT INTO thread_items (agent_id, sequence, updated_sequence, attention, message, item)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(agent_id, sequence)
-             DO UPDATE SET updated_sequence = ?3, attention = ?4, item = ?5",
+             DO UPDATE SET updated_sequence = ?3, attention = ?4, message = ?5, item = ?6",
         )?;
         let mut delete_item =
             tx.prepare("DELETE FROM thread_items WHERE agent_id = ?1 AND sequence = ?2")?;
@@ -931,6 +1008,7 @@ impl Store {
                     sequence,
                     updated,
                     i64::from(item.attention_reason().is_some()),
+                    i64::from(matches!(item, ThreadItem::Message(_))),
                     serde_json::to_string(item).expect("a thread item always serializes")
                 ])?;
             }
@@ -1002,6 +1080,97 @@ impl Store {
         let connection = self.connection();
         let mut statement = connection.prepare(THREAD_PAGE_SQL)?;
         read_thread_page(&mut statement, agent_id, before, limit)
+    }
+
+    /// One page of a conversation, measured in conversation: the items down to
+    /// and including the `limit`-th counted one below `before_sequence`,
+    /// oldest-first, with whether anything at all remains below it.
+    ///
+    /// Three seeks and no scan. One finds where the page reaches back to, one
+    /// reads that span under the ceiling, and one asks whether anything is
+    /// left below what was shipped — which is what `has_more` means, for items
+    /// of any kind, so a client walking `before_sequence = oldest_sequence`
+    /// sees every row exactly once.
+    pub fn thread_conversation_page(
+        &self,
+        agent_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<(Vec<ThreadItem>, bool), StoreError> {
+        let before = before_sequence
+            .and_then(|sequence| i64::try_from(sequence).ok())
+            .unwrap_or(i64::MAX);
+        // A page of nothing is not a page; the callers clamp to at least one.
+        let limit = limit.max(1);
+        let connection = self.connection();
+        let floor: i64 = connection
+            .query_row(
+                THREAD_CONVERSATION_FLOOR_SQL,
+                rusqlite::params![agent_id, before, (limit - 1) as i64],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let mut page = {
+            let mut statement = connection.prepare(THREAD_CONVERSATION_PAGE_SQL)?;
+            let span = decode_thread_items(
+                agent_id,
+                statement.query_map(
+                    rusqlite::params![
+                        agent_id,
+                        before,
+                        floor,
+                        crate::thread::page_span_ceiling(limit) as i64
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?,
+            )?;
+            span
+        };
+        page.reverse();
+        // Off the page's own oldest item, never off the floor: the ceiling may
+        // have stopped the read above it, and a page that claimed to reach the
+        // floor it asked for would tell a client to skip what it never sent.
+        let shipped_floor = match page.first() {
+            Some(oldest) => oldest.sequence() as i64,
+            None => return Ok((page, false)),
+        };
+        let has_more = connection
+            .query_row(
+                "SELECT 1 FROM thread_items WHERE agent_id = ?1 AND sequence < ?2 LIMIT 1",
+                rusqlite::params![agent_id, shipped_floor],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        Ok((page, has_more))
+    }
+
+    /// The newest `limit` **messages** of a conversation, oldest-first — what
+    /// a resumed agent's catch-up packet carries.
+    ///
+    /// Messages of either role, outcomes among them because an outcome is a
+    /// message. The limit counts messages, so a session that emitted hundreds
+    /// of tool calls before it stopped still hands its replacement what the
+    /// human said: the seek runs down the conversation index and never reads
+    /// the activity between the words at all.
+    pub fn thread_message_page(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ThreadItem>, StoreError> {
+        let connection = self.connection();
+        let mut statement = connection.prepare(THREAD_MESSAGE_PAGE_SQL)?;
+        let mut page = decode_thread_items(
+            agent_id,
+            statement.query_map(rusqlite::params![agent_id, limit as i64], |row| {
+                row.get::<_, String>(0)
+            })?,
+        )?;
+        // Read newest-first off the seek, handed back in the order the
+        // conversation happened — the way `read_thread_page` reverses.
+        page.reverse();
+        Ok(page)
     }
 
     /// How many items a conversation holds. A `COUNT(*)`, never a load — the
@@ -2296,7 +2465,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path().join("tasks")).expect("store opens");
         let connection = store.connection();
-        for statement in [THREAD_PAGE_SQL, THREAD_CURSOR_SQL] {
+        for statement in [
+            THREAD_PAGE_SQL,
+            THREAD_CURSOR_SQL,
+            THREAD_MESSAGE_PAGE_SQL,
+            THREAD_CONVERSATION_FLOOR_SQL,
+            THREAD_CONVERSATION_PAGE_SQL,
+        ] {
             let mut explain = connection
                 .prepare(&format!("EXPLAIN QUERY PLAN {statement}"))
                 .expect("the statement prepares");
@@ -2380,6 +2555,55 @@ mod tests {
         assert!(
             plan.iter().any(|step| step.contains("thread_items_cursor")),
             "the forward cursor does not use thread_items_cursor: {plan:?}"
+        );
+    }
+
+    /// The conversation index by name. The primary key would answer this
+    /// statement too — by walking every tool call between the words, which is
+    /// the whole cost the partial index exists to skip — and the page it
+    /// returned would look identical either way. So the plan is pinned to the
+    /// index, not merely to a seek.
+    #[test]
+    fn the_message_page_reads_through_the_conversation_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let connection = store.connection();
+        let mut explain = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {THREAD_MESSAGE_PAGE_SQL}"))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan: Vec<String> = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("thread_items_conversation")),
+            "the message page does not use thread_items_conversation: {plan:?}"
+        );
+
+        // The same for the seek that finds where a page reaches back to: on
+        // the primary key it would count every tool call on the way down.
+        let mut explain = connection
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN {THREAD_CONVERSATION_FLOOR_SQL}"
+            ))
+            .expect("the statement prepares");
+        let placeholders = vec![1_i64; explain.parameter_count()];
+        let plan: Vec<String> = explain
+            .query_map(rusqlite::params_from_iter(placeholders), |row| {
+                row.get::<_, String>(3)
+            })
+            .expect("the plan reads")
+            .collect::<Result<_, _>>()
+            .expect("the plan reads");
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("thread_items_conversation")),
+            "the page floor does not use thread_items_conversation: {plan:?}"
         );
     }
 
@@ -2552,6 +2776,268 @@ mod tests {
         );
     }
 
+    /// A conversation buried in activity still hands its messages back, and
+    /// hands back nothing else: the query the catch-up packet reads through,
+    /// against exactly the thread that starved it.
+    #[test]
+    fn the_message_page_reads_past_the_activity_between_the_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0]
+            .thread
+            .post_user("please rename the helper", None, NOW);
+        for index in 0..300 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        record.agents[0].thread.post_outcome(
+            crate::thread::MessageOutcome::Blocked,
+            "needs production credentials",
+            None,
+            NOW,
+        );
+        record.agents[0].thread.push_event(
+            crate::thread::ThreadEventKind::Interrupted,
+            Some("the daemon restarted".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        store.save_run(&record).expect("the conversation saves");
+        let agent_id = record.agents[0].id.clone();
+
+        let messages = store
+            .thread_message_page(&agent_id, 40)
+            .expect("the message page reads");
+        let bodies: Vec<String> = messages
+            .iter()
+            .map(|item| match item {
+                ThreadItem::Message(message) => message.body.clone(),
+                ThreadItem::Event(event) => panic!("an event came back: {event:?}"),
+            })
+            .collect();
+        assert_eq!(
+            bodies,
+            vec![
+                "please rename the helper".to_string(),
+                "needs production credentials".to_string(),
+            ],
+            "the words are handed back oldest-first, activity and observations left behind"
+        );
+    }
+
+    /// The limit counts messages and keeps the newest of them, whatever sits
+    /// between.
+    #[test]
+    fn the_message_page_keeps_the_newest_messages_up_to_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for index in 0..10 {
+            record.agents[0]
+                .thread
+                .post_user(format!("ask {index}"), None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+
+        let messages = store
+            .thread_message_page(&record.agents[0].id, 3)
+            .expect("the message page reads");
+        assert_eq!(sequences(&messages), vec![15, 17, 19], "{messages:?}");
+    }
+
+    /// The two readings of the counted rule — `ThreadItem::counted()` and the
+    /// store's `message = 1 OR attention = 1` — held equal over every kind
+    /// there is, so the hoisted columns cannot drift from the enum they were
+    /// written off.
+    #[test]
+    fn the_hoisted_columns_agree_with_the_counted_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for kind in crate::thread::ThreadEventKind::ALL {
+            record.agents[0].thread.push_event(
+                kind,
+                Some(kind.as_str().to_string()),
+                None,
+                None,
+                NOW,
+            );
+        }
+        record.agents[0].thread.post_user("a question", None, NOW);
+        record.agents[0].thread.post_agent("an answer", None, NOW);
+        record.agents[0]
+            .thread
+            .post_agent_progress("still going", None, NOW);
+        store.save_run(&record).expect("the conversation saves");
+
+        let counted_in_sql: Vec<u64> = {
+            let connection = store.connection();
+            let mut statement = connection
+                .prepare(
+                    "SELECT sequence FROM thread_items \
+                     WHERE agent_id = ?1 AND (message = 1 OR attention = 1) ORDER BY sequence",
+                )
+                .expect("the predicate prepares");
+            statement
+                .query_map([&record.agents[0].id], |row| row.get::<_, i64>(0))
+                .expect("the predicate reads")
+                .map(|sequence| sequence.expect("a row reads") as u64)
+                .collect()
+        };
+        let counted_in_rust: Vec<u64> = record.agents[0]
+            .thread
+            .items
+            .iter()
+            .filter(|item| item.counted())
+            .map(ThreadItem::sequence)
+            .collect();
+
+        assert!(!counted_in_rust.is_empty(), "the fixture counts nothing");
+        assert_eq!(counted_in_sql, counted_in_rust);
+    }
+
+    /// A stored page is measured the same way a resident one is: its limit
+    /// buys conversation, the activity between two messages travels with them,
+    /// and `has_more` answers for items of any kind below what was shipped.
+    #[test]
+    fn a_stored_page_is_measured_in_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        for turn in 0..10 {
+            record.agents[0]
+                .thread
+                .post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..5 {
+                record.agents[0].thread.push_event(
+                    crate::thread::ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+        }
+        store.save_run(&record).expect("the conversation saves");
+        let agent_id = record.agents[0].id.clone();
+
+        let (page, has_more) = store
+            .thread_conversation_page(&agent_id, None, 3)
+            .expect("a page reads");
+        let shipped = sequences(&page);
+        assert_eq!(
+            page.iter().filter(|item| item.counted()).count(),
+            3,
+            "the limit counts conversation: {shipped:?}"
+        );
+        assert!(
+            shipped.len() > 3,
+            "the activity between the messages rides with them: {shipped:?}"
+        );
+        assert_eq!(
+            shipped,
+            (*shipped.first().unwrap()..=60).collect::<Vec<u64>>(),
+            "a page is one contiguous run, oldest-first"
+        );
+        assert!(has_more, "there is history below this page");
+
+        // Pages abut at their seeks: the walk sees every item exactly once.
+        let mut walked = shipped;
+        let mut before = walked.first().copied();
+        loop {
+            let (page, has_more) = store
+                .thread_conversation_page(&agent_id, before, 3)
+                .expect("a page reads");
+            let shipped = sequences(&page);
+            assert!(
+                !shipped.is_empty(),
+                "a page below {before:?} came back empty"
+            );
+            walked.splice(0..0, shipped);
+            if !has_more {
+                break;
+            }
+            before = walked.first().copied();
+        }
+        assert_eq!(walked, (1..=60).collect::<Vec<u64>>());
+    }
+
+    /// The ceiling holds in SQL too: an all-activity stretch ends the page
+    /// early rather than reading an unbounded span of it.
+    #[test]
+    fn a_stored_page_of_pure_activity_stops_at_the_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().join("tasks")).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        record.agents[0].thread.post_user("rename it", None, NOW);
+        for index in 0..500 {
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        store.save_run(&record).expect("the conversation saves");
+
+        let (page, has_more) = store
+            .thread_conversation_page(&record.agents[0].id, None, 4)
+            .expect("a page reads");
+        assert_eq!(page.len(), 4 * crate::thread::THREAD_PAGE_SPAN_FACTOR);
+        assert!(has_more, "the walk stopped early and says so");
+    }
+
+    /// A v2 database gains the message column and is classified in place, the
+    /// way v1 gained attention. Nobody's stored conversation has to be
+    /// rewritten for the packet to read it.
+    #[test]
+    fn a_v2_database_is_migrated_and_its_messages_classified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let agent_id;
+        {
+            let store = Store::new(&root).expect("store opens");
+            let mut record = run_record("run-1", None, NOW);
+            agent_id = record.agents[0].id.clone();
+            record.agents[0].thread.post_user("said before", None, NOW);
+            record.agents[0].thread.push_event(
+                crate::thread::ThreadEventKind::ToolUse,
+                Some("Read a file".to_string()),
+                None,
+                None,
+                NOW,
+            );
+            store.save_run(&record).expect("the run saves");
+            store.pretend_to_be_v2();
+        }
+        let migrated = Store::new(&root).expect("a v2 store opens");
+
+        assert_eq!(
+            sequences(
+                &migrated
+                    .thread_message_page(&agent_id, 40)
+                    .expect("the message page reads")
+            ),
+            vec![1],
+            "the backfill classified the items already stored"
+        );
+    }
+
     /// A v1 database gains the attention column and is classified in place —
     /// the one real installation is a v1 database, so this path is the only one
     /// that will ever run on it.
@@ -2581,6 +3067,15 @@ mod tests {
                 .expect("the count runs"),
             1,
             "the backfill classified the items already stored"
+        );
+        assert_eq!(
+            sequences(
+                &migrated
+                    .thread_message_page(&agent_id, 40)
+                    .expect("the message page reads")
+            ),
+            vec![1],
+            "a v1 store arrives at v3, so both classifiers ran on it"
         );
         assert_eq!(
             migrated.load_all_runs().expect("runs load")[0].agents[0]

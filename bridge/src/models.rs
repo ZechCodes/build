@@ -24,6 +24,12 @@ pub enum AgentProvider {
     #[default]
     Claude,
     Codex,
+    /// The same CLI as [`Claude`](AgentProvider::Claude), run headless over its
+    /// session protocol instead of as a TUI. A different provider rather than a
+    /// flag on that one: the carrier it opens has no terminal, and which
+    /// carrier a spawn opens is what a provider answers.
+    #[serde(rename = "claude_adk")]
+    ClaudeAdk,
 }
 
 impl AgentProvider {
@@ -31,7 +37,11 @@ impl AgentProvider {
     /// anything that has to visit them all — the catalog RPC, the tests that
     /// hold each harness to the same contract — reads this rather than writing
     /// the list out again.
-    pub const ALL: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::Codex];
+    pub const ALL: [AgentProvider; 3] = [
+        AgentProvider::Claude,
+        AgentProvider::Codex,
+        AgentProvider::ClaudeAdk,
+    ];
 
     /// How a provider is spelled on the wire and in the store. Matches the
     /// serde representation, so a persisted record and an RPC param agree.
@@ -39,6 +49,7 @@ impl AgentProvider {
         match self {
             AgentProvider::Claude => "claude",
             AgentProvider::Codex => "codex",
+            AgentProvider::ClaudeAdk => "claude_adk",
         }
     }
 

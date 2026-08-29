@@ -8,14 +8,18 @@
 //!   whether the provider already has a conversation for that worktree to
 //!   resume. One implementation per [`AgentProvider`], reached only through
 //!   [`harness_for`].
-//! - [`HarnessSession`] is the running side — the calls the daemon makes on a
-//!   session once it exists.
+//! - [`AgentSession`] is the running side — the calls the daemon makes on a
+//!   session once it exists, with [`TerminalView`] as the capability a session
+//!   offers only when the harness behind it is opaque enough to need an escape
+//!   hatch. It is the whole vocabulary: nothing above [`crate::pty`] knows
+//!   what a session is carried over.
 //!
 //! Nothing above these traits matches on a provider. Adding one means adding an
 //! `AgentProvider` variant, a module here, and an arm in [`harness_for`]; the
 //! compiler finds the rest.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use portable_pty::PtySize;
@@ -24,11 +28,14 @@ use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
 use crate::pty::{HarnessSpec, PtySession};
 
+pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
 
-pub use session::{HarnessError, HarnessSession};
+pub use session::{
+    AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView, Turn,
+};
 
 /// How long a real harness TUI must stop painting before its input is live.
 ///
@@ -107,6 +114,22 @@ pub trait Harness: Send + Sync {
         context: &HarnessContext,
     ) -> HarnessSpec;
 
+    /// Whether a session opened for this provider offers a terminal.
+    ///
+    /// The provider answers because it is the only authority that exists BOTH
+    /// before and after a spawn: the rail decides whether to offer an agent a
+    /// basement while that agent is still idle, and the spawn decides which
+    /// carrier to open. One authority, one answer, so the rail never offers a
+    /// TUI button the spawn would then refuse.
+    ///
+    /// True by default, and true for every provider today: a CLI wrapper is
+    /// opaque — Build sees what it launched and what the agent reported, and
+    /// nothing in between — so it needs the escape hatch. A harness that
+    /// reports its own reasoning and tool calls has nothing to escape to.
+    fn has_terminal(&self) -> bool {
+        true
+    }
+
     /// Make `cwd` fit for this provider to open a session in, before one is
     /// spawned there.
     ///
@@ -129,17 +152,100 @@ pub trait Harness: Send + Sync {
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool;
 }
 
-/// Open a live session for `spec`, rooted at `root`.
+/// Which carrier a spawn opens, and what that carrier needs to know.
 ///
-/// The one place a launch description becomes a running agent. Every spec names
-/// a binary today, so every session is a subprocess in a full PTY; a carrier
-/// that is not a subprocess is chosen here and nowhere else has to notice.
+/// The provider decides ([`Harness::has_terminal`]) and this is the shape that
+/// decision travels in, so the two arms carry only what their own carrier has
+/// an answer for: a grid and a readiness wait belong to a terminal, and a
+/// session protocol has neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carrier {
+    /// A full PTY around an opaque CLI wrapper.
+    ///
+    /// `turn_ready_grace` is how long to wait for the harness to be able to
+    /// take a turn, and `None` is for a session Build will never hand one to
+    /// (the human's own shell): waiting on a login shell for a signal it may
+    /// never send would stall the caller for the whole grace.
+    Terminal {
+        size: PtySize,
+        turn_ready_grace: Option<Duration>,
+    },
+    /// A session protocol over piped stdio. There is no readiness dance: a
+    /// turn is a value, and the child says for itself when it can take one.
+    Protocol,
+}
+
+/// Open a live session for `spec`, rooted at `root`, on the carrier the
+/// provider chose. Returns the session and its output, subscribed before its
+/// first word can be missed.
+///
+/// The session comes back behind an [`Arc`] because the daemon keeps it inside
+/// the state it locks, and hands turns to it with that lock RELEASED — see
+/// [`AgentSession::send_turn`]. A shared handle is what lets a caller take the
+/// session out of the registry without holding the registry open across the
+/// turn.
+///
+/// The one place a launch description becomes a running agent, and the only
+/// place the two carriers are told apart: above here a session is a session.
+///
+/// The readiness wait is the PTY arm's alone, because readiness is how a
+/// *terminal* opens: an interactive TUI paints a banner — or a modal
+/// workspace-trust dialog — long before its line editor will accept a turn, so
+/// a prompt written on first byte lands in whatever owns the keyboard. A
+/// carrier that takes a turn as a value has nothing to wait for.
+///
+/// The subscribe happens BEFORE that wait, and the order is not incidental: a
+/// harness paints its entire startup while readiness is being waited out — and
+/// a harness that dies there paints its last words — so a stream subscribed
+/// afterwards would open blank on a live agent and lose the epitaph of a dead
+/// one. The protocol arm subscribes inside its own spawn for the same reason.
 pub fn open_session(
     spec: &HarnessSpec,
     root: PathBuf,
-    size: PtySize,
-) -> Result<Box<dyn HarnessSession>, HarnessError> {
-    Ok(Box::new(PtySession::spawn(spec, Some(root), size)?))
+    carrier: Carrier,
+) -> Result<(Arc<dyn AgentSession>, SessionOutput), HarnessError> {
+    let (session, output): (Arc<dyn AgentSession>, SessionOutput) = match carrier {
+        Carrier::Terminal {
+            size,
+            turn_ready_grace,
+        } => {
+            let session = PtySession::spawn(spec, Some(root), size)?;
+            let output = match session.terminal() {
+                Some(terminal) => SessionOutput::painting(terminal.subscribe()),
+                None => SessionOutput::silent(),
+            };
+            if let Some(grace) = turn_ready_grace {
+                session.ready_within(grace);
+            }
+            (Arc::new(session), output)
+        }
+        Carrier::Protocol => {
+            let (session, activity) = adk::AdkSession::spawn(spec, Some(root))?;
+            (Arc::new(session), SessionOutput::reporting(activity))
+        }
+    };
+    refuse_a_session_nobody_can_watch(session.as_ref())?;
+    Ok((session, output))
+}
+
+/// Refuse a session that offers neither a terminal nor an activity stream.
+///
+/// The two capabilities are alternatives, not extras, and a carrier with
+/// neither is worse than one Build cannot see working: the death rites hang off
+/// a stream CLOSING — the tab going not live, the conversation's session
+/// lineage ending — so a session with no stream would leave a dead agent's tab
+/// reading as live until the idle sweep explained the exit as silence. Better
+/// to never open it.
+fn refuse_a_session_nobody_can_watch(session: &dyn AgentSession) -> Result<(), HarnessError> {
+    if session.terminal().is_some() || session.activity().is_some() {
+        return Ok(());
+    }
+    session.end();
+    Err(HarnessError::Session(
+        "this harness offers neither a terminal nor an activity stream, so Build could not see it \
+         working or learn that it had stopped"
+            .to_string(),
+    ))
 }
 
 /// The implementation for `provider`. The only way to reach one.
@@ -147,6 +253,7 @@ pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
     match provider {
         AgentProvider::Claude => &claude::ClaudeHarness,
         AgentProvider::Codex => &codex::CodexHarness,
+        AgentProvider::ClaudeAdk => &adk::AdkHarness,
     }
 }
 
@@ -208,6 +315,173 @@ mod tests {
                 "{provider:?}"
             );
         }
+    }
+
+    /// The terminal is a capability, and exactly the opaque CLI wrappers have
+    /// it: Build sees what it launched and what they reported, and nothing in
+    /// between, so the human needs the escape hatch. The headless carrier
+    /// reports its own reasoning and tool calls, so it has nothing to escape
+    /// to — and this is the answer the rail and the spawn BOTH read, which is
+    /// what keeps the rail from offering a button the spawn would refuse.
+    #[test]
+    fn only_the_opaque_cli_wrappers_offer_a_terminal() {
+        for provider in [AgentProvider::Claude, AgentProvider::Codex] {
+            assert!(harness_for(provider).has_terminal(), "{provider:?}");
+        }
+        assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
+    }
+
+    /// A harness that announces its line editor only after a pause, the way a
+    /// real TUI does.
+    fn slow_to_open_spec() -> HarnessSpec {
+        HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("sleep 0.3; printf '\\033[?2004h'; cat >/dev/null")
+    }
+
+    fn one_pty() -> PtySize {
+        PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 0,
+            pixel_height: 0,
+        }
+    }
+
+    /// A session Build will hand a turn to is opened READY.
+    ///
+    /// An interactive TUI paints its banner — or a modal workspace-trust dialog
+    /// — long before its line editor will take a turn, so a prompt written on
+    /// first byte lands in whatever owns the keyboard and the submit key
+    /// answers it. Waiting that out is how a terminal opens, so it happens
+    /// where the carrier is chosen rather than at the caller.
+    #[test]
+    fn a_session_that_will_be_handed_a_turn_opens_ready() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let started = std::time::Instant::now();
+        let (session, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            Carrier::Terminal {
+                size: one_pty(),
+                turn_ready_grace: Some(Duration::from_secs(5)),
+            },
+        )
+        .expect("the session opens");
+        let waited = started.elapsed();
+        session.end();
+        assert!(
+            waited >= Duration::from_millis(300),
+            "the open returned before the harness would take a turn, after {waited:?}"
+        );
+    }
+
+    /// And a session no turn is coming for is NOT waited on.
+    ///
+    /// The human's own shell is opened this way: it may never announce a line
+    /// editor at all, and `term.create` holds the app-wide state lock across
+    /// the open — so a wait for a signal that never comes would stall every
+    /// project for the whole grace.
+    #[test]
+    fn a_session_with_no_turn_coming_is_not_waited_on() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let started = std::time::Instant::now();
+        let (session, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            Carrier::Terminal {
+                size: one_pty(),
+                turn_ready_grace: None,
+            },
+        )
+        .expect("the session opens");
+        let waited = started.elapsed();
+        session.end();
+        assert!(
+            waited < Duration::from_millis(200),
+            "opening a session nobody will speak to waited {waited:?} for readiness"
+        );
+    }
+
+    /// A fake stream-json harness: it announces its session, then sits with its
+    /// stdin open the way the real one does between turns.
+    fn fake_protocol_spec() -> HarnessSpec {
+        HarnessSpec::new("sh").arg("-c").arg(
+            "printf '%s\\n' '{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"s-1\"}'; \
+             cat >/dev/null",
+        )
+    }
+
+    /// The carrier choice, made in the one place it is made: a harness with no
+    /// terminal opens a session protocol, and what comes back offers the
+    /// alternative capability instead of an empty one.
+    #[test]
+    fn a_harness_with_no_terminal_opens_a_carrier_that_reports_itself() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let (session, output) = open_session(
+            &fake_protocol_spec(),
+            root.path().to_path_buf(),
+            Carrier::Protocol,
+        )
+        .expect("the session opens");
+
+        assert!(
+            session.terminal().is_none(),
+            "a session protocol has nothing to escape to"
+        );
+        assert!(output.bytes.is_none(), "and nothing to paint into a grid");
+        assert!(
+            output.activity.is_some(),
+            "what it has instead is its own account of its work"
+        );
+        session.end();
+    }
+
+    /// A session that offers NEITHER capability is refused rather than opened.
+    ///
+    /// Not because Build could not watch it work — because the death rites hang
+    /// off a stream closing. A session with no stream has no close to hang them
+    /// on, so its tab would keep reading as live and its conversation would
+    /// stay in session until the idle sweep explained the exit as silence,
+    /// minutes later.
+    #[test]
+    fn a_session_offering_neither_capability_is_refused() {
+        struct MuteSession;
+        impl AgentSession for MuteSession {
+            fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+                Ok(())
+            }
+            fn status(&self) -> AgentStatus {
+                AgentStatus::Waiting
+            }
+            fn quiet_for(&self) -> Duration {
+                Duration::ZERO
+            }
+            fn exited_within(&self, _timeout: Duration) -> bool {
+                false
+            }
+            fn end(&self) {}
+            fn backdate_last_output(&self, _ago: Duration) {}
+        }
+
+        let refusal = refuse_a_session_nobody_can_watch(&MuteSession)
+            .expect_err("a session nobody can watch is not opened");
+        assert!(
+            refusal
+                .to_string()
+                .contains("neither a terminal nor an activity stream"),
+            "the refusal says what is missing: {refusal}"
+        );
+
+        let root = tempfile::tempdir().expect("temp worktree");
+        let (session, _output) = open_session(
+            &fake_protocol_spec(),
+            root.path().to_path_buf(),
+            Carrier::Protocol,
+        )
+        .expect("a carrier that reports itself opens");
+        assert!(refuse_a_session_nobody_can_watch(session.as_ref()).is_ok());
+        session.end();
     }
 
     /// A worktree Build has never opened has no conversation to resume, on any

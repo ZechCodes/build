@@ -47,6 +47,40 @@ impl MessageSource {
     }
 }
 
+/// What an agent reported through `done`, as a status on the message it posted.
+///
+/// The message is the whole record of an outcome — there is no companion event
+/// — so this is what tells an outcome from an ordinary reply, both on the wire
+/// and in the catch-up packet a replacement agent is handed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageOutcome {
+    Completed,
+    Blocked,
+    Failed,
+}
+
+impl MessageOutcome {
+    /// The stable wire token, byte-identical to how it serializes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MessageOutcome::Completed => "completed",
+            MessageOutcome::Blocked => "blocked",
+            MessageOutcome::Failed => "failed",
+        }
+    }
+
+    /// Why this outcome needs the human, as the same token the event it
+    /// replaced used to answer with — so an inbox row reads exactly as it did.
+    fn attention_reason(self) -> &'static str {
+        match self {
+            MessageOutcome::Completed => ThreadEventKind::Done.as_str(),
+            MessageOutcome::Blocked => ThreadEventKind::Blocked.as_str(),
+            MessageOutcome::Failed => ThreadEventKind::RunFailed.as_str(),
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !*value
 }
@@ -392,10 +426,26 @@ pub struct ThreadMessage {
     #[serde(default)]
     pub updated_sequence: u64,
     pub role: MessageRole,
-    /// Completion is metadata on an otherwise ordinary message. The timeline
-    /// renders it like any other send after the separate `done` event.
+    /// Completion is metadata on an otherwise ordinary message. Set by a
+    /// completed [`outcome`](Self::outcome) and by nothing else, so a client
+    /// that knows only this field renders a completion exactly as it always
+    /// has.
     #[serde(default, skip_serializing_if = "is_false")]
     pub done: bool,
+    /// The outcome this message reports, when the agent's `done` is what wrote
+    /// it. Absent on every ordinary message, and on every message written
+    /// before outcomes were message statuses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<MessageOutcome>,
+    /// The agent's structured handoff, on the message reporting the outcome it
+    /// came with. Only an outcome carries one, and only when the agent wrote
+    /// one — every other message omits the field entirely.
+    ///
+    /// Boxed: a report is four vectors and the rarest field on the largest kind
+    /// of thread item, so every ordinary message would otherwise carry its bulk
+    /// through every conversation the daemon holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_report: Option<Box<CompletionReport>>,
     /// Deprecated persisted shape. New completion sends use `done`; retaining
     /// this field lets older thread records deserialize without migration.
     #[serde(default, skip_serializing_if = "MessageSource::is_chat")]
@@ -608,12 +658,21 @@ pub enum ThreadEventKind {
     /// A daemon restart killed the session mid-work. The entity is parked and
     /// waiting for the human to restart it.
     Interrupted,
+    /// The agent thought out loud.
+    Reasoning,
+    /// The agent called a tool.
+    ToolUse,
+    /// A tool answered.
+    ToolResult,
+    /// The agent narrated. Distinct from a `post_thread_message`, which is the
+    /// agent deliberately addressing the human.
+    Narration,
 }
 
 impl ThreadEventKind {
     /// Every variant, so the wire-token and class rules can be checked over the
     /// whole enum instead of a sample of it.
-    pub const ALL: [ThreadEventKind; 32] = [
+    pub const ALL: [ThreadEventKind; 36] = [
         ThreadEventKind::SessionStarted,
         ThreadEventKind::SessionEnded,
         ThreadEventKind::RunStarted,
@@ -646,6 +705,10 @@ impl ThreadEventKind {
         ThreadEventKind::Triaged,
         ThreadEventKind::TriageOverridden,
         ThreadEventKind::Interrupted,
+        ThreadEventKind::Reasoning,
+        ThreadEventKind::ToolUse,
+        ThreadEventKind::ToolResult,
+        ThreadEventKind::Narration,
     ];
 
     /// Whether this event needs the human, or merely tells them where things
@@ -654,7 +717,10 @@ impl ThreadEventKind {
     /// Attention is what an agent hands back: it finished, it stopped, it went
     /// quiet, or the work reached an outcome that ends the entry. Status is the
     /// work happening — sessions opening and closing, stages moving, commits
-    /// landing, revisions appearing, checkouts being made and recovered.
+    /// landing, revisions appearing, checkouts being made and recovered, and
+    /// the agent's own reasoning, tool calls and narration. An agent thinking
+    /// out loud is the work happening, so it never marks the entry unread; the
+    /// agent choosing to address the human is a message, which does.
     pub fn class(self) -> EventClass {
         match self {
             ThreadEventKind::Done
@@ -688,6 +754,10 @@ impl ThreadEventKind {
             | ThreadEventKind::Committed
             | ThreadEventKind::Triaged
             | ThreadEventKind::TriageOverridden
+            | ThreadEventKind::Reasoning
+            | ThreadEventKind::ToolUse
+            | ThreadEventKind::ToolResult
+            | ThreadEventKind::Narration
             | ThreadEventKind::Pushed => EventClass::Status,
         }
     }
@@ -728,6 +798,10 @@ impl ThreadEventKind {
             ThreadEventKind::Triaged => "triaged",
             ThreadEventKind::TriageOverridden => "triage_overridden",
             ThreadEventKind::Interrupted => "interrupted",
+            ThreadEventKind::Reasoning => "reasoning",
+            ThreadEventKind::ToolUse => "tool_use",
+            ThreadEventKind::ToolResult => "tool_result",
+            ThreadEventKind::Narration => "narration",
         }
     }
 }
@@ -812,6 +886,16 @@ fn count_serialized_items(count: usize) {
 #[cfg(not(test))]
 fn count_serialized_items(_count: usize) {}
 
+impl ThreadMessage {
+    /// The outcome this message reports, reading a record written before the
+    /// field existed too: such a record set `done` alone, which is a completion
+    /// and has always been one.
+    pub fn reported_outcome(&self) -> Option<MessageOutcome> {
+        self.outcome
+            .or_else(|| self.done.then_some(MessageOutcome::Completed))
+    }
+}
+
 impl ThreadItem {
     pub fn sequence(&self) -> u64 {
         match self {
@@ -834,7 +918,10 @@ impl ThreadItem {
     ///
     /// An agent message is the agent handing the turn back, so it needs
     /// reading; a progress note explicitly keeps the turn, so it does not. A
-    /// message the human wrote themselves never needs their attention.
+    /// message the human wrote themselves never needs their attention. A
+    /// message reporting an outcome names it with the token the event it
+    /// replaced answered with, so an entry says why it needs reading in the
+    /// same words it always did.
     pub fn attention_reason(&self) -> Option<&'static str> {
         match self {
             ThreadItem::Event(event) => match event.event.class() {
@@ -845,10 +932,9 @@ impl ThreadItem {
                 if message.role != MessageRole::Agent || message.still_working {
                     return None;
                 }
-                Some(if message.done {
-                    ThreadEventKind::Done.as_str()
-                } else {
-                    AGENT_MESSAGE_REASON
+                Some(match message.reported_outcome() {
+                    Some(outcome) => outcome.attention_reason(),
+                    None => AGENT_MESSAGE_REASON,
                 })
             }
         }
@@ -859,6 +945,23 @@ impl ThreadItem {
             Some(_) => EventClass::Attention,
             None => EventClass::Status,
         }
+    }
+
+    /// Whether the human reads this item as conversation — the one predicate
+    /// the two bounds count with.
+    ///
+    /// A message is conversation whoever wrote it, an outcome included since
+    /// an outcome is a message. An event counts only when it is Build calling
+    /// the human. Everything else rides free: the four activity kinds, and the
+    /// quiet lifecycle markers with them. So a page's limit buys conversation,
+    /// and a catch-up packet's limit buys what was said, however much work
+    /// happened between two words.
+    ///
+    /// The store filters the same rule as `message = 1 OR attention = 1` over
+    /// two hoisted columns, and a test holds the two readings equal across
+    /// every kind.
+    pub fn counted(&self) -> bool {
+        matches!(self, ThreadItem::Message(_)) || self.attention_reason().is_some()
     }
 
     /// What this item referenced, as derived when it was written.
@@ -873,7 +976,9 @@ impl ThreadItem {
     /// about the work.
     pub fn searchable_text(&self) -> String {
         match self {
-            ThreadItem::Message(message) => message.body.clone(),
+            ThreadItem::Message(message) => {
+                completion_text(&message.body, message.completion_report.as_deref())
+            }
             ThreadItem::Event(event) => completion_text(
                 event.summary.as_deref().unwrap_or_default(),
                 event.completion_report.as_ref(),
@@ -965,6 +1070,18 @@ pub const DEFAULT_THREAD_PAGE: usize = 60;
 /// A scroll-back that asks for the whole conversation at once is the thing
 /// paging exists to prevent, so the cap holds even when the caller means well.
 pub const MAX_THREAD_PAGE: usize = 200;
+
+/// How many items a page may ship per unit of its limit.
+///
+/// A page's `limit` buys CONVERSATION — messages and the events that call the
+/// human — and the activity between two messages travels beside them without
+/// being counted, because an agent that spent an hour on tool calls must not
+/// push what was said off the page a reviewer opens on. This is the hard bound
+/// that keeps "rides free" from meaning "unbounded": an all-activity stretch
+/// ends the page early, and `has_more` says so. A multiple of the budget
+/// rather than a flat constant, so the smallest polls stay small — a page of 1
+/// ships at most 10 items, the default 60 at most 600.
+pub const THREAD_PAGE_SPAN_FACTOR: usize = 10;
 
 /// How many hits a query returns when it does not say.
 pub const DEFAULT_QUERY_LIMIT: usize = 20;
@@ -1297,7 +1414,6 @@ impl Thread {
         }
         self.post_message(
             MessageRole::User,
-            false,
             body.into(),
             anchor,
             Vec::new(),
@@ -1357,7 +1473,6 @@ impl Thread {
         }];
         self.post_message(
             MessageRole::User,
-            false,
             body.into(),
             Some(message_anchor),
             links,
@@ -1464,7 +1579,6 @@ impl Thread {
     ) -> String {
         self.post_message_working(
             MessageRole::Agent,
-            false,
             body.into(),
             anchor,
             links,
@@ -1571,55 +1685,55 @@ impl Thread {
         self.last_completion = Some(report.clone());
     }
 
-    /// Record a completion: one `Done` event carrying the agent's summary and,
-    /// when it wrote one, its structured report.
+    /// Record an outcome the agent reported: its summary as an ordinary agent
+    /// message carrying the outcome as a status, and the structured report
+    /// attached when the agent wrote one.
     ///
-    /// The event IS the record. A completion used to also post an agent
-    /// message repeating the summary, which put one hand-back on the
-    /// conversation twice and made the entry unread twice for it.
-    pub fn post_completion(
+    /// The message IS the record — no companion event stands beside it, free to
+    /// disagree with it. An outcome is the agent addressing the human, so it
+    /// needs reading exactly once, and a replacement agent reads why its
+    /// predecessor stopped out of the same catch-up packet that carries what
+    /// the human said.
+    pub fn post_outcome(
         &mut self,
+        outcome: MessageOutcome,
         summary: impl Into<String>,
         report: Option<&CompletionReport>,
         now: impl Into<String>,
-    ) {
+    ) -> String {
         let summary = summary.into();
         // The report is the densest statement of what the change touched, so it
-        // is indexed with the summary rather than beside it.
+        // is indexed with the summary rather than beside it. Derived before the
+        // post, which reads the scope this borrows.
         let metadata =
             ItemMetadata::derive(&completion_text(&summary, report), &[], None, &self.scope);
-        let sequence = self.next();
-        self.items.push(ThreadItem::Event(ThreadEvent {
-            id: format!("event-{sequence}"),
-            sequence,
-            event: ThreadEventKind::Done,
-            created_at: now.into(),
-            summary: Some(summary),
-            session_id: None,
-            revision_id: None,
-            links: Vec::new(),
-            completion_report: report.cloned(),
-            metadata,
-        }));
+        let id = self.post_agent(summary, None, now);
+        if let Some(ThreadItem::Message(message)) = self.items.last_mut() {
+            message.outcome = Some(outcome);
+            message.done = outcome == MessageOutcome::Completed;
+            message.completion_report = report.cloned().map(Box::new);
+            message.metadata = metadata;
+        }
+        id
     }
 
     fn post_message(
         &mut self,
         role: MessageRole,
-        done: bool,
         body: String,
         anchor: Option<MessageAnchor>,
         links: Vec<ThreadLink>,
         now: String,
     ) -> String {
-        self.post_message_working(role, done, body, anchor, links, now, false)
+        self.post_message_working(role, body, anchor, links, now, false)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Every message is posted here, and none of them is a completion: `done`
+    /// is set by [`post_outcome`](Self::post_outcome) and by nothing else, so
+    /// the flag cannot come apart from the outcome it stands for.
     fn post_message_working(
         &mut self,
         role: MessageRole,
-        done: bool,
         body: String,
         anchor: Option<MessageAnchor>,
         links: Vec<ThreadLink>,
@@ -1636,7 +1750,9 @@ impl Thread {
             sequence,
             updated_sequence: sequence,
             role,
-            done,
+            done: false,
+            outcome: None,
+            completion_report: None,
             source: MessageSource::Chat,
             body,
             created_at: now,
@@ -1932,16 +2048,23 @@ impl Thread {
 
     /// Whether the page asked for reaches under the tail this process holds,
     /// and so has to be read from the store instead of out of memory.
+    ///
+    /// Counted the way the page is: the tail answers when it holds the page's
+    /// worth of CONVERSATION below the seek, or when it holds the page's
+    /// ceiling in items of any kind — a tail that fills the ceiling is a full
+    /// page whatever is in it, and there is nothing the store could add.
     pub fn page_reaches_stored_history(&self, before_sequence: Option<u64>, limit: usize) -> bool {
         if self.earlier_item_count == 0 {
             return false;
         }
         let before = before_sequence.unwrap_or(u64::MAX);
-        self.items
+        let below: Vec<&ThreadItem> = self
+            .items
             .iter()
             .filter(|item| item.sequence() < before)
-            .count()
-            < limit
+            .collect();
+        below.iter().filter(|item| item.counted()).count() < limit
+            && below.len() < page_span_ceiling(limit)
     }
 
     /// Whether a cursor this far back reaches under the tail this process
@@ -2205,7 +2328,7 @@ impl Thread {
             .iter()
             .filter(|item| item.sequence() < before)
             .collect();
-        let page = &older[older.len().saturating_sub(limit)..];
+        let page = &older[older.len() - page_span(older.iter().rev().copied(), limit)..];
         // What is left above this page, plus the history no load read: both
         // are pages the client can still ask for.
         let outstanding = older.len() - page.len() + self.earlier_item_count as usize;
@@ -2234,27 +2357,120 @@ impl Thread {
         })
     }
 
+    /// What a resumed agent is handed to rebuild the conversation: the last
+    /// `limit` **messages** to and from the agent, and nothing else on the
+    /// thread.
+    ///
+    /// Events are left out by construction rather than by tuning a ratio. They
+    /// are Build's observations about the agent, and the limit counts messages
+    /// so that a session which emitted hundreds of tool calls before restarting
+    /// still hands its replacement what the human said — the exact context the
+    /// packet exists to carry.
+    ///
+    /// An outcome is not one of those observations: it is the agent's own
+    /// report, so it is a message, and it is carried with the outcome named on
+    /// its line. That is what tells a replacement why its predecessor blocked.
     pub fn catch_up_markdown(&self, limit: usize) -> String {
-        let mut lines = Vec::new();
-        for item in self.items.iter().rev().take(limit).rev() {
-            match item {
-                ThreadItem::Message(message)
-                    if message.done || message.source == MessageSource::Completion => {}
-                ThreadItem::Message(message) => lines.push(format!(
-                    "- {}: {}{}",
-                    message.role.as_str(),
-                    message.body.replace('\n', " "),
-                    attachment_note(&message.attachments)
-                )),
-                ThreadItem::Event(event) => {
-                    if let Some(summary) = &event.summary {
-                        lines.push(format!("- event/{:?}: {summary}", event.event));
-                    }
-                }
-            }
-        }
-        lines.join("\n")
+        catch_up_lines(self.items.iter(), limit)
     }
+
+    /// Whether the packet has to be read from the store rather than off the
+    /// tail — the sibling of [`page_reaches_stored_history`](Self::page_reaches_stored_history).
+    ///
+    /// True only when there is history under the tail AND the tail itself does
+    /// not hold the packet's worth of messages. Both halves are answered off
+    /// integers this process already has, so a conversation held whole — the
+    /// common small case, and every storeless test daemon — hands a packet at
+    /// today's speed and touches no SQL. The starved tail is the one that pays
+    /// the read, and it is the one the packet exists for.
+    pub fn catch_up_reaches_stored_history(&self, limit: usize) -> bool {
+        self.earlier_item_count > 0
+            && self
+                .items
+                .iter()
+                .filter(|item| matches!(item, ThreadItem::Message(_)))
+                .count()
+                < limit
+    }
+
+    /// The same packet, completed with messages read back out of the store —
+    /// the conversation under the tail an activity-heavy session left behind.
+    ///
+    /// Stored rows are admitted only below `resident_from_sequence`, the way
+    /// the forward cursor admits them: the tail is the fresher copy of
+    /// everything it still holds, so a message in both is carried once, from
+    /// memory. The chain then runs exactly the filter-take-reverse the
+    /// tail-only packet runs, so the limit still counts messages and still
+    /// keeps the newest of them.
+    pub fn catch_up_markdown_including_history(
+        &self,
+        history: &[ThreadItem],
+        limit: usize,
+    ) -> String {
+        catch_up_lines(
+            history
+                .iter()
+                .filter(|item| item.sequence() < self.resident_from_sequence)
+                .chain(self.items.iter()),
+            limit,
+        )
+    }
+}
+
+/// The most items a page of `limit` conversation may ship.
+pub fn page_span_ceiling(limit: usize) -> usize {
+    limit.saturating_mul(THREAD_PAGE_SPAN_FACTOR)
+}
+
+/// How many items a page takes, walking newest→older: every item ships, the
+/// walk stops at the `limit`-th counted item, and the ceiling stops it early
+/// however much activity it is walking through.
+///
+/// So activity BETWEEN counted items travels with the page uncounted, folded
+/// beside the messages it sits between, and activity older than the page's
+/// oldest counted item waits for the next page. A page is always one
+/// contiguous run of sequences.
+fn page_span<'a>(newest_first: impl Iterator<Item = &'a ThreadItem>, limit: usize) -> usize {
+    let ceiling = page_span_ceiling(limit);
+    let mut taken = 0;
+    let mut counted = 0;
+    for item in newest_first {
+        if taken == ceiling || counted == limit {
+            break;
+        }
+        taken += 1;
+        if item.counted() {
+            counted += 1;
+        }
+    }
+    taken
+}
+
+/// The packet's lines, off whatever conversation the caller assembled: the
+/// newest `limit` messages, oldest-first.
+fn catch_up_lines<'a>(
+    items: impl DoubleEndedIterator<Item = &'a ThreadItem>,
+    limit: usize,
+) -> String {
+    let mut lines: Vec<String> = items
+        .rev()
+        .filter_map(|item| match item {
+            ThreadItem::Message(message) => Some(format!(
+                "- {}{}: {}{}",
+                message.role.as_str(),
+                match message.reported_outcome() {
+                    Some(outcome) => format!(" [{}]", outcome.as_str()),
+                    None => String::new(),
+                },
+                message.body.replace('\n', " "),
+                attachment_note(&message.attachments)
+            )),
+            ThreadItem::Event(_) => None,
+        })
+        .take(limit)
+        .collect();
+    lines.reverse();
+    lines.join("\n")
 }
 
 /// The trailer that names a message's files in prose form. The catch-up packet
@@ -2362,60 +2578,21 @@ mod attention_class_tests {
     }
 
     #[test]
-    fn a_completion_is_one_done_event_and_no_companion_message() {
-        let mut thread = Thread::new("run-1");
-        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
-
-        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
-        assert!(matches!(
-            &thread.items[0],
-            ThreadItem::Event(event)
-                if event.event == ThreadEventKind::Done
-                    && event.summary.as_deref() == Some("implemented the change")
-        ));
-        assert_eq!(thread.items[0].attention_reason(), Some("done"));
-    }
-
-    #[test]
-    fn the_done_event_carries_the_completion_report_onto_the_wire() {
-        let mut thread = Thread::new("run-report");
-        let report = CompletionReport {
-            critical_files: vec!["src/thread.rs — the event now carries the report".to_string()],
-            risk_notes: vec!["older records have no report".to_string()],
-            decisions: vec!["kept last_completion for cold sessions".to_string()],
-            skips: vec!["no SPA card yet".to_string()],
-        };
-
-        thread.post_completion(
-            "implemented the change",
-            Some(&report),
-            "2026-08-13T09:00:00Z",
-        );
-
-        let wire = thread.wire_value();
-        let carried = &wire["items"][0]["data"]["completion_report"];
-        assert_eq!(
-            carried["critical_files"][0],
-            "src/thread.rs — the event now carries the report"
-        );
-        assert_eq!(carried["risk_notes"][0], "older records have no report");
-        assert_eq!(
-            carried["decisions"][0],
-            "kept last_completion for cold sessions"
-        );
-        assert_eq!(carried["skips"][0], "no SPA card yet");
-    }
-
-    #[test]
     fn an_event_without_a_report_omits_the_field() {
         let mut thread = Thread::new("run-plain");
-        thread.post_completion("implemented the change", None, "2026-08-13T09:00:00Z");
         thread.push_event(
             ThreadEventKind::RunStarted,
             None,
             None,
             None,
             "2026-08-13T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::IdleUnreported,
+            Some("Agent went quiet without reporting done".to_string()),
+            None,
+            None,
+            "2026-08-13T09:02:00Z",
         );
 
         let wire = thread.wire_value();
@@ -2559,6 +2736,798 @@ mod attention_class_tests {
             thread.user_message_times().collect::<Vec<_>>(),
             vec!["2026-08-13T09:00:00Z", "2026-08-14T22:00:00Z"],
             "only what the user said, in the order they said it"
+        );
+    }
+}
+
+/// The four kinds an event-stream harness fills a conversation with, and the
+/// packet a resumed agent is handed once they exist.
+#[cfg(test)]
+mod agent_activity_tests {
+    use super::*;
+
+    const ACTIVITY: [ThreadEventKind; 4] = [
+        ThreadEventKind::Reasoning,
+        ThreadEventKind::ToolUse,
+        ThreadEventKind::ToolResult,
+        ThreadEventKind::Narration,
+    ];
+
+    /// The property that makes activity safe to put in the conversation: an
+    /// agent thinking out loud updates the entry underneath the human and
+    /// never marks it unread.
+    #[test]
+    fn agent_activity_is_status_and_moves_no_unread_count() {
+        let mut thread = Thread::new("run-activity");
+        let cursor = thread.last_sequence();
+        for kind in ACTIVITY {
+            assert_eq!(kind.class(), EventClass::Status, "{kind:?}");
+            thread.push_event(
+                kind,
+                Some(format!("{} happened", kind.as_str())),
+                None,
+                None,
+                "2026-08-23T09:00:00Z",
+            );
+        }
+
+        assert_eq!(thread.items.len(), 4);
+        for item in &thread.items {
+            assert_eq!(item.attention_reason(), None, "{item:?}");
+        }
+        assert_eq!(thread.unread_since(cursor), UnreadSummary::default());
+        assert_eq!(thread.last_attention_sequence(), 0);
+    }
+
+    /// Activity rides the wire as an ordinary thread item — no new envelope,
+    /// no new RPC, and a token that matches how the kind serializes.
+    #[test]
+    fn a_tool_use_rides_the_wire_as_an_ordinary_thread_item() {
+        let mut thread = Thread::new("run-activity");
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read bridge/src/app.rs".to_string()),
+            None,
+            None,
+            "2026-08-23T09:00:00Z",
+        );
+
+        let wire = thread.wire_value();
+        assert_eq!(wire["items"][0]["type"], "event");
+        assert_eq!(wire["items"][0]["data"]["event"], "tool_use");
+        assert_eq!(
+            wire["items"][0]["data"]["summary"],
+            "Read bridge/src/app.rs"
+        );
+        assert_eq!(wire["items"][0]["data"]["sequence"], 1);
+    }
+
+    /// The packet exists to carry the conversation across a restart, so it
+    /// carries messages and nothing else: a session that emitted activity all
+    /// afternoon must still hand its replacement what the human said.
+    #[test]
+    fn the_catch_up_packet_carries_messages_and_no_events() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-23T09:00:00Z");
+        for index in 0..3 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                "2026-08-23T09:01:00Z",
+            );
+        }
+        thread.post_agent("renamed it", None, "2026-08-23T09:02:00Z");
+        // Build's own observations about the agent go the same way as activity.
+        thread.push_event(
+            ThreadEventKind::Blocked,
+            Some("the test suite will not build".to_string()),
+            None,
+            None,
+            "2026-08-23T09:03:00Z",
+        );
+
+        let catch_up = thread.catch_up_markdown(40);
+        assert_eq!(
+            catch_up, "- user: please rename the helper\n- agent: renamed it",
+            "{catch_up}"
+        );
+    }
+
+    /// The limit counts messages, not items. An agent that emitted more
+    /// activity than the packet holds must still be handed what the human
+    /// said — the case that made the packet messages-only in the first place.
+    #[test]
+    fn a_session_full_of_activity_still_hands_back_the_humans_words() {
+        let mut thread = Thread::new("run-activity");
+        thread.post_user("please rename the helper", None, "2026-08-23T09:00:00Z");
+        for index in 0..100 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                "2026-08-23T09:01:00Z",
+            );
+        }
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper"
+        );
+    }
+
+    /// The limit still bounds the packet, and still keeps the newest.
+    #[test]
+    fn the_packet_keeps_the_newest_messages_up_to_its_limit() {
+        let mut thread = Thread::new("run-activity");
+        for index in 0..5 {
+            thread.post_user(format!("ask {index}"), None, "2026-08-23T09:00:00Z");
+            thread.push_event(
+                ThreadEventKind::Reasoning,
+                Some("thinking".to_string()),
+                None,
+                None,
+                "2026-08-23T09:00:01Z",
+            );
+        }
+
+        assert_eq!(thread.catch_up_markdown(2), "- user: ask 3\n- user: ask 4");
+    }
+}
+
+/// The packet a resumed agent is handed when the tail it booted onto holds no
+/// conversation — the failure §6.3 names first, and the one the messages-only
+/// filter cannot fix on its own.
+#[cfg(test)]
+mod catch_up_history_tests {
+    use super::*;
+
+    const NOW: &str = "2026-08-29T09:00:00Z";
+
+    /// A conversation stored whole, and the process that booted onto the last
+    /// `tail` items of it — which is where an activity-heavy session leaves
+    /// its replacement.
+    fn stored_and_booted(tail: usize) -> (Vec<ThreadItem>, Thread) {
+        let mut whole = Thread::new("run-restart");
+        whole.post_user("please rename the helper", None, NOW);
+        whole.post_agent("on it", None, NOW);
+        for index in 0..8 {
+            whole.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        let stored = whole.items.clone();
+        let mut booted = Thread::new("run-restart");
+        booted.adopt_stored_tail(
+            stored[stored.len() - tail..].to_vec(),
+            (stored.len() - tail) as u64,
+            whole.last_sequence(),
+        );
+        (stored, booted)
+    }
+
+    /// What the store hands the packet back: the conversation's messages,
+    /// oldest-first.
+    fn stored_messages(stored: &[ThreadItem]) -> Vec<ThreadItem> {
+        stored
+            .iter()
+            .filter(|item| matches!(item, ThreadItem::Message(_)))
+            .cloned()
+            .collect()
+    }
+
+    /// The gate: only a starved tail pays a read. A conversation held whole,
+    /// and a long one whose tail still holds the packet's worth of messages,
+    /// are both answered out of memory.
+    #[test]
+    fn only_a_tail_short_of_its_messages_reaches_for_the_store() {
+        let (_, booted) = stored_and_booted(5);
+        assert!(
+            booted.catch_up_reaches_stored_history(40),
+            "a tail of pure activity has to read the store"
+        );
+        assert!(
+            !booted.catch_up_reaches_stored_history(0),
+            "a packet that asks for nothing needs nothing"
+        );
+
+        let mut whole = Thread::new("run-whole");
+        whole.post_user("please rename the helper", None, NOW);
+        assert!(
+            !whole.catch_up_reaches_stored_history(40),
+            "a conversation with no history under it never reads the store"
+        );
+
+        let (_, rich_tail) = stored_and_booted(10);
+        assert!(
+            !rich_tail.catch_up_reaches_stored_history(2),
+            "a tail holding the packet's worth of messages answers from memory"
+        );
+    }
+
+    /// The failure this exists for: the tail holds nothing but tool calls, so
+    /// the messages-only filter over it yields an empty packet. Read through
+    /// the store, the same packet carries what the human said.
+    #[test]
+    fn a_starved_tail_still_hands_over_the_conversation() {
+        let (stored, booted) = stored_and_booted(5);
+        assert_eq!(
+            booted.catch_up_markdown(40),
+            "",
+            "the tail alone is the starved packet this replaces"
+        );
+
+        assert_eq!(
+            booted.catch_up_markdown_including_history(&stored_messages(&stored), 40),
+            "- user: please rename the helper\n- agent: on it"
+        );
+    }
+
+    /// The merge rule, held to the precedent the forward cursor set: a stored
+    /// row is admitted only below what this process read, so a message the
+    /// tail still holds is carried once, from the tail.
+    #[test]
+    fn a_message_the_tail_still_holds_is_not_repeated() {
+        let (stored, booted) = stored_and_booted(9);
+
+        let packet = booted.catch_up_markdown_including_history(&stored_messages(&stored), 40);
+        assert_eq!(packet, "- user: please rename the helper\n- agent: on it");
+        assert_eq!(packet.matches("on it").count(), 1, "{packet}");
+    }
+
+    /// The limit still counts messages and still keeps the newest of them,
+    /// across the join.
+    #[test]
+    fn the_merged_packet_keeps_the_newest_messages_up_to_its_limit() {
+        let (stored, booted) = stored_and_booted(5);
+
+        assert_eq!(
+            booted.catch_up_markdown_including_history(&stored_messages(&stored), 1),
+            "- agent: on it"
+        );
+    }
+}
+
+/// §6.3's second failure: a page measured in items shows a reviewer who opens
+/// a conversation mid-session nothing but tool calls, with the last thing
+/// anyone said somewhere below them.
+#[cfg(test)]
+mod counted_page_tests {
+    use super::*;
+
+    const NOW: &str = "2026-08-29T09:00:00Z";
+
+    /// A working session as the thread records it: each message followed by
+    /// the activity the agent emitted after it.
+    fn conversation_with_activity(turns: usize, activity_per_turn: usize) -> Thread {
+        let mut thread = Thread::new("run-busy");
+        for turn in 0..turns {
+            thread.post_user(format!("ask {turn}"), None, NOW);
+            for index in 0..activity_per_turn {
+                thread.push_event(
+                    ThreadEventKind::ToolUse,
+                    Some(format!("Read file-{turn}-{index}.rs")),
+                    None,
+                    None,
+                    NOW,
+                );
+            }
+        }
+        thread
+    }
+
+    fn page_items(page: &Value) -> Vec<u64> {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["data"]["sequence"].as_u64().unwrap())
+            .collect()
+    }
+
+    fn counted_in_page(page: &Value) -> usize {
+        page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .count()
+    }
+
+    /// The limit buys conversation. A page opened on a session that emitted
+    /// twenty tool calls per turn carries its five messages and the activity
+    /// between them, rather than five tool calls and nothing said.
+    #[test]
+    fn a_pages_limit_buys_conversation_and_activity_rides_beside_it() {
+        let thread = conversation_with_activity(10, 5);
+        let page = thread.wire_value_page(None, 5);
+
+        assert_eq!(counted_in_page(&page), 5, "the limit counts messages");
+        let shipped = page_items(&page);
+        assert!(
+            shipped.len() > 5,
+            "the activity between the messages travels with them: {shipped:?}"
+        );
+        // One contiguous run of sequences, ending at the newest item.
+        assert_eq!(
+            shipped,
+            (shipped[0]..=thread.last_sequence()).collect::<Vec<u64>>()
+        );
+        assert_eq!(page["oldest_sequence"], shipped[0], "{page:?}");
+        assert_eq!(page["has_more"], true);
+        assert_eq!(page["thread_total"], 60, "the total counts every item");
+    }
+
+    /// The page stops AT the limit-th counted item: activity older than it is
+    /// the next page's, so a page is never padded with work nobody asked for.
+    #[test]
+    fn a_page_ends_on_its_oldest_message_not_on_the_activity_under_it() {
+        let thread = conversation_with_activity(4, 3);
+        let page = thread.wire_value_page(None, 2);
+
+        let shipped = page_items(&page);
+        let oldest = shipped[0];
+        assert!(
+            matches!(
+                thread.items.iter().find(|item| item.sequence() == oldest),
+                Some(ThreadItem::Message(_))
+            ),
+            "the page opens on a message: {shipped:?}"
+        );
+    }
+
+    /// The ceiling. An all-activity stretch cannot make a page unbounded: the
+    /// walk stops at ten items per unit of the budget, the page ends higher,
+    /// and `has_more` says there is more to ask for.
+    #[test]
+    fn an_all_activity_stretch_is_bounded_by_the_span_factor() {
+        let mut thread = Thread::new("run-busy");
+        thread.post_user("please rename the helper", None, NOW);
+        for index in 0..1000 {
+            thread.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+
+        let page = thread.wire_value_page(None, 5);
+        let shipped = page_items(&page);
+        assert_eq!(
+            shipped.len(),
+            5 * THREAD_PAGE_SPAN_FACTOR,
+            "{}",
+            shipped.len()
+        );
+        assert_eq!(counted_in_page(&page), 0, "there was nothing said in it");
+        assert_eq!(page["has_more"], true, "the walk stopped early and says so");
+        assert_eq!(page["oldest_sequence"], shipped[0]);
+    }
+
+    /// What a sequence-paging client relies on: pages abut at their seeks, so
+    /// walking `before_sequence = oldest_sequence` sees every item exactly
+    /// once and skips none — activity included.
+    #[test]
+    fn paging_backward_over_an_activity_heavy_thread_sees_every_item_once() {
+        let thread = conversation_with_activity(9, 7);
+
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before = None;
+        loop {
+            let page = thread.wire_value_page(before, 2);
+            let shipped = page_items(&page);
+            assert!(!shipped.is_empty(), "{page:?}");
+            walked.splice(0..0, shipped.clone());
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = Some(page["oldest_sequence"].as_u64().unwrap());
+        }
+
+        assert_eq!(walked, (1..=thread.last_sequence()).collect::<Vec<u64>>());
+    }
+
+    /// The gate that sends a page to the store is counted too: a tail holding
+    /// only activity cannot answer a page, however many items it holds — and a
+    /// tail that fills the ceiling is a full page from memory whatever it
+    /// holds.
+    #[test]
+    fn the_stored_page_gate_counts_conversation_and_respects_the_ceiling() {
+        let mut whole = Thread::new("run-busy");
+        whole.post_user("please rename the helper", None, NOW);
+        for index in 0..300 {
+            whole.push_event(
+                ThreadEventKind::ToolUse,
+                Some(format!("Read file-{index}.rs")),
+                None,
+                None,
+                NOW,
+            );
+        }
+        let stored = whole.items.clone();
+
+        let mut starved = Thread::new("run-busy");
+        starved.adopt_stored_tail(
+            stored[stored.len() - 20..].to_vec(),
+            (stored.len() - 20) as u64,
+            whole.last_sequence(),
+        );
+        assert!(
+            starved.page_reaches_stored_history(None, 5),
+            "a tail of pure activity holds no page of conversation"
+        );
+        // A page of one buys ten items at most, and the tail holds twenty:
+        // there is nothing the store could add to it.
+        assert!(
+            !starved.page_reaches_stored_history(None, 1),
+            "a tail that fills the ceiling is a full page from memory"
+        );
+    }
+}
+
+/// The one predicate both bounds count with: an item is counted when the human
+/// reads it as conversation. Everything else — the four activity kinds and the
+/// quiet lifecycle markers with them — rides free.
+#[cfg(test)]
+mod counted_item_tests {
+    use super::*;
+
+    /// The two readings of the rule, held equal over every kind there is: the
+    /// Rust one here, and the `message = 1 OR attention = 1` the store filters
+    /// with. A kind added later cannot make them disagree without failing
+    /// here.
+    #[test]
+    fn a_counted_item_is_a_message_or_a_call_for_the_human() {
+        let mut thread = Thread::new("run-counted");
+        for kind in ThreadEventKind::ALL {
+            thread.push_event(
+                kind,
+                Some(format!("{} happened", kind.as_str())),
+                None,
+                None,
+                "2026-08-29T09:00:00Z",
+            );
+        }
+        thread.post_user("please rename the helper", None, "2026-08-29T09:01:00Z");
+        thread.post_agent("renamed it", None, "2026-08-29T09:02:00Z");
+        thread.post_agent_progress("still going", None, "2026-08-29T09:03:00Z");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            None,
+            "2026-08-29T09:04:00Z",
+        );
+
+        for item in &thread.items {
+            let expected =
+                matches!(item, ThreadItem::Message(_)) || item.attention_reason().is_some();
+            assert_eq!(item.counted(), expected, "{item:?}");
+        }
+    }
+
+    /// Both halves of the rule, said out loud rather than only as an
+    /// equivalence: a progress note is conversation even though it asks
+    /// nothing, and activity is not even though it is the agent talking.
+    #[test]
+    fn every_message_counts_and_no_activity_does() {
+        let mut thread = Thread::new("run-counted");
+        thread.post_agent_progress("still going", None, "2026-08-29T09:00:00Z");
+        for kind in [
+            ThreadEventKind::Reasoning,
+            ThreadEventKind::ToolUse,
+            ThreadEventKind::ToolResult,
+            ThreadEventKind::Narration,
+            ThreadEventKind::Triaged,
+        ] {
+            thread.push_event(kind, None, None, None, "2026-08-29T09:01:00Z");
+        }
+        thread.push_event(
+            ThreadEventKind::Interrupted,
+            None,
+            None,
+            None,
+            "2026-08-29T09:02:00Z",
+        );
+
+        let counted: Vec<bool> = thread.items.iter().map(ThreadItem::counted).collect();
+        assert_eq!(
+            counted,
+            vec![true, false, false, false, false, false, true],
+            "{:?}",
+            thread.items
+        );
+    }
+}
+
+/// What an agent reported through `done`, as a status on the message it
+/// posted. The message is the whole record: there is no companion event, so
+/// the outcome needs the human once and a resumed agent reads it out of the
+/// same packet that carries what the human said.
+#[cfg(test)]
+mod outcome_message_tests {
+    use super::*;
+
+    fn report() -> CompletionReport {
+        CompletionReport {
+            critical_files: vec!["src/render.rs — the new draw path".to_string()],
+            risk_notes: vec!["untested on the legacy screen".to_string()],
+            decisions: vec!["kept the old entry point".to_string()],
+            skips: vec!["no perf pass".to_string()],
+        }
+    }
+
+    #[test]
+    fn a_completion_is_one_agent_message_carrying_its_outcome() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let ThreadItem::Message(message) = &thread.items[0] else {
+            panic!("the outcome is a message: {:?}", thread.items);
+        };
+        assert_eq!(message.role, MessageRole::Agent);
+        assert_eq!(message.body, "implemented the change");
+        assert_eq!(message.outcome, Some(MessageOutcome::Completed));
+        assert!(
+            message.done,
+            "a completed outcome keeps the flag an older client reads"
+        );
+        assert_eq!(message.completion_report.as_deref(), Some(&report()));
+        assert!(!message.still_working, "an outcome hands the turn back");
+    }
+
+    /// The attention job the `Done` and `Blocked` events used to do, moved onto
+    /// the message whole: one unread entry per outcome, naming which it was.
+    #[test]
+    fn every_outcome_needs_the_human_once_and_says_which_it_was() {
+        for (outcome, reason) in [
+            (MessageOutcome::Completed, "done"),
+            (MessageOutcome::Blocked, "blocked"),
+            (MessageOutcome::Failed, "run_failed"),
+        ] {
+            let mut thread = Thread::new("run-outcome");
+            thread.post_user("do the thing", None, "2026-08-24T09:00:00Z");
+            thread.read_unread("2026-08-24T09:00:01Z");
+            let cursor = thread.last_sequence();
+            thread.post_outcome(
+                outcome,
+                "the agent's own words",
+                None,
+                "2026-08-24T09:01:00Z",
+            );
+
+            let unread = thread.unread_since(cursor);
+            assert_eq!(unread.count, 1, "{outcome:?}");
+            assert_eq!(unread.reason, Some(reason), "{outcome:?}");
+            assert_eq!(
+                thread.working_since(),
+                None,
+                "an outcome ends the turn: {outcome:?}"
+            );
+        }
+    }
+
+    /// Additive: `outcome` is new, `done` keeps its exact meaning, and the
+    /// report the `Done` event carried rides the message instead.
+    #[test]
+    fn the_outcome_and_its_report_ride_the_message_on_the_wire() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            None,
+            "2026-08-24T09:02:00Z",
+        );
+
+        let wire = thread.wire_value();
+        let blocked = &wire["items"][0];
+        assert_eq!(blocked["type"], "message");
+        assert_eq!(blocked["data"]["outcome"], "blocked");
+        assert_eq!(blocked["data"]["role"], "agent");
+        assert!(
+            blocked["data"].get("done").is_none(),
+            "only a completion sets done: {wire:?}"
+        );
+        assert_eq!(
+            blocked["data"]["completion_report"]["risk_notes"][0],
+            "untested on the legacy screen"
+        );
+        let completed = &wire["items"][1];
+        assert_eq!(completed["data"]["outcome"], "completed");
+        assert_eq!(completed["data"]["done"], true);
+        assert!(
+            completed["data"].get("completion_report").is_none(),
+            "an outcome with no report omits the field: {wire:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_message_carries_neither_field() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_agent("here is what I found", None, "2026-08-24T09:00:00Z");
+
+        let wire = thread.wire_value();
+        assert!(
+            wire["items"][0]["data"].get("outcome").is_none(),
+            "{wire:?}"
+        );
+        assert!(
+            wire["items"][0]["data"].get("completion_report").is_none(),
+            "{wire:?}"
+        );
+        assert_eq!(
+            thread.items[0].attention_reason(),
+            Some(AGENT_MESSAGE_REASON)
+        );
+    }
+
+    /// The report is the densest statement of what a change touched, so a
+    /// search reads it with the summary — as it did off the `Done` event.
+    #[test]
+    fn a_search_reads_the_report_with_the_summary() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "implemented the change",
+            Some(&report()),
+            "2026-08-24T09:00:00Z",
+        );
+
+        let text = thread.items[0].searchable_text();
+        assert!(text.contains("implemented the change"), "{text}");
+        assert!(text.contains("src/render.rs — the new draw path"), "{text}");
+    }
+
+    /// The gap this exists to close: a replacement agent is told why its
+    /// predecessor blocked, out of the packet that carries the human's words.
+    #[test]
+    fn the_catch_up_packet_carries_the_outcome_a_predecessor_reported() {
+        let mut thread = Thread::new("run-outcome");
+        thread.post_user("please rename the helper", None, "2026-08-24T09:00:00Z");
+        thread.post_outcome(
+            MessageOutcome::Blocked,
+            "needs production credentials",
+            None,
+            "2026-08-24T09:01:00Z",
+        );
+        thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read src/app.rs".to_string()),
+            None,
+            None,
+            "2026-08-24T09:02:00Z",
+        );
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper\n- agent [blocked]: needs production credentials",
+        );
+    }
+
+    /// Every outcome is in the packet, each prefixed with which it was — and no
+    /// event line is re-admitted with them.
+    #[test]
+    fn the_packet_names_each_outcome_and_still_carries_no_events() {
+        let mut thread = Thread::new("run-outcome");
+        for (outcome, summary) in [
+            (MessageOutcome::Completed, "implemented the change"),
+            (MessageOutcome::Blocked, "needs production credentials"),
+            (MessageOutcome::Failed, "the migration will not run"),
+        ] {
+            thread.post_outcome(outcome, summary, None, "2026-08-24T09:00:00Z");
+        }
+        thread.push_event(
+            ThreadEventKind::IdleUnreported,
+            Some("Agent went quiet without reporting done".to_string()),
+            None,
+            None,
+            "2026-08-24T09:03:00Z",
+        );
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- agent [completed]: implemented the change\n\
+             - agent [blocked]: needs production credentials\n\
+             - agent [failed]: the migration will not run",
+        );
+    }
+
+    /// A thread persisted before outcomes existed: a `Done` event carrying the
+    /// report, and the companion completion message an older bridge wrote
+    /// beside it. It loads, it still needs the human where it did, and the
+    /// event still carries what it always carried — no migration.
+    fn pre_step_7_thread() -> Thread {
+        let raw = serde_json::json!({
+            "id": "thread:run-old",
+            "agent": { "id": "agent:run-old" },
+            "items": [
+                { "type": "message", "data": {
+                    "id": "message-1", "sequence": 1, "role": "user",
+                    "body": "please rename the helper",
+                    "created_at": "2026-07-24T12:00:00Z", "seen_at": "2026-07-24T12:00:30Z" } },
+                { "type": "message", "data": {
+                    "id": "message-2", "sequence": 2, "role": "agent", "done": true,
+                    "source": "completion", "body": "Implemented the change",
+                    "created_at": "2026-07-24T12:01:00Z" } },
+                { "type": "event", "data": {
+                    "id": "event-3", "sequence": 3, "event": "done",
+                    "created_at": "2026-07-24T12:01:00Z",
+                    "summary": "Implemented the change",
+                    "completion_report": { "critical_files": ["src/render.rs"] } } },
+                { "type": "event", "data": {
+                    "id": "event-4", "sequence": 4, "event": "blocked",
+                    "created_at": "2026-07-24T12:02:00Z",
+                    "summary": "needs production credentials" } }
+            ],
+            "next_sequence": 4
+        });
+        serde_json::from_value(raw).expect("a pre-outcome thread loads")
+    }
+
+    #[test]
+    fn a_thread_written_before_outcomes_loads_and_reads_as_it_did() {
+        let thread = pre_step_7_thread();
+
+        let reasons: Vec<Option<&str>> = thread
+            .items
+            .iter()
+            .map(ThreadItem::attention_reason)
+            .collect();
+        assert_eq!(
+            reasons,
+            vec![None, Some("done"), Some("done"), Some("blocked")],
+            "{:?}",
+            thread.items
+        );
+        let ThreadItem::Message(completion) = &thread.items[1] else {
+            panic!("{:?}", thread.items);
+        };
+        assert_eq!(
+            completion.outcome, None,
+            "an old record carries no outcome field"
+        );
+        assert_eq!(completion.source, MessageSource::Completion);
+        let ThreadItem::Event(done) = &thread.items[2] else {
+            panic!("{:?}", thread.items);
+        };
+        assert_eq!(
+            done.completion_report
+                .as_ref()
+                .map(|report| report.critical_files.clone()),
+            Some(vec!["src/render.rs".to_string()]),
+            "the old event still carries the report it was written with"
+        );
+        assert_eq!(thread.unread_since(0).count, 3);
+    }
+
+    /// The packet reads an old completion message as the completion it was:
+    /// `done` without an `outcome` is a completed outcome.
+    #[test]
+    fn an_old_completion_message_reads_as_a_completed_outcome() {
+        let thread = pre_step_7_thread();
+
+        assert_eq!(
+            thread.catch_up_markdown(40),
+            "- user: please rename the helper\n- agent [completed]: Implemented the change",
         );
     }
 }
@@ -2817,7 +3786,8 @@ mod findability_tests {
     fn a_completion_report_makes_its_critical_files_findable() {
         let dir = checkout(&["src/parser.rs"]);
         let mut thread = thread_in(&dir);
-        thread.post_completion(
+        thread.post_outcome(
+            MessageOutcome::Completed,
             "rewrote the parser",
             Some(&CompletionReport {
                 critical_files: vec!["src/parser.rs — now streams tokens".to_string()],
@@ -3391,20 +4361,23 @@ mod tests {
     }
 
     #[test]
-    fn the_done_event_is_the_whole_wire_record_of_a_completion() {
+    fn the_outcome_message_is_the_whole_wire_record_of_a_completion() {
         let mut thread = Thread::new("run-done");
         thread.post_agent("here is what I found", None, "2026-07-24T11:00:00Z");
-        thread.post_completion("Implemented the change", None, "2026-07-24T12:00:00Z");
+        thread.post_outcome(
+            MessageOutcome::Completed,
+            "Implemented the change",
+            None,
+            "2026-07-24T12:00:00Z",
+        );
 
         let wire = thread.wire_value();
         assert_eq!(wire["items"][0]["type"], "message");
         assert!(wire["items"][0]["data"].get("source").is_none(), "{wire:?}");
-        assert_eq!(wire["items"][1]["type"], "event");
-        assert_eq!(wire["items"][1]["data"]["event"], "done");
-        assert_eq!(
-            wire["items"][1]["data"]["summary"],
-            "Implemented the change"
-        );
+        assert_eq!(wire["items"][1]["type"], "message");
+        assert_eq!(wire["items"][1]["data"]["outcome"], "completed");
+        assert_eq!(wire["items"][1]["data"]["done"], true);
+        assert_eq!(wire["items"][1]["data"]["body"], "Implemented the change");
         assert_eq!(wire["items"].as_array().unwrap().len(), 2, "{wire:?}");
     }
 

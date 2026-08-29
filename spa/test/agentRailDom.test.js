@@ -528,6 +528,68 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
   });
 
+  // The terminal is a capability, not a guarantee. A harness that reports its
+  // own reasoning and tool calls is not opaque, so it has no basement to drop
+  // into — and the rail is where that shows: no TUI button, and no way to ask
+  // for one.
+  it("offers the terminal only to an agent whose session has one", async () => {
+    payload = branchRow({ agents: [agent({ has_terminal: false })] });
+    await mount();
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
+  // An older bridge does not mention the field at all, and silence is not a
+  // refusal: every agent had a terminal before this question could be asked.
+  it("keeps the terminal for a digest that never mentions one", async () => {
+    await mount();
+    expect(agent().has_terminal).toBe(undefined);
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+  });
+
+  // The face the panel wears is remembered per work item, so opening a
+  // terminal-less agent's bubble arrives with "tui" in hand. It must land on
+  // the conversation anyway, and attach nothing.
+  it("puts the panel back on the conversation when a terminal-less agent is opened", async () => {
+    payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, has_terminal: false })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+
+    bubbles()[1].click();
+    await flush();
+
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(mountAgentTab).toHaveBeenCalledTimes(1);
+
+    // …and the choice is not spent: the agent that does have a terminal is
+    // still where it was left.
+    bubbles()[0].click();
+    await flush();
+    expect(panel().querySelector('[data-mode="tui"]')).toBeTruthy();
+    expect(mountAgentTab).toHaveBeenCalledTimes(2);
+  });
+
+  // The digest can change its answer under a panel that is already open — an
+  // agent is replaced by one of another shape on the same bubble. The screen
+  // has to go with it.
+  it("takes the terminal away from a panel standing on one when the agent loses it", async () => {
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBe(null);
+
+    payload = branchRow({ agents: [agent({ has_terminal: false })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(panel().querySelector('[data-mode="tui"]')).toBe(null);
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
   it("leaves a live screen alone while the rail keeps polling", async () => {
     await mount();
     panel().querySelector('[data-mode="tui"]').click();
@@ -935,5 +997,86 @@ describe("the first message", () => {
     await flush();
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" });
     expect(callsTo("agent.start")).toEqual([]);
+  });
+});
+
+// A message to an agent mid-turn can be handed over two ways: queued for its
+// next step — which for a carrier that can be steered usually decides the same
+// turn — or after stopping the turn outright. Two behaviours behind one verb,
+// so the send is a split button, and the stop is never the default press.
+describe("interrupting the turn", () => {
+  const splitSend = () => panel().querySelector(".composer-send-control .splitbtn");
+  const menuItem = (action) =>
+    [...panel().querySelectorAll(".composer-send-control .splitmenu .mi")].find((mi) => mi.dataset.action === action);
+
+  it("offers the plain send to an agent whose turn cannot be stopped", async () => {
+    payload = branchRow({ agents: [agent({ working: true })] });
+    await mount();
+    expect(splitSend()).toBe(null);
+    expect(panel().querySelector("#railsend")).toBeTruthy();
+  });
+
+  it("offers the plain send to an agent that is not working, whatever it can do", async () => {
+    payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
+    await mount();
+    expect(splitSend()).toBe(null);
+  });
+
+  it("splits the send for a working agent that announced the interrupt", async () => {
+    payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
+    await mount();
+    expect(splitSend()).toBeTruthy();
+    // The default press is the send it always was, still the button by that id.
+    expect(splitSend().querySelector("#railsend").dataset.action).toBe("send");
+    expect(menuItem("interrupt_send").textContent).toContain("Interrupt & send");
+  });
+
+  it("posts the message with the interrupt flag when that is the option chosen", async () => {
+    payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
+    await mount();
+    panel().querySelector("#railinput").value = "stop, do this instead";
+    splitSend().querySelector(".caret").click();
+    menuItem("interrupt_send").click();
+    await flush();
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-1", body: "stop, do this instead", interrupt: true,
+    });
+  });
+
+  it("leaves the flag off the default press", async () => {
+    payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
+    await mount();
+    panel().querySelector("#railinput").value = "when you get a moment";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(callsTo("thread.post")[0].params.body).toBe("when you get a moment");
+    expect(callsTo("thread.post")[0].params.interrupt).toBeUndefined();
+  });
+
+  // The condition changes every time an agent starts or finishes a turn, which
+  // on a 1.6s poll is often. Rebuilding the composer to swap the control would
+  // take the draft and the focus with it, mid-sentence.
+  it("swaps the control in place, keeping the box and the words in it", async () => {
+    payload = branchRow({ agents: [agent({ working: true })] });
+    await mount();
+    const input = panel().querySelector("#railinput");
+    input.value = "half a sent";
+    expect(splitSend()).toBe(null);
+
+    payload = branchRow({ agents: [agent({ working: true, can_interrupt: true })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(splitSend()).toBeTruthy();
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(input.value).toBe("half a sent");
+
+    // …and back to the plain button when the turn it could have stopped ends.
+    payload = branchRow({ agents: [agent({ working: false, can_interrupt: true })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(splitSend()).toBe(null);
+    expect(panel().querySelector("#railinput")).toBe(input);
+    expect(input.value).toBe("half a sent");
   });
 });

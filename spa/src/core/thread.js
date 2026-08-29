@@ -3,12 +3,16 @@ import { renderMarkdown } from "./markdown.js";
 import { patchElement } from "./domPatch.js";
 import { completionReportSections } from "./agentRailModel.js";
 import {
+  INTERRUPT_SEND_OPTION,
   autoGrow,
   composerHtml,
+  composerPartIds,
   formatAttachmentSize,
   isImageAttachment,
   mountComposerAttachments,
+  sendControlHtml,
 } from "./composer.js";
+import { mountSplitMenu } from "./splitButton.js";
 
 const EVENT_META = {
   session_started: { label: "Agent session started", icon: "▶" },
@@ -43,6 +47,15 @@ const EVENT_META = {
   pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
   merged: { label: "Changes merged", icon: "⌁", tone: "success" },
   abandoned: { label: "Abandoned", icon: "×", tone: "blocked" },
+  // Activity: the agent working, rather than the agent speaking. A harness that
+  // reports its own reasoning and tool calls has no terminal for them to scroll
+  // past in, so they ride the conversation — and they arrive hundreds to a
+  // session, which is why `activity` folds them (see activityHtml). None of the
+  // four carries a tone: not one of them is asking the reader for anything.
+  reasoning: { label: "Agent thought", icon: "◌", activity: true },
+  tool_use: { label: "Agent called a tool", icon: "▸", activity: true },
+  tool_result: { label: "Tool answered", icon: "◂", activity: true },
+  narration: { label: "Agent narrated", icon: "◦", activity: true },
 };
 
 const MINUTE_MS = 60_000;
@@ -613,20 +626,52 @@ function optionsHtml(message, live, key) {
   </div>`;
 }
 
+/// What an agent reported through `done`, in the vocabulary of the event each
+/// outcome replaced — so a completion reads as "reported done" with the same
+/// tick and the same tone it always did, and a blocker as the blocker it always
+/// was. Keyed by the wire token (`bridge/src/thread.rs`, `MessageOutcome`).
+const OUTCOME_META = {
+  completed: EVENT_META.done,
+  blocked: EVENT_META.blocked,
+  failed: EVENT_META.run_failed,
+};
+
+/// The outcome a message reports, as a marker on the message that reports it.
+///
+/// An outcome is a status the agent attached to its own words, so the marker
+/// rides the card rather than standing beside it as a second record. A token
+/// this client has no meta for still marks the message — the reader learns an
+/// outcome was reported, in the agent's own token, rather than reading the
+/// message as an ordinary reply.
+function outcomeMarkerHtml(outcome, agentLabel) {
+  if (!outcome) return "";
+  const meta = OUTCOME_META[outcome] || { label: String(outcome).replaceAll("_", " "), icon: "•" };
+  const label = meta.label.replace(/^Agent\b/, agentLabel);
+  return `<div class="thread-outcome ${meta.tone || ""}" data-outcome="${esc(outcome)}">
+    <span class="thread-outcome-icon" aria-hidden="true">${esc(meta.icon)}</span>
+    <strong>${esc(label)}</strong>
+  </div>`;
+}
+
 function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer = "") {
   const user = message.role === "user";
   const status = user
     ? `<span class="thread-status">${message.seen_at ? "Seen" : "Unread"}${message.resolved_by_revision ? ` · <button class="thread-revision-link" data-revision="${esc(message.resolved_by_revision)}">Resolved in ${esc(message.resolved_by_revision)}</button>` : ""}</span>`
     : "";
-  // `done` is message metadata, not a presentation type. A done-flagged send
-  // follows the timeline's done event and otherwise renders like every message.
+  // `done` is message metadata, not a presentation type: on a thread written
+  // before outcomes were message statuses it flags the send that followed the
+  // timeline's done event, and such a message renders like every other one.
+  // What marks a message is `outcome` — the whole record of a reported outcome,
+  // carrying the structured handoff the done event used to.
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   return `<article class="thread-message thread-comment ${user ? "user" : "agent"}">
     <span class="thread-avatar" aria-hidden="true">${user ? "Y" : "A"}</span>
     <div class="thread-comment-card">
       <div class="thread-message-head"><span><strong>${user ? "You" : esc(agentLabel)}</strong> commented ${timeHtml(message.created_at)}</span>${status}</div>
+      ${outcomeMarkerHtml(message.outcome, agentLabel)}
       ${anchorLabel(message.anchor)}
       ${message.body ? `<div class="thread-body markdown">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(message.body)}</div>` : ""}
+      ${completionReportHtml(message.completion_report)}
       ${attachmentsHtml(message.attachments)}
       ${linksHtml(message.links)}
       ${optionsHtml(message, liveOptions, offer)}
@@ -636,11 +681,12 @@ function messageHtml(message, agentLabel = "Agent", liveOptions = false, offer =
 
 /// The agent's handoff, as a card.
 ///
-/// `done` is asked for a completion report and the event is the whole record of
-/// it (there is no companion message any more), so the report renders where the
-/// event does: the critical files, the decisions a reviewer would otherwise
-/// reverse-engineer, the risks, and what was deliberately left alone. Every
-/// line is the agent's words — escaped.
+/// `done` is asked for a completion report, and the report renders wherever the
+/// record of that completion is: on the outcome message that reports it, and on
+/// the `Done` event of a thread written before outcomes were message statuses.
+/// Either way it is the same card — the critical files, the decisions a
+/// reviewer would otherwise reverse-engineer, the risks, and what was
+/// deliberately left alone. Every line is the agent's words — escaped.
 function completionReportHtml(report) {
   const sections = completionReportSections(report);
   if (!sections.length) return "";
@@ -653,8 +699,45 @@ function completionReportHtml(report) {
     .join("")}</div>`;
 }
 
+/// The first line of a summary, which is what the fold's head shows.
+///
+/// A row that says only "Agent called a tool" is a row nobody can scan; what
+/// the agent actually did is the line under it, and that is the half worth
+/// having outside the fold.
+function firstLine(summary) {
+  return summary.split("\n").find((line) => line.trim()) || "";
+}
+
+/// Activity, folded.
+///
+/// Reasoning, tool calls, tool results and narration are the agent working, not
+/// the agent addressing anyone — the daemon classes all four as status, so they
+/// move no unread count and pull nobody in, and the timeline says the same
+/// thing in the way it draws them: a dim single line, shut, opening onto the
+/// whole of what was said only when the reader asks.
+///
+/// A row with nothing behind it is not a fold. An event carrying neither a
+/// summary nor links would otherwise offer a disclosure triangle onto an empty
+/// box, which is a worse answer than the plain line it has always been.
+function activityHtml(event, meta, agentLabel) {
+  const label = meta.label.replace(/^Agent\b/, agentLabel);
+  const summary = String(event.summary || "").trim();
+  const head = `<span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
+    <span class="thread-activity-what">${esc(label)}</span>
+    ${summary ? `<span class="thread-activity-preview">${esc(firstLine(summary))}</span>` : ""}
+    ${timeHtml(event.created_at)}`;
+  // renderMarkdown escapes all input before adding its fixed safe tag set.
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
+  if (!body) return `<div class="thread-event thread-activity">${head}</div>`;
+  return `<details class="thread-event thread-activity">
+    <summary class="thread-activity-head">${head}</summary>
+    ${body}
+  </details>`;
+}
+
 function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
+  if (meta.activity) return activityHtml(event, meta, agentLabel);
   const label = meta.label.replace(/^Agent\b/, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
@@ -1067,21 +1150,27 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments)` does the transport and resolves when the post
-/// has landed. `upload` (with the `readAttachments`/`writeAttachments` draft
-/// pair) turns the box into one that takes files; without it the composer is
-/// the plain text box it always was.
+/// `onSubmit(body, attachments, { interrupt })` does the transport and resolves
+/// when the post has landed — `interrupt` is true only where the send control
+/// offered the alternative and the writer chose it. `upload` (with the
+/// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
+/// takes files; without it the composer is the plain text box it always was.
+///
+/// Returns a controller: `setCanInterrupt(flag)` moves the send between its two
+/// shapes in place, for a surface whose poll can change the answer under a box
+/// somebody is typing in.
 /// The send button's word. It wraps its label so a busy state can rewrite the
-/// word without wiping the icon beside it; an older composer without the span
-/// is still driven directly.
+/// word without wiping the icon beside it; the split shape, which has no icon
+/// to protect, is driven directly.
 const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
 
 export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit, upload, readAttachments, writeAttachments }) {
-  if (!root) return;
+  if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
-  const send = root.querySelector(`#${ids.send}`);
+  let send = root.querySelector(`#${ids.send}`);
+  const control = root.querySelector(`#${composerPartIds(ids.input).sendControl}`);
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
-  if (!input || !send) return;
+  if (!input || !send) return null;
 
   const say = (message) => {
     if (hint) hint.textContent = message;
@@ -1103,7 +1192,15 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
   };
   const fitToText = autoGrow(input);
 
-  const submit = async () => {
+  /// The caret half of a split send, when the control is wearing that shape.
+  const caretOf = () => control && control.querySelector(".caret");
+  const setPressable = (pressable) => {
+    send.disabled = !pressable;
+    const caret = caretOf();
+    if (caret) caret.disabled = !pressable;
+  };
+
+  const submit = async ({ interrupt = false } = {}) => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
     if (tray && tray.busy()) {
@@ -1120,32 +1217,58 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       input.focus();
       return;
     }
-    send.disabled = true;
+    setPressable(false);
     sendLabel(send).textContent = "sending…";
     try {
-      const result = await onSubmit(body, tray ? tray.attachments() : []);
+      const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
       writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
-      send.disabled = false;
+      setPressable(true);
       sendLabel(send).textContent = "Send";
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
-      send.disabled = false;
+      setPressable(true);
       sendLabel(send).textContent = "Send";
       if (onError) onError(error);
     }
   };
 
-  send.onclick = submit;
+  /// Take hold of whichever shape the send control is wearing. Called again
+  /// after a swap, because the buttons it wires are new elements.
+  const wireSendControl = () => {
+    send = root.querySelector(`#${ids.send}`);
+    if (!send) return;
+    send.onclick = () => submit();
+    if (control) {
+      mountSplitMenu(control, { onChoose: (action) => submit({ interrupt: action === INTERRUPT_SEND_OPTION.id }) });
+    }
+  };
+
+  /// Move the send between its two shapes. Never mid-press: a send in flight
+  /// owns the button's word, and an open menu is a choice being made — the
+  /// poll comes round again a second later, and by then the press has landed.
+  let splitShown = !!(control && control.querySelector(".splitmenu"));
+  const setCanInterrupt = (wanted) => {
+    const split = !!wanted;
+    if (!control || split === splitShown) return;
+    if (send.disabled || control.querySelector(".splitmenu:not([hidden])")) return;
+    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt: split });
+    splitShown = split;
+    wireSendControl();
+  };
+
+  wireSendControl();
   input.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       submit();
     }
   };
+
+  return { setCanInterrupt };
 }
 

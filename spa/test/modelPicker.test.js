@@ -33,6 +33,16 @@ const CATALOG = {
   ],
 };
 
+describe("the harnesses a start can name", () => {
+  it("offers the headless claude carrier beside the two CLIs, under the bridge's own label", async () => {
+    const { STARTABLE_PROVIDERS, DEFAULT_START_PROVIDER } = await import("../src/core/modelPicker.js");
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude", "claude_adk", "codex"]);
+    expect(STARTABLE_PROVIDERS.find((provider) => provider.id === "claude_adk").label).toBe("Claude Code (headless)");
+    // The full PTY harness stays the obvious start; headless is an offer, not a default.
+    expect(DEFAULT_START_PROVIDER).toBe("claude");
+  });
+});
+
 describe("provider catalog", () => {
   it("renders providers and resolves a provider-specific model catalog", () => {
     expect(providerOptionsHtml(CATALOG.providers, "codex")).toContain('value="codex" selected');

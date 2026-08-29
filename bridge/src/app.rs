@@ -25,7 +25,10 @@ use tokio::sync::broadcast;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
-use crate::harness::{harness_for, open_session, HarnessContext, HarnessSession};
+use crate::harness::{
+    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
+    TerminalView, Turn,
+};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -106,6 +109,24 @@ fn require_shell_kind(params: &Value) -> Result<(), String> {
             "unknown terminal kind {other:?} — a user terminal is always the shell"
         )),
     }
+}
+
+/// Refuse a terminal call on an agent whose session has no terminal.
+///
+/// The terminal is the escape hatch into a harness Build can only see the
+/// outside of. A harness that reports its own reasoning and tool calls is not
+/// opaque, so it has nothing to escape to and offers no basement to drop into
+/// — and a client that asks anyway is told where that agent's work actually is.
+///
+/// Same precedent as [`require_shell_kind`], for the same reason: falling back
+/// would attach a grid nothing paints into, or answer `ok` to keystrokes no
+/// process will ever read, which is the silent-wrong-thing failure loud
+/// refusals exist to prevent.
+fn no_terminal_here(term_id: &str) -> String {
+    format!(
+        "{term_id} has no terminal — this agent reports its reasoning, tool calls and \
+         messages into its conversation, which is where its work is read"
+    )
 }
 
 /// The harness a shell tab spawns in its worktree root: `-i -l`, so the user
@@ -640,8 +661,8 @@ enum TabRole {
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
 ///
-/// The session is held behind [`HarnessSession`], so nothing a tab does knows
-/// which harness — or which kind of harness — is on the other end.
+/// The session is held behind [`AgentSession`], so nothing a tab does knows
+/// which harness — or which kind of carrier — is on the other end.
 struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
@@ -649,8 +670,16 @@ struct Tab {
     /// Surfaced by `term.list` so a reloaded client can order the tab row the
     /// way the human opened it.
     created_at: String,
-    session: Box<dyn HarnessSession>,
-    screen: TermScreen,
+    /// Shared rather than owned outright: a turn is handed over with the
+    /// app-wide state lock RELEASED, so the delivery takes a handle out of the
+    /// registry instead of holding the registry open across the turn.
+    session: Arc<dyn AgentSession>,
+    /// The grid this tab's terminal paints into — `None` for a session with no
+    /// terminal, because there is no grid without one. The terminal is a
+    /// capability, not a guarantee, and a screen kept for a session that has
+    /// none would be a second answer to a question with one:
+    /// [`AgentSession::terminal`](crate::harness::AgentSession::terminal).
+    screen: Option<TermScreen>,
     /// False once the PTY stream has ended. An agent tab is RETAINED after its
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
@@ -678,8 +707,51 @@ impl Tab {
         }
     }
 
-    /// Spawn `role`'s program in a PTY at `root`, returning the tab and a
-    /// receiver subscribed before the first byte can be missed.
+    /// Whether this tab's agent session is still running.
+    ///
+    /// Two conjuncts, each ruling out a different corpse. An agent tab is
+    /// RETAINED after its stream ends so the human still sees the last screen,
+    /// so `live` is the tab's own answer; and a session that reports `Ended` is
+    /// over whatever the tab still holds. `has_exited` was how a terminal asked
+    /// the second — a process poll — and [`AgentStatus::Ended`] is how every
+    /// carrier does.
+    fn session_is_live(&self) -> bool {
+        self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
+    }
+
+    /// The terminal this tab's session offers, or the reason it has none.
+    fn require_terminal(&self) -> Result<&dyn TerminalView, String> {
+        self.session
+            .terminal()
+            .ok_or_else(|| no_terminal_here(&self.wire_id()))
+    }
+
+    /// The terminal and the grid it paints into.
+    ///
+    /// One question answers for both: they are made together in
+    /// [`Tab::spawn`] and a session with no terminal has neither, so there is
+    /// no state in which a tab has a screen to hand a client and nothing
+    /// behind it.
+    fn require_terminal_and_screen(
+        &mut self,
+    ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
+        let refusal = no_terminal_here(&self.wire_id());
+        let Tab {
+            session, screen, ..
+        } = self;
+        match (session.terminal(), screen.as_mut()) {
+            (Some(terminal), Some(screen)) => Ok((terminal, screen)),
+            _ => Err(refusal),
+        }
+    }
+
+    /// Spawn `role`'s program at `root`, returning the tab and whichever stream
+    /// its session offers, subscribed before its first word can be missed.
+    ///
+    /// The grid is made together with the terminal, or not at all: a session
+    /// with no terminal paints nothing, so there is no screen to hold and no
+    /// byte pump to run — its work reaches the conversation through the
+    /// activity pump instead.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -687,23 +759,41 @@ impl Tab {
         root: std::path::PathBuf,
         cols: u16,
         rows: u16,
-    ) -> Result<(Tab, broadcast::Receiver<Vec<u8>>), String> {
+    ) -> Result<(Tab, SessionOutput), String> {
         let size = PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
         };
-        let session = open_session(spec, root.clone(), size).map_err(|e| e.to_string())?;
-        let rx = session.subscribe();
+        // Which carrier opens is the PROVIDER's answer, asked here and asked by
+        // the rail before there is a session — one authority, so the rail never
+        // offers a basement this spawn would refuse. The human's own shell is
+        // always a terminal, and is the one session never handed a turn: it is
+        // not waited on, because a login shell may never announce a line editor
+        // at all and `term.create` holds the state lock across this.
+        let carrier = match &role {
+            TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
+                Carrier::Protocol
+            }
+            TabRole::Agent { .. } => Carrier::Terminal {
+                size,
+                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+            },
+            TabRole::Shell => Carrier::Terminal {
+                size,
+                turn_ready_grace: None,
+            },
+        };
+        let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
         Ok((
             Tab {
                 tab_id,
                 root,
                 role,
                 created_at: now_rfc3339(),
+                screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
                 session,
-                screen: TermScreen::new(cols, rows),
                 live: true,
                 last_delivered_at: None,
             },
@@ -771,6 +861,14 @@ struct PendingAgentTurn {
     /// The phase recorded on the conversation's session lineage if the turn
     /// turns out to be cold — a cold delivery is a new agent process.
     phase: &'static str,
+    /// Whether `cold` is closed with the durable conversation — the catch-up
+    /// packet and the previous completion report — when the turn is handed
+    /// over.
+    ///
+    /// True for every turn addressed to an entity's conversation, false for
+    /// the router's: a router is one decision long, works no conversation, and
+    /// its prompt deliberately carries none.
+    wants_catch_up: bool,
 }
 
 /// The live implementation an Issue's conversation actually speaks to: the
@@ -806,6 +904,7 @@ impl PendingAgentTurn {
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
+            wants_catch_up: true,
         }
     }
 
@@ -823,6 +922,7 @@ impl PendingAgentTurn {
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
+            wants_catch_up: true,
         })
     }
 
@@ -831,14 +931,17 @@ impl PendingAgentTurn {
         active: &ActiveRun,
         project_root: &std::path::Path,
         prompt: String,
-        issue_thread: &crate::thread::Thread,
     ) -> Self {
         // A recovery may replace a dead process or take over a warm
         // implementation tab. In either case it is a distinct Issue agent and
         // must re-establish the durable conversation protocol before touching
         // refs. Wrapping both variants also gives a warm recovery the unread
         // pull instruction instead of assuming an earlier phase primed it.
-        let primed = crate::orchestrator::conversation_prompt(&prompt, issue_thread);
+        //
+        // Only the cold half is closed with the catch-up packet at delivery: a
+        // warm recovery is a live process that lived this conversation, and
+        // the protocol block it keeps already tells it to read what it missed.
+        let primed = crate::orchestrator::conversation_prompt(&prompt);
         PendingAgentTurn {
             root: AppState::canonical_root(project_root),
             owner: owner.to_string(),
@@ -847,6 +950,7 @@ impl PendingAgentTurn {
             cold: primed.clone(),
             warm: primed,
             phase: "recover",
+            wants_catch_up: true,
         }
     }
 }
@@ -874,27 +978,23 @@ struct Project {
 /// poll.
 const EXTERNAL_SCAN_INTERVAL: Duration = Duration::from_secs(10);
 
-/// How recently an agent's PTY must have painted for it to count as WORKING.
-///
-/// Aliveness alone is the wrong signal: an agent tab opened yesterday and left
-/// at its prompt is alive and doing nothing, and a rail that pulses at it
-/// forever teaches you to ignore the pulse. A working agent paints — spinners,
-/// tool output, tokens — so silence means it is waiting for you, which is the
-/// state the dot must NOT claim is progress.
-const AGENT_WORKING_WINDOW: Duration = Duration::from_secs(30);
-
 /// Whether a tab holds an agent that is working right now.
 ///
 /// Three things have to be true, and each rules out a different lie: the tab
-/// is an agent's (a shell is the human's own hands, however busy it looks),
-/// its process is still alive (a dead agent's retained screen is not a
-/// heartbeat), and it has painted inside [`AGENT_WORKING_WINDOW`] (an agent
-/// parked at its prompt is waiting for you, not working).
+/// is an agent's (a shell is the human's own hands, however busy it looks), its
+/// stream is still open (a dead agent's retained screen is not a heartbeat),
+/// and the session itself reports [`AgentStatus::Working`].
+///
+/// That last one used to be the age of the last paint, read straight off the
+/// PTY. It is now the session's own answer, because the paint clock is a guess
+/// only a terminal is forced to make — a harness that knows when its turn began
+/// and ended has a better one, and must be able to give it. For a PTY the guess
+/// is unchanged: [`crate::pty::PtySession`] synthesizes `Working` from exactly
+/// the two conjuncts that moved, so this reports what it always has.
 fn agent_is_working(tab: &Tab) -> bool {
     matches!(tab.role, TabRole::Agent { .. })
         && tab.live
-        && !tab.session.has_exited()
-        && tab.session.idle_for() < AGENT_WORKING_WINDOW
+        && matches!(tab.session.status(), AgentStatus::Working)
 }
 
 /// `(agent_working, can_finish)` for one worktree's managed agent tab. Finish
@@ -2406,20 +2506,11 @@ impl AppState {
                     active.last_error = Some(format!(
                         "automatic branch restoration failed: {error}; verified recovery {recovery_id} is running"
                     ));
-                    let (stages, issue_thread) = self
+                    let stages = self
                         .plans
                         .get(&issue_id)
-                        .map(|issue| (issue.stages.clone(), issue.agents.clone()))
-                        .unwrap_or_else(|| {
-                            (
-                                Vec::new(),
-                                crate::agent::AgentRoster::with_first(
-                                    &issue_id,
-                                    active.model_choice.clone(),
-                                    &now_rfc3339(),
-                                ),
-                            )
-                        });
+                        .map(|issue| issue.stages.clone())
+                        .unwrap_or_default();
                     let prompt = recovery_agent_prompt(
                         &recovery_id,
                         &issue_id,
@@ -2431,11 +2522,7 @@ impl AppState {
                     );
                     self.pending_agent_turns
                         .push(PendingAgentTurn::for_recovery(
-                            &run_id,
-                            &active,
-                            &repo_path,
-                            prompt,
-                            &issue_thread,
+                            &run_id, &active, &repo_path, prompt,
                         ));
                     state_changed = true;
                 }
@@ -2937,6 +3024,159 @@ impl AppState {
         }
     }
 
+    /// Apply `edit` to `agent_id`'s own RECORD — what the agent IS, not what it
+    /// said — and persist the entity that owns it.
+    ///
+    /// Beside [`edit_owner_thread`](Self::edit_owner_thread) rather than
+    /// [`edit_agent_conversation`](Self::edit_agent_conversation), which edits
+    /// the conversation an agent SPEAKS in: for a planned implementation's
+    /// first agent that is the Issue's thread, which is not the agent.
+    ///
+    /// Quiet about an owner or an agent it cannot find, for the reason
+    /// `edit_owner_thread` is: an entity whose record was deleted with its tab
+    /// has no roster left to write onto.
+    fn edit_agent_record(
+        &mut self,
+        context: &str,
+        owner: &str,
+        agent_id: &str,
+        edit: impl FnOnce(&mut crate::agent::Agent),
+    ) {
+        if self.plans.contains_key(owner) {
+            let Ok(mut active) = self.take_plan(owner) else {
+                return;
+            };
+            if let Some(agent) = active.agents.by_id_mut(agent_id) {
+                edit(agent);
+            }
+            if let Err(error) = self.finish_plan_mutation(owner.to_string(), active) {
+                eprintln!("{context} {owner}: {error}");
+            }
+            return;
+        }
+        let Ok(mut active) = self.take_run(owner) else {
+            return;
+        };
+        if let Some(agent) = active.agents.by_id_mut(agent_id) {
+            edit(agent);
+        }
+        if let Err(error) = self.finish_run_mutation(owner.to_string(), active) {
+            eprintln!("{context} {owner}: {error}");
+        }
+    }
+
+    /// The name the agent's record says its conversation has — `None` for one
+    /// no session of its has ever announced.
+    fn recorded_resume_id(&self, owner: &str, agent_id: &str) -> Option<String> {
+        self.entity_agents(owner)
+            .ok()?
+            .by_id(agent_id)?
+            .resume_session_id
+            .clone()
+    }
+
+    /// Write down the name the agent's live session gave its conversation, so
+    /// the next spawn resumes it BY NAME instead of guessing the newest
+    /// transcript in the checkout.
+    ///
+    /// `None` clears it, which is what a session that ended having never
+    /// announced one asks for: that is the shape of a spawn whose `--resume`
+    /// id no longer resolved, and clearing costs one restart where keeping it
+    /// would cost every restart.
+    fn record_agent_resume_id(&mut self, owner: &str, agent_id: &str, named: Option<String>) {
+        self.edit_agent_record("record_agent_resume_id", owner, agent_id, |agent| {
+            agent.resume_session_id = named;
+        });
+    }
+
+    /// Post one thing the agent reported doing into the conversation it speaks
+    /// in.
+    ///
+    /// Activity is conversation: an event-stream harness has no second tab and
+    /// no second scrollback, so its reasoning, tool calls and narration ride the
+    /// timeline the human already reads, told apart from what the agent SAID by
+    /// class rather than by living somewhere else.
+    ///
+    /// Quiet about an owner it cannot find, for the reason
+    /// [`edit_owner_thread`](Self::edit_owner_thread) is: a router owns no
+    /// conversation, and an entity whose record was deleted with its tab has
+    /// none left to speak in. Neither is worth a line per tool call.
+    fn record_agent_activity(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        activity: &crate::harness::AgentActivity,
+    ) {
+        let event = activity_event_kind(activity);
+        let summary = activity.summary().to_string();
+        let now = now_rfc3339();
+        let _ = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            let session_id = open_session_id(thread);
+            thread.push_event(event, Some(summary), session_id, None, now);
+            Ok(())
+        });
+    }
+
+    /// Edit the conversation `agent_id` speaks in, and persist the entity that
+    /// owns it.
+    ///
+    /// Which conversation that is has one rule and this is where it lives: an
+    /// implementation's FIRST agent speaks in its Issue's conversation — the one
+    /// every Issue surface renders — and an agent added to the branch beside it
+    /// owns its own, because aliasing it would put two agents' words in one
+    /// place. The artifact that conversation is about travels with it, since a
+    /// plan's links resolve against a document and a run's against a diff.
+    ///
+    /// The record is persisted whether the edit succeeded or not, and the
+    /// edit's own error is what the caller hears: a rejected action must not
+    /// take the writes made before it down with it.
+    fn edit_agent_conversation<T>(
+        &mut self,
+        entity_id: &str,
+        agent_id: &str,
+        edit: impl FnOnce(&mut crate::thread::Thread, crate::thread::ArtifactKind) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let speaks_for_the_entity = self.entity_agents(entity_id)?.first().id == agent_id;
+        if self.plans.contains_key(entity_id) {
+            let mut active = self.take_plan(entity_id)?;
+            let result = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Plan));
+            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if let Some(issue_id) = self
+            .runs
+            .get(entity_id)
+            .and_then(|run| run.run.plan_id.as_ref())
+            .map(|id| id.0.clone())
+            .filter(|issue_id| self.plans.contains_key(issue_id))
+            .filter(|_| speaks_for_the_entity)
+        {
+            let mut issue = self.take_plan(&issue_id)?;
+            let result = edit(&mut issue.agents, crate::thread::ArtifactKind::Diff);
+            let persisted = self.finish_plan_mutation(issue_id, issue);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        if self.runs.contains_key(entity_id) {
+            let mut active = self.take_run(entity_id)?;
+            let result = active
+                .agents
+                .resolve_mut(Some(agent_id))
+                .and_then(|agent| edit(&mut agent.thread, crate::thread::ArtifactKind::Diff));
+            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
+            let value = result?;
+            persisted?;
+            return Ok(value);
+        }
+        Err(format!("unknown conversation owner: {entity_id}"))
+    }
+
     /// A turn never reached an agent: record why on the entity and persist it,
     /// so the surface says what happened instead of showing a working task with
     /// nobody working.
@@ -3370,7 +3610,7 @@ impl AppState {
     fn agent_is_live(&self, root: &std::path::Path, agent_id: &str) -> bool {
         self.tabs
             .get(&TabKey::agent(root, agent_id))
-            .is_some_and(|tab| tab.live && !tab.session.has_exited())
+            .is_some_and(Tab::session_is_live)
     }
 
     /// Point an entity's agents at a different provider/model. The persisted
@@ -3435,8 +3675,10 @@ impl AppState {
                 continue;
             };
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "closed");
+            tab.session.end();
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "closed");
+            }
         }
     }
 
@@ -4087,63 +4329,13 @@ impl AppState {
         if let BridgeAction::PostThreadMessage { links, .. } = &action {
             self.validate_thread_links_for_owner(entity_id, links)?;
         }
-        // An implementation's FIRST agent speaks in its Issue's conversation —
-        // the one every Issue surface renders. An agent added to the branch
-        // beside it owns its own, and aliasing it would put two agents' words
-        // in one place.
-        let speaks_for_the_entity = self.entity_agents(entity_id)?.first().id == agent_id;
+        // Where an agent speaks — its own conversation, or its Issue's when it
+        // is the implementation's first — is one rule, and it is
+        // `edit_agent_conversation`'s.
         let now = now_rfc3339();
-        if self.plans.contains_key(entity_id) {
-            let mut active = self.take_plan(entity_id)?;
-            let result = active.agents.resolve_mut(Some(agent_id)).and_then(|agent| {
-                apply_thread_action(
-                    &mut agent.thread,
-                    crate::thread::ArtifactKind::Plan,
-                    action,
-                    &now,
-                )
-            });
-            let persisted = self.finish_plan_mutation(entity_id.to_string(), active);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        if let Some(issue_id) = self
-            .runs
-            .get(entity_id)
-            .and_then(|run| run.run.plan_id.as_ref())
-            .map(|id| id.0.clone())
-            .filter(|issue_id| self.plans.contains_key(issue_id))
-            .filter(|_| speaks_for_the_entity)
-        {
-            let mut issue = self.take_plan(&issue_id)?;
-            let result = apply_thread_action(
-                &mut issue.agents,
-                crate::thread::ArtifactKind::Diff,
-                action,
-                &now,
-            );
-            let persisted = self.finish_plan_mutation(issue_id, issue);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        if self.runs.contains_key(entity_id) {
-            let mut active = self.take_run(entity_id)?;
-            let result = active.agents.resolve_mut(Some(agent_id)).and_then(|agent| {
-                apply_thread_action(
-                    &mut agent.thread,
-                    crate::thread::ArtifactKind::Diff,
-                    action,
-                    &now,
-                )
-            });
-            let persisted = self.finish_run_mutation(entity_id.to_string(), active);
-            let value = result?;
-            persisted?;
-            return Ok(value);
-        }
-        Err(format!("unknown conversation owner: {entity_id}"))
+        self.edit_agent_conversation(entity_id, agent_id, |thread, artifact| {
+            apply_thread_action(thread, artifact, action, &now)
+        })
     }
 
     /// Answer a history query out of the conversations this agent may read.
@@ -5551,17 +5743,20 @@ impl AppState {
             .tabs
             .iter()
             .filter(|(key, tab)| key.root == root && tab.role == TabRole::Shell)
-            .map(|(key, tab)| {
-                (
+            .filter_map(|(key, tab)| {
+                // A shell IS its terminal, so the filter above already excluded
+                // the only role that can be without one.
+                let screen = tab.screen.as_ref()?;
+                Some((
                     term_id_suffix(&key.tab_id),
                     json!({
                         "term_id": tab.tab_id,
                         "kind": SHELL_TAB_KIND,
-                        "cols": tab.screen.cols,
-                        "rows": tab.screen.rows,
+                        "cols": screen.cols,
+                        "rows": screen.rows,
                         "created_at": tab.created_at,
                     }),
-                )
+                ))
             })
             .collect();
         terminals.sort_by_key(|(suffix, _)| *suffix);
@@ -5580,8 +5775,10 @@ impl AppState {
             return Err("cannot close an agent terminal".to_string());
         }
         let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
-        tab.session.kill_and_reap();
-        tab.screen.push_closed(&term_id, "closed");
+        tab.session.end();
+        if let Some(screen) = &tab.screen {
+            screen.push_closed(&term_id, "closed");
+        }
         Ok(json!({ "ok": true }))
     }
 
@@ -5590,21 +5787,30 @@ impl AppState {
     /// user's machine and the terminal is the basement — and an agent whose
     /// process has ended surfaces "no active agent session" rather than
     /// swallowing the keystrokes.
+    ///
+    /// An agent with no terminal has no basement to type into, and hears about
+    /// it ([`no_terminal_here`]) before its state is consulted: that is a
+    /// property of the session, not of whether it happens to be running.
     fn term_input(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let data = b64decode(&require_str(params, "data")?)?;
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
-        if !tab.live || tab.session.has_exited() {
+        let terminal = tab.require_terminal()?;
+        if !tab.session_is_live() {
             return Err("no active agent session".to_string());
         }
-        tab.session.write_input(&data).map_err(|e| e.to_string())?;
+        terminal.write_input(&data).map_err(|e| e.to_string())?;
         Ok(json!({ "ok": true }))
     }
 
     /// Resize a tab's PTY and screen model, by id. The resize only applies
     /// while the session is live; a dead resize is a no-op `live: false` so a
     /// retained last screen is never garbled.
+    ///
+    /// A session with no terminal refuses instead, live or not: a viewport
+    /// means nothing to a session with no grid, so `live: false` there would be
+    /// a quiet "nothing to do" in place of a reason.
     fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
         let term_id = require_str(params, "term_id")?;
         let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
@@ -5617,10 +5823,11 @@ impl AppState {
         };
         let key = self.tab_key_of_wire_id(&term_id)?;
         let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
-        let live = tab.live && !tab.session.has_exited();
+        let live = tab.session_is_live();
+        let (terminal, screen) = tab.require_terminal_and_screen()?;
         if live {
-            tab.session.resize(size).map_err(|e| e.to_string())?;
-            tab.screen.set_size(cols, rows);
+            terminal.resize(size).map_err(|e| e.to_string())?;
+            screen.set_size(cols, rows);
         }
         Ok(json!({ "ok": true, "live": live }))
     }
@@ -5636,9 +5843,11 @@ impl AppState {
     /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
         for tab in self.tabs.values_mut() {
-            tab.screen
-                .attached
-                .retain(|client| client.sender.session_id() != session_id);
+            if let Some(screen) = &mut tab.screen {
+                screen
+                    .attached
+                    .retain(|client| client.sender.session_id() != session_id);
+            }
         }
         self.agent_screens_awaiting_spawn.retain(|_, screen| {
             screen
@@ -5683,8 +5892,10 @@ impl AppState {
             {
                 killed_agents.push((owner.clone(), agent_id.clone()));
             }
-            tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "reaped");
+            tab.session.end();
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "reaped");
+            }
             reaped.push(wire_id);
         }
         // The kill above is one the pump can never report: the tab left the
@@ -5761,18 +5972,38 @@ impl AppState {
             let Some(tab) = tab else {
                 return if turn_undelivered { None } else { Some(None) };
             };
-            if tab.session.has_exited() {
+            // Asked once, so the two questions below cannot be answered by two
+            // different moments of the same session.
+            let status = tab.session.status();
+            if let AgentStatus::Ended { code } = status {
                 return Some(Some(HarnessExit {
-                    code: tab.session.exit_code().unwrap_or(-1),
-                    epitaph: screen_epitaph(&tab.screen),
+                    code: code.unwrap_or(-1),
+                    // The screen first, the session second. A retained screen is
+                    // the last words of a harness Build could only see the
+                    // outside of; a session that reports its own errors was told
+                    // them, and hands back what it was told.
+                    epitaph: tab
+                        .screen
+                        .as_ref()
+                        .and_then(screen_epitaph)
+                        .or_else(|| tab.session.epitaph()),
                 }));
             }
+            // A session that reports its own turn boundaries cannot be
+            // demoted mid-turn: a model reasoning for forty minutes is working
+            // and silent, and silence is the only instrument the two clocks
+            // below own. For a PTY this changes nothing — paint inside 30s is
+            // what makes one `Working`, so a tab quiet past a threshold minutes
+            // long can never claim it.
+            if matches!(status, AgentStatus::Working) {
+                return None;
+            }
             let quiet_for = quiet_threshold;
-            let painted_recently = tab.session.idle_for() < quiet_for;
+            let heard_from_recently = tab.session.quiet_for() < quiet_for;
             let spoken_to_recently = tab
                 .last_delivered_at
                 .is_some_and(|at| at.elapsed() < quiet_for);
-            if painted_recently || spoken_to_recently {
+            if heard_from_recently || spoken_to_recently {
                 None
             } else {
                 Some(None)
@@ -7726,8 +7957,10 @@ impl AppState {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         if let Some(tab) = self.tabs.remove(&key) {
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "closed");
+            tab.session.end();
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "closed");
+            }
         }
         if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
             screen.push_closed(&key.tab_id, "closed");
@@ -7793,7 +8026,7 @@ impl AppState {
         let unread = self.agent_unread(entity_id, agent, thread);
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
         let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
-        let live = tab.is_some_and(|tab| tab.live && !tab.session.has_exited());
+        let live = tab.is_some_and(|tab| tab.session_is_live());
         json!({
             "id": agent.id,
             "ordinal": agent.ordinal,
@@ -7808,6 +8041,22 @@ impl AppState {
             "unread_count": unread.count,
             "unread_reason": unread.reason,
             "working": tab.is_some_and(agent_is_working),
+            // Whether the rail offers this agent a basement. The live session
+            // answers for an agent that is running, since it is the only thing
+            // that can; before there is one the PROVIDER answers, because it
+            // knows which carrier its spawn will open. Same authority either
+            // side of the spawn, so the rail never offers a TUI button that the
+            // spawn then refuses.
+            "has_terminal": match tab {
+                Some(tab) => tab.session.terminal().is_some(),
+                None => harness_for(agent.choice.provider).has_terminal(),
+            },
+            // Whether the composer offers "Interrupt & send". Unlike
+            // `has_terminal` the PROVIDER cannot answer this one: the capability
+            // is announced by the child in its own `init` line rather than
+            // decided by the argv, so the same provider answers differently on
+            // two versions of the same CLI. No session, no turn to stop.
+            "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
             "created_at": agent.created_at,
         })
     }
@@ -8414,10 +8663,12 @@ impl AppState {
             agent_id: session.agent_id.clone(),
             model_choice: session.choice.clone(),
             // A router is one decision long, so there is no warm half: every
-            // turn it ever hears is the whole job.
+            // turn it ever hears is the whole job — and no conversation, so no
+            // catch-up packet either.
             cold: prompt.clone(),
             warm: prompt,
             phase: "route",
+            wants_catch_up: false,
         });
         self.router_sessions.insert(capture_id.to_string(), session);
         Ok(())
@@ -8529,6 +8780,10 @@ impl AppState {
     /// One work item's conversation, as the catch-up the agents themselves are
     /// given. Read-only: the router has no way to post here, by design — it
     /// hands work over, it does not join it.
+    ///
+    /// Read through the same door the packet is: a router deciding where work
+    /// belongs must not be handed an empty transcript because the agent it is
+    /// reading spent the afternoon calling tools.
     fn router_read_conversation(
         &self,
         entity_id: &str,
@@ -8539,8 +8794,56 @@ impl AppState {
         Ok(json!({
             "entity_id": entity_id,
             "agent_id": agent.id,
-            "transcript": agent.thread.catch_up_markdown(limit),
+            "transcript": self.catch_up_packet(&agent.thread, limit),
         }))
+    }
+
+    /// The catch-up packet for one conversation: the last `limit` messages to
+    /// and from the agent, read out of the store when the tail this process
+    /// booted onto does not hold them.
+    ///
+    /// The gate is answered off two integers, so a conversation held whole —
+    /// the common case, and every storeless test daemon — is byte-identical to
+    /// what the tail alone said and touches no SQL. A store that cannot answer
+    /// falls back to the tail-built packet: a starved packet is today's
+    /// behaviour, and it is a far smaller loss than dropping the turn.
+    fn catch_up_packet(&self, thread: &crate::thread::Thread, limit: usize) -> String {
+        if !thread.catch_up_reaches_stored_history(limit) {
+            return thread.catch_up_markdown(limit);
+        }
+        let Some(store) = self.store.as_ref() else {
+            return thread.catch_up_markdown(limit);
+        };
+        match store.thread_message_page(&thread.agent.id, limit) {
+            Ok(history) => thread.catch_up_markdown_including_history(&history, limit),
+            Err(error) => {
+                eprintln!(
+                    "catch-up packet for {}: {error}; the resident tail is what it carries",
+                    thread.agent.id
+                );
+                thread.catch_up_markdown(limit)
+            }
+        }
+    }
+
+    /// The cold prompt a turn is actually handed over with: the prompt and its
+    /// protocol block, closed with the durable conversation.
+    ///
+    /// Composed here, at the drain, rather than where the turn was built:
+    /// transitions hold a conversation and no store, and a packet baked when
+    /// the turn was queued would miss whatever was said while it waited for
+    /// the lock. An owner whose conversation has gone (an entity closed under
+    /// a queued turn) is handed the prompt as it stands — the delivery gate
+    /// above has the last word on whether it travels at all.
+    fn cold_prompt_with_catch_up(&self, owner: &str, agent_id: &str, cold: &str) -> String {
+        let Ok(thread) = self.agent_conversation(owner, Some(agent_id)) else {
+            return cold.to_string();
+        };
+        crate::orchestrator::append_durable_conversation(
+            cold.to_string(),
+            &self.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES),
+            thread,
+        )
     }
 
     /// The default destination: an issue on the best-guess project, with its
@@ -8865,8 +9168,10 @@ impl AppState {
         let root = Self::canonical_root(&session.scratch_dir);
         if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
             let wire_id = tab.wire_id();
-            tab.session.kill_and_reap();
-            tab.screen.push_closed(&wire_id, "agent_session_ended");
+            tab.session.end();
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "agent_session_ended");
+            }
         }
         self.mcp_session_tokens.remove(&session.agent_id);
         self.entity_project.remove(capture_id);
@@ -9431,7 +9736,6 @@ impl AppState {
                         &active,
                         &project_root,
                         prompt,
-                        &issue.agents,
                     ));
                 let persisted = self.finish_run_mutation(run_id.to_string(), active);
                 persisted?;
@@ -10376,8 +10680,10 @@ impl AppState {
 
     /// One page of the history no load read, straight off the store.
     ///
-    /// Asks for one item more than the page, which is how it knows whether
-    /// there is anything above without counting the conversation.
+    /// Measured in conversation exactly as a resident page is — the limit buys
+    /// messages and the events that call the human, the activity between them
+    /// rides along — and the store answers `has_more` for items of any kind
+    /// below what it shipped, so a client's backward walk still abuts.
     fn stored_thread_page(
         &self,
         thread: &crate::thread::Thread,
@@ -10388,13 +10694,9 @@ impl AppState {
             .store
             .as_ref()
             .ok_or("this conversation's history is not stored")?;
-        let mut page = store
-            .thread_page(&thread.agent.id, before_sequence, limit + 1)
+        let (page, has_more) = store
+            .thread_conversation_page(&thread.agent.id, before_sequence, limit)
             .map_err(|error| format!("conversation store: {error}"))?;
-        let has_more = page.len() > limit;
-        if has_more {
-            page.remove(0);
-        }
         Ok(thread.wire_value_of_page(&page.iter().collect::<Vec<_>>(), has_more))
     }
 
@@ -10472,6 +10774,15 @@ impl AppState {
         // that follows one — waking the agent, resuming a parked entity, the
         // inbox anchor — has to happen exactly as it does for a typed one.
         let choice = parse_option_choice(params)?;
+        // And an interrupt is a flag on the message rather than a verb of its
+        // own, for the same reason: Build never interrupts without a turn to
+        // follow, so a separate call would always be followed by this one a
+        // moment later — with a window between the two in which the child
+        // starts a fresh turn or the agent calls `done`. Absent is false.
+        let interrupt = params
+            .get("interrupt")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         if let Some(active) = self.plans.get(&entity_id) {
             if active.plan.state.is_terminal() {
                 return Err(format!(
@@ -10543,12 +10854,16 @@ impl AppState {
                 // must therefore wake that implementation agent — and the same
                 // reply rule applies to the run it wakes.
                 let run_id = implementation.run_id;
+                // The named agent has to be on this roster; the message was
+                // just appended to its conversation and the turn is addressed
+                // to it.
+                active.agents.resolve(Some(&agent_id))?;
                 self.tell_the_agent_a_message_is_waiting(
                     &implementation.worktree_path,
                     &implementation.agent_id,
                     &run_id,
                     implementation.model_choice,
-                    &active.agents.resolve(Some(&agent_id))?.thread,
+                    interrupt,
                 );
                 parked_implementation = self
                     .runs
@@ -10567,7 +10882,7 @@ impl AppState {
                     &agent_id,
                     &entity_id,
                     agent.choice.clone(),
-                    &agent.thread,
+                    interrupt,
                 );
             }
             let (view, persisted) =
@@ -10640,7 +10955,7 @@ impl AppState {
                     &agent_id,
                     &entity_id,
                     agent_choice,
-                    &issue.agents,
+                    interrupt,
                 );
                 let persisted = self.finish_plan_mutation(issue_id, issue);
                 persisted?;
@@ -10671,13 +10986,14 @@ impl AppState {
                     .apply(crate::run::RunEvent::Reply)
                     .expect("Reply is legal from every parked run state");
             }
-            let agent = active.agents.resolve(Some(&agent_id))?;
+            // As above: the agent named is the one the message was appended to.
+            active.agents.resolve(Some(&agent_id))?;
             self.tell_the_agent_a_message_is_waiting(
                 &active.worktree.path,
                 &agent_id,
                 &entity_id,
                 agent_choice,
-                &agent.thread,
+                interrupt,
             );
             let (view, persisted) =
                 self.answer_run_mutation(entity_id, active, thread_detail(params));
@@ -10703,22 +11019,24 @@ impl AppState {
     /// Before this, a message to an agent whose TUI had exited sat on the
     /// thread forever — the entity read as idle, the human waited, and nothing
     /// was listening.
+    ///
+    /// `interrupt` asks the live session to stop the turn it is running before
+    /// this message is handed over. It is dropped without an error on the cold
+    /// path: a message that has to SPAWN an agent has no turn to stop, and an
+    /// interrupt of nothing is not a failure but a stronger form of what was
+    /// asked for.
     fn tell_the_agent_a_message_is_waiting(
         &mut self,
         root: &std::path::Path,
         agent_id: &str,
         owner: &str,
         model_choice: ModelChoice,
-        thread: &crate::thread::Thread,
+        interrupt: bool,
     ) {
         let root = Self::canonical_root(root);
         let key = TabKey::agent(&root, agent_id);
-        if self
-            .tabs
-            .get(&key)
-            .is_some_and(|tab| tab.live && !tab.session.has_exited())
-        {
-            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner);
+        if self.tabs.get(&key).is_some_and(Tab::session_is_live) {
+            nudge_live_agent_tab(&self.tabs, &root, agent_id, owner, interrupt);
             return;
         }
         // Two harnesses in one checkout would both report `done` for the same
@@ -10744,9 +11062,10 @@ impl AppState {
             // already durable on the thread, so the harness is told to read
             // them — wrapped, when it is a new process, in the catch-up packet
             // it has no other way to reconstruct.
-            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "revive",
+            wants_catch_up: true,
         });
     }
 
@@ -12833,12 +13152,10 @@ impl AppState {
             owner: run_id.clone(),
             agent_id: agent_id.clone(),
             model_choice,
-            cold: crate::orchestrator::conversation_prompt(
-                NEW_THREAD_MESSAGES_PROMPT,
-                &agent.thread,
-            ),
+            cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
             warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             phase: "dispatch",
+            wants_catch_up: true,
         });
         let persisted = self.finish_run_mutation(run_id.clone(), active);
         persisted?;
@@ -13398,18 +13715,23 @@ impl AppState {
             .max()
     }
 
-    /// When the agent working in this checkout last painted, or `None` when no
-    /// agent has ever run there. Read off the PTY's own idle clock, which is
-    /// the only record of it.
+    /// When the agent working in this checkout was last heard from, or `None`
+    /// when no agent has ever run there. Read off the session's own quiet
+    /// clock, which is the only record of it — bytes painted for a terminal,
+    /// protocol events read for a carrier that has none.
     fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
         let root = Self::canonical_root(root);
-        let idle = self
+        let quiet = self
             .tabs
             .iter()
-            .filter(|(key, tab)| key.root == root && key.is_agent() && !tab.session.has_exited())
-            .map(|(_, tab)| tab.session.idle_for())
+            .filter(|(key, tab)| {
+                key.root == root
+                    && key.is_agent()
+                    && !matches!(tab.session.status(), AgentStatus::Ended { .. })
+            })
+            .map(|(_, tab)| tab.session.quiet_for())
             .min()?;
-        let painted = time::OffsetDateTime::now_utc() - idle;
+        let painted = time::OffsetDateTime::now_utc() - quiet;
         painted
             .format(&time::format_description::well_known::Rfc3339)
             .ok()
@@ -15949,24 +16271,50 @@ fn parse_message_anchor(
 /// No tab, or a tab whose process has ended, swallows the nudge, and a write
 /// failure against an exiting harness is logged, never surfaced: the message is
 /// durable either way.
+///
+/// Unlike [`deliver`], this speaks from under the app-wide state lock — it
+/// reads the caller's own tab registry — which is why
+/// [`AgentSession::send_turn`] must return promptly. A carrier that blocked
+/// there would stall every RPC and every terminal pump behind one nudge.
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
     root: &std::path::Path,
     agent_id: &str,
     entity_id: &str,
+    interrupt: bool,
 ) {
     let Some(tab) = tabs.get(&TabKey::agent(&AppState::canonical_root(root), agent_id)) else {
         return;
     };
-    if !tab.live || tab.session.has_exited() {
+    if !tab.session_is_live() {
         return;
     }
-    // Through write_prompt, not a raw write with a hardcoded Enter: the nudge is
-    // a turn, so it must honor the harness's SubmitKey and paste framing exactly
-    // as a dispatched prompt does. Hardcoding \r submits into a SubmitKey::None
-    // harness that never asked for it, and leaves the notification unframed —
-    // safe today only because it happens to be one line.
-    if let Err(error) = tab.session.write_prompt(NEW_THREAD_MESSAGES_PROMPT) {
+    // Stop first, then hand over — the order is the whole point of the flag
+    // riding the message rather than arriving as a verb of its own, which would
+    // leave a window in which the child starts a fresh turn or the agent calls
+    // `done`. Both calls return promptly by contract, which is what lets them
+    // speak from under the state lock.
+    //
+    // A refusal is not a failed post. Where the carrier cannot stop a turn —
+    // a capability lost between the digest the client read and the post it sent
+    // — the message is delivered as an ordinary queued turn, which reaches the
+    // running turn at its next step boundary anyway. The alternative is an
+    // error the human must read for a difference they cannot act on and did not
+    // cause.
+    if interrupt {
+        if let Err(refused) = tab.session.interrupt() {
+            eprintln!("thread.post {entity_id}: interrupt refused: {refused}");
+        }
+    }
+    // As a turn, not a raw write with a hardcoded Enter: the nudge is one of
+    // Build's turns, so it travels the way every other one does and the carrier
+    // decides what that means. Hardcoding \r submits into a SubmitKey::None
+    // harness that never asked for it, leaves the notification unframed — and
+    // says nothing at all to a carrier with no keyboard.
+    if let Err(error) = tab
+        .session
+        .send_turn(&Turn::new(NEW_THREAD_MESSAGES_PROMPT))
+    {
         eprintln!("thread.post {entity_id}: agent notify failed: {error}");
     }
 }
@@ -16181,21 +16529,23 @@ fn record_current_stage_started(
 /// does (the tab pump's EOF) or when Build kills it — never when the agent
 /// merely finishes a turn.
 fn finish_open_session(thread: &mut crate::thread::Thread, now: &str) {
-    let Some(session_id) = thread
-        .sessions
-        .iter()
-        .rev()
-        .find(|session| session.ended_at.is_none())
-        .map(|session| session.id.clone())
-    else {
+    let Some(session_id) = open_session_id(thread) else {
         return;
     };
     thread.finish_session(&session_id, now);
 }
 
-/// Whether one of an implementation's events travels to the Issue that owns
-/// it. Exactly the attention class: what needs the human is news wherever they
-/// are watching from, what merely reports progress belongs to the run.
+/// The conversation's open session, if one is open — the agent process
+/// speaking right now, which is what an event it produces belongs to.
+fn open_session_id(thread: &crate::thread::Thread) -> Option<String> {
+    thread
+        .sessions
+        .iter()
+        .rev()
+        .find(|session| session.ended_at.is_none())
+        .map(|session| session.id.clone())
+}
+
 /// What an issue's conversation says when the branch implementing it is gone
 /// and nothing was merged out of it. `how` is the way it went: abandoned by the
 /// user, deleted outside Build, finished off the board.
@@ -16206,6 +16556,16 @@ fn abandoned_branch_summary(branch: &str, how: &str) -> String {
     )
 }
 
+/// Whether one of an implementation's events travels to the Issue that owns
+/// it. Exactly the attention class: what needs the human is news wherever they
+/// are watching from, what merely reports progress belongs to the run.
+///
+/// Events only, because an outcome is no longer one: a report the agent made on
+/// a planned implementation is written straight onto the Issue's conversation
+/// as the agent's own message (`record_report_in_thread`, whose caller picks
+/// that conversation), which is the same timeline this mirror copies onto and
+/// the same one unread entry. What still travels this way is what Build
+/// observed about the implementation itself — an abandoned branch.
 fn run_outcome_mirrors_to_issue(event: crate::thread::ThreadEventKind) -> bool {
     event.class() == crate::thread::EventClass::Attention
 }
@@ -16258,33 +16618,46 @@ fn triage_override_summary(
     lines.join("\n\n")
 }
 
+/// How a report is written down.
+///
+/// An outcome the agent reported is a status on the agent's own message: it
+/// said this, so there is one record of it and the conversation carries it.
+/// An event is Build's own reading of the report — a triage pass nobody has to
+/// answer, a validation Build judged — which has no agent message to hang on.
+enum ReportRecord {
+    Outcome(crate::thread::MessageOutcome, String),
+    Event(crate::thread::ThreadEventKind, String),
+}
+
 fn record_report_in_thread(
     thread: &mut crate::thread::Thread,
     report: &DoneReport,
     orchestration_error: Option<&str>,
 ) {
     let now = now_rfc3339();
-    let (event, summary) = match orchestration_error {
-        Some(error) => (
-            crate::thread::ThreadEventKind::RunFailed,
+    let recorded = match orchestration_error {
+        // Still the agent's report, and still its outcome: Build's note about
+        // why it could not be applied rides the same body.
+        Some(error) => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Failed,
             format!(
                 "{}\n\nBuild could not apply the report: {error}",
                 report.summary
             ),
         ),
-        None if report.status == DoneStatus::Blocked => (
-            crate::thread::ThreadEventKind::Blocked,
+        None if report.status == DoneStatus::Blocked => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Blocked,
             report.summary.clone(),
         ),
         // A finished triage pass is not an agent handing work back: nothing
         // waits on it and nobody has to answer it. It updates the review
         // surface, and says so quietly.
-        None if report.phase == DonePhase::Triage => (
+        None if report.phase == DonePhase::Triage => ReportRecord::Event(
             crate::thread::ThreadEventKind::Triaged,
             report.summary.clone(),
         ),
-        None if report.status == DoneStatus::Failed => (
-            crate::thread::ThreadEventKind::RunFailed,
+        None if report.status == DoneStatus::Failed => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Failed,
             report.summary.clone(),
         ),
         None if report
@@ -16293,7 +16666,7 @@ fn record_report_in_thread(
             .as_ref()
             .is_some_and(|validation| !validation.passed) =>
         {
-            (
+            ReportRecord::Event(
                 crate::thread::ThreadEventKind::ReviewBlocked,
                 report
                     .outputs
@@ -16303,15 +16676,21 @@ fn record_report_in_thread(
                     .unwrap_or_else(|| report.summary.clone()),
             )
         }
-        _ => (crate::thread::ThreadEventKind::Done, report.summary.clone()),
+        _ => ReportRecord::Outcome(
+            crate::thread::MessageOutcome::Completed,
+            report.summary.clone(),
+        ),
     };
-    match event {
-        crate::thread::ThreadEventKind::Done => {
-            thread.post_completion(summary, report.outputs.completion_report.as_ref(), &now)
+    let completion = report.outputs.completion_report.as_ref();
+    match recorded {
+        ReportRecord::Outcome(outcome, summary) => {
+            thread.post_outcome(outcome, summary, completion, &now);
         }
-        _ => thread.push_event(event, Some(summary), None, None, &now),
+        ReportRecord::Event(event, summary) => {
+            thread.push_event(event, Some(summary), None, None, &now)
+        }
     }
-    if let Some(completion) = &report.outputs.completion_report {
+    if let Some(completion) = completion {
         thread.remember_completion(completion);
     }
 }
@@ -16635,7 +17014,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         s.tabs.insert(key.clone(), tab);
         (key, rx)
     };
-    spawn_tab_pump(state, key.clone(), rx);
+    spawn_tab_pumps(state, key.clone(), rx);
     Ok(json!({
         "term_id": key.tab_id,
         "kind": SHELL_TAB_KIND,
@@ -16665,7 +17044,7 @@ fn term_attach(
     // dupe across a reconnect.
     let mut s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(&term_id)?;
-    Ok(attach_to_tab(&mut s, &key, sender, cols, rows))
+    attach_to_tab(&mut s, &key, sender, cols, rows)
 }
 
 /// Report how far this client has applied a tab's output — the client half of
@@ -16688,7 +17067,11 @@ fn term_ack(
     let mut s = state.lock().unwrap();
     let key = s.tab_key_of_wire_id(&term_id)?;
     let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
-    tab.screen.ack(&term_id, sender.session_id(), cursor);
+    // A client that was never allowed to attach has nothing to acknowledge, so
+    // it hears the same refusal rather than acking into a screen that is not
+    // there.
+    let (_, screen) = tab.require_terminal_and_screen()?;
+    screen.ack(&term_id, sender.session_id(), cursor);
     Ok(json!({ "ok": true }))
 }
 
@@ -16714,6 +17097,10 @@ fn term_ack(
 /// entity or scope errors, and so does an entity with no worktree (an approved
 /// or abandoned plan): its disposable worktree is gone, so there is no worktree
 /// to host an agent and the surface renders its empty state instead.
+///
+/// It errors for an agent whose session has no terminal ([`no_terminal_here`]).
+/// A client that reads `has_terminal` never asks, and one that predates the
+/// field gets a sentence rather than a blank grid it will sit in forever.
 fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
@@ -16786,7 +17173,7 @@ fn agent_attach(
             "provider": Value::Null,
         }));
     }
-    Ok(attach_to_tab(s, &key, sender, cols, rows))
+    attach_to_tab(s, &key, sender, cols, rows)
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start
@@ -16846,9 +17233,10 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
                 // Only sent when something is actually waiting (below). A hand-
                 // started agent has no context, so it gets the cold form: the
                 // conversation protocol and the catch-up packet around the nudge.
-                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT, thread),
+                cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
                 phase: "start",
+                wants_catch_up: true,
             },
             thread.has_unread(),
         )
@@ -16915,21 +17303,13 @@ fn attach_to_tab(
     sender: &SessionSender,
     cols: u16,
     rows: u16,
-) -> Value {
+) -> Result<Value, String> {
     let tab = state
         .tabs
         .get_mut(key)
         .expect("the key came from the registry");
-    if tab.live && (tab.screen.cols != cols || tab.screen.rows != rows) {
-        let _ = tab.session.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        tab.screen.set_size(cols, rows);
-    }
-    tab.screen.register(sender);
+    let live = tab.live;
+    let wire_id = tab.wire_id();
     // Which harness is behind this screen. Null for a shell, and null from the
     // no-tab-yet branch above — a worktree nothing has run in has no answer, and
     // the client leads its start offer with its own default there instead.
@@ -16937,15 +17317,28 @@ fn attach_to_tab(
         TabRole::Agent { provider, .. } => Some(provider),
         TabRole::Shell => None,
     };
-    json!({
-        "term_id": tab.wire_id(),
-        "live": tab.live,
+    // Both verbs refuse here, because both end here: a session with no terminal
+    // has no snapshot to hand back and no viewport to be told about.
+    let (terminal, screen) = tab.require_terminal_and_screen()?;
+    if live && (screen.cols != cols || screen.rows != rows) {
+        let _ = terminal.resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        screen.set_size(cols, rows);
+    }
+    screen.register(sender);
+    Ok(json!({
+        "term_id": wire_id,
+        "live": live,
         "provider": provider,
-        "snapshot": tab.screen.snapshot(),
-        "cursor": tab.screen.total,
-        "cols": tab.screen.cols,
-        "rows": tab.screen.rows,
-    })
+        "snapshot": screen.snapshot(),
+        "cursor": screen.total,
+        "cols": screen.cols,
+        "rows": screen.rows,
+    }))
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
@@ -16983,15 +17376,15 @@ fn ensure_agent_tab(
                     &tab.role,
                     TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
                 );
-                if same_owner && tab.live && !tab.session.has_exited() {
+                if same_owner && tab.session_is_live() {
                     return Ok((tab.wire_id(), Spawned::Warm));
                 }
             }
             if s.agent_spawns_in_flight.contains(&key) {
                 None
             } else {
-                let carried = s.tabs.remove(&key).map(|dead| {
-                    dead.session.kill_and_reap();
+                let carried = s.tabs.remove(&key).and_then(|dead| {
+                    dead.session.end();
                     dead.screen
                 });
                 // A checkout outlives the entity that owned it — a planning
@@ -17014,8 +17407,10 @@ fn ensure_agent_tab(
                 for other in stale {
                     if let Some(tab) = s.tabs.remove(&other) {
                         let wire_id = tab.wire_id();
-                        tab.session.kill_and_reap();
-                        tab.screen.push_closed(&wire_id, "closed");
+                        tab.session.end();
+                        if let Some(screen) = &tab.screen {
+                            screen.push_closed(&wire_id, "closed");
+                        }
                     }
                 }
                 // A router session belongs to no project — deciding which one
@@ -17038,12 +17433,19 @@ fn ensure_agent_tab(
                 // A Build-owned tab respawned after a crash should always pick
                 // its own transcript back up, so the probe is unconditional too.
                 let continue_session = (s.transcript_probe)(&root, model_choice.provider);
+                // Sharper than the probe where the agent's last session left a
+                // name: `--resume <id>` reopens the exact conversation Build
+                // was speaking to, where `--continue` reopens the newest one in
+                // the checkout. Absent is never an error — the probe is what
+                // answers then, exactly as it did before this existed.
+                let resume_session_id = s.recorded_resume_id(owner, agent_id);
                 let session_token = uuid::Uuid::new_v4().to_string();
                 let spec = orch.agent_harness_spec(
                     agent_id,
                     &root,
                     model_choice,
                     continue_session,
+                    resume_session_id,
                     &session_token,
                 );
                 let size = orch.pty_size();
@@ -17095,22 +17497,25 @@ fn ensure_agent_tab(
             }
         };
         if let Some(screen) = carried {
-            // Reconnect is snapshot + cursor: a replacement process must never
-            // rewind that cursor, and clients already attached stay attached.
-            // The new PTY takes the retained screen's grid so the two agree.
-            let _ = tab.session.resize(PtySize {
-                rows: screen.rows,
-                cols: screen.cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
-            tab.screen = screen;
+            match tab.session.terminal() {
+                // Reconnect is snapshot + cursor: a replacement process must
+                // never rewind that cursor, and clients already attached stay
+                // attached. The new PTY takes the retained screen's grid so the
+                // two agree.
+                Some(terminal) => {
+                    let _ = terminal.resize(PtySize {
+                        rows: screen.rows,
+                        cols: screen.cols,
+                        pixel_width: 0,
+                        pixel_height: 0,
+                    });
+                    tab.screen = Some(screen);
+                }
+                // The replacement paints nothing, so the retained grid has
+                // nothing to become — see [`close_a_screen_with_no_terminal`].
+                None => close_a_screen_with_no_terminal(&screen, &key.tab_id),
+            }
         }
-        // An interactive TUI must be servicing its PTY before a turn is written
-        // into it, or the prompt lands on a startup screen.
-        tab.session
-            .ready_within(crate::orchestrator::HARNESS_READY_GRACE);
-
         let wire_id = tab.wire_id();
         {
             let mut s = state.lock().unwrap();
@@ -17138,30 +17543,58 @@ fn ensure_agent_tab(
                 })?
             });
             if let Some(waiting) = waiting {
-                let _ = tab.session.resize(PtySize {
-                    rows: waiting.rows,
-                    cols: waiting.cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                });
-                tab.screen.set_size(waiting.cols, waiting.rows);
-                for client in &waiting.attached {
-                    tab.screen.register(&client.sender);
+                match tab.require_terminal_and_screen() {
+                    Ok((terminal, screen)) => {
+                        let _ = terminal.resize(PtySize {
+                            rows: waiting.rows,
+                            cols: waiting.cols,
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                        screen.set_size(waiting.cols, waiting.rows);
+                        for client in &waiting.attached {
+                            screen.register(&client.sender);
+                        }
+                    }
+                    // There is no real screen to carry them onto — see
+                    // [`close_a_screen_with_no_terminal`].
+                    Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
                 }
             }
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
         }
-        spawn_tab_pump(state, key, rx);
+        spawn_tab_pumps(state, key, rx);
         return Ok((wire_id, Spawned::Fresh));
     }
 }
 
+/// What a delivery reports when the tab it just ensured is already gone.
+const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
+
+/// End a screen the spawn that was supposed to fill it can never fill.
+///
+/// Both screens `ensure_agent_tab` may be holding — the retained grid of the
+/// session being replaced, and the one clients that mounted the Agent tab early
+/// are waiting on — exist to be carried onto the new session's screen. A
+/// session with no terminal has none, so there is nothing to carry them to and
+/// the carry would drop their clients silently: attached to a grid nothing will
+/// ever paint, waiting on a basement that is never coming.
+///
+/// So they are told, the way [`AppState::retire_agent`] and the orphan reaper
+/// tell one. The rail reads `has_terminal: false` off the digest by then and
+/// stops offering the terminal; this is what closes the door for a client that
+/// was already through it.
+fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
+    screen.push_closed(term_id, "no_terminal");
+}
+
 /// The one pipe from Build to a worktree's agent.
 ///
-/// Ensures the tab exists, then submits exactly one turn through
-/// [`PtySession::write_prompt`] — the harness's own submit key and bracketed
-/// paste framing, never a raw write with a hardcoded `\r`. Which text travels
+/// Ensures the tab exists, then hands the agent exactly one turn — a value the
+/// carrier decides how to say, which for a PTY is the harness's own submit key
+/// and bracketed paste framing and never a raw write with a hardcoded `\r`.
+/// Which text travels
 /// is decided by whether the tab had to be spawned: `cold` for an agent with no
 /// context to read messages into, `warm` for one already in the conversation,
 /// whose messages are already durable in the thread for `read_unread_messages`
@@ -17184,27 +17617,33 @@ fn deliver(
         Spawned::Warm => warm,
     };
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
-    let mut s = state.lock().unwrap();
-    let tab = s
-        .tabs
-        .get_mut(&key)
-        .ok_or("the agent tab closed before its turn could be delivered")?;
-    if let Err(error) = tab.session.write_prompt(prompt) {
+    // The handle comes out of the registry so the turn travels with the
+    // app-wide state lock RELEASED: every RPC, every terminal pump and the idle
+    // sweep wait on that lock, and how long a carrier takes to accept a turn is
+    // its own business — a protocol write to a full pipe, an ack a harness
+    // answers late, the exit-race wait below.
+    let session = {
+        let s = state.lock().unwrap();
+        let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
+        Arc::clone(&tab.session)
+    };
+    if let Err(error) = session.send_turn(&Turn::new(prompt)) {
         // A harness that exits immediately still owns its tab: PTYs return EIO
         // once the child's side is closed, and the child closes it BEFORE the
         // OS makes its exit status reapable, so a single poll here races the
-        // kernel. The bounded wait covers that lag; a genuinely wedged PTY
+        // kernel. The bounded wait covers that lag; a genuinely wedged session
         // (live but unwritable) still surfaces its error.
-        if !tab
-            .session
-            .exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE)
-        {
+        if !session.exited_within(crate::orchestrator::PROMPT_WRITE_EXIT_GRACE) {
             return Err(error.to_string());
         }
     }
     // The quiescence clock restarts here: whatever the agent was silent about
-    // before, it now has something to answer for.
-    tab.last_delivered_at = Some(std::time::Instant::now());
+    // before, it now has something to answer for. A tab that closed while the
+    // turn was in flight has no clock left to restart — and the turn still
+    // travelled, so that is not a delivery failure to report.
+    if let Some(tab) = state.lock().unwrap().tabs.get_mut(&key) {
+        tab.last_delivered_at = Some(std::time::Instant::now());
+    }
     Ok((wire_id, spawned))
 }
 
@@ -17238,6 +17677,15 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
             *s.agent_turns_in_flight
                 .entry(turn.owner.clone())
                 .or_default() += 1;
+        }
+        // The one door every cold prompt passes: the conversation is read and
+        // closed onto the prompt HERE, so the packet carries what the store
+        // holds under the tail and what was said while the turn waited.
+        let mut queued = queued;
+        for turn in &mut queued {
+            if turn.wants_catch_up {
+                turn.cold = s.cold_prompt_with_catch_up(&turn.owner, &turn.agent_id, &turn.cold);
+            }
         }
         queued
     };
@@ -17278,6 +17726,17 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     }
 }
 
+/// Start whichever pump this tab's session needs: the byte pump for a terminal,
+/// the activity pump for a session that reports its own work.
+///
+/// One or the other and never both, because the two capabilities are
+/// alternatives — and never neither, because the death rites hang off a stream
+/// closing ([`open_session`] refuses a session with no stream at all).
+fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, output: SessionOutput) {
+    spawn_tab_pump(state, key.clone(), output.bytes);
+    spawn_activity_pump(state, key, output.activity);
+}
+
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
@@ -17292,7 +17751,16 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
 /// One pump per tab for the tab's whole life: with one PTY per worktree there
 /// is no phase boundary to generation-guard against — a missing tab is the
 /// only stop condition.
-fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::Receiver<Vec<u8>>) {
+fn spawn_tab_pump(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    rx: Option<broadcast::Receiver<Vec<u8>>>,
+) {
+    // No terminal, no bytes: the pump exists to paint a stream into a grid, and
+    // a session that offers none has nothing for it to do.
+    let Some(mut rx) = rx else {
+        return;
+    };
     if tokio::runtime::Handle::try_current().is_err() {
         // Sync unit tests drive the registry without a runtime; there is
         // nothing to spawn the pump onto and nothing attached to feed.
@@ -17306,18 +17774,23 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                 return;
             };
             let term_id = tab.wire_id();
-            tab.screen.parser = vt100::Parser::new(tab.screen.rows, tab.screen.cols, 2000);
-            tab.screen.pending.clear();
+            // A session with no terminal produces no bytes, so there is nothing
+            // to pump: the pump is only ever spawned beside a PTY.
+            let Some(screen) = tab.screen.as_mut() else {
+                return;
+            };
+            screen.parser = vt100::Parser::new(screen.rows, screen.cols, 2000);
+            screen.pending.clear();
             // This reset resyncs every attached client, so a snapshot a previous
             // session's flood left owing is already paid.
-            tab.screen.snapshot_due = false;
+            screen.snapshot_due = false;
             let payload = json!({
                 "type": "term.reset",
                 "term_id": term_id,
-                "data": tab.screen.snapshot(),
-                "cursor": tab.screen.total,
+                "data": screen.snapshot(),
+                "cursor": screen.total,
             });
-            tab.screen.push_to_keeping_up(payload);
+            screen.push_to_keeping_up(payload);
             term_id
         };
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
@@ -17328,7 +17801,8 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                     Ok(chunk) => {
                         let mut s = state.lock().unwrap();
                         let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        tab.screen.process(&chunk);
+                        let Some(screen) = tab.screen.as_mut() else { return; };
+                        screen.process(&chunk);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
@@ -17343,8 +17817,10 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                         match ended_agent {
                             Some((owner, agent_id)) => {
                                 tab.live = false;
-                                tab.screen.flush(&term_id);
-                                tab.screen.push_closed(&term_id, "agent_session_ended");
+                                if let Some(screen) = tab.screen.as_mut() {
+                                    screen.flush(&term_id);
+                                    screen.push_closed(&term_id, "agent_session_ended");
+                                }
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -17353,8 +17829,10 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                             }
                             None => {
                                 let Some(tab) = s.tabs.remove(&key) else { return; };
-                                tab.session.kill_and_reap();
-                                tab.screen.push_closed(&term_id, "exited");
+                                tab.session.end();
+                                if let Some(screen) = &tab.screen {
+                                    screen.push_closed(&term_id, "exited");
+                                }
                             }
                         }
                         return;
@@ -17363,11 +17841,138 @@ fn spawn_tab_pump(state: &Arc<Mutex<AppState>>, key: TabKey, mut rx: broadcast::
                 _ = flush.tick() => {
                     let mut s = state.lock().unwrap();
                     let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                    tab.screen.flush(&term_id);
+                    let Some(screen) = tab.screen.as_mut() else { return; };
+                    screen.flush(&term_id);
                 }
             }
         }
     });
+}
+
+/// Pump one session's reported activity into the conversation it speaks in.
+///
+/// The mirror of [`spawn_tab_pump`] for a carrier that has no bytes. Where the
+/// byte pump paints a stream into a grid, this one posts what the agent
+/// reported doing as the four activity kinds — reasoning, tool calls, tool
+/// results and narration — which are conversation, classed `Status`: they move
+/// no unread count, reach no Issue conversation and pull nobody in.
+///
+/// It owes the same death rites, minus the screen's half: on close the tab goes
+/// not live and the conversation's session lineage ends. There is no
+/// `term.closed` to push because there is no screen — the step-3 refusals
+/// already keep every client off one — and the tab is RETAINED for the same
+/// reason the byte pump retains an agent's, so the rail still shows the agent
+/// that was here.
+fn spawn_activity_pump(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    rx: Option<broadcast::Receiver<crate::harness::AgentActivity>>,
+) {
+    let Some(mut rx) = rx else {
+        return;
+    };
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Sync unit tests drive the registry without a runtime; there is
+        // nothing to spawn the pump onto.
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(activity) => {
+                    let mut s = state.lock().unwrap();
+                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                        return;
+                    };
+                    note_announced_conversation(&mut s, &key, &owner, &agent_id);
+                    s.record_agent_activity(&owner, &agent_id, &activity);
+                }
+                // A turn that called forty tools while the lock was busy is a
+                // reader problem, not a reason to stop reading: what is lost is
+                // lost, and the events after it still belong in the timeline.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => {
+                    let mut s = state.lock().unwrap();
+                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                        return;
+                    };
+                    if let Some(tab) = s.tabs.get_mut(&key) {
+                        tab.live = false;
+                    }
+                    match announced_conversation(&s, &key) {
+                        Some(_) => note_announced_conversation(&mut s, &key, &owner, &agent_id),
+                        // A session that ended having never announced a
+                        // conversation of its own is the shape of one spawned
+                        // with an id that no longer resolves: the child exits
+                        // without an init line. Clearing sends the next spawn
+                        // back to the transcript probe, so one dead id costs
+                        // one restart rather than every restart — and where the
+                        // child died at startup for an unrelated reason, the
+                        // probe is what would have answered anyway.
+                        None => s.record_agent_resume_id(&owner, &agent_id, None),
+                    }
+                    // The process is what a session IS, so this is where the
+                    // conversation's lineage closes — and where a turn the dead
+                    // process was holding is closed, so the row stops reading as
+                    // working.
+                    s.record_agent_session_end(&owner, &agent_id);
+                    return;
+                }
+            }
+        }
+    });
+}
+
+/// The name the session in `key`'s tab has given its conversation, or `None`
+/// for a carrier that names none and for one that has not announced yet.
+fn announced_conversation(state: &AppState, key: &TabKey) -> Option<String> {
+    state.tabs.get(key)?.session.session_id()
+}
+
+/// Keep the agent's record naming the conversation its live session is having.
+///
+/// The activity pump is the capture point because it is the only task that
+/// wakes on this carrier's own events, and it already resolves the agent and
+/// holds the state lock. Compared on every wake and written only when it moved,
+/// so a session that announces once costs one write however many events it goes
+/// on to report.
+///
+/// An announcement that has not arrived leaves the record alone: what it
+/// carries is the last session's name, which is exactly what `--resume` should
+/// use if this one dies before saying its own.
+fn note_announced_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(announced) = announced_conversation(state, key) else {
+        return;
+    };
+    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(announced.as_str()) {
+        return;
+    }
+    state.record_agent_resume_id(owner, agent_id, Some(announced));
+}
+
+/// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
+/// the tab is gone or was never an agent's.
+fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
+    match &state.tabs.get(key)?.role {
+        TabRole::Agent {
+            owner, agent_id, ..
+        } => Some((owner.clone(), agent_id.clone())),
+        TabRole::Shell => None,
+    }
+}
+
+/// The conversation event one reported activity becomes. The four kinds are the
+/// same four, named once here so the mapping cannot drift.
+fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::thread::ThreadEventKind {
+    use crate::harness::AgentActivity;
+    use crate::thread::ThreadEventKind;
+    match activity {
+        AgentActivity::Reasoning { .. } => ThreadEventKind::Reasoning,
+        AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
+        AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
+        AgentActivity::Narration { .. } => ThreadEventKind::Narration,
+    }
 }
 
 /// Start a deterministic agent output stream: register it, then spawn a background
@@ -17472,7 +18077,8 @@ mod tests {
     use std::process::Command;
 
     use crate::harness::claude;
-    use crate::pty::PtySession;
+    use crate::harness::{AgentSession, HarnessError, Turn};
+    use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -17558,6 +18164,22 @@ mod tests {
             capture_login_path("/nonexistent-shell-for-test", Duration::from_secs(5)),
             None
         );
+    }
+
+    /// The grid a tab's terminal paints into. Every tab a test spawns has one:
+    /// only a hand-built terminal-free session does not, and no test that
+    /// speaks about a screen owns one of those.
+    fn screen_of(tab: &Tab) -> &TermScreen {
+        tab.screen
+            .as_ref()
+            .expect("a tab spawned in a PTY has a screen")
+    }
+
+    /// The same grid, for a test that attaches a client to it.
+    fn screen_of_mut(tab: &mut Tab) -> &mut TermScreen {
+        tab.screen
+            .as_mut()
+            .expect("a tab spawned in a PTY has a screen")
     }
 
     fn req(method: &str, params: Value) -> Frame {
@@ -17895,7 +18517,7 @@ mod tests {
     fn tab_pid(state: &Arc<Mutex<AppState>>, wire_id: &str) -> Option<u32> {
         let s = state.lock().unwrap();
         let key = s.tab_key_of_wire_id(wire_id).ok()?;
-        s.tabs[&key].session.pid()
+        agent_pid(&s.tabs[&key])
     }
 
     /// True once `pid` is fully gone from the process table (killed AND reaped —
@@ -18304,7 +18926,7 @@ mod tests {
         let key = first_agent_key(&AppState::canonical_root(&root), "run-unclosable");
         let tab = s.tabs.get(&key).expect("the agent tab is still registered");
         assert!(tab.live, "and its session was never killed");
-        assert!(!tab.session.has_exited());
+        assert!(tab.session_is_live());
     }
 
     /// A user terminal is the user's own login shell and nothing else. The
@@ -18480,7 +19102,7 @@ mod tests {
         else {
             return String::new();
         };
-        String::from_utf8_lossy(&b64decode(&tab.screen.snapshot()).unwrap()).into_owned()
+        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot()).unwrap()).into_owned()
     }
 
     /// Poll the agent tab's screen until it shows `needle` (the pump feeds it),
@@ -18650,6 +19272,91 @@ mod tests {
         assert_eq!(state.lock().unwrap().tabs.len(), 1);
     }
 
+    /// A session that answers what the app-wide state lock was doing at the
+    /// moment its turn arrived.
+    ///
+    /// It cannot own the state — the state owns the tab that owns the session —
+    /// so it holds a `Weak` and upgrades it for the one question it asks.
+    struct LockProbingSession {
+        state: std::sync::Weak<Mutex<AppState>>,
+        state_was_free: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl AgentSession for LockProbingSession {
+        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+            let state = self.state.upgrade().expect("the daemon outlives the turn");
+            // `try_lock` on a std mutex fails for the thread that already holds
+            // it, so this reads the DELIVERY's own lock, not a race with some
+            // other caller's.
+            self.state_was_free.store(
+                state.try_lock().is_ok(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
+    }
+
+    /// The turn travels with the app-wide state lock RELEASED.
+    ///
+    /// Every RPC, every terminal pump and the idle sweep wait on that lock, so
+    /// a carrier that takes its time accepting a turn — a protocol write to a
+    /// full pipe, an ack the harness answers late — would stall the whole
+    /// daemon if the turn were handed over under it. `AgentSession::send_turn`
+    /// promises callers they may take that time; this is where the promise is
+    /// kept, and it is kept for the exit-race wait on the failure path too.
+    #[test]
+    fn a_turn_travels_with_the_state_lock_released() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-lock");
+        let agent_id = crate::agent::derived_agent_id("run-lock");
+        let canonical = AppState::canonical_root(&root);
+        let state_was_free = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut tab = terminal_free_agent_tab(&canonical, "run-lock", &agent_id);
+            tab.session = Arc::new(LockProbingSession {
+                state: Arc::downgrade(&state),
+                state_was_free: Arc::clone(&state_was_free),
+            });
+            let mut s = state.lock().unwrap();
+            s.tabs.insert(TabKey::agent(&canonical, &agent_id), tab);
+        }
+
+        let (_, spawned) = deliver(
+            &state,
+            &root,
+            "run-lock",
+            &agent_id,
+            &ModelChoice::default(),
+            "COLD-CONTEXT-PROMPT",
+            "WARM-NUDGE-PROMPT",
+        )
+        .expect("the live tab takes the turn");
+
+        assert_eq!(spawned, Spawned::Warm, "the tab was already alive");
+        assert!(
+            state_was_free.load(std::sync::atomic::Ordering::Relaxed),
+            "a delivery must not hold the app-wide state lock across send_turn"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&TabKey::agent(&canonical, &agent_id)]
+                .last_delivered_at
+                .is_some(),
+            "the quiescence clock still restarts on the delivered turn"
+        );
+    }
+
     /// The conversation's open session for `owner`, if it has one.
     fn open_session_count(state: &Arc<Mutex<AppState>>, owner: &str) -> usize {
         state.lock().unwrap().runs[owner]
@@ -18689,6 +19396,7 @@ mod tests {
                     cold: "COLD-TURN".into(),
                     warm: "WARM-TURN".into(),
                     phase: "build",
+                    wants_catch_up: false,
                 });
         };
 
@@ -18757,10 +19465,11 @@ mod tests {
                 cold: String::new(),
                 warm: String::new(),
                 phase: "build",
+                wants_catch_up: false,
             });
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while open_session_count(&state, "run-eof") > 0 {
@@ -18846,7 +19555,7 @@ mod tests {
             "a turn in flight is the row working"
         );
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let row = loop {
@@ -18899,7 +19608,7 @@ mod tests {
                 agent_id: agent_id.clone(),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            &warm_tui_spec(),
             agent_tab_id(&agent_id),
             root.clone(),
             120,
@@ -18908,7 +19617,7 @@ mod tests {
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(state, key.clone(), rx);
+        spawn_tab_pumps(state, key.clone(), rx);
         (agent_id, key)
     }
 
@@ -18933,9 +19642,7 @@ mod tests {
             second.thread.read_unread("2026-08-15T10:00:03Z");
         }
 
-        state.lock().unwrap().tabs[&second_key]
-            .session
-            .kill_and_reap();
+        state.lock().unwrap().tabs[&second_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
@@ -18995,7 +19702,7 @@ mod tests {
             assert_eq!(run.agents.working_since(), None, "the reply hands back");
         }
 
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
 
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while state.lock().unwrap().tabs[&tab_key].live {
@@ -19149,7 +19856,7 @@ mod tests {
 
     /// The prompt-write race, end to end: a harness that exits instantly closes
     /// its PTY (the write fails with EIO) *before* the OS makes its exit status
-    /// reapable, so a single `has_exited` poll says "running". That must not
+    /// reapable, so a single status poll says "running". That must not
     /// fail the delivery — the tab is still the agent's tab, and the crash is
     /// the idle monitor's to report, not the delivery's.
     #[tokio::test]
@@ -19318,7 +20025,7 @@ mod tests {
             effort: None,
         };
 
-        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, "token-42");
+        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, None, "token-42");
         assert_eq!(spec.binary, "claude");
         let args = spec.args.join(" ");
         assert!(
@@ -19334,10 +20041,10 @@ mod tests {
             spec.env
         );
         // A replaced tab picks its own conversation back up.
-        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, "token-43");
+        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, None, "token-43");
         assert!(resumed.args.join(" ").contains("--continue"));
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, "token-42");
+        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, None, "token-42");
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
         assert!(
@@ -19353,7 +20060,7 @@ mod tests {
             "{args}"
         );
         assert!(!args.ends_with("resume --last"), "{args}");
-        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, "token-43");
+        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, None, "token-43");
         assert!(resumed.args.join(" ").ends_with("resume --last"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -19502,8 +20209,8 @@ mod tests {
             s.tabs
                 .values()
                 .find(|tab| tab.wire_id() == wire_id)
+                .map(screen_of)
                 .expect("the tab is still registered")
-                .screen
                 .attached
                 .iter()
                 .map(|client| client.sender.session_id().to_string())
@@ -21263,6 +21970,21 @@ mod tests {
         TabKey::agent(root, &crate::agent::derived_agent_id(entity_id))
     }
 
+    /// The terminal a tab's session offers. Tests are the only place that
+    /// reaches for one without a client asking: the daemon goes through
+    /// [`Tab::require_terminal`], which says why when there is none.
+    fn agent_terminal(tab: &Tab) -> &dyn TerminalView {
+        tab.session
+            .terminal()
+            .expect("a PTY session offers a terminal")
+    }
+
+    /// The OS process behind a tab, asked through the terminal that owns it —
+    /// a process id is the basement's, and no other carrier has one to give.
+    fn agent_pid(tab: &Tab) -> Option<u32> {
+        tab.session.terminal().and_then(TerminalView::pid)
+    }
+
     /// [`planned_run_in_review`] over the frame handler — the entry point that
     /// actually delivers the turn each verb queues. A conversation only gains
     /// its session lineage when a turn is delivered COLD (a new agent process),
@@ -21527,10 +22249,11 @@ mod tests {
         );
         let queued = &state.pending_agent_turns[0];
         assert_eq!(queued.owner, issue_id);
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Start with the endpoint."),
-            "the message that started the session is in its prompt: {}",
-            queued.cold
+            delivered.contains("Start with the endpoint."),
+            "the message that started the session is in the prompt it is handed: {delivered}"
         );
 
         // A second message steers the session it already has; it never mints a
@@ -22417,6 +23140,19 @@ mod tests {
             .unwrap();
         assert!(catalog.find("first-half") < catalog.find("second-half"));
         assert!(recovery_turn.warm.contains("read_unread_messages"));
+        // A warm recovery is a live process that lived this conversation, and
+        // the protocol block it keeps tells it to read what it missed — so the
+        // packet is the cold half's alone, and is composed at delivery.
+        assert!(
+            !recovery_turn.warm.contains("Catch-up packet"),
+            "{}",
+            recovery_turn.warm
+        );
+        assert!(
+            !recovery_turn.cold.contains("Catch-up packet"),
+            "{}",
+            recovery_turn.cold
+        );
         assert!(issue_view["result"]["thread"]["items"]
             .as_array()
             .unwrap()
@@ -23582,14 +24318,15 @@ mod tests {
             queued.warm, NEW_THREAD_MESSAGES_PROMPT,
             "an agent already in the conversation is only told to read the thread"
         );
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains(NEW_THREAD_MESSAGES_PROMPT)
-                && queued.cold.contains("rename the symbol")
-                && queued.cold.contains("Ordered Issue stage-plan catalog")
-                && queued.cold.find("\n- first-half").unwrap()
-                    < queued.cold.find("\n- second-half").unwrap(),
-            "a cold agent gets the run context, ordered stage catalog, AND the reviewer's words: {}",
-            queued.cold
+            delivered.contains(NEW_THREAD_MESSAGES_PROMPT)
+                && delivered.contains("rename the symbol")
+                && delivered.contains("Ordered Issue stage-plan catalog")
+                && delivered.find("\n- first-half").unwrap()
+                    < delivered.find("\n- second-half").unwrap(),
+            "a cold agent gets the run context, ordered stage catalog, AND the reviewer's              words: {delivered}"
         );
         let structured = state.handle(req(
             "run.request_changes",
@@ -24006,12 +24743,12 @@ mod tests {
         let key = first_agent_key(&root, &run_id);
         let first_stage_pid = {
             let s = state.lock().unwrap();
-            s.tabs
-                .get(&key)
-                .expect("the first stage's turns opened the worktree's agent")
-                .session
-                .pid()
-                .expect("a live harness has a pid")
+            agent_pid(
+                s.tabs
+                    .get(&key)
+                    .expect("the first stage's turns opened the worktree's agent"),
+            )
+            .expect("a live harness has a pid")
         };
 
         let armed = call(
@@ -24033,7 +24770,7 @@ mod tests {
             "the run is building the stage run-all dispatched"
         );
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_stage_pid),
             "the agent that built stage one is the one asked to build stage two"
         );
@@ -24074,11 +24811,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("dispatching a run opens the worktree's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
 
         let next = call(
@@ -24089,7 +24823,7 @@ mod tests {
         assert_eq!(next["ok"], true, "{next:?}");
         let s = state.lock().unwrap();
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_pid),
             "every phase must reach the process the dispatch woke"
         );
@@ -24140,11 +24874,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("a change request opens the worktree's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
 
         let second = call(
@@ -24158,7 +24889,7 @@ mod tests {
         let s = state.lock().unwrap();
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(first_pid),
             "the second request must reach the process the first one woke"
         );
@@ -24190,22 +24921,21 @@ mod tests {
             got["result"]["state"], "review",
             "an out-of-phase report moves nothing: {got:?}"
         );
-        let events: Vec<&Value> = got["result"]["thread"]["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|item| item["type"] == "event")
-            .collect();
+        let items = got["result"]["thread"]["items"].as_array().unwrap();
         assert!(
-            events.iter().any(|e| {
-                e["data"]["event"] == "done"
-                    && e["data"]["summary"] == "Tidied the imports you mentioned"
+            items.iter().any(|item| {
+                item["type"] == "message"
+                    && item["data"]["outcome"] == "completed"
+                    && item["data"]["body"] == "Tidied the imports you mentioned"
             }),
-            "the report is recorded: {events:?}"
+            "the report is recorded: {items:?}"
         );
         assert!(
-            !events.iter().any(|e| e["data"]["event"] == "run_failed"),
-            "a report Build cannot apply is not a failure: {events:?}"
+            !items
+                .iter()
+                .any(|item| item["data"]["event"] == "run_failed"
+                    || item["data"]["outcome"] == "failed"),
+            "a report Build cannot apply is not a failure: {items:?}"
         );
     }
 
@@ -24985,7 +25715,7 @@ mod tests {
                 .expect("dispatching a stage opens the worktree's agent");
             let agent_id = &s.runs[&run_id].agents.first().id;
             (
-                tab.session.pid().expect("a live harness has a pid"),
+                agent_pid(tab).expect("a live harness has a pid"),
                 // The capability is minted per AGENT: that is who reports.
                 s.mcp_session_tokens[agent_id].clone(),
             )
@@ -25029,7 +25759,7 @@ mod tests {
             StageProgressState::Validating
         );
         assert_eq!(
-            s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+            s.tabs.get(&key).and_then(agent_pid),
             Some(build_pid),
             "the agent that built the stage is the one asked to validate it"
         );
@@ -25225,11 +25955,8 @@ mod tests {
                 .tabs
                 .get(&key)
                 .expect("authoring a plan opens the primary checkout's agent");
-            assert!(
-                tab.live && !tab.session.has_exited(),
-                "the plan's agent is running"
-            );
-            tab.session.pid().expect("a live harness has a pid")
+            assert!(tab.session_is_live(), "the plan's agent is running");
+            agent_pid(tab).expect("a live harness has a pid")
         };
         // The scripted agent would answer each verb itself and drive the plan
         // straight back to its gate; from here it must stay where a verb puts it.
@@ -25249,7 +25976,7 @@ mod tests {
             assert_eq!(done["ok"], true, "{method}: {done:?}");
             let s = state.lock().unwrap();
             assert_eq!(
-                s.tabs.get(&key).and_then(|tab| tab.session.pid()),
+                s.tabs.get(&key).and_then(agent_pid),
                 Some(drafting_pid),
                 "{method} must reach the process that authored the plan"
             );
@@ -25334,8 +26061,11 @@ mod tests {
         );
     }
 
+    /// The record of a reported completion is the agent's own message: the
+    /// summary it wrote, the outcome it reported, and the structured report
+    /// riding the message that carries them.
     #[test]
-    fn a_completed_build_report_is_one_done_event_carrying_the_completion_report() {
+    fn a_completed_build_report_is_one_agent_message_carrying_the_completion_report() {
         let mut thread = crate::thread::Thread::new("run-completion");
         record_report_in_thread(
             &mut thread,
@@ -25357,18 +26087,23 @@ mod tests {
         );
 
         assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
-        let crate::thread::ThreadItem::Event(done) = &thread.items[0] else {
-            panic!("the completion is an event: {:?}", thread.items);
+        let crate::thread::ThreadItem::Message(completion) = &thread.items[0] else {
+            panic!("the completion is a message: {:?}", thread.items);
         };
-        assert_eq!(done.event, crate::thread::ThreadEventKind::Done);
+        assert_eq!(completion.role, crate::thread::MessageRole::Agent);
         assert_eq!(
-            done.summary.as_deref(),
-            Some("Fixed and deployed the renderer.")
+            completion.outcome,
+            Some(crate::thread::MessageOutcome::Completed)
         );
-        let carried = done
+        assert!(
+            completion.done,
+            "the flag an older client reads keeps its meaning"
+        );
+        assert_eq!(completion.body, "Fixed and deployed the renderer.");
+        let carried = completion
             .completion_report
-            .as_ref()
-            .expect("the report rides the event");
+            .as_deref()
+            .expect("the report rides the message");
         assert_eq!(
             carried.critical_files,
             vec!["src/render.rs — the new draw path"]
@@ -25379,10 +26114,14 @@ mod tests {
             Some(carried),
             "a cold session still finds the newest report on the thread"
         );
+        assert_eq!(thread.items[0].attention_reason(), Some("done"));
     }
 
+    /// Every outcome an agent reports lands on its own message. What stays an
+    /// event is what Build read for itself — a triage pass nobody has to
+    /// answer, and a validation report Build judged.
     #[test]
-    fn conversation_records_every_report_outcome_as_its_own_event() {
+    fn conversation_records_every_reported_outcome_on_the_agents_message() {
         let mut thread = crate::thread::Thread::new("run-activity");
         record_report_in_thread(
             &mut thread,
@@ -25394,12 +26133,38 @@ mod tests {
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Blocked
-                    && event.summary.as_deref() == Some("Needs production credentials")
-        )));
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.outcome == Some(crate::thread::MessageOutcome::Blocked)
+                        && message.body == "Needs production credentials"
+                        && !message.done
+            )),
+            "{:?}",
+            thread.items
+        );
+
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Failed,
+                summary: "The migration will not run".into(),
+                outputs: DoneOutputs::default(),
+            },
+            None,
+        );
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Message(message)
+                    if message.outcome == Some(crate::thread::MessageOutcome::Failed)
+                        && message.body == "The migration will not run"
+            )),
+            "{:?}",
+            thread.items
+        );
 
         record_report_in_thread(
             &mut thread,
@@ -25422,17 +26187,16 @@ mod tests {
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::ReviewBlocked
-                    && event.summary.as_deref() == Some("The migration is not reversible")
-        )));
-        assert!(!thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Message(message)
-                if message.role == crate::thread::MessageRole::Agent && message.done
-        )));
+        assert!(
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::ReviewBlocked
+                        && event.summary.as_deref() == Some("The migration is not reversible")
+            )),
+            "Build's own reading of a validation report stays an event: {:?}",
+            thread.items
+        );
         assert_eq!(
             thread.last_completion.as_ref().unwrap().critical_files,
             vec!["src/app.rs"]
@@ -25441,27 +26205,107 @@ mod tests {
         record_report_in_thread(
             &mut thread,
             &DoneReport {
-                phase: DonePhase::Build,
+                phase: DonePhase::Triage,
                 status: DoneStatus::Completed,
-                summary: "Fixed and deployed the renderer.".into(),
+                summary: "Classified 12 hunks".into(),
                 outputs: DoneOutputs::default(),
             },
             None,
         );
-        assert!(thread.items.iter().any(|item| matches!(
-            item,
-            crate::thread::ThreadItem::Event(event)
-                if event.event == crate::thread::ThreadEventKind::Done
-                    && event.summary.as_deref() == Some("Fixed and deployed the renderer.")
-        )));
         assert!(
-            !thread
-                .items
-                .iter()
-                .any(|item| matches!(item, crate::thread::ThreadItem::Message(_))),
-            "a done never writes a companion message: {:?}",
+            thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::Triaged
+            )),
+            "a triage pass asks nothing of anyone and stays quiet: {:?}",
             thread.items
         );
+        assert!(
+            !thread.items.iter().any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if matches!(
+                        event.event,
+                        crate::thread::ThreadEventKind::Done
+                            | crate::thread::ThreadEventKind::Blocked
+                            | crate::thread::ThreadEventKind::RunFailed
+                    )
+            )),
+            "nothing emits the outcome events any more: {:?}",
+            thread.items
+        );
+    }
+
+    /// A report Build could not apply is still the agent's report: the outcome
+    /// is a failure on its message, and Build's note rides the same body.
+    #[test]
+    fn a_report_build_cannot_apply_fails_on_the_agents_message() {
+        let mut thread = crate::thread::Thread::new("run-unapplied");
+        record_report_in_thread(
+            &mut thread,
+            &DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Completed,
+                summary: "Implemented the change".into(),
+                outputs: DoneOutputs::default(),
+            },
+            Some("the worktree is gone"),
+        );
+
+        assert_eq!(thread.items.len(), 1, "{:?}", thread.items);
+        let crate::thread::ThreadItem::Message(failed) = &thread.items[0] else {
+            panic!("the outcome is a message: {:?}", thread.items);
+        };
+        assert_eq!(
+            failed.outcome,
+            Some(crate::thread::MessageOutcome::Failed),
+            "{failed:?}"
+        );
+        assert!(
+            failed.body.starts_with("Implemented the change"),
+            "{failed:?}"
+        );
+        assert!(
+            failed
+                .body
+                .contains("Build could not apply the report: the worktree is gone"),
+            "{failed:?}"
+        );
+        assert_eq!(thread.items[0].attention_reason(), Some("run_failed"));
+    }
+
+    /// What Build observed for itself has no agent message to hang on, so it
+    /// stays an event: an agent that went quiet, and one whose process died.
+    #[test]
+    fn builds_own_observations_about_a_silent_agent_stay_events() {
+        let mut quiet = crate::thread::Thread::new("run-quiet");
+        record_idle_in_thread(&mut quiet, None);
+        let mut crashed = crate::thread::Thread::new("run-crashed");
+        record_idle_in_thread(
+            &mut crashed,
+            Some(&HarnessExit {
+                code: 1,
+                epitaph: Some("out of quota".into()),
+            }),
+        );
+        let mut killed = crate::thread::Thread::new("run-killed");
+        record_session_death_in_thread(&mut killed, &now_rfc3339());
+
+        for (thread, kind) in [
+            (&quiet, crate::thread::ThreadEventKind::IdleUnreported),
+            (&crashed, crate::thread::ThreadEventKind::RunFailed),
+            (&killed, crate::thread::ThreadEventKind::Interrupted),
+        ] {
+            assert!(
+                thread.items.iter().any(|item| matches!(
+                    item,
+                    crate::thread::ThreadItem::Event(event) if event.event == kind
+                )),
+                "{kind:?}: {:?}",
+                thread.items
+            );
+        }
     }
 
     #[test]
@@ -27103,8 +27947,8 @@ mod tests {
             RunState::Review,
             warm_tui_spec(),
         );
-        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
-        let mut output = state.tabs[&key].session.subscribe();
+        let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27116,7 +27960,7 @@ mod tests {
             "the gate does not move"
         );
         assert_eq!(
-            state.tabs[&key].session.pid(),
+            agent_pid(&state.tabs[&key]),
             Some(pid_before),
             "a post talks to the agent, it never replaces it"
         );
@@ -27195,7 +28039,7 @@ mod tests {
             40,
         )
         .expect("implementation agent tab spawns");
-        let mut output = tab.session.subscribe();
+        let mut output = agent_terminal(&tab).subscribe();
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         let posted = state.handle(req(
@@ -27368,8 +28212,8 @@ mod tests {
             RunState::Building,
             warm_tui_spec(),
         );
-        let pid_before = state.tabs[&key].session.pid().expect("a live agent");
-        let mut output = state.tabs[&key].session.subscribe();
+        let pid_before = agent_pid(&state.tabs[&key]).expect("a live agent");
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27380,12 +28224,12 @@ mod tests {
         let active = state.runs.get(&run_id).unwrap();
         assert_eq!(active.run.state, RunState::Building, "no state transition");
         assert_eq!(
-            state.tabs[&key].session.pid(),
+            agent_pid(&state.tabs[&key]),
             Some(pid_before),
             "the worktree's agent must not be respawned"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "the worktree's agent must not be ended"
         );
 
@@ -27497,6 +28341,7 @@ mod tests {
         };
         let options = SpawnOptions {
             continue_session: false,
+            resume_session_id: None,
             owner_id: "e2e".into(),
             mcp_session_token: "e2e-session-token".into(),
             cwd: workspace.clone(),
@@ -27505,7 +28350,9 @@ mod tests {
         // guards against fires precisely because the directory is brand new.
         let spec = build(prompt, &choice, &options);
 
-        // The three lines under test, mirroring ensure_agent_tab + deliver.
+        // The three lines under test, mirroring what `open_session` waits out
+        // and what `deliver` then hands over — spelled out against the concrete
+        // PTY, because what is under test here is the terminal mechanics.
         let session = PtySession::spawn(
             &spec,
             Some(workspace.clone()),
@@ -27608,10 +28455,10 @@ mod tests {
             warm_tui_spec(),
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "precondition: the agent is still live at the gate"
         );
-        let mut output = state.tabs[&key].session.subscribe();
+        let mut output = agent_terminal(&state.tabs[&key]).subscribe();
 
         let posted = state.handle(req(
             "thread.post",
@@ -27640,7 +28487,7 @@ mod tests {
             "hearing a message is not a state transition"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "the agent is talked to, never replaced"
         );
         // Durable regardless: the next session's catch-up carries it.
@@ -27669,14 +28516,14 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id(&run_id),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("cat"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
             120,
             40,
         )
         .expect("the agent tab spawns");
-        let agent_pid = tab.session.pid().expect("the agent has a pid");
+        let agent_pid = agent_pid(&tab).expect("the agent has a pid");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
         state.runs.get_mut(&run_id).unwrap().agents.start_session(
             "claude",
@@ -27969,7 +28816,7 @@ mod tests {
         spec: HarnessSpec,
     ) -> TabKey {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, mut rx) = Tab::spawn(
+        let (tab, rx) = Tab::spawn(
             TabRole::Agent {
                 owner: run_id.to_string(),
                 agent_id: crate::agent::derived_agent_id(run_id),
@@ -27984,7 +28831,7 @@ mod tests {
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
         state.tabs.insert(key.clone(), tab);
-        drain_pty_into_screen(state, &key, &mut rx);
+        drain_pty_into_screen(state, &key, &mut rx.bytes.expect("a PTY session paints"));
         key
     }
 
@@ -28000,22 +28847,22 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    if let Some(tab) = state.tabs.get_mut(key) {
-                        tab.screen.process(&chunk);
+                    if let Some(screen) =
+                        state.tabs.get_mut(key).and_then(|tab| tab.screen.as_mut())
+                    {
+                        screen.process(&chunk);
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
-                    if state
-                        .tabs
-                        .get(key)
-                        .is_some_and(|tab| tab.session.has_exited())
-                    {
-                        // The child is gone and nothing is queued: whatever it
-                        // painted is already on the screen.
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10))
                 }
+                // Closed: the reader thread hit EOF and dropped both senders,
+                // so every byte the harness ever painted has already been
+                // handed over. An exited child is NOT the same signal — the
+                // wait can reap it a scheduling slice before the reader has
+                // forwarded its last words, and a loaded machine is where that
+                // slice gets long: a crash's epitaph would go missing exactly
+                // when the whole suite is running.
                 Err(_) => return,
             }
         }
@@ -28028,6 +28875,13 @@ mod tests {
             .arg("-c")
             .arg("printf '\\033[?2004h'; cat >/dev/null")
     }
+
+    /// The sweep threshold these tests speak in — the shape of the real one
+    /// (`BRIDGE_IDLE_SECONDS`, 300s by default): minutes, and so comfortably
+    /// past the 30s window inside which a PTY's paint makes it `Working`. A
+    /// threshold shorter than that window would be asking whether an agent that
+    /// painted a moment ago is quiet, which is a question no deployment asks.
+    const QUIET_THRESHOLD: Duration = Duration::from_secs(300);
 
     /// Silence is an anomaly only when measured from the last thing Build
     /// asked. A tab's agent outlives every phase and idles at a prompt between
@@ -28046,22 +28900,130 @@ mod tests {
             RunState::Building,
             warm_tui_spec(),
         );
-        // Long enough that the PTY has been silent past the threshold below.
-        std::thread::sleep(Duration::from_millis(200));
+        // The PTY has painted nothing for ten minutes: silent by the paint
+        // clock, and — since that is minutes past the 30s window — not claiming
+        // to be working either. Aged rather than waited out, so the test reads
+        // the behaviour instead of a wall clock.
+        state.tabs[&key]
+            .session
+            .backdate_last_output(Duration::from_secs(600));
 
         state.tabs.get_mut(&key).unwrap().last_delivered_at = Some(std::time::Instant::now());
         assert!(
-            state.mark_idle_tasks(Duration::from_millis(50)).is_empty(),
+            state.mark_idle_tasks(QUIET_THRESHOLD).is_empty(),
             "an agent that was just given a turn is working, not quiet"
         );
         assert_eq!(state.runs["run-quiet"].run.state, RunState::Building);
 
         state.tabs.get_mut(&key).unwrap().last_delivered_at =
-            Some(std::time::Instant::now() - Duration::from_secs(1));
+            Some(std::time::Instant::now() - QUIET_THRESHOLD);
         assert_eq!(
-            state.mark_idle_tasks(Duration::from_millis(50)),
+            state.mark_idle_tasks(QUIET_THRESHOLD),
             vec!["run-quiet".to_string()],
             "silence that outlasts the turn that provoked it is an anomaly"
+        );
+    }
+
+    /// A carrier that knows when its turn began is never demoted mid-turn.
+    ///
+    /// The sweep's whole instrument used to be silence, and silence is exactly
+    /// what a model reasoning for forty minutes produces. A PTY could only
+    /// guess at the difference; a session that reports its own turn boundaries
+    /// can say it, so `Working` short-circuits the demotion and the anomaly
+    /// clock is only consulted for a session that is not in a turn.
+    #[test]
+    fn a_session_that_reports_a_turn_in_flight_is_never_demoted_for_silence() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-mid-turn",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-mid-turn");
+        let key = first_agent_key(&root, "run-mid-turn");
+        let quiet = Duration::from_secs(2400);
+        state.tabs.insert(
+            key.clone(),
+            dictated_agent_tab(
+                &root,
+                "run-mid-turn",
+                &agent_id,
+                DictatedSession::reporting(AgentStatus::Working).silent_for(quiet),
+            ),
+        );
+        // Build spoke long ago and has heard nothing since: every other
+        // instrument the sweep owns reads this as an anomaly.
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - quiet);
+
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(300)).is_empty(),
+            "a model mid-turn is working, however long it has been thinking"
+        );
+        assert_eq!(state.runs["run-mid-turn"].run.state, RunState::Building);
+
+        // Control: the same silence, one status later. The turn ended without a
+        // `done`, and THAT is the anomaly the sweep exists for.
+        state.tabs.insert(
+            key,
+            dictated_agent_tab(
+                &root,
+                "run-mid-turn",
+                &agent_id,
+                DictatedSession::reporting(AgentStatus::Waiting).silent_for(quiet),
+            ),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-mid-turn".to_string()],
+            "a turn that ended in silence rather than a report is still demoted"
+        );
+    }
+
+    /// And for a PTY the short-circuit is a no-op, by construction: paint
+    /// inside thirty seconds is the only thing that makes one `Working`, so a
+    /// tab quiet past a threshold minutes long can never be. The new conjunct
+    /// cannot spare a single agent the sweep used to demote.
+    #[test]
+    fn a_pty_quiet_past_the_threshold_is_never_working() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let key = insert_run_with_agent_tab(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-painting",
+            RunState::Building,
+            warm_tui_spec(),
+        );
+        let tab = &state.tabs[&key];
+        assert_eq!(
+            tab.session.status(),
+            AgentStatus::Working,
+            "a freshly spawned harness has just painted"
+        );
+
+        for quiet in [
+            AGENT_WORKING_WINDOW + Duration::from_secs(1),
+            Duration::from_secs(300),
+            Duration::from_secs(2400),
+        ] {
+            state.tabs[&key].session.backdate_last_output(quiet);
+            assert_ne!(
+                state.tabs[&key].session.status(),
+                AgentStatus::Working,
+                "a PTY silent for {quiet:?} cannot claim to be working"
+            );
+        }
+        state.tabs.get_mut(&key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(600));
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-painting".to_string()],
+            "so the demotion the sweep has always made is unmoved"
         );
     }
 
@@ -28152,7 +29114,7 @@ mod tests {
     async fn wait_for_pty_quiet(state: &Arc<Mutex<AppState>>, key: &TabKey, quiet: Duration) {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let idle = state.lock().unwrap().tabs[key].session.idle_for();
+            let idle = state.lock().unwrap().tabs[key].session.quiet_for();
             if idle >= quiet {
                 return;
             }
@@ -28249,18 +29211,20 @@ mod tests {
             .unwrap()
             .agents
             .start_session("claude", None, None, "build", &now_rfc3339());
-        // Long enough that the PTY has been silent past the threshold below.
-        std::thread::sleep(Duration::from_millis(200));
+        // Silent past the threshold, aged rather than waited out.
+        state.tabs[&key]
+            .session
+            .backdate_last_output(Duration::from_secs(600));
         state.tabs.get_mut(&key).unwrap().last_delivered_at =
-            Some(std::time::Instant::now() - Duration::from_secs(1));
+            Some(std::time::Instant::now() - QUIET_THRESHOLD);
 
         assert_eq!(
-            state.mark_idle_tasks(Duration::from_millis(50)),
+            state.mark_idle_tasks(QUIET_THRESHOLD),
             vec!["run-still-there".to_string()],
             "the quiet agent's entity is demoted"
         );
         assert!(
-            !state.tabs[&key].session.has_exited(),
+            state.tabs[&key].session_is_live(),
             "this test is only meaningful while the agent is still alive"
         );
         let thread = &state.runs["run-still-there"].agents;
@@ -28307,6 +29271,7 @@ mod tests {
             cold: "cold turn".into(),
             warm: "warm turn".into(),
             phase: "build",
+            wants_catch_up: false,
         }
     }
 
@@ -28761,7 +29726,7 @@ mod tests {
             40,
         )
         .unwrap();
-        let agent_pid = tab.session.pid().expect("a live agent");
+        let agent_pid = agent_pid(&tab).expect("a live agent");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         // Release drops the record, keeps the files.
@@ -28972,7 +29937,7 @@ mod tests {
             40,
         )
         .unwrap();
-        let agent_pid = tab.session.pid().expect("a live agent");
+        let agent_pid = agent_pid(&tab).expect("a live agent");
         state.tabs.insert(first_agent_key(&root, &run_id), tab);
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -29377,7 +30342,7 @@ mod tests {
             s.runs.insert(run_id.to_string(), active);
             s.tabs.insert(key.clone(), tab);
         }
-        spawn_tab_pump(state, key.clone(), rx);
+        spawn_tab_pumps(state, key.clone(), rx);
         (key, wire_id)
     }
 
@@ -29448,11 +30413,7 @@ mod tests {
         );
         let pid = {
             let s = state.lock().unwrap();
-            s.tabs
-                .get(&key)
-                .expect("the agent tab exists")
-                .session
-                .pid()
+            agent_pid(s.tabs.get(&key).expect("the agent tab exists"))
         };
 
         let again = call(&handler, "agent.start", json!({ "id": "run-start" }));
@@ -29462,7 +30423,7 @@ mod tests {
             "a second start addresses the same tab"
         );
         assert_eq!(
-            state.lock().unwrap().tabs.get(&key).unwrap().session.pid(),
+            agent_pid(state.lock().unwrap().tabs.get(&key).unwrap()),
             pid,
             "starting an agent that is already running must not spawn a second one"
         );
@@ -29482,7 +30443,7 @@ mod tests {
         assert_eq!(first["ok"], true, "{first:?}");
         let first_pid = {
             let s = state.lock().unwrap();
-            s.tabs.get(&key).unwrap().session.pid()
+            agent_pid(s.tabs.get(&key).unwrap())
         };
 
         // The harness dies the way a real one does, and the tab is RETAINED so
@@ -29490,7 +30451,7 @@ mod tests {
         {
             let mut s = state.lock().unwrap();
             let tab = s.tabs.get_mut(&key).unwrap();
-            tab.session.kill_and_reap();
+            tab.session.end();
             tab.live = false;
         }
 
@@ -29505,7 +30466,7 @@ mod tests {
         let tab = s.tabs.get(&key).expect("the tab came back");
         assert!(tab.live, "the restarted agent is live");
         assert_ne!(
-            tab.session.pid(),
+            agent_pid(tab),
             first_pid,
             "restart means a NEW process, not the corpse reported as alive"
         );
@@ -29525,14 +30486,14 @@ mod tests {
         let key = first_agent_key(&root, "run-revive");
         let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
         assert_eq!(started["ok"], true, "{started:?}");
-        let dead_pid = state.lock().unwrap().tabs[&key].session.pid();
+        let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
 
         // The harness dies the way a real one does, and the tab is RETAINED so
         // the human can still read the last screen.
         {
             let mut s = state.lock().unwrap();
             let tab = s.tabs.get_mut(&key).unwrap();
-            tab.session.kill_and_reap();
+            tab.session.end();
             tab.live = false;
         }
         // Let the old pump see its own EOF before the revival, so the tab it
@@ -29550,11 +30511,11 @@ mod tests {
             let s = state.lock().unwrap();
             let tab = s.tabs.get(&key).expect("the agent came back");
             assert!(
-                tab.live && !tab.session.has_exited(),
+                tab.session_is_live(),
                 "a message to a dead agent brings it back running"
             );
             assert_ne!(
-                tab.session.pid(),
+                agent_pid(tab),
                 dead_pid,
                 "revival is a NEW process, not the corpse reported as alive"
             );
@@ -29618,10 +30579,14 @@ mod tests {
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, root);
         assert_eq!(queued.owner, run_id);
+        // The words travel in the catch-up packet, which is composed when the
+        // turn is handed over — so this is the prompt the revived agent opens
+        // on, not the one the queue is holding.
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("still there?"),
-            "the revived agent opens on what was said to it: {}",
-            queued.cold
+            delivered.contains("still there?"),
+            "the revived agent opens on what was said to it: {delivered}"
         );
     }
 
@@ -30008,7 +30973,7 @@ mod tests {
 
         // The agent's process ends → clients hear agent_session_ended and the
         // tab keeps showing the last screen.
-        state.lock().unwrap().tabs[&tab_key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&tab_key].session.end();
         wait_for_push(&mut pushes, &key, |p| {
             p["type"] == "term.closed"
                 && p["term_id"] == wire_id
@@ -30091,7 +31056,7 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id("run-x"),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("cat"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("run-x")),
             root.clone(),
             120,
@@ -30101,7 +31066,7 @@ mod tests {
         let wire_id = tab.wire_id();
         let key = first_agent_key(&root, "run-x");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(&state, key.clone(), rx);
+        spawn_tab_pumps(&state, key.clone(), rx);
 
         let live = handler(
             SessionSender::detached("s2"),
@@ -30155,7 +31120,7 @@ mod tests {
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, "run-codex");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
-        spawn_tab_pump(&state, key.clone(), rx);
+        spawn_tab_pumps(&state, key.clone(), rx);
 
         let ran = handler(
             SessionSender::detached("s2"),
@@ -30269,8 +31234,9 @@ mod tests {
         );
 
         let s = state.lock().unwrap();
-        let screen =
-            &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-waited-for")].screen;
+        let screen = screen_of(
+            &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
+        );
         assert_eq!(
             (screen.cols, screen.rows),
             (100, 30),
@@ -30305,13 +31271,13 @@ mod tests {
         )
         .expect("the first delivery spawns");
         wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
         let retained_total = loop {
             {
                 let s = state.lock().unwrap();
                 let tab = &s.tabs[&key];
                 if !tab.live {
-                    break tab.screen.total;
+                    break screen_of(tab).total;
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -30352,6 +31318,171 @@ mod tests {
             "the retained cursor is carried forward, never rewound to the \
              waiting screen's zero: {seen:?}"
         );
+    }
+
+    /// Point a fixture's project at a headless provider running `spec`, and
+    /// hand back the model choice that opens it.
+    ///
+    /// The provider on the choice is the whole launch config — it is what
+    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
+    /// without swapping the provider would run a stream-json child inside a
+    /// PTY and prove nothing.
+    fn a_headless_provider_running(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        let mut s = state.lock().unwrap();
+        let worktrees = s.worktrees_root.clone();
+        let agent = Agent::WarmBuilder(Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| spec.clone(),
+        ));
+        s.projects[0].orch =
+            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        ModelChoice {
+            provider: AgentProvider::ClaudeAdk,
+            ..ModelChoice::default()
+        }
+    }
+
+    /// A spawn with no terminal closes the screens waiting on it.
+    ///
+    /// Clients that mount the Agent tab before a worktree has an agent are held
+    /// on a screen with no PTY, and a spawn carries them onto the real one. A
+    /// session with no terminal has no real screen to carry them to, so the
+    /// carry would drop them silently and leave them attached to a grid nothing
+    /// will ever paint. They are told instead — the way the reaper and
+    /// `retire_agent` tell one — and the rail, which reads `has_terminal: false`
+    /// off the digest, stops offering the basement they were waiting for.
+    #[tokio::test]
+    async fn a_headless_spawn_closes_the_screens_that_were_waiting_for_a_terminal() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-headless-wait");
+        let choice = a_headless_provider_running(
+            &state,
+            &repo,
+            crate::harness::adk::fake::stream_json_harness(&[crate::harness::adk::fake::RESULT]),
+        );
+        let agent_id = crate::agent::derived_agent_id("run-headless-wait");
+        let key = first_agent_key(&AppState::canonical_root(&root), "run-headless-wait");
+
+        let (sender, mut pushes, session_key) = SessionSender::observable("waiting");
+        {
+            let mut s = state.lock().unwrap();
+            let mut waiting = TermScreen::new(90, 25);
+            waiting.register(&sender);
+            s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
+        }
+
+        deliver(
+            &state,
+            &root,
+            "run-headless-wait",
+            &agent_id,
+            &choice,
+            "cold",
+            "warm",
+        )
+        .expect("the headless agent spawns");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter().any(|push| push["type"] == "term.closed")
+        })
+        .await;
+        let closed = seen
+            .iter()
+            .find(|push| push["type"] == "term.closed")
+            .expect("the waiting client is told, rather than left on a dead grid");
+        assert_eq!(closed["term_id"], key.tab_id, "{closed:?}");
+
+        let s = state.lock().unwrap();
+        assert!(
+            s.agent_screens_awaiting_spawn.is_empty(),
+            "and the screen is not left behind for some later spawn to inherit"
+        );
+        let tab = &s.tabs[&key];
+        assert!(
+            tab.screen.is_none(),
+            "a session with no terminal has no grid, so there is none to hand anyone"
+        );
+        assert!(
+            tab.live,
+            "the agent itself is running — it just has no basement"
+        );
+        s.tabs[&key].session.end();
+    }
+
+    /// The same rule for the other screen a spawn can be holding: the grid the
+    /// session being replaced left behind.
+    ///
+    /// A retained screen is carried onto the replacement so the cursor never
+    /// rewinds — but a replacement with no terminal has nothing to carry it to,
+    /// and a human who changed this agent's provider between the two sessions
+    /// would otherwise be left watching the dead one's last frame forever.
+    #[tokio::test]
+    async fn a_headless_respawn_closes_the_grid_the_terminal_left_behind() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-carrier-swap");
+        let agent_id = crate::agent::derived_agent_id("run-carrier-swap");
+        let key = first_agent_key(&AppState::canonical_root(&root), "run-carrier-swap");
+
+        // A terminal session, watched by a client, that then dies.
+        deliver(
+            &state,
+            &root,
+            "run-carrier-swap",
+            &agent_id,
+            &ModelChoice::default(),
+            "FIRST-SESSION",
+            "warm",
+        )
+        .expect("the first delivery spawns a PTY");
+        wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        {
+            let mut s = state.lock().unwrap();
+            screen_of_mut(s.tabs.get_mut(&key).expect("the agent tab")).register(&sender);
+        }
+        state.lock().unwrap().tabs[&key].session.end();
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the dead session leaves a retained screen behind");
+
+        // The human changed this agent's provider while it was down, so its
+        // replacement reports itself instead of painting.
+        let choice = a_headless_provider_running(
+            &state,
+            &repo,
+            crate::harness::adk::fake::stream_json_harness(&[crate::harness::adk::fake::RESULT]),
+        );
+        deliver(
+            &state,
+            &root,
+            "run-carrier-swap",
+            &agent_id,
+            &choice,
+            "SECOND-SESSION",
+            "warm",
+        )
+        .expect("the headless replacement spawns");
+
+        let seen = wait_for_pushes(&mut pushes, &session_key, |seen| {
+            seen.iter()
+                .any(|push| push["type"] == "term.closed" && push["reason"] == "no_terminal")
+        })
+        .await;
+        assert!(
+            seen.iter().any(|push| push["term_id"] == key.tab_id),
+            "the client watching the old grid is told which tab closed: {seen:?}"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            s.tabs[&key].screen.is_none(),
+            "and the retained grid is not hung on a session that cannot paint it"
+        );
+        s.tabs[&key].session.end();
     }
 
     /// A client can be waiting on the Agent tab of a worktree that is then
@@ -30910,11 +32041,11 @@ mod tests {
         let s = state.lock().unwrap();
         let tab = &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
         assert!(
-            tab.screen.attached.is_empty(),
+            screen_of(tab).attached.is_empty(),
             "a session that ended is never carried onto the agent it waited for"
         );
         assert_eq!(
-            (tab.screen.cols, tab.screen.rows),
+            (screen_of(tab).cols, screen_of(tab).rows),
             (120, 40),
             "with nobody left waiting, the spawn keeps the size Build chose"
         );
@@ -31402,6 +32533,281 @@ mod tests {
         }
     }
 
+    /// The Issue is where a planned implementation's outcomes have always
+    /// landed, and they still land there — as the agent's own message now,
+    /// needing the human exactly once and saying which outcome it was.
+    #[test]
+    fn a_reported_outcome_is_news_on_the_issue_that_owns_the_implementation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut state, "outcome on the issue");
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": run_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Build,
+                status: DoneStatus::Blocked,
+                summary: "Needs production credentials".into(),
+                outputs: DoneOutputs::default(),
+            },
+        );
+
+        let issue_thread = &state.plans[&issue_id].agents;
+        let outcomes: Vec<&crate::thread::ThreadMessage> = issue_thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Message(message) if message.outcome.is_some() => {
+                    Some(message)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            outcomes.len(),
+            1,
+            "one report, one record: {:?}",
+            issue_thread.items
+        );
+        assert_eq!(
+            outcomes[0].outcome,
+            Some(crate::thread::MessageOutcome::Blocked)
+        );
+        assert_eq!(outcomes[0].body, "Needs production credentials");
+        let packet = issue_thread.catch_up_markdown(40);
+        assert!(
+            packet.contains("- agent [blocked]: Needs production credentials"),
+            "the packet says why the predecessor stopped: {packet}"
+        );
+
+        let entry = board_entry(&mut state, &run_id);
+        assert_eq!(entry["unread"], true, "{entry:?}");
+        assert_eq!(entry["unread_reason"], "blocked", "{entry:?}");
+    }
+
+    /// An issue whose conversation is buried under a session's worth of
+    /// activity, booted again: the tail the daemon reads holds nothing but
+    /// tool calls, so the packet has to come from the store or the replacement
+    /// agent is handed nothing at all.
+    fn issue_buried_in_activity(state: &mut AppState, goal: &str, said: &str) -> String {
+        let issue_id = plan_id_of(&state.handle(req(
+            "issue.create",
+            json!({ "goal": goal, "dispatch": false }),
+        )));
+        let agent_id = state.plans[&issue_id].agents.first().id.clone();
+        state
+            .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                thread.post_user(said, None, "2026-08-29T09:00:00Z");
+                for index in 0..crate::store::RESIDENT_CONVERSATION_TAIL + 40 {
+                    thread.push_event(
+                        crate::thread::ThreadEventKind::ToolUse,
+                        Some(format!("Read file-{index}.rs")),
+                        None,
+                        None,
+                        "2026-08-29T09:01:00Z",
+                    );
+                }
+                Ok(())
+            })
+            .expect("the conversation is written");
+        issue_id
+    }
+
+    /// §6.3's first failure. A conversation is loaded as its newest 200 items,
+    /// and one session emits hundreds of tool calls — so the agent that boots
+    /// onto that tail is exactly the one whose messages-only packet finds no
+    /// messages in it. The words come out of the store instead.
+    #[test]
+    fn a_starved_tail_hands_a_resumed_agent_the_words_from_the_store() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(
+                &mut state,
+                "fix the login redirect",
+                "the redirect drops the query string",
+            )
+        };
+
+        let state = qa_state(&repo, dir.path());
+        let thread = state
+            .agent_conversation(&issue_id, None)
+            .expect("the issue's conversation");
+        assert!(
+            thread
+                .items
+                .iter()
+                .all(|item| matches!(item, crate::thread::ThreadItem::Event(_))),
+            "the fixture did not starve the tail: {:?}",
+            thread.items.first()
+        );
+        assert_eq!(
+            thread.catch_up_markdown(crate::orchestrator::CATCH_UP_MESSAGES),
+            "",
+            "the tail alone is the empty packet this fixes"
+        );
+
+        let packet = state.catch_up_packet(thread, crate::orchestrator::CATCH_UP_MESSAGES);
+        assert_eq!(
+            packet, "- user: fix the login redirect\n- user: the redirect drops the query string",
+            "the packet reads the store when the tail holds no conversation"
+        );
+    }
+
+    /// Where the packet is composed: at the door every cold prompt passes, not
+    /// where the turn was built. A queued turn carries the prompt and the
+    /// protocol; the conversation is added when it is handed over — which is
+    /// also why a message posted while the turn waited for the lock is in it.
+    #[test]
+    fn the_catch_up_packet_is_composed_when_the_turn_is_delivered() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            issue_buried_in_activity(&mut state, "fix the redirect", "keep the query string")
+        };
+        let mut state = qa_state(&repo, dir.path());
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start with the router" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let queued = state
+            .pending_agent_turns
+            .last()
+            .expect("the message queued a turn");
+        assert!(
+            queued.wants_catch_up,
+            "a cold prompt wants the conversation"
+        );
+        assert!(
+            !queued.cold.contains("Catch-up packet"),
+            "the packet is not baked in at queue time: {}",
+            queued.cold
+        );
+
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
+        assert!(
+            delivered.contains("Catch-up packet from the durable conversation"),
+            "{delivered}"
+        );
+        assert!(
+            delivered.contains("- user: keep the query string"),
+            "the words under the tail travel with the turn: {delivered}"
+        );
+        assert!(
+            delivered.contains("- user: start with the router"),
+            "so do the words posted while it waited: {delivered}"
+        );
+        assert!(
+            delivered.contains("Build conversation protocol"),
+            "the protocol block is still the prompt's own: {delivered}"
+        );
+    }
+
+    /// §6.3's second failure, over the wire. A reviewer opening a conversation
+    /// mid-session used to be handed sixty tool calls with the last thing
+    /// anyone said somewhere below them. The page's limit buys conversation
+    /// now — and `has_more` / `oldest_sequence` still mean exactly what a
+    /// client walking back by sequence needs them to mean, across the seam
+    /// between the resident tail and the history under it.
+    #[test]
+    fn a_page_over_an_activity_heavy_conversation_still_shows_what_was_said() {
+        let (dir, repo) = init_repo();
+        let issue_id = {
+            let mut state = qa_state(&repo, dir.path());
+            let issue_id = plan_id_of(&state.handle(req(
+                "issue.create",
+                json!({ "goal": "trim the retry loop", "dispatch": false }),
+            )));
+            let agent_id = state.plans[&issue_id].agents.first().id.clone();
+            state
+                .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
+                    for turn in 0..40 {
+                        thread.post_user(format!("ask {turn}"), None, "2026-08-29T09:00:00Z");
+                        for index in 0..6 {
+                            thread.push_event(
+                                crate::thread::ThreadEventKind::ToolUse,
+                                Some(format!("Read file-{turn}-{index}.rs")),
+                                None,
+                                None,
+                                "2026-08-29T09:01:00Z",
+                            );
+                        }
+                    }
+                    Ok(())
+                })
+                .expect("the conversation is written");
+            issue_id
+        };
+        let mut state = qa_state(&repo, dir.path());
+        let held = state
+            .agent_conversation(&issue_id, None)
+            .expect("the conversation")
+            .total_item_count();
+        assert!(
+            held > crate::store::RESIDENT_CONVERSATION_TAIL as u64,
+            "the fixture has to reach under the tail: {held}"
+        );
+
+        let first = state.handle(req(
+            "thread.page",
+            json!({ "entity_id": issue_id, "limit": 5 }),
+        ));
+        let page = &first["result"];
+        let said: Vec<&str> = page["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "message")
+            .map(|item| item["data"]["body"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            said.len(),
+            5,
+            "the page a reviewer opens on is five turns of conversation: {said:?}"
+        );
+        assert_eq!(said.last(), Some(&"ask 39"), "{said:?}");
+
+        // And the walk back is whole: every item exactly once, in order, over
+        // the seam between the tail and the stored history under it.
+        let mut walked: Vec<u64> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let mut params = json!({ "entity_id": issue_id, "limit": 5 });
+            if let Some(seek) = before {
+                params["before_sequence"] = json!(seek);
+            }
+            let answer = state.handle(req("thread.page", params));
+            let page = &answer["result"];
+            let shipped: Vec<u64> = page["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["data"]["sequence"].as_u64().unwrap())
+                .collect();
+            assert!(
+                !shipped.is_empty(),
+                "an empty page below {before:?}: {page}"
+            );
+            assert_eq!(
+                page["oldest_sequence"].as_u64(),
+                shipped.first().copied(),
+                "oldest_sequence is the oldest item shipped, rider or not"
+            );
+            assert_eq!(page["thread_total"], json!(held));
+            walked.splice(0..0, shipped);
+            if !page["has_more"].as_bool().unwrap() {
+                break;
+            }
+            before = walked.first().copied();
+        }
+        assert_eq!(walked, (1..=held).collect::<Vec<u64>>());
+    }
+
     /// The Issue's conversation is where the human follows the work they asked
     /// for, so its implementation being abandoned is news there — and the
     /// mirrored event says which implementation it came from.
@@ -31641,7 +33047,10 @@ mod tests {
                 .session
                 .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
             assert!(agent.live, "the tab is live");
-            assert!(!agent.session.has_exited(), "and its process still running");
+            assert!(
+                !matches!(agent.session.status(), AgentStatus::Ended { .. }),
+                "and its process still running"
+            );
             agent_is_working(agent)
         };
         assert!(
@@ -31661,7 +33070,1328 @@ mod tests {
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
-        shell.session.kill_and_reap();
+        shell.session.end();
+    }
+
+    /// What a dictated session was asked to do, still readable once the daemon
+    /// owns the session itself — an `Arc<dyn AgentSession>` in a tab cannot be
+    /// looked inside, so the record lives beside it.
+    #[derive(Clone, Default)]
+    struct SessionLog {
+        turns: Arc<Mutex<Vec<String>>>,
+        ended: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SessionLog {
+        /// Every turn the daemon has handed this session, in order.
+        fn turns(&self) -> Vec<String> {
+            self.turns.lock().unwrap().clone()
+        }
+
+        /// Whether the daemon has ended this session.
+        fn ended(&self) -> bool {
+            self.ended.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// A session that reports what it is told to, and remembers what was asked
+    /// of it.
+    ///
+    /// It has no terminal and no process, so nothing about it can be inferred
+    /// from paint or from a wait — a caller reading a PTY would find no answer
+    /// here at all. Only a caller that asks the session gets one.
+    struct DictatedSession {
+        status: AgentStatus,
+        quiet: Duration,
+        log: SessionLog,
+    }
+
+    impl DictatedSession {
+        /// A session reporting `status`, silent for no time at all.
+        fn reporting(status: AgentStatus) -> DictatedSession {
+            DictatedSession {
+                status,
+                quiet: Duration::ZERO,
+                log: SessionLog::default(),
+            }
+        }
+
+        /// The same session, with nothing heard from it for `quiet` — the
+        /// anomaly clock the idle sweep demotes on.
+        fn silent_for(mut self, quiet: Duration) -> DictatedSession {
+            self.quiet = quiet;
+            self
+        }
+
+        /// The same session, recording what it is asked into `log`.
+        fn recording_into(mut self, log: &SessionLog) -> DictatedSession {
+            self.log = log.clone();
+            self
+        }
+    }
+
+    impl AgentSession for DictatedSession {
+        fn send_turn(&self, turn: &Turn) -> Result<(), HarnessError> {
+            self.log.turns.lock().unwrap().push(turn.text.clone());
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            self.status
+        }
+        fn quiet_for(&self) -> Duration {
+            self.quiet
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            matches!(self.status, AgentStatus::Ended { .. })
+        }
+        fn end(&self) {
+            self.log
+                .ended
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        fn backdate_last_output(&self, _ago: Duration) {}
+    }
+
+    /// A live tab whose session reports `status`.
+    fn tab_reporting(role: TabRole, status: AgentStatus) -> Tab {
+        tab_running(role, DictatedSession::reporting(status))
+    }
+
+    /// A live tab carrying `session`, rooted nowhere in particular.
+    fn tab_running(role: TabRole, session: DictatedSession) -> Tab {
+        Tab {
+            tab_id: "term-status".to_string(),
+            root: PathBuf::from("/nowhere"),
+            role,
+            created_at: now_rfc3339(),
+            session: Arc::new(session),
+            // `DictatedSession` says nothing about terminals, so it has none —
+            // and a tab with no terminal has no grid, because the two are made
+            // together. A screen here would be the flag that disagrees with
+            // reality.
+            screen: None,
+            live: true,
+            last_delivered_at: None,
+        }
+    }
+
+    /// An agent tab rooted at `root` whose session has no terminal — the shape
+    /// a session protocol has.
+    ///
+    /// Built by hand so a test can put a session in a state it chooses. The
+    /// headless provider produces the real thing —
+    /// `the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned` walks
+    /// the refusals against a child the daemon spawned — and this stays for the
+    /// tests that need a session reporting a dictated status rather than
+    /// whatever a real one happens to be doing.
+    fn terminal_free_agent_tab(root: &std::path::Path, owner: &str, agent_id: &str) -> Tab {
+        dictated_agent_tab(
+            root,
+            owner,
+            agent_id,
+            DictatedSession::reporting(AgentStatus::Working),
+        )
+    }
+
+    /// A live agent tab at `root` carrying a session that reports exactly what
+    /// it was told — the only way a test can put a turn-boundary carrier where
+    /// the daemon expects one, since a PTY can only be asked about paint.
+    fn dictated_agent_tab(
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        session: DictatedSession,
+    ) -> Tab {
+        Tab {
+            tab_id: agent_tab_id(agent_id),
+            root: root.to_path_buf(),
+            role: TabRole::Agent {
+                owner: owner.to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            created_at: now_rfc3339(),
+            session: Arc::new(session),
+            screen: None,
+            live: true,
+            last_delivered_at: None,
+        }
+    }
+
+    /// Poll `look` until it answers, or give up after `budget`.
+    ///
+    /// A pump runs on its own task, so a test speaks about what it did by
+    /// waiting for the thing itself — never by sleeping a guess and asserting
+    /// on whatever had happened by then.
+    async fn wait_for<T>(budget: Duration, mut look: impl FnMut() -> Option<T>) -> Option<T> {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if let Some(found) = look() {
+                return Some(found);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Every activity event on a conversation, as (kind, summary).
+    fn activity_of(
+        thread: &crate::thread::Thread,
+    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+        thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if event.event.class() == crate::thread::EventClass::Status =>
+                {
+                    Some((event.event, event.summary.clone().unwrap_or_default()))
+                }
+                _ => None,
+            })
+            .filter(|(kind, _)| {
+                matches!(
+                    kind,
+                    crate::thread::ThreadEventKind::Reasoning
+                        | crate::thread::ThreadEventKind::ToolUse
+                        | crate::thread::ThreadEventKind::ToolResult
+                        | crate::thread::ThreadEventKind::Narration
+                )
+            })
+            .collect()
+    }
+
+    /// What a session with no terminal has instead of a screen: its reasoning,
+    /// tool calls and narration, landing in the conversation the human already
+    /// reads.
+    ///
+    /// The four kinds are `Status`, so an agent thinking out loud moves no
+    /// unread count — that is the property that makes putting activity in the
+    /// conversation safe, and it is asserted here rather than assumed.
+    #[tokio::test]
+    async fn a_reporting_session_pumps_its_work_into_the_conversation() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-activity",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-activity");
+        let key = first_agent_key(&root, "run-activity");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-activity", &agent_id),
+        );
+        // Everything on the conversation so far has been read, so anything the
+        // badge shows after this is the activity's doing.
+        app.handle(req("entity.seen", json!({ "entity_id": "run-activity" })));
+        let state = app.shared();
+
+        let (activity, subscribed) = broadcast::channel(16);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        for reported in [
+            crate::harness::AgentActivity::Reasoning {
+                summary: "the index is unused".into(),
+            },
+            crate::harness::AgentActivity::ToolUse {
+                summary: "Read bridge/src/app.rs".into(),
+            },
+            crate::harness::AgentActivity::ToolResult {
+                summary: "Read: fn main() {}".into(),
+            },
+            crate::harness::AgentActivity::Narration {
+                summary: "dropped the index".into(),
+            },
+        ] {
+            activity.send(reported).expect("the pump is listening");
+        }
+
+        let reported = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let reported = activity_of(&s.runs["run-activity"].agents);
+            (reported.len() == 4).then_some(reported)
+        })
+        .await
+        .expect("the four events reach the conversation");
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    "the index is unused".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    "Read bridge/src/app.rs".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolResult,
+                    "Read: fn main() {}".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    "dropped the index".to_string()
+                ),
+            ],
+            "in the order the agent did them"
+        );
+
+        let mut s = state.lock().unwrap();
+        let view = s.handle(req("run.get", json!({ "run_id": "run-activity" })));
+        assert_eq!(
+            view["result"]["unread_count"], 0,
+            "an agent working is not an agent addressing anyone: {view:?}"
+        );
+    }
+
+    /// The death rites a no-terminal carrier would otherwise fall through.
+    ///
+    /// The byte pump performs them when the PTY closes — the tab stops being
+    /// live, the conversation's session lineage ends. A session that paints
+    /// nothing has no PTY to close, so its activity stream ending is the same
+    /// moment, and the same two things have to happen: without them a dead
+    /// agent's tab reads as live and its run stays in session until the idle
+    /// sweep explains the exit as silence.
+    #[tokio::test]
+    async fn the_activity_stream_closing_ends_the_session_the_way_a_pty_eof_does() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(&mut app, &repo, dir.path(), "run-rites", RunState::Building);
+        let agent_id = crate::agent::derived_agent_id("run-rites");
+        let key = first_agent_key(&root, "run-rites");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-rites", &agent_id),
+        );
+        app.runs.get_mut("run-rites").unwrap().agents.start_session(
+            "claude",
+            None,
+            None,
+            "build",
+            &now_rfc3339(),
+        );
+        let state = app.shared();
+        assert_eq!(open_session_count(&state, "run-rites"), 1);
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        drop(activity);
+
+        wait_for(Duration::from_secs(5), || {
+            (open_session_count(&state, "run-rites") == 0).then_some(())
+        })
+        .await
+        .expect("the session lineage closes when the stream does");
+        let s = state.lock().unwrap();
+        assert!(
+            !s.tabs[&key].live,
+            "and the tab stops reading as live, so nothing else has to guess"
+        );
+        assert!(
+            s.tabs.contains_key(&key),
+            "the tab is RETAINED, exactly as an agent tab whose PTY ended is"
+        );
+    }
+
+    /// Put `run_id` on the headless provider, running `spec`.
+    ///
+    /// Both the launch config a delivery reads (the entity's model choice) and
+    /// the one the rail reads before there is a session (the agent's own) are
+    /// set, because a real provider change sets both and a test that moved only
+    /// one would prove the daemon agrees with itself when it does not.
+    fn run_on_a_headless_provider(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        run_id: &str,
+        spec: HarnessSpec,
+    ) -> ModelChoice {
+        let choice = a_headless_provider_running(state, repo, spec);
+        let mut s = state.lock().unwrap();
+        let run = s.runs.get_mut(run_id).expect("the run");
+        run.model_choice = choice.clone();
+        run.agents.resolve_mut(None).expect("its agent").choice = choice.clone();
+        choice
+    }
+
+    /// The whole path, end to end: a human says something to a run whose
+    /// provider has no terminal, and what comes back is a conversation.
+    ///
+    /// Nothing here is hand-built — the daemon picks the carrier off the
+    /// provider, opens a real child, hands it the turn as a value, and the
+    /// activity pump posts what the child reported into the thread the human
+    /// reads. The child is a fake stream-json harness replaying a recording of
+    /// what claude says; no model turn is ever run.
+    ///
+    /// Then it leaves, the way a real one does when its work is over, and the
+    /// death rites the byte pump owes a PTY are owed here too.
+    #[tokio::test]
+    async fn a_headless_agent_turns_a_message_into_activity_and_leaves() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-headless");
+        let key = first_agent_key(&root, "run-headless");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-headless",
+            fake::stream_json_harness_that_leaves(&[
+                fake::THINKING,
+                fake::TOOL_USE,
+                fake::TOOL_RESULT,
+                fake::NARRATION,
+                fake::RESULT,
+            ]),
+        );
+        // Everything said so far has been read, so an unread entry after this
+        // is the activity's doing.
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-headless", "body": "drop the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        call(
+            &handler,
+            "entity.seen",
+            json!({ "entity_id": "run-headless" }),
+        );
+
+        let reported = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let reported = activity_of(&s.runs["run-headless"].agents);
+            (reported.len() == 4).then_some(reported)
+        })
+        .await
+        .expect("the turn's work reaches the conversation");
+        assert_eq!(
+            reported,
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    "the index is unused".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    "Read bridge/src/app.rs".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolResult,
+                    "Read: fn main() {}".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    "dropped the index".to_string()
+                ),
+            ],
+            "in the order the child reported them, and saying what it said"
+        );
+
+        // The child answered its one turn and left. Both rites the byte pump
+        // performs on PTY EOF are owed here, and nothing else in the daemon
+        // learns a harness died on its own.
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let lineage = &s.runs["run-headless"].agents.sessions;
+            // Opened by the cold delivery and closed by the pump — asserted as
+            // one thing, because a lineage that was never opened would satisfy
+            // "nothing is open" without a rite having been performed.
+            (lineage.len() == 1 && lineage[0].ended_at.is_some()).then_some(())
+        })
+        .await
+        .expect("the session Build opened is closed when the child's stream ends");
+        assert_eq!(open_session_count(&state, "run-headless"), 0);
+        let listed = call(
+            &handler,
+            "agent.list",
+            json!({ "entity_id": "run-headless" }),
+        );
+        let bubble = &listed["result"]["agents"][0];
+        assert_eq!(
+            bubble["has_terminal"], false,
+            "the rail never offers a basement this provider has none of: {bubble:?}"
+        );
+        assert_eq!(
+            bubble["working"], false,
+            "and an agent that has left is not working: {bubble:?}"
+        );
+        let view = call(&handler, "run.get", json!({ "run_id": "run-headless" }));
+        assert_eq!(
+            view["result"]["unread_count"], 0,
+            "an agent working is not an agent addressing anyone: {view:?}"
+        );
+
+        let s = state.lock().unwrap();
+        assert!(!s.tabs[&key].live, "the tab stops reading as live");
+        assert!(
+            s.tabs[&key].screen.is_none(),
+            "and never had a grid to be retained"
+        );
+    }
+
+    /// How many times this agent has reasoned out loud — the evidence a turn
+    /// was delivered and started, one per turn for the fakes below.
+    fn reasoning_count(state: &Arc<Mutex<AppState>>, run_id: &str) -> usize {
+        let s = state.lock().unwrap();
+        activity_of(&s.runs[run_id].agents)
+            .iter()
+            .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::Reasoning)
+            .count()
+    }
+
+    /// Everything the conversation says happened, so a test can assert what did
+    /// NOT happen over the whole vocabulary rather than a sample of it.
+    fn event_kinds(
+        state: &Arc<Mutex<AppState>>,
+        run_id: &str,
+    ) -> Vec<crate::thread::ThreadEventKind> {
+        let s = state.lock().unwrap();
+        s.runs[run_id]
+            .agents
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event) => Some(event.event),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A live headless agent mid-turn, on `spec`, with one turn already
+    /// delivered and running.
+    ///
+    /// The fakes below never emit a `result`, so the turn stays open and the
+    /// session keeps reporting `Working` — which is the state an interrupt is
+    /// for and the only one the composer offers it in.
+    async fn a_headless_agent_mid_turn(
+        state: &Arc<Mutex<AppState>>,
+        handler: &FrameHandler,
+        run_id: &str,
+        spec: HarnessSpec,
+        repo: &std::path::Path,
+    ) {
+        run_on_a_headless_provider(state, repo, run_id, spec);
+        let posted = call(
+            handler,
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "start on the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(state, run_id) == 1).then_some(())
+        })
+        .await
+        .expect("the first turn reaches the agent and it starts working");
+    }
+
+    /// The steering flow, end to end: a message that stops the turn it lands in.
+    ///
+    /// The wire is `thread.post` with `interrupt: true` and there is no
+    /// `agent.interrupt` verb — Build never interrupts without a turn to follow,
+    /// so a verb of its own would always be followed by this post a moment
+    /// later, with a window between them in which the child starts a fresh turn
+    /// or the agent calls `done`.
+    ///
+    /// And status moves by exactly one step: the human's message. Nothing else
+    /// is minted — an interrupted turn's `error_during_execution` result is a
+    /// turn boundary, never a report, and the only path by which its text could
+    /// have reached a human was the epitaph the carrier clears.
+    #[tokio::test]
+    async fn a_post_that_interrupts_stops_the_turn_and_hands_over_the_message() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-steer");
+        use crate::harness::adk::fake;
+        // Everything Build says to this agent is kept, because the steering
+        // flow IS two writes in one order and what comes back cannot tell them
+        // apart from an ordinary send.
+        let heard = dir.path().join("heard.jsonl");
+        a_headless_agent_mid_turn(
+            &state,
+            &handler,
+            "run-steer",
+            fake::stream_json_harness_recording_stdin(&[fake::THINKING], &heard),
+            &repo,
+        )
+        .await;
+
+        let bubble = call(&handler, "agent.list", json!({ "entity_id": "run-steer" }))["result"]
+            ["agents"][0]
+            .clone();
+        assert_eq!(bubble["working"], true, "{bubble:?}");
+        assert_eq!(
+            bubble["can_interrupt"], true,
+            "the child announced an interrupt in its init line: {bubble:?}"
+        );
+
+        let steered = call(
+            &handler,
+            "thread.post",
+            json!({
+                "entity_id": "run-steer",
+                "body": "stop — just the trigger",
+                "interrupt": true,
+            }),
+        );
+        assert_eq!(steered["ok"], true, "{steered:?}");
+
+        // The child acks, closes the stopped turn with `error_during_execution`,
+        // and only then reads the steering turn — so a second reasoning event
+        // can only mean the message was handed over behind the interrupt.
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(&state, "run-steer") == 2).then_some(())
+        })
+        .await
+        .expect("the message the interrupt cleared the way for is delivered");
+
+        // The wire, in order: the child heard the first turn, then a
+        // `control_request` to stop it, and only then the turn that replaces it.
+        let said: Vec<Value> = std::fs::read_to_string(&heard)
+            .expect("the child kept what it heard")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("a protocol line"))
+            .collect();
+        let kinds: Vec<&str> = said
+            .iter()
+            .map(|line| line["type"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "control_request", "user"],
+            "stop first, then hand over — the order the flag on the message exists to hold: {said:?}"
+        );
+        assert_eq!(said[1]["request"]["subtype"], "interrupt", "{said:?}");
+
+        let s = state.lock().unwrap();
+        let said: Vec<String> = s.runs["run-steer"]
+            .agents
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Message(message) => {
+                    assert_eq!(
+                        message.outcome, None,
+                        "nothing here is an outcome: {message:?}"
+                    );
+                    assert!(
+                        !message.done,
+                        "and nothing here is a completion: {message:?}"
+                    );
+                    Some(message.body.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            said.iter()
+                .any(|body| body.contains("stop — just the trigger")),
+            "the human's own message is the record of why the turn stopped: {said:?}"
+        );
+        assert_eq!(
+            s.runs["run-steer"].run.state,
+            RunState::Building,
+            "an interrupt moves no state of any kind"
+        );
+        drop(s);
+
+        use crate::thread::ThreadEventKind;
+        let happened = event_kinds(&state, "run-steer");
+        for never in [
+            ThreadEventKind::Blocked,
+            ThreadEventKind::RunFailed,
+            // `Interrupted` means a session that is GONE. This one is the same
+            // session, holding the same conversation, and it is about to answer.
+            ThreadEventKind::Interrupted,
+            ThreadEventKind::SessionEnded,
+        ] {
+            assert!(
+                !happened.contains(&never),
+                "a stopped turn is not a failure: {never:?} in {happened:?}"
+            );
+        }
+    }
+
+    /// A refused interrupt does not fail the post.
+    ///
+    /// Where the carrier cannot stop a turn — a CLI built before the capability
+    /// landed, or one lost between the digest the client read and the post it
+    /// sent — the message is delivered as an ordinary queued turn, which the
+    /// probes verified reaches the running turn at its next step boundary
+    /// anyway. The alternative is an error the human must read for a difference
+    /// they cannot act on and did not cause.
+    #[tokio::test]
+    async fn an_interrupt_the_carrier_refuses_still_hands_over_the_message() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refuses");
+        use crate::harness::adk::fake;
+        a_headless_agent_mid_turn(
+            &state,
+            &handler,
+            "run-refuses",
+            fake::stream_json_harness_without_interrupt(&[fake::THINKING]),
+            &repo,
+        )
+        .await;
+
+        let bubble = call(
+            &handler,
+            "agent.list",
+            json!({ "entity_id": "run-refuses" }),
+        )["result"]["agents"][0]
+            .clone();
+        assert_eq!(
+            bubble["can_interrupt"], false,
+            "this child announced none, so the composer never offers the control: {bubble:?}"
+        );
+
+        let steered = call(
+            &handler,
+            "thread.post",
+            json!({
+                "entity_id": "run-refuses",
+                "body": "stop — just the trigger",
+                "interrupt": true,
+            }),
+        );
+        assert_eq!(
+            steered["ok"], true,
+            "a capability the carrier lacks is not the human's mistake: {steered:?}"
+        );
+        wait_for(Duration::from_secs(10), || {
+            (reasoning_count(&state, "run-refuses") == 2).then_some(())
+        })
+        .await
+        .expect("the message is delivered as an ordinary queued turn");
+    }
+
+    /// Put `run_id` on the headless provider running `spec`, and keep every
+    /// [`SpawnOptions`] the daemon built a spawn from.
+    ///
+    /// What a respawn picks back up is decided there and nowhere else, so the
+    /// recording is where a test reads the daemon's answer without a real
+    /// claude on the other end of it.
+    fn run_on_a_headless_provider_recording_spawns(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+        run_id: &str,
+        spec: HarnessSpec,
+    ) -> Arc<Mutex<Vec<SpawnOptions>>> {
+        let spawns: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&spawns);
+        let choice = {
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorded.lock().unwrap().push(options.clone());
+                    spec.clone()
+                },
+            ));
+            s.projects[0].orch =
+                Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+            ModelChoice {
+                provider: AgentProvider::ClaudeAdk,
+                ..ModelChoice::default()
+            }
+        };
+        let mut s = state.lock().unwrap();
+        let run = s.runs.get_mut(run_id).expect("the run");
+        run.model_choice = choice.clone();
+        run.agents.resolve_mut(None).expect("its agent").choice = choice;
+        spawns
+    }
+
+    /// The argv the headless provider builds from one recorded spawn.
+    fn headless_argv(options: &SpawnOptions) -> String {
+        use crate::harness::Harness;
+        crate::harness::adk::AdkHarness
+            .spec(
+                &ModelChoice {
+                    provider: AgentProvider::ClaudeAdk,
+                    ..ModelChoice::default()
+                },
+                options,
+                &crate::harness::HarnessContext {
+                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                },
+            )
+            .args
+            .join(" ")
+    }
+
+    /// A respawn resumes the conversation the last session NAMED.
+    ///
+    /// The child announces its session id in its own `init` line, the activity
+    /// pump writes it onto the agent's record, and the next spawn carries
+    /// `--resume <id>` instead of the transcript probe's `--continue` — which
+    /// names the newest conversation in the checkout and not necessarily the
+    /// one Build was speaking to.
+    #[tokio::test]
+    async fn a_respawn_resumes_the_conversation_the_last_session_named() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-resume");
+        let agent_id = crate::agent::derived_agent_id("run-resume");
+        use crate::harness::adk::fake;
+        // It answers its one turn and leaves, the way a real one does when its
+        // work is over — which is what makes the next message a respawn.
+        let spawns = run_on_a_headless_provider_recording_spawns(
+            &state,
+            &repo,
+            "run-resume",
+            fake::stream_json_harness_that_leaves(&[fake::NARRATION, fake::RESULT]),
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-resume", "body": "drop the index" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let named = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-resume", &agent_id)
+        })
+        .await
+        .expect("the name the child gave its conversation reaches the agent's record");
+        assert_eq!(named, "sess-adk");
+
+        let again = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-resume", "body": "and the trigger" }),
+        );
+        assert_eq!(again["ok"], true, "{again:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            let spawns = spawns.lock().unwrap();
+            (spawns.len() == 2).then(|| spawns.clone())
+        })
+        .await
+        .expect("a message to an agent that has left starts it again");
+
+        assert_eq!(
+            spawned[0].resume_session_id, None,
+            "the first spawn had no conversation to name: {:?}",
+            spawned[0]
+        );
+        assert_eq!(
+            spawned[1].resume_session_id.as_deref(),
+            Some("sess-adk"),
+            "and the second carries the one the first announced: {:?}",
+            spawned[1]
+        );
+        let argv = headless_argv(&spawned[1]);
+        assert!(argv.contains("--resume sess-adk"), "{argv}");
+        assert!(
+            !argv.contains("--continue"),
+            "the name and the cwd guess are alternatives, never both: {argv}"
+        );
+    }
+
+    /// One dead id costs one restart, not every restart.
+    ///
+    /// A session spawned with a `--resume` id that no longer resolves exits
+    /// without ever announcing itself. So a session that ends having announced
+    /// nothing clears the record: the next spawn falls back to the transcript
+    /// probe, which is the path that shipped before any of this and still
+    /// answers. The same clearing covers a child that died at startup for an
+    /// unrelated reason, where the fallback is what would have run anyway.
+    #[tokio::test]
+    async fn a_session_that_never_announced_clears_the_name_it_was_spawned_with() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-stale");
+        let agent_id = crate::agent::derived_agent_id("run-stale");
+        // A child that leaves without a word — the shape of one handed an id
+        // its harness cannot find.
+        let spawns = run_on_a_headless_provider_recording_spawns(
+            &state,
+            &repo,
+            "run-stale",
+            HarnessSpec::new("sh").arg("-c").arg("exit 1"),
+        );
+        {
+            let mut s = state.lock().unwrap();
+            s.runs
+                .get_mut("run-stale")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-gone".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-stale", "body": "are you still there" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            spawns.lock().unwrap().first().cloned()
+        })
+        .await
+        .expect("the message starts the agent");
+        assert_eq!(
+            spawned.resume_session_id.as_deref(),
+            Some("sess-gone"),
+            "the spawn carried the recorded name — which is how it becomes a dead spawn"
+        );
+
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-stale", &agent_id)
+                .is_none()
+                .then_some(())
+        })
+        .await
+        .expect("a session that announced nothing takes the name it was spawned with with it");
+    }
+
+    /// Step 3's refusals, live in production for the first time.
+    ///
+    /// Until a provider answered `has_terminal` false, every terminal verb's
+    /// refusal was walked only by tests that built the terminal-free session by
+    /// hand. This drives the real one: a headless agent the daemon spawned, and
+    /// every verb a client could reach its basement through.
+    #[tokio::test]
+    async fn the_terminal_verbs_refuse_the_headless_agent_the_daemon_spawned() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refused");
+        let key = first_agent_key(&root, "run-refused");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-refused",
+            fake::stream_json_harness(&[fake::RESULT]),
+        );
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-refused", "body": "have a look" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.tabs
+                .get(&key)
+                .filter(|tab| tab.session_is_live())
+                .map(|_| ())
+        })
+        .await
+        .expect("the headless agent is running");
+        let term_id = key.tab_id.clone();
+
+        let attached = call(&handler, "agent.attach", json!({ "id": "run-refused" }));
+        assert_eq!(attached["ok"], false, "{attached:?}");
+        let refusal = attached["error"].as_str().unwrap().to_string();
+        assert!(
+            refusal.contains(&term_id) && refusal.contains("conversation"),
+            "the refusal names the agent and where its work is read: {refusal}"
+        );
+        for (method, params) in [
+            ("term.attach", json!({ "term_id": term_id })),
+            (
+                "term.input",
+                json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
+            ),
+            (
+                "term.resize",
+                json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
+            ),
+            ("term.ack", json!({ "term_id": term_id, "cursor": 0 })),
+        ] {
+            let refused = call(&handler, method, params);
+            assert_eq!(refused["error"], json!(refusal), "{method}: {refused:?}");
+        }
+
+        state.lock().unwrap().tabs[&key].session.end();
+    }
+
+    /// The terminal verbs refuse an agent whose session has no terminal, and
+    /// say where that agent's work actually is.
+    ///
+    /// Following `require_shell_kind`: never fall back. Swallowing keystrokes
+    /// no process will read, or answering `ok` to a resize of a grid that does
+    /// not exist, is the same silent-wrong-program failure that refusal exists
+    /// to prevent — and here it would leave a human typing into a void.
+    #[test]
+    fn the_terminal_verbs_refuse_an_agent_with_no_terminal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-protocol";
+        state.tabs.insert(
+            TabKey::agent(&root, agent_id),
+            terminal_free_agent_tab(&root, "run-protocol", agent_id),
+        );
+        let term_id = agent_tab_id(agent_id);
+
+        let typed = state.handle(req(
+            "term.input",
+            json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
+        ));
+        assert_eq!(typed["ok"], false, "{typed:?}");
+        let refusal = typed["error"].as_str().unwrap().to_string();
+        assert!(
+            refusal.contains(&term_id) && refusal.contains("conversation"),
+            "the refusal names the agent and where its work is read: {refusal}"
+        );
+
+        let resized = state.handle(req(
+            "term.resize",
+            json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
+        ));
+        assert_eq!(
+            resized["ok"], false,
+            "a viewport means nothing to a session with no grid: {resized:?}"
+        );
+        assert_eq!(resized["error"], json!(refusal));
+    }
+
+    /// Attaching to a terminal-free agent refuses the same way, whichever verb
+    /// asks — `agent.attach` by what a surface holds, `term.attach` by wire id.
+    /// One capability, one question, one answer.
+    #[tokio::test]
+    async fn agent_attach_refuses_an_agent_with_no_terminal() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-protocol";
+        let project_id = {
+            let mut s = state.lock().unwrap();
+            s.tabs.insert(
+                TabKey::agent(&root, agent_id),
+                terminal_free_agent_tab(&root, "run-protocol", agent_id),
+            );
+            s.projects[0].id.clone()
+        };
+
+        let attached = call(
+            &handler,
+            "agent.attach",
+            json!({ "project_id": project_id }),
+        );
+        assert_eq!(attached["ok"], false, "{attached:?}");
+        assert!(
+            attached["error"].as_str().unwrap().contains("conversation"),
+            "{attached:?}"
+        );
+
+        let by_wire = call(
+            &handler,
+            "term.attach",
+            json!({ "term_id": agent_tab_id(agent_id) }),
+        );
+        assert_eq!(by_wire["error"], attached["error"], "{by_wire:?}");
+
+        // A client that was never allowed to attach has nothing to acknowledge
+        // either, and hears why rather than acking into a screen that does not
+        // exist.
+        let acked = call(
+            &handler,
+            "term.ack",
+            json!({ "term_id": agent_tab_id(agent_id), "cursor": 0 }),
+        );
+        assert_eq!(acked["error"], attached["error"], "{acked:?}");
+    }
+
+    fn agent_role() -> TabRole {
+        TabRole::Agent {
+            owner: "run-status".to_string(),
+            agent_id: "agent-status".to_string(),
+            provider: AgentProvider::Claude,
+        }
+    }
+
+    /// The pulse is whatever the session says it is doing, and the daemon does
+    /// not second-guess it with the terminal's own signals. The age of the last
+    /// paint is how a PTY — which has no better answer — synthesizes its
+    /// status; a harness that knows its own turn boundaries has to be able to
+    /// contradict it.
+    #[test]
+    fn the_pulse_reads_the_session_status_and_nothing_else() {
+        let cases = [
+            (AgentStatus::Working, true),
+            (AgentStatus::Waiting, false),
+            (AgentStatus::Starting, false),
+            (AgentStatus::Ended { code: Some(0) }, false),
+            (AgentStatus::Ended { code: None }, false),
+        ];
+        for (status, working) in cases {
+            assert_eq!(
+                agent_is_working(&tab_reporting(agent_role(), status)),
+                working,
+                "{status:?}"
+            );
+        }
+    }
+
+    /// The two conjuncts the session cannot see survive the move: a shell is
+    /// the human's own hands however busy it looks, and a tab whose stream has
+    /// ended is holding a corpse, not a heartbeat.
+    #[test]
+    fn a_working_status_still_needs_a_live_agent_tab() {
+        assert!(!agent_is_working(&tab_reporting(
+            TabRole::Shell,
+            AgentStatus::Working
+        )));
+        let mut retained = tab_reporting(agent_role(), AgentStatus::Working);
+        retained.live = false;
+        assert!(!agent_is_working(&retained));
+    }
+
+    /// An agent tab whose session reports `status`, rooted where the daemon
+    /// will look for it.
+    fn insert_dictated_agent_tab(
+        state: &mut AppState,
+        root: &std::path::Path,
+        owner: &str,
+        session: DictatedSession,
+    ) -> TabKey {
+        let agent_id = crate::agent::derived_agent_id(owner);
+        let key = TabKey::agent(root, &agent_id);
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: owner.to_string(),
+                agent_id,
+                provider: AgentProvider::default(),
+            },
+            session,
+        );
+        tab.root = root.to_path_buf();
+        tab.tab_id = key.tab_id.clone();
+        state.tabs.insert(key.clone(), tab);
+        key
+    }
+
+    /// Whether an agent is live is the same question the pulse asks, one state
+    /// further out, and it is now asked the same way: a session that reports
+    /// `Ended` is over, whatever a process table would have said about it.
+    ///
+    /// `has_exited` was how a terminal answered this. A carrier with no process
+    /// behind it has no such question to poll, and it must still be able to say
+    /// its session is over.
+    #[test]
+    fn liveness_is_read_off_the_reported_status() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-liveness",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-liveness");
+
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-liveness",
+            DictatedSession::reporting(AgentStatus::Waiting),
+        );
+        assert!(
+            state.agent_is_live(&root, &agent_id),
+            "a session waiting at its prompt is live"
+        );
+        assert_eq!(state.agent_digests("run-liveness")[0]["state"], "live");
+
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-liveness",
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(1) }),
+        );
+        assert!(
+            !state.agent_is_live(&root, &agent_id),
+            "a session that reports it is over is not live"
+        );
+        assert_ne!(state.agent_digests("run-liveness")[0]["state"], "live");
+    }
+
+    /// The idle sweep's two clocks come off the session: the exit it explains a
+    /// crash with is the code inside `Ended`, and the silence it demotes on is
+    /// `quiet_for`.
+    ///
+    /// Both used to be the PTY's — `has_exited` + `exit_code`, and the age of
+    /// the last paint. A session protocol has neither a screen nor a wait, and
+    /// has to be able to answer both.
+    #[test]
+    fn the_idle_sweep_reads_the_exit_and_the_quiet_off_the_session() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-swept",
+            RunState::Building,
+        );
+
+        // Live, and heard from inside the threshold: nothing to explain.
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(10)),
+        );
+        assert!(
+            state.mark_idle_tasks(Duration::from_secs(300)).is_empty(),
+            "a session heard from inside the threshold is not an anomaly"
+        );
+
+        // Live, and quiet past it: demoted, and no exit code is invented.
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(600)),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-swept".to_string()],
+            "silence past the threshold is the anomaly the sweep exists for"
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+        assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
+        assert!(
+            got["result"]["last_error"].is_null(),
+            "nothing exited, so nothing claims an exit code: {got:?}"
+        );
+
+        // Ended: the code inside the status is what the crash is explained by.
+        state.runs.get_mut("run-swept").unwrap().run.state = RunState::Building;
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-swept",
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(9) }),
+        );
+        assert_eq!(
+            state.mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-swept".to_string()],
+        );
+        let got = state.handle(req("run.get", json!({ "run_id": "run-swept" })));
+        assert!(
+            got["result"]["last_error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("exit code 9"),
+            "the code the session reported explains the crash: {got:?}"
+        );
+    }
+
+    /// A worktree card's "last active" reads the same quiet clock. It was the
+    /// PTY's paint clock and the comment said so; the measurement has not
+    /// moved, but the question is now one every carrier can answer.
+    #[test]
+    fn a_worktree_card_reads_the_sessions_quiet_clock() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-card",
+            RunState::Building,
+        );
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-card",
+            DictatedSession::reporting(AgentStatus::Waiting).silent_for(Duration::from_secs(3600)),
+        );
+
+        let active = state
+            .agent_last_painted_at(&root)
+            .expect("an agent has run here");
+        let active =
+            time::OffsetDateTime::parse(&active, &time::format_description::well_known::Rfc3339)
+                .expect("an rfc3339 stamp");
+        let quiet = time::OffsetDateTime::now_utc() - active;
+        assert!(
+            (quiet - time::Duration::hours(1)).abs() < time::Duration::seconds(30),
+            "the card reads the session's own hour of silence, got {quiet}"
+        );
+    }
+
+    /// The nudge is a turn, and it travels as one. It used to be a `write_prompt`
+    /// — keystroke mechanics — and the whole point of a value is that a carrier
+    /// with no keyboard can still be told what to say.
+    #[test]
+    fn the_nudge_hands_the_agent_a_turn() {
+        let root = AppState::canonical_root(&PathBuf::from("/nowhere"));
+        let agent_id = "agent-nudged";
+        let mut tabs: HashMap<TabKey, Tab> = HashMap::new();
+        let log = SessionLog::default();
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: "run-nudge".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            DictatedSession::reporting(AgentStatus::Waiting).recording_into(&log),
+        );
+        tab.root = root.clone();
+        tabs.insert(TabKey::agent(&root, agent_id), tab);
+
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge", false);
+        assert_eq!(
+            log.turns(),
+            vec![NEW_THREAD_MESSAGES_PROMPT.to_string()],
+            "the waiting agent is told a message arrived, as one turn"
+        );
+
+        // A session that reports it is over is not told anything: the message
+        // is durable on the thread, and its replacement reads it there.
+        let over = SessionLog::default();
+        let mut tab = tab_running(
+            TabRole::Agent {
+                owner: "run-nudge".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            DictatedSession::reporting(AgentStatus::Ended { code: Some(0) }).recording_into(&over),
+        );
+        tab.root = root.clone();
+        tabs.insert(TabKey::agent(&root, agent_id), tab);
+
+        nudge_live_agent_tab(&tabs, &root, agent_id, "run-nudge", false);
+        assert!(over.turns().is_empty(), "a dead agent hears nothing");
+    }
+
+    /// Closing a worktree's agents ends their sessions — through `end`, which
+    /// carries the reap obligation the kill-and-reap pair used to name.
+    #[test]
+    fn closing_a_worktrees_agents_ends_their_sessions() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let log = SessionLog::default();
+        insert_dictated_agent_tab(
+            &mut state,
+            &root,
+            "run-closed",
+            DictatedSession::reporting(AgentStatus::Working).recording_into(&log),
+        );
+
+        state.close_agent_tab(&root);
+
+        assert!(
+            log.ended(),
+            "an agent whose owner is gone must be ended, not merely forgotten"
+        );
+        assert!(state.tabs.is_empty(), "and forgotten too");
     }
 
     /// The board reports it per worktree, so a bare worktree — which has no run
@@ -31751,7 +34481,7 @@ mod tests {
             true,
             "a managed agent that has stopped working makes finish advisable"
         );
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
     }
 
     /// A worktree Build never touched — no run, no adoption — is not the
@@ -31816,7 +34546,7 @@ mod tests {
             "an agent happening to be live in it is not the same as Build having adopted it"
         );
         let key = first_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
-        state.lock().unwrap().tabs[&key].session.kill_and_reap();
+        state.lock().unwrap().tabs[&key].session.end();
 
         let adopted = state.lock().unwrap().handle(req(
             "run.adopt",
@@ -33531,7 +36261,7 @@ mod tests {
                 agent_id: crate::agent::derived_agent_id("idle-agent-owner"),
                 provider: AgentProvider::default(),
             },
-            &HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null"),
+            &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("idle-agent-owner")),
             root.clone(),
             80,
@@ -33552,7 +36282,7 @@ mod tests {
             .unwrap();
         assert_eq!(entry["agent_working"], false, "{entry:?}");
         assert_eq!(entry["can_finish"], true, "{entry:?}");
-        state.tabs.remove(&key).unwrap().session.kill_and_reap();
+        state.tabs.remove(&key).unwrap().session.end();
     }
 
     #[tokio::test]
@@ -33577,7 +36307,7 @@ mod tests {
         let (term_key, pid) = {
             let app = state.lock().unwrap();
             let term_key = app.tab_key_of_wire_id(&term_id).unwrap();
-            let pid = app.tabs[&term_key].session.pid().unwrap();
+            let pid = agent_pid(&app.tabs[&term_key]).unwrap();
             (term_key, pid)
         };
 
@@ -33597,6 +36327,101 @@ mod tests {
     }
 
     // ==== Agents: one entity, several conversations ==========================
+
+    /// The rail needs to know whether an agent has a basement to offer, so the
+    /// digest says it. It is a different question from `working` — one asks
+    /// what the session can do, the other what it is doing — and the answer to
+    /// the second must not move when the first is added.
+    #[test]
+    fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
+        let agent_id = state.runs[&run_id].agents.first().id.clone();
+        let root = state
+            .entity_agent_root(&run_id)
+            .expect("the adopted worktree");
+        let bubble = |state: &mut AppState| -> Value {
+            let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
+            listed["result"]["agents"][0].clone()
+        };
+
+        // Nothing has started yet, so the PROVIDER answers: it knows which
+        // carrier its spawn will open, before there is a session to ask. Every
+        // provider today has a terminal, so the answer is the one this digest
+        // has always given — and the day one does not, the rail stops offering
+        // a basement the spawn would refuse, with no second place to fix.
+        let idle = bubble(&mut state);
+        let provider = state.runs[&run_id].model_choice.provider;
+        assert_eq!(
+            idle["has_terminal"],
+            crate::harness::harness_for(provider).has_terminal(),
+            "a session-less agent's answer comes from its provider: {idle:?}"
+        );
+        assert_eq!(idle["has_terminal"], true, "{idle:?}");
+        assert_eq!(idle["working"], false, "{idle:?}");
+
+        // And on the headless provider the same question answers no before
+        // anything has started — which is the whole point of asking the
+        // provider: the rail stops offering the basement while there is still
+        // no session to ask, so it never offers one the spawn would refuse.
+        state
+            .runs
+            .get_mut(&run_id)
+            .expect("the run")
+            .agents
+            .resolve_mut(None)
+            .expect("its agent")
+            .choice
+            .provider = AgentProvider::ClaudeAdk;
+        assert_eq!(bubble(&mut state)["has_terminal"], false);
+        state
+            .runs
+            .get_mut(&run_id)
+            .expect("the run")
+            .agents
+            .resolve_mut(None)
+            .expect("its agent")
+            .choice
+            .provider = AgentProvider::default();
+
+        // A PTY session answers for itself, and answers yes: today every
+        // session does.
+        let (tab, _rx) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.clone(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::default(),
+            },
+            &warm_tui_spec(),
+            agent_tab_id(&agent_id),
+            root.clone(),
+            120,
+            40,
+        )
+        .expect("the agent tab spawns");
+        state.tabs.insert(TabKey::agent(&root, &agent_id), tab);
+        let running = bubble(&mut state);
+        assert_eq!(running["has_terminal"], true, "{running:?}");
+
+        // And a session with no terminal answers no, while still reporting the
+        // status it is in — `working` keeps its exact meaning.
+        state
+            .tabs
+            .insert(
+                TabKey::agent(&root, &agent_id),
+                terminal_free_agent_tab(&root, &run_id, &agent_id),
+            )
+            .expect("the PTY tab it replaces")
+            .session
+            .end();
+        let protocol = bubble(&mut state);
+        assert_eq!(protocol["has_terminal"], false, "{protocol:?}");
+        assert_eq!(
+            protocol["working"], true,
+            "a session with no terminal still says what it is doing: {protocol:?}"
+        );
+    }
 
     /// A branch can carry more than one agent, and each gets its own
     /// conversation. Nothing an agent says lands in another agent's thread —
@@ -33869,10 +36694,8 @@ mod tests {
             );
             assert_eq!(started["ok"], true, "{started:?}");
         }
-        let pid = state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]
-            .session
-            .pid()
-            .unwrap();
+        let pid =
+            agent_pid(&state.lock().unwrap().tabs[&TabKey::agent(&root, &second_agent)]).unwrap();
 
         let removed = call(
             &handler,
@@ -34405,10 +37228,11 @@ mod tests {
             .expect("a change request is a turn");
         assert_eq!(queued.agent_id, second_agent);
         assert_ne!(queued.agent_id, first_agent);
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("second-agent-comment"),
-            "a cold spawn catches up on ITS conversation: {}",
-            queued.cold
+            delivered.contains("second-agent-comment"),
+            "a cold spawn catches up on ITS conversation: {delivered}"
         );
 
         // Named nothing, the comments still land where every surface before the
@@ -35487,10 +38311,11 @@ mod tests {
         assert_eq!(queued.owner, run_id);
         assert_eq!(queued.agent_id, agent_id);
         assert_eq!(queued.root, AppState::canonical_root(&active.worktree.path));
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Add a health endpoint"),
-            "a cold agent reads the instruction out of its packet: {}",
-            queued.cold
+            delivered.contains("Add a health endpoint"),
+            "a cold agent reads the instruction out of the packet composed at delivery: {delivered}"
         );
         assert_eq!(queued.warm, NEW_THREAD_MESSAGES_PROMPT);
 
@@ -35621,10 +38446,11 @@ mod tests {
             AgentProvider::Codex,
             "the harness it spawns is the one this agent was dispatched on"
         );
+        let delivered =
+            state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
-            queued.cold.contains("Also cover the empty case"),
-            "{}",
-            queued.cold
+            delivered.contains("Also cover the empty case"),
+            "{delivered}"
         );
     }
 

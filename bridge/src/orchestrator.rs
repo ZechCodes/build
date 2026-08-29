@@ -29,8 +29,10 @@
 //! entity's read-only view or `&mut` handle as a parameter rather than reaching
 //! into any app-level map.
 //!
-//! The two pipes from the scope are both here: Build → agent is `write_prompt`
-//! into the warm PTY; agent → Build is [`on_plan_done`](Orchestrator::on_plan_done)
+//! The two pipes from the scope are both here: Build → agent is one turn handed
+//! to the session ([`AgentSession::send_turn`](crate::harness::AgentSession::send_turn),
+//! a framed paste into the warm PTY when that is the carrier); agent → Build is
+//! [`on_plan_done`](Orchestrator::on_plan_done)
 //! / [`on_run_done`](Orchestrator::on_run_done), the typed events the MCP server
 //! forwards (the caller routes each report by owner lookup).
 
@@ -225,13 +227,9 @@ impl AgentTurn {
     /// resume, a validation hand-off, a stage fix. The instruction travels
     /// either way; only the conversation protocol and the catch-up packet are
     /// cold-only, because a warm agent has already lived them.
-    fn dispatched(
-        rendered: String,
-        thread: &crate::thread::Thread,
-        phase: &'static str,
-    ) -> AgentTurn {
+    fn dispatched(rendered: String, phase: &'static str) -> AgentTurn {
         AgentTurn {
-            cold: conversation_prompt(&rendered, thread),
+            cold: conversation_prompt(&rendered),
             warm: rendered,
             phase,
         }
@@ -241,14 +239,9 @@ impl AgentTurn {
     /// request, a message, a batch of notes. A warm agent is told to read it
     /// (`nudge`); a cold one gets the same instruction wrapped in the run/plan
     /// context it has no way to reconstruct.
-    fn posted(
-        rendered: String,
-        thread: &crate::thread::Thread,
-        nudge: &str,
-        phase: &'static str,
-    ) -> AgentTurn {
+    fn posted(rendered: String, nudge: &str, phase: &'static str) -> AgentTurn {
         AgentTurn {
-            cold: conversation_prompt(&rendered, thread),
+            cold: conversation_prompt(&rendered),
             warm: nudge.to_string(),
             phase,
         }
@@ -568,6 +561,14 @@ pub struct SpawnOptions {
     /// Resume the harness's own most-recent conversation for this cwd
     /// (claude: `--continue`). Set only for the first session after adoption.
     pub continue_session: bool,
+    /// Resume the conversation the agent's last session NAMED (claude:
+    /// `--resume <id>`), when one was recorded.
+    ///
+    /// An alternative to `continue_session`, never a companion: this names the
+    /// exact conversation Build was speaking to, and `--continue` guesses the
+    /// newest one in the cwd. A carrier that names no conversation — every PTY
+    /// one — leaves it empty, so the field is carrier-neutral in shape only.
+    pub resume_session_id: Option<String>,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
     /// Unlogged capability for this exact harness process. The daemon rotates it
@@ -622,7 +623,23 @@ pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
 /// writes into the startup screen, where the alternate-screen clear eats it.
 pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(20000);
 
-pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) -> String {
+/// How many messages a resumed agent's catch-up packet carries.
+///
+/// The limit counts messages, never items (§6.1), so a session that emitted
+/// hundreds of tool calls still hands its replacement what the human said. The
+/// 12 KB byte bound below is the real cap on how much that is.
+pub const CATCH_UP_MESSAGES: usize = 40;
+
+/// The cold prompt: the rendered instruction and the conversation protocol
+/// every new agent process needs before it touches anything.
+///
+/// What it deliberately does NOT carry is the durable conversation — the
+/// catch-up packet and the previous completion report. Those are composed onto
+/// this at delivery ([`append_durable_conversation`]), because only the daemon
+/// draining the queue can read the conversation's history out of the store,
+/// and because a packet baked when the turn was queued misses whatever was
+/// said while it waited for the lock.
+pub(crate) fn conversation_prompt(prompt: &str) -> String {
     let mut out = String::with_capacity(prompt.len() + 2048);
     out.push_str(prompt);
     // This block is the canonical reply policy. The `post_thread_message` tool
@@ -641,11 +658,23 @@ pub(crate) fn conversation_prompt(prompt: &str, thread: &crate::thread::Thread) 
          - When the reply you need is a choice you can enumerate, send `options` with the message: each is a chip the reviewer presses, and what comes back is an ordinary reviewer message. Write each option's `message` as the full instruction it stands for, not a repeat of its label — that text is what a later session sees. Anything said afterwards closes the offer.\n\
          - A message may carry files (`attachments`, each with a `path`). Open every one before acting on that message: the reviewer attached it because the words alone do not carry what they mean.\n",
     );
-    let catch_up = thread.catch_up_markdown(40);
+    out
+}
+
+/// Close a cold prompt with the durable conversation: the catch-up packet the
+/// caller assembled, and the structured report the last session ended on.
+///
+/// Kept newest-first inside the byte bound — a packet clipped from the front
+/// loses the oldest lines rather than the ones that just happened.
+pub(crate) fn append_durable_conversation(
+    mut out: String,
+    catch_up: &str,
+    thread: &crate::thread::Thread,
+) -> String {
     if !catch_up.is_empty() {
         out.push_str("\nCatch-up packet from the durable conversation (oldest to newest):\n");
         if catch_up.len() <= 12_000 {
-            out.push_str(&catch_up);
+            out.push_str(catch_up);
         } else {
             let mut boundary = catch_up.len() - 12_000;
             while !catch_up.is_char_boundary(boundary) {
@@ -802,10 +831,12 @@ impl Orchestrator {
         cwd: &Path,
         model_choice: &ModelChoice,
         continue_session: bool,
+        resume_session_id: Option<String>,
         mcp_session_token: &str,
     ) -> HarnessSpec {
         let options = SpawnOptions {
             continue_session,
+            resume_session_id,
             owner_id: owner_id.to_string(),
             mcp_session_token: mcp_session_token.to_string(),
             cwd: cwd.to_path_buf(),
@@ -889,7 +920,7 @@ impl Orchestrator {
         // being started to answer, so the dispatch reads all of it.
         let _ = active.agents.read_unread(&crate::store::now_rfc3339());
         let prompt = self.render_plan(&self.templates.plan, active, "");
-        Ok(AgentTurn::dispatched(prompt, &active.agents, "plan"))
+        Ok(AgentTurn::dispatched(prompt, "plan"))
     }
 
     /// Where this issue's planning agent works — the primary checkout, always,
@@ -1125,7 +1156,7 @@ impl Orchestrator {
         active.plan.apply(PlanEvent::SendNotes)?;
         active.last_error = None;
         let prompt = self.render_plan(&self.templates.revise, active, notes);
-        Ok(AgentTurn::posted(prompt, &active.agents, notes, "revise"))
+        Ok(AgentTurn::posted(prompt, notes, "revise"))
     }
 
     /// Make sure the plan has a workspace its agent can work in: the primary
@@ -1210,12 +1241,7 @@ impl Orchestrator {
             index,
             THREAD_NOTIFICATION,
         );
-        Ok(AgentTurn::posted(
-            prompt,
-            &active.agents,
-            THREAD_NOTIFICATION,
-            "revise",
-        ))
+        Ok(AgentTurn::posted(prompt, THREAD_NOTIFICATION, "revise"))
     }
 
     /// A freeform human message to the plan's agent (the plan-side `message`).
@@ -1261,12 +1287,7 @@ impl Orchestrator {
             active.plan.apply(event)?;
         }
         active.last_error = None;
-        Ok(AgentTurn::posted(
-            prompt,
-            &active.agents,
-            message,
-            "message",
-        ))
+        Ok(AgentTurn::posted(prompt, message, "message"))
     }
 
     /// Re-dispatch an interrupted plan phase in a fresh session (the plan-side
@@ -1299,7 +1320,7 @@ impl Orchestrator {
         };
         active.plan.apply(PlanEvent::Reply)?;
         active.last_error = None;
-        Ok(AgentTurn::dispatched(prompt, &active.agents, "revise"))
+        Ok(AgentTurn::dispatched(prompt, "revise"))
     }
 
     /// Abandon a plan from any non-terminal state: kill the plan agent, mark
@@ -1455,8 +1476,7 @@ impl Orchestrator {
             last_error: None,
         };
 
-        let agent_id = active.agents.first().id.clone();
-        let turn = self.open_implementation(&mut active, plan_link, &agent_id);
+        let turn = self.open_implementation(&mut active, plan_link);
         Ok((active, turn))
     }
 
@@ -1519,7 +1539,7 @@ impl Orchestrator {
             .add(&active.run.id.0, model_choice, &crate::store::now_rfc3339())
             .id
             .clone();
-        let turn = self.open_implementation(active, plan_link, &agent_id);
+        let turn = self.open_implementation(active, plan_link);
         Ok((turn, agent_id))
     }
 
@@ -1529,12 +1549,7 @@ impl Orchestrator {
     /// Multi-stage plan → the first stage's build session (progress record
     /// created, stage diff pinned to the materialization commit); a single-doc
     /// plan → the whole-plan build prompt.
-    fn open_implementation(
-        &self,
-        active: &mut ActiveRun,
-        plan_link: &ActivePlan,
-        agent_id: &str,
-    ) -> AgentTurn {
+    fn open_implementation(&self, active: &mut ActiveRun, plan_link: &ActivePlan) -> AgentTurn {
         let prompt = if plan_link.is_multi_stage() {
             let first_stage = &plan_link.stages[0];
             active.current_stage_id = Some(first_stage.id.clone());
@@ -1551,12 +1566,7 @@ impl Orchestrator {
         } else {
             self.render_run(&self.templates.build, active, "", &plan_link.stages)
         };
-        let thread = &active
-            .agents
-            .by_id(agent_id)
-            .expect("the implementing agent is on the run's own roster")
-            .thread;
-        AgentTurn::dispatched(prompt, thread, "build")
+        AgentTurn::dispatched(prompt, "build")
     }
 
     /// Materialize a plan's canonical docs into a fresh run worktree and
@@ -1783,7 +1793,7 @@ impl Orchestrator {
                 ..crate::templates::Vars::default()
             },
         );
-        Some(AgentTurn::dispatched(rendered, &active.agents, "triage"))
+        Some(AgentTurn::dispatched(rendered, "triage"))
     }
 
     /// A stage build/fix session reported done(completed): commit the stage's
@@ -1879,7 +1889,7 @@ impl Orchestrator {
         );
         Ok(ReportConsumed {
             outcome: ReportOutcome::Applied,
-            next: Some(AgentTurn::dispatched(prompt, &active.agents, "validate")),
+            next: Some(AgentTurn::dispatched(prompt, "validate")),
         })
     }
 
@@ -2096,7 +2106,7 @@ impl Orchestrator {
             doc_index,
             "",
         );
-        Ok(AgentTurn::dispatched(prompt, &active.agents, "build"))
+        Ok(AgentTurn::dispatched(prompt, "build"))
     }
 
     /// Send a validation-failed stage back to a fresh fix session (the run-side
@@ -2142,7 +2152,7 @@ impl Orchestrator {
             doc_index,
             note,
         );
-        Ok(AgentTurn::dispatched(prompt, &active.agents, "build"))
+        Ok(AgentTurn::dispatched(prompt, "build"))
     }
 
     /// Submit a batch of diff comments (the run-side `request_changes`): put the
@@ -2186,17 +2196,14 @@ impl Orchestrator {
             comments,
             plan_stage_docs,
         );
-        let conversation = &active
+        // The agent whose conversation the reviewer was reading has to be on
+        // this run's roster: the turn is addressed to it, and a name that is
+        // not here is a caller error rather than a turn for somebody else.
+        active
             .agents
             .resolve(conversation_agent)
-            .map_err(OrchestratorError::Gate)?
-            .thread;
-        Ok(AgentTurn::posted(
-            rendered,
-            conversation,
-            comments,
-            "revise",
-        ))
+            .map_err(OrchestratorError::Gate)?;
+        Ok(AgentTurn::posted(rendered, comments, "revise"))
     }
 
     /// A freeform human message to the run's agent (the run-side `message`). A
@@ -2260,12 +2267,7 @@ impl Orchestrator {
             active.run.apply(event)?;
         }
         active.last_error = None;
-        Ok(AgentTurn::posted(
-            prompt,
-            &active.agents,
-            message,
-            "message",
-        ))
+        Ok(AgentTurn::posted(prompt, message, "message"))
     }
 
     /// Re-dispatch an interrupted build phase in a fresh session (the run-side
@@ -2287,7 +2289,7 @@ impl Orchestrator {
         };
         active.run.apply(RunEvent::Reply)?;
         active.last_error = None;
-        Ok(AgentTurn::dispatched(prompt, &active.agents, "resume"))
+        Ok(AgentTurn::dispatched(prompt, "resume"))
     }
 
     /// An interrupted multi-stage build phase, routed by the current stage's
@@ -2562,12 +2564,7 @@ impl Orchestrator {
             doc_index,
             THREAD_NOTIFICATION,
         );
-        Ok(AgentTurn::posted(
-            prompt,
-            &active.agents,
-            THREAD_NOTIFICATION,
-            "revise",
-        ))
+        Ok(AgentTurn::posted(prompt, THREAD_NOTIFICATION, "revise"))
     }
 
     /// Consume a mid-run stage-doc revision's `done(revise)`: ingest the revised
@@ -5326,8 +5323,7 @@ mod tests {
 
     #[test]
     fn conversation_prompt_instructs_clarifying_reply_for_ambiguous_comments() {
-        let thread = crate::thread::Thread::new("run-1");
-        let prompt = conversation_prompt("do the work", &thread);
+        let prompt = conversation_prompt("do the work");
         assert!(prompt.contains("Build conversation protocol"), "{prompt}");
         assert!(
             prompt.contains("either a question or a directive"),

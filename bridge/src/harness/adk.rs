@@ -460,6 +460,17 @@ impl AgentSession for AdkSession {
     ///
     /// A second ask while one is outstanding replaces it: asking twice to stop
     /// the same turn is one ask.
+    ///
+    /// A press with no turn open is a press that arrived too late — the control
+    /// is offered off a digest up to 1.6s old, so the result can close the turn
+    /// inside that window or race the ask by milliseconds. Nothing is recorded
+    /// and nothing is written: the turn the human meant to stop is already
+    /// over, so the ask is satisfied, and the message the press rode in on is
+    /// delivered as the ordinary turn it now is. Recording it would leak the
+    /// interrupt into THAT turn, whose own result would then hand `Working` to
+    /// nothing and clear its own error; writing it would hand a child that
+    /// announced `interrupt_cancel_queued_v1` a request that could take the
+    /// queued turn with it.
     fn interrupt(&self) -> Result<(), HarnessError> {
         if !self.can_interrupt() {
             return Err(HarnessError::Unsupported(
@@ -473,14 +484,22 @@ impl AgentSession for AdkSession {
             "request": { "subtype": "interrupt" },
         })
         .to_string();
-        // Recorded before the write rather than after it: the child can answer
-        // faster than this thread reaches its next lock, and an ack that
-        // arrived before the record existed would read as somebody else's.
-        self.state.lock().unwrap().pending_interrupt = Some(PendingInterrupt {
-            request_id,
-            acked: false,
-            steered: false,
-        });
+        {
+            // Recorded before the write rather than after it: the child can
+            // answer faster than this thread reaches its next lock, and an ack
+            // that arrived before the record existed would read as somebody
+            // else's. Under the same lock as the turn it is recorded against,
+            // so a result cannot close that turn in between.
+            let mut state = self.state.lock().unwrap();
+            if !state.turn_open {
+                return Ok(());
+            }
+            state.pending_interrupt = Some(PendingInterrupt {
+                request_id,
+                acked: false,
+                steered: false,
+            });
+        }
         if let Err(refused) = self.write_line(&line) {
             self.state.lock().unwrap().pending_interrupt = None;
             return Err(refused);
@@ -895,6 +914,12 @@ pub(crate) mod fake {
         /// assumed: a response naming another request is noise, and the turn's
         /// own failure keeps its epitaph.
         AnotherRequest,
+        /// The one asked, and NOTHING else: an interrupt that lands between
+        /// turns has no turn to end, so no result follows the ack. What makes
+        /// an interrupt recorded against a finished turn observable — the next
+        /// result to arrive is then the NEXT turn's, and a session that took it
+        /// as the stopped turn's would swallow that turn whole.
+        WithNoTurnToStop,
     }
 
     /// A fake stream-json harness: it announces its session after a beat, then
@@ -950,6 +975,24 @@ pub(crate) mod fake {
         harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest, None)
     }
 
+    /// A recording child with nothing to stop: it acks a `control_request` and
+    /// emits no result, because an interrupt that lands between turns ends no
+    /// turn. Both halves matter to the stale press — the recorder says whether
+    /// the press was spoken at all, and the missing result is what leaves the
+    /// NEXT turn's result the only one there is.
+    pub(crate) fn stream_json_harness_with_nothing_to_stop(
+        per_turn: &[&str],
+        heard: &std::path::Path,
+    ) -> HarnessSpec {
+        harness_replaying(
+            INIT,
+            per_turn,
+            true,
+            Acknowledged::WithNoTurnToStop,
+            Some(heard),
+        )
+    }
+
     fn harness_replaying(
         init: &str,
         per_turn: &[&str],
@@ -968,8 +1011,14 @@ pub(crate) mod fake {
         // The one place the script interpolates rather than quoting a recording:
         // the id it echoes is a value it read at runtime.
         let echoed = match acknowledged {
-            Acknowledged::TheOneAsked => "\"$asked\"",
+            Acknowledged::TheOneAsked | Acknowledged::WithNoTurnToStop => "\"$asked\"",
             Acknowledged::AnotherRequest => "nobody-asked-this",
+        };
+        // The result that closes the turn the interrupt stopped — unless there
+        // was no turn to stop, in which case the ack is the whole answer.
+        let stopped_turn = match acknowledged {
+            Acknowledged::WithNoTurnToStop => String::new(),
+            _ => format!("printf '%s\\n' '{FAILED_RESULT}'\n"),
         };
         let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n");
         script.push_str(match turn_after_turn {
@@ -987,7 +1036,7 @@ pub(crate) mod fake {
              *control_request*)\n\
              asked=$(printf '%s' \"$turn\" | sed -n 's/.*\"request_id\":\"\\([^\"]*\\)\".*/\\1/p')\n\
              printf '{{\"type\":\"control_response\",\"response\":{{\"subtype\":\"success\",\"request_id\":\"%s\"}}}}\\n' {echoed}\n\
-             printf '%s\\n' '{FAILED_RESULT}'\n\
+             {stopped_turn}\
              ;;\n\
              *)\n\
              {replay}\
@@ -1558,12 +1607,15 @@ mod tests {
         )));
         wait_for_status(&session, AgentStatus::Waiting);
 
+        // A turn to stop: this child never answers one, so it stays open, and
+        // an ask only travels while a turn is open.
+        session.send_turn(&Turn::new("rewrite everything")).unwrap();
         session.interrupt().expect("this child advertised one");
         session.interrupt().expect("asking twice is allowed");
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut written = Vec::new();
-        while Instant::now() < deadline && written.len() < 2 {
+        while Instant::now() < deadline && written.len() < 3 {
             written = std::fs::read_to_string(&capture)
                 .unwrap_or_default()
                 .lines()
@@ -1572,8 +1624,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
 
-        assert_eq!(written.len(), 2, "one line per ask: {written:?}");
-        for asked in &written {
+        assert_eq!(
+            written.len(),
+            3,
+            "the turn, then one line per ask: {written:?}"
+        );
+        assert_eq!(written[0]["type"], "user", "{written:?}");
+        let written = &written[1..];
+        for asked in written {
             assert_eq!(asked["type"], "control_request");
             assert_eq!(asked["request"]["subtype"], "interrupt");
             assert!(
@@ -1664,6 +1722,67 @@ mod tests {
             session.epitaph().as_deref(),
             Some("the tool call was refused"),
             "an interrupt the child never acted on does not excuse the turn's own failure"
+        );
+        session.end();
+    }
+
+    /// A press that lands after the turn it meant to stop has already ended.
+    ///
+    /// The control is offered off a digest up to 1.6s old, so a result can land
+    /// inside that window — or race the ask by milliseconds. The rule is the
+    /// one the take-on-result holds: an interrupt can never leak into the turn
+    /// AFTER it, and taking the pending on a result only holds that when a
+    /// result intervenes. Recorded against a turn already closed, the pending
+    /// would be marked `steered` by the send that follows, and that turn's OWN
+    /// result would then hand `Working` to nothing — a session reporting
+    /// `Working` with nothing running, which the idle sweep will not demote,
+    /// since it demotes only what is not working — while clearing that turn's
+    /// own error from the epitaph.
+    #[test]
+    fn a_press_that_lands_between_turns_leaves_the_next_turn_alone() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let heard = dir.path().join("heard.jsonl");
+        let session = open(&stream_json_harness_with_nothing_to_stop(
+            &[FAILED_RESULT],
+            &heard,
+        ));
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        // A turn runs and its result closes it — the window the press lands in.
+        session.send_turn(&Turn::new("drop the index")).unwrap();
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        // The human presses stop on that turn, a moment too late, and the
+        // message rides along the way the composer sends it.
+        session.interrupt().expect("this child advertised one");
+        session.send_turn(&Turn::new("try the other file")).unwrap();
+        assert_eq!(session.status(), AgentStatus::Working);
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        assert_eq!(
+            session.epitaph().as_deref(),
+            Some("the tool call was refused"),
+            "the new turn failed on its own account; no interrupt of an older turn excuses it"
+        );
+
+        // And the child was never told to stop a turn it had already finished.
+        // Not merely tidy: the live CLI announces `interrupt_cancel_queued_v1`,
+        // so a `control_request` sent with nothing running is a request that
+        // could take the queued turn with it.
+        let kinds: Vec<String> = std::fs::read_to_string(&heard)
+            .expect("the child kept what it heard")
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).expect("a protocol line")["type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["user", "user"],
+            "a press with no turn open is not spoken to the child at all"
         );
         session.end();
     }

@@ -1431,6 +1431,25 @@ the first stdin message. Everything below follows from those four facts.
   `send_turn`'s, for `send_turn`'s reason — the in-place nudge speaks from under
   the app-wide state lock.
 
+- **Unless there is no turn open, in which case it writes nothing and returns
+  `Ok`.** The control is offered off a digest up to 1.6s old, so the result can
+  close the turn inside that window, or race the ask by milliseconds. Such a
+  press is one that arrived too late: the turn the human meant to stop is
+  already over, so the ask is satisfied and the message it rode in on is
+  delivered as the ordinary turn it now is. The guard is one `if` under the
+  same lock the pending interrupt is recorded under, and it is doing two jobs:
+  - **Nothing is recorded.** Taking the pending on a result holds the "an
+    interrupt can never leak into the turn after it" rule only when a result
+    intervenes. A pending recorded against a turn already closed is marked
+    `steered` by the send that follows, and that turn's OWN result then sets
+    `turn_open = steered = true` with nothing running — the session reports
+    `Working` indefinitely (blocking the idle sweep, which demotes only what is
+    not working) and that turn's real error is cleared from the epitaph.
+  - **Nothing is written.** The live child announces
+    `interrupt_cancel_queued_v1`, so a `control_request` sent with nothing
+    running is a request that could take the queued turn with it. An
+    unmatched ack, were one to come anyway, is already ignored as noise.
+
 - **What the reader does with the ack.** `ProtocolState` holds at most one
   outstanding interrupt:
 
@@ -1746,7 +1765,13 @@ The tests the step is written first as, all against that child:
 10. a session that ends having never announced clears the persisted id;
 11. in the SPA: `can_interrupt` absent renders the plain Send; `working` plus
     `can_interrupt` renders the split with Send as the default; choosing the
-    alternative posts `interrupt: true`.
+    alternative posts `interrupt: true`;
+12. a press that lands between turns — the turn's result has already closed it
+    — is not spoken to the child at all, and the turn sent behind it ends
+    `Waiting` with its own error kept. Against a child that acks a
+    `control_request` and emits NO result of its own, since a turn that was
+    never running has none to end: the only result that follows is the next
+    turn's, which is exactly what a leaked pending would swallow.
 
 ---
 

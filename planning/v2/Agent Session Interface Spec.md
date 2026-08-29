@@ -1403,8 +1403,17 @@ the first stdin message. Everything below follows from those four facts.
 > would pass with the flag ignored. So `adk::fake` grew a stdin recorder, and
 > test 7 asserts the sequence `user`, `control_request`, `user` — the order
 > §8.3 exists to hold, read off the wire.
-
-#### 8.1 The carrier's interrupt
+>
+> **Live-verified against claude 2.1.236 (2026-08-28), interrupt included.**
+> The final review added a second ignored test beside the steering one,
+> `real_adk_session_interrupts_mid_tool`, and ran both against the real binary.
+> Steering: a follow-up written mid-tool decided the same turn's outcome (no
+> second turn, no drop). Interrupt: the child announced
+> `interrupt_receipt_v1`, the `control_request` written while a 120-second
+> tool ran cut the turn 8 seconds after the ask, the interrupted result left
+> no epitaph, and the steering turn queued behind the interrupt ran in the
+> same session — it wrote the file whose name only the FIRST message carried,
+> which is what proves the conversation survived its own stop.
 
 `AdkSession` gains the two calls §3 adds, both answered from the protocol.
 

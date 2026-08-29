@@ -1871,4 +1871,156 @@ mod tests {
         );
         session.end();
     }
+
+    /// The other live claim: the native interrupt, against the REAL wire. While
+    /// a real turn sits inside a slow tool, `interrupt()` writes the
+    /// `control_request`; the live child must ack it, close the stopped turn
+    /// with `error_during_execution`, and run the steering turn queued behind
+    /// the interrupt in the SAME session. Three things only the real binary can
+    /// prove: the ack arrives (the epitaph clearing hangs on it — an unacked
+    /// interrupt would leave `error_during_execution` reading as a crash), the
+    /// stopped tool never finishes, and the conversation survives its own stop.
+    ///
+    /// Ignored by default for the same reason as the steering test above; run
+    /// with the same `cargo test --lib real_adk -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    fn real_adk_session_interrupts_mid_tool() {
+        use crate::harness::Harness;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("fresh-worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mcp = workspace.join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        AdkHarness.prepare_workspace(&workspace);
+
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+
+        let (session, mut activity) =
+            AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                while let Ok(event) = activity.blocking_recv() {
+                    let line = match &event {
+                        AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
+                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                    };
+                    eprintln!("[activity] {line}");
+                    seen.lock().unwrap().push(line);
+                }
+            });
+        }
+
+        let wait_until = |what: &str, deadline: Duration, test: &dyn Fn() -> bool| {
+            let started = Instant::now();
+            while !test() {
+                assert!(started.elapsed() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+
+        // A turn that parks inside a tool long enough to be stopped: if the
+        // interrupt were silently ignored, this sleep runs its full two minutes
+        // and the deadline math below catches it.
+        session
+            .send_turn(&Turn::new(concat!(
+                "You are being driven by an automated test. Do exactly this and nothing ",
+                "else, then stop. First, use the Bash tool to run exactly: sleep 120\n",
+                "After the sleep finishes, write a file named answer.txt in the current ",
+                "directory whose entire contents are exactly the single word: APPLE",
+            )))
+            .unwrap();
+        // The turn just written holds status at `Working`, so init's arrival is
+        // observed through the capability it carries: `can_interrupt()` turns
+        // true the moment the child's own line announces
+        // `interrupt_receipt_v1`. A timeout here means the live CLI stopped
+        // advertising it — and then this leg proves nothing.
+        wait_until(
+            "the child to announce its interrupt",
+            Duration::from_secs(30),
+            &|| session.can_interrupt(),
+        );
+        wait_until("the sleep tool to start", Duration::from_secs(90), &|| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.starts_with("tool_use") && line.contains("sleep"))
+        });
+
+        // The same berth the steering test gives the CLI's loop transition.
+        std::thread::sleep(Duration::from_secs(3));
+        let interrupted_at = Instant::now();
+        session.interrupt().expect("the child advertised one");
+        // The daemon's steering order, from `nudge_live_agent_tab`: stop, then
+        // hand over. The steering message names nothing the first one did not,
+        // so the right file appearing is also proof the conversation survived.
+        session
+            .send_turn(&Turn::new(concat!(
+                "You were interrupted on purpose; that is expected. Do not sleep again. ",
+                "Write the same file the first message named, but its entire contents ",
+                "must be exactly the single word: CHERRY. Then stop.",
+            )))
+            .unwrap();
+        eprintln!("[interrupt] control_request written mid-sleep, steering turn queued behind it");
+
+        // Status must hold `Working` across the interrupted turn's result — the
+        // steered hand-off — so `Waiting` here means the steering turn ended in
+        // its own result.
+        wait_until(
+            "the steering turn to end",
+            Duration::from_secs(240),
+            &|| matches!(session.status(), AgentStatus::Waiting),
+        );
+        let settled_after = interrupted_at.elapsed();
+
+        let answer = std::fs::read_to_string(workspace.join("answer.txt"))
+            .expect("the steering turn should have written answer.txt");
+        eprintln!(
+            "[verdict] answer.txt = {:?}; settled {}ms after the interrupt; epitaph: {:?}",
+            answer.trim(),
+            settled_after.as_millis(),
+            session.epitaph(),
+        );
+        assert!(
+            settled_after < Duration::from_secs(110),
+            "the whole stop-and-steer took {}ms — longer than the sleep it was meant to cut short, so the turn was never stopped",
+            settled_after.as_millis()
+        );
+        assert_eq!(
+            answer.trim(),
+            "CHERRY",
+            "the steering turn must decide the file, in the same conversation"
+        );
+        assert_eq!(
+            session.epitaph(),
+            None,
+            "the human stopped it — an epitaph here means the ack was missed and error_during_execution read as a crash"
+        );
+        assert!(
+            !matches!(session.status(), AgentStatus::Ended { .. }),
+            "an interrupted session is the same session, still alive"
+        );
+        session.end();
+    }
 }

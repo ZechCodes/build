@@ -417,7 +417,7 @@ be fixed in the same change that introduces the new kinds. Both are now decided.
 **Decided 2026-08-20:** the catch-up packet a resumed agent is handed carries
 **only messages to and from the agent** — nothing else on the thread.
 
-`Thread::catch_up_markdown` (`bridge/src/thread.rs:2270`) took the last N items
+`Thread::catch_up_markdown` (`bridge/src/thread.rs:2337`) took the last N items
 by recency, N = 40, filtered only for completion messages:
 
 ```rust
@@ -622,9 +622,11 @@ one predicate is the whole of the new counting.
 conversation.** Counted = it is a message (either role — and outcome messages
 are messages since step 7, so §6.1's inversion carries into every reader
 below by construction) or an attention-classed event (Build calling the
-human: `Triaged`, `IdleUnreported`, `Interrupted`, `RunFailed`…). Every
-Status-classed event — the four activity kinds, and the quiet lifecycle
-markers with them — rides free. In Rust this is one new reading,
+human: `Blocked`, `IdleUnreported`, `Interrupted`, `RunFailed`, `Merged`…).
+Every Status-classed event rides free — the four activity kinds, and the
+quiet lifecycle markers with them, `Triaged` among them: triage orders what
+the reviewer reads and asks nothing of them, so it never marks the entry
+unread and never buys a slot here. In Rust this is one new reading,
 `ThreadItem::counted()` = `matches!(item, Message(_)) ||
 attention_reason().is_some()`; in SQL it is `message = 1 OR attention = 1`
 over two hoisted columns, and a test holds the two readings equal across
@@ -693,7 +695,7 @@ the `EXPLAIN QUERY PLAN` test that pins `THREAD_PAGE_SQL` /
   own: a packet baked at queue time misses messages posted while the turn
   waited for the lock; one composed at delivery does not.
 - **One behavior change, owned:** `PendingAgentTurn::for_recovery`
-  (`app.rs:931`) wraps cold *and* warm today, so a warm recovery currently
+  (`app.rs:919`) wraps cold *and* warm today, so a warm recovery currently
   receives a packet. It stops: a warm recovery is a live process that lived
   the conversation, the protocol block it keeps instructs
   `read_unread_messages`, and the packet there was belt-and-braces.
@@ -770,8 +772,8 @@ Everything that must become conditional. This is the actual size of the work.
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | one pump per capability — **shipped**: `spawn_tab_pumps` starts the byte pump for a terminal and the activity pump for a session that reports itself |
 | `mark_idle_tasks` (`app.rs:5860`) | demotes on `quiet_for` + `last_delivered_at` | **shipped**: `status()` not `Working` is the first conjunct, a no-op for the PTY |
 | `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
-| `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped**; read from the store when the tail is starved (§6.3, step 9) |
-| `Thread::items` (`thread.rs:1191`) | resident tail of 200 items, older items paged from SQLite | residency unchanged — activity rows ride the same tail; the pages and the packet stop counting them (§6.3, step 9) |
+| `catch_up_markdown` (`thread.rs:2337`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped**; read from the store when the tail is starved (§6.3, step 9) |
+| `Thread::items` (`thread.rs:1255`) | resident tail of 200 items, older items paged from SQLite | residency unchanged — activity rows ride the same tail; the pages and the packet stop counting them (§6.3, step 9) |
 
 ### SPA
 

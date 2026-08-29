@@ -1128,6 +1128,14 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .composer-send { display:inline-flex; align-items:center; gap:6px; border-radius:9px;
   padding:6px 12px; font-size:12.5px; }
 .composer-send svg { width:15px; height:15px; }
+/* Send has a second shape: the split that offers the interrupting send to an
+   agent mid-turn. It is the same compact button — a control that changes size
+   under the poll would move the whole row — with the caret taking the arrow's
+   place at its right edge. */
+.composer-send-control { display:inline-flex; }
+.composer-actions .splitbtn .btn { border-radius:9px; padding:6px 12px; font-size:12.5px; }
+.composer-actions .splitbtn .btn:not(.caret) { border-top-right-radius:0; border-bottom-right-radius:0; }
+.composer-actions .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; padding:6px 9px; }
 .composer-attach { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
   border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
 .composer-attach:hover { background:var(--panel); color:var(--ink2); }

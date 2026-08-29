@@ -20,12 +20,16 @@ const VARIANT_BUTTON_CLASS = {
  *
  *  `danger` marks the option's MENU item, never the button chrome: a
  *  destructive verb says what it costs in the confirmation it opens, and a
- *  primary button painted half-accent half-red reads as neither. */
-export function splitButtonMarkup(options, { variant = "primary" } = {}) {
+ *  primary button painted half-accent half-red reads as neither.
+ *
+ *  `primaryId` names the default button for a caller that wires it by id
+ *  rather than through `mountSplitButton` — the composer's send, which is one
+ *  button in two shapes and must be found by one lookup either way. */
+export function splitButtonMarkup(options, { variant = "primary", primaryId = "" } = {}) {
   const buttonClass = VARIANT_BUTTON_CLASS[variant];
   if (!buttonClass) throw new Error(`unknown split button variant: ${variant}`);
   const primary = options[0];
-  const primaryButton = `<button class="${buttonClass}" data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
+  const primaryButton = `<button class="${buttonClass}"${primaryId ? ` id="${esc(primaryId)}"` : ""} data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
   if (options.length === 1) return `<div class="splitbtn">${primaryButton}</div>`;
   const items = options
     .map(

@@ -59,6 +59,15 @@ describe("splitButtonMarkup", () => {
     expect(html).not.toContain("primary");
   });
 
+  // The composer's send is wired by id — one lookup finds it whether it is the
+  // plain button or the primary half of a split — so the caller can name it.
+  it("names the primary button when the caller asks it to", () => {
+    const html = splitButtonMarkup([MERGE, KEEP], { primaryId: "railsend" });
+    expect(html).toMatch(/<button class="btn primary" id="railsend" data-action="merge_prune"/);
+    expect(html).not.toContain('class="btn primary caret" id=');
+    expect(splitButtonMarkup([MERGE, KEEP])).not.toContain(" id=");
+  });
+
   it("refuses a variant that is not part of the vocabulary", () => {
     expect(() => splitButtonMarkup([MERGE], { variant: "chunky" })).toThrow(/unknown split button variant: chunky/);
   });

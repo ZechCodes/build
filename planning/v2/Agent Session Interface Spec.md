@@ -584,11 +584,12 @@ its own — not smuggled in behind an activity feed. The jsonl log can be migrat
 into a database later; it cannot be un-migrated out of the aggregate record once
 the write amplification has been shipped.
 
-### 6.3 Activity must not flood the resident tail — open
+### 6.3 Activity must not flood the resident tail — designed, implementing
 
 > **Merged from main's reconciliation of this spec (written 2026-08-23, merged
-> 2026-08-28). Not implemented** — steps 4 and 6 shipped without it, so this is
-> the one §6 obligation still open now that a headless carrier is live.
+> 2026-08-28)** — steps 4 and 6 shipped without it, so this was the one §6
+> obligation still open once a headless carrier was live. **Designed
+> 2026-08-29** ("The fix, designed" below); §10 step 9 is the implementation.
 
 A conversation is no longer fully resident: a boot reads the newest
 `RESIDENT_CONVERSATION_TAIL` items (200, `store.rs:477`) and pages the rest
@@ -607,11 +608,151 @@ the human and the agent exchanged out of the tail. Two silent failures follow:
   thing anyone said somewhere below them.
 
 So activity must not be counted against either bound: the catch-up packet is
-built from a store query for messages rather than the resident tail (the store
-already tells the kinds apart — a `WHERE`, not a scan), and the page a client
+built from a store query for messages rather than the resident tail (a
+`WHERE`, not a scan — though the store must first be taught to ask it: only
+`attention` is hoisted out of the item JSON today), and the page a client
 opens on is measured in conversation, with the activity between two messages
 travelling folded beside them instead of consuming the budget that decides how
 far back the human can see.
+
+**The fix, designed 2026-08-29.** One hoisted column funds both remedies, and
+one predicate is the whole of the new counting.
+
+**The predicate: an item is *counted* when the human reads it as
+conversation.** Counted = it is a message (either role — and outcome messages
+are messages since step 7, so §6.1's inversion carries into every reader
+below by construction) or an attention-classed event (Build calling the
+human: `Triaged`, `IdleUnreported`, `Interrupted`, `RunFailed`…). Every
+Status-classed event — the four activity kinds, and the quiet lifecycle
+markers with them — rides free. In Rust this is one new reading,
+`ThreadItem::counted()` = `matches!(item, Message(_)) ||
+attention_reason().is_some()`; in SQL it is `message = 1 OR attention = 1`
+over two hoisted columns, and a test holds the two readings equal across
+every kind.
+
+**Schema v3 hoists `message`.** `thread_items` keeps each item whole in its
+JSON column and hoists only what SQL must filter on — today that is
+`attention` alone (`store.rs:427`), so "message or event" is not yet a
+question the store can put in a `WHERE`. The migration repeats the v1→v2
+precedent exactly (`add_attention_column` / `classify_stored_items`,
+`store.rs:625/644`): a `message INTEGER NOT NULL DEFAULT 0` column added
+before the schema batch (the new index names it), written where
+`write_agents` already writes `attention` (`store.rs:933`), backfilled in
+Rust by decoding rows — no `json_extract` dependency — and `SCHEMA_VERSION`
+bumped to 3, with the v1 path running both classifiers. One partial index
+serves both new queries: `thread_items_conversation ON thread_items(agent_id,
+sequence) WHERE message = 1 OR attention = 1`. Each new statement repeats
+that predicate verbatim so the planner's implication check is trivial, and
+the `EXPLAIN QUERY PLAN` test that pins `THREAD_PAGE_SQL` /
+`THREAD_CURSOR_SQL` (`store.rs:2299`) grows to pin these two.
+
+**Remedy 1 — the catch-up packet reads the store when the tail is starved.**
+
+- **The query.** A store fn beside `thread_page`:
+  `thread_message_page(agent_id, limit)` — `SELECT item … WHERE agent_id = ?1
+  AND (message = 1 OR attention = 1) AND message = 1 ORDER BY sequence DESC
+  LIMIT ?2`, reversed the way `read_thread_page` reverses. Messages only,
+  both roles, outcomes included because they are messages.
+- **N stays 40** (`CATCH_UP_MESSAGES`, replacing the literals at
+  `orchestrator.rs:654` and the router's call). §6.1 already made the limit
+  count messages and the 12 KB newest-first byte bound stays the real cap;
+  this remedy changes where the packet reads, never how much it says.
+- **The gate, and the common case.**
+  `Thread::catch_up_reaches_stored_history(limit)` — the sibling of
+  `page_reaches_stored_history` — is `earlier_item_count > 0 &&` resident
+  messages `< limit`. A thread whose store holds no history (everything
+  resident — the common small case, and every storeless test daemon) answers
+  `false` off two integers, touches no SQL, and hands a byte-identical
+  packet at today's speed. A long thread whose tail still holds 40 messages
+  is answered from memory too; only the starved tail pays the read, and it
+  is the one the fix exists for.
+- **The merge is the `wire_value_after_including_history` precedent**
+  (`thread.rs:2235`): store rows are admitted only below
+  `resident_from_sequence`, the tail is the fresher copy of everything it
+  still holds, and the chain then runs the same filter-take-reverse. (The
+  packet renders only fields that never mutate in place — role, outcome,
+  body, attachments — so the sequence filter is there to keep a row from
+  appearing twice, and the freshness rule is discipline held with the
+  precedent rather than a correctness need.) Composition lives in
+  `Thread::catch_up_markdown_including_history(history, limit)`, beside the
+  tail-only fn it extends.
+- **Where it runs: at delivery, not where the turn is built.**
+  `conversation_prompt` (`orchestrator.rs:635`) bakes the packet into
+  `AgentTurn.cold` at transition time, inside orchestrator fns that hold a
+  `&Thread` and no store. Rather than threading store reads through every
+  transition, the packet moves to the one door every cold prompt already
+  passes: `conversation_prompt` keeps the prompt + protocol block,
+  `PendingAgentTurn` gains `wants_catch_up: bool` (true from every
+  constructor except the router's push — a router is one decision long and
+  its prompt deliberately carries no packet), and
+  `deliver_pending_agent_turns` (`app.rs:17604`) composes the packet and the
+  `last_completion` block onto `cold` just before `deliver`, through an
+  App-level helper (gate → query → merge) that `router_read_conversation`
+  (`app.rs:8790`) calls too, so the router's read-only transcript stops
+  starving with the packet. Late binding is a small correctness gain of its
+  own: a packet baked at queue time misses messages posted while the turn
+  waited for the lock; one composed at delivery does not.
+- **One behavior change, owned:** `PendingAgentTurn::for_recovery`
+  (`app.rs:931`) wraps cold *and* warm today, so a warm recovery currently
+  receives a packet. It stops: a warm recovery is a live process that lived
+  the conversation, the protocol block it keeps instructs
+  `read_unread_messages`, and the packet there was belt-and-braces.
+- **Failure:** a store error at the drain logs and falls back to the
+  tail-built packet — a starved packet is today's behavior, and dropping the
+  turn would be worse than either.
+
+**Remedy 2 — the page is measured in conversation.**
+
+- **The counting rule, exact.** A page's `limit` buys **counted items**.
+  Walking newest→older from the seek, every item ships and the walk stops at
+  the `limit`-th counted item — so activity *between* the counted items
+  travels with the page uncounted, folded beside the messages it sits
+  between, and activity older than the page's oldest counted item waits for
+  the next page. A page stays one contiguous run of sequences.
+- **The ceiling.** A page ships at most `limit ×
+  THREAD_PAGE_SPAN_FACTOR` items, factor **10** — the hard bound that stops
+  an all-activity stretch from being unbounded. When the ceiling stops the
+  walk before the budget fills, the page ends higher and `has_more` says so;
+  the client scrolls again. Worst cases, stated: the default page of 60 → at
+  most 600 items; the clamp maximum 200 → at most 2000, only on an explicit
+  scroll-back ask; the `SMALLEST_THREAD_PAGE` polls (`thread_limit: 1`) → at
+  most 10 items a tick where they get exactly 1 today — which is why the
+  ceiling is a multiple of the budget rather than a flat constant.
+- **`has_more` and `oldest_sequence` keep their wire meaning exactly.**
+  `oldest_sequence` is the oldest item shipped, counted or rider; `has_more`
+  is whether items of any kind remain below it; `thread_total` still counts
+  every item. Pages abut at their seeks, so a client walking
+  `before_sequence = oldest_sequence` sees every row exactly once and skips
+  none.
+- **Where.** `Thread::wire_value_page` (`thread.rs:2286`) walks the new rule
+  over the tail. `page_reaches_stored_history` (`thread.rs:2022`) becomes
+  the counted gate: the store answers when `earlier_item_count > 0`,
+  resident counted items below the seek `< limit`, *and* resident items
+  below the seek are under the ceiling (a tail that fills the ceiling is a
+  full page from memory). The store fn beside `thread_page`:
+  `thread_conversation_page(agent_id, before, limit)` → `(items, has_more)`
+  — one seek down the partial index for the `limit`-th counted sequence
+  below the seek (`ORDER BY sequence DESC LIMIT 1 OFFSET limit − 1`; none
+  found → floor 0), one read of that span newest-first `LIMIT` ceiling,
+  reversed, and one `LIMIT 1` probe below the shipped floor for `has_more`.
+  `stored_thread_page` (`app.rs:10631`) calls it in place of
+  `thread_page(limit + 1)`; the raw `thread_page` stays for the boot's tail
+  read, which is unchanged — `RESIDENT_CONVERSATION_TAIL` still counts
+  items, because residency bounds this process's memory, not what the human
+  sees.
+
+**Wire and SPA, stated honestly.** No field changes meaning and none is
+added. What changes is composition: a page may carry more items than its
+`limit` — at most ten per unit — with `limit` bounding the conversation in
+it. The shipped client needs no change, for reasons read out of it rather
+than hoped: `absorbOlderPage` (`core/thread.js`) merges whatever items
+arrive and trusts the daemon's `has_more`; the gap check compares
+`thread_total`, whose meaning is unmoved; a page folds in only at its seek;
+nothing in `thread.js` assumes `items.length <= thread_limit`; and activity
+folding shipped with step 5. Mutation answers (`MUTATION_THREAD_PAGE`) and
+the smallest-page polls grow by at most the factor, bounded above. The
+Client check stage has one job: hold the merge path against an oversized
+page (more items than its `thread_limit`) — a test, not a change.
 
 ## 7. Terminal-coupled surfaces — the inventory
 
@@ -629,8 +770,8 @@ Everything that must become conditional. This is the actual size of the work.
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | one pump per capability — **shipped**: `spawn_tab_pumps` starts the byte pump for a terminal and the activity pump for a session that reports itself |
 | `mark_idle_tasks` (`app.rs:5860`) | demotes on `quiet_for` + `last_delivered_at` | **shipped**: `status()` not `Working` is the first conjunct, a no-op for the PTY |
 | `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
-| `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped** |
-| `Thread::items` (`thread.rs:1191`) | resident tail of 200 items, older items paged from SQLite | unchanged — activity rows ride the same tail and pages |
+| `catch_up_markdown` (`thread.rs:2270`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped**; read from the store when the tail is starved (§6.3, step 9) |
+| `Thread::items` (`thread.rs:1191`) | resident tail of 200 items, older items paged from SQLite | residency unchanged — activity rows ride the same tail; the pages and the packet stop counting them (§6.3, step 9) |
 
 ### SPA
 
@@ -1112,6 +1253,14 @@ Each step compiles, ships and is green on its own.
    share one capture point and one test child, so they are one step.
    **Shipped**: the bridge half in `66ad2ac`, `defa1be` and `f3ec04b`, §8.4 —
    the composer's split send — in `07980b3`, `8d114b4` and `7eb0398`.
+9. **Activity stops flooding the two bounds** — §6.3 as designed there: schema
+   v3 hoists `message` beside `attention` with one partial index over the
+   counted predicate; the catch-up packet composes at
+   `deliver_pending_agent_turns` from a store query when the tail is starved
+   (byte-identical and SQL-free for an all-resident thread); and a page's
+   `limit` buys counted items with activity riding free under a ×10 ceiling,
+   `has_more` / `oldest_sequence` / `thread_total` unmoved. Bridge-only; the
+   SPA's part is one oversized-page test.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -1876,6 +2025,26 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-29, §6.3 designed.** One hoisted column funds both remedies: an
+  item is *counted* when it is a message or an attention-classed event
+  (`ThreadItem::counted()` in Rust, `message = 1 OR attention = 1` in SQL —
+  schema v3 hoists `message` by the exact v1→v2 `attention` precedent, with
+  one partial index and the query-plan test extended). The catch-up packet
+  stays 40 messages and gains a store read only when the tail is starved: a
+  two-integer gate keeps the all-resident thread byte-identical and SQL-free,
+  the merge follows `wire_value_after_including_history` (store rows admitted
+  only below `resident_from_sequence`), and the packet composes at
+  `deliver_pending_agent_turns` instead of being baked at transition time —
+  late-bound, the router opting out, a warm recovery losing its redundant
+  copy, and a store error falling back to the tail-built packet rather than
+  dropping the turn. A page's `limit` buys counted items, activity rides free
+  between them, and a hard ceiling of ten items per unit of budget bounds the
+  pathological all-activity page (and the `thread_limit: 1` polls at ten a
+  tick); `has_more`, `oldest_sequence` and `thread_total` keep their wire
+  meanings and pages stay contiguous, so the shipped SPA needs no change —
+  held by reading `absorbOlderPage` and the `thread_total` gap check, with
+  the Client check stage owing only an oversized-page merge test. §10 gains
+  step 9.
 - **2026-08-28, the stale press.** The final review's one defect, fixed in
   `7e6c0d5`: `interrupt()` recorded its pending request without asking whether a
   turn was open, so a press that landed after the turn's own result had closed

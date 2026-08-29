@@ -3,12 +3,16 @@ import { renderMarkdown } from "./markdown.js";
 import { patchElement } from "./domPatch.js";
 import { completionReportSections } from "./agentRailModel.js";
 import {
+  INTERRUPT_SEND_OPTION,
   autoGrow,
   composerHtml,
+  composerPartIds,
   formatAttachmentSize,
   isImageAttachment,
   mountComposerAttachments,
+  sendControlHtml,
 } from "./composer.js";
+import { mountSplitMenu } from "./splitButton.js";
 
 const EVENT_META = {
   session_started: { label: "Agent session started", icon: "▶" },
@@ -1146,21 +1150,27 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments)` does the transport and resolves when the post
-/// has landed. `upload` (with the `readAttachments`/`writeAttachments` draft
-/// pair) turns the box into one that takes files; without it the composer is
-/// the plain text box it always was.
+/// `onSubmit(body, attachments, { interrupt })` does the transport and resolves
+/// when the post has landed — `interrupt` is true only where the send control
+/// offered the alternative and the writer chose it. `upload` (with the
+/// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
+/// takes files; without it the composer is the plain text box it always was.
+///
+/// Returns a controller: `setCanInterrupt(flag)` moves the send between its two
+/// shapes in place, for a surface whose poll can change the answer under a box
+/// somebody is typing in.
 /// The send button's word. It wraps its label so a busy state can rewrite the
-/// word without wiping the icon beside it; an older composer without the span
-/// is still driven directly.
+/// word without wiping the icon beside it; the split shape, which has no icon
+/// to protect, is driven directly.
 const sendLabel = (button) => button.querySelector(".composer-send-label") || button;
 
 export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft, onError, afterSubmit, upload, readAttachments, writeAttachments }) {
-  if (!root) return;
+  if (!root) return null;
   const input = root.querySelector(`#${ids.input}`);
-  const send = root.querySelector(`#${ids.send}`);
+  let send = root.querySelector(`#${ids.send}`);
+  const control = root.querySelector(`#${composerPartIds(ids.input).sendControl}`);
   const hint = ids.hint ? root.querySelector(`#${ids.hint}`) : null;
-  if (!input || !send) return;
+  if (!input || !send) return null;
 
   const say = (message) => {
     if (hint) hint.textContent = message;
@@ -1182,7 +1192,15 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
   };
   const fitToText = autoGrow(input);
 
-  const submit = async () => {
+  /// The caret half of a split send, when the control is wearing that shape.
+  const caretOf = () => control && control.querySelector(".caret");
+  const setPressable = (pressable) => {
+    send.disabled = !pressable;
+    const caret = caretOf();
+    if (caret) caret.disabled = !pressable;
+  };
+
+  const submit = async ({ interrupt = false } = {}) => {
     // A send is already in flight: the keyboard path has no disabled gate.
     if (send.disabled) return;
     if (tray && tray.busy()) {
@@ -1199,32 +1217,58 @@ export function wireThreadComposer(root, { ids, onSubmit, readDraft, writeDraft,
       input.focus();
       return;
     }
-    send.disabled = true;
+    setPressable(false);
     sendLabel(send).textContent = "sending…";
     try {
-      const result = await onSubmit(body, tray ? tray.attachments() : []);
+      const result = await onSubmit(body, tray ? tray.attachments() : [], { interrupt });
       writeDraft("");
       input.value = "";
       fitToText();
       if (tray) tray.clear();
-      send.disabled = false;
+      setPressable(true);
       sendLabel(send).textContent = "Send";
       if (afterSubmit) afterSubmit(result);
     } catch (error) {
       // The text and the files stay put: a failed send must never cost the user
       // their words, and re-picking the files would be worse.
-      send.disabled = false;
+      setPressable(true);
       sendLabel(send).textContent = "Send";
       if (onError) onError(error);
     }
   };
 
-  send.onclick = submit;
+  /// Take hold of whichever shape the send control is wearing. Called again
+  /// after a swap, because the buttons it wires are new elements.
+  const wireSendControl = () => {
+    send = root.querySelector(`#${ids.send}`);
+    if (!send) return;
+    send.onclick = () => submit();
+    if (control) {
+      mountSplitMenu(control, { onChoose: (action) => submit({ interrupt: action === INTERRUPT_SEND_OPTION.id }) });
+    }
+  };
+
+  /// Move the send between its two shapes. Never mid-press: a send in flight
+  /// owns the button's word, and an open menu is a choice being made — the
+  /// poll comes round again a second later, and by then the press has landed.
+  let splitShown = !!(control && control.querySelector(".splitmenu"));
+  const setCanInterrupt = (wanted) => {
+    const split = !!wanted;
+    if (!control || split === splitShown) return;
+    if (send.disabled || control.querySelector(".splitmenu:not([hidden])")) return;
+    control.innerHTML = sendControlHtml({ sendId: ids.send, canInterrupt: split });
+    splitShown = split;
+    wireSendControl();
+  };
+
+  wireSendControl();
   input.onkeydown = (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       submit();
     }
   };
+
+  return { setCanInterrupt };
 }
 

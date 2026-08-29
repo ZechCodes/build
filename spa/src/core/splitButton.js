@@ -60,6 +60,64 @@ export function createSingleFlight() {
   };
 }
 
+/** Wire the caret and the menu of a split button already in the DOM: the caret
+ *  toggles it, a press outside closes it, and choosing an item closes it and
+ *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
+ *  shut it for its own reasons — a press that starts working, say. A container
+ *  holding a lone button (no caret, no menu) wires nothing and the close is a
+ *  no-op.
+ *
+ *  Split out of `mountSplitButton` because the composer's send is a split
+ *  button whose press is NOT a single-flight action with a busy label: it is a
+ *  submit that restores its own button, and re-rendering it under the poll is
+ *  the composer's business. What both share is the menu. */
+export function mountSplitMenu(container, { onChoose }) {
+  const caret = container.querySelector(".caret");
+  const menu = container.querySelector(".splitmenu");
+
+  // The open menu's outside-press watch. It is armed in the same event cycle as
+  // the click that opens the menu — deferring it to a macrotask loses the race
+  // against a real pointer, whose press can land before the timer runs, so the
+  // menu shuts the instant it appears. Arming it immediately is safe because a
+  // press anywhere inside the split button (the caret that toggles it, the item
+  // being reached for) is not outside.
+  let stopWatchingOutsidePress = null;
+  const closeMenu = () => {
+    if (menu) menu.hidden = true;
+    if (stopWatchingOutsidePress) stopWatchingOutsidePress();
+  };
+  const openMenu = () => {
+    menu.hidden = false;
+    if (stopWatchingOutsidePress) return;
+    const onOutsidePress = (event) => {
+      if (container.querySelector(".splitbtn")?.contains(event.target)) return;
+      closeMenu();
+    };
+    document.addEventListener("pointerdown", onOutsidePress);
+    stopWatchingOutsidePress = () => {
+      document.removeEventListener("pointerdown", onOutsidePress);
+      stopWatchingOutsidePress = null;
+    };
+  };
+
+  if (caret && menu) {
+    caret.onclick = (event) => {
+      event.stopPropagation();
+      if (caret.disabled) return;
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    };
+    menu.querySelectorAll(".mi").forEach(
+      (mi) =>
+        (mi.onclick = () => {
+          closeMenu();
+          onChoose(mi.dataset.action);
+        }),
+    );
+  }
+  return { closeMenu };
+}
+
 /** What each container was last mounted from. A poll-driven caller remounts the
  *  same button over and over, and the markup is what says whether that remount
  *  would change anything at all. Keyed weakly: a container that goes away takes
@@ -89,32 +147,7 @@ export function mountSplitButton(container, { options, run, variant = "primary",
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
   const primary = container.querySelector(".btn:not(.caret)");
   const caret = container.querySelector(".caret");
-  const menu = container.querySelector(".splitmenu");
-
-  // The open menu's outside-press watch. It is armed in the same event cycle as
-  // the click that opens the menu — deferring it to a macrotask loses the race
-  // against a real pointer, whose press can land before the timer runs, so the
-  // menu shuts the instant it appears. Arming it immediately is safe because a
-  // press anywhere inside the split button (the caret that toggles it, the item
-  // being reached for) is not outside.
-  let stopWatchingOutsidePress = null;
-  const closeMenu = () => {
-    if (menu) menu.hidden = true;
-    if (stopWatchingOutsidePress) stopWatchingOutsidePress();
-  };
-  const openMenu = () => {
-    menu.hidden = false;
-    if (stopWatchingOutsidePress) return;
-    const onOutsidePress = (event) => {
-      if (container.querySelector(".splitbtn")?.contains(event.target)) return;
-      closeMenu();
-    };
-    document.addEventListener("pointerdown", onOutsidePress);
-    stopWatchingOutsidePress = () => {
-      document.removeEventListener("pointerdown", onOutsidePress);
-      stopWatchingOutsidePress = null;
-    };
-  };
+  const { closeMenu } = mountSplitMenu(container, { onChoose: (optionId) => invoke(optionId) });
 
   const invoke = async (optionId) => {
     if (!flight.begin()) return;
@@ -139,20 +172,4 @@ export function mountSplitButton(container, { options, run, variant = "primary",
   };
 
   primary.onclick = () => invoke(primary.dataset.action);
-
-  if (caret && menu) {
-    caret.onclick = (event) => {
-      event.stopPropagation();
-      if (caret.disabled) return;
-      if (menu.hidden) openMenu();
-      else closeMenu();
-    };
-    menu.querySelectorAll(".mi").forEach(
-      (mi) =>
-        (mi.onclick = () => {
-          closeMenu();
-          invoke(mi.dataset.action);
-        }),
-    );
-  }
 }

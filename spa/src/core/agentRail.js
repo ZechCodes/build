@@ -24,6 +24,7 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  agentCanInterrupt,
   agentHasTerminal,
   agentTitle,
   canRemoveAgent,
@@ -312,6 +313,10 @@ export function mountAgentRail(host, context) {
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
   // must not keep yanking focus back while the human is doing something else.
   let autofocusComposerPending = context.autofocusComposer === true;
+  // The pinned box's controller, for the one thing on it a poll can move: which
+  // shape the send control is wearing. Null whenever the panel is not showing
+  // the conversation.
+  let composerControl = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -538,6 +543,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
+      composerControl = null;
       if (shownMode === "tui") mountTui();
       else {
         wireComposer(panel);
@@ -657,7 +663,7 @@ export function mountAgentRail(host, context) {
     body.onscroll = () => {
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
     };
-    syncComposerPlaceholder();
+    syncComposer();
     reportRead(body);
   };
 
@@ -681,14 +687,18 @@ export function mountAgentRail(host, context) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
+        canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>`;
 
-  /// The placeholder is the only thing on the composer a poll can change — a
-  /// checkout Build owned nothing in a second ago now has an agent to talk to.
-  /// The element itself is never rebuilt, so the words are moved onto it.
-  const syncComposerPlaceholder = () => {
+  /// The two things on the composer a poll can change: the placeholder — a
+  /// checkout Build owned nothing in a second ago now has an agent to talk to —
+  /// and whether the send offers to stop the turn in flight, which moves every
+  /// time an agent starts or finishes one. The box itself is never rebuilt for
+  /// either: a rebuild would take the draft and the focus with it, mid-sentence.
+  const syncComposer = () => {
     const input = host.querySelector(`#${COMPOSER_IDS.input}`);
     if (input) input.placeholder = composerPlaceholder();
+    if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentOf(selectedId)));
   };
 
   const wireTimeline = (body) => {
@@ -707,7 +717,7 @@ export function mountAgentRail(host, context) {
   /// dropped anywhere on the conversation lands in the tray — the gesture aims
   /// at the agent, not at a 40px strip.
   const wireComposer = (panel) => {
-    wireThreadComposer(panel, {
+    composerControl = wireThreadComposer(panel, {
       ids: COMPOSER_IDS,
       readDraft: () => draftOf().body,
       writeDraft: (value) => writeDraft({ body: value }),
@@ -721,7 +731,7 @@ export function mountAgentRail(host, context) {
         const entityId = await ensureEntity();
         return App.call("thread.attach", { entity_id: entityId, filename: file.name, content_b64: contentBase64 });
       },
-      onSubmit: (message, attachments) => send(message, attachments),
+      onSubmit: (message, attachments, options) => send(message, attachments, options),
       onError: (error) => notifyError("Message failed", error.message),
     });
   };
@@ -805,7 +815,12 @@ export function mountAgentRail(host, context) {
     await refresh();
   };
 
-  const send = (body, attachments) => post({ body, attachments });
+  /** A typed message. `interrupt` rides on the post rather than travelling as a
+   *  verb of its own: Build never stops a turn without one to put in its place,
+   *  and a second round trip is a window in which the agent starts a fresh turn
+   *  or finishes. One send path, one flag. */
+  const send = (body, attachments, { interrupt = false } = {}) =>
+    post({ body, attachments, ...(interrupt ? { interrupt: true } : {}) });
 
   /** A press on the actions the agent suggested. It goes out as the message it
    *  is — same adoption, same waking, same refresh — and the daemon composes

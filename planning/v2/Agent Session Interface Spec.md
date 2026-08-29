@@ -1110,6 +1110,8 @@ Each step compiles, ships and is green on its own.
    `--continue` — the one step-6 bullet that did not ship. Detail below. The
    two halves are independent and the resume half may land first, but they
    share one capture point and one test child, so they are one step.
+   **The bridge half is shipped** (`66ad2ac`, `defa1be`, `f3ec04b`); §8.4, the
+   composer's split send, is what remains.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -1378,6 +1380,29 @@ Grounded in the step-6 probes above, not in a guess about the protocol: the
 native interrupt exists and is advertised, a mid-turn message is delivered at
 the next step boundary, `init` carries the session id and arrives only after
 the first stdin message. Everything below follows from those four facts.
+
+> **The bridge half shipped in `66ad2ac`, `defa1be` and `f3ec04b`** — §8.1,
+> §8.2, §8.3 and §8.5, as designed, with tests 1–10 of the list below. Three
+> things worth knowing, none of which changed a decision.
+>
+> **The `--resume` fallback is not one path but two.** §8.2's crash window says
+> a missing id falls back to `--continue`; the shipped `AdkHarness::spec` says
+> the same thing as one `match` over `resume_session_id`, so "never both" is a
+> shape rather than a rule anyone has to remember. The daemon still fills
+> `continue_session` unconditionally from the transcript probe, exactly as it
+> did — the name simply wins where there is one.
+>
+> **`agent_harness_spec` grew a parameter rather than a struct.** Its callers
+> are the one spawn reservation and five tests, and the alternative — folding
+> `continue_session` and `resume_session_id` into a resume enum — would have
+> touched `ClaudeHarness` and `CodexHarness`, which §8.2 says are untouched.
+>
+> **The daemon test reads the child's stdin.** What Build SAID is otherwise
+> invisible from outside the session: with an ordinary send and an interrupted
+> send both ending in a delivered turn, a test watching only what came back
+> would pass with the flag ignored. So `adk::fake` grew a stdin recorder, and
+> test 7 asserts the sequence `user`, `control_request`, `user` — the order
+> §8.3 exists to hold, read off the wire.
 
 #### 8.1 The carrier's interrupt
 
@@ -1778,6 +1803,14 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-28, step 8's bridge half shipped.** §8.1, §8.2, §8.3 and §8.5 as
+  designed, in `66ad2ac` (the trait's two calls and the PTY's refusal),
+  `defa1be` (the carrier: capability from `init`, the interrupted result read
+  as interrupted, the session id captured and spent as `--resume`) and
+  `f3ec04b` (the daemon: `thread.post`'s flag through `nudge_live_agent_tab`,
+  and `can_interrupt` on the digest). Tests 1–10 of §8.5's list, all against
+  the fake, none running a model turn. §8.4 — the composer's split send — is
+  what remains.
 - **2026-08-28, step 8 specified — the interrupt and the persisted session
   id.** The two things the live probes of step 6 made possible, designed
   against what the wire was actually observed doing. `AgentSession` gains

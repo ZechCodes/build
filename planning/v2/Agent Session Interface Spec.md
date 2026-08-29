@@ -591,7 +591,9 @@ the write amplification has been shipped.
 > obligation still open once a headless carrier was live. **Designed
 > 2026-08-29** ("The fix, designed" below); §10 step 9 is the implementation,
 > **shipped 2026-08-29** in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8` —
-> see the step-9 note in §10 for what the implementation decided.
+> see the step-9 note in §10 for what the implementation decided. The client
+> half is `c0d1b89`: the SPA needed **no change**, and the three tests that
+> prove it are the last thing §6.3 owed.
 
 A conversation is no longer fully resident: a boot reads the newest
 `RESIDENT_CONVERSATION_TAIL` items (200, `store.rs:477`) and pages the rest
@@ -757,6 +759,29 @@ folding shipped with step 5. Mutation answers (`MUTATION_THREAD_PAGE`) and
 the smallest-page polls grow by at most the factor, bounded above. The
 Client check stage has one job: hold the merge path against an oversized
 page (more items than its `thread_limit`) — a test, not a change.
+
+**Verdict, 2026-08-29 (`c0d1b89`): no change, and for the reasons read out
+above.** The whole of the SPA's paging is `createThreadCache`
+(`spa/src/core/thread.js`), reached from one surface (`agentRail.js`), and
+nothing in it counts items against a limit: the soundness check is
+`merged.length <= thread_total` — a window may not be larger than the
+conversation it is a window on, which an oversized page never is — and the
+deletion check predicts `thread_total` from `thread_total`, both meanings
+unmoved. `absorbOlderPage` merges whatever arrives, keyed by sequence and
+sorted, guarded by the seek rather than by any size. The `thread_limit` the
+client asks with is a request, which the comment above `FIRST_PAGE_ITEMS`
+already said.
+
+Three tests hold it, driven by a JS mirror of `page_span` so the fixtures are
+pages the daemon would actually cut. A first page of 360 items against a
+limit of 60 — eighty turns of five tool calls — opens a sound window and
+engages the forward cursor. A conversation dense enough for the ×10 ceiling
+to end its pages early (fifteen tool calls a turn, so the first page carries
+37 messages, not 60) still walks back to the start with every sequence seen
+exactly once and none skipped. And a poll delivering a turn's message plus
+its five tool calls does not trip the gap check, whose `thread_total` counts
+them. They are not vacuous: restoring an item-count bound to the soundness
+check fails all three.
 
 ## 7. Terminal-coupled surfaces — the inventory
 
@@ -1264,8 +1289,8 @@ Each step compiles, ships and is green on its own.
    (byte-identical and SQL-free for an all-resident thread); and a page's
    `limit` buys counted items with activity riding free under a ×10 ceiling,
    `has_more` / `oldest_sequence` / `thread_total` unmoved. Bridge-only; the
-   SPA's part is one oversized-page test. **Shipped** — see the note below;
-   the SPA's merge test is what remains.
+   SPA's part is one oversized-page test. **Shipped** — see the note below,
+   and `c0d1b89` for the client half, which was the test and nothing else.
 
 > **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
 > designed in §6.3. The two failures it exists for are the two tests that
@@ -1308,6 +1333,17 @@ Each step compiles, ships and is green on its own.
 > the seek asked for.** The ceiling can stop the read above that floor, and a
 > page that claimed to reach a floor it never sent would tell a client to seek
 > past rows it does not hold. The store's backward-walk test holds it.
+
+> **The client half is `c0d1b89`, and it is a test.** The judgement §6.3 asked
+> for came back the way that section had read it: the SPA's paging is one
+> cache (`createThreadCache`) reached from one surface, it bounds a window by
+> `thread_total` and by the seek a page was fetched at, and it counts nothing
+> — so a page carrying ten items per unit of budget merges the way any other
+> page does. The three tests drive that merge with pages cut by a JS mirror of
+> the daemon's `page_span`, including the ceiling case where a page ends
+> higher than the budget asked for, and all three fail if an item-count bound
+> is put back into the soundness check. The verdict, with what was read to
+> reach it, is at the end of §6.3.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -2072,6 +2108,16 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-29, §6.3 complete — the client half was a test.** `c0d1b89`. The
+  SPA needed no change, proven rather than assumed: `createThreadCache` is
+  the whole of the client's paging, it bounds a window by `thread_total` and
+  by a page's seek, and it counts nothing — so an oversized page merges like
+  any other. Three tests hold it against pages cut by a JS mirror of the
+  daemon's `page_span` (a 360-item first page against a limit of 60; the ×10
+  ceiling ending pages early on a fifteen-tool-call-a-turn conversation, walked
+  back to the start with every sequence seen once; a delta carrying a turn's
+  tool calls not tripping the gap check), and all three fail if an item-count
+  bound is restored. §6.3 gains the verdict; step 9, and with it §6, is done.
 - **2026-08-29, §6.3 shipped — step 9.** `51c6d0b` (`ThreadItem::counted()`,
   held equal to the store's `message = 1 OR attention = 1` across every kind),
   `48d3933` (schema v3: `message` hoisted by the v1→v2 precedent, one partial
@@ -2083,7 +2129,7 @@ sections cite (§11 q3, §11 q4) must not move.
   entirely and the packet's conversation becoming one rule, which fixes a
   planned implementation reading its packet off the run's own empty thread)
   and `a7efeb8` (the counted page, its ×10 ceiling, and the store's three-seek
-  page). The SPA's oversized-page merge test is what the step still owes.
+  page). The SPA's oversized-page merge test followed in `c0d1b89`.
 - **2026-08-29, §6.3 designed.** One hoisted column funds both remedies: an
   item is *counted* when it is a message or an attention-classed event
   (`ThreadItem::counted()` in Rust, `message = 1 OR attention = 1` in SQL —

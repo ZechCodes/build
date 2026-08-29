@@ -584,12 +584,14 @@ its own — not smuggled in behind an activity feed. The jsonl log can be migrat
 into a database later; it cannot be un-migrated out of the aggregate record once
 the write amplification has been shipped.
 
-### 6.3 Activity must not flood the resident tail — designed, implementing
+### 6.3 Activity must not flood the resident tail — shipped
 
 > **Merged from main's reconciliation of this spec (written 2026-08-23, merged
 > 2026-08-28)** — steps 4 and 6 shipped without it, so this was the one §6
 > obligation still open once a headless carrier was live. **Designed
-> 2026-08-29** ("The fix, designed" below); §10 step 9 is the implementation.
+> 2026-08-29** ("The fix, designed" below); §10 step 9 is the implementation,
+> **shipped 2026-08-29** in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8` —
+> see the step-9 note in §10 for what the implementation decided.
 
 A conversation is no longer fully resident: a boot reads the newest
 `RESIDENT_CONVERSATION_TAIL` items (200, `store.rs:477`) and pages the rest
@@ -772,8 +774,8 @@ Everything that must become conditional. This is the actual size of the work.
 | `spawn_tab_pump` | pumps bytes into `TermScreen` | one pump per capability — **shipped**: `spawn_tab_pumps` starts the byte pump for a terminal and the activity pump for a session that reports itself |
 | `mark_idle_tasks` (`app.rs:5860`) | demotes on `quiet_for` + `last_delivered_at` | **shipped**: `status()` not `Working` is the first conjunct, a no-op for the PTY |
 | `agent_digest` (`app.rs:7857`) | `"working": bool` | add `"has_terminal": bool`; keep `working` — **shipped**, and asked of the provider before a session exists |
-| `catch_up_markdown` (`thread.rs:2337`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped**; read from the store when the tail is starved (§6.3, step 9) |
-| `Thread::items` (`thread.rs:1255`) | resident tail of 200 items, older items paged from SQLite | residency unchanged — activity rows ride the same tail; the pages and the packet stop counting them (§6.3, step 9) |
+| `catch_up_markdown` (`thread.rs:2337`) | last 40 items by recency, events included | messages only, the limit counting messages (§6.1) — **shipped**; read from the store when the tail is starved and composed at delivery (§6.3, step 9) — **shipped** |
+| `Thread::items` (`thread.rs:1255`) | resident tail of 200 items, older items paged from SQLite | residency unchanged — activity rows ride the same tail; the pages and the packet stop counting them (§6.3, step 9) — **shipped** |
 
 ### SPA
 
@@ -1255,14 +1257,57 @@ Each step compiles, ships and is green on its own.
    share one capture point and one test child, so they are one step.
    **Shipped**: the bridge half in `66ad2ac`, `defa1be` and `f3ec04b`, §8.4 —
    the composer's split send — in `07980b3`, `8d114b4` and `7eb0398`.
-9. **Activity stops flooding the two bounds** — §6.3 as designed there: schema
+9. ~~**Activity stops flooding the two bounds**~~ — §6.3 as designed there: schema
    v3 hoists `message` beside `attention` with one partial index over the
    counted predicate; the catch-up packet composes at
    `deliver_pending_agent_turns` from a store query when the tail is starved
    (byte-identical and SQL-free for an all-resident thread); and a page's
    `limit` buys counted items with activity riding free under a ×10 ceiling,
    `has_more` / `oldest_sequence` / `thread_total` unmoved. Bridge-only; the
-   SPA's part is one oversized-page test.
+   SPA's part is one oversized-page test. **Shipped** — see the note below;
+   the SPA's merge test is what remains.
+
+> **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
+> designed in §6.3. The two failures it exists for are the two tests that
+> would have caught them: a resident tail holding only activity still yields a
+> packet carrying the human's messages, and a first page over an
+> activity-heavy conversation still shows what was said with `has_more` /
+> `oldest_sequence` honest for a client walking back by sequence. Five things
+> worth knowing.
+>
+> **`conversation_prompt` lost its thread entirely**, rather than keeping it
+> and skipping the packet. Once the packet composes at the drain, the previous
+> completion report has to move with it — both are the durable conversation,
+> and splitting them would have left one read at transition time and one at
+> delivery. So the prompt builder takes a `&str`, `AgentTurn::dispatched` /
+> `posted` lose their thread parameter at fourteen call sites, and
+> `append_durable_conversation` is the second half, called once.
+>
+> **The packet's conversation is now one rule, and it is the right one.** At
+> the drain the thread comes from `agent_conversation(owner, agent_id)` — the
+> conversation the agent SPEAKS in, which for a planned implementation's first
+> agent is its Issue's. The orchestrator's turns used to build their packet
+> from `&active.agents`, the run's OWN thread, where a planned implementation's
+> human never says anything: the §6.1 failure in a third shape, fixed here as a
+> side effect of asking the question in one place. Six tests that asserted the
+> reviewer's words were in `queued.cold` now read the prompt the turn is
+> handed over with, which is what they always meant.
+>
+> **`for_recovery` gave up its `issue_thread` parameter** and, with it, a
+> fabricated fallback roster one call site built purely so the packet would
+> have something to read. The warm half stops carrying a packet, as designed.
+>
+> **The ceiling is a real bound, not a formality.** Writing the tests found it
+> biting immediately: a page of 5 over a session emitting fifteen tool calls
+> per message carries three messages, not five, because fifty items is the
+> most it may ship. That is the design working — the page ends higher,
+> `has_more` says so, and the client scrolls again — but it means the factor,
+> not the budget, is what decides a page's shape on an activity-dense thread.
+>
+> **`has_more` is answered off the page's own oldest item, never off the floor
+> the seek asked for.** The ceiling can stop the read above that floor, and a
+> page that claimed to reach a floor it never sent would tell a client to seek
+> past rows it does not hold. The store's backward-walk test holds it.
 
 Steps 1–5a add no providers and change no behaviour. If ADK slips they are
 still worth having: step 2 alone removes "quiet for 30 seconds" from being the
@@ -2027,6 +2072,18 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-29, §6.3 shipped — step 9.** `51c6d0b` (`ThreadItem::counted()`,
+  held equal to the store's `message = 1 OR attention = 1` across every kind),
+  `48d3933` (schema v3: `message` hoisted by the v1→v2 precedent, one partial
+  index over the counted predicate, one classifier writing both columns so a
+  v1 database reaches v3 in one open, and the plan pinned to the index by
+  name), `50f2cb7` (the packet: the starved-tail gate, the store read, the
+  merge below `resident_from_sequence`, and composition moved to
+  `deliver_pending_agent_turns` — with `conversation_prompt` losing its thread
+  entirely and the packet's conversation becoming one rule, which fixes a
+  planned implementation reading its packet off the run's own empty thread)
+  and `a7efeb8` (the counted page, its ×10 ceiling, and the store's three-seek
+  page). The SPA's oversized-page merge test is what the step still owes.
 - **2026-08-29, §6.3 designed.** One hoisted column funds both remedies: an
   item is *counted* when it is a message or an attention-classed event
   (`ThreadItem::counted()` in Rust, `message = 1 OR attention = 1` in SQL —

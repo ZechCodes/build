@@ -150,6 +150,63 @@ pub trait Harness: Send + Sync {
     /// wrong one. `home` is a parameter rather than read here so tests never
     /// touch the developer's real home directory.
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool;
+
+    /// A locator that will name the conversation a session opened in `cwd` is
+    /// having, watched off this provider's own transcript tree under `home`.
+    ///
+    /// The mirror of [`has_transcript`](Harness::has_transcript), with `home` a
+    /// parameter for the same reason: tests never read the real `~/.claude` or
+    /// `~/.codex`. Built BEFORE the child exists, so what is already in the
+    /// tree can be told from what the child writes.
+    ///
+    /// `None` by default, which is the answer for a carrier that announces its
+    /// own id: a locator standing beside that announcement would be two records
+    /// of one answer, free to disagree.
+    fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
+        let _ = (home, cwd);
+        None
+    }
+
+    /// Whether the conversation `id` names is still in this provider's tree —
+    /// asked before a recorded id is spent, so a dead one costs zero restarts
+    /// instead of one.
+    ///
+    /// `true` by default: a provider that keeps no tree Build can read has no
+    /// grounds to refuse an id, and refusing on a doubt would throw away a good
+    /// conversation. This is also what makes a provider swap safe — an agent
+    /// moved from one harness to another holds an id the new one does not
+    /// recognize, and the check clears it rather than letting the resume choke.
+    fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
+        let _ = (home, cwd, id);
+        true
+    }
+}
+
+/// Finds the name a harness gave the conversation a PTY session is having, by
+/// watching the harness's own transcript tree — the durable records the resume
+/// probe has always read, never the screen.
+///
+/// The terminal carrier's answer to [`AgentSession::session_id`]: a CLI wrapper
+/// announces nothing to Build, but it writes down what it is doing, and where
+/// it writes is the same place the resume it performs reads from.
+pub trait SessionLocator: Send + Sync {
+    /// The id, once exactly one transcript this session could be has appeared.
+    /// `None` until then; cached once found, so a locator never changes its
+    /// answer and the steady-state cost is a field read.
+    fn session_id(&self) -> Option<String>;
+}
+
+/// Whether `id` is a name a transcript file can be looked up by.
+///
+/// A recorded id rides a JSON record on disk and is spent as a path component,
+/// so the one that walks out of the tree it names is refused before any
+/// filesystem call is made. Every real id from either provider is a uuid, so
+/// this rejects nothing a harness actually writes.
+pub(crate) fn is_a_filename(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Which carrier a spawn opens, and what that carrier needs to know.
@@ -329,6 +386,63 @@ mod tests {
             assert!(harness_for(provider).has_terminal(), "{provider:?}");
         }
         assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
+    }
+
+    /// The alternatives hold their shape: a carrier Build can only see the
+    /// outside of has its conversation named FOR it, off the harness's own
+    /// transcript tree, and one that announces its own id needs no locator —
+    /// two records of one answer, free to disagree, is the shape this spec
+    /// rejects everywhere else.
+    #[test]
+    fn a_locator_is_offered_exactly_where_a_terminal_is() {
+        let home = tempfile::tempdir().expect("temp home");
+        let cwd = tempfile::tempdir().expect("temp worktree");
+        for provider in AgentProvider::ALL {
+            let harness = harness_for(provider);
+            assert_eq!(
+                harness.session_locator(home.path(), cwd.path()).is_some(),
+                harness.has_terminal(),
+                "{provider:?}"
+            );
+        }
+    }
+
+    /// A recorded id is verified against the provider that would spend it, and
+    /// an empty tree holds nobody's conversation — which is what clears the id
+    /// an agent moved between providers still carries.
+    #[test]
+    fn an_id_no_provider_holds_is_not_spent_by_any_of_them() {
+        let home = tempfile::tempdir().expect("temp home");
+        let cwd = tempfile::tempdir().expect("temp worktree");
+        for provider in AgentProvider::ALL {
+            assert!(
+                !harness_for(provider).holds_conversation(home.path(), cwd.path(), "sess-1"),
+                "{provider:?}"
+            );
+        }
+
+        // Both claude carriers write and read the ONE tree, so an id captured
+        // under either verifies under both.
+        let project = home
+            .path()
+            .join(".claude/projects")
+            .join(claude::encode_project_dir(cwd.path()));
+        std::fs::create_dir_all(&project).expect("the transcript directory");
+        std::fs::write(project.join("sess-1.jsonl"), "{}\n").expect("the transcript");
+        for provider in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            assert!(
+                harness_for(provider).holds_conversation(home.path(), cwd.path(), "sess-1"),
+                "{provider:?}"
+            );
+        }
+        assert!(
+            !harness_for(AgentProvider::Codex).holds_conversation(
+                home.path(),
+                cwd.path(),
+                "sess-1"
+            ),
+            "codex keeps its own tree and does not recognize a claude uuid"
+        );
     }
 
     /// A harness that announces its line editor only after a pause, the way a

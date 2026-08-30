@@ -1919,6 +1919,7 @@ mod tests {
                         AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
                     eprintln!("[activity] {line}");
                     seen.lock().unwrap().push(line);
@@ -2061,6 +2062,7 @@ mod tests {
                         AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
                     eprintln!("[activity] {line}");
                     seen.lock().unwrap().push(line);

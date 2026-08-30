@@ -220,10 +220,11 @@ pub trait AgentSession: Send + Sync {
 
 /// One thing an agent reported doing, on its way to the conversation.
 ///
-/// The four kinds are `ThreadEventKind`'s four activity kinds and nothing else:
+/// The five kinds are `ThreadEventKind`'s five activity kinds and nothing else:
 /// a session that reports its own work has no second tab, no second scrollback
-/// and no second input path — its reasoning, tool calls and narration are
-/// conversation, classed `Status`, so none of them pulls the human in.
+/// and no second input path — its reasoning, tool calls, narration and
+/// background work are conversation, classed `Status`, so none of them pulls
+/// the human in.
 ///
 /// Each carries the summary the timeline shows. What it costs to build one is
 /// the reporting session's business: a protocol carrier renders a tool call as
@@ -240,6 +241,9 @@ pub enum AgentActivity {
     /// The agent narrated. Distinct from a `post_thread_message`, which is the
     /// agent deliberately addressing the human.
     Narration { summary: String },
+    /// Background work the harness runs beyond the turn moved — started,
+    /// finished, failed, or said something worth reading.
+    TaskUpdate { summary: String },
 }
 
 impl AgentActivity {
@@ -249,7 +253,8 @@ impl AgentActivity {
             AgentActivity::Reasoning { summary }
             | AgentActivity::ToolUse { summary }
             | AgentActivity::ToolResult { summary }
-            | AgentActivity::Narration { summary } => summary,
+            | AgentActivity::Narration { summary }
+            | AgentActivity::TaskUpdate { summary } => summary,
         }
     }
 }

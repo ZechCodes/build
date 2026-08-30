@@ -18150,8 +18150,8 @@ fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
     }
 }
 
-/// The conversation event one reported activity becomes. The four kinds are the
-/// same four, named once here so the mapping cannot drift.
+/// The conversation event one reported activity becomes. The five kinds are the
+/// same five, named once here so the mapping cannot drift.
 fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::thread::ThreadEventKind {
     use crate::harness::AgentActivity;
     use crate::thread::ThreadEventKind;
@@ -18160,6 +18160,7 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
         AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
         AgentActivity::Narration { .. } => ThreadEventKind::Narration,
+        AgentActivity::TaskUpdate { .. } => ThreadEventKind::TaskUpdate,
     }
 }
 
@@ -33477,16 +33478,17 @@ mod tests {
                         | crate::thread::ThreadEventKind::ToolUse
                         | crate::thread::ThreadEventKind::ToolResult
                         | crate::thread::ThreadEventKind::Narration
+                        | crate::thread::ThreadEventKind::TaskUpdate
                 )
             })
             .collect()
     }
 
     /// What a session with no terminal has instead of a screen: its reasoning,
-    /// tool calls and narration, landing in the conversation the human already
-    /// reads.
+    /// tool calls, narration and background work, landing in the conversation
+    /// the human already reads.
     ///
-    /// The four kinds are `Status`, so an agent thinking out loud moves no
+    /// The five kinds are `Status`, so an agent thinking out loud moves no
     /// unread count — that is the property that makes putting activity in the
     /// conversation safe, and it is asserted here rather than assumed.
     #[tokio::test]
@@ -33526,6 +33528,9 @@ mod tests {
             crate::harness::AgentActivity::Narration {
                 summary: "dropped the index".into(),
             },
+            crate::harness::AgentActivity::TaskUpdate {
+                summary: "started — reindex the archive".into(),
+            },
         ] {
             activity.send(reported).expect("the pump is listening");
         }
@@ -33533,10 +33538,10 @@ mod tests {
         let reported = wait_for(Duration::from_secs(5), || {
             let s = state.lock().unwrap();
             let reported = activity_of(&s.runs["run-activity"].agents);
-            (reported.len() == 4).then_some(reported)
+            (reported.len() == 5).then_some(reported)
         })
         .await
-        .expect("the four events reach the conversation");
+        .expect("the five events reach the conversation");
         assert_eq!(
             reported,
             vec![
@@ -33555,6 +33560,10 @@ mod tests {
                 (
                     crate::thread::ThreadEventKind::Narration,
                     "dropped the index".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::TaskUpdate,
+                    "started — reindex the archive".to_string()
                 ),
             ],
             "in the order the agent did them"

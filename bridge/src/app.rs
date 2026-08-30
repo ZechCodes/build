@@ -3832,9 +3832,11 @@ impl AppState {
     /// A running harness cannot be re-provisioned under itself: the process
     /// would keep the old provider while the record claimed the new one, and
     /// the human would have no owner-side handle on what is actually running.
-    /// So a switch is refused while a session is live. Re-asserting the choice
-    /// the entity already has is not a switch and passes through, which is what
-    /// keeps a start that always names its provider idempotent.
+    /// So a PROVIDER move is refused while a session is live. Re-asserting the
+    /// choice the entity already has is not a move and passes through, which is
+    /// what keeps a start that always names its provider idempotent — and a
+    /// model or effort edit is not a move either: it is what the next start
+    /// spends, so it persists and waits for one.
     fn set_entity_model_choice(
         &mut self,
         entity_id: &str,
@@ -3843,7 +3845,13 @@ impl AppState {
         if self.entity_model_choice(entity_id)? == choice {
             return Ok(());
         }
-        if self.entity_agent_is_live(entity_id) {
+        // Only a PROVIDER move is refused while a session runs: that is the one
+        // that would leave the process on the old harness while the record
+        // claimed the new one. A model or effort edit is what the next start
+        // spends, so it persists under a live session and waits for it.
+        if self.entity_model_choice(entity_id)?.provider != choice.provider
+            && self.entity_agent_is_live(entity_id)
+        {
             return Err(format!(
                 "agent.start: an agent session is already running on {} — stop the current \
                  session first, then start it on {}",
@@ -5838,12 +5846,14 @@ impl AppState {
             // that only ever pings can still tell whether this bridge will
             // invalidate for it, and an old client ignores the extra field.
             "ping" => Ok(json!({ "pong": true, "push_events": true })),
-            // `models`/`efforts` are the default provider's catalog, repeated
-            // at the top level for clients that predate `providers`.
+            // What a start leads with is the account's answer, so the default
+            // provider is the account's default harness. `models`/`efforts` are
+            // that harness's catalog, repeated at the top level for clients
+            // that predate `providers`.
             "models.list" => Ok(json!({
-                "models": harness_for(AgentProvider::default()).models(),
-                "efforts": harness_for(AgentProvider::default()).effort_levels(),
-                "default_provider": AgentProvider::default(),
+                "models": harness_for(self.default_harness).models(),
+                "efforts": harness_for(self.default_harness).effort_levels(),
+                "default_provider": self.default_harness,
                 "providers": models::provider_catalogs(),
             })),
             "thread.revision" => self.thread_revision(params),
@@ -5967,6 +5977,7 @@ impl AppState {
             "entity.dismiss" => self.entity_dismiss(params),
             "triage.override" => self.triage_override(params),
             "agent.add" => self.agent_add(params),
+            "agent.choose" => self.agent_choose(params),
             "agent.remove" => self.agent_remove(params),
             "agent.list" => self.agent_list(params),
             "worktree.diff" => self.worktree_diff(params),
@@ -8192,6 +8203,36 @@ impl AppState {
         Ok(json!({
             "entity_id": entity_id,
             "agent": self.agent_digest(&entity_id, &added, root.as_deref()),
+        }))
+    }
+
+    /// `agent.choose` — set the model and reasoning effort an entity's agents
+    /// run on. The composer's model menu, and the only verb that persists a
+    /// choice without spawning anything.
+    ///
+    /// The provider is not a question here: an agent is locked to the harness
+    /// it was created on, so this keeps the entity's own and refuses a caller
+    /// that names one, by that harness's name. A live session is untouched —
+    /// the choice is what the NEXT start spends, which is exactly what the
+    /// menu offers.
+    fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
+        let entity_id = require_str(params, "entity_id")?;
+        let locked = self.entity_model_choice(&entity_id)?.provider;
+        if let Some(named) = params.get("provider").and_then(Value::as_str) {
+            if !named.is_empty() {
+                return Err(format!(
+                    "agent.choose: the agent is locked to {} — model and effort only",
+                    locked.label()
+                ));
+            }
+        }
+        let choice = model_choice_from(params, locked)?;
+        self.set_entity_model_choice(&entity_id, choice.clone())?;
+        Ok(json!({
+            "entity_id": entity_id,
+            "provider": choice.provider,
+            "model": choice.model,
+            "effort": choice.effort,
         }))
     }
 
@@ -21237,8 +21278,13 @@ mod tests {
         let mut state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/m.sock");
         let res = state.handle(req("models.list", json!({})));
         assert_eq!(res["ok"], true, "{res:?}");
+        assert_eq!(
+            res["result"]["default_provider"], "claude_adk",
+            "what a start leads with is the account's default harness: {res:?}"
+        );
         let models = res["result"]["models"].as_array().unwrap();
         assert!(models.iter().any(|m| m["id"] == "claude-opus-4-8"));
+        assert!(models.iter().any(|m| m["id"] == "claude-opus-5"));
         assert!(models.iter().all(|m| m["supports_effort"].is_boolean()));
         let efforts = res["result"]["efforts"].as_array().unwrap();
         assert!(efforts.iter().any(|e| e == "xhigh"));
@@ -32188,6 +32234,113 @@ mod tests {
                 .contains_key(&first_agent_key(&root, "run-bogus")),
             "a refused start opens no agent"
         );
+    }
+
+    /// The composer's model menu edits what the entity RUNS, not what its
+    /// session is running: the choice is persisted and the next start spends
+    /// it. The agent is locked to its harness, so the menu asks only what is
+    /// still a question — a provider named here is refused by name.
+    #[tokio::test]
+    async fn agent_choose_persists_the_model_without_touching_a_live_session() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-choose");
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-choose", "model": "claude-opus-5", "effort": "high" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+        assert_eq!(chosen["result"]["model"], "claude-opus-5");
+        assert_eq!(chosen["result"]["effort"], "high");
+        assert_eq!(
+            chosen["result"]["provider"], "claude",
+            "the harness the agent is locked to is what it stays on"
+        );
+        {
+            let s = state.lock().unwrap();
+            let choice = s.runs["run-choose"].model_choice.clone();
+            assert_eq!(choice.model.as_deref(), Some("claude-opus-5"));
+            assert_eq!(choice.effort.as_deref(), Some("high"));
+            assert_eq!(choice.provider, AgentProvider::Claude);
+            assert!(
+                s.tabs[&key].live,
+                "the session that is running keeps running: it spends the new \
+                 model at its next start"
+            );
+        }
+
+        let refused = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-choose", "provider": "codex" }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let error = refused["error"].as_str().unwrap();
+        assert!(
+            error.contains("locked to Claude Code TUI"),
+            "the refusal names the harness the agent is locked to: {error}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs["run-choose"]
+                .model_choice
+                .provider,
+            AgentProvider::Claude,
+            "and a refusal moves nothing"
+        );
+    }
+
+    /// The same verb on an idle entity, which is the ordinary case: nothing is
+    /// running, so there is nothing to be careful about.
+    #[tokio::test]
+    async fn agent_choose_persists_on_an_idle_entity_and_refuses_what_cannot_run() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-idle-choose");
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-idle-choose", "model": "claude-opus-5" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+        assert_eq!(
+            state.lock().unwrap().runs["run-idle-choose"]
+                .model_choice
+                .model
+                .as_deref(),
+            Some("claude-opus-5")
+        );
+
+        let refused = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-idle-choose", "model": "claude-haiku-4-5", "effort": "high" }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("does not support effort"),
+            "{refused:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs["run-idle-choose"]
+                .model_choice
+                .model
+                .as_deref(),
+            Some("claude-opus-5"),
+            "a refusal moves nothing"
+        );
+
+        let unknown = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-nowhere", "model": "claude-opus-5" }),
+        );
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
     }
 
     /// Switching provider under a running harness would leave that process

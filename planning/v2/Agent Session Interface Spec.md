@@ -1274,7 +1274,26 @@ Each step compiles, ships and is green on its own.
 > provider had to be added there: `claude_adk`, under the bridge's own label
 > "Claude Code (headless)". The full PTY harness stays the default start, and
 > `providerLabel` now names a headless agent's bubble properly instead of
-> echoing the wire token.
+> echoing the wire token. *(Superseded 2026-08-30 by the note below: the
+> picker no longer offers a carrier at all.)*
+>
+> **The carrier is an account setting, not a start card (2026-08-30).** Two
+> cards for one agent made every start re-answer a question with one right
+> answer, and put two Claude Codes side by side with only a parenthetical to
+> tell them apart. So the choice moved to the account: `settings.get` /
+> `settings.set` carry `claude_mode` (`"headless" | "tui"`, absent means
+> headless) and a `codex_mode` locked to `"tui"`, and `model_choice_from`
+> resolves the generic token `claude` to whichever carrier the mode names.
+>
+> In the SPA, `STARTABLE_PROVIDERS` is back to two entries — `claude` and
+> `codex` — and Account → Settings holds the mode controls ("Claude Code" /
+> "Claude Code TUI", plus Codex's locked field with its reason). The naming
+> table behind `providerLabel` still answers for `claude_adk`, because a run
+> persisted on it must read as itself: both carriers are called "Claude Code"
+> everywhere a person can see, including on the restart offer of a worktree
+> that ran one, and `normalizeModelCatalog` folds the catalog's two entries of
+> that name into one so the Account page's agent dropdown asks once. The word
+> "headless" survives only as a wire token — never as anything a person reads.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No

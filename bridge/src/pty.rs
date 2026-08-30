@@ -254,6 +254,13 @@ pub struct PtySession {
     /// crash-detection message ("exit code N") could never recover the code after
     /// the first poll.
     exit_code: Mutex<Option<i32>>,
+    /// How this session learns the name of the conversation it is having.
+    ///
+    /// A terminal is opaque — it announces nothing to Build — but the harness
+    /// behind it writes its conversation down, and the locator reads that
+    /// record. `None` for a session with no conversation to name: the human's
+    /// own shell, and any spawn the caller opened without one.
+    locator: Option<Box<dyn crate::harness::SessionLocator>>,
 }
 
 impl PtySession {
@@ -352,7 +359,23 @@ impl PtySession {
             settle: spec.settle,
             submit_delay: spec.submit_delay,
             exit_code: Mutex::new(None),
+            locator: None,
         })
+    }
+
+    /// Hand this session the locator that will name the conversation it is
+    /// having.
+    ///
+    /// Taken after the spawn rather than during it because the locator is built
+    /// BEFORE the child exists — that snapshot of the harness's transcript tree
+    /// is what tells the child's own record from everybody else's, so it cannot
+    /// be made from in here.
+    pub fn named_by(
+        mut self,
+        locator: Option<Box<dyn crate::harness::SessionLocator>>,
+    ) -> PtySession {
+        self.locator = locator;
+        self
     }
 
     /// Resolve once the PTY has been silent for at least `threshold` — the
@@ -507,6 +530,15 @@ impl AgentSession for PtySession {
     /// Always, for a CLI wrapper: it is opaque, so the human needs a way in.
     fn terminal(&self) -> Option<&dyn TerminalView> {
         Some(self)
+    }
+
+    /// Delegated to the locator, which is the one place a terminal's answer
+    /// comes from: a harness that tells Build nothing still writes down what it
+    /// is doing, and the locator reads that record. Lazy and cached there, so
+    /// the answer arrives when the harness's own file does and never changes
+    /// afterwards.
+    fn session_id(&self) -> Option<String> {
+        self.locator.as_ref()?.session_id()
     }
 
     /// Test-only: age the paint clock — see
@@ -1168,6 +1200,37 @@ mod tests {
         session.kill().unwrap();
         // A killed process does not exit successfully.
         assert!(!session.wait().unwrap());
+    }
+
+    /// A terminal names its conversation through the locator the provider gave
+    /// it — lazily, so the answer arrives when the harness's own record does,
+    /// and by delegation, so there is exactly one place the name comes from.
+    #[tokio::test]
+    async fn a_pty_answers_the_name_the_locator_it_was_given_finds() {
+        struct WhenAsked(Arc<Mutex<Option<String>>>);
+        impl crate::harness::SessionLocator for WhenAsked {
+            fn session_id(&self) -> Option<String> {
+                self.0.lock().unwrap().clone()
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let found = Arc::new(Mutex::new(None));
+        let session: Box<dyn AgentSession> = Box::new(
+            PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty())
+                .unwrap()
+                .named_by(Some(Box::new(WhenAsked(Arc::clone(&found))))),
+        );
+
+        assert_eq!(
+            session.session_id(),
+            None,
+            "nothing the harness could be having has appeared yet"
+        );
+        *found.lock().unwrap() = Some("sess-on-disk".to_string());
+        assert_eq!(session.session_id().as_deref(), Some("sess-on-disk"));
+        session.end();
     }
 
     #[tokio::test]

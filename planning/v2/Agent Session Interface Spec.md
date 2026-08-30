@@ -1,10 +1,13 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–7 shipped: the ADK is a provider and the first
-carrier with no terminal, and an outcome is a status on the agent's own
-message (see §10)
-**Last updated:** August 24, 2026
-**Branch:** `build/agent-polymorphism`
+**Status:** Draft — steps 0–10 shipped: the ADK is a provider and the first
+carrier with no terminal, an outcome is a status on the agent's own message,
+activity floods neither bound, and every carrier names the conversation it is
+having — a terminal off its harness's own transcript tree — so a respawn
+resumes by name and a brand-new agent record starts fresh (see §10)
+**Last updated:** August 29, 2026
+**Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
+(step 10)
 
 ---
 
@@ -275,8 +278,10 @@ pub trait AgentSession: Send + Sync {
     /// has announced one. What a respawn resumes BY NAME.
     ///
     /// `None` for a carrier that names no conversation, and for one that has
-    /// not announced yet. Reported, never scraped: it is read off the protocol
-    /// line the child sent, never out of a transcript directory.
+    /// not announced yet. Never scraped off a screen: a protocol carrier reads
+    /// it off the `init` line the child sent, and a PTY carrier reads it out
+    /// of the harness's own durable records — the same transcript trees the
+    /// resume probe has always read (§10 step 10).
     fn session_id(&self) -> Option<String> {
         None
     }
@@ -295,6 +300,14 @@ pub trait AgentSession: Send + Sync {
   `can_interrupt` is the flag `terminal()` avoided, and it is safe here only
   because the implementation answers both from ONE value, held to it by a test
   asserting `interrupt()` refuses exactly when `can_interrupt()` is false.
+
+- **`session_id` was first written protocol-only, and step 10 widens it.** The
+  doc originally read "never out of a transcript directory", which drew the
+  no-scraping line in the wrong place: the scope doc's rule forbids parsing
+  PAINT, and the transcript tree is the harness's own durable record — the
+  thing `has_transcript` has read since adoption shipped, and where the resume
+  a spawn performs actually lives. A PTY carrier answers from a locator over
+  that tree (§10 step 10); what stays forbidden is the screen.
 
 - **The PTY stays unsupported, and does not map interrupt to ESC bytes.** Three
   reasons, in the order that decides it. ESC is a keystroke whose meaning
@@ -1291,6 +1304,18 @@ Each step compiles, ships and is green on its own.
    `has_more` / `oldest_sequence` / `thread_total` unmoved. Bridge-only; the
    SPA's part is one oversized-page test. **Shipped** — see the note below,
    and `c0d1b89` for the client half, which was the test and nothing else.
+10. **Every carrier names its conversation, and a fresh agent record is a
+    fresh conversation.** `AgentSession::session_id` answered by the PTY
+    carriers too — the `Harness` supplies a locator over its own transcript
+    tree, the spawn installs it into `PtySession` — captured by the idle
+    sweep through the step-8 record path, spent per carrier
+    (`--resume <id>` for claude, `codex resume <id>` for codex), and verified
+    against the same tree before it is spent. With it, the sharper spawn
+    rule: a persisted id resumes exactly; an agent record with history keeps
+    the `--continue` guess; a brand-new agent record resumes NOTHING — with
+    adoption's continue-pickup preserved by the flag adoption already sets.
+    Detail below. **Shipped 2026-08-29** in `6d937fc`, `178085d`, `480d3a8`
+    and `55e7f10` — see the note after §10.5.
 
 > **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
 > designed in §6.3. The two failures it exists for are the two tests that
@@ -1797,7 +1822,9 @@ the first stdin message. Everything below follows from those four facts.
   the newest one in the cwd, so passing both would be asking for two different
   conversations. `ClaudeHarness` and `CodexHarness` are untouched: a PTY session
   answers `None` to `session_id()`, so the field is always empty for them, and
-  the option is carrier-neutral in shape only.
+  the option is carrier-neutral in shape only. *(True as shipped; step 10
+  retires it — the PTY carriers grow locators and their own resume arms, and
+  the field becomes carrier-neutral in fact.)*
 
 - **The crash window: `--continue` stands, unchanged.** An id is captured only
   after the child announces `init`, and `init` arrives only after the first
@@ -2005,6 +2032,281 @@ The tests the step is written first as, all against that child:
     never running has none to end: the only result that follows is the next
     turn's, which is exactly what a leaked pending would swallow.
 
+### Step 10 in detail — the session id is polymorphic, and a fresh agent starts fresh
+
+Grounded in live probes (2026-08-29), not in guesses about the harnesses.
+claude writes one transcript per conversation at
+`~/.claude/projects/<munged-cwd>/<session-uuid>.jsonl`, and **the filename is
+the id**. codex writes global dated rollouts at
+`~/.codex/sessions/<Y>/<M>/<D>/rollout-<timestamp>-<uuid>.jsonl`, with the
+session's cwd in the first metadata line — global, so cwd matching is
+mandatory: recency alone misattributes the moment two codex sessions run.
+`claude --resume <id>` works in the TUI exactly as it does headless, and the
+installed codex CLI resumes by `codex resume <SESSION_ID>` — a subcommand,
+not a flag. No screen is ever scraped: everything below reads the same
+durable trees the transcript probe (`Harness::has_transcript`) has always
+read, which is why §3's `session_id` doc is amended rather than bent.
+
+The step also carries the behaviour change that makes it urgent rather than
+merely sharp. The spawn reservation runs the transcript probe
+unconditionally today (`app.rs:17434` — "the probe is unconditional too"),
+so a brand-new agent spawned into a worktree holding any old transcript
+inherits the newest conversation in it. That is a misdelivery, hit live
+2026-08-29: a new headless agent adopted the worktree's old conversation.
+§10.4 ends it without breaking the one flow that inheritance was built for.
+
+#### 10.1 The locator — polymorphic on `Harness`, evaluated by `PtySession`
+
+```rust
+/// Finds the name a harness gave the conversation a PTY session is having,
+/// by watching the harness's own transcript tree — the durable records the
+/// resume probe already reads, never the screen.
+pub trait SessionLocator: Send + Sync {
+    /// The id, once exactly one transcript this session could be has
+    /// appeared. `None` until then; cached once found, so a locator never
+    /// changes its answer and the steady-state cost is a field read.
+    fn session_id(&self) -> Option<String>;
+}
+```
+
+- **The `Harness` supplies it.** `fn session_locator(&self, home: &Path,
+  cwd: &Path) -> Option<Box<dyn SessionLocator>> { None }`, in
+  `harness/mod.rs` beside the trait — the mirror of `has_transcript`, with
+  `home` a parameter for the same reason: tests never read the real
+  `~/.claude` or `~/.codex`, they fake the transcript trees in tempdirs.
+  `ClaudeHarness` and `CodexHarness` override; `AdkHarness` keeps the
+  default `None`, because its session answers `session_id` from `init` and a
+  locator beside that would be two records of one answer, free to disagree —
+  the flag-standing-beside-the-call shape this spec rejects everywhere else.
+- **Claude's locator reuses the path knowledge that exists.**
+  `encode_project_dir` and the `.jsonl` listing (`harness/claude.rs:122/132`)
+  are called, not copied. At construction it snapshots the set of `.jsonl`
+  stems in `~/.claude/projects/<munged-cwd>/`; `session_id()` lists again
+  and considers only stems not in the snapshot. The stem is the id.
+- **Codex's locator reuses the header parse.** `transcript_exists`'s
+  `/payload/cwd` read (`harness/codex.rs:185`) moves into a shared
+  `rollout_header` helper both call. Rollouts are global, so the candidate
+  walk is date-bounded — only date directories on or after the construction
+  date, with the rollouts already present there snapshotted — and
+  **cwd-matched**: a candidate counts only when its header's canonicalized
+  cwd equals the session's. The id is read from the same header
+  (`payload.id`), with the filename's uuid as the fallback — both are
+  codex's own record.
+- **One candidate, or none.** Exactly one candidate → cached and answered
+  forever. More than one → `None`, indefinitely. A branch legally carries
+  several agents in one checkout, and two sessions spawned together there
+  produce two new files nobody can tell apart; guessing by recency is the
+  misattribution this step exists to end, so the locator refuses to guess.
+  The cost is the probe's own bargain restated: a missing id never errs
+  (§8.2 — no code path may treat one as an error), it only forgoes the
+  sharper resume, exactly as `has_transcript`'s "a false negative costs a
+  fresh session, never a wrong one".
+- **Built at the spawn reservation, before the child exists.** The
+  reservation (`app.rs:17435`'s neighbourhood) builds the locator through an
+  injectable seam beside `transcript_probe` — `session_locator_factory`,
+  defaulting to `harness_for(provider).session_locator(home, root)` — so
+  the snapshot can never contain the child's own file. It travels with the
+  reserved spec through `Tab::spawn` into `open_session`'s Terminal arm and
+  into `PtySession`, which stores it and answers
+  `AgentSession::session_id()` by delegation: lazy, cached by the locator,
+  `None` until the file appears. Shells and the Protocol arm take no
+  locator, held by a test: the provider that opens `Protocol` answers `None`
+  from `session_locator`.
+
+#### 10.2 Capture — the idle sweep, writing the step-8 record path
+
+- **The capture point is the idle monitor's tick** (`spawn_idle_monitor`,
+  `app.rs:6100`; 5 s, `main.rs:296`), not the status poll. The digest poll
+  is client-driven: with no browser open nothing would ever be captured —
+  and a daemon running agents unattended is normal here — while every
+  attached client would multiply the filesystem probe by its own poll rate,
+  on the RPC path that answers the SPA from under the lock. The sweep is
+  daemon-owned and fixed-cadence, it already wakes beside
+  `mark_idle_tasks`, and 5 s bounds the crash window to the same order as
+  the activity pump's event-driven capture.
+- **Asked with the state lock released** — the `deliver` precedent. The
+  tick collects each live agent tab's `(owner, agent_id,
+  Arc<dyn AgentSession>, recorded id)` under the lock, drops it, asks
+  `session_id()` — the one call that may touch the filesystem — then
+  re-locks and writes each answer that moved through
+  `record_agent_resume_id` (`app.rs:3086`): the exact path step 8 built, so
+  a captured PTY id and a captured headless id are the same record written
+  by the same hand. Compared before written, so a session costs one write
+  however long it lives.
+- **The byte pump's close arm takes one final reading**, just before
+  `record_agent_session_end` (`app.rs:17828`): a session shorter than a
+  tick is still captured at EOF, and the respawn that needs the id is the
+  very next thing after a close. It records; it **never clears**. The
+  headless pump's clearing rule (§8.2) keys on a child that ended without
+  announcing, which for that carrier means a dead `--resume` id — but a PTY
+  session resumed in place legitimately makes no new file, so `None` at
+  close is its normal answer, and clearing on it would throw away a good id
+  at every restart. The dead-id problem moves to the one place it can be
+  answered exactly: §10.3's verification.
+- The activity pump is untouched: the headless carrier's capture and its
+  clearing stay exactly as step 8 shipped them.
+
+#### 10.3 Spending the id — the argv per carrier, verified first
+
+- **`ClaudeHarness` gains `AdkHarness`'s match verbatim** (`adk.rs:110`):
+  `--resume <id>` when the record names one, `--continue` when it does not
+  and the probe said yes, neither otherwise — never both, for step 8's
+  reason. `--resume <id>` is already the headless shape and works in the
+  TUI (verified live 2026-08-29).
+- **`CodexHarness` gains the same three-way match in a different argv
+  shape**: resume is a **subcommand**, not a flag. Today `resume --last` is
+  appended at the argv tail, after the global `--config` overrides
+  (`codex.rs:148`); the named form keeps that position and swaps the
+  argument — `resume <SESSION_ID>` (verified live 2026-08-29), `resume
+  --last` as the guess, nothing otherwise. The overrides staying ahead of
+  the subcommand is the shape that already works.
+- **A recorded id is verified against the same tree before it is spent.**
+  `Harness::holds_conversation(&self, home: &Path, cwd: &Path, id: &str) ->
+  bool`, default `true`: claude stats `<munged-cwd>/<id>.jsonl`; codex
+  walks rollout FILENAMES for `-<id>.jsonl` (no file is opened);
+  `AdkHarness` delegates to `ClaudeHarness`. The reservation filters the
+  recorded id through it (via an injectable sibling of the probe,
+  `resume_id_probe`) and clears a filtered-out id through
+  `record_agent_resume_id` on the spot — so a dead id costs zero restarts
+  on every carrier, sharpening §8.2's "one restart", whose pump-side
+  clearing stays as the backstop. This is also why a provider swap is safe:
+  an agent moved from claude to codex holds a claude uuid codex does not
+  recognize, and the check clears it instead of letting `codex resume`
+  choke on it.
+- **A dividend worth naming:** an id captured under one claude carrier
+  resumes under the other. TUI ⇄ headless provider swaps keep the exact
+  conversation, because both write the same tree and both spend
+  `--resume` — the polymorphism paying for itself.
+
+#### 10.4 The sharper spawn rule — a fresh record is a fresh conversation
+
+The reservation decides in order, and the order is the rule:
+
+1. **A recorded id that verifies → resume by name.** No `--continue` beside
+   it, ever.
+2. **No id, but this agent's own record shows history — its
+   `thread.sessions` is non-empty → today's continue-guess**, still gated
+   on the transcript probe. This is the crash window (§8.2): a session that
+   died before capture, an agent from before this step shipped.
+3. **Otherwise fresh: no resume of any kind, on every carrier.** A
+   brand-new agent record has no conversation to pick up, and the worktree's
+   old one belongs to whoever had it.
+
+- **The gate is one reading:** `may_pick_up = !agent.thread.sessions
+  .is_empty() || (entity is adopted && no session lineage has ever opened
+  on the entity)`, and `continue_session = recorded-id absent &&
+  may_pick_up && probe`.
+- **Whose `sessions` — stated exactly, because lineage is not per-agent
+  today.** `record_agent_session_start` writes through `edit_owner_thread`
+  (`app.rs:3000`), which edits the ROSTER's first agent's thread — so for
+  the first agent, its own `thread.sessions` is the entity's whole lineage
+  and the gate is exact. A non-first agent's is empty, so its crash window
+  is FRESH rather than guessed — deliberate: `--continue` guesses the
+  newest conversation in the cwd, and on a shared checkout that is
+  precisely the misattribution being retired; one sweep tick after its
+  first session, rule 1 carries it by name instead.
+- **Adoption keeps its pickup, on the flag adoption already sets.** Both
+  adoption mints put their agent on an entity whose record says `adopted:
+  true` — `adopt_run` (`orchestrator.rs:2366`, `AgentRoster::with_first`,
+  reached by external-worktree adopt-on-first-mutation and the primary
+  checkout alike) and `adopt_implementation` (`orchestrator.rs:1494`,
+  `agents.add` on an already-adopted run). The gate's second disjunct —
+  adopted, and no session lineage has ever opened on the entity — is
+  exactly "the first session after adoption": the meaning
+  `pending_continuation` (`orchestrator.rs:436`) was minted for and lost.
+  Its own doc calls it VESTIGIAL because the unconditional probe replaced
+  it — and the reason it was retired, crash respawns needing `--continue`
+  too, is rule 2's job now. Deriving the disjunct from records rather than
+  reviving the mutated flag needs no clearing write and self-limits: an
+  adopted entity whose lineage has opened grants no more pickups, so an
+  agent added to an old adopted branch starts fresh. `pending_continuation`
+  stays vestigial; `adopted` is what the gate reads.
+- **Routers always spawn fresh**, by construction: no roster, no record,
+  rule 3 — and rightly, since a router is one decision long and today's
+  unconditional probe could hand it a stale conversation.
+- Two comments are corrected where they stand: the reservation's "the probe
+  is unconditional too" (`app.rs:17433`) describes rule 2's gate instead,
+  and `SpawnOptions.continue_session`'s "Set only for the first session
+  after adoption" (`orchestrator.rs:562`) becomes "the first session after
+  adoption, or a respawn of an agent with recorded history".
+
+#### 10.5 Wire, SPA, and the tests
+
+**No wire change and no SPA change, confirmed by reading rather than
+assumed.** `resume_session_id` appears on no payload: the agent digest
+(`app.rs:8030`) carries id / ordinal / provider / model / effort / state /
+unread / working / `has_terminal` / `can_interrupt` / created_at and gains
+nothing; the record rides the `agents` table's serde JSON exactly as step 8
+shipped it, no schema change; the `sessions` array a thread ships is
+`SessionLineage`, untouched. Resume is invisible to the client on purpose —
+it is the daemon respawning the same conversation, which a client
+experiences as nothing having happened.
+
+> **Step 10 shipped in `6d937fc`, `178085d`, `480d3a8` and `55e7f10`**, as
+> designed above. Four things worth knowing, all of them places the code had
+> to be more specific than the design.
+>
+> **The codex walk needed a bound that survives midnight.** The design says
+> "only date directories on or after the construction date"; the code compares
+> a directory's path relative to the sessions root (`2026/08/29`), which is
+> zero-padded and so orders lexicographically the way the dates order — and it
+> descends into a directory that is a PREFIX of the bound as well as one at or
+> past it, or the walk would never reach the bound's own leaves. A session that
+> opens at 23:59 and writes its rollout after midnight lands in a later dated
+> directory, which is `>=` the bound and therefore walked.
+>
+> **A candidate with no readable name still counts as a candidate.** The
+> locator's rule is "exactly one, or none", and a rollout that matched the cwd
+> but yielded neither a header id nor a filename uuid is still one of this
+> checkout's new conversations. Counting it keeps two such rollouts refusing
+> rather than letting an unnamed one wave a named one through.
+>
+> **The pump-side capture and the sweep are literally one function.**
+> `note_announced_conversation` became `note_named_conversation`: the activity
+> pump, the byte pump's close arm and the sweep all call it, so the compare
+> before the write and the "a name that has not arrived leaves the record
+> alone" rule exist once. `capture_conversation_names` is the sweep half —
+> collect under the lock, ask with it released, write back what moved.
+>
+> **One existing test changed meaning rather than being adjusted around.**
+> `an_agent_tab_spawns_the_harness_the_orchestrator_built` spawns for an owner
+> that holds no record at all — the shape a router has — and asserted the
+> unconditional probe's `--continue`. Under rule 3 that owner inherits nothing,
+> so the assertion is now `!continue_session`, which is the router case §10.4
+> names. The revival test kept its subject by giving both its agents history,
+> so the transcript probe is the only thing separating them.
+
+The tests, written first, no real model turn, every transcript tree a
+tempdir fake:
+
+1. the claude locator answers the stem of the file that appeared after its
+   snapshot; a pre-existing file is never a candidate;
+2. two new files → `None`, indefinitely (never a guess); one file → cached,
+   and a later second file does not change the answer;
+3. the codex locator refuses a rollout whose header cwd is another checkout
+   — two codex sessions at once, the misattribution case — and reads the id
+   from the header of the one that matches;
+4. `holds_conversation` per provider: true for the fake tree holding the
+   id, false once the file is gone;
+5. argv, per PTY harness, all three arms: `--resume <id>` with no
+   `--continue` beside it; the probe-gated guess; neither — claude in flag
+   shape, codex in subcommand shape with the `--config` overrides still
+   ahead of it;
+6. through the daemon: a PTY session whose injected locator resolves is
+   captured by one sweep tick, and the next spawn's argv carries the name —
+   §8.5's test 9, now walked by the PTY carrier;
+7. through the daemon: a recorded id whose file is gone is cleared at the
+   reservation and the spawn falls back — the poisoned-respawn case, now
+   costing zero failed restarts;
+8. the spawn rule, three ways: a verified id resumes; history plus a
+   transcript continues; a fresh agent record over a cwd with an old
+   transcript gets NEITHER — the 2026-08-29 misdelivery, pinned;
+9. adoption: the adopted entity's first spawn keeps the pickup; the same
+   entity after one session does not; an agent added later does not;
+10. the alternatives hold shape: `session_locator` answers `Some` exactly
+    where `has_terminal` is true, and `None` where the session announces
+    its own id — asked over every provider, like the terminal test.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -2104,10 +2406,71 @@ sections cite (§11 q3, §11 q4) must not move.
      human's own message, which is always there because Build never
      interrupts without one.
 
+6. ~~**What may a spawn resume?**~~ **Answered 2026-08-29, specified as §10
+   step 10.** In order: a persisted session id that still verifies against
+   the harness's own transcript tree resumes that exact conversation; an
+   agent record with recorded history but no id keeps today's probe-gated
+   `--continue` guess; a brand-new agent record resumes **nothing**, on
+   every carrier — the worktree's old conversation belongs to whoever had
+   it, and a fresh agent inheriting it is the misdelivery this rule ends
+   (hit live 2026-08-29: a new headless agent adopted the worktree's old
+   conversation). The one deliberate inheritance survives by derivation
+   rather than by a new flag: an adopted entity on which no session has
+   ever opened grants its agent the pickup — which is "the first session
+   after adoption", the meaning the vestigial `pending_continuation` was
+   minted for, now read out of `adopted` plus the lineage instead of a
+   mutated bool. And the id itself is polymorphic: captured from `init`
+   where the child announces one, located in the harness's durable records
+   where it does not, persisted through one record path, spent as
+   `--resume <id>` / `codex resume <id>`, and never, under any carrier,
+   scraped off a screen.
+
 ---
 
 ## 12. Revision history
 
+- **2026-08-29, step 10 shipped — every carrier names its conversation, and a
+  fresh agent starts fresh.** `6d937fc` (the locators over each harness's own
+  transcript tree, `holds_conversation`, and both PTY carriers' three-way
+  resume argv — claude in flag shape, codex as a subcommand behind the
+  `--config` overrides), `178085d` (`Carrier::Terminal` carries a locator,
+  `PtySession` answers `session_id` by delegating to it, built at the
+  reservation before the child exists so the snapshot cannot contain the
+  child's own file), `480d3a8` (the ordered spawn rule: a recorded name
+  verified and cleared where it fails, the cwd guess gated on the agent's own
+  history or an adopted entity whose lineage has never opened, fresh
+  otherwise — routers included) and `55e7f10` (the capture: the idle sweep
+  asks each live session with the lock released and writes through
+  `note_named_conversation`, the one record path both carriers now use, plus
+  the byte pump's final reading at close, which records and never clears).
+  The 2026-08-29 misdelivery is pinned by a test: a brand-new agent record
+  over a checkout holding an old transcript gets neither `--resume` nor
+  `--continue`. No wire or SPA change, as designed.
+- **2026-08-29, step 10 specified — the polymorphic session id, and the
+  fresh spawn.** Every carrier can now answer `session_id`, from its own
+  durable artifacts and never from a screen: the `Harness` supplies a
+  `SessionLocator` over its transcript tree (claude: the filename under the
+  munged-cwd projects dir IS the id; codex: the dated global rollout whose
+  header cwd matches — cwd-matched because recency alone misattributes,
+  and answered only when exactly one candidate exists, because the locator
+  never guesses). The spawn reservation builds the locator before the child
+  exists and installs it into `PtySession`; the idle sweep's 5 s tick
+  captures the answer with the state lock released and writes it through
+  `record_agent_resume_id` — the step-8 path — with one final reading at
+  the byte pump's close, which records and never clears. The id is spent
+  per carrier (`ClaudeHarness` gains `AdkHarness`'s `--resume` match;
+  `CodexHarness` gains `resume <id>`, a subcommand at the argv tail where
+  `resume --last` sits today) and is verified against the same tree before
+  it is spent (`Harness::holds_conversation`), so a dead id costs zero
+  restarts. And the spawn rule is sharpened into §11 q6: id → exact resume;
+  history → the probe-gated guess; a brand-new agent record → fresh on
+  every carrier, with adoption's pickup preserved by `adopted` plus an
+  empty lineage — the vestigial `pending_continuation`'s meaning, derived
+  instead of revived. No wire or SPA change: resume is invisible to the
+  client, confirmed against the digest and the record's serde shape. §3's
+  `session_id` doc is amended (the transcript tree is a durable record, not
+  a scrape; the screen stays forbidden), and §10 gains step 10 with the
+  test list.
 - **2026-08-29, §6.3 complete — the client half was a test.** `c0d1b89`. The
   SPA needed no change, proven rather than assumed: `createThreadCache` is
   the whole of the client's paging, it bounds a window by `thread_total` and

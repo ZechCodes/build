@@ -431,12 +431,19 @@ pub struct ActiveRun {
     /// "Run all": auto-dispatch the next approved stage when validation passes.
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
+    ///
+    /// Read by the spawn rule: an adopted entity whose session lineage has
+    /// never opened is having its first session after the adoption, and that is
+    /// the one case where a fresh agent SHOULD inherit the checkout's
+    /// conversation — it is the human's own, in a checkout they were already
+    /// working in.
     pub adopted: bool,
-    /// VESTIGIAL. Set at adoption, and nothing reads it: continuation is now
-    /// decided per spawn by the transcript probe, because a Build-owned tab
-    /// respawned after a crash should always pick its own conversation back up
-    /// — not only the first time after an adoption. Kept because it is on every
-    /// `PersistedRun` on disk and dropping it needs a store migration.
+    /// VESTIGIAL. Set at adoption, and nothing reads it: the meaning it was
+    /// minted for — the first session after an adoption picks the human's
+    /// conversation up — is derived from `adopted` plus an empty session
+    /// lineage now, which needs no clearing write and cannot be left set on an
+    /// entity that has moved on. Kept because it is on every `PersistedRun` on
+    /// disk and dropping it needs a store migration.
     pub pending_continuation: bool,
     /// The last triage pass over this run's diff, with the revision it read.
     /// Presentational: nothing in the lifecycle reads it, and a stale one still
@@ -558,16 +565,22 @@ fn gate_implementation(
 /// Per-spawn context an interactive harness builder may honor.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnOptions {
-    /// Resume the harness's own most-recent conversation for this cwd
-    /// (claude: `--continue`). Set only for the first session after adoption.
+    /// Resume the harness's own most-recent conversation for this cwd (claude:
+    /// `--continue`, codex: `resume --last`) — a GUESS, since what it reopens
+    /// is the newest conversation in the checkout whoever was having it. Set
+    /// for the first session after adoption, or for a respawn of an agent with
+    /// recorded history, and never for a brand-new agent.
     pub continue_session: bool,
     /// Resume the conversation the agent's last session NAMED (claude:
-    /// `--resume <id>`), when one was recorded.
+    /// `--resume <id>`, codex: `resume <SESSION_ID>`), when one was recorded
+    /// and the provider still holds it.
     ///
     /// An alternative to `continue_session`, never a companion: this names the
     /// exact conversation Build was speaking to, and `--continue` guesses the
-    /// newest one in the cwd. A carrier that names no conversation — every PTY
-    /// one — leaves it empty, so the field is carrier-neutral in shape only.
+    /// newest one in the cwd. Every carrier can carry a name — a protocol one
+    /// announces it, a terminal one has it read out of the harness's own
+    /// transcript tree — so the field is carrier-neutral in fact, not only in
+    /// shape.
     pub resume_session_id: Option<String>,
     /// Entity whose per-session MCP server receives the terminal `done` report.
     pub owner_id: String,
@@ -597,6 +610,22 @@ pub type WarmBuilder =
 /// the worktree by hand before Build ever looked at it. Injectable so tests
 /// never touch the real home directory.
 pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
+
+/// Builds the watcher that will name the conversation a session about to open
+/// in a worktree cwd is having. Called at the spawn reservation, BEFORE the
+/// child exists, so what the harness already wrote there can be told from what
+/// the child writes. `None` for a provider whose session names its own
+/// conversation. Injectable for the same reason the probe is: tests never read
+/// the developer's real transcript tree.
+pub type SessionLocatorFactory = std::sync::Arc<
+    dyn Fn(&Path, AgentProvider) -> Option<Box<dyn crate::harness::SessionLocator>> + Send + Sync,
+>;
+
+/// Whether the conversation a recorded id names is still in the provider's
+/// tree — asked before the id is spent, so a dead one costs zero restarts
+/// rather than one. The sibling of [`TranscriptProbe`], injectable for the same
+/// reason.
+pub type ResumeIdProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider, &str) -> bool + Send + Sync>;
 
 const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
 

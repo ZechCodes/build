@@ -34,7 +34,8 @@ use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
-    ReportConsumed, ReportOutcome, RunSource, SpawnOptions, TranscriptProbe,
+    ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions,
+    TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -752,6 +753,11 @@ impl Tab {
     /// with no terminal paints nothing, so there is no screen to hold and no
     /// byte pump to run — its work reaches the conversation through the
     /// activity pump instead.
+    ///
+    /// `locator` is how the session opened here will name the conversation it
+    /// is having, and it arrives from the caller because it has to be built
+    /// before this: it snapshots the harness's transcript tree, and a snapshot
+    /// taken after the child started could contain the child's own file.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -759,6 +765,7 @@ impl Tab {
         root: std::path::PathBuf,
         cols: u16,
         rows: u16,
+        locator: Option<Box<dyn crate::harness::SessionLocator>>,
     ) -> Result<(Tab, SessionOutput), String> {
         let size = PtySize {
             rows,
@@ -779,10 +786,14 @@ impl Tab {
             TabRole::Agent { .. } => Carrier::Terminal {
                 size,
                 turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                locator,
             },
+            // The human's own shell is having no conversation, so there is no
+            // name for a locator to find.
             TabRole::Shell => Carrier::Terminal {
                 size,
                 turn_ready_grace: None,
+                locator: None,
             },
         };
         let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
@@ -1782,6 +1793,25 @@ fn default_transcript_probe() -> TranscriptProbe {
     })
 }
 
+fn default_resume_id_probe() -> ResumeIdProbe {
+    Arc::new(|cwd: &std::path::Path, provider, id: &str| {
+        let Ok(home) = std::env::var("HOME") else {
+            // No home to read means no grounds to refuse: a recorded id is
+            // cleared only where the tree that would hold it was READ and did
+            // not.
+            return true;
+        };
+        harness_for(provider).holds_conversation(std::path::Path::new(&home), cwd, id)
+    })
+}
+
+fn default_session_locator_factory() -> SessionLocatorFactory {
+    Arc::new(|cwd: &std::path::Path, provider| {
+        let home = std::env::var("HOME").ok()?;
+        harness_for(provider).session_locator(std::path::Path::new(&home), cwd)
+    })
+}
+
 /// What a mutation tail found on the conversation it just wrote: the thread it
 /// looked at, how far that thread has got, and the newest attention-class item
 /// to land since a tail last looked (`None` when nothing did, or when this is
@@ -1979,6 +2009,15 @@ pub struct AppState {
     /// looked at it, are the same case, and both want the transcript picked
     /// back up. Never true in QA mode.
     transcript_probe: TranscriptProbe,
+    /// Builds the watcher that names the conversation a spawning session is
+    /// having — consulted once per agent-tab spawn, before the child exists.
+    /// Never builds one in QA mode: the scripted harness has no transcript
+    /// tree to watch.
+    session_locator_factory: SessionLocatorFactory,
+    /// Whether a recorded resume id still names a conversation the provider
+    /// holds — consulted at every spawn that has one to spend, so a dead one is
+    /// cleared where it is read instead of costing a session to find out.
+    resume_id_probe: ResumeIdProbe,
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
     notifier: Option<Notifier>,
@@ -2049,6 +2088,11 @@ impl AppState {
         } else {
             default_transcript_probe()
         };
+        let session_locator_factory: SessionLocatorFactory = if qa_agent {
+            Arc::new(|_, _| None)
+        } else {
+            default_session_locator_factory()
+        };
         let mut state = AppState {
             projects: Vec::new(),
             entity_project: HashMap::new(),
@@ -2098,6 +2142,8 @@ impl AppState {
             next_project: 1,
             qa_agent,
             transcript_probe,
+            session_locator_factory,
+            resume_id_probe: default_resume_id_probe(),
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
@@ -3063,6 +3109,47 @@ impl AppState {
         if let Err(error) = self.finish_run_mutation(owner.to_string(), active) {
             eprintln!("{context} {owner}: {error}");
         }
+    }
+
+    /// Whether a spawn for this agent may pick up a conversation Build never
+    /// named — the guess `--continue` makes, which reopens the newest
+    /// conversation in the checkout whoever it belonged to.
+    ///
+    /// Two readings, and both come off durable records rather than a flag some
+    /// earlier verb set:
+    ///
+    /// - **The agent's own record shows history.** Its `thread.sessions` is
+    ///   non-empty, so a session of its own has opened before and this spawn is
+    ///   a respawn: the crash window where the name was never captured. Lineage
+    ///   is not per-agent today — [`AppState::record_agent_session_start`]
+    ///   writes through the ROSTER's first agent — so for the first agent its
+    ///   own `sessions` IS the entity's whole lineage and this reading is
+    ///   exact, while a non-first agent's is empty and starts FRESH.
+    ///   Deliberate: `--continue` guesses the newest conversation in the cwd,
+    ///   and on a checkout several agents share that is precisely the
+    ///   misattribution being retired. One capture after its first session, the
+    ///   name carries it instead.
+    /// - **It is the first session after an adoption.** The entity's record
+    ///   says `adopted` and no session lineage has ever opened on it, which is
+    ///   the meaning `pending_continuation` was minted for: the human's own
+    ///   conversation in a checkout they were already working in, which is the
+    ///   one conversation a fresh agent SHOULD inherit. Self-limiting — an
+    ///   adopted entity whose lineage has opened grants no more pickups — so an
+    ///   agent added to an old adopted branch starts fresh.
+    ///
+    /// A router owns no record at all, so it falls through to `false` and
+    /// always spawns fresh: a router is one decision long, and the newest
+    /// conversation in a checkout is never it.
+    fn may_pick_up_a_conversation(&self, owner: &str, agent_id: &str) -> bool {
+        let Ok(agents) = self.entity_agents(owner) else {
+            return false;
+        };
+        let has_run_before = agents
+            .by_id(agent_id)
+            .is_some_and(|agent| !agent.thread.sessions.is_empty());
+        let first_session_after_adoption =
+            self.runs.get(owner).is_some_and(|run| run.adopted) && agents.sessions.is_empty();
+        has_run_before || first_session_after_adoption
     }
 
     /// The name the agent's record says its conversation has — `None` for one
@@ -6120,6 +6207,9 @@ impl AppState {
                 for capture_id in routers {
                     eprintln!("idle monitor: the router on {capture_id} stopped");
                 }
+                // Asked with the lock RELEASED: a terminal answers this off its
+                // harness's transcript tree, which is a filesystem read.
+                capture_conversation_names(&state);
             }
         });
     }
@@ -17010,6 +17100,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             root,
             cols,
             rows,
+            None,
         )?;
         s.tabs.insert(key.clone(), tab);
         (key, rx)
@@ -17424,21 +17515,44 @@ fn ensure_agent_tab(
                     }
                     Err(unknown) => return Err(unknown),
                 };
+                // What this spawn picks back up, decided in order, and the
+                // order is the rule.
+                //
+                // 1. A recorded name the provider still holds is resumed
+                //    EXACTLY — the conversation Build was speaking to, with no
+                //    cwd guess beside it. Verified first, so a dead name costs
+                //    zero restarts instead of one, and the claude uuid an agent
+                //    carried onto codex is cleared here rather than choking the
+                //    resume.
+                let resume_session_id = match s.recorded_resume_id(owner, agent_id) {
+                    Some(named) if (s.resume_id_probe)(&root, model_choice.provider, &named) => {
+                        Some(named)
+                    }
+                    Some(_gone) => {
+                        s.record_agent_resume_id(owner, agent_id, None);
+                        None
+                    }
+                    None => None,
+                };
+                // 2. No name, but this agent's record shows history, or it is
+                //    the first session after an adoption: `--continue` guesses
+                //    the newest conversation in the checkout, still gated on
+                //    the transcript probe.
+                // 3. Otherwise fresh, on every carrier. A brand-new agent
+                //    record has no conversation to pick up, and the checkout's
+                //    old one belongs to whoever had it.
+                let continue_session = resume_session_id.is_none()
+                    && s.may_pick_up_a_conversation(owner, agent_id)
+                    && (s.transcript_probe)(&root, model_choice.provider);
+                // Built here, before the child exists, so the transcripts it
+                // snapshots as "not mine" cannot include the child's own.
+                let locator = (s.session_locator_factory)(&root, model_choice.provider);
                 let orch = s.orch_for(&project_id)?;
                 // Unconditional: under `--strict-mcp-config` a missing config
                 // kills the harness before it reads a byte of the prompt, and
                 // the scaffold is idempotent. The config is written per AGENT,
                 // so two agents sharing a checkout report as themselves.
                 orch.scaffold_agent_worktree(&root, agent_id).map_err(err)?;
-                // A Build-owned tab respawned after a crash should always pick
-                // its own transcript back up, so the probe is unconditional too.
-                let continue_session = (s.transcript_probe)(&root, model_choice.provider);
-                // Sharper than the probe where the agent's last session left a
-                // name: `--resume <id>` reopens the exact conversation Build
-                // was speaking to, where `--continue` reopens the newest one in
-                // the checkout. Absent is never an error — the probe is what
-                // answers then, exactly as it did before this existed.
-                let resume_session_id = s.recorded_resume_id(owner, agent_id);
                 let session_token = uuid::Uuid::new_v4().to_string();
                 let spec = orch.agent_harness_spec(
                     agent_id,
@@ -17452,11 +17566,11 @@ fn ensure_agent_tab(
                 s.mcp_session_tokens
                     .insert(agent_id.to_string(), session_token.clone());
                 s.agent_spawns_in_flight.insert(key.clone());
-                Some((spec, size, carried, session_token))
+                Some((spec, size, carried, session_token, locator))
             }
         };
 
-        let Some((spec, size, carried, session_token)) = reserved else {
+        let Some((spec, size, carried, session_token, locator)) = reserved else {
             // Someone else is spawning this root's agent: wait for their tab
             // rather than start a second harness beside it.
             if std::time::Instant::now() >= deadline {
@@ -17480,6 +17594,7 @@ fn ensure_agent_tab(
             root.clone(),
             size.cols,
             size.rows,
+            locator,
         );
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
@@ -17821,6 +17936,17 @@ fn spawn_tab_pump(
                                     screen.flush(&term_id);
                                     screen.push_closed(&term_id, "agent_session_ended");
                                 }
+                                // One final reading, so a session shorter than
+                                // a sweep tick is still named — and the respawn
+                                // that needs the name is the very next thing
+                                // after a close. It RECORDS; it never clears: a
+                                // terminal resumed in place writes no new
+                                // transcript, so a locator finding nothing is
+                                // its normal answer here, and clearing on that
+                                // would throw a good name away at every
+                                // restart. A name that no longer resolves is
+                                // caught at the reservation instead.
+                                note_named_conversation(&mut s, &key, &owner, &agent_id);
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -17885,7 +18011,7 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    note_announced_conversation(&mut s, &key, &owner, &agent_id);
+                    note_named_conversation(&mut s, &key, &owner, &agent_id);
                     s.record_agent_activity(&owner, &agent_id, &activity);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -17900,8 +18026,8 @@ fn spawn_activity_pump(
                     if let Some(tab) = s.tabs.get_mut(&key) {
                         tab.live = false;
                     }
-                    match announced_conversation(&s, &key) {
-                        Some(_) => note_announced_conversation(&mut s, &key, &owner, &agent_id),
+                    match named_conversation(&s, &key) {
+                        Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -17925,30 +18051,92 @@ fn spawn_activity_pump(
 }
 
 /// The name the session in `key`'s tab has given its conversation, or `None`
-/// for a carrier that names none and for one that has not announced yet.
-fn announced_conversation(state: &AppState, key: &TabKey) -> Option<String> {
+/// for a carrier that names none and for one that has not named one yet.
+fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
     state.tabs.get(key)?.session.session_id()
 }
 
-/// Keep the agent's record naming the conversation its live session is having.
+/// Keep the agent's record naming the conversation its session is having.
 ///
-/// The activity pump is the capture point because it is the only task that
-/// wakes on this carrier's own events, and it already resolves the agent and
-/// holds the state lock. Compared on every wake and written only when it moved,
-/// so a session that announces once costs one write however many events it goes
-/// on to report.
+/// Compared before it is written, so a session that names its conversation once
+/// costs one write however long it lives. A name that has not arrived leaves
+/// the record alone: what it carries is the last session's, which is exactly
+/// what a resume should use if this one dies before naming its own.
 ///
-/// An announcement that has not arrived leaves the record alone: what it
-/// carries is the last session's name, which is exactly what `--resume` should
-/// use if this one dies before saying its own.
-fn note_announced_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(announced) = announced_conversation(state, key) else {
+/// Both carriers' capture points come through here, so a name a child announced
+/// and a name a locator found are the same record written by the same hand.
+fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(named) = named_conversation(state, key) else {
         return;
     };
-    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(announced.as_str()) {
+    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(named.as_str()) {
         return;
     }
-    state.record_agent_resume_id(owner, agent_id, Some(announced));
+    state.record_agent_resume_id(owner, agent_id, Some(named));
+}
+
+/// The terminal carrier's capture point: ask every live agent session for the
+/// name its conversation has, and write down each answer that moved.
+///
+/// A terminal announces nothing, so no task wakes on its behalf the way the
+/// activity pump wakes on a protocol carrier's events — which is why the sweep
+/// is daemon-owned and fixed-cadence rather than hung off the status poll. The
+/// poll is client-driven: with no browser open nothing would ever be captured,
+/// and every attached client would multiply this filesystem read by its own
+/// poll rate, on the RPC path that answers from under the state lock.
+///
+/// The lock is HELD only to collect the live agents and to write the answers.
+/// The one call that may touch the filesystem — a locator listing the harness's
+/// transcript tree — is made between the two, with the lock released, the way a
+/// turn is handed over.
+fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
+    /// One live agent, taken out of the registry so the name can be asked for
+    /// with the lock released, and put back by `key` once it is known.
+    struct LiveAgent {
+        key: TabKey,
+        owner: String,
+        agent_id: String,
+        session: Arc<dyn AgentSession>,
+        recorded: Option<String>,
+    }
+
+    let live: Vec<LiveAgent> = {
+        let s = state.lock().unwrap();
+        s.tabs
+            .iter()
+            .filter(|(_, tab)| tab.live)
+            .filter_map(|(key, tab)| match &tab.role {
+                TabRole::Agent {
+                    owner, agent_id, ..
+                } => Some(LiveAgent {
+                    key: key.clone(),
+                    owner: owner.clone(),
+                    agent_id: agent_id.clone(),
+                    session: Arc::clone(&tab.session),
+                    recorded: s.recorded_resume_id(owner, agent_id),
+                }),
+                TabRole::Shell => None,
+            })
+            .collect()
+    };
+    let moved: Vec<(TabKey, String, String)> = live
+        .into_iter()
+        .filter_map(|agent| {
+            let named = agent.session.session_id()?;
+            (agent.recorded.as_deref() != Some(named.as_str())).then_some((
+                agent.key,
+                agent.owner,
+                agent.agent_id,
+            ))
+        })
+        .collect();
+    if moved.is_empty() {
+        return;
+    }
+    let mut s = state.lock().unwrap();
+    for (key, owner, agent_id) in moved {
+        note_named_conversation(&mut s, &key, &owner, &agent_id);
+    }
 }
 
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
@@ -19613,6 +19801,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
@@ -19934,6 +20123,7 @@ mod tests {
             shell_root,
             80,
             24,
+            None,
         )
         .expect("a shell tab spawns");
         state.lock().unwrap().tabs.insert(shell_key, shell_tab);
@@ -20067,9 +20257,9 @@ mod tests {
     }
 
     /// The tab spawns the spec the orchestrator built FOR IT: the run as
-    /// `owner_id`, the canonical worktree as cwd, and continuation decided by
-    /// the transcript probe — a Build-owned tab replaced after a crash should
-    /// always pick its own conversation back up. The empty prompt is the
+    /// `owner_id`, the canonical worktree as cwd, and — for an owner holding no
+    /// record of a conversation, the shape a router has — no resume of any
+    /// kind, however much the checkout already holds. The empty prompt is the
     /// contract too: a turn never rides in argv, it travels through the PTY.
     #[tokio::test]
     async fn an_agent_tab_spawns_the_harness_the_orchestrator_built() {
@@ -20116,8 +20306,8 @@ mod tests {
             "the spec is built for the canonical root"
         );
         assert!(
-            built[0].continue_session,
-            "a replaced tab picks its own transcript back up"
+            !built[0].continue_session,
+            "an owner with no record of a conversation inherits nobody else's"
         );
         let screen = wait_for_agent_screen(&state, &root, "SPEC-FROM-THE-ORCHESTRATOR").await;
         assert!(
@@ -28037,6 +28227,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
@@ -28521,6 +28712,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
@@ -28827,6 +29019,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
@@ -29724,6 +29917,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -29935,6 +30129,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -30331,6 +30526,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
@@ -30590,13 +30786,17 @@ mod tests {
         );
     }
 
-    /// Revival RESUMES where the provider can. An agent whose checkout holds a
-    /// claude transcript comes back with continuation asked for, so the human's
-    /// message reaches the session it was already in rather than a blank one;
-    /// an agent that has never run has nothing to continue and opens fresh.
-    /// (That decision becomes the harness's own `--continue` /
-    /// `resume --last` argument — see
+    /// Revival RESUMES where the provider can. An agent that has run before
+    /// and whose checkout holds a claude transcript comes back with
+    /// continuation asked for, so the human's message reaches the session it
+    /// was already in rather than a blank one; one whose checkout holds nothing
+    /// has nothing to continue and opens fresh. (That decision becomes the
+    /// harness's own `--continue` / `resume --last` argument — see
     /// `agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id`.)
+    ///
+    /// Both agents here have history, so the probe is the only thing that
+    /// separates them — whether an agent is ALLOWED to guess at all is the
+    /// other reading, and it has its own test.
     #[tokio::test]
     async fn a_revived_agent_resumes_its_session_and_one_that_never_ran_does_not() {
         let (dir, repo) = init_repo();
@@ -30633,6 +30833,22 @@ mod tests {
             });
             s.projects[0].orch =
                 Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            // Both are respawns: a session of each agent's own has opened
+            // before, which is what puts them in the crash window a guess is
+            // for. What separates them is only what is on disk.
+            for run_id in ["run-resumed", "run-fresh"] {
+                s.runs
+                    .get_mut(run_id)
+                    .expect("the run")
+                    .agents
+                    .start_session(
+                        "claude",
+                        None,
+                        None,
+                        "implementation",
+                        "2026-08-29T00:00:00Z",
+                    );
+            }
         }
 
         for run_id in ["run-resumed", "run-fresh"] {
@@ -31061,6 +31277,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
@@ -31116,6 +31333,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, "run-codex");
@@ -33067,6 +33285,7 @@ mod tests {
             shell_root.clone(),
             80,
             24,
+            None,
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
@@ -33801,6 +34020,10 @@ mod tests {
             }
         };
         let mut s = state.lock().unwrap();
+        // These tests are about what the pump does with a name AFTER the spawn
+        // spends it, so the reservation's verification says yes: the tree holds
+        // what the record claims, and the session still ends the way it ends.
+        s.resume_id_probe = Arc::new(|_, _, _| true);
         let run = s.runs.get_mut(run_id).expect("the run");
         run.model_choice = choice.clone();
         run.agents.resolve_mut(None).expect("its agent").choice = choice;
@@ -33953,6 +34176,582 @@ mod tests {
         })
         .await
         .expect("a session that announced nothing takes the name it was spawned with with it");
+    }
+
+    /// The gate on the cwd guess, read off durable records rather than a flag
+    /// some earlier verb set.
+    ///
+    /// `--continue` reopens the newest conversation in the checkout whoever was
+    /// having it, so it is offered only where a conversation of Build's own is
+    /// what it would land on: an agent whose record shows it has run before, or
+    /// the first session after an adoption — the human's own conversation in a
+    /// checkout they were already working in.
+    #[tokio::test]
+    async fn only_history_or_a_freshly_adopted_entity_may_guess_at_a_conversation() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
+        insert_run_without_agent(&state, &repo, dir.path().join("lived"), "run-lived");
+        insert_run_without_agent(&state, &repo, dir.path().join("adopted"), "run-adopted");
+        let mut s = state.lock().unwrap();
+
+        let first = |s: &AppState, run_id: &str| {
+            s.entity_agents(run_id).expect("the run").first().id.clone()
+        };
+        let fresh_agent = first(&s, "run-fresh");
+        assert!(
+            !s.may_pick_up_a_conversation("run-fresh", &fresh_agent),
+            "a brand-new agent record has no conversation of its own to pick up"
+        );
+
+        // A record that shows a session of its own has opened before: this
+        // spawn is a respawn, and the name of that session was never captured.
+        let lived_agent = first(&s, "run-lived");
+        s.runs
+            .get_mut("run-lived")
+            .expect("the run")
+            .agents
+            .start_session(
+                "claude",
+                None,
+                None,
+                "implementation",
+                "2026-08-29T00:00:00Z",
+            );
+        assert!(
+            s.may_pick_up_a_conversation("run-lived", &lived_agent),
+            "an agent that has run before is in the crash window the guess exists for"
+        );
+
+        // Adoption's own pickup, on the flag adoption already sets. It is
+        // entity-wide while it lasts: an agent added to a checkout nobody has
+        // opened a session in yet is still the first session after the
+        // adoption.
+        s.runs.get_mut("run-adopted").expect("the run").adopted = true;
+        let adopted_first = first(&s, "run-adopted");
+        let added_agent = s
+            .runs
+            .get_mut("run-adopted")
+            .expect("the run")
+            .agents
+            .add(
+                "run-adopted",
+                ModelChoice::default(),
+                "2026-08-29T00:00:00Z",
+            )
+            .id
+            .clone();
+        assert!(
+            s.may_pick_up_a_conversation("run-adopted", &adopted_first),
+            "the first session after an adoption picks the human's conversation up"
+        );
+        assert!(
+            s.may_pick_up_a_conversation("run-adopted", &added_agent),
+            "and so does any agent on it, while no session has opened yet"
+        );
+
+        // And it self-limits: once a session has opened on the entity, the
+        // conversation in the checkout is Build's own, and only the record that
+        // holds it may guess at it.
+        s.runs
+            .get_mut("run-adopted")
+            .expect("the run")
+            .agents
+            .start_session(
+                "claude",
+                None,
+                None,
+                "implementation",
+                "2026-08-29T00:01:00Z",
+            );
+        assert!(
+            !s.may_pick_up_a_conversation("run-adopted", &added_agent),
+            "an agent added to an adopted entity that has already run starts fresh"
+        );
+
+        assert!(
+            !s.may_pick_up_a_conversation("router", "router-agent"),
+            "a router owns no record at all, and is one decision long"
+        );
+    }
+
+    /// The spawn rule, three ways — decided in order, and the order is the
+    /// rule.
+    ///
+    /// The third case is the one that made this urgent: before it, the probe
+    /// ran unconditionally, so a brand-new agent spawned into a checkout
+    /// holding anybody's old transcript inherited that conversation.
+    #[tokio::test]
+    async fn a_spawn_resumes_by_name_then_guesses_by_history_and_otherwise_starts_fresh() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let named_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("named"), "run-named");
+        let history_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("history"), "run-history");
+        let fresh_root =
+            insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            // Every checkout holds an old conversation. Which of them may be
+            // picked up is the whole question.
+            s.transcript_probe = Arc::new(|_, _| true);
+            s.resume_id_probe = Arc::new(|_, _, id| id == "sess-named");
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            // 1. A name Build wrote down, and the provider still holds it.
+            s.runs
+                .get_mut("run-named")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-named".to_string());
+            // 2. No name, but a session of its own has opened before.
+            s.runs
+                .get_mut("run-history")
+                .expect("the run")
+                .agents
+                .start_session(
+                    "claude",
+                    None,
+                    None,
+                    "implementation",
+                    "2026-08-29T00:00:00Z",
+                );
+            // 3. run-fresh is left exactly as it was minted.
+        }
+
+        for run_id in ["run-named", "run-history", "run-fresh"] {
+            let posted = call(
+                &handler,
+                "thread.post",
+                json!({ "entity_id": run_id, "body": "pick this up" }),
+            );
+            assert_eq!(posted["ok"], true, "{posted:?}");
+        }
+
+        let built = specs_built.lock().unwrap().clone();
+        let spawned_in = |root: &std::path::Path| {
+            let root = AppState::canonical_root(root);
+            built
+                .iter()
+                .find(|options| options.cwd == root)
+                .unwrap_or_else(|| panic!("the message spawned an agent in {}", root.display()))
+                .clone()
+        };
+
+        let named = spawned_in(&named_root);
+        assert_eq!(
+            named.resume_session_id.as_deref(),
+            Some("sess-named"),
+            "a verified name is resumed exactly: {named:?}"
+        );
+        assert!(
+            !named.continue_session,
+            "and never with the cwd guess beside it: {named:?}"
+        );
+
+        let history = spawned_in(&history_root);
+        assert_eq!(
+            history.resume_session_id, None,
+            "there was no name to spend: {history:?}"
+        );
+        assert!(
+            history.continue_session,
+            "but a respawn of an agent that has run before guesses: {history:?}"
+        );
+
+        let fresh = spawned_in(&fresh_root);
+        assert_eq!(
+            fresh.resume_session_id, None,
+            "a brand-new agent record names nothing: {fresh:?}"
+        );
+        assert!(
+            !fresh.continue_session,
+            "and inherits nothing — the checkout's old conversation belongs to \
+             whoever had it: {fresh:?}"
+        );
+    }
+
+    /// A locator that has found the name the harness wrote down, or has not
+    /// yet — the two answers a real one gives, without a real transcript tree.
+    struct LocatorThatFound(Option<&'static str>);
+
+    impl crate::harness::SessionLocator for LocatorThatFound {
+        fn session_id(&self) -> Option<String> {
+            self.0.map(str::to_string)
+        }
+    }
+
+    /// Give every terminal this daemon opens a locator with this answer.
+    fn every_terminal_names_its_conversation(
+        state: &Arc<Mutex<AppState>>,
+        named: Option<&'static str>,
+    ) {
+        state.lock().unwrap().session_locator_factory =
+            Arc::new(move |_, _| Some(Box::new(LocatorThatFound(named))));
+    }
+
+    /// The terminal carrier's capture, and the respawn that spends it.
+    ///
+    /// A terminal announces nothing, so nothing wakes on its behalf: the
+    /// daemon's own sweep asks each live session for the name its locator
+    /// found and writes it down the same way the headless carrier's
+    /// announcement is written down. One tick later the name is on the record,
+    /// and the next spawn resumes by it instead of guessing at the checkout.
+    #[tokio::test]
+    async fn one_sweep_tick_writes_down_the_name_a_terminals_locator_found() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-pty");
+        let agent_id = crate::agent::derived_agent_id("run-pty");
+        every_terminal_names_its_conversation(&state, Some("sess-pty"));
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.resume_id_probe = Arc::new(|_, _, id| id == "sess-pty");
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-pty", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-pty", &agent_id),
+            None,
+            "nothing has looked yet"
+        );
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-pty", &agent_id)
+                .as_deref(),
+            Some("sess-pty"),
+            "one tick puts the name the harness wrote down on the agent's record"
+        );
+
+        // The harness dies. The next message is a respawn, and it opens on the
+        // conversation by name.
+        let key = first_agent_key(&root, "run-pty");
+        state
+            .lock()
+            .unwrap()
+            .tabs
+            .get(&key)
+            .expect("the agent tab")
+            .session
+            .end();
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key).expect("the agent tab").live).then_some(())
+        })
+        .await
+        .expect("the pump notices the harness left");
+
+        let again = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-pty", "body": "and again" }),
+        );
+        assert_eq!(again["ok"], true, "{again:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            let built = specs_built.lock().unwrap();
+            (built.len() == 2).then(|| built[1].clone())
+        })
+        .await
+        .expect("the message starts the agent again");
+        assert_eq!(
+            spawned.resume_session_id.as_deref(),
+            Some("sess-pty"),
+            "the respawn carries the name the sweep found: {spawned:?}"
+        );
+        assert!(
+            !spawned.continue_session,
+            "and never the cwd guess beside it: {spawned:?}"
+        );
+        let argv = terminal_argv(&spawned);
+        assert!(argv.contains("--resume sess-pty"), "{argv}");
+        assert!(
+            !argv.contains("--continue"),
+            "the name and the cwd guess are alternatives, never both: {argv}"
+        );
+    }
+
+    /// The argv the TUI carrier builds from one recorded spawn — the mirror of
+    /// [`headless_argv`], so the same capture is walked out to argv on both.
+    fn terminal_argv(options: &SpawnOptions) -> String {
+        use crate::harness::Harness;
+        crate::harness::claude::ClaudeHarness
+            .spec(
+                &ModelChoice::default(),
+                options,
+                &crate::harness::HarnessContext {
+                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                },
+            )
+            .args
+            .join(" ")
+    }
+
+    /// A session shorter than a tick is still named.
+    ///
+    /// The sweep runs every few seconds and the respawn that needs the name is
+    /// the very next thing after a close, so the byte pump takes one final
+    /// reading on its way out — with no sweep in this test at all.
+    #[tokio::test]
+    async fn a_terminal_that_closes_before_a_sweep_is_named_on_its_way_out() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-brief");
+        let agent_id = crate::agent::derived_agent_id("run-brief");
+        every_terminal_names_its_conversation(&state, Some("sess-brief"));
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    // Announces its line editor, takes the turn, and leaves.
+                    HarnessSpec::new("sh")
+                        .arg("-c")
+                        .arg("printf '\\033[?2004h'; exit 0")
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-brief", "body": "one quick thing" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = first_agent_key(&root, "run-brief");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the harness leaves on its own");
+
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-brief", &agent_id)
+                .as_deref(),
+            Some("sess-brief"),
+            "the close arm takes the reading no sweep tick was going to take"
+        );
+    }
+
+    /// The close arm RECORDS; it never clears.
+    ///
+    /// The headless pump clears on a session that ended having announced
+    /// nothing, because for that carrier it means a dead `--resume` id. A
+    /// terminal resumed in place legitimately writes no new transcript, so its
+    /// locator finding nothing is the normal answer — and clearing on it would
+    /// throw a good name away at every restart. The dead-name problem is
+    /// answered at the reservation instead.
+    #[tokio::test]
+    async fn a_terminal_that_named_nothing_keeps_the_name_its_record_already_had() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-quiet");
+        let agent_id = crate::agent::derived_agent_id("run-quiet");
+        every_terminal_names_its_conversation(&state, None);
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    HarnessSpec::new("sh")
+                        .arg("-c")
+                        .arg("printf '\\033[?2004h'; exit 0")
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.resume_id_probe = Arc::new(|_, _, _| true);
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.runs
+                .get_mut("run-quiet")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-resumed-in-place".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-quiet", "body": "carry on" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = first_agent_key(&root, "run-quiet");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the harness leaves on its own");
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-quiet", &agent_id)
+                .as_deref(),
+            Some("sess-resumed-in-place"),
+            "a terminal that wrote no new transcript keeps the conversation it resumed"
+        );
+    }
+
+    /// Adoption keeps its pickup, walked end to end.
+    ///
+    /// The one conversation a fresh agent SHOULD inherit is the human's own, in
+    /// a checkout they were already working in — which is what an adoption is.
+    /// The rule that stops a brand-new agent inheriting a stranger's
+    /// conversation must not take this one away with it.
+    #[tokio::test]
+    async fn an_adopted_entitys_first_spawn_still_picks_the_humans_conversation_up() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-adoptee");
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.transcript_probe = Arc::new(|_, _| true);
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            // What both adoption mints write down, and what the gate reads.
+            s.runs.get_mut("run-adoptee").expect("the run").adopted = true;
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-adoptee", "body": "carry on where I left off" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let spawned = specs_built
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the message starts the agent");
+        assert_eq!(spawned.cwd, AppState::canonical_root(&root));
+        assert!(
+            spawned.continue_session,
+            "the first session after an adoption opens on the human's own \
+             conversation: {spawned:?}"
+        );
+    }
+
+    /// A dead name costs ZERO restarts, not one.
+    ///
+    /// The recorded id is checked against the provider's own tree before it is
+    /// spent, so an id whose conversation is gone — deleted, or written by the
+    /// other provider an agent was switched away from — is cleared where it is
+    /// read and the spawn falls back to the rule below it, instead of burning a
+    /// session finding out.
+    #[tokio::test]
+    async fn a_recorded_name_the_provider_no_longer_holds_is_cleared_before_it_is_spent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-poisoned");
+        let agent_id = crate::agent::derived_agent_id("run-poisoned");
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.resume_id_probe = Arc::new(|_, _, _| false);
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.runs
+                .get_mut("run-poisoned")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-gone".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-poisoned", "body": "are you still there" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let spawned = specs_built
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the message starts the agent");
+        assert_eq!(
+            spawned.resume_session_id, None,
+            "a name the provider does not hold is never spent: {spawned:?}"
+        );
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-poisoned", &agent_id),
+            None,
+            "and it is cleared where it was read, so no later spawn spends it either"
+        );
     }
 
     /// Step 3's refusals, live in production for the first time.
@@ -36266,6 +37065,7 @@ mod tests {
             root.clone(),
             80,
             24,
+            None,
         )
         .unwrap();
         tab.session
@@ -36398,6 +37198,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         state.tabs.insert(TabKey::agent(&root, &agent_id), tab);

@@ -34,8 +34,8 @@ use tokio::sync::broadcast;
 
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
-    AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError, Turn,
-    INHERITED_AGENT_MARKERS,
+    AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
+    SessionLocator, Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -140,6 +140,23 @@ impl Harness for AdkHarness {
     /// carrier ran there.
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
         ClaudeHarness.has_transcript(home, cwd)
+    }
+
+    /// The same transcripts, so the same answer — and this is the dividend: an
+    /// id captured under the TUI carrier verifies here and resumes here, and
+    /// one captured here resumes there. Both write that tree and both spend
+    /// `--resume`, so a provider swap between the two claude carriers keeps the
+    /// exact conversation.
+    fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
+        ClaudeHarness.holds_conversation(home, cwd, id)
+    }
+
+    /// No locator, and it is the only provider that answers so. This session
+    /// reads its own id off the `init` line the child sent, and a locator
+    /// beside that would be two records of one answer, free to disagree.
+    fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
+        let _ = (home, cwd);
+        None
     }
 }
 

@@ -6,12 +6,15 @@
 //! session opens in it. That is the one place Build writes outside its own
 //! tree, and it only ever adds the flag for a path Build itself created.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
 use crate::harness::{
-    Harness, HarnessContext, INHERITED_AGENT_MARKERS, REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
+    is_a_filename, Harness, HarnessContext, SessionLocator, INHERITED_AGENT_MARKERS,
+    REAL_TUI_SETTLE, REAL_TUI_SUBMIT_DELAY,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -98,8 +101,16 @@ impl Harness for ClaudeHarness {
             .arg(crate::orchestrator::mcp_config_path(&options.owner_id))
             .arg("--strict-mcp-config")
             .arg("--dangerously-skip-permissions");
-        if options.continue_session {
-            spec = spec.arg("--continue");
+        // The two are alternatives and never both: `--resume` names the exact
+        // conversation this agent was having, `--continue` guesses the newest
+        // one in the checkout, and passing both would ask for two different
+        // conversations. The name wins where there is one; the guess is what
+        // answers for a session that died before Build could read its name off
+        // the transcript tree.
+        match options.resume_session_id.as_deref() {
+            Some(named) => spec = spec.arg("--resume").arg(named),
+            None if options.continue_session => spec = spec.arg("--continue"),
+            None => {}
         }
         for arg in self.model_args(choice) {
             spec = spec.arg(arg);
@@ -115,6 +126,68 @@ impl Harness for ClaudeHarness {
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
         transcript_exists(&home.join(".claude/projects"), cwd)
     }
+
+    fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
+        Some(Box::new(ClaudeSessionLocator::watching(project_dir(
+            &home.join(".claude/projects"),
+            cwd,
+        ))))
+    }
+
+    fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
+        is_a_filename(id)
+            && project_dir(&home.join(".claude/projects"), cwd)
+                .join(format!("{id}.jsonl"))
+                .is_file()
+    }
+}
+
+/// Names the conversation a claude session is having by the file claude opens
+/// for it: one transcript per conversation, and the filename is the id.
+///
+/// The snapshot is what makes the answer this session's own — every stem
+/// already in the directory when the spawn was reserved belongs to somebody
+/// else's conversation, so only a stem that appears afterwards can be the
+/// child's.
+struct ClaudeSessionLocator {
+    project_dir: PathBuf,
+    /// The transcripts that were already there. Never re-read: a locator is
+    /// built before the child exists, so this is the whole of "not mine".
+    before: HashSet<String>,
+    /// The answer, once there is one. A locator never changes its answer, so
+    /// this is written once and read forever after.
+    named: Mutex<Option<String>>,
+}
+
+impl ClaudeSessionLocator {
+    fn watching(project_dir: PathBuf) -> ClaudeSessionLocator {
+        ClaudeSessionLocator {
+            before: transcript_stems(&project_dir).into_iter().collect(),
+            project_dir,
+            named: Mutex::new(None),
+        }
+    }
+}
+
+impl SessionLocator for ClaudeSessionLocator {
+    fn session_id(&self) -> Option<String> {
+        let mut named = self.named.lock().unwrap();
+        if named.is_none() {
+            let mut appeared = transcript_stems(&self.project_dir)
+                .into_iter()
+                .filter(|stem| !self.before.contains(stem));
+            // Exactly one, or none. A branch legally carries several agents in
+            // one checkout, and two sessions opened together there write two
+            // files nobody can tell apart — so the locator refuses to guess
+            // rather than name the wrong conversation. Refusing only forgoes
+            // the sharper resume; naming wrongly hands an agent somebody
+            // else's context.
+            if let (Some(only), None) = (appeared.next(), appeared.next()) {
+                *named = Some(only);
+            }
+        }
+        named.clone()
+    }
 }
 
 /// The transcript directory name Claude Code uses for a cwd under
@@ -127,15 +200,35 @@ pub(crate) fn encode_project_dir(path: &Path) -> String {
         .collect()
 }
 
-/// True iff the encoded directory exists under `root` and holds at least one
-/// `.jsonl` transcript.
-pub(crate) fn transcript_exists(root: &Path, cwd: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(root.join(encode_project_dir(cwd))) else {
-        return false;
+/// Where `cwd`'s transcripts live under a `projects` root.
+pub(crate) fn project_dir(root: &Path, cwd: &Path) -> PathBuf {
+    root.join(encode_project_dir(cwd))
+}
+
+/// The name of every `.jsonl` transcript in `project_dir`, without its
+/// extension — which for claude is the id of the conversation it holds. Empty
+/// for a directory that does not exist, which is a checkout nobody has opened
+/// claude in.
+pub(crate) fn transcript_stems(project_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(project_dir) else {
+        return Vec::new();
     };
     entries
         .flatten()
-        .any(|entry| entry.path().extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter_map(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// True iff the encoded directory exists under `root` and holds at least one
+/// `.jsonl` transcript.
+pub(crate) fn transcript_exists(root: &Path, cwd: &Path) -> bool {
+    !transcript_stems(&project_dir(root, cwd)).is_empty()
 }
 
 /// Record a Build-created worktree as trusted in claude's project registry, so
@@ -288,6 +381,156 @@ mod tests {
         );
         std::fs::write(encoded_dir.join("session.jsonl"), "{}\n").unwrap();
         assert!(transcript_exists(root.path(), cwd));
+    }
+
+    fn spec_for(options: &SpawnOptions) -> String {
+        ClaudeHarness
+            .spec(
+                &ModelChoice::default(),
+                options,
+                &HarnessContext {
+                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                },
+            )
+            .args
+            .join(" ")
+    }
+
+    /// The three arms, in the one shape claude's argv has for them.
+    ///
+    /// `--resume <id>` names the exact conversation Build was speaking to and
+    /// `--continue` guesses the newest one in the checkout, so they are
+    /// alternatives and never companions — and a spawn with no history to pick
+    /// up asks for neither, because the checkout's old conversation belongs to
+    /// whoever had it.
+    #[test]
+    fn claude_resumes_by_name_or_guesses_by_cwd_or_starts_fresh() {
+        let named = spec_for(&SpawnOptions {
+            resume_session_id: Some("sess-1".to_string()),
+            continue_session: true,
+            ..SpawnOptions::default()
+        });
+        assert!(named.contains("--resume sess-1"), "{named}");
+        assert!(
+            !named.contains("--continue"),
+            "the name wins outright, never both: {named}"
+        );
+
+        let guessed = spec_for(&SpawnOptions {
+            continue_session: true,
+            ..SpawnOptions::default()
+        });
+        assert!(guessed.contains("--continue"), "{guessed}");
+        assert!(!guessed.contains("--resume"), "{guessed}");
+
+        let fresh = spec_for(&SpawnOptions::default());
+        assert!(!fresh.contains("--resume"), "{fresh}");
+        assert!(!fresh.contains("--continue"), "{fresh}");
+    }
+
+    /// The locator names the conversation THIS session is having, and it knows
+    /// which one that is by what was already there: the transcripts present
+    /// when the spawn reserved the session are somebody else's, and the file
+    /// that appears afterwards is the child's own.
+    #[test]
+    fn the_claude_locator_names_the_transcript_that_appeared_after_it_was_built() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = std::path::Path::new("/Users/z/proj");
+        let project_dir = home
+            .path()
+            .join(".claude/projects")
+            .join(encode_project_dir(cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // A conversation somebody else had in this checkout, before Build
+        // opened anything here.
+        std::fs::write(project_dir.join("older-session.jsonl"), "{}\n").unwrap();
+
+        let locator = ClaudeHarness
+            .session_locator(home.path(), cwd)
+            .expect("an opaque CLI wrapper names its conversation on disk");
+        assert_eq!(
+            locator.session_id(),
+            None,
+            "a pre-existing transcript is never this session's"
+        );
+
+        std::fs::write(project_dir.join("d2a1-mine.jsonl"), "{}\n").unwrap();
+        assert_eq!(
+            locator.session_id().as_deref(),
+            Some("d2a1-mine"),
+            "the filename IS the id claude gave the conversation"
+        );
+
+        // Cached: the answer a locator gave once is the answer it keeps, so a
+        // later conversation in the same checkout cannot rename this session.
+        std::fs::write(project_dir.join("someone-elses-later.jsonl"), "{}\n").unwrap();
+        assert_eq!(locator.session_id().as_deref(), Some("d2a1-mine"));
+    }
+
+    /// Two sessions opened together in one checkout write two files nobody can
+    /// tell apart, and a branch is allowed to carry several agents. Guessing by
+    /// recency is the misattribution the locator exists to end, so it refuses
+    /// to guess — indefinitely, because a missing id only forgoes the sharper
+    /// resume and never errs.
+    #[test]
+    fn the_claude_locator_refuses_to_guess_between_two_new_transcripts() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = std::path::Path::new("/Users/z/shared");
+        let project_dir = home
+            .path()
+            .join(".claude/projects")
+            .join(encode_project_dir(cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let locator = ClaudeHarness.session_locator(home.path(), cwd).unwrap();
+        std::fs::write(project_dir.join("one.jsonl"), "{}\n").unwrap();
+        std::fs::write(project_dir.join("two.jsonl"), "{}\n").unwrap();
+        assert_eq!(locator.session_id(), None);
+        // And it stays refused: the files only accumulate from here.
+        std::fs::write(project_dir.join("three.jsonl"), "{}\n").unwrap();
+        assert_eq!(locator.session_id(), None);
+    }
+
+    /// A recorded id is worth spending only while the conversation it names is
+    /// still on disk — the check that makes a dead id cost zero restarts.
+    #[test]
+    fn claude_holds_a_conversation_only_while_its_transcript_is_there() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = std::path::Path::new("/Users/z/proj");
+        assert!(!ClaudeHarness.holds_conversation(home.path(), cwd, "sess-1"));
+
+        let project_dir = home
+            .path()
+            .join(".claude/projects")
+            .join(encode_project_dir(cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("sess-1.jsonl"), "{}\n").unwrap();
+        assert!(ClaudeHarness.holds_conversation(home.path(), cwd, "sess-1"));
+        assert!(!ClaudeHarness.holds_conversation(home.path(), cwd, "sess-2"));
+
+        std::fs::remove_file(project_dir.join("sess-1.jsonl")).unwrap();
+        assert!(
+            !ClaudeHarness.holds_conversation(home.path(), cwd, "sess-1"),
+            "a conversation that is gone is not resumed by name"
+        );
+    }
+
+    /// An id is a filename component and nothing else. A recorded id rides a
+    /// JSON record on disk, so the one that walks out of the tree it names is
+    /// refused rather than stat'ed.
+    #[test]
+    fn a_session_id_that_is_not_a_filename_names_no_conversation() {
+        let home = tempfile::tempdir().unwrap();
+        let cwd = std::path::Path::new("/Users/z/proj");
+        let project_dir = home
+            .path()
+            .join(".claude/projects")
+            .join(encode_project_dir(cwd));
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(home.path().join("escaped.jsonl"), "{}\n").unwrap();
+
+        assert!(!ClaudeHarness.holds_conversation(home.path(), cwd, "../../../escaped"));
     }
 
     /// The trait method and the free function have to agree about where claude

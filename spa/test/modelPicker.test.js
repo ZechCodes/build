@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   catalogForProvider,
+  genericProviderId,
   modelOptionsHtml,
   effortOptionsHtml,
   effortSupported,
@@ -50,6 +51,16 @@ describe("the agents a start can name", () => {
     expect(providerLabel("claude")).toBe("Claude Code");
     expect(providerLabel("claude_adk")).toBe("Claude Code");
     expect(providerLabel("codex")).toBe("Codex");
+  });
+
+  it("resolves a carrier to the agent a start names", () => {
+    // The bridge records which program a session opened; a start names the
+    // agent and lets the account setting choose the program again.
+    expect(genericProviderId("claude_adk")).toBe("claude");
+    expect(genericProviderId("claude")).toBe("claude");
+    expect(genericProviderId("codex")).toBe("codex");
+    expect(genericProviderId("")).toBe("");
+    expect(genericProviderId(null)).toBe("");
   });
 
   it("says what an unnamed or unknown provider is, rather than nothing", () => {

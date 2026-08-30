@@ -256,6 +256,22 @@ describe("conversation thread rendering", () => {
     expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
   });
+
+  it("calls either claude carrier Claude Code, never the word the wire uses", () => {
+    // Claude is Claude: which program carried the session is the bridge's
+    // record, not a second agent for a reader to tell apart.
+    document.body.innerHTML = threadHtml({
+      sessions: [{ provider: "claude_adk" }],
+      items: [
+        { type: "event", data: { event: "session_started" } },
+        { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
+      ],
+    }, { initialMessage: "Do the task" });
+    const shown = document.querySelector(".thread-items").textContent;
+    expect(shown).toContain("Claude Code session started");
+    expect(shown).not.toMatch(/claude_adk/);
+    expect(shown).not.toMatch(/headless/i);
+  });
 });
 
 describe("relative conversation dates", () => {

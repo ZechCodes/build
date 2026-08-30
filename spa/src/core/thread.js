@@ -13,6 +13,7 @@ import {
   sendControlHtml,
 } from "./composer.js";
 import { mountSplitMenu } from "./splitButton.js";
+import { genericProviderId } from "./modelPicker.js";
 
 const EVENT_META = {
   session_started: { label: "Agent session started", icon: "▶" },
@@ -482,7 +483,9 @@ function anchorLabel(anchor) {
 function harnessLabel(thread, override) {
   const raw = override || (thread && thread.sessions && thread.sessions.at(-1)?.provider) || "Agent";
   if (raw === "codex" || raw === "Codex CLI") return "Codex";
-  if (raw === "claude" || raw === "Claude") return "Claude Code";
+  // Claude is Claude: a session the bridge recorded on either carrier is the
+  // same agent to the reader, so the conversation says the one name for both.
+  if (raw === "Claude" || genericProviderId(raw) === "claude") return "Claude Code";
   return raw;
 }
 

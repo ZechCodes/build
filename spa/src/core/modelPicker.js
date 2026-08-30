@@ -20,13 +20,23 @@ export const STARTABLE_PROVIDERS = [
 /** What a start leads with where nothing has run yet to say otherwise. */
 export const DEFAULT_START_PROVIDER = "claude";
 
-/** Every provider id the bridge can name, and what a person calls it. Both
- *  claude carriers are "Claude Code": a record persisted on either one is the
- *  same agent to the human, and the account setting is what keeps two of them
- *  from ever sitting side by side. */
+/** The carrier ids the bridge records, and the agent each one carries. Claude
+ *  Code runs two programs; a record persisted on either is the same agent to the
+ *  human, and which one a start opens is the account's answer, never a client's.
+ *  So every client-side read of a provider goes through here first: the concrete
+ *  carrier is the bridge's business, and the agent is what a person sees and
+ *  what a start names. */
+const CARRIED_AGENTS = { claude_adk: "claude" };
+
+/** The agent a carrier id belongs to; every other id is already an agent. */
+export function genericProviderId(provider) {
+  if (!provider) return "";
+  return CARRIED_AGENTS[provider] || String(provider);
+}
+
+/** Every agent the bridge can name, and what a person calls it. */
 const PROVIDER_LABELS = {
   claude: "Claude Code",
-  claude_adk: "Claude Code",
   codex: "Codex",
 };
 
@@ -34,7 +44,8 @@ const PROVIDER_LABELS = {
  *  bridge named it — a new harness must read as itself, not as "Agent". */
 export function providerLabel(provider) {
   if (!provider) return "Agent";
-  return PROVIDER_LABELS[provider] || String(provider);
+  const agent = genericProviderId(provider);
+  return PROVIDER_LABELS[agent] || agent;
 }
 
 export function providerOptionsHtml(providers, selectedId) {

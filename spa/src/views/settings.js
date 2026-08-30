@@ -14,6 +14,7 @@ import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
+import { agentModePanelHtml, mountAgentMode } from "../core/agentMode.js";
 import { loadModelCatalog } from "../app.js";
 import {
   catalogForProvider,
@@ -52,6 +53,7 @@ export async function renderSettings() {
       <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
     </div>
+    ${agentModePanelHtml()}
     <div class="panel">
       <h3>🤖 Agent defaults</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
@@ -111,6 +113,7 @@ export async function renderSettings() {
     }
   };
   await refresh();
+  await mountAgentMode($("#root"), { callRpc: (method, params) => App.call(method, params) });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);

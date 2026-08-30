@@ -301,7 +301,7 @@ mod tests {
             .find(|provider| provider.id == AgentProvider::Codex)
             .unwrap();
 
-        assert_eq!(claude.label, "Claude Code");
+        assert_eq!(claude.label, "Claude Code TUI");
         assert!(claude
             .models
             .iter()
@@ -311,7 +311,7 @@ mod tests {
             .iter()
             .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(codex.label, "Codex CLI");
+        assert_eq!(codex.label, "Codex");
         assert!(sol.efforts.contains(&"ultra"));
         let luna = codex
             .models
@@ -353,22 +353,45 @@ mod tests {
             .contains("does not support effort ultra"));
     }
 
-    /// The catalog is machine truth — an entity persisted on either claude
-    /// carrier needs its models served under its own id — but what it calls
-    /// them is what a human reads. Both claude carriers are "Claude Code", and
-    /// no label anywhere names the difference between them.
+    /// An agent is locked to its harness, so the three harnesses sit side by
+    /// side and each needs a name of its own. The default carrier owns the
+    /// plain name; the word the code uses for the difference stays out of every
+    /// label a human reads.
     #[test]
-    fn every_catalog_label_a_human_reads_is_the_name_they_know() {
-        for catalog in provider_catalogs() {
+    fn every_catalog_label_a_human_reads_is_distinct_and_free_of_jargon() {
+        let labels: Vec<&str> = provider_catalogs()
+            .iter()
+            .map(|catalog| catalog.label)
+            .collect();
+        for label in &labels {
             assert!(
-                !catalog.label.to_lowercase().contains("headless"),
-                "{:?} is labeled {:?}",
-                catalog.id,
-                catalog.label
+                !label.to_lowercase().contains("headless"),
+                "{label:?} names the carrier the way the code does"
             );
         }
+        let distinct: std::collections::BTreeSet<&&str> = labels.iter().collect();
+        assert_eq!(distinct.len(), labels.len(), "{labels:?} are not distinct");
+        assert_eq!(AgentProvider::ClaudeAdk.label(), "Claude Code");
+        assert_eq!(AgentProvider::Claude.label(), "Claude Code TUI");
+        assert_eq!(AgentProvider::Codex.label(), "Codex");
+    }
+
+    /// Both claude carriers run the same CLI, so a model released for one is
+    /// available on the other by construction.
+    #[test]
+    fn opus_5_is_in_both_claude_carriers_catalogs_with_effort() {
         for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
-            assert_eq!(carrier.label(), "Claude Code");
+            let catalog = provider_catalogs()
+                .into_iter()
+                .find(|catalog| catalog.id == carrier)
+                .expect("every provider has a catalog");
+            let opus = catalog
+                .models
+                .iter()
+                .find(|model| model.id == "claude-opus-5")
+                .unwrap_or_else(|| panic!("{carrier:?} does not offer Claude Opus 5"));
+            assert_eq!(opus.label, "Claude Opus 5");
+            assert!(opus.supports_effort);
         }
     }
 

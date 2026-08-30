@@ -29,7 +29,7 @@ impl Harness for CodexHarness {
     }
 
     fn label(&self) -> &'static str {
-        "Codex CLI"
+        "Codex"
     }
 
     /// The curated catalog, most capable first. (cached: 2026-07)

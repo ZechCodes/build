@@ -6207,6 +6207,9 @@ impl AppState {
                 for capture_id in routers {
                     eprintln!("idle monitor: the router on {capture_id} stopped");
                 }
+                // Asked with the lock RELEASED: a terminal answers this off its
+                // harness's transcript tree, which is a filesystem read.
+                capture_conversation_names(&state);
             }
         });
     }
@@ -17933,6 +17936,17 @@ fn spawn_tab_pump(
                                     screen.flush(&term_id);
                                     screen.push_closed(&term_id, "agent_session_ended");
                                 }
+                                // One final reading, so a session shorter than
+                                // a sweep tick is still named — and the respawn
+                                // that needs the name is the very next thing
+                                // after a close. It RECORDS; it never clears: a
+                                // terminal resumed in place writes no new
+                                // transcript, so a locator finding nothing is
+                                // its normal answer here, and clearing on that
+                                // would throw a good name away at every
+                                // restart. A name that no longer resolves is
+                                // caught at the reservation instead.
+                                note_named_conversation(&mut s, &key, &owner, &agent_id);
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -17997,7 +18011,7 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    note_announced_conversation(&mut s, &key, &owner, &agent_id);
+                    note_named_conversation(&mut s, &key, &owner, &agent_id);
                     s.record_agent_activity(&owner, &agent_id, &activity);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -18012,8 +18026,8 @@ fn spawn_activity_pump(
                     if let Some(tab) = s.tabs.get_mut(&key) {
                         tab.live = false;
                     }
-                    match announced_conversation(&s, &key) {
-                        Some(_) => note_announced_conversation(&mut s, &key, &owner, &agent_id),
+                    match named_conversation(&s, &key) {
+                        Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -18037,30 +18051,92 @@ fn spawn_activity_pump(
 }
 
 /// The name the session in `key`'s tab has given its conversation, or `None`
-/// for a carrier that names none and for one that has not announced yet.
-fn announced_conversation(state: &AppState, key: &TabKey) -> Option<String> {
+/// for a carrier that names none and for one that has not named one yet.
+fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
     state.tabs.get(key)?.session.session_id()
 }
 
-/// Keep the agent's record naming the conversation its live session is having.
+/// Keep the agent's record naming the conversation its session is having.
 ///
-/// The activity pump is the capture point because it is the only task that
-/// wakes on this carrier's own events, and it already resolves the agent and
-/// holds the state lock. Compared on every wake and written only when it moved,
-/// so a session that announces once costs one write however many events it goes
-/// on to report.
+/// Compared before it is written, so a session that names its conversation once
+/// costs one write however long it lives. A name that has not arrived leaves
+/// the record alone: what it carries is the last session's, which is exactly
+/// what a resume should use if this one dies before naming its own.
 ///
-/// An announcement that has not arrived leaves the record alone: what it
-/// carries is the last session's name, which is exactly what `--resume` should
-/// use if this one dies before saying its own.
-fn note_announced_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(announced) = announced_conversation(state, key) else {
+/// Both carriers' capture points come through here, so a name a child announced
+/// and a name a locator found are the same record written by the same hand.
+fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(named) = named_conversation(state, key) else {
         return;
     };
-    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(announced.as_str()) {
+    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(named.as_str()) {
         return;
     }
-    state.record_agent_resume_id(owner, agent_id, Some(announced));
+    state.record_agent_resume_id(owner, agent_id, Some(named));
+}
+
+/// The terminal carrier's capture point: ask every live agent session for the
+/// name its conversation has, and write down each answer that moved.
+///
+/// A terminal announces nothing, so no task wakes on its behalf the way the
+/// activity pump wakes on a protocol carrier's events — which is why the sweep
+/// is daemon-owned and fixed-cadence rather than hung off the status poll. The
+/// poll is client-driven: with no browser open nothing would ever be captured,
+/// and every attached client would multiply this filesystem read by its own
+/// poll rate, on the RPC path that answers from under the state lock.
+///
+/// The lock is HELD only to collect the live agents and to write the answers.
+/// The one call that may touch the filesystem — a locator listing the harness's
+/// transcript tree — is made between the two, with the lock released, the way a
+/// turn is handed over.
+fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
+    /// One live agent, taken out of the registry so the name can be asked for
+    /// with the lock released, and put back by `key` once it is known.
+    struct LiveAgent {
+        key: TabKey,
+        owner: String,
+        agent_id: String,
+        session: Arc<dyn AgentSession>,
+        recorded: Option<String>,
+    }
+
+    let live: Vec<LiveAgent> = {
+        let s = state.lock().unwrap();
+        s.tabs
+            .iter()
+            .filter(|(_, tab)| tab.live)
+            .filter_map(|(key, tab)| match &tab.role {
+                TabRole::Agent {
+                    owner, agent_id, ..
+                } => Some(LiveAgent {
+                    key: key.clone(),
+                    owner: owner.clone(),
+                    agent_id: agent_id.clone(),
+                    session: Arc::clone(&tab.session),
+                    recorded: s.recorded_resume_id(owner, agent_id),
+                }),
+                TabRole::Shell => None,
+            })
+            .collect()
+    };
+    let moved: Vec<(TabKey, String, String)> = live
+        .into_iter()
+        .filter_map(|agent| {
+            let named = agent.session.session_id()?;
+            (agent.recorded.as_deref() != Some(named.as_str())).then_some((
+                agent.key,
+                agent.owner,
+                agent.agent_id,
+            ))
+        })
+        .collect();
+    if moved.is_empty() {
+        return;
+    }
+    let mut s = state.lock().unwrap();
+    for (key, owner, agent_id) in moved {
+        note_named_conversation(&mut s, &key, &owner, &agent_id);
+    }
 }
 
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
@@ -34305,6 +34381,238 @@ mod tests {
             !fresh.continue_session,
             "and inherits nothing — the checkout's old conversation belongs to \
              whoever had it: {fresh:?}"
+        );
+    }
+
+    /// A locator that has found the name the harness wrote down, or has not
+    /// yet — the two answers a real one gives, without a real transcript tree.
+    struct LocatorThatFound(Option<&'static str>);
+
+    impl crate::harness::SessionLocator for LocatorThatFound {
+        fn session_id(&self) -> Option<String> {
+            self.0.map(str::to_string)
+        }
+    }
+
+    /// Give every terminal this daemon opens a locator with this answer.
+    fn every_terminal_names_its_conversation(
+        state: &Arc<Mutex<AppState>>,
+        named: Option<&'static str>,
+    ) {
+        state.lock().unwrap().session_locator_factory =
+            Arc::new(move |_, _| Some(Box::new(LocatorThatFound(named))));
+    }
+
+    /// The terminal carrier's capture, and the respawn that spends it.
+    ///
+    /// A terminal announces nothing, so nothing wakes on its behalf: the
+    /// daemon's own sweep asks each live session for the name its locator
+    /// found and writes it down the same way the headless carrier's
+    /// announcement is written down. One tick later the name is on the record,
+    /// and the next spawn resumes by it instead of guessing at the checkout.
+    #[tokio::test]
+    async fn one_sweep_tick_writes_down_the_name_a_terminals_locator_found() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-pty");
+        let agent_id = crate::agent::derived_agent_id("run-pty");
+        every_terminal_names_its_conversation(&state, Some("sess-pty"));
+
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let recorder = Arc::clone(&specs_built);
+            let agent = Agent::WarmBuilder(Arc::new(
+                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                    recorder.lock().unwrap().push(options.clone());
+                    warm_tui_spec()
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.resume_id_probe = Arc::new(|_, _, id| id == "sess-pty");
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-pty", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-pty", &agent_id),
+            None,
+            "nothing has looked yet"
+        );
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-pty", &agent_id)
+                .as_deref(),
+            Some("sess-pty"),
+            "one tick puts the name the harness wrote down on the agent's record"
+        );
+
+        // The harness dies. The next message is a respawn, and it opens on the
+        // conversation by name.
+        let key = first_agent_key(&root, "run-pty");
+        state
+            .lock()
+            .unwrap()
+            .tabs
+            .get(&key)
+            .expect("the agent tab")
+            .session
+            .end();
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key).expect("the agent tab").live).then_some(())
+        })
+        .await
+        .expect("the pump notices the harness left");
+
+        let again = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-pty", "body": "and again" }),
+        );
+        assert_eq!(again["ok"], true, "{again:?}");
+        let spawned = wait_for(Duration::from_secs(10), || {
+            let built = specs_built.lock().unwrap();
+            (built.len() == 2).then(|| built[1].clone())
+        })
+        .await
+        .expect("the message starts the agent again");
+        assert_eq!(
+            spawned.resume_session_id.as_deref(),
+            Some("sess-pty"),
+            "the respawn carries the name the sweep found: {spawned:?}"
+        );
+        assert!(
+            !spawned.continue_session,
+            "and never the cwd guess beside it: {spawned:?}"
+        );
+    }
+
+    /// A session shorter than a tick is still named.
+    ///
+    /// The sweep runs every few seconds and the respawn that needs the name is
+    /// the very next thing after a close, so the byte pump takes one final
+    /// reading on its way out — with no sweep in this test at all.
+    #[tokio::test]
+    async fn a_terminal_that_closes_before_a_sweep_is_named_on_its_way_out() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-brief");
+        let agent_id = crate::agent::derived_agent_id("run-brief");
+        every_terminal_names_its_conversation(&state, Some("sess-brief"));
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    // Announces its line editor, takes the turn, and leaves.
+                    HarnessSpec::new("sh")
+                        .arg("-c")
+                        .arg("printf '\\033[?2004h'; exit 0")
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-brief", "body": "one quick thing" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = first_agent_key(&root, "run-brief");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the harness leaves on its own");
+
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-brief", &agent_id)
+                .as_deref(),
+            Some("sess-brief"),
+            "the close arm takes the reading no sweep tick was going to take"
+        );
+    }
+
+    /// The close arm RECORDS; it never clears.
+    ///
+    /// The headless pump clears on a session that ended having announced
+    /// nothing, because for that carrier it means a dead `--resume` id. A
+    /// terminal resumed in place legitimately writes no new transcript, so its
+    /// locator finding nothing is the normal answer — and clearing on it would
+    /// throw a good name away at every restart. The dead-name problem is
+    /// answered at the reservation instead.
+    #[tokio::test]
+    async fn a_terminal_that_named_nothing_keeps_the_name_its_record_already_had() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-quiet");
+        let agent_id = crate::agent::derived_agent_id("run-quiet");
+        every_terminal_names_its_conversation(&state, None);
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
+                    HarnessSpec::new("sh")
+                        .arg("-c")
+                        .arg("printf '\\033[?2004h'; exit 0")
+                },
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.resume_id_probe = Arc::new(|_, _, _| true);
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.runs
+                .get_mut("run-quiet")
+                .expect("the run")
+                .agents
+                .resolve_mut(None)
+                .expect("its agent")
+                .resume_session_id = Some("sess-resumed-in-place".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-quiet", "body": "carry on" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = first_agent_key(&root, "run-quiet");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the harness leaves on its own");
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id("run-quiet", &agent_id)
+                .as_deref(),
+            Some("sess-resumed-in-place"),
+            "a terminal that wrote no new transcript keeps the conversation it resumed"
         );
     }
 

@@ -67,6 +67,54 @@ impl AgentProvider {
     }
 }
 
+/// The only mode Codex has. The setting is wired like Claude's so the Account
+/// page has one idiom, but there is no codex headless to choose: this is the
+/// answer `settings.get` synthesizes and the only value `settings.set` takes.
+pub const CODEX_ONLY_MODE: &str = "tui";
+
+/// Which program "Claude Code" opens — the account's answer, not a per-start
+/// question. Both modes are the same CLI, the same account and the same
+/// transcripts; what differs is the carrier, which is why the human is asked
+/// once on the Account page instead of at every start.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaudeMode {
+    #[default]
+    Headless,
+    Tui,
+}
+
+impl ClaudeMode {
+    /// Every mode, so the wire vocabulary is enumerated once.
+    pub const ALL: [ClaudeMode; 2] = [ClaudeMode::Headless, ClaudeMode::Tui];
+
+    /// The provider this mode opens. The whole point of the setting: the
+    /// generic token "claude" becomes a concrete carrier here and nowhere else.
+    pub fn carrier(self) -> AgentProvider {
+        match self {
+            ClaudeMode::Headless => AgentProvider::ClaudeAdk,
+            ClaudeMode::Tui => AgentProvider::Claude,
+        }
+    }
+
+    /// How a mode is spelled on the wire and in the config file. Matches the
+    /// serde representation, so a saved setting and an RPC param agree.
+    pub fn wire_id(self) -> &'static str {
+        match self {
+            ClaudeMode::Headless => "headless",
+            ClaudeMode::Tui => "tui",
+        }
+    }
+
+    /// The mode a client named, or `None` for a word this bridge has no mode
+    /// for.
+    pub fn from_wire(id: &str) -> Option<ClaudeMode> {
+        ClaudeMode::ALL
+            .into_iter()
+            .find(|mode| mode.wire_id() == id)
+    }
+}
+
 /// One selectable model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelOption {
@@ -303,6 +351,25 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("does not support effort ultra"));
+    }
+
+    /// The mode names a carrier, and the wire spelling is the serde spelling —
+    /// a mode read back out of the config file has to be the same word a
+    /// client can send.
+    #[test]
+    fn a_claude_mode_names_its_carrier_and_round_trips_through_its_wire_id() {
+        assert_eq!(ClaudeMode::default(), ClaudeMode::Headless);
+        assert_eq!(ClaudeMode::Headless.carrier(), AgentProvider::ClaudeAdk);
+        assert_eq!(ClaudeMode::Tui.carrier(), AgentProvider::Claude);
+        for mode in ClaudeMode::ALL {
+            let id = mode.wire_id();
+            assert_eq!(ClaudeMode::from_wire(id), Some(mode));
+            assert_eq!(
+                serde_json::to_value(mode).unwrap(),
+                serde_json::Value::String(id.to_string())
+            );
+        }
+        assert_eq!(ClaudeMode::from_wire("adk"), None);
     }
 
     #[test]

@@ -30,7 +30,7 @@ use crate::harness::{
     TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
-use crate::models::{self, AgentProvider, ModelChoice};
+use crate::models::{self, AgentProvider, ClaudeMode, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
@@ -1838,6 +1838,10 @@ pub struct AppState {
     worktrees_root: std::path::PathBuf,
     /// Where cloned repos land and the directory browser starts; user-configurable.
     projects_dir: std::path::PathBuf,
+    /// Which program "Claude Code" opens on this account. Asked once on the
+    /// Account page rather than at every start, which is what keeps two carriers
+    /// of the same agent from sitting side by side needing to be told apart.
+    claude_mode: ClaudeMode,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     agent: Agent,
@@ -2099,6 +2103,7 @@ impl AppState {
             entity_project_path: HashMap::new(),
             worktrees_root: worktrees_root.into(),
             projects_dir: default_projects_dir(),
+            claude_mode: ClaudeMode::default(),
             config_path: None,
             agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
@@ -2189,6 +2194,16 @@ impl AppState {
             if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
                 if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
                     self.projects_dir = expand_tilde(dir);
+                }
+                // An absent key is the default, which is the stated default:
+                // a bridge nobody has configured runs Claude Code headless.
+                if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
+                    match ClaudeMode::from_wire(named) {
+                        Some(mode) => self.claude_mode = mode,
+                        None => {
+                            eprintln!("config claude_mode: unknown {named:?}; using the default")
+                        }
+                    }
                 }
                 // Routing runs on the account default at low effort unless this
                 // names something else. A choice the harness would refuse is
@@ -3532,6 +3547,7 @@ impl AppState {
         };
         let cfg = json!({
             "projects_dir": self.projects_dir.display().to_string(),
+            "claude_mode": self.claude_mode,
             "router_model": self.router_choice,
             "projects": self.projects.iter().map(|p| json!({
                 "path": p.repo_path.display().to_string(),
@@ -6458,17 +6474,57 @@ impl AppState {
         }))
     }
 
+    /// Every account setting this bridge holds. `codex_mode` is synthesized
+    /// rather than stored: Codex has one mode, so there is nothing to remember
+    /// and nothing to migrate the day it grows a second.
     fn settings_get(&self) -> Value {
-        json!({ "projects_dir": self.projects_dir.display().to_string() })
+        json!({
+            "projects_dir": self.projects_dir.display().to_string(),
+            "claude_mode": self.claude_mode,
+            "codex_mode": models::CODEX_ONLY_MODE,
+        })
     }
 
-    /// Choose where cloned repos land (and the browser's default start), creating
-    /// the folder and persisting the choice.
+    /// Set the account settings a client names, and only those: where cloned
+    /// repos land (creating the folder), and which program Claude Code opens.
+    ///
+    /// Every field is parsed before any is applied, so a refusal leaves the
+    /// settings exactly as they were rather than half-moved.
     fn settings_set(&mut self, params: &Value) -> Result<Value, String> {
-        let dir = expand_tilde(&require_str(params, "projects_dir")?);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-        self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let projects_dir = match params.get("projects_dir") {
+            Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
+            None => None,
+        };
+        let claude_mode = match params.get("claude_mode") {
+            Some(named) => {
+                let named = named.as_str().unwrap_or_default();
+                Some(ClaudeMode::from_wire(named).ok_or_else(|| {
+                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?)
+            }
+            None => None,
+        };
+        // Wired like a real field so the Account page has one idiom, hard-locked
+        // because there is no other Codex to open.
+        let codex_mode = params.get("codex_mode");
+        if let Some(named) = codex_mode {
+            if named.as_str() != Some(models::CODEX_ONLY_MODE) {
+                return Err(
+                    "codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string(),
+                );
+            }
+        }
+        if projects_dir.is_none() && claude_mode.is_none() && codex_mode.is_none() {
+            return Err("settings.set: nothing to set".to_string());
+        }
+        if let Some(dir) = projects_dir {
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+            self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        }
+        if let Some(mode) = claude_mode {
+            self.claude_mode = mode;
+        }
         self.persist();
         Ok(self.settings_get())
     }
@@ -18703,6 +18759,159 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("myprojects")
+        );
+    }
+
+    /// The account's answer to "which program does Claude Code open" is a
+    /// bridge setting, so every device gets the same answer. A bridge nobody
+    /// has configured answers with the default.
+    #[test]
+    fn settings_report_the_claude_mode_and_the_locked_codex_one() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let settings = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["claude_mode"], "headless");
+        assert_eq!(settings["codex_mode"], "tui");
+    }
+
+    /// The mode outlives the process it was chosen in — it is an account
+    /// setting, not a session's mood — and choosing it moves nothing else.
+    #[test]
+    fn a_chosen_claude_mode_survives_a_reload_and_leaves_the_projects_dir_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        {
+            let mut state = AppState::new(
+                repo.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&cfg);
+            state.handle(req(
+                "settings.set",
+                json!({ "projects_dir": tmp.path().join("myprojects").to_str().unwrap() }),
+            ));
+            let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+            assert_eq!(set["ok"], true, "{set:?}");
+            assert_eq!(set["result"]["claude_mode"], "tui");
+        }
+        let mut reloaded = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&cfg);
+        let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["claude_mode"], "tui");
+        assert!(
+            settings["projects_dir"]
+                .as_str()
+                .unwrap()
+                .contains("myprojects"),
+            "setting one field moves no other: {settings:?}"
+        );
+    }
+
+    /// A mode the bridge cannot run is refused, and a refusal applies nothing:
+    /// the settings are exactly what they were.
+    #[test]
+    fn an_unknown_claude_mode_is_refused_and_changes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let before = state.handle(req("settings.get", json!({})))["result"].clone();
+        let refused = state.handle(req(
+            "settings.set",
+            json!({
+                "projects_dir": tmp.path().join("elsewhere").to_str().unwrap(),
+                "claude_mode": "telepathy",
+            }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let error = refused["error"].as_str().unwrap();
+        assert!(error.contains("unknown claude_mode"), "{error}");
+        assert!(error.contains("expected"), "{error}");
+        assert_eq!(
+            state.handle(req("settings.get", json!({})))["result"],
+            before,
+            "a refused set leaves every field where it was"
+        );
+    }
+
+    /// Codex has one mode, so the field exists and accepts exactly it — the
+    /// day a second one exists the lock comes off and nothing has to migrate.
+    #[test]
+    fn codex_mode_accepts_only_tui() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let accepted = state.handle(req("settings.set", json!({ "codex_mode": "tui" })));
+        assert_eq!(accepted["ok"], true, "{accepted:?}");
+        assert_eq!(accepted["result"]["codex_mode"], "tui");
+
+        let refused = state.handle(req("settings.set", json!({ "codex_mode": "headless" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(
+            refused["error"].as_str().unwrap(),
+            "codex_mode accepts only \"tui\" — Codex has no other mode yet"
+        );
+    }
+
+    /// The fields are additive: a client written before the modes existed
+    /// still sets the projects folder the way it always has. A set that names
+    /// nothing the bridge knows is a no-op dressed as a mutation, and says so.
+    #[test]
+    fn settings_set_stays_field_wise_for_an_old_client_and_refuses_an_empty_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let old_client = state.handle(req(
+            "settings.set",
+            json!({ "projects_dir": tmp.path().join("projects").to_str().unwrap() }),
+        ));
+        assert_eq!(old_client["ok"], true, "{old_client:?}");
+        assert!(old_client["result"]["projects_dir"]
+            .as_str()
+            .unwrap()
+            .contains("projects"));
+        assert_eq!(
+            old_client["result"]["claude_mode"], "headless",
+            "an old client's set leaves the mode at the account's answer"
+        );
+
+        let empty = state.handle(req("settings.set", json!({})));
+        assert_eq!(empty["ok"], false, "{empty:?}");
+        assert_eq!(
+            empty["error"].as_str().unwrap(),
+            "settings.set: nothing to set"
         );
     }
 

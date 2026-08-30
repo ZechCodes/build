@@ -2649,6 +2649,32 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 11's review fixes — a foreground command is a task too.**
+  Running the whole live family turned up a defect the background probe could
+  not see, and the fix took §11.1's own escape hatch: the rules stand, the
+  reading moved. A FOREGROUND Bash command gets `task_started` like any other
+  task, and is closed by a `task_notification` carrying a terminal status —
+  **alone**: no `task_updated`, no `background_tasks_changed`, ever
+  (raw-wire probes against claude 2.1.236, both a `completed` and a `failed`
+  one, now recorded in `adk::fake` as `FOREGROUND_TASK_*`). Both lines arrive
+  together when the command finishes, so the shipped reader inserted the task
+  and had nothing that could ever remove it: the session reported `Working`
+  for the rest of its life, the sweep never demoted it, and the rail dot
+  pulsed over an idle agent — the inverse of the failure this step closes,
+  and what made `real_adk_session_steers_mid_turn` hang waiting for
+  `Waiting`. So a terminal notification IS a membership removal and mints the
+  ending row; its text still mints first, unless the text merely repeats the
+  task's own name, which is exactly what a foreground notification's
+  `summary` is. `stopped` joined the terminal statuses — the same probe run
+  turned it up on a task the child killed. An interrupted foreground command
+  emits no task lines at all, so a stopped turn leaves nothing in the set.
+  Separately, `real_adk_session_interrupts_mid_tool`'s premise was rebuilt:
+  the installed CLI now BLOCKS a standalone `sleep`, the model reruns it in
+  the background, and nothing is parked — so the leg parks the turn in
+  `python3 -c "import time; time.sleep(90)"`, which the CLI runs in the
+  foreground, and asserts the stop-and-steer settles inside sixty seconds (it
+  takes about five). All three live legs pass.
+
 - **2026-08-29, step 11's bridge half shipped — the payloads are pinned.**
   One probe against claude 2.1.236 (a headless turn that backgrounded
   `sleep 12 && echo woke`) produced all four events, and their shapes are

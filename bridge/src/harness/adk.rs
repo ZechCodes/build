@@ -2750,6 +2750,15 @@ mod tests {
     /// interrupt would leave `error_during_execution` reading as a crash), the
     /// stopped tool never finishes, and the conversation survives its own stop.
     ///
+    /// The parked tool is a python sleep rather than a plain `sleep 90`
+    /// because the installed CLI BLOCKS a standalone sleep outright — "Blocked:
+    /// standalone sleep 90 … use run_in_background" — and the model, told no,
+    /// obligingly reruns it in the background, where nothing is parked at all
+    /// and the turn ends immediately. This command the CLI runs in the
+    /// foreground, timeout and all, which is what parks the turn (verified on
+    /// the wire, 2026-08-30: tool call at 9s, still running at 12s, and the
+    /// interrupt cut it there).
+    ///
     /// Ignored by default for the same reason as the steering test above; run
     /// with the same `cargo test --lib real_adk -- --ignored --nocapture`.
     #[test]
@@ -2811,14 +2820,17 @@ mod tests {
         };
 
         // A turn that parks inside a tool long enough to be stopped: if the
-        // interrupt were silently ignored, this sleep runs its full two minutes
-        // and the deadline math below catches it.
+        // interrupt were silently ignored, this command runs its full ninety
+        // seconds and the deadline math below catches it.
         session
             .send_turn(&Turn::new(concat!(
                 "You are being driven by an automated test. Do exactly this and nothing ",
-                "else, then stop. First, use the Bash tool to run exactly: sleep 120\n",
-                "After the sleep finishes, write a file named answer.txt in the current ",
-                "directory whose entire contents are exactly the single word: APPLE",
+                "else, then stop. First, use the Bash tool to run exactly this command ",
+                "in the FOREGROUND, and do NOT set run_in_background: ",
+                "python3 -c \"import time; time.sleep(90)\"\n",
+                "Set the tool timeout to 150000. After it finishes, write a file named ",
+                "answer.txt in the current directory whose entire contents are exactly ",
+                "the single word: APPLE",
             )))
             .unwrap();
         // The turn just written holds status at `Working`, so init's arrival is
@@ -2835,7 +2847,7 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .iter()
-                .any(|line| line.starts_with("tool_use") && line.contains("sleep"))
+                .any(|line| line.starts_with("tool_use") && line.contains("time.sleep"))
         });
 
         // The same berth the steering test gives the CLI's loop transition.
@@ -2872,9 +2884,13 @@ mod tests {
             settled_after.as_millis(),
             session.epitaph(),
         );
+        // The stopped command still had some eighty-seven of its ninety seconds
+        // to run, so an interrupt the child ignored cannot settle inside this
+        // window however fast the steering turn is. On the wire the whole
+        // stop-and-steer takes about five seconds.
         assert!(
-            settled_after < Duration::from_secs(110),
-            "the whole stop-and-steer took {}ms — longer than the sleep it was meant to cut short, so the turn was never stopped",
+            settled_after < Duration::from_secs(60),
+            "the whole stop-and-steer took {}ms — the parked command had eighty-seven seconds left, so the turn was never stopped",
             settled_after.as_millis()
         );
         assert_eq!(

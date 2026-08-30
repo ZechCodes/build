@@ -3193,15 +3193,51 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         activity: &crate::harness::AgentActivity,
-    ) {
-        let event = activity_event_kind(activity);
-        let summary = activity.summary().to_string();
+    ) -> Option<u64> {
+        self.record_activity_row(
+            owner,
+            agent_id,
+            activity_event_kind(activity),
+            activity.summary().to_string(),
+        )
+    }
+
+    /// Mint one activity row, and hand back the counter value it was minted at
+    /// — the handle a tool call's answer comes back on. `None` for an owner
+    /// with no conversation to speak in, for the reason above.
+    fn record_activity_row(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        event: crate::thread::ThreadEventKind,
+        summary: String,
+    ) -> Option<u64> {
         let now = now_rfc3339();
-        let _ = self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+        self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
             let session_id = open_session_id(thread);
-            thread.push_event(event, Some(summary), session_id, None, now);
-            Ok(())
-        });
+            Ok(thread.push_event(event, Some(summary), session_id, None, now))
+        })
+        .ok()
+    }
+
+    /// Land a tool call's answer on the row the call minted, closing it.
+    ///
+    /// `false` when that row is not there to be closed — the conversation is
+    /// gone, or a reload left the call under the resident tail — which is what
+    /// sends the pump back to minting the answer as a row of its own rather
+    /// than losing it.
+    fn resolve_agent_tool_call(
+        &mut self,
+        owner: &str,
+        agent_id: &str,
+        sequence: u64,
+        outcome: crate::thread::ToolCallOutcome,
+        answer: &str,
+    ) -> bool {
+        self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
+            Ok(thread.resolve_tool_call(sequence, outcome, answer))
+        })
+        .unwrap_or(false)
     }
 
     /// Edit the conversation `agent_id` speaks in, and persist the entity that
@@ -16777,7 +16813,7 @@ fn record_report_in_thread(
             thread.post_outcome(outcome, summary, completion, &now);
         }
         ReportRecord::Event(event, summary) => {
-            thread.push_event(event, Some(summary), None, None, &now)
+            thread.push_event(event, Some(summary), None, None, &now);
         }
     }
     if let Some(completion) = completion {
@@ -17979,9 +18015,15 @@ fn spawn_tab_pump(
 ///
 /// The mirror of [`spawn_tab_pump`] for a carrier that has no bytes. Where the
 /// byte pump paints a stream into a grid, this one posts what the agent
-/// reported doing as the four activity kinds — reasoning, tool calls, tool
-/// results and narration — which are conversation, classed `Status`: they move
-/// no unread count, reach no Issue conversation and pull nobody in.
+/// reported doing as the activity kinds — reasoning, tool calls, narration and
+/// background work — which are conversation, classed `Status`: they move no
+/// unread count, reach no Issue conversation and pull nobody in.
+///
+/// A tool call is ONE row for its whole life: minted when the call is made and
+/// updated in place when its answer arrives, which is what `open_calls` below
+/// is for. The map is task-local, so it is per session by construction — a new
+/// session is a new pump with an empty map — and the protocol's call id never
+/// reaches the conversation: the pairing lives and dies with the session.
 ///
 /// It owes the same death rites, minus the screen's half: on close the tab goes
 /// not live and the conversation's session lineage ends. There is no
@@ -18004,6 +18046,9 @@ fn spawn_activity_pump(
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
+        // The call id the protocol used, against the sequence of the row it
+        // minted here.
+        let mut open_calls: HashMap<String, u64> = HashMap::new();
         loop {
             match rx.recv().await {
                 Ok(activity) => {
@@ -18012,7 +18057,7 @@ fn spawn_activity_pump(
                         return;
                     };
                     note_named_conversation(&mut s, &key, &owner, &agent_id);
-                    s.record_agent_activity(&owner, &agent_id, &activity);
+                    record_activity(&mut s, &owner, &agent_id, &activity, &mut open_calls);
                 }
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
@@ -18037,6 +18082,20 @@ fn spawn_activity_pump(
                         // child died at startup for an unrelated reason, the
                         // probe is what would have answered anyway.
                         None => s.record_agent_resume_id(&owner, &agent_id, None),
+                    }
+                    // A call still open when the child's stream ended never got
+                    // an answer and never will: it is closed here, saying so,
+                    // BEFORE the session ends — so the timeline reads
+                    // calls-closed-then-session-ended rather than a session
+                    // ending over work that still claims to run.
+                    for (_, sequence) in std::mem::take(&mut open_calls) {
+                        s.resolve_agent_tool_call(
+                            &owner,
+                            &agent_id,
+                            sequence,
+                            crate::thread::ToolCallOutcome::Unanswered,
+                            NO_ANSWER_SESSION_ENDED,
+                        );
                     }
                     // The process is what a session IS, so this is where the
                     // conversation's lineage closes — and where a turn the dead
@@ -18161,6 +18220,81 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
         AgentActivity::Narration { .. } => ThreadEventKind::Narration,
         AgentActivity::TaskUpdate { .. } => ThreadEventKind::TaskUpdate,
+    }
+}
+
+/// What a call's row says when its answer never came, named by the boundary
+/// that closed it. Pending is a claim too — "this is still running" — so a call
+/// nothing will ever answer says which thing ended instead.
+const NO_ANSWER_TURN_ENDED: &str = "no answer — turn ended";
+const NO_ANSWER_SESSION_ENDED: &str = "no answer — session ended";
+
+/// Put one reported activity into the conversation, keeping `open_calls` — the
+/// pump's record of which row each live call minted — in step with it.
+///
+/// Three shapes, and the third is the one that keeps a stored row honest:
+/// a call mints a row and is remembered; its answer updates that row and is
+/// forgotten; and an answer to a call this pump never saw — one lost to
+/// broadcast lag, or minted by a session before this one — falls back to
+/// minting the standalone `tool_result` row every answer used to mint, so the
+/// answer reaches the human either way.
+fn record_activity(
+    state: &mut AppState,
+    owner: &str,
+    agent_id: &str,
+    activity: &crate::harness::AgentActivity,
+    open_calls: &mut HashMap<String, u64>,
+) {
+    use crate::harness::AgentActivity;
+    match activity {
+        AgentActivity::ToolUse { call_id, .. } => {
+            if let Some(sequence) = state.record_agent_activity(owner, agent_id, activity) {
+                open_calls.insert(call_id.clone(), sequence);
+            }
+        }
+        AgentActivity::ToolResult {
+            call_id,
+            outcome,
+            summary,
+        } => {
+            let answer = match outcome {
+                crate::harness::ToolOutcome::Unanswered => NO_ANSWER_TURN_ENDED,
+                _ => summary.as_str(),
+            };
+            let landed = open_calls.remove(call_id).is_some_and(|sequence| {
+                state.resolve_agent_tool_call(
+                    owner,
+                    agent_id,
+                    sequence,
+                    tool_call_outcome(*outcome),
+                    answer,
+                )
+            });
+            // An empty answer mints nothing, exactly as it never did: a row
+            // saying only that some tool answered says nothing at all.
+            if !landed && !answer.is_empty() {
+                state.record_activity_row(
+                    owner,
+                    agent_id,
+                    crate::thread::ThreadEventKind::ToolResult,
+                    answer.to_string(),
+                );
+            }
+        }
+        _ => {
+            state.record_agent_activity(owner, agent_id, activity);
+        }
+    }
+}
+
+/// The conversation's word for what the harness saw.
+fn tool_call_outcome(outcome: crate::harness::ToolOutcome) -> crate::thread::ToolCallOutcome {
+    use crate::harness::ToolOutcome;
+    use crate::thread::ToolCallOutcome;
+    match outcome {
+        ToolOutcome::Ok => ToolCallOutcome::Ok,
+        ToolOutcome::Error => ToolCallOutcome::Error,
+        ToolOutcome::Unanswered => ToolCallOutcome::Unanswered,
     }
 }
 
@@ -33520,10 +33654,13 @@ mod tests {
                 summary: "the index is unused".into(),
             },
             crate::harness::AgentActivity::ToolUse {
+                call_id: "toolu_1".into(),
                 summary: "Read bridge/src/app.rs".into(),
             },
             crate::harness::AgentActivity::ToolResult {
-                summary: "Read: fn main() {}".into(),
+                call_id: "toolu_1".into(),
+                outcome: crate::harness::ToolOutcome::Ok,
+                summary: "fn main() {}".into(),
             },
             crate::harness::AgentActivity::Narration {
                 summary: "dropped the index".into(),
@@ -33535,13 +33672,15 @@ mod tests {
             activity.send(reported).expect("the pump is listening");
         }
 
+        // Four rows for five reports: the answer completes the call's row
+        // rather than minting one of its own.
         let reported = wait_for(Duration::from_secs(5), || {
             let s = state.lock().unwrap();
             let reported = activity_of(&s.runs["run-activity"].agents);
-            (reported.len() == 5).then_some(reported)
+            (reported.len() == 4).then_some(reported)
         })
         .await
-        .expect("the five events reach the conversation");
+        .expect("the reported work reaches the conversation");
         assert_eq!(
             reported,
             vec![
@@ -33551,11 +33690,7 @@ mod tests {
                 ),
                 (
                     crate::thread::ThreadEventKind::ToolUse,
-                    "Read bridge/src/app.rs".to_string()
-                ),
-                (
-                    crate::thread::ThreadEventKind::ToolResult,
-                    "Read: fn main() {}".to_string()
+                    "Read bridge/src/app.rs\n→ fn main() {}".to_string()
                 ),
                 (
                     crate::thread::ThreadEventKind::Narration,
@@ -33690,10 +33825,12 @@ mod tests {
             json!({ "entity_id": "run-headless" }),
         );
 
+        // Three rows for four protocol lines: the call and its answer are ONE
+        // row, updated in place when the answer arrived.
         let reported = wait_for(Duration::from_secs(10), || {
             let s = state.lock().unwrap();
             let reported = activity_of(&s.runs["run-headless"].agents);
-            (reported.len() == 4).then_some(reported)
+            (reported.len() == 3).then_some(reported)
         })
         .await
         .expect("the turn's work reaches the conversation");
@@ -33706,11 +33843,7 @@ mod tests {
                 ),
                 (
                     crate::thread::ThreadEventKind::ToolUse,
-                    "Read bridge/src/app.rs".to_string()
-                ),
-                (
-                    crate::thread::ThreadEventKind::ToolResult,
-                    "Read: fn main() {}".to_string()
+                    "Read bridge/src/app.rs\n→ fn main() {}".to_string()
                 ),
                 (
                     crate::thread::ThreadEventKind::Narration,
@@ -33719,6 +33852,17 @@ mod tests {
             ],
             "in the order the child reported them, and saying what it said"
         );
+        {
+            let s = state.lock().unwrap();
+            let calls = tool_call_rows(&s.runs["run-headless"].agents);
+            assert_eq!(calls.len(), 1, "{calls:?}");
+            assert_eq!(calls[0].outcome, Some(crate::thread::ToolCallOutcome::Ok));
+            assert!(
+                calls[0].updated_sequence > calls[0].sequence,
+                "the row was updated in place, so every cursor re-ships it: {:?}",
+                calls[0]
+            );
+        }
 
         // The child answered its one turn and left. Both rites the byte pump
         // performs on PTY EOF are owed here, and nothing else in the daemon
@@ -33760,6 +33904,411 @@ mod tests {
             s.tabs[&key].screen.is_none(),
             "and never had a grid to be retained"
         );
+    }
+
+    /// Put a headless agent on `run_id` running `spec`, deliver `body`, and
+    /// wait until its tool-call rows read as `want`.
+    ///
+    /// The wait is for the rows themselves rather than for a clock: the pump
+    /// runs on its own task, and an update lands on a row the conversation
+    /// already holds — so a test that slept a guess could not tell an answer
+    /// that had not arrived yet from one that never would.
+    async fn tool_calls_after_a_turn(
+        state: &Arc<Mutex<AppState>>,
+        handler: &FrameHandler,
+        repo: &std::path::Path,
+        run_id: &str,
+        spec: HarnessSpec,
+        body: &str,
+        want: &[(String, Option<crate::thread::ToolCallOutcome>)],
+    ) {
+        run_on_a_headless_provider(state, repo, run_id, spec);
+        let posted = call(
+            handler,
+            "thread.post",
+            json!({ "entity_id": run_id, "body": body }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let rows = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let rows = tool_calls_of(&s.runs[run_id].agents);
+            (rows == want).then_some(rows)
+        })
+        .await;
+        assert!(
+            rows.is_some(),
+            "the conversation reads {:?}, wanted {want:?}",
+            tool_calls_of(&state.lock().unwrap().runs[run_id].agents)
+        );
+    }
+
+    /// A failed answer lands on the call it answers like any other, and the
+    /// failure travels as the outcome — the row itself stays toneless, because
+    /// a tool that failed is the agent's problem and not a call for the human.
+    #[tokio::test]
+    async fn a_failed_answer_closes_the_call_it_answers() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-failed-tool");
+        use crate::harness::adk::fake;
+        tool_calls_after_a_turn(
+            &state,
+            &handler,
+            &repo,
+            "run-failed-tool",
+            fake::stream_json_harness(&[fake::TOOL_USE, fake::ERROR_TOOL_RESULT, fake::RESULT]),
+            "read the file",
+            &[(
+                "Read bridge/src/app.rs\n→ File does not exist. Note: your current working \
+                 directory is /work."
+                    .to_string(),
+                Some(crate::thread::ToolCallOutcome::Error),
+            )],
+        )
+        .await;
+
+        let view = call(&handler, "run.get", json!({ "run_id": "run-failed-tool" }));
+        assert_eq!(
+            view["result"]["unread_count"], 0,
+            "a failed tool call still asks the human for nothing: {view:?}"
+        );
+    }
+
+    /// The pairing is by id, and only by id: two calls answered in the reverse
+    /// order each land on their own row. Adjacency would have crossed them.
+    #[tokio::test]
+    async fn two_calls_answered_out_of_order_land_on_their_own_rows() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-two-calls");
+        use crate::harness::adk::fake;
+        tool_calls_after_a_turn(
+            &state,
+            &handler,
+            &repo,
+            "run-two-calls",
+            fake::stream_json_harness(&[
+                fake::TOOL_USE,
+                fake::SECOND_TOOL_USE,
+                fake::SECOND_TOOL_RESULT,
+                fake::TOOL_RESULT,
+                fake::RESULT,
+            ]),
+            "read both",
+            &[
+                (
+                    "Read bridge/src/app.rs\n→ fn main() {}".to_string(),
+                    Some(crate::thread::ToolCallOutcome::Ok),
+                ),
+                (
+                    "Read bridge/src/thread.rs\n→ pub struct Thread".to_string(),
+                    Some(crate::thread::ToolCallOutcome::Ok),
+                ),
+            ],
+        )
+        .await;
+    }
+
+    /// The degraded path, kept alive: an answer to a call this session never
+    /// announced has no row to land on, so it mints the standalone
+    /// `tool_result` row every answer used to mint. Stored rows must render
+    /// forever, and this is what still produces one.
+    #[tokio::test]
+    async fn an_answer_to_a_call_nobody_announced_mints_a_row_of_its_own() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-orphan");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-orphan",
+            fake::stream_json_harness(&[fake::ORPHAN_TOOL_RESULT, fake::NARRATION, fake::RESULT]),
+        );
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-orphan", "body": "read the file" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let reported = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let reported = activity_of(&s.runs["run-orphan"].agents);
+            (reported.len() == 2).then_some(reported)
+        })
+        .await
+        .expect("the orphan answer reaches the conversation");
+        assert_eq!(
+            reported[0],
+            (
+                crate::thread::ThreadEventKind::ToolResult,
+                "an answer to nothing".to_string()
+            ),
+            "exactly the row this kind always minted"
+        );
+        assert!(
+            tool_call_rows(&state.lock().unwrap().runs["run-orphan"].agents).is_empty(),
+            "and no call row was invented to hang it on"
+        );
+    }
+
+    /// A call the interrupted turn left open closes honestly: no answer ever
+    /// arrived, so the row says which boundary ended it rather than going on
+    /// claiming to run.
+    ///
+    /// The second turn is the fence. Its call pairs into a fresh row, which
+    /// proves the drain emptied both maps — the reader's and the pump's —
+    /// rather than leaving the first turn's id behind to swallow it.
+    #[tokio::test]
+    async fn a_call_an_interrupted_turn_left_open_closes_as_unanswered() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-unanswered");
+        use crate::harness::adk::fake;
+        tool_calls_after_a_turn(
+            &state,
+            &handler,
+            &repo,
+            "run-unanswered",
+            fake::stream_json_harness_turn_by_turn(&[
+                &[fake::TOOL_USE, fake::FAILED_RESULT],
+                &[
+                    fake::SECOND_TOOL_USE,
+                    fake::SECOND_TOOL_RESULT,
+                    fake::RESULT,
+                ],
+            ]),
+            "read the file",
+            &[(
+                "Read bridge/src/app.rs\n→ no answer — turn ended".to_string(),
+                Some(crate::thread::ToolCallOutcome::Unanswered),
+            )],
+        )
+        .await;
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-unanswered", "body": "try the other one" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let rows = wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            let rows = tool_calls_of(&s.runs["run-unanswered"].agents);
+            (rows.len() == 2).then_some(rows)
+        })
+        .await
+        .expect("the next turn's call pairs into a row of its own");
+        assert_eq!(
+            rows[1],
+            (
+                "Read bridge/src/thread.rs\n→ pub struct Thread".to_string(),
+                Some(crate::thread::ToolCallOutcome::Ok)
+            ),
+        );
+    }
+
+    /// The death rites close what the turn boundary never saw. A session that
+    /// dies over an open call leaves a row claiming to run, and no later event
+    /// would ever contradict it — so the pump closes it, and closes it BEFORE
+    /// the session-ended row, so the timeline reads calls-closed-then-session-
+    /// ended rather than a session ending over work that still claims to run.
+    #[tokio::test]
+    async fn the_death_rites_close_the_calls_the_session_died_over() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(&mut app, &repo, dir.path(), "run-died", RunState::Building);
+        let agent_id = crate::agent::derived_agent_id("run-died");
+        let key = first_agent_key(&root, "run-died");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-died", &agent_id),
+        );
+        app.runs.get_mut("run-died").unwrap().agents.start_session(
+            "claude",
+            None,
+            None,
+            "build",
+            &now_rfc3339(),
+        );
+        let state = app.shared();
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        activity
+            .send(crate::harness::AgentActivity::ToolUse {
+                call_id: "toolu_1".into(),
+                summary: "Bash npm test".into(),
+            })
+            .expect("the pump is listening");
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            (!tool_call_rows(&s.runs["run-died"].agents).is_empty()).then_some(())
+        })
+        .await
+        .expect("the call reaches the conversation");
+
+        drop(activity);
+        let closed = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = tool_call_rows(&s.runs["run-died"].agents);
+            rows.first().filter(|row| row.outcome.is_some()).cloned()
+        })
+        .await
+        .expect("the call the session died over is closed");
+        assert_eq!(
+            closed.summary.as_deref(),
+            Some("Bash npm test\n→ no answer — session ended")
+        );
+        assert_eq!(
+            closed.outcome,
+            Some(crate::thread::ToolCallOutcome::Unanswered)
+        );
+
+        wait_for(Duration::from_secs(5), || {
+            (open_session_count(&state, "run-died") == 0).then_some(())
+        })
+        .await
+        .expect("and the rites otherwise ran exactly as they do today");
+        let s = state.lock().unwrap();
+        let ended = s.runs["run-died"]
+            .agents
+            .first()
+            .thread
+            .items
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::SessionEnded =>
+                {
+                    Some(event.sequence)
+                }
+                _ => None,
+            })
+            .expect("the session lineage closed");
+        assert!(
+            closed.updated_sequence < ended,
+            "the calls close before the session does: {closed:?} then {ended}"
+        );
+    }
+
+    /// Step 12's live claim, end to end on the real wire: a real haiku turn
+    /// runs one tool, and the daemon's whole path — reader, pump, conversation
+    /// — yields ONE row, minted at the call and completed in place when the
+    /// real answer arrives: `updated_sequence` moved, the answer a suffix line,
+    /// and no standalone `tool_result` row minted anywhere in the turn.
+    ///
+    /// Ignored by default for the same reason as the `real_adk` legs in
+    /// `harness::adk`, and run by the same hand:
+    ///
+    /// ```text
+    /// cargo test --lib real_adk -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    async fn real_adk_tool_call_completes_its_own_row() {
+        use crate::harness::Harness;
+
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root =
+            insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-live-call");
+        crate::harness::adk::AdkHarness.prepare_workspace(&root);
+        let mcp = dir.path().join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+        run_on_a_headless_provider(&state, &repo, "run-live-call", spec);
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-live-call", "body": concat!(
+                "You are being driven by an automated test. Do exactly this and ",
+                "nothing else, then stop. Use the Bash tool exactly ONCE, to run ",
+                "exactly: echo pear\n",
+                "Then reply with the single word done and stop.",
+            ) }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        // The whole turn: rows exist and every one of them has closed. The
+        // drain at the result closes anything unanswered, so an outcome still
+        // absent past this wait would be a pairing that never landed.
+        let rows = wait_for(Duration::from_secs(240), || {
+            let s = state.lock().unwrap();
+            let rows = tool_call_rows(&s.runs["run-live-call"].agents);
+            (!rows.is_empty() && rows.iter().all(|row| row.outcome.is_some())).then_some(rows)
+        })
+        .await
+        .expect("the live call closes on its own row");
+        eprintln!("[verdict] tool-call rows: {rows:?}");
+
+        assert_eq!(rows.len(), 1, "one call was asked for, one row: {rows:?}");
+        let row = &rows[0];
+        assert_eq!(row.outcome, Some(crate::thread::ToolCallOutcome::Ok));
+        assert!(
+            row.updated_sequence > row.sequence,
+            "minted at the call and completed in place, so the bump moved: {row:?}"
+        );
+        let summary = row.summary.as_deref().unwrap_or_default();
+        assert!(
+            summary.contains("\n→ "),
+            "the real answer landed as the suffix line: {summary:?}"
+        );
+        let reported = activity_of(&state.lock().unwrap().runs["run-live-call"].agents);
+        assert!(
+            !reported
+                .iter()
+                .any(|(kind, _)| *kind == crate::thread::ThreadEventKind::ToolResult),
+            "and no standalone tool_result row was minted anywhere: {reported:?}"
+        );
+    }
+
+    /// Every tool-call row on this conversation — since step 12 that is the
+    /// whole of a call: the summary carries the answer when one arrived, and
+    /// the outcome says how it ended.
+    fn tool_call_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
+        thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::ToolUse =>
+                {
+                    Some(event.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The same conversation's tool-call rows as (summary, outcome), which is
+    /// what most of the assertions below are about.
+    fn tool_calls_of(
+        thread: &crate::thread::Thread,
+    ) -> Vec<(String, Option<crate::thread::ToolCallOutcome>)> {
+        tool_call_rows(thread)
+            .into_iter()
+            .map(|event| (event.summary.unwrap_or_default(), event.outcome))
+            .collect()
     }
 
     /// How many times this agent has reasoned out loud — the evidence a turn

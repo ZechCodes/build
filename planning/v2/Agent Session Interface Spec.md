@@ -371,9 +371,13 @@ pub enum ThreadEventKind {
 
     /// The agent thought out loud.
     Reasoning,
-    /// The agent called a tool.
+    /// The agent called a tool. Since step 12 the row is the whole call: its
+    /// answer updates it in place rather than minting a `ToolResult` beside it.
     ToolUse,
-    /// A tool answered.
+    /// A tool answered. Step 12 pairs the answer into the `ToolUse` row, so
+    /// new sessions stop minting this on the happy path — the kind stays,
+    /// because stored rows render forever and the orphan fallback still
+    /// produces it.
     ToolResult,
     /// The agent narrated. Distinct from a `post_thread_message`, which is the
     /// agent deliberately addressing the human.
@@ -877,6 +881,20 @@ capability that is new, and "yes" for one that predates the question.
 { "type": "event",
   "data": { "id": "event-41", "sequence": 41, "event": "tool_use",
             "created_at": "…", "summary": "Read bridge/src/app.rs" } }
+```
+
+```json
+// the same row after its answer arrived (step 12): two additive fields.
+// `updated_sequence` re-ships it through the existing cursor — the same
+// machinery a message marked seen rides — and `outcome` is
+// "ok" | "error" | "unanswered", absent on every event that is not a
+// completed tool call. A client that knows neither field reads a slightly
+// longer summary on a row it already holds.
+{ "type": "event",
+  "data": { "id": "event-41", "sequence": 41, "updated_sequence": 47,
+            "event": "tool_use", "created_at": "…",
+            "summary": "Read bridge/src/app.rs\n→ fn main() {}",
+            "outcome": "ok" } }
 ```
 
 ```json
@@ -1507,7 +1525,8 @@ What the step builds, all in `bridge/src/harness/adk.rs` plus one enum arm:
   for an activity stream: the pump owns the receiver, posts the four §5 kinds
   through the thread under the app lock — thinking summaries as `Reasoning`,
   `tool_use` as `ToolUse` (summary: tool name plus a one-line input),
-  `tool_result` as `ToolResult`, assistant text as `Narration` — and on
+  `tool_result` as `ToolResult` (step 12 later pairs it into the call's own
+  row), assistant text as `Narration` — and on
   close performs exactly the byte pump's death rites. Two deliberate
   exclusions: `tool_use` of Build's own MCP tools is not minted (the socket
   already carries `post_thread_message` and `done` as their real selves —
@@ -2527,6 +2546,259 @@ rule. Every test below runs against that child; none runs a model turn.
 8. in the SPA: `task_update` folds shut with its own label, and every other
    kind renders untouched.
 
+### Step 12 in detail — a tool call and its answer are one row
+
+*Specified 2026-08-30.* The reader already pairs every call to its answer:
+`ProtocolReader.calls` (`adk.rs:670`) maps the protocol's `tool_use` id to
+what became of the call, because a `tool_result` names the call it answers by
+id and nothing else. Then the pairing is thrown away at the last moment — the
+call and the answer are minted as two unrelated rows, and the human reads the
+join the reader already computed by eyeballing adjacent lines. Step 12 carries
+the pairing outward: **one thread row per tool call, minted at the call,
+updated in place when its answer arrives.** Headless carrier only, like step
+11 — the PTY reports no activity, so nothing else moves.
+
+#### 12.1 Events gain mutation
+
+`ThreadEvent` joins `ThreadMessage`'s `updated_sequence` machinery, additively:
+
+```rust
+pub struct ThreadEvent {
+    // … id, sequence …
+    /// Drawn from the same counter as `sequence` and bumped when the event
+    /// mutates in place — today that is a tool call's answer arriving — so
+    /// the cursor protocol re-ships the newer copy of an already-held row.
+    /// Defaults to 0 (never mutated) on every record persisted before this
+    /// field, which leaves old rows untouched: `latest_sequence` is a max.
+    #[serde(default)]
+    pub updated_sequence: u64,
+    // …
+}
+```
+
+**One arm changes, and everything else inherits it.** The paths were read,
+and this is the list:
+
+- `ThreadItem::latest_sequence` (`thread.rs:919`) — the Event arm becomes
+  `event.sequence.max(event.updated_sequence)`, mirroring the Message arm,
+  and its doc line "Events never mutate in place" dies. Every consumer below
+  consults the event's bump through this one reading:
+  - `resident_after` / `wire_value_after` (`thread.rs:2301/2272`) — the
+    forward delta re-ships the updated row to a client whose cursor is past
+    its creation, exactly as it re-ships a message marked seen;
+  - `wire_value_after_including_history` (`thread.rs:2281`) — the store-row
+    admission filter, same reading;
+  - `Thread::last_sequence` (`thread.rs:2012`) — the cursor high-water mark:
+    the bump moves `thread_last_sequence` on the wire, which is what lets the
+    SPA's delivered-equals-newest check pass once the delta lands;
+  - the load's `next_sequence` repair (`thread.rs:1397`) — already a max over
+    `latest_sequence`, so a reload clears event bumps too and no counter
+    value is ever spent twice;
+  - the store's `write_agents` dirty check (`store.rs:992–1004`) — compares
+    stored `(sequence, updated_sequence)` against `item.latest_sequence()`,
+    so the updated row is rewritten and its `updated_sequence` **column**
+    (`store.rs:422` — it has existed since the store landed, written for
+    every item, events included) moves with it; `THREAD_CURSOR_SQL`
+    (`store.rs:523`) and `THREAD_LAST_SEQUENCE_SQL` (`store.rs:534`) then
+    serve the mutation with **no SQL change**.
+- **Paths that must NOT consult it, held by their own docs:** `unread_since`,
+  `unread_attention_below` and `last_attention_sequence`
+  (`thread.rs:2160/2185/2205`) read creation sequence deliberately — a
+  mutation bump is not the conversation speaking again — and a tool row is
+  `Status` on both sides of its update anyway.
+- **Hashing and deduping: read for, and there is none.** Nothing in the
+  bridge hashes or dedups events; the one equality-adjacent read is the
+  has-this-event-kind match (`event.event == kind`, `app.rs:26494`), which a
+  bump does not touch. On the client, the cursor already merges mutations by
+  latest sequence generically: `itemCursorSequence`
+  (`core/thread.js:169–174`) reads `updated_sequence || 0` off **every**
+  item, `mergeArrivals` replaces the held copy keyed by creation sequence,
+  and `theWindowMayTake` keeps a mutation from under the window's floor out
+  of it — all three shipped for messages and written over items, so the
+  client cursor needs **no change**.
+
+The bump is spent through `Thread::next()` the way `resolve_doc_comment`'s is
+(`thread.rs:1761`). Two small additive changes carry it: `push_event` returns
+the minted sequence (callers that ignore it stand unmodified), and a new
+`Thread::resolve_tool_call(sequence, outcome, answer)` finds the `ToolUse`
+row by creation sequence, appends the answer to its summary, sets its
+outcome, and bumps `updated_sequence` — returning `false` for a row that is
+not resident, so the caller can fall back to minting (below).
+
+#### 12.2 The pairing carried outward
+
+**The activity variants.** `AgentActivity::ToolUse` gains the protocol's call
+id; `ToolResult` stops being a row of its own and becomes the completion
+signal for the call with the same id:
+
+```rust
+/// The agent called a tool. `call_id` is the protocol's own id for the call
+/// (`tool_use.id`) — the name its answer will arrive under.
+ToolUse { call_id: String, summary: String },
+/// A tool answered: the completion signal for the `ToolUse` carrying the
+/// same id. `summary` is the one-line answer text, possibly empty.
+ToolResult { call_id: String, outcome: ToolOutcome, summary: String },
+
+pub enum ToolOutcome { Ok, Error, Unanswered }
+```
+
+The reader's own half barely moves: `read_tool_use` (`adk.rs:956`) emits the
+id it already holds; `read_tool_result` (`adk.rs:968`) emits the completion
+instead of a summary row — outcome `Error` when the `tool_result` block's
+`is_error` is true (re-verified against the installed CLI and recorded into
+`adk::fake` at implementation, under §11's escape hatch), `Ok` otherwise,
+answer text `one_line`-clipped as today. Build's own MCP calls stay silent at
+both ends, exactly as now.
+
+**The stored outcome.** `ThreadEvent` gains a second additive field, absent
+on every event that is not a completed tool call — the thread's own mirror of
+the harness enum, in the manner of the kind mapping:
+
+```rust
+/// What a tool call's answer reported, on the `ToolUse` row it completes.
+#[serde(default, skip_serializing_if = "Option::is_none")]
+pub outcome: Option<ToolCallOutcome>,   // wire: "ok" | "error" | "unanswered"
+```
+
+**The pump keeps the open-call map.** `spawn_activity_pump` (`app.rs:17992`)
+holds `open_calls: HashMap<String, u64>` — call id → the minted row's
+creation sequence — as task-local state, so it is per session by
+construction: a new session is a new pump with an empty map. The call id
+never reaches the thread; the pairing lives and dies with the session.
+
+- On `ToolUse`: mint as today (`record_agent_activity` hands back the
+  sequence `push_event` now returns), insert into the map, outcome absent —
+  the row **is** the pending state.
+- On `ToolResult` whose id the map holds: remove it and update the row in
+  place through `resolve_tool_call` — the summary gains the answer as a
+  suffix line, `\n→ <answer>` (omitted when the answer is empty; the outcome
+  field carries the state either way, and a legacy client just reads a
+  slightly longer summary), the outcome field is set, and **no `tool_result`
+  row is minted**.
+- On `ToolResult` whose id the map does not hold — a `ToolUse` lost to
+  broadcast lag, or a row the resident tail no longer has — it falls back to
+  minting a standalone `tool_result` row exactly as today. The `tool_result`
+  **kind stays**: stored rows must render forever, and the orphan fallback
+  keeps a producer alive for the degraded path. New sessions on the happy
+  path simply stop producing it.
+
+#### 12.3 Unanswered calls close honestly
+
+A row must never pretend an answer arrived — and it must not dangle as
+pending forever either, because pending is a claim too ("this is still
+running"). So an unanswered call **closes by update**: outcome `unanswered` —
+a terminal state distinct from ok and error — with the suffix naming what
+ended it. Two closers:
+
+- **A `result` line ends the turn, and the reader drains its map.**
+  `read_result` (`adk.rs:901`) already owns the boundary; it grows a drain:
+  every `Minted` entry still in `calls` emits
+  `ToolResult { call_id, outcome: Unanswered, summary: "" }`, and
+  `BuildsOwn` entries drop silently, as their answers always did. The pump
+  words the update `→ no answer — turn ended`. On a normal turn the protocol
+  answers every call before its result, so the drain finds the map empty;
+  the interrupt's `error_during_execution` was expected to be the case with
+  leftovers — but the live leg showed otherwise (2026-08-30, claude 2.1.x):
+  the CLI answers the interrupted call itself, with an `is_error` rejection
+  ("The user doesn't want to proceed…"), before the result, so the
+  interrupted call closes as `error` and the drain finds the map empty
+  there too. The drain stays as the net beneath a wire that does not answer
+  — a crashed child, an older CLI — pinned by the fake. The
+  map is therefore **one map drained at every turn boundary**, not a
+  per-turn structure — the next turn starts against an empty map by
+  construction, on both sides: the reader's drain empties `calls`, and the
+  emitted completions empty the pump's `open_calls`.
+- **The death rites close the rest.** On the activity stream closing
+  (`app.rs:18021`), the pump closes every entry still in `open_calls` —
+  a crashed child's calls, plus any completion broadcast lag swallowed —
+  as `→ no answer — session ended`, **before** `record_agent_session_end`,
+  so the timeline reads calls-closed-then-session-ended rather than a
+  session ending over calls that still claim to run.
+
+A daemon crash leaves its open rows pending with no marker, and that is the
+honest answer: no answer ever arrived, nothing is fabricated afterward, and
+the session-ended row the next boot's lineage carries sits beneath them
+saying why.
+
+#### 12.4 Volume, and §6.3
+
+A tool-heavy session mints one row per call instead of two — roughly half its
+activity rows. The counted predicate is untouched by construction and pinned
+by test: a `ToolUse` row is `Status` with `message = 0, attention = 0` when
+minted and after every update (the store upsert rewrites the same column
+values), so completion flips neither `counted()` nor `attention_reason()`,
+buys no slot against either §6.3 bound, moves no unread count, and pulls
+nobody in.
+
+#### 12.5 SPA
+
+The `tool_use` fold renders one line with three states, in the shipped fold
+idiom (`activityHtml`, `core/thread.js:726`) — the head keeps its icon, its
+label and the call's first line as preview, and gains a trailing state mark:
+
+- **pending** — no `outcome` field: today's row exactly, no mark. Absence is
+  the pending state, which is also what every legacy row and every legacy
+  daemon produces.
+- **ok** — a dim `✓` on the head; the answer lives in the fold body, where
+  the full summary (call, then `→ answer`) already renders.
+- **error** — `✕` in the blocked color **on the mark alone**: the row stays
+  toneless, because activity asks the reader for nothing and a failed tool
+  call still doesn't — the agent deals with it, and the agent calling the
+  human is what `Blocked` is for.
+- **unanswered** — `⊘`, with the `no answer — …` line in the body saying
+  which boundary closed it.
+
+An unknown outcome token renders as pending (no mark), the additive-wire
+discipline read in the client's direction. Legacy `tool_result` rows keep
+their `EVENT_META` entry and render exactly as today. The preview is the
+summary's **first line**, so the head stays stable when the answer suffix
+lands; the fold-survives-the-repaint patch already covers a repaint under an
+open fold, and a test holds it across an outcome arriving specifically.
+
+#### 12.6 The fake harness, and the tests
+
+`adk::fake` grows the recordings the tests need — probe-recorded against the
+installed CLI, never typed from this spec, under the module's single-quote
+rule: an error `tool_result` (`is_error: true`), a second call pair with a
+distinct id (for out-of-order interleave), and a `tool_result` naming an id
+no call announced. The interrupt leg reuses the recorded `TOOL_USE` +
+`FAILED_RESULT` pair it already has. Every test runs against the fake; none
+runs a model turn.
+
+1. the happy pair: a `tool_use` then its `tool_result` puts ONE row in the
+   thread — kind `tool_use`, summary `call\n→ answer`, outcome `ok`,
+   `updated_sequence > sequence` — and no `tool_result` row;
+2. an error answer updates the same row with outcome `error` and the block's
+   text;
+3. two calls answered out of order each land on their own row — the id
+   pairs, not adjacency;
+4. a Build-own MCP call stays unminted through both halves of the pairing;
+5. an orphan `tool_result` mints a standalone `tool_result` row exactly as
+   today — the kind's producer of last resort;
+6. the interrupt: a call left open by an `error_during_execution` result
+   closes as `→ no answer — turn ended`, outcome `unanswered`, and the next
+   turn's call pairs into a fresh row, proving the drain emptied both maps;
+7. the death rites: a stream closing over an open call closes it as
+   `→ no answer — session ended` before `record_agent_session_end`, and the
+   rites otherwise run unchanged;
+8. the cursor re-ships: `wire_value_after` with a cursor past the row's
+   creation carries the updated row — the event mirror of
+   `wire_value_after_reships_a_message_marked_seen_after_the_cursor`;
+9. persistence: `write_agents` rewrites the bumped row and no other,
+   `thread_items_after` re-serves it, and a reload's `next_sequence` clears
+   the bump so no counter value is spent twice;
+10. compatibility: a stored event without the two fields loads with
+    `updated_sequence` 0 and `outcome` `None`, `latest_sequence ==
+    sequence`, and the record round-trips byte-identical — old rows are
+    untouched by machinery they predate;
+11. §6.3 invariance: `counted()`, `attention_reason()` and the two hoisted
+    columns are identical before and after an outcome lands, and the unread
+    count is unmoved;
+12. in the SPA: the three states render off `outcome`, `unanswered` shows
+    its no-answer line, a legacy `tool_result` row renders as today, an
+    unknown outcome token renders as pending, and a fold the reader opened
+    survives the outcome landing under it.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -2648,6 +2920,48 @@ sections cite (§11 q3, §11 q4) must not move.
 ---
 
 ## 12. Revision history
+
+- **2026-08-30, activity renders grouped.** A maximal run of consecutive
+  activity rows between two things somebody said (or any non-activity row)
+  collapses to a single dim line — a counter and the newest item's summary
+  first line, no label — that opens onto the per-row folds as they render
+  today, eight rows tall and scrolling past that. SPA-only (`core/thread.js`,
+  `styles.css`): no wire, store or bridge change. The run is a `<details>`
+  keyed by its first item's sequence, so it keeps its identity and its open
+  state while its tail grows under a live agent.
+- **2026-08-30, step 12 specified — a tool call and its answer are one row.**
+  The reader's own pairing (`ProtocolReader.calls`, which has matched every
+  `tool_result` to its `tool_use` by id since step 6) stops being discarded
+  at minting: one thread row per tool call, minted at the call, updated in
+  place when its answer arrives. `ThreadEvent` joins `ThreadMessage`'s
+  `updated_sequence` machinery additively (serde default 0, the store column
+  already exists, `latest_sequence`'s Event arm becomes a max — and every
+  consulting path was read and is listed in §10 step 12.1: the forward
+  delta, the history merge, the high-water mark, the load's counter repair
+  and the store's dirty check all inherit the one arm; the unread family
+  deliberately stays on creation sequence; no code hashes or dedups events;
+  the SPA cursor already reads `updated_sequence` off every item, so the
+  client cursor needs no change). `AgentActivity::ToolUse` gains `call_id`;
+  `ToolResult` becomes the completion signal — `call_id` plus
+  `ToolOutcome::{Ok, Error, Unanswered}` and the one-line answer — and the
+  pump keeps a per-session `open_calls` map (call id → minted row sequence),
+  updating the row through `Thread::resolve_tool_call`: summary gains
+  `→ <answer>`, a new additive `outcome` field ("ok"/"error"/"unanswered")
+  carries the state, and no `tool_result` row is minted on the happy path.
+  The kind stays for stored rows and for the orphan fallback (a result whose
+  call was lost mints standalone, as today). Unanswered calls close by
+  update, never by a fabricated answer: the reader drains its map at every
+  `result` line (`→ no answer — turn ended` — the interrupt case; both maps
+  empty at every turn boundary by construction) and the death rites close
+  the rest (`→ no answer — session ended`) before `record_agent_session_end`.
+  Tool-heavy sessions mint roughly half the rows; the counted predicate is
+  untouched (`message = 0, attention = 0` on both sides of the update,
+  pinned). The SPA's `tool_use` fold gains a trailing state mark — nothing
+  while pending, `✓` ok, `✕` error on the mark alone, `⊘` unanswered — with
+  the answer in the fold body, legacy `tool_result` rows rendering as
+  always, and unknown outcome tokens reading as pending. §5 and §8 amended;
+  §10 gains step 12 with the fake's new recordings and the test list, none
+  running a model turn.
 
 - **2026-08-30, step 11's review fixes — a foreground command is a task too.**
   Running the whole live family turned up a defect the background probe could

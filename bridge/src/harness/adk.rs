@@ -35,7 +35,7 @@ use tokio::sync::broadcast;
 use crate::harness::claude::ClaudeHarness;
 use crate::harness::{
     AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
-    SessionLocator, Turn, INHERITED_AGENT_MARKERS,
+    SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -295,10 +295,13 @@ impl ProtocolState {
     }
 }
 
-/// What became of one tool call, kept until its result arrives so the answer can
-/// be named — or dropped, when the call itself was Build's own.
+/// What became of one tool call, kept until its result arrives so the answer
+/// can be paired to it — or so it can be closed as unanswered when the turn
+/// ends first. A call that was Build's own is remembered too, so that its answer
+/// stays as silent as the call was.
+#[derive(PartialEq, Eq)]
 enum RecordedCall {
-    Minted { tool: String },
+    Minted,
     BuildsOwn,
 }
 
@@ -903,18 +906,24 @@ impl ProtocolReader {
             || event["subtype"]
                 .as_str()
                 .is_some_and(|kind| kind != "success");
-        let mut state = self.state.lock().unwrap();
-        // Taken, acked or not, so an interrupt can never leak into the turn
-        // after the one it ended.
-        let stopped = state.pending_interrupt.take();
-        // The turn queued behind an interrupt is running the moment this result
-        // lands, so the flag is handed to it rather than cleared.
-        state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
-        state.reported_error =
-            match failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
-                true => Some(result_error_text(event)),
-                false => None,
-            };
+        {
+            let mut state = self.state.lock().unwrap();
+            // Taken, acked or not, so an interrupt can never leak into the turn
+            // after the one it ended.
+            let stopped = state.pending_interrupt.take();
+            // The turn queued behind an interrupt is running the moment this
+            // result lands, so the flag is handed to it rather than cleared.
+            state.turn_open = stopped.as_ref().is_some_and(|pending| pending.steered);
+            state.reported_error =
+                match failed && !stopped.as_ref().is_some_and(|pending| pending.acked) {
+                    true => Some(result_error_text(event)),
+                    false => None,
+                };
+        }
+        // Outside the lock, because emitting is the broadcast channel's
+        // business and not this session's state. A turn the protocol answered
+        // in full leaves nothing to close.
+        self.close_open_calls();
     }
 
     /// One message's content blocks, minted in the order the child reported
@@ -955,34 +964,61 @@ impl ProtocolReader {
 
     fn read_tool_use(&mut self, block: &Value) {
         let tool = block["name"].as_str().unwrap_or_default().to_string();
-        let id = block["id"].as_str().unwrap_or_default().to_string();
+        let call_id = block["id"].as_str().unwrap_or_default().to_string();
         if tool.starts_with(BUILD_MCP_TOOL_PREFIX) {
-            self.calls.insert(id, RecordedCall::BuildsOwn);
+            self.calls.insert(call_id, RecordedCall::BuildsOwn);
             return;
         }
         let summary = tool_call_summary(&tool, &block["input"]);
-        self.calls.insert(id, RecordedCall::Minted { tool });
-        self.emit(AgentActivity::ToolUse { summary });
+        self.calls.insert(call_id.clone(), RecordedCall::Minted);
+        self.emit(AgentActivity::ToolUse { call_id, summary });
     }
 
+    /// One call's answer, reported as the completion of the call it names
+    /// rather than as an event of its own — the pairing this reader has always
+    /// computed, carried outward instead of thrown away.
+    ///
+    /// The answer travels alone, without the tool's name in front of it: the row
+    /// it lands on is the call, which said what tool this was when it was
+    /// minted.
     fn read_tool_result(&mut self, block: &Value) {
-        let id = block["tool_use_id"].as_str().unwrap_or_default();
+        let call_id = block["tool_use_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         // Taken, not read: a call is answered once, and a session that runs for
         // hours must not accumulate one entry per tool call it ever made.
-        let call = self.calls.remove(id);
-        if matches!(call, Some(RecordedCall::BuildsOwn)) {
+        if self.calls.remove(&call_id) == Some(RecordedCall::BuildsOwn) {
             return;
         }
-        let answer = one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT);
-        let summary = match call {
-            Some(RecordedCall::Minted { tool }) if !answer.is_empty() => {
-                format!("{tool}: {answer}")
-            }
-            Some(RecordedCall::Minted { tool }) => tool,
-            _ => answer,
+        let outcome = match block["is_error"].as_bool().unwrap_or(false) {
+            true => ToolOutcome::Error,
+            false => ToolOutcome::Ok,
         };
-        if !summary.is_empty() {
-            self.emit(AgentActivity::ToolResult { summary });
+        self.emit(AgentActivity::ToolResult {
+            call_id,
+            outcome,
+            summary: one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT),
+        });
+    }
+
+    /// Close every call the turn just ended left open.
+    ///
+    /// A call whose answer never came must not go on claiming to run, so the
+    /// boundary that ended it says so: one `Unanswered` completion per call
+    /// still in the map, and Build's own calls dropped in the silence their
+    /// answers always kept. Draining here is also what leaves the next turn
+    /// reading against an empty map.
+    fn close_open_calls(&mut self) {
+        for (call_id, recorded) in std::mem::take(&mut self.calls) {
+            if recorded == RecordedCall::BuildsOwn {
+                continue;
+            }
+            self.emit(AgentActivity::ToolResult {
+                call_id,
+                outcome: ToolOutcome::Unanswered,
+                summary: String::new(),
+            });
         }
     }
 
@@ -1165,6 +1201,24 @@ pub(crate) mod fake {
     pub(crate) const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
+    /// An answer that FAILED — recorded from a live probe against claude
+    /// 2.1.236 on 2026-08-30: one headless turn that read a path which does not
+    /// exist. `is_error` is the whole of what says so, and the block carries no
+    /// other marker.
+    ///
+    /// The same substitutions the recordings above take and nothing else: the
+    /// `tool_use_id` is swapped for this module's, and the probe's own working
+    /// directory for a short path. Every field the reader looks at is verbatim.
+    pub(crate) const ERROR_TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"File does not exist. Note: your current working directory is /work.","is_error":true,"tool_use_id":"toolu_1"}]},"parent_tool_use_id":null}"#;
+    /// A SECOND call and its answer, the recorded pair above with its id and
+    /// the file it reads changed and nothing else — what an out-of-order
+    /// interleave is told apart by, since adjacency cannot tell it.
+    pub(crate) const SECOND_TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"bridge/src/thread.rs"}}]},"parent_tool_use_id":null}"#;
+    pub(crate) const SECOND_TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_2","content":"pub struct Thread"}]},"parent_tool_use_id":null}"#;
+    /// An answer to a call this session never saw announced — the shape a
+    /// broadcast lag or a reload leaves behind, and the only thing that still
+    /// mints a `tool_result` row of its own.
+    pub(crate) const ORPHAN_TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_nobody_announced","content":"an answer to nothing"}]},"parent_tool_use_id":null}"#;
     pub(crate) const NARRATION: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"dropped the index"}]},"parent_tool_use_id":null}"#;
     pub(crate) const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"dropped the index","session_id":"sess-adk"}"#;
     pub(crate) const DONE_CALL: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_done","name":"mcp__build__done","input":{"phase":"build","status":"completed"}}]},"parent_tool_use_id":null}"#;
@@ -1749,20 +1803,157 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::ToolUse {
+                call_id: "toolu_1".to_string(),
                 summary: "Read bridge/src/app.rs".to_string()
             }
         );
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::ToolResult {
-                summary: "Read: fn main() {}".to_string()
-            }
+                call_id: "toolu_1".to_string(),
+                outcome: ToolOutcome::Ok,
+                summary: "fn main() {}".to_string()
+            },
+            "the answer names the call it answers, and carries the answer alone"
         );
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::Narration {
                 summary: "dropped the index".to_string()
             }
+        );
+        session.end();
+    }
+
+    /// The pairing is by id, never by adjacency: two calls answered in the
+    /// reverse order each carry their own id, so the daemon lands each answer
+    /// on the row its own call minted.
+    #[tokio::test]
+    async fn two_calls_answered_out_of_order_each_name_their_own_call() {
+        let session = open(&stream_json_harness(&[
+            TOOL_USE,
+            SECOND_TOOL_USE,
+            SECOND_TOOL_RESULT,
+            TOOL_RESULT,
+            RESULT,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("read both")).unwrap();
+
+        for expected in ["toolu_1", "toolu_2"] {
+            let AgentActivity::ToolUse { call_id, .. } = next_activity(&mut activity).await else {
+                panic!("a call was expected");
+            };
+            assert_eq!(call_id, expected);
+        }
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_2".to_string(),
+                outcome: ToolOutcome::Ok,
+                summary: "pub struct Thread".to_string()
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_1".to_string(),
+                outcome: ToolOutcome::Ok,
+                summary: "fn main() {}".to_string()
+            }
+        );
+        session.end();
+    }
+
+    /// `is_error` is the whole of what says a call failed, and the failure
+    /// travels as the outcome rather than as words in the summary.
+    #[tokio::test]
+    async fn a_failed_answer_reports_the_error_outcome_and_its_text() {
+        let session = open(&stream_json_harness(&[TOOL_USE, ERROR_TOOL_RESULT, RESULT]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("read the file")).unwrap();
+
+        assert!(matches!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolUse { .. }
+        ));
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_1".to_string(),
+                outcome: ToolOutcome::Error,
+                summary: "File does not exist. Note: your current working directory is /work."
+                    .to_string()
+            }
+        );
+        session.end();
+    }
+
+    /// An answer to a call nobody announced still reaches the timeline: the
+    /// reader knows nothing about it beyond its id and what it says, and says
+    /// exactly that.
+    #[tokio::test]
+    async fn an_answer_to_a_call_nobody_announced_is_still_reported() {
+        let session = open(&stream_json_harness(&[ORPHAN_TOOL_RESULT, RESULT]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("read the file")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_nobody_announced".to_string(),
+                outcome: ToolOutcome::Ok,
+                summary: "an answer to nothing".to_string()
+            }
+        );
+        session.end();
+    }
+
+    /// The turn boundary drains the map. A call the interrupted turn left open
+    /// is closed as unanswered — no answer ever arrived and none is coming —
+    /// and the next turn's call pairs into a row of its own, which is what
+    /// proves the drain emptied the map rather than leaving the id behind.
+    #[tokio::test]
+    async fn a_result_closes_every_call_its_turn_left_open() {
+        let session = open(&stream_json_harness_turn_by_turn(&[
+            &[TOOL_USE, FAILED_RESULT],
+            &[SECOND_TOOL_USE, SECOND_TOOL_RESULT, RESULT],
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("read the file")).unwrap();
+
+        assert!(matches!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolUse { .. }
+        ));
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_1".to_string(),
+                outcome: ToolOutcome::Unanswered,
+                summary: String::new()
+            },
+            "the turn ended over the call, and nothing is fabricated about it"
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("try the other one")).unwrap();
+        assert!(matches!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolUse { .. }
+        ));
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolResult {
+                call_id: "toolu_2".to_string(),
+                outcome: ToolOutcome::Ok,
+                summary: "pub struct Thread".to_string()
+            },
+            "and the next turn starts against an empty map"
         );
         session.end();
     }
@@ -2648,8 +2839,10 @@ mod tests {
                 while let Ok(event) = activity.blocking_recv() {
                     let line = match &event {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
-                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
-                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult {
+                            outcome, summary, ..
+                        } => format!("tool_result[{outcome:?}]: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
                         AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
@@ -2800,8 +2993,10 @@ mod tests {
                 while let Ok(event) = activity.blocking_recv() {
                     let line = match &event {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
-                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
-                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult {
+                            outcome, summary, ..
+                        } => format!("tool_result[{outcome:?}]: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
                         AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
@@ -2907,6 +3102,38 @@ mod tests {
             !matches!(session.status(), AgentStatus::Ended { .. }),
             "an interrupted session is the same session, still alive"
         );
+        // Step 12's half of this leg: the parked call must not outlive the
+        // turn the interrupt ended — every call the session made closes. On
+        // the live wire (claude 2.1.x, observed 2026-08-30) the CLI answers
+        // the interrupted call ITSELF, with an `is_error` rejection ("The user
+        // doesn't want to proceed…"), before the `error_during_execution`
+        // result — so the boundary drain finds the map already empty. The
+        // drain stays as the net beneath a wire that does not answer (a
+        // crashed child, an older CLI), pinned by the fake in
+        // `a_result_closes_every_call_its_turn_left_open`; what the live leg
+        // holds is the invariant both paths serve: one completion per call,
+        // and the interrupted call's completion is terminal — `Error` from the
+        // CLI's own rejection, or `Unanswered` from the drain.
+        let lines = seen.lock().unwrap().clone();
+        let calls = lines
+            .iter()
+            .filter(|line| line.starts_with("tool_use:"))
+            .count();
+        let completions = lines
+            .iter()
+            .filter(|line| line.starts_with("tool_result["))
+            .count();
+        assert_eq!(
+            completions, calls,
+            "every call closes at its turn's boundary, the interrupted one included: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("tool_result[Error]")
+                    || line.starts_with("tool_result[Unanswered]")),
+            "the interrupted call's completion is terminal, never a fabricated success: {lines:?}"
+        );
         session.end();
     }
 
@@ -2958,8 +3185,10 @@ mod tests {
                 while let Ok(event) = activity.blocking_recv() {
                     let line = match &event {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
-                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
-                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult {
+                            outcome, summary, ..
+                        } => format!("tool_result[{outcome:?}]: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
                         AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };

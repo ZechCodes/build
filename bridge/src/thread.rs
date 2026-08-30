@@ -85,6 +85,13 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+/// Never mutated, for the counter an event carries only once it has been: an
+/// event that was written and never touched again serializes exactly as it did
+/// before events could mutate at all.
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 impl MessageRole {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -820,10 +827,22 @@ impl ThreadEventKind {
 pub struct ThreadEvent {
     pub id: String,
     pub sequence: u64,
+    /// Drawn from the same counter as `sequence` and bumped when the event
+    /// mutates in place — today that is a tool call's answer arriving — so the
+    /// cursor protocol re-ships the newer copy of an already-held row.
+    /// Defaults to 0 (never mutated) on every record persisted before this
+    /// field, which leaves old rows untouched: `latest_sequence` is a max.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub updated_sequence: u64,
     pub event: ThreadEventKind,
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// What a tool call's answer reported, on the `ToolUse` row it completes.
+    /// Absent on every event that is not a completed tool call, and on every
+    /// event written before calls and answers were one row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ToolCallOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -840,6 +859,22 @@ pub struct ThreadEvent {
     /// [`ThreadMessage::metadata`].
     #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
     pub metadata: ItemMetadata,
+}
+
+/// How a tool call ended, on the row the call minted.
+///
+/// The conversation's own mirror of the harness enum, in the manner of the kind
+/// mapping: what a client reads off the wire belongs to the thread, and the
+/// harness stays free to name what it saw in its own words. `Unanswered` is a
+/// terminal state of its own — no answer ever arrived and the boundary that
+/// ended the call said so — never a failure, which the agent would have been
+/// told about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallOutcome {
+    Ok,
+    Error,
+    Unanswered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -915,11 +950,15 @@ impl ThreadItem {
     }
 
     /// The newest counter value this item has touched: its creation sequence,
-    /// or a later in-place mutation bump. Events never mutate in place.
+    /// or a later in-place mutation bump.
+    ///
+    /// Both arms read the same way, and every cursor path in this file reads
+    /// the mutation through this one place — an event bumped by its tool call's
+    /// answer travels exactly as a message marked seen does.
     pub fn latest_sequence(&self) -> u64 {
         match self {
             ThreadItem::Message(message) => message.sequence.max(message.updated_sequence),
-            ThreadItem::Event(event) => event.sequence,
+            ThreadItem::Event(event) => event.sequence.max(event.updated_sequence),
         }
     }
 
@@ -1810,6 +1849,9 @@ impl Thread {
         unread
     }
 
+    /// Mint one event and hand back the counter value it was minted at — the
+    /// handle a later in-place update names it by. Callers with nothing to
+    /// update ignore the value.
     pub fn push_event(
         &mut self,
         event: ThreadEventKind,
@@ -1817,8 +1859,8 @@ impl Thread {
         session_id: Option<String>,
         revision_id: Option<String>,
         now: impl Into<String>,
-    ) {
-        self.push_event_with_links(event, summary, session_id, revision_id, Vec::new(), now);
+    ) -> u64 {
+        self.push_event_with_links(event, summary, session_id, revision_id, Vec::new(), now)
     }
 
     pub fn push_event_with_links(
@@ -1829,7 +1871,7 @@ impl Thread {
         revision_id: Option<String>,
         links: Vec<ThreadLink>,
         now: impl Into<String>,
-    ) {
+    ) -> u64 {
         let metadata = ItemMetadata::derive(
             summary.as_deref().unwrap_or_default(),
             &links,
@@ -1840,15 +1882,59 @@ impl Thread {
         self.items.push(ThreadItem::Event(ThreadEvent {
             id: format!("event-{sequence}"),
             sequence,
+            updated_sequence: 0,
             event,
             created_at: now.into(),
             summary,
+            outcome: None,
             session_id,
             revision_id,
             links,
             completion_report: None,
             metadata,
         }));
+        sequence
+    }
+
+    /// Record a tool call's answer on the row the call minted: the answer
+    /// arrives as a suffix line, the outcome as a field, and the row's
+    /// `updated_sequence` is bumped so every cursor re-ships it.
+    ///
+    /// `false` when `sequence` names no resident tool-call row — a call minted
+    /// before a reload left the tail, say — which sends the caller back to
+    /// minting an answer of its own rather than losing it.
+    ///
+    /// The row's metadata is left as the call derived it: the answer is tool
+    /// output, not the agent naming a file, and re-deriving would let a
+    /// grep result's own text link the conversation somewhere the agent never
+    /// looked.
+    pub fn resolve_tool_call(
+        &mut self,
+        sequence: u64,
+        outcome: ToolCallOutcome,
+        answer: &str,
+    ) -> bool {
+        let found = self.items.iter().position(|item| {
+            matches!(item, ThreadItem::Event(event)
+                if event.sequence == sequence && event.event == ThreadEventKind::ToolUse)
+        });
+        let Some(index) = found else {
+            return false;
+        };
+        // An in-place mutation of an already-sequenced item, like resolving a
+        // comment: bump so the cursored polls re-ship the answered call.
+        let bumped = self.next();
+        let ThreadItem::Event(event) = &mut self.items[index] else {
+            return false;
+        };
+        if !answer.is_empty() {
+            let summary = event.summary.get_or_insert_with(String::new);
+            summary.push_str("\n→ ");
+            summary.push_str(answer);
+        }
+        event.outcome = Some(outcome);
+        event.updated_sequence = bumped;
+        true
     }
 
     pub fn start_session(
@@ -4234,6 +4320,165 @@ mod tests {
         assert!(bumped > cursor, "{delta:?}");
         let drained = thread.wire_value_after(bumped);
         assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    /// A conversation holding one open tool call, and the sequence that call
+    /// was minted at — the handle the pump keeps and the answer comes back on.
+    fn thread_with_an_open_tool_call() -> (Thread, u64) {
+        let mut thread = Thread::new("run-1");
+        let sequence = thread.push_event(
+            ThreadEventKind::ToolUse,
+            Some("Read bridge/src/app.rs".to_string()),
+            None,
+            None,
+            "2026-08-30T09:00:00Z",
+        );
+        (thread, sequence)
+    }
+
+    fn event_at(thread: &Thread, sequence: u64) -> &ThreadEvent {
+        thread
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ThreadItem::Event(event) if event.sequence == sequence => Some(event),
+                _ => None,
+            })
+            .expect("the row the call minted")
+    }
+
+    /// The call and its answer are ONE row: the answer lands on the row the
+    /// call minted, as a suffix line and an outcome, and mints nothing beside
+    /// it.
+    #[test]
+    fn a_tool_calls_answer_updates_the_row_the_call_minted() {
+        let (mut thread, call) = thread_with_an_open_tool_call();
+        assert_eq!(thread.items.len(), 1);
+
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Ok, "fn main() {}"));
+
+        assert_eq!(thread.items.len(), 1, "no second row: {:?}", thread.items);
+        let row = event_at(&thread, call);
+        assert_eq!(
+            row.summary.as_deref(),
+            Some("Read bridge/src/app.rs\n→ fn main() {}")
+        );
+        assert_eq!(row.outcome, Some(ToolCallOutcome::Ok));
+        assert!(row.updated_sequence > row.sequence, "{row:?}");
+        assert_eq!(
+            ThreadItem::Event(row.clone()).latest_sequence(),
+            row.updated_sequence,
+            "the bump is what every cursor path reads"
+        );
+    }
+
+    /// An answer with nothing in it still closes the row: the outcome carries
+    /// the state, and an empty suffix line would say nothing.
+    #[test]
+    fn an_empty_answer_closes_the_row_without_a_suffix() {
+        let (mut thread, call) = thread_with_an_open_tool_call();
+
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Unanswered, ""));
+
+        let row = event_at(&thread, call);
+        assert_eq!(row.summary.as_deref(), Some("Read bridge/src/app.rs"));
+        assert_eq!(row.outcome, Some(ToolCallOutcome::Unanswered));
+        assert!(row.updated_sequence > row.sequence, "{row:?}");
+    }
+
+    /// A sequence that names no resident tool call is refused rather than
+    /// guessed at, which is what sends the caller back to minting a row of its
+    /// own.
+    #[test]
+    fn resolving_a_call_no_resident_row_holds_is_refused() {
+        let (mut thread, call) = thread_with_an_open_tool_call();
+        thread.push_event(
+            ThreadEventKind::Narration,
+            Some("dropped the index".to_string()),
+            None,
+            None,
+            "2026-08-30T09:00:01Z",
+        );
+        let before = thread.last_sequence();
+
+        assert!(!thread.resolve_tool_call(call + 1, ToolCallOutcome::Ok, "answer"));
+        assert!(!thread.resolve_tool_call(9_999, ToolCallOutcome::Ok, "answer"));
+
+        assert_eq!(
+            thread.last_sequence(),
+            before,
+            "a refusal spends no counter value"
+        );
+    }
+
+    /// The event mirror of
+    /// [`wire_value_after_reships_a_message_marked_seen_after_the_cursor`]: a
+    /// client whose cursor sits past the call's creation is still owed the
+    /// answer, and the same bump that ships it moves the high-water mark so the
+    /// row is shipped once.
+    #[test]
+    fn wire_value_after_reships_a_tool_call_its_answer_completed() {
+        let (mut thread, call) = thread_with_an_open_tool_call();
+        let cursor = thread.last_sequence();
+
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Ok, "fn main() {}"));
+
+        let delta = thread.wire_value_after(cursor);
+        let items = delta["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "{items:?}");
+        assert_eq!(items[0]["data"]["sequence"], json!(call));
+        assert_eq!(items[0]["data"]["outcome"], "ok");
+        assert_eq!(
+            items[0]["data"]["summary"],
+            "Read bridge/src/app.rs\n→ fn main() {}"
+        );
+        let bumped = delta["thread_last_sequence"].as_u64().unwrap();
+        assert!(bumped > cursor, "{delta:?}");
+        let drained = thread.wire_value_after(bumped);
+        assert_eq!(drained["items"].as_array().unwrap().len(), 0, "{drained:?}");
+    }
+
+    /// §6.3 invariance. An answer arriving is the agent working, never the
+    /// agent addressing anyone — so the two hoisted columns, the counted
+    /// predicate and the unread rule read exactly as they did before it landed.
+    #[test]
+    fn an_answer_landing_moves_neither_the_counted_predicate_nor_attention() {
+        let (mut thread, call) = thread_with_an_open_tool_call();
+        thread.post_user("drop the index", None, "2026-08-30T09:00:01Z");
+        let read_to = thread.last_sequence();
+        let before = event_at(&thread, call).clone();
+        let attention_line = thread.last_attention_sequence();
+
+        assert!(thread.resolve_tool_call(call, ToolCallOutcome::Error, "no such file"));
+
+        let after = ThreadItem::Event(event_at(&thread, call).clone());
+        let before = ThreadItem::Event(before);
+        assert_eq!(before.counted(), after.counted());
+        assert_eq!(before.attention_reason(), after.attention_reason());
+        assert_eq!(after.attention_reason(), None, "activity asks for nothing");
+        assert!(!after.counted(), "and buys no slot against either bound");
+        assert_eq!(thread.unread_since(read_to).count, 0);
+        assert_eq!(thread.last_attention_sequence(), attention_line);
+    }
+
+    /// A row written before events could mutate loads with the machinery it
+    /// predates absent, and goes back to the store byte for byte as it came.
+    #[test]
+    fn an_event_written_before_events_mutated_loads_and_round_trips_unchanged() {
+        let stored = r#"{"type":"event","data":{"id":"event-7","sequence":7,"event":"tool_use","created_at":"2026-08-01T09:00:00Z","summary":"Read bridge/src/app.rs"}}"#;
+
+        let item: ThreadItem = serde_json::from_str(stored).expect("an old row still loads");
+        let ThreadItem::Event(event) = &item else {
+            panic!("{item:?}");
+        };
+        assert_eq!(event.updated_sequence, 0, "never mutated");
+        assert_eq!(event.outcome, None, "and never answered");
+        assert_eq!(item.latest_sequence(), 7, "so the max is its creation");
+        assert_eq!(
+            serde_json::to_string(&item).unwrap(),
+            stored,
+            "old rows are untouched by machinery they predate"
+        );
     }
 
     fn thread_with_long_conversation(item_count: usize) -> Thread {

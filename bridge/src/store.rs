@@ -3002,6 +3002,89 @@ mod tests {
         assert!(has_more, "the walk stopped early and says so");
     }
 
+    /// A tool call answered after it was stored is rewritten where it sits, and
+    /// nothing else is: the `updated_sequence` column has carried in-place
+    /// mutations since the store landed, and an event bump rides it with no SQL
+    /// change at all.
+    ///
+    /// The reload is the other half. `next_sequence` is repaired from the
+    /// items' newest counter value, so the bump travels with them and the
+    /// conversation carries on above it rather than spending a value twice.
+    #[test]
+    fn an_answered_tool_call_is_rewritten_in_place_and_survives_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tasks");
+        let store = Store::new(&root).expect("store opens");
+        let mut record = run_record("run-1", None, NOW);
+        let thread = &mut record.agents[0].thread;
+        let call = thread.push_event(
+            crate::thread::ThreadEventKind::ToolUse,
+            Some("Read bridge/src/app.rs".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        thread.push_event(
+            crate::thread::ThreadEventKind::Narration,
+            Some("dropped the index".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        store.save_run(&record).expect("the conversation saves");
+        let cursor = record.agents[0].thread.last_sequence();
+        let agent_id = record.agents[0].id.clone();
+
+        assert!(record.agents[0].thread.resolve_tool_call(
+            call,
+            crate::thread::ToolCallOutcome::Ok,
+            "fn main() {}"
+        ));
+        store.save_run(&record).expect("the answer saves");
+
+        let delta = store
+            .thread_items_after(&agent_id, cursor)
+            .expect("the cursor reads");
+        assert_eq!(delta.len(), 1, "the answered row and no other: {delta:?}");
+        let crate::thread::ThreadItem::Event(event) = &delta[0] else {
+            panic!("{delta:?}");
+        };
+        assert_eq!(event.sequence, call);
+        assert_eq!(event.outcome, Some(crate::thread::ToolCallOutcome::Ok));
+        assert_eq!(
+            event.summary.as_deref(),
+            Some("Read bridge/src/app.rs\n→ fn main() {}")
+        );
+        assert_eq!(
+            store
+                .thread_items_after(&agent_id, 0)
+                .expect("the whole conversation reads")
+                .len(),
+            2,
+            "and the rewrite replaced the row rather than adding one"
+        );
+
+        let mut reloaded = store
+            .load_all_runs()
+            .expect("runs load")
+            .into_iter()
+            .find(|run| run.id == "run-1")
+            .expect("the run is there");
+        let thread = &mut reloaded.agents[0].thread;
+        assert_eq!(thread.last_sequence(), event.updated_sequence);
+        let minted = thread.push_event(
+            crate::thread::ThreadEventKind::Narration,
+            Some("and carried on".to_string()),
+            None,
+            None,
+            NOW,
+        );
+        assert!(
+            minted > event.updated_sequence,
+            "a reload clears the bump, so no counter value is spent twice: {minted}"
+        );
+    }
+
     /// A v2 database gains the message column and is classified in place, the
     /// way v1 gained attention. Nobody's stored conversation has to be
     /// rewritten for the packet to read it.

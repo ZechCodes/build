@@ -339,6 +339,50 @@ describe("thread cache (cursor merge for the detail polls)", () => {
     expect(html).not.toContain("Unread");
   });
 
+  // An EVENT mutates too, since a tool call's answer lands on the call's own
+  // row rather than as a row of its own. The merge is keyed by creation
+  // sequence over every item, message and event alike, so the answered copy
+  // replaces the pending one in place — and the cursor moves past the bump, or
+  // the daemon re-ships the same answered call on every poll for as long as the
+  // conversation is open.
+  it("replaces a held EVENT when its answer lands on it, and advances the cursor past the bump", () => {
+    const cache = createThreadCache();
+    cache.absorb({
+      items: [
+        { type: "message", data: { sequence: 1, role: "agent", body: "Reading the reader." } },
+        { type: "event", data: { sequence: 2, event: "tool_use", summary: "Read bridge/src/app.rs" } },
+      ],
+    });
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 2 });
+
+    const merged = cache.absorb({
+      items: [
+        {
+          type: "event",
+          data: {
+            sequence: 2,
+            updated_sequence: 3,
+            event: "tool_use",
+            summary: "Read bridge/src/app.rs\n→ fn main() {}",
+            outcome: "ok",
+          },
+        },
+      ],
+      thread_total: 2,
+      thread_last_sequence: 3,
+    });
+
+    // One row, not two: the answer completed the call rather than joining it.
+    expect(merged.items).toHaveLength(2);
+    expect(merged.items[1].data.outcome).toBe("ok");
+    expect(merged.items[1].data.summary).toContain("→ fn main() {}");
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 3 });
+    // End-to-end guard: the repaint off the merged thread shows the answered
+    // state, so a mutation the cache took delivery of actually reaches the page.
+    const html = threadHtml(merged);
+    expect(html).toContain('data-outcome="ok"');
+  });
+
   it("a zero-item delta leaves the accumulated items intact", () => {
     const cache = createThreadCache();
     const first = cache.absorb({ items: [item(1, "a"), item(2, "b")] });

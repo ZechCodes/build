@@ -778,6 +778,79 @@ function activityHtml(event, meta, agentLabel) {
   </details>`;
 }
 
+/// The activity meta for an event kind, or nothing for a kind that is not
+/// activity.
+///
+/// A kind this client has never heard of is deliberately NOT activity: it
+/// renders as the plain row it always did, and it ends a run rather than being
+/// swept into one. The five kinds are a closed set the daemon and this client
+/// agree on, and a row nobody can classify is better read as something that
+/// happened than hidden inside a fold.
+const activityMetaOf = (event) => {
+  const meta = EVENT_META[event.event];
+  return meta && meta.activity ? meta : null;
+};
+
+/// The line a collapsed run shows for one item: the first line of what the
+/// agent actually did, with no label in front of it. An item that carried no
+/// summary at all has only its label to show, and showing the label is better
+/// than showing a blank line.
+function activityMeat(event, meta, agentLabel) {
+  const summary = String(event.summary || "").trim();
+  return summary ? firstLine(summary) : meta.label.replace(/^Agent\b/, agentLabel);
+}
+
+/// A run of activity, collapsed to one line.
+///
+/// Everything between two things somebody SAID is one row here: a counter, and
+/// the newest item's own words. No label — the reader can see it is activity,
+/// and the label would spend the width of the line saying so — and no tone,
+/// because a run of work asks for nothing. For a live run the line is a ticker:
+/// each repaint shows the newest item and the count going up.
+///
+/// A `<details>` rather than a wired button, for the same reason each row inside
+/// it is one: the open state then belongs to the element the reader clicked, and
+/// `patchElement` already knows to leave it alone across a repaint.
+///
+/// Keyed by the run's FIRST item, so a run that grows under a reader watching it
+/// keeps its identity — and with it, the scroll position inside the box they
+/// opened.
+function activityRunHtml(run) {
+  const latest = run.at(-1).activity;
+  return `<details class="thread-activity-group" data-activity-run="${esc(String(run[0].key))}">
+    <summary class="thread-activity-head thread-activity-group-head">
+      <span class="thread-event-icon" aria-hidden="true">${esc(latest.icon)}</span>
+      <span class="thread-activity-count">${run.length}</span>
+      <span class="thread-activity-preview">${esc(latest.meat)}</span>
+      ${timeHtml(latest.createdAt)}
+      ${toolOutcomeHtml(latest.outcome)}
+    </summary>
+    <div class="thread-activity-group-list">${run.map((entry) => entry.html).join("")}</div>
+  </details>`;
+}
+
+/// Fold every maximal run of consecutive activity into one row apiece, and
+/// leave everything else exactly where it was.
+function foldActivityRuns(entries) {
+  const rows = [];
+  let run = [];
+  const closeRun = () => {
+    if (!run.length) return;
+    rows.push(activityRunHtml(run));
+    run = [];
+  };
+  for (const entry of entries) {
+    if (entry.activity) {
+      run.push(entry);
+      continue;
+    }
+    closeRun();
+    rows.push(entry.html);
+  }
+  closeRun();
+  return rows;
+}
+
 function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel);
@@ -798,13 +871,36 @@ function eventHtml(event, agentLabel = "Agent") {
 /// are standing in the work, and they change every second — so they live on the
 /// toolbar (core/toolbar.js) and the conversation keeps its own record: the
 /// messages, the events, and whether the agent has read you.
+/// Returns the timeline's top-level rows, and how many conversation items they
+/// were rendered from — which is not the same number any more: a run of
+/// activity is many items and one row, and the count on the conversation's
+/// title counts what was said and done rather than how it fell into runs.
 function timelineHtml(items, agentLabel, threadId) {
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
   const lastSpoken = items.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
-  return items.flatMap((item, index) => {
-    if (item.type !== "message") return [eventHtml(item.data || {}, agentLabel)];
+  const entries = items.flatMap((item, index) => {
+    if (item.type !== "message") {
+      const event = item.data || {};
+      const meta = activityMetaOf(event);
+      const html = eventHtml(event, agentLabel);
+      if (!meta) return [{ html }];
+      return [{
+        html,
+        // Keyed by the item's own sequence, which is what makes a run's
+        // identity stable while its tail grows. A conversation rendered
+        // without sequences (the tests, and the initial-message row) falls
+        // back to where the item sits.
+        key: event.sequence ?? `at-${index}`,
+        activity: {
+          icon: meta.icon,
+          meat: activityMeat(event, meta, agentLabel),
+          outcome: event.outcome,
+          createdAt: event.created_at,
+        },
+      }];
+    }
     const message = item.data || {};
     // Old bridges persisted the noisy structured handoff as a chat message.
     if (message.source === "completion" && String(message.body || "").includes("Completion report")) return [];
@@ -813,8 +909,9 @@ function timelineHtml(items, agentLabel, threadId) {
     if (message.answers_options_of) return [];
     const key = offerKey(threadId, message.id);
     const live = index === lastSpoken && !sendingChoices.has(key);
-    return [messageHtml(message, agentLabel, live, key)];
+    return [{ html: messageHtml(message, agentLabel, live, key) }];
   });
+  return { rows: foldActivityRuns(entries), itemCount: entries.length };
 }
 
 // The plan composer's historical ids/copy, kept as the `composer: true`
@@ -863,8 +960,7 @@ export function threadHtml(thread, options = {}) {
   const items = initialMessage && !hasInitialMessage
     ? [{ type: "message", data: { role: "user", body: initialMessage, seen_at: "initial" } }, ...sourceItems]
     : sourceItems;
-  const renderedItems = timelineHtml(items, agentLabel, thread && thread.id);
-  const itemCount = renderedItems.length;
+  const { rows, itemCount } = timelineHtml(items, agentLabel, thread && thread.id);
   // The timeline draws the avatar spine, and the messages sit in the gutter it
   // runs down. With nothing on the record there is neither, so the empty case
   // says so and the CSS drops both rather than ruling a line beside a sentence.
@@ -872,7 +968,7 @@ export function threadHtml(thread, options = {}) {
   return `<section class="review-thread pane-col${empty}">
     <div class="thread-title"><span class="thread-title-text">Conversation${itemCount ? ` <span>${itemCount}</span>` : ""}</span>${statusChipHtml(options.status)}</div>
     <div class="thread-items thread-timeline${empty}">${itemCount
-      ? renderedItems.join("")
+      ? rows.join("")
       : '<div class="thread-empty">No conversation yet.</div>'}</div>
     <div class="thread-revision-view" hidden></div>
     ${threadActionsHtml(options.actionsId)}

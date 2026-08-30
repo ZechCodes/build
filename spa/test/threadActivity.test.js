@@ -265,3 +265,206 @@ describe("a fold the reader opened", () => {
     expect(fold.querySelector(".thread-event-detail").textContent).toContain("412 passed");
   });
 });
+
+// A run of activity is one line.
+//
+// Folding each item on its own was the right answer to a row nobody can scan,
+// and the wrong answer to two hundred of them: a message with forty tool calls
+// under it is a message the reader has to scroll for. So between two things
+// somebody SAID, the whole run collapses to a single dim line — how many, and
+// the newest one's own words with no label in front of them — and opens onto
+// the rows themselves only when the reader asks.
+describe("a run of activity between messages", () => {
+  const event = (data) => ({ type: "event", data });
+  const message = (body) => ({ type: "message", data: { role: "agent", body } });
+  const groups = () => [...document.querySelectorAll(".thread-activity-group")];
+  const timeline = () => [...document.querySelector(".thread-items").children];
+
+  it("collapses the whole run into one line: how many, and the latest one's meat", () => {
+    document.body.innerHTML = activity();
+
+    expect(groups()).toHaveLength(1);
+    expect(timeline()).toHaveLength(1);
+    const group = groups()[0];
+    expect(group.tagName).toBe("DETAILS");
+    // Shut on arrival: activity asks the reader for nothing.
+    expect(group.open).toBe(false);
+    expect(group.querySelector(".thread-activity-count").textContent).toBe("5");
+    // The newest item, not the oldest: a live run's line is a ticker.
+    expect(group.querySelector(".thread-activity-preview").textContent).toBe("started — run the full suite");
+  });
+
+  // No label. "Background task — started — run the full suite" spends the
+  // width of the line on the half the reader can already see is activity.
+  it("says no label on the collapsed line", () => {
+    document.body.innerHTML = activity();
+
+    const head = groups()[0].querySelector(".thread-activity-head");
+    expect(head.querySelector(".thread-activity-what")).toBe(null);
+    expect(head.textContent).not.toContain("Background task");
+    expect(head.textContent).not.toContain("Agent");
+  });
+
+  // What ends a run: anybody speaking. Activity is the gap between two things
+  // that were said, and the point of collapsing it is that the saying stays
+  // findable.
+  it("starts a new run after a message", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        event({ event: "reasoning", summary: "Checking the lock order." }),
+        event({ event: "tool_use", summary: "Read bridge/src/app.rs" }),
+        message("The lock has to move."),
+        event({ event: "tool_use", summary: "Edit bridge/src/app.rs" }),
+      ],
+    });
+
+    expect(timeline().map((row) => row.className.split(" ")[0])).toEqual([
+      "thread-activity-group",
+      "thread-message",
+      "thread-activity-group",
+    ]);
+    expect(groups().map((group) => group.querySelector(".thread-activity-count").textContent)).toEqual(["2", "1"]);
+    expect(groups()[0].querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+    expect(document.querySelector(".thread-message").textContent).toContain("The lock has to move.");
+  });
+
+  // A lifecycle row is not activity — it is something that HAPPENED, and it
+  // carries a tone and a summons. It ends the run like a message does.
+  it("starts a new run after a lifecycle event", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        event({ event: "narration", summary: "Running the suite." }),
+        event({ event: "done", summary: "Implemented the requested change." }),
+        event({ event: "reasoning", summary: "Reading the review." }),
+      ],
+    });
+
+    expect(groups()).toHaveLength(2);
+    expect(timeline()[1].classList.contains("thread-event")).toBe(true);
+    expect(timeline()[1].textContent).toContain("Agent reported done");
+  });
+
+  // An event kind this client has never heard of is not swept into the run:
+  // it renders as the plain row it always did, and it ends the run, exactly as
+  // the timeline treated it before runs existed.
+  it("leaves an unknown kind out of the run, and ends the run with it", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        event({ event: "tool_use", summary: "Read bridge/src/app.rs" }),
+        event({ event: "some_new_kind", summary: "Something happened." }),
+        event({ event: "tool_result", summary: "17 matches" }),
+      ],
+    });
+
+    expect(groups()).toHaveLength(2);
+    expect(timeline()[1].classList.contains("thread-activity-group")).toBe(false);
+    expect(timeline()[1].textContent).toContain("some new kind");
+    // The legacy standalone answer row is activity, and rides the run.
+    expect(groups()[1].querySelector(".thread-activity-preview").textContent).toBe("17 matches");
+  });
+
+  // One item is still a run. The line reads the same, so a run that grows
+  // under a reader watching it never changes shape — and the row underneath is
+  // one press away either way.
+  it("collapses a run of one", () => {
+    document.body.innerHTML = threadHtml({
+      items: [event({ event: "tool_use", summary: "Read bridge/src/app.rs\n\nlines 1-40" })],
+    });
+
+    const group = groups()[0];
+    expect(group.querySelector(".thread-activity-count").textContent).toBe("1");
+    expect(group.querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+  });
+
+  // How the newest call ended rides the line: the reader watching a run go by
+  // sees the last thing tried and whether it worked, which is the whole of what
+  // a ticker is for.
+  it("carries the latest call's mark on the line", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        event({ event: "reasoning", summary: "The suite should be green." }),
+        event({ event: "tool_use", summary: "Bash npm test\n→ 3 tests failed", outcome: "error" }),
+      ],
+    });
+
+    const mark = groups()[0].querySelector(".thread-activity-head .thread-activity-outcome");
+    expect(mark.dataset.outcome).toBe("error");
+    expect(mark.classList.contains("blocked")).toBe(true);
+  });
+
+  // The count on the conversation's own title counts what was said and done,
+  // not how many runs it fell into.
+  it("still counts every item in the conversation's title", () => {
+    document.body.innerHTML = activity();
+
+    expect(document.querySelector(".thread-title-text").textContent).toContain("5");
+  });
+});
+
+describe("opening a run", () => {
+  it("shows every row in it, exactly as activity renders on its own", () => {
+    document.body.innerHTML = activity();
+    const group = document.querySelector(".thread-activity-group");
+
+    group.querySelector(".thread-activity-head").click();
+
+    expect(group.open).toBe(true);
+    const list = group.querySelector(".thread-activity-group-list");
+    const rows = [...list.querySelectorAll(".thread-activity")];
+    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.querySelector(".thread-activity-what").textContent)).toEqual([
+      "Agent thought",
+      "Agent called a tool",
+      "Tool answered",
+      "Agent narrated",
+      "Background task",
+    ]);
+    expect(rows[1].querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+  });
+
+  it("shuts again on the line that opened it", () => {
+    document.body.innerHTML = activity();
+    const group = document.querySelector(".thread-activity-group");
+    const head = group.querySelector(".thread-activity-head");
+
+    head.click();
+    head.click();
+
+    expect(group.open).toBe(false);
+  });
+});
+
+// The run a reader opened is the run they are reading, and the poll repaints
+// the conversation under them every 1.6 seconds. It has to stay open — and it
+// has to keep being the same element, or the browser drops the scroll position
+// inside it.
+describe("a run the reader opened", () => {
+  const toolCall = (sequence) => ({
+    type: "event",
+    data: { sequence, event: "tool_use", summary: `Read src/a${sequence}.js` },
+  });
+  const run = (calls) => threadHtml({ items: calls.map((sequence) => toolCall(sequence)) });
+
+  it("stays open across the repaint, and takes in what arrived", () => {
+    document.body.innerHTML = run([1, 2, 3]);
+    const live = document.querySelector(".thread-items");
+    const group = live.querySelector(".thread-activity-group");
+    group.open = true;
+    const runKey = group.dataset.activityRun;
+
+    const rendered = document.createElement("div");
+    rendered.innerHTML = run([1, 2, 3, 4]);
+    patchElement(live, rendered.querySelector(".thread-items"));
+
+    const patched = live.querySelector(".thread-activity-group");
+    // The same element, so what the reader had scrolled to inside it is still
+    // where they left it.
+    expect(patched).toBe(group);
+    expect(patched.open).toBe(true);
+    // Keyed by the run's FIRST item, so a run that grows keeps its identity.
+    expect(patched.dataset.activityRun).toBe(runKey);
+    expect(patched.querySelector(".thread-activity-count").textContent).toBe("4");
+    expect(patched.querySelector(".thread-activity-preview").textContent).toBe("Read src/a4.js");
+    expect(patched.querySelectorAll(".thread-activity-group-list .thread-activity")).toHaveLength(4);
+  });
+});

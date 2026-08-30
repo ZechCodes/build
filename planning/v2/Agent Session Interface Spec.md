@@ -2921,6 +2921,14 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, activity renders grouped.** A maximal run of consecutive
+  activity rows between two things somebody said (or any non-activity row)
+  collapses to a single dim line — a counter and the newest item's summary
+  first line, no label — that opens onto the per-row folds as they render
+  today, eight rows tall and scrolling past that. SPA-only (`core/thread.js`,
+  `styles.css`): no wire, store or bridge change. The run is a `<details>`
+  keyed by its first item's sequence, so it keeps its identity and its open
+  state while its tail grows under a live agent.
 - **2026-08-30, step 12 specified — a tool call and its answer are one row.**
   The reader's own pairing (`ProtocolReader.calls`, which has matched every
   `tool_result` to its `tool_use` by id since step 6) stops being discarded

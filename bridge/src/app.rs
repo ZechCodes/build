@@ -30,7 +30,7 @@ use crate::harness::{
     TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
-use crate::models::{self, AgentProvider, ClaudeMode, ModelChoice};
+use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
@@ -77,6 +77,10 @@ struct StreamState {
     events: Vec<LogEvent>,
     complete: bool,
 }
+
+/// The harness a bridge nobody has configured creates agents on, and the
+/// answer `settings.get` gives until someone chooses otherwise.
+const DEFAULT_HARNESS: AgentProvider = AgentProvider::ClaudeAdk;
 
 /// The one kind of program a user terminal runs, on the wire. `term.create`
 /// echoes it and `term.list` carries it, so a reloaded client still labels the
@@ -1838,10 +1842,11 @@ pub struct AppState {
     worktrees_root: std::path::PathBuf,
     /// Where cloned repos land and the directory browser starts; user-configurable.
     projects_dir: std::path::PathBuf,
-    /// Which program "Claude Code" opens on this account. Asked once on the
-    /// Account page rather than at every start, which is what keeps two carriers
-    /// of the same agent from sitting side by side needing to be told apart.
-    claude_mode: ClaudeMode,
+    /// The harness a new agent is created on when nobody names one. An agent is
+    /// locked to its harness for life, so this is asked once on the Account
+    /// page and spent at creation — never re-read to move an agent that
+    /// already exists.
+    default_harness: AgentProvider,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     agent: Agent,
@@ -2103,7 +2108,7 @@ impl AppState {
             entity_project_path: HashMap::new(),
             worktrees_root: worktrees_root.into(),
             projects_dir: default_projects_dir(),
-            claude_mode: ClaudeMode::default(),
+            default_harness: DEFAULT_HARNESS,
             config_path: None,
             agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
@@ -2195,11 +2200,22 @@ impl AppState {
                 if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
                     self.projects_dir = expand_tilde(dir);
                 }
-                // An absent key is the default, which is the stated default:
-                // a bridge nobody has configured runs Claude Code headless.
-                if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
-                    match ClaudeMode::from_wire(named) {
-                        Some(mode) => self.claude_mode = mode,
+                // The new key first, then the one a bridge written before it
+                // saved: an upgrade in place keeps the human's choice with no
+                // migration step, and the old key is never written again. An
+                // absent key is the stated default.
+                if let Some(named) = cfg.get("default_harness").and_then(Value::as_str) {
+                    match AgentProvider::from_wire(named) {
+                        Some(harness) => self.default_harness = harness,
+                        None => {
+                            eprintln!(
+                                "config default_harness: unknown {named:?}; using the default"
+                            )
+                        }
+                    }
+                } else if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
+                    match models::carrier_of_claude_mode(named) {
+                        Some(harness) => self.default_harness = harness,
                         None => {
                             eprintln!("config claude_mode: unknown {named:?}; using the default")
                         }
@@ -3547,7 +3563,7 @@ impl AppState {
         };
         let cfg = json!({
             "projects_dir": self.projects_dir.display().to_string(),
-            "claude_mode": self.claude_mode,
+            "default_harness": self.default_harness,
             "router_model": self.router_choice,
             "projects": self.projects.iter().map(|p| json!({
                 "path": p.repo_path.display().to_string(),
@@ -6474,19 +6490,21 @@ impl AppState {
         }))
     }
 
-    /// Every account setting this bridge holds. `codex_mode` is synthesized
-    /// rather than stored: Codex has one mode, so there is nothing to remember
-    /// and nothing to migrate the day it grows a second.
+    /// Every account setting this bridge holds. `claude_mode` and `codex_mode`
+    /// are derived rather than stored — the first is what a step-13 client
+    /// calls the default harness, the second is Codex's one mode — so there is
+    /// nothing to remember and nothing to migrate.
     fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
-            "claude_mode": self.claude_mode,
+            "default_harness": self.default_harness,
+            "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::CODEX_ONLY_MODE,
         })
     }
 
     /// Set the account settings a client names, and only those: where cloned
-    /// repos land (creating the folder), and which program Claude Code opens.
+    /// repos land (creating the folder), and which harness a new agent opens on.
     ///
     /// Every field is parsed before any is applied, so a refusal leaves the
     /// settings exactly as they were rather than half-moved.
@@ -6495,14 +6513,29 @@ impl AppState {
             Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
             None => None,
         };
+        // A step-13 client names the same setting in an older vocabulary. Both
+        // are parsed; the new key wins when a client sends both, because that
+        // is the one this bridge writes back.
         let claude_mode = match params.get("claude_mode") {
             Some(named) => {
                 let named = named.as_str().unwrap_or_default();
-                Some(ClaudeMode::from_wire(named).ok_or_else(|| {
+                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
                     format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
                 })?)
             }
             None => None,
+        };
+        let default_harness = match params.get("default_harness") {
+            Some(named) => {
+                let named = named.as_str().unwrap_or_default();
+                Some(AgentProvider::from_wire(named).ok_or_else(|| {
+                    format!(
+                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
+                         or \"codex\")"
+                    )
+                })?)
+            }
+            None => claude_mode,
         };
         // Wired like a real field so the Account page has one idiom, hard-locked
         // because there is no other Codex to open.
@@ -6514,7 +6547,7 @@ impl AppState {
                 );
             }
         }
-        if projects_dir.is_none() && claude_mode.is_none() && codex_mode.is_none() {
+        if projects_dir.is_none() && default_harness.is_none() && codex_mode.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
         if let Some(dir) = projects_dir {
@@ -6522,8 +6555,8 @@ impl AppState {
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
             self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
         }
-        if let Some(mode) = claude_mode {
-            self.claude_mode = mode;
+        if let Some(harness) = default_harness {
+            self.default_harness = harness;
         }
         self.persist();
         Ok(self.settings_get())
@@ -8043,7 +8076,7 @@ impl AppState {
         // The provider is parsed before anything is touched, so an unrunnable
         // one refuses instead of leaving an agent nothing can start.
         let choice = if has_agent_choice(params) {
-            model_choice_from(params, self.claude_carrier())?
+            model_choice_from(params, self.default_harness)?
         } else {
             self.entity_model_choice(&entity_id)?
         };
@@ -8856,16 +8889,14 @@ impl AppState {
         Ok(())
     }
 
-    /// The provider a device routes on when nothing has been configured: the
-    /// carrier this account's Claude Code opens.
+    /// The provider a device routes on when nothing has been configured.
+    ///
+    /// Pinned rather than read off the account: routing is a headless-shaped
+    /// job — one decision long, with no terminal for anyone to watch — and
+    /// there is exactly one headless carrier. A human whose default harness is
+    /// a TUI must not have every capture stranded on it.
     fn default_agent_provider(&self) -> AgentProvider {
-        self.claude_carrier()
-    }
-
-    /// What the token "claude" opens on this account — the setting's one
-    /// consequence, read by every site that mints a model choice.
-    fn claude_carrier(&self) -> AgentProvider {
-        self.claude_mode.carrier()
+        AgentProvider::ClaudeAdk
     }
 
     /// The capture a router session speaks for, from the agent id its harness
@@ -9416,7 +9447,7 @@ impl AppState {
             None => self.default_project()?,
         };
         let base = self.base_for(&project_id)?;
-        let model_choice = model_choice_from(params, self.claude_carrier())?;
+        let model_choice = model_choice_from(params, self.default_harness)?;
         self.require_store()?;
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
         if !params
@@ -10554,7 +10585,7 @@ impl AppState {
             return self.run_create_in_worktree(&plan_id, &worktree_id, params);
         }
         let source_plan_id = plan_id.clone();
-        let requested_choice = model_choice_from(params, self.claude_carrier())?;
+        let requested_choice = model_choice_from(params, self.default_harness)?;
         let base_override = params
             .get("base_branch")
             .and_then(Value::as_str)
@@ -10625,7 +10656,7 @@ impl AppState {
             return Err("unknown plan_id".to_string());
         }
         let project_id = self.project_of(issue_id)?;
-        let requested_choice = model_choice_from(params, self.claude_carrier())?;
+        let requested_choice = model_choice_from(params, self.default_harness)?;
         let run_id = match self.run_on_worktree(&project_id, worktree_id) {
             Some(run_id) => {
                 // The primary checkout is the repository, not a worktree to
@@ -11627,7 +11658,7 @@ impl AppState {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let model_override = if has_agent_choice(params) {
-            Some(model_choice_from(params, self.claude_carrier())?)
+            Some(model_choice_from(params, self.default_harness)?)
         } else {
             None
         };
@@ -12243,7 +12274,7 @@ impl AppState {
     /// that already owns it.
     fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let model_choice = model_choice_from(params, self.claude_carrier())?;
+        let model_choice = model_choice_from(params, self.default_harness)?;
         let base = self.base_for(&project_id)?;
         let adopting_primary = params
             .get("primary")
@@ -13238,7 +13269,7 @@ impl AppState {
         // The provider is parsed before anything is created, so an unrunnable
         // one refuses instead of leaving a branch nothing can work on.
         if has_agent_choice(params) {
-            model_choice_from(params, self.claude_carrier())?;
+            model_choice_from(params, self.default_harness)?;
         }
 
         let mut created = BranchDispatchCreations::default();
@@ -13308,7 +13339,7 @@ impl AppState {
         // Parsed before the run leaves the map, so a choice that cannot run
         // never strands a run outside it.
         let choice = if has_agent_choice(params) {
-            model_choice_from(params, self.claude_carrier())?
+            model_choice_from(params, self.default_harness)?
         } else {
             self.entity_model_choice(&run_id)?
         };
@@ -14855,18 +14886,16 @@ fn git_default_branch(dir: &std::path::Path) -> Option<String> {
 }
 
 /// Parse and validate the optional provider/model/effort params of a request,
-/// resolving the generic token `"claude"` to `claude_means` — the carrier this
-/// account's `claude_mode` names.
+/// falling back to `default` — the account's default harness — when the caller
+/// names no provider.
 ///
-/// This is the one place a wire provider becomes a persisted one, so it is the
-/// one place resolution may happen. What it mints is always concrete: a record
-/// names the carrier it runs, so every later resume spends that carrier instead
-/// of asking the setting again.
-fn model_choice_from(params: &Value, claude_means: AgentProvider) -> Result<ModelChoice, String> {
+/// This is the one place a wire provider becomes a persisted one. Every token
+/// names one harness concretely, so what this mints is what the agent is locked
+/// to: nothing is ever resolved a second time.
+fn model_choice_from(params: &Value, default: AgentProvider) -> Result<ModelChoice, String> {
     let provider = match params.get("provider").and_then(Value::as_str) {
-        // Silence and the generic token say the same thing — "Claude Code" —
-        // and the setting is what Claude Code means.
-        None | Some("") | Some("claude") => claude_means,
+        // No preference means the account's answer; a named one means itself.
+        None | Some("") => default,
         Some(named) => AgentProvider::from_wire(named)
             .ok_or_else(|| format!("unknown agent provider: {named}"))?,
     };
@@ -17412,7 +17441,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         // but still before anything is touched, so an unrunnable provider
         // refuses instead of opening an agent on the old one.
         let requested_choice = has_agent_choice(params)
-            .then(|| model_choice_from(params, s.claude_carrier()))
+            .then(|| model_choice_from(params, s.default_harness))
             .transpose()?;
         if let Some(choice) = requested_choice {
             s.set_entity_model_choice(&entity_id, choice)?;
@@ -18778,11 +18807,12 @@ mod tests {
         );
     }
 
-    /// The account's answer to "which program does Claude Code open" is a
+    /// The account's answer to "which harness does a new agent open on" is a
     /// bridge setting, so every device gets the same answer. A bridge nobody
-    /// has configured answers with the default.
+    /// has configured answers with the default, and still answers the older
+    /// keys a step-13 client reads.
     #[test]
-    fn settings_report_the_claude_mode_and_the_locked_codex_one() {
+    fn settings_report_the_default_harness_and_the_compat_modes() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(
             repo,
@@ -18792,14 +18822,15 @@ mod tests {
             "/tmp/test-mcp.sock",
         );
         let settings = state.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["default_harness"], "claude_adk");
         assert_eq!(settings["claude_mode"], "headless");
         assert_eq!(settings["codex_mode"], "tui");
     }
 
-    /// The mode outlives the process it was chosen in — it is an account
+    /// The default outlives the process it was chosen in — it is an account
     /// setting, not a session's mood — and choosing it moves nothing else.
     #[test]
-    fn a_chosen_claude_mode_survives_a_reload_and_leaves_the_projects_dir_alone() {
+    fn a_chosen_default_harness_survives_a_reload_and_leaves_the_projects_dir_alone() {
         let tmp = tempfile::tempdir().unwrap();
         let (_dir, repo) = init_repo();
         let cfg = tmp.path().join("config.json");
@@ -18816,8 +18847,9 @@ mod tests {
                 "settings.set",
                 json!({ "projects_dir": tmp.path().join("myprojects").to_str().unwrap() }),
             ));
-            let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+            let set = state.handle(req("settings.set", json!({ "default_harness": "claude" })));
             assert_eq!(set["ok"], true, "{set:?}");
+            assert_eq!(set["result"]["default_harness"], "claude");
             assert_eq!(set["result"]["claude_mode"], "tui");
         }
         let mut reloaded = AppState::new(
@@ -18829,6 +18861,7 @@ mod tests {
         )
         .with_config(&cfg);
         let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
+        assert_eq!(settings["default_harness"], "claude");
         assert_eq!(settings["claude_mode"], "tui");
         assert!(
             settings["projects_dir"]
@@ -18839,10 +18872,10 @@ mod tests {
         );
     }
 
-    /// A mode the bridge cannot run is refused, and a refusal applies nothing:
-    /// the settings are exactly what they were.
+    /// A harness the bridge cannot run is refused, and a refusal applies
+    /// nothing: the settings are exactly what they were.
     #[test]
-    fn an_unknown_claude_mode_is_refused_and_changes_nothing() {
+    fn an_unknown_default_harness_is_refused_and_changes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let (_dir, repo) = init_repo();
         let mut state = AppState::new(
@@ -18857,17 +18890,87 @@ mod tests {
             "settings.set",
             json!({
                 "projects_dir": tmp.path().join("elsewhere").to_str().unwrap(),
-                "claude_mode": "telepathy",
+                "default_harness": "telepathy",
             }),
         ));
         assert_eq!(refused["ok"], false, "{refused:?}");
-        let error = refused["error"].as_str().unwrap();
-        assert!(error.contains("unknown claude_mode"), "{error}");
-        assert!(error.contains("expected"), "{error}");
+        assert_eq!(
+            refused["error"].as_str().unwrap(),
+            "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\" or \
+             \"codex\")"
+        );
         assert_eq!(
             state.handle(req("settings.get", json!({})))["result"],
             before,
             "a refused set leaves every field where it was"
+        );
+    }
+
+    /// Step 13's `claude_mode` said the same thing in an older vocabulary, so
+    /// a client that still speaks it still lands — and a refusal it would have
+    /// got, it still gets.
+    #[test]
+    fn a_step_13_client_still_sets_the_default_harness_through_claude_mode() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["default_harness"], "claude");
+        assert_eq!(state.default_harness, AgentProvider::Claude);
+
+        let back = state.handle(req("settings.set", json!({ "claude_mode": "headless" })));
+        assert_eq!(back["result"]["default_harness"], "claude_adk");
+
+        let refused = state.handle(req("settings.set", json!({ "claude_mode": "telepathy" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(
+            refused["error"]
+                .as_str()
+                .unwrap()
+                .contains("unknown claude_mode"),
+            "{refused:?}"
+        );
+    }
+
+    /// A bridge upgraded in place keeps the carrier its human chose, with no
+    /// migration step: the old key is read when the new one is absent, and
+    /// never written again.
+    #[test]
+    fn a_config_holding_only_the_old_key_loads_the_harness_it_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let load = |cfg: &std::path::Path| {
+            let mut state = AppState::new(
+                repo.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(cfg);
+            state.handle(req("settings.get", json!({})))["result"].clone()
+        };
+
+        let old = tmp.path().join("old.json");
+        std::fs::write(&old, json!({ "claude_mode": "tui" }).to_string()).unwrap();
+        assert_eq!(load(&old)["default_harness"], "claude");
+
+        let both = tmp.path().join("both.json");
+        std::fs::write(
+            &both,
+            json!({ "claude_mode": "tui", "default_harness": "codex" }).to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            load(&both)["default_harness"],
+            "codex",
+            "the new key is the one that is written, so it is the one believed"
         );
     }
 
@@ -18931,11 +19034,12 @@ mod tests {
         );
     }
 
-    /// The setting's one consequence: the generic token a client sends — and
-    /// the silence that means the same thing — becomes a concrete carrier at
-    /// the single site where a model choice is minted.
+    /// Naming no provider means "the account's default harness"; naming one
+    /// means that harness, concretely, whatever the account prefers. `"claude"`
+    /// is the terminal carrier and nothing else — an agent is locked to what it
+    /// was created on, so no token is left to be re-read later.
     #[test]
-    fn claude_and_silence_both_resolve_to_the_carrier_the_account_chose() {
+    fn silence_follows_the_default_harness_and_every_token_is_concrete() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let carrier_of = |state: &mut AppState, params: Value| {
@@ -18947,34 +19051,35 @@ mod tests {
         assert_eq!(
             carrier_of(
                 &mut state,
-                json!({ "goal": "headless by default", "dispatch": false, "provider": "claude" })
-            ),
-            AgentProvider::ClaudeAdk
-        );
-        assert_eq!(
-            carrier_of(
-                &mut state,
-                json!({ "goal": "and so does silence", "dispatch": false })
+                json!({ "goal": "silence takes the default", "dispatch": false })
             ),
             AgentProvider::ClaudeAdk
         );
 
-        let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        let set = state.handle(req("settings.set", json!({ "default_harness": "codex" })));
         assert_eq!(set["ok"], true, "{set:?}");
         assert_eq!(
             carrier_of(
                 &mut state,
-                json!({ "goal": "tui once chosen", "dispatch": false, "provider": "claude" })
+                json!({ "goal": "and follows it when it moves", "dispatch": false })
             ),
-            AgentProvider::Claude
+            AgentProvider::Codex
         );
-        assert_eq!(
-            carrier_of(
-                &mut state,
-                json!({ "goal": "silence follows it", "dispatch": false })
-            ),
-            AgentProvider::Claude
-        );
+
+        for (token, provider) in [
+            ("claude", AgentProvider::Claude),
+            ("claude_adk", AgentProvider::ClaudeAdk),
+            ("codex", AgentProvider::Codex),
+        ] {
+            assert_eq!(
+                carrier_of(
+                    &mut state,
+                    json!({ "goal": format!("named {token}"), "dispatch": false, "provider": token })
+                ),
+                provider,
+                "{token} names one harness"
+            );
+        }
     }
 
     /// A client that names a concrete carrier gets that carrier. The setting
@@ -18993,15 +19098,15 @@ mod tests {
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
-        for mode in ["headless", "tui"] {
-            let set = state.handle(req("settings.set", json!({ "claude_mode": mode })));
+        for default in ["claude_adk", "claude", "codex"] {
+            let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
-                carrier_of(&mut state, &format!("adk under {mode}"), "claude_adk"),
+                carrier_of(&mut state, &format!("adk under {default}"), "claude_adk"),
                 AgentProvider::ClaudeAdk
             );
             assert_eq!(
-                carrier_of(&mut state, &format!("codex under {mode}"), "codex"),
+                carrier_of(&mut state, &format!("codex under {default}"), "codex"),
                 AgentProvider::Codex
             );
         }
@@ -19016,13 +19121,13 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let filed = state.handle(req(
             "plan.create",
-            json!({ "goal": "filed while headless", "dispatch": false, "provider": "claude" }),
+            json!({ "goal": "filed under the old default", "dispatch": false }),
         ));
         let plan_id = plan_id_of(&filed);
         let before = state.entity_model_choice(&plan_id).unwrap();
         assert_eq!(before.provider, AgentProvider::ClaudeAdk);
 
-        let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        let set = state.handle(req("settings.set", json!({ "default_harness": "claude" })));
         assert_eq!(set["ok"], true, "{set:?}");
 
         assert_eq!(
@@ -19032,15 +19137,23 @@ mod tests {
         );
     }
 
-    /// The router is a Claude Code job like any other, so it opens whatever
-    /// Claude Code means here.
+    /// Routing is a headless-shaped job — one decision long, no terminal for
+    /// anyone to watch — and there is exactly one headless carrier. So it pins
+    /// that one: a human who makes Codex their default must not strand every
+    /// capture on a harness the router cannot drive.
     #[test]
-    fn the_router_runs_on_the_carrier_the_account_chose() {
+    fn the_router_pins_the_headless_carrier_under_every_default() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
-        state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
-        assert_eq!(state.default_agent_provider(), AgentProvider::Claude);
+        for default in ["claude", "codex", "claude_adk"] {
+            state.handle(req("settings.set", json!({ "default_harness": default })));
+            assert_eq!(
+                state.default_agent_provider(),
+                AgentProvider::ClaudeAdk,
+                "the router does not follow a default of {default}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -19115,7 +19228,7 @@ mod tests {
     /// a PTY session — so it says which carrier it means instead of riding
     /// whatever the account's Claude Code mode happens to be.
     fn on_the_terminal_carrier(state: &Arc<Mutex<AppState>>) {
-        state.lock().unwrap().claude_mode = ClaudeMode::Tui;
+        state.lock().unwrap().default_harness = AgentProvider::Claude;
     }
 
     fn shared_state_and_handler(
@@ -31605,12 +31718,12 @@ mod tests {
             json!({ "id": "run-mid", "provider": "codex" }),
         );
         assert_eq!(refused["ok"], false, "{refused:?}");
+        let error = refused["error"].as_str().unwrap();
+        assert!(error.contains("stop the current session"), "{error}");
         assert!(
-            refused["error"]
-                .as_str()
-                .unwrap()
-                .contains("stop the current session"),
-            "{refused:?}"
+            !error.to_lowercase().contains("headless"),
+            "the refusal prints provider labels, and no label names a carrier \
+             the way the code does: {error}"
         );
         let s = state.lock().unwrap();
         assert_eq!(
@@ -31632,10 +31745,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
-        // The live run is on the TUI carrier, so "claude" has to mean that one
-        // for this start to be the same provider being re-asserted.
-        call(&handler, "settings.set", json!({ "claude_mode": "tui" }));
-
+        // The live run is on the TUI carrier, which is what "claude" names.
         let again = call(
             &handler,
             "agent.start",
@@ -31643,68 +31753,6 @@ mod tests {
         );
         assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
-    }
-
-    /// A start is the moment the setting may have its say: an idle entity
-    /// whose record names the other claude carrier is re-carriered onto the
-    /// account's answer, because a restart is a start and "Claude Code" is
-    /// what the account says it is.
-    #[tokio::test]
-    async fn agent_start_naming_claude_re_carriers_an_idle_entity_onto_the_accounts_answer() {
-        let (dir, repo) = init_repo();
-        let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-recarrier");
-        assert_eq!(
-            state.lock().unwrap().runs["run-recarrier"]
-                .model_choice
-                .provider,
-            AgentProvider::Claude,
-            "the record starts on the TUI carrier"
-        );
-
-        let started = call(
-            &handler,
-            "agent.start",
-            json!({ "id": "run-recarrier", "provider": "claude" }),
-        );
-        assert_eq!(started["ok"], true, "{started:?}");
-        assert_eq!(
-            state.lock().unwrap().runs["run-recarrier"]
-                .model_choice
-                .provider,
-            AgentProvider::ClaudeAdk,
-            "the account runs Claude Code headless, so that is what a start opens"
-        );
-    }
-
-    /// The setting has its say at a start, not under a running harness: a
-    /// generic "claude" that would re-carrier a LIVE agent is refused exactly
-    /// as a named switch is.
-    #[tokio::test]
-    async fn a_generic_start_cannot_re_carrier_a_live_agent() {
-        let (dir, repo) = init_repo();
-        let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        let (key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-live-c");
-
-        let refused = call(
-            &handler,
-            "agent.start",
-            json!({ "id": "run-live-c", "provider": "claude" }),
-        );
-        assert_eq!(refused["ok"], false, "{refused:?}");
-        let error = refused["error"].as_str().unwrap();
-        assert!(error.contains("stop the current session"), "{error}");
-        assert!(
-            !error.to_lowercase().contains("headless"),
-            "the refusal prints provider labels, and no label names a carrier: {error}"
-        );
-        let s = state.lock().unwrap();
-        assert_eq!(
-            s.runs["run-live-c"].model_choice.provider,
-            AgentProvider::Claude,
-            "a refused start leaves the record alone"
-        );
-        assert!(s.tabs[&key].live, "and the running harness where it was");
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works
@@ -38327,7 +38375,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         // This half of the test is about the carrier that HAS a basement, so
         // the account names it rather than riding the default.
-        state.claude_mode = ClaudeMode::Tui;
+        state.default_harness = AgentProvider::Claude;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
         let agent_id = state.runs[&run_id].agents.first().id.clone();
         let root = state

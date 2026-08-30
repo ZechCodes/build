@@ -1193,7 +1193,7 @@ pub(crate) mod fake {
     /// `error_during_execution` result that closes the turn it stopped, and
     /// only then does the loop read the next queued turn.
     pub(crate) fn stream_json_harness(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, None)
+        harness_replaying(INIT, &[per_turn], true, Acknowledged::TheOneAsked, None)
     }
 
     /// The same child, appending every line written to its stdin to `heard`.
@@ -1206,14 +1206,20 @@ pub(crate) mod fake {
         per_turn: &[&str],
         heard: &std::path::Path,
     ) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, Some(heard))
+        harness_replaying(
+            INIT,
+            &[per_turn],
+            true,
+            Acknowledged::TheOneAsked,
+            Some(heard),
+        )
     }
 
     /// The same child, for one turn only: it answers, then leaves the way a
     /// real one does when its work is over. That departure closes its stream,
     /// which is what a no-terminal session's death rites hang off.
     pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, false, Acknowledged::TheOneAsked, None)
+        harness_replaying(INIT, &[per_turn], false, Acknowledged::TheOneAsked, None)
     }
 
     /// A CLI that announces no interrupt. Build never sends it a
@@ -1222,7 +1228,7 @@ pub(crate) mod fake {
     pub(crate) fn stream_json_harness_without_interrupt(per_turn: &[&str]) -> HarnessSpec {
         harness_replaying(
             INIT_WITHOUT_INTERRUPT,
-            per_turn,
+            &[per_turn],
             true,
             Acknowledged::TheOneAsked,
             None,
@@ -1232,7 +1238,7 @@ pub(crate) mod fake {
     /// A child that answers an interrupt by naming a request nobody made, and
     /// then fails the turn on its own account.
     pub(crate) fn stream_json_harness_answering_another_request(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest, None)
+        harness_replaying(INIT, &[per_turn], true, Acknowledged::AnotherRequest, None)
     }
 
     /// A recording child with nothing to stop: it acks a `control_request` and
@@ -1246,28 +1252,63 @@ pub(crate) mod fake {
     ) -> HarnessSpec {
         harness_replaying(
             INIT,
-            per_turn,
+            &[per_turn],
             true,
             Acknowledged::WithNoTurnToStop,
             Some(heard),
         )
     }
 
+    /// A child that answers each turn with its OWN recording — the first turn
+    /// with the first, the second with the second, and every turn after that
+    /// with the last one.
+    ///
+    /// What a single recording cannot express: work that is live after one turn
+    /// and over after the next, which is the whole shape the idle sweep has to
+    /// tell apart.
+    pub(crate) fn stream_json_harness_turn_by_turn(turns: &[&[&str]]) -> HarnessSpec {
+        harness_replaying(INIT, turns, true, Acknowledged::TheOneAsked, None)
+    }
+
     fn harness_replaying(
         init: &str,
-        per_turn: &[&str],
+        turns: &[&[&str]],
         turn_after_turn: bool,
         acknowledged: Acknowledged,
         heard: Option<&std::path::Path>,
     ) -> HarnessSpec {
-        let mut replay = String::new();
-        for line in per_turn {
-            assert!(
-                !line.contains('\''),
-                "a recorded protocol line may not carry a single quote: {line}"
-            );
-            replay.push_str(&format!("printf '%s\\n' '{line}'\n"));
-        }
+        let recorded = |lines: &[&str]| {
+            let mut replay = String::new();
+            for line in lines {
+                assert!(
+                    !line.contains('\''),
+                    "a recorded protocol line may not carry a single quote: {line}"
+                );
+                replay.push_str(&format!("printf '%s\\n' '{line}'\n"));
+            }
+            replay
+        };
+        // One recording needs no counter and produces the script it always did.
+        // Several are answered by a `case` on how many turns have been read, in
+        // which the last recording is the catch-all — so a child asked for more
+        // turns than were recorded keeps answering rather than falling silent.
+        let (counter, replay) = match turns {
+            [only] => (String::new(), recorded(only)),
+            _ => {
+                let mut arms = String::new();
+                for (index, lines) in turns.iter().enumerate() {
+                    let label = match index == turns.len() - 1 {
+                        true => "*".to_string(),
+                        false => (index + 1).to_string(),
+                    };
+                    arms.push_str(&format!("{label})\n{}\n;;\n", recorded(lines)));
+                }
+                (
+                    "turns=0\n".to_string(),
+                    format!("turns=$((turns+1))\ncase \"$turns\" in\n{arms}esac\n"),
+                )
+            }
+        };
         // The one place the script interpolates rather than quoting a recording:
         // the id it echoes is a value it read at runtime.
         let echoed = match acknowledged {
@@ -1280,7 +1321,7 @@ pub(crate) mod fake {
             Acknowledged::WithNoTurnToStop => String::new(),
             _ => format!("printf '%s\\n' '{FAILED_RESULT}'\n"),
         };
-        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n");
+        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n{counter}");
         script.push_str(match turn_after_turn {
             true => "while IFS= read -r turn; do\n",
             false => "if IFS= read -r turn; then\n",

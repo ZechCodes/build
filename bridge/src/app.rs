@@ -33520,9 +33520,12 @@ mod tests {
                 summary: "the index is unused".into(),
             },
             crate::harness::AgentActivity::ToolUse {
+                call_id: "toolu_1".into(),
                 summary: "Read bridge/src/app.rs".into(),
             },
             crate::harness::AgentActivity::ToolResult {
+                call_id: "toolu_orphan".into(),
+                outcome: crate::harness::ToolOutcome::Ok,
                 summary: "Read: fn main() {}".into(),
             },
             crate::harness::AgentActivity::Narration {
@@ -33710,7 +33713,7 @@ mod tests {
                 ),
                 (
                     crate::thread::ThreadEventKind::ToolResult,
-                    "Read: fn main() {}".to_string()
+                    "fn main() {}".to_string()
                 ),
                 (
                     crate::thread::ThreadEventKind::Narration,

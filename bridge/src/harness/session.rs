@@ -243,10 +243,20 @@ pub trait AgentSession: Send + Sync {
 pub enum AgentActivity {
     /// The agent thought out loud.
     Reasoning { summary: String },
-    /// The agent called a tool.
-    ToolUse { summary: String },
-    /// A tool answered.
-    ToolResult { summary: String },
+    /// The agent called a tool. `call_id` is the protocol's own id for the
+    /// call — the name its answer will arrive under.
+    ToolUse { call_id: String, summary: String },
+    /// A tool answered: the completion signal for the [`ToolUse`] carrying the
+    /// same id, rather than an event of its own. `summary` is the one-line
+    /// answer text, which is empty when the tool said nothing and when no
+    /// answer ever came.
+    ///
+    /// [`ToolUse`]: AgentActivity::ToolUse
+    ToolResult {
+        call_id: String,
+        outcome: ToolOutcome,
+        summary: String,
+    },
     /// The agent narrated. Distinct from a `post_thread_message`, which is the
     /// agent deliberately addressing the human.
     Narration { summary: String },
@@ -255,13 +265,26 @@ pub enum AgentActivity {
     TaskUpdate { summary: String },
 }
 
+/// How a tool call ended, as the harness saw it.
+///
+/// `Unanswered` is what a boundary reports rather than what a tool did: the
+/// turn ended, or the session did, over a call whose answer never came. It is
+/// terminal like the other two — a call that closed this way is not still
+/// running and never will be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolOutcome {
+    Ok,
+    Error,
+    Unanswered,
+}
+
 impl AgentActivity {
     /// The line the timeline shows for this event.
     pub fn summary(&self) -> &str {
         match self {
             AgentActivity::Reasoning { summary }
-            | AgentActivity::ToolUse { summary }
-            | AgentActivity::ToolResult { summary }
+            | AgentActivity::ToolUse { summary, .. }
+            | AgentActivity::ToolResult { summary, .. }
             | AgentActivity::Narration { summary }
             | AgentActivity::TaskUpdate { summary } => summary,
         }

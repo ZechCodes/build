@@ -34,7 +34,8 @@ pub(crate) mod codex;
 mod session;
 
 pub use session::{
-    AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView, Turn,
+    AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView,
+    ToolOutcome, Turn,
 };
 
 /// How long a real harness TUI must stop painting before its input is live.

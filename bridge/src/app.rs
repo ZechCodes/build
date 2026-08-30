@@ -16777,7 +16777,7 @@ fn record_report_in_thread(
             thread.post_outcome(outcome, summary, completion, &now);
         }
         ReportRecord::Event(event, summary) => {
-            thread.push_event(event, Some(summary), None, None, &now)
+            thread.push_event(event, Some(summary), None, None, &now);
         }
     }
     if let Some(completion) = completion {

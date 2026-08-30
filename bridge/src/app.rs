@@ -34194,6 +34194,94 @@ mod tests {
         );
     }
 
+    /// Step 12's live claim, end to end on the real wire: a real haiku turn
+    /// runs one tool, and the daemon's whole path — reader, pump, conversation
+    /// — yields ONE row, minted at the call and completed in place when the
+    /// real answer arrives: `updated_sequence` moved, the answer a suffix line,
+    /// and no standalone `tool_result` row minted anywhere in the turn.
+    ///
+    /// Ignored by default for the same reason as the `real_adk` legs in
+    /// `harness::adk`, and run by the same hand:
+    ///
+    /// ```text
+    /// cargo test --lib real_adk -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    async fn real_adk_tool_call_completes_its_own_row() {
+        use crate::harness::Harness;
+
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root =
+            insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-live-call");
+        crate::harness::adk::AdkHarness.prepare_workspace(&root);
+        let mcp = dir.path().join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+        run_on_a_headless_provider(&state, &repo, "run-live-call", spec);
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-live-call", "body": concat!(
+                "You are being driven by an automated test. Do exactly this and ",
+                "nothing else, then stop. Use the Bash tool exactly ONCE, to run ",
+                "exactly: echo pear\n",
+                "Then reply with the single word done and stop.",
+            ) }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        // The whole turn: rows exist and every one of them has closed. The
+        // drain at the result closes anything unanswered, so an outcome still
+        // absent past this wait would be a pairing that never landed.
+        let rows = wait_for(Duration::from_secs(240), || {
+            let s = state.lock().unwrap();
+            let rows = tool_call_rows(&s.runs["run-live-call"].agents);
+            (!rows.is_empty() && rows.iter().all(|row| row.outcome.is_some())).then_some(rows)
+        })
+        .await
+        .expect("the live call closes on its own row");
+        eprintln!("[verdict] tool-call rows: {rows:?}");
+
+        assert_eq!(rows.len(), 1, "one call was asked for, one row: {rows:?}");
+        let row = &rows[0];
+        assert_eq!(row.outcome, Some(crate::thread::ToolCallOutcome::Ok));
+        assert!(
+            row.updated_sequence > row.sequence,
+            "minted at the call and completed in place, so the bump moved: {row:?}"
+        );
+        let summary = row.summary.as_deref().unwrap_or_default();
+        assert!(
+            summary.contains("\n→ "),
+            "the real answer landed as the suffix line: {summary:?}"
+        );
+        let reported = activity_of(&state.lock().unwrap().runs["run-live-call"].agents);
+        assert!(
+            !reported
+                .iter()
+                .any(|(kind, _)| *kind == crate::thread::ThreadEventKind::ToolResult),
+            "and no standalone tool_result row was minted anywhere: {reported:?}"
+        );
+    }
+
     /// Every tool-call row on this conversation — since step 12 that is the
     /// whole of a call: the summary carries the answer when one arrived, and
     /// the outcome says how it ended.

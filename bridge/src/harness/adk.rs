@@ -3102,6 +3102,38 @@ mod tests {
             !matches!(session.status(), AgentStatus::Ended { .. }),
             "an interrupted session is the same session, still alive"
         );
+        // Step 12's half of this leg: the parked call must not outlive the
+        // turn the interrupt ended — every call the session made closes. On
+        // the live wire (claude 2.1.x, observed 2026-08-30) the CLI answers
+        // the interrupted call ITSELF, with an `is_error` rejection ("The user
+        // doesn't want to proceed…"), before the `error_during_execution`
+        // result — so the boundary drain finds the map already empty. The
+        // drain stays as the net beneath a wire that does not answer (a
+        // crashed child, an older CLI), pinned by the fake in
+        // `a_result_closes_every_call_its_turn_left_open`; what the live leg
+        // holds is the invariant both paths serve: one completion per call,
+        // and the interrupted call's completion is terminal — `Error` from the
+        // CLI's own rejection, or `Unanswered` from the drain.
+        let lines = seen.lock().unwrap().clone();
+        let calls = lines
+            .iter()
+            .filter(|line| line.starts_with("tool_use:"))
+            .count();
+        let completions = lines
+            .iter()
+            .filter(|line| line.starts_with("tool_result["))
+            .count();
+        assert_eq!(
+            completions, calls,
+            "every call closes at its turn's boundary, the interrupted one included: {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.starts_with("tool_result[Error]")
+                    || line.starts_with("tool_result[Unanswered]")),
+            "the interrupted call's completion is terminal, never a fabricated success: {lines:?}"
+        );
         session.end();
     }
 

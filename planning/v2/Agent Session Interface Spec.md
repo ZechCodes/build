@@ -2697,7 +2697,13 @@ ended it. Two closers:
   `BuildsOwn` entries drop silently, as their answers always did. The pump
   words the update `→ no answer — turn ended`. On a normal turn the protocol
   answers every call before its result, so the drain finds the map empty;
-  the interrupt's `error_during_execution` is the case with leftovers. The
+  the interrupt's `error_during_execution` was expected to be the case with
+  leftovers — but the live leg showed otherwise (2026-08-30, claude 2.1.x):
+  the CLI answers the interrupted call itself, with an `is_error` rejection
+  ("The user doesn't want to proceed…"), before the result, so the
+  interrupted call closes as `error` and the drain finds the map empty
+  there too. The drain stays as the net beneath a wire that does not answer
+  — a crashed child, an older CLI — pinned by the fake. The
   map is therefore **one map drained at every turn boundary**, not a
   per-turn structure — the next turn starts against an empty map by
   construction, on both sides: the reader's drain empties `calls`, and the

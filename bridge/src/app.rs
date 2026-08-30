@@ -34499,6 +34499,29 @@ mod tests {
             !spawned.continue_session,
             "and never the cwd guess beside it: {spawned:?}"
         );
+        let argv = terminal_argv(&spawned);
+        assert!(argv.contains("--resume sess-pty"), "{argv}");
+        assert!(
+            !argv.contains("--continue"),
+            "the name and the cwd guess are alternatives, never both: {argv}"
+        );
+    }
+
+    /// The argv the TUI carrier builds from one recorded spawn — the mirror of
+    /// [`headless_argv`], so the same capture is walked out to argv on both.
+    fn terminal_argv(options: &SpawnOptions) -> String {
+        use crate::harness::Harness;
+        crate::harness::claude::ClaudeHarness
+            .spec(
+                &ModelChoice::default(),
+                options,
+                &crate::harness::HarnessContext {
+                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
+                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                },
+            )
+            .args
+            .join(" ")
     }
 
     /// A session shorter than a tick is still named.

@@ -4,17 +4,65 @@
 
 import { esc } from "./text.js";
 
-/** The harnesses a start can name. The catalog RPC is the authority for models
- *  and efforts, but a start needs only a provider — so the Agent tab's picker
- *  renders with the pane, not after a round trip. */
+/** The agents a start can name. The catalog RPC is the authority for models and
+ *  efforts, but a start needs only a provider — so the Agent tab's picker
+ *  renders with the pane, not after a round trip.
+ *
+ *  One card per agent a person knows, not one per carrier: Claude Code runs two
+ *  carriers, and which one a start opens is the account's answer (Account →
+ *  Settings), resolved by the bridge. A start names "claude" and gets whichever
+ *  program the account says that is. */
 export const STARTABLE_PROVIDERS = [
   { id: "claude", label: "Claude Code" },
-  { id: "claude_adk", label: "Claude Code (headless)" },
   { id: "codex", label: "Codex" },
 ];
 
 /** What a start leads with where nothing has run yet to say otherwise. */
 export const DEFAULT_START_PROVIDER = "claude";
+
+/** The carrier ids the bridge records, and the agent each one carries. Claude
+ *  Code runs two programs; a record persisted on either is the same agent to the
+ *  human, and which one a start opens is the account's answer, never a client's.
+ *  So every client-side read of a provider goes through here first: the concrete
+ *  carrier is the bridge's business, and the agent is what a person sees and
+ *  what a start names. */
+const CARRIED_AGENTS = { claude_adk: "claude" };
+
+/** The agent a carrier id belongs to; every other id is already an agent. */
+export function genericProviderId(provider) {
+  if (!provider) return "";
+  return CARRIED_AGENTS[provider] || String(provider);
+}
+
+/** Every agent the bridge can name, and what a person calls it. */
+const PROVIDER_LABELS = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
+
+/** The provider's name as a person says it. An unknown provider is shown as the
+ *  bridge named it — a new harness must read as itself, not as "Agent". */
+export function providerLabel(provider) {
+  if (!provider) return "Agent";
+  const agent = genericProviderId(provider);
+  return PROVIDER_LABELS[agent] || agent;
+}
+
+/** The catalog entries a picker may offer: one per agent a start can name, under
+ *  the generic id a start sends. The catalog itself keeps an entry per carrier —
+ *  an agent persisted on either one needs its models served under its own id —
+ *  but a picker saving a carrier id would save a preference the account setting
+ *  can never answer for, so a carrier entry is folded onto its agent here. */
+export function startableCatalogProviders(providers) {
+  const startable = STARTABLE_PROVIDERS.map((provider) => provider.id);
+  const kept = [];
+  for (const provider of providers || []) {
+    const id = genericProviderId(provider.id);
+    if (!startable.includes(id) || kept.some((entry) => entry.id === id)) continue;
+    kept.push({ ...provider, id, label: providerLabel(id) });
+  }
+  return kept;
+}
 
 export function providerOptionsHtml(providers, selectedId) {
   return providers
@@ -57,8 +105,35 @@ export function catalogForProvider(catalog, providerId) {
   return providers.find((provider) => provider.id === providerId) || providers[0] || { models: [], efforts: [] };
 }
 
+/** The name a catalog entry is offered under. */
+const catalogName = (provider) => provider.label || providerLabel(provider.id);
+
+/** The catalog carries one entry per carrier — a run persisted on either claude
+ *  carrier needs its models served under its own id — but two entries under one
+ *  name is a picker asking a question with the same answer twice. Keep the first
+ *  of each name; whichever carrier the bridge lists first is the one a fresh
+ *  choice is made on, and the account setting decides what it opens. */
+function oneProviderPerName(providers) {
+  const kept = [];
+  for (const provider of providers) {
+    if (!kept.some((entry) => catalogName(entry) === catalogName(provider))) kept.push(provider);
+  }
+  return kept;
+}
+
+/** The default, moved onto the entry that survived the fold when the bridge's
+ *  default was the carrier that did not. */
+function defaultAmong(providers, defaultProvider) {
+  if (!defaultProvider || providers.some((provider) => provider.id === defaultProvider)) return defaultProvider;
+  const folded = providers.find((provider) => providerLabel(provider.id) === providerLabel(defaultProvider));
+  return folded ? folded.id : defaultProvider;
+}
+
 export function normalizeModelCatalog(catalog) {
-  if (catalog && Array.isArray(catalog.providers) && catalog.providers.length) return catalog;
+  if (catalog && Array.isArray(catalog.providers) && catalog.providers.length) {
+    const providers = oneProviderPerName(catalog.providers);
+    return { ...catalog, providers, default_provider: defaultAmong(providers, catalog.default_provider) };
+  }
   return {
     default_provider: "claude",
     providers: [{

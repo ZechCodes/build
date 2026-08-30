@@ -1274,7 +1274,26 @@ Each step compiles, ships and is green on its own.
 > provider had to be added there: `claude_adk`, under the bridge's own label
 > "Claude Code (headless)". The full PTY harness stays the default start, and
 > `providerLabel` now names a headless agent's bubble properly instead of
-> echoing the wire token.
+> echoing the wire token. *(Superseded 2026-08-30 by the note below: the
+> picker no longer offers a carrier at all.)*
+>
+> **The carrier is an account setting, not a start card (2026-08-30).** Two
+> cards for one agent made every start re-answer a question with one right
+> answer, and put two Claude Codes side by side with only a parenthetical to
+> tell them apart. So the choice moved to the account: `settings.get` /
+> `settings.set` carry `claude_mode` (`"headless" | "tui"`, absent means
+> headless) and a `codex_mode` locked to `"tui"`, and `model_choice_from`
+> resolves the generic token `claude` to whichever carrier the mode names.
+>
+> In the SPA, `STARTABLE_PROVIDERS` is back to two entries — `claude` and
+> `codex` — and Account → Settings holds the mode controls ("Claude Code" /
+> "Claude Code TUI", plus Codex's locked field with its reason). The naming
+> table behind `providerLabel` still answers for `claude_adk`, because a run
+> persisted on it must read as itself: both carriers are called "Claude Code"
+> everywhere a person can see, including on the restart offer of a worktree
+> that ran one, and `normalizeModelCatalog` folds the catalog's two entries of
+> that name into one so the Account page's agent dropdown asks once. The word
+> "headless" survives only as a wire token — never as anything a person reads.
 
 1. ~~**Introduce `AgentSession` + `TerminalView`**; `PtySession` implements
    both, `terminal()` returns `Some(self)`. Nothing is optional yet. No
@@ -2799,6 +2818,226 @@ runs a model turn.
     unknown outcome token renders as pending, and a fold the reader opened
     survives the outcome landing under it.
 
+### Step 13 in detail — the account chooses Claude Code's carrier
+
+*Specified 2026-08-30.* Since step 6 the SPA has offered three start cards —
+"Claude Code", "Claude Code (headless)", "Codex" — which puts a carrier
+question in front of every start and the word "headless" in front of every
+human. Step 13 removes both. **An account setting chooses Claude Code's mode;
+creating a chat offers only "Claude Code" or "Codex", and the setting decides
+which carrier "Claude Code" means.** The default mode is headless and is
+labeled just "Claude Code" — the word "headless" appears in no user-facing
+string, anywhere, after this step. The other option is "Claude Code TUI".
+Codex gets the same setting field wired but hard-locked to TUI, because no
+codex headless exists. And *Claude is Claude*: every bubble and label for both
+claude carriers reads "Claude Code" — the account-level setting is what
+guarantees TUI and headless agents never sit side by side needing to be told
+apart.
+
+#### 13.1 The setting
+
+Settings already live on the bridge: `settings.get` / `settings.set`
+(`app.rs:6461/6467`) serve `projects_dir`, and `persist()` (`app.rs:3529`)
+writes it to the config file beside `router_model` and the project list. The
+mode joins that file, additively:
+
+```json
+// settings.get — the full answer after this step
+{ "projects_dir": "/Users/…/Projects",
+  "claude_mode": "headless",        // or "tui"; absent config = "headless"
+  "codex_mode":  "tui" }            // always; not stored, synthesized
+```
+
+`ClaudeMode` is an enum beside `AgentProvider` in `models.rs` —
+`{ #[default] Headless, Tui }`, serde `lowercase` — with one method,
+`carrier()`: `Headless → ClaudeAdk`, `Tui → Claude`. `AppState` holds a
+`claude_mode: ClaudeMode`, loaded from the config key (absent = default,
+which IS the stated default: headless), written back by `persist()`.
+`codex_mode` is not a field at all — it is a hard-locked wire answer, always
+`"tui"`, so there is nothing to migrate when a codex headless someday exists:
+the lock comes off and the field starts being stored.
+
+`settings.set` becomes field-wise: each known field is optional and only the
+ones present are applied — `projects_dir` exactly as today when named, so an
+old client sending only it is byte-identical; `claude_mode` accepting
+`"headless"` or `"tui"` and refusing anything else with
+`unknown claude_mode {value:?} (expected "headless" or "tui")` (the wire
+tokens are machine vocabulary — the settings page's select can only send
+valid ones, so no human is shown this sentence with "headless" in it);
+`codex_mode` accepting only `"tui"`, refused otherwise with exactly:
+**`codex_mode accepts only "tui" — Codex has no other mode yet`**. A set
+naming no known field is refused (`settings.set: nothing to set`). Every
+accepted set persists and returns the full `settings_get()` answer, as today.
+
+#### 13.2 Resolution at spawn — where "claude" becomes a carrier
+
+Every persisted `ModelChoice` is minted at ONE chokepoint:
+`model_choice_from(params)` (`app.rs:14796`), the free function all nine
+choice-minting sites call — `agent.add` (7990), `plan.create` (9357),
+`run.create` (10495), `run_create_in_worktree` (10566), `run_stage_dispatch`
+(11568), `run.adopt` (12184), the branch-dispatch validate (13179) and its
+agent-add (13249), and `agent_start` (17336). Resolution lives there and
+nowhere else: the function gains a parameter,
+`model_choice_from(params, claude_means: AgentProvider)`, where
+`claude_means = self.claude_mode.carrier()` (a one-line
+`AppState::claude_carrier()`), and its provider match becomes:
+
+- **absent / empty / `"claude"`** → `claude_means`. The generic token and
+  the no-preference silence mean the same thing — "Claude Code" — and the
+  setting is what Claude Code means.
+- **`"claude_adk"`** → `ClaudeAdk`, honored as-is. A client that names the
+  concrete carrier gets the concrete carrier, whatever the setting says.
+- **`"codex"`** → `Codex`, always — the hard lock, restated where it bites.
+
+Eight of the nine sites are `AppState` methods and pass `self`'s answer;
+`agent_start` parses before taking the lock today, so its parse moves under
+the lock it already takes — the "parsed before anything is touched" comment
+survives, since the parse still precedes every mutation. Two neighbors
+resolve through the same rule: `default_agent_provider` (`app.rs:8804`, the
+router's carrier) returns `self.claude_carrier()` instead of
+`AgentProvider::default()` — the router is a headless-shaped job and "the
+default provider" now means the setting's answer — and nothing else in the
+daemon interprets the token (`from_wire`'s only other caller,
+`require_shell_kind` at `app.rs:104`, asks *is this any provider* and does
+not care which).
+
+**What never resolves: persisted records.** `AgentProvider`'s serde
+`#[default]` stays `Claude`, and
+`old_choices_without_a_provider_deserialize_as_claude` keeps pinning it — a
+record written before the provider field was TUI and stays TUI. Resolution
+is wire-parse-time only, never deserialize-time, so existing entities never
+migrate and every resume path stays concrete: the respawn/nudge paths read
+`entity_model_choice` (`app.rs:3707`) or the roster's own persisted choice
+and never pass through `model_choice_from`.
+
+**The wire consequence, owned honestly.** The fields are additive — no token
+is removed, no shape changes — but the token `"claude"` (and an absent
+provider) changes MEANING at start-time: it used to name the TUI carrier and
+now names whatever the account's `claude_mode` says, which is headless by
+default. A fresh bridge that used to start a TUI starts headless; an OLD
+client sending `"claude"` gets the setting's answer, which is the intended
+new meaning, not a compatibility accident. One visible edge: `agent.start`
+naming `"claude"` on an idle entity whose persisted choice is the other
+claude carrier re-carriers it through `set_entity_model_choice`
+(`app.rs:3749`) — that is the setting having its say at the only moment it
+may, and the existing while-live refusal stands unchanged. `models.list`'s
+`default_provider` keeps serving `"claude"`: the generic token is now the
+honest answer, since what it starts is the setting's business.
+
+#### 13.3 Claude is Claude — the labels
+
+The word "headless" survives in exactly two user-reachable strings today, and
+both die:
+
+- **`AdkHarness::label()`** (`harness/adk.rs:59`) becomes `"Claude Code"`.
+  That one change fixes the `models.list` catalog (`provider_catalogs` reads
+  `harness.label()`) and the carrier-switch refusal in
+  `set_entity_model_choice`, which prints labels. The catalog **keeps all
+  three concrete providers** — it is machine truth: an entity persisted on
+  `claude_adk` still needs its models/efforts served under its own id, and
+  removing an entry would break old clients — but two of its entries now
+  share the label "Claude Code", which only an old client's defaults select
+  ever renders side by side (functional, merely duplicate-labeled; a new
+  client never shows the third entry at all). No new wire field: the SPA
+  already ships its own startable list, so a `startable` flag on the catalog
+  would be a second copy of a decision the client owns.
+- **`STARTABLE_PROVIDERS`** (`spa/src/core/modelPicker.js:10`) drops the
+  `claude_adk` entry: exactly two cards, `claude` "Claude Code" and `codex`
+  "Codex". `DEFAULT_START_PROVIDER` stays `"claude"`.
+
+With the entry gone, every SPA read of a concrete `claude_adk` token must
+alias rather than echo. One helper in `modelPicker.js` —
+`genericProviderId(id)`: `claude_adk → claude`, else identity — used by:
+
+- `providerLabel` (`agentRailModel.js:23`): alias before the lookup, so a
+  headless agent's bubble reads "Claude Code 1", never the wire token;
+- `harnessLabel` (`core/thread.js:483`): `claude_adk` joins the `claude` arm
+  → "Claude Code";
+- the Agent tab's lead card (`surfaceTabs.js:176/183`): a worktree whose
+  last session was `claude_adk` leads with the generic `claude` card labeled
+  "Claude Code" — and *starts* generic, because a restart is a start and the
+  setting decides what Claude Code opens (without the alias the current
+  `.find(...).label` would throw on the unknown id);
+- `loadAgentDefaults` (`core/agentDefaults.js`): a stored provider of
+  `claude_adk` from the three-card era loads as `claude`;
+- the Account page's defaults select (`views/settings.js:135`): the catalog
+  it paints is filtered to ids in `STARTABLE_PROVIDERS`, so the third entry
+  never reaches a picker.
+
+#### 13.4 The Account page
+
+The Settings page has two control idioms: `projects_dir` renders as a code
+line with a "Change…" button opening the browse sheet — the idiom for a
+filesystem path — and the Agent defaults panel renders `<select>`s in
+`field-row`/`field` markup, saved on every change with a "Saved." note,
+because "a preference with a commit step is a preference people forget to
+commit". A two-value mode is the second kind. A new panel between Agent
+defaults and Appearance:
+
+```
+🚂 How agents run
+   dim note: "Which program each agent opens as. Saved on your bridge, for
+   every device."
+   field "Claude Code" — <select>: "Claude Code" (value headless, default)
+                                   / "Claude Code TUI" (value tui)
+   field "Codex"       — <select disabled>: "Codex TUI"
+                         dim note: "the only mode Codex has yet"
+   dim #modesaved note, "Saved." after each successful set
+```
+
+Mounted like `mountAgentDefaults`: `settings.get` fills the select (absent
+`claude_mode` on an old bridge reads as headless — the default — and the
+panel still renders), `onchange` calls
+`App.call("settings.set", { claude_mode: value })`, a refusal lands in the
+panel's error line, and unlike the defaults panel this one round-trips the
+bridge — it is an account setting, not a browser-local one, which is why it
+does not live inside the Agent defaults panel.
+
+#### 13.5 The tests
+
+Bridge (`cargo test`, no model turns — everything drives `AppState::handle`
+or the fake harness):
+
+1. `settings.get` on a fresh state answers `claude_mode` `"headless"` and
+   `codex_mode` `"tui"`;
+2. `settings.set { claude_mode: "tui" }` persists: a state reloaded from the
+   same config file answers `"tui"`, and `projects_dir` is unmoved;
+3. an unknown `claude_mode` is refused with the expected-values sentence and
+   changes nothing;
+4. `settings.set { codex_mode: "tui" }` passes (idempotent); any other value
+   is refused with exactly the no-other-mode sentence;
+5. old-client shape: a set naming only `projects_dir` behaves byte-identically
+   to today; a set naming no known field is refused;
+6. `plan.create` naming `"claude"` under the default setting persists a
+   `ModelChoice` whose provider is `ClaudeAdk`; under `claude_mode: "tui"`,
+   `Claude`; with the provider absent, the same two answers;
+7. `"claude_adk"` named concretely is honored regardless of the setting, and
+   `"codex"` is `Codex` regardless of the setting;
+8. changing the setting migrates no existing entity: `entity_model_choice`
+   before and after a `settings.set` is identical, and a respawn spends the
+   persisted concrete provider;
+9. `agent.start` naming `"claude"` on an idle TUI entity re-carriers it to
+   the setting's answer, and the while-live refusal still refuses;
+10. no user-facing string says "headless": every `provider_catalogs()` label
+    and the switch-refusal message are asserted clean;
+11. the router: `default_agent_provider` follows the setting.
+
+SPA (`npm test`):
+
+1. `STARTABLE_PROVIDERS` is exactly `claude` + `codex`, no label containing
+   "headless";
+2. `providerLabel("claude_adk")` and `harnessLabel` on a `claude_adk` session
+   both read "Claude Code";
+3. the lead card for a worktree that last ran `claude_adk` is labeled
+   "Claude Code" and starts provider `"claude"`;
+4. `loadAgentDefaults` normalizes a stored `claude_adk` to `claude`, and the
+   defaults select renders only startable providers from a three-entry
+   catalog;
+5. the modes panel: `settings.get` paints the selection, a change calls
+   `settings.set` with the chosen `claude_mode` and shows "Saved.", an
+   absent `claude_mode` renders as the default, and the Codex control is
+   disabled.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -2921,6 +3160,35 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 13 specified — the account chooses Claude Code's
+  carrier.** An account setting on the bridge decides which carrier "Claude
+  Code" means: `settings.get`/`settings.set` gain `claude_mode`
+  (`"headless"` | `"tui"`, absent = headless, persisted in the config file
+  beside `projects_dir`) and a hard-locked `codex_mode` (always `"tui"`,
+  synthesized not stored, any other value refused with `codex_mode accepts
+  only "tui" — Codex has no other mode yet`); `settings.set` becomes
+  field-wise optional, old clients naming only `projects_dir` unchanged.
+  Resolution lives at the one minting chokepoint — `model_choice_from` gains
+  a `claude_means` parameter fed by the setting — so `"claude"` and an
+  absent provider resolve to the concrete carrier (`ClaudeAdk` by default),
+  `"claude_adk"` is honored as-is, `"codex"` is always `Codex`, persisted
+  choices stay concrete, existing entities never migrate, and resumes never
+  re-resolve (serde default stays `Claude`). The owned semantic shift: the
+  token `"claude"` changes meaning at start-time from "the TUI carrier" to
+  "whatever the setting says" — additive fields only, but a fresh bridge now
+  starts headless, and an old client sending `"claude"` gets the new
+  meaning on purpose. Claude is Claude: `AdkHarness::label()` becomes
+  "Claude Code" (fixing the catalog and the switch refusal in one change;
+  the catalog keeps all three concrete entries for machine truth),
+  `STARTABLE_PROVIDERS` collapses to two cards, and every SPA read of a
+  concrete `claude_adk` token aliases through `genericProviderId` —
+  `providerLabel`, `harnessLabel`, the Agent tab's lead card (which now
+  starts generic), `loadAgentDefaults`, and the Account page's
+  catalog-filtered defaults select — so the word "headless" appears in no
+  user-facing string. The Settings page gains a bridge-persisted modes panel
+  in the save-on-change select idiom: "Claude Code" / "Claude Code TUI" for
+  claude, Codex shown locked to TUI with a short note. §10 gains step 13
+  with the test list; no test runs a model turn.
 - **2026-08-30, activity renders grouped.** A maximal run of consecutive
   activity rows between two things somebody said (or any non-activity row)
   collapses to a single dim line — a counter and the newest item's summary

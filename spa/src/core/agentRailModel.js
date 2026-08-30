@@ -16,15 +16,12 @@
 
 import { entityIdOf } from "./entityId.js";
 import { unreadReasonText } from "./inbox.js";
-import { STARTABLE_PROVIDERS } from "./modelPicker.js";
+import { providerLabel } from "./modelPicker.js";
 
-/** The harness's name as a person says it. An unknown provider is shown as the
- *  bridge named it — a new harness must read as itself, not as "Agent". */
-export function providerLabel(provider) {
-  if (!provider) return "Agent";
-  const known = STARTABLE_PROVIDERS.find((entry) => entry.id === provider);
-  return known ? known.label : String(provider);
-}
+// One naming table for the whole client (core/modelPicker.js): the picker's
+// cards, the rail's bubbles and the tab's restart offer all say the same word
+// for the same agent, including for a carrier the picker no longer lists.
+export { providerLabel };
 
 /** Which agent this is, in words: the harness and its place on the strip. */
 export function agentTitle(agent) {

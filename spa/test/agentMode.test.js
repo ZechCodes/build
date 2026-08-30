@@ -147,4 +147,59 @@ describe("the Settings page", () => {
     expect(document.getElementById("codexmode").disabled).toBe(true);
     expect(document.getElementById("root").textContent).not.toMatch(/headless/i);
   });
+
+  it("offers the agent defaults per agent, never per carrier", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    const { App } = await import("../src/app.js");
+    const { renderSettings } = await import("../src/views/settings.js");
+    // The bridge's catalog is machine truth — one entry per carrier, so an
+    // agent persisted on either one still gets its models. A picker is not:
+    // choosing a carrier here would save a preference the account setting can
+    // never answer for.
+    App.call = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [] };
+      if (method === "settings.get") return { projects_dir: "/p", claude_mode: "headless", codex_mode: "tui" };
+      if (method === "models.list") {
+        return {
+          default_provider: "claude",
+          providers: [
+            { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+            { id: "claude", label: "Claude Code", models: [], efforts: [] },
+            { id: "codex", label: "Codex", models: [], efforts: [] },
+          ],
+        };
+      }
+      return {};
+    });
+
+    await renderSettings();
+    await flush();
+
+    const defaults = document.getElementById("defprovider");
+    expect([...defaults.options].map((option) => option.value)).toEqual(["claude", "codex"]);
+    expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
+  });
+
+  it("puts how agents run beside the other agent preferences", async () => {
+    vi.resetModules();
+    document.body.innerHTML = bodyHtml;
+    const { App } = await import("../src/app.js");
+    const { renderSettings } = await import("../src/views/settings.js");
+    App.call = vi.fn(async (method) => {
+      if (method === "project.list") return { projects: [] };
+      if (method === "settings.get") return { projects_dir: "/p", claude_mode: "headless", codex_mode: "tui" };
+      if (method === "models.list") return { default_provider: "claude", providers: [] };
+      return {};
+    });
+
+    await renderSettings();
+    await flush();
+
+    const headings = [...document.querySelectorAll("#root .panel h3")].map((h) => h.textContent);
+    const at = (word) => headings.findIndex((heading) => heading.includes(word));
+    expect(at("Agent defaults")).toBeGreaterThan(-1);
+    expect(at("How agents run")).toBe(at("Agent defaults") + 1);
+    expect(at("Appearance")).toBe(at("How agents run") + 1);
+  });
 });

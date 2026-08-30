@@ -48,6 +48,22 @@ export function providerLabel(provider) {
   return PROVIDER_LABELS[agent] || agent;
 }
 
+/** The catalog entries a picker may offer: one per agent a start can name, under
+ *  the generic id a start sends. The catalog itself keeps an entry per carrier —
+ *  an agent persisted on either one needs its models served under its own id —
+ *  but a picker saving a carrier id would save a preference the account setting
+ *  can never answer for, so a carrier entry is folded onto its agent here. */
+export function startableCatalogProviders(providers) {
+  const startable = STARTABLE_PROVIDERS.map((provider) => provider.id);
+  const kept = [];
+  for (const provider of providers || []) {
+    const id = genericProviderId(provider.id);
+    if (!startable.includes(id) || kept.some((entry) => entry.id === id)) continue;
+    kept.push({ ...provider, id, label: providerLabel(id) });
+  }
+  return kept;
+}
+
 export function providerOptionsHtml(providers, selectedId) {
   return providers
     .map((provider) => `<option value="${esc(provider.id)}"${provider.id === selectedId ? " selected" : ""}>${esc(provider.label)}</option>`)

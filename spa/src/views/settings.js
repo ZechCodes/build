@@ -20,9 +20,11 @@ import {
   catalogForProvider,
   effortOptionsHtml,
   effortSupported,
+  genericProviderId,
   modelInCatalog,
   modelOptionsHtml,
   providerOptionsHtml,
+  startableCatalogProviders,
 } from "../core/modelPicker.js";
 
 export async function renderSettings() {
@@ -53,7 +55,6 @@ export async function renderSettings() {
       <div class="row"><span class="k">Timing</span><span class="v">when blobs move</span></div>
       <div class="row last"><span class="k">Nothing else</span><span class="v">no goals, no plans, no diffs, no terminal bytes — content decrypts only on your devices</span></div>
     </div>
-    ${agentModePanelHtml()}
     <div class="panel">
       <h3>🤖 Agent defaults</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">What a new issue starts with. You can still change any of it per issue, under the harness button in the New issue sheet.</div>
@@ -64,6 +65,7 @@ export async function renderSettings() {
       </div>
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
+    ${agentModePanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -134,9 +136,14 @@ export async function renderSettings() {
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 
+    // The catalog names carriers; this picker names agents. Which program
+    // "Claude Code" opens is the account's answer (How agents run), so a
+    // default saved here must never carry one.
+    const offered = { ...catalog, providers: startableCatalogProviders(catalog.providers) };
+
     const paint = () => {
-      providerSelect.innerHTML = providerOptionsHtml(catalog.providers, current.provider || catalog.default_provider);
-      const providerCatalog = catalogForProvider(catalog, providerSelect.value);
+      providerSelect.innerHTML = providerOptionsHtml(offered.providers, current.provider || genericProviderId(offered.default_provider));
+      const providerCatalog = catalogForProvider(offered, providerSelect.value);
       $("#defmodel").innerHTML = modelOptionsHtml(providerCatalog.models, modelInCatalog(providerCatalog.models, current.model));
       const supported = effortSupported(providerCatalog.models, $("#defmodel").value);
       $("#defeffort").innerHTML = effortOptionsHtml(providerCatalog.efforts, supported ? current.effort : "", $("#defmodel").value);

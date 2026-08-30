@@ -26,6 +26,14 @@ describe("loadAgentDefaults", () => {
     expect(loadAgentDefaults(storage)).toEqual({ provider: "codex", model: "gpt-5.6-sol", effort: "ultra" });
   });
 
+  it("reads a preference saved on a carrier as the agent that carries it", () => {
+    // Back when the picker offered a card per carrier, a browser could save the
+    // concrete one. It means "Claude Code", and which program that opens is now
+    // the account's answer — so it loads as the agent, not the carrier.
+    const storage = memory({ [AGENT_DEFAULTS_KEY]: '{"provider":"claude_adk","model":"","effort":""}' });
+    expect(loadAgentDefaults(storage).provider).toBe("claude");
+  });
+
   it("keeps only the three known fields", () => {
     const storage = memory();
     saveAgentDefaults({ provider: "claude", model: "", effort: "", danger: "rm -rf" }, storage);

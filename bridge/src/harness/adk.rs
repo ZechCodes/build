@@ -2699,4 +2699,145 @@ mod tests {
         );
         session.end();
     }
+
+    /// Step 11's live claim: a REAL background task, on the real wire. The
+    /// recorded fixtures pin what one probe emitted; this leg holds the shipped
+    /// reader to a fresh child — the task events still arrive on `system`, the
+    /// reader mints the started and finished rows, and the session reports
+    /// `Working` with `can_interrupt` false while its turn is closed and the
+    /// task lives, then `Waiting` once the roster empties.
+    ///
+    /// Ignored by default for the same reason as the two legs above; run with
+    /// the same `cargo test --lib real_adk -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    fn real_adk_session_reports_a_background_task_and_stays_working() {
+        use crate::harness::Harness;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("fresh-worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mcp = workspace.join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        AdkHarness.prepare_workspace(&workspace);
+
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+
+        let (session, mut activity) =
+            AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                while let Ok(event) = activity.blocking_recv() {
+                    let line = match &event {
+                        AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
+                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
+                    };
+                    eprintln!("[activity] {line}");
+                    seen.lock().unwrap().push(line);
+                }
+            });
+        }
+
+        let wait_until = |what: &str, deadline: Duration, test: &dyn Fn() -> bool| {
+            let started = Instant::now();
+            while !test() {
+                assert!(started.elapsed() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        let task_rows = |prefix: &str| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with(&format!("task_update: {prefix}")))
+                .count()
+        };
+
+        // A turn that puts a sleep in the BACKGROUND and answers without
+        // waiting on it, so the turn's result closes over live work — the exact
+        // shape the headless-looks-idle finding described.
+        session
+            .send_turn(&Turn::new(concat!(
+                "You are being driven by an automated test. Do exactly this and nothing ",
+                "else. Use the Bash tool with run_in_background set to true to run ",
+                "exactly: sleep 15 && echo woke\n",
+                "Do NOT wait for it, do NOT check on it, do NOT use any other tool. ",
+                "Immediately after starting it, reply with a two-line haiku and stop.",
+            )))
+            .unwrap();
+        wait_until("init", Duration::from_secs(30), &|| {
+            !matches!(session.status(), AgentStatus::Starting)
+        });
+        wait_until("the started task row", Duration::from_secs(120), &|| {
+            task_rows("started — ") == 1
+        });
+
+        // The result must close the turn while the task lives. The turn's edge
+        // is read through the control tied to it: `can_interrupt` goes false
+        // when the turn closes, while the live task holds status at `Working` —
+        // the legal pair the digest pins, observed on the real wire.
+        wait_until(
+            "the turn to close over the live task",
+            Duration::from_secs(120),
+            &|| !session.can_interrupt(),
+        );
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "the turn is closed and the sleep is not: this session is mid-work, not idle"
+        );
+
+        // The sleep ends; the roster empties; the reader closes the task in the
+        // timeline and the session finally waits.
+        wait_until(
+            "the task to finish in the timeline",
+            Duration::from_secs(120),
+            &|| task_rows("finished — ") + task_rows("failed — ") >= 1,
+        );
+        wait_until(
+            "the session to wait once the roster empties",
+            Duration::from_secs(60),
+            &|| matches!(session.status(), AgentStatus::Waiting),
+        );
+        eprintln!(
+            "[verdict] task rows: {:?}",
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with("task_update:"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            task_rows("started — "),
+            1,
+            "one start, one row — however many events described it"
+        );
+        assert_eq!(
+            task_rows("finished — "),
+            1,
+            "the task completed, so its ending reads as finished, minted once"
+        );
+        session.end();
+    }
 }

@@ -2307,6 +2307,16 @@ tempdir fake:
     where `has_terminal` is true, and `None` where the session announces
     its own id — asked over every provider, like the terminal test.
 
+> **Live-observed 2026-08-29, first restart on the deployed step 10.** The
+> reviving spawn took the spawn rule's middle arm exactly as designed (no
+> recorded id, agent with history → `--continue`, own conversation), and it
+> answered the first of the two open live questions: claude's TUI resumes
+> **in place** — same session id, no new transcript file — so the locator
+> correctly stayed `None` and the fallback stood, the benign outcome §10.2
+> predicted for resume-in-place. Still open: whether a resumed codex appends
+> to its old rollout or cuts a new one; the locator tolerates both, and the
+> observed answer belongs here after the first real codex restart.
+
 ---
 
 ## 11. Decisions needed before step 1

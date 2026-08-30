@@ -2386,8 +2386,15 @@ and `background_tasks_changed` is the source of truth.
   the reason status flips to `Working` without waiting for the next roster.
 - **`task_updated` carrying a terminal status removes its task**; one that
   does not is progress, and touches membership not at all.
-- **`task_notification` never changes membership.** It is the task saying
-  something worth reading.
+- **`task_notification` carrying a terminal status removes its task**, and
+  one that does not never changes membership. (Amended 2026-08-30 under this
+  section's own escape hatch — the rules stand, the reading moved. A
+  FOREGROUND Bash command is a task too, and the live child closes it with a
+  notification ALONE: no `task_updated`, no roster, ever. Taking every
+  notification for chatter held that task for the life of the session and
+  pinned the agent `Working` while it sat idle — the exact inverse of the
+  failure this step closes.) Either way it is also the task saying something
+  worth reading.
 
 **Minting follows the transition, not the event name.** One row per
 transition, however many events describe it:
@@ -2400,9 +2407,13 @@ transition, however many events describe it:
   and never ends;
 - a `task_started` followed by a roster listing the same task mints ONCE,
   because the second event moved nothing;
-- `task_notification` mints its text; a `task_updated` that changes neither
+- `task_notification` mints its text, and then its ending row when the
+  status it carried removed the task; a `task_updated` that changes neither
   membership nor carries new human-readable text mints nothing — a progress
-  counter ticking is not a meaningful change.
+  counter ticking is not a meaningful change. Text that only repeats the
+  task's own name mints nothing either: a foreground notification's `summary`
+  IS the description, and a row reading `X: X` says nothing the ending row
+  did not.
 
 **The summary lines**, in the shape the tool summaries set — one line,
 clipped by `one_line` at `TOOL_SUMMARY_LIMIT`, because this is operational
@@ -2486,10 +2497,11 @@ every other kind, known or unknown, renders as it did.
 #### 11.5 The fake harness, and the tests
 
 `adk::fake` grows recorded lines for the four events — a start, a terminal
-update, a notification, a roster, and an empty roster — recorded from the
-pinning probe rather than typed from this spec, under the module's standing
-single-quote rule. Every test below runs against that child; none runs a
-model turn.
+update, a notification, a roster, and an empty roster — plus the FOREGROUND
+pair a second probe turned up: a start and the terminal notification that is
+the only word that task's ending ever gets. All recorded from the probes
+rather than typed from this spec, under the module's standing single-quote
+rule. Every test below runs against that child; none runs a model turn.
 
 1. a `task_started` mints one started row and flips a turn-closed session to
    `Working`; the `background_tasks_changed` listing the same task mints
@@ -2500,7 +2512,11 @@ model turn.
 3. a `task_updated` with a terminal status mints failed once; the roster
    that later omits the id mints nothing more;
 4. a `task_notification`'s text is minted, clipped to one line; a
-   `task_updated` changing neither membership nor text mints nothing;
+   `task_updated` changing neither membership nor text mints nothing; and a
+   FOREGROUND task — a `task_started` closed by a terminal
+   `task_notification`, with no roster and no `task_updated` ever arriving —
+   mints its started and ended rows and lets the session report `Waiting`
+   again, which is the fence against the pin that reading cost;
 5. through the daemon: the idle sweep leaves a quiet, turn-closed session
    holding a live task alone (quiet clock aged past the threshold, no new
    sweep code), and demotes the same session once its roster empties;

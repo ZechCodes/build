@@ -809,29 +809,53 @@ impl ProtocolReader {
         self.mint_task_updates(minted);
     }
 
-    /// The task saying something worth reading. Never changes membership.
+    /// The task saying something worth reading — and, when it carries a
+    /// terminal status, the only word some tasks ever get that the work is over.
     ///
-    /// Under the task's own name while the set still holds it; on its own after
-    /// that, because the live child empties the roster before it delivers the
-    /// notification, and a name the set no longer holds is not a name to speak
-    /// with. The notification's own text says which task it is either way.
+    /// A FOREGROUND Bash command is a task too, and the child closes it with a
+    /// notification alone: no `task_updated`, no roster, ever (probe,
+    /// 2026-08-30). A reader that took every notification for chatter would
+    /// hold that task for the life of the session and report `Working` over an
+    /// agent idle for hours — the inverse of the failure this step closes. So a
+    /// terminal status here IS a membership removal, and mints the ending row
+    /// the way the roster and the terminal patch do.
+    ///
+    /// Its text is minted under the task's own name while the set still holds
+    /// it, and on its own after that: the child empties the roster before it
+    /// delivers a background task's notification, and a name the set no longer
+    /// holds is not a name to speak with — the text says which task it is
+    /// either way. Text that only repeats the task's own name mints nothing,
+    /// because a foreground notification's summary IS the description, and a
+    /// row reading `X: X` says nothing the ending row did not.
     fn read_task_notification(&mut self, event: &Value) {
         let said = event["summary"]
             .as_str()
             .or_else(|| event["message"].as_str())
             .unwrap_or_default()
             .trim();
-        if said.is_empty() {
-            return;
-        }
-        let named = event["task_id"]
-            .as_str()
-            .and_then(|id| self.state.lock().unwrap().tasks.get(id).cloned());
-        let summary = match named {
-            Some(description) => format!("{description}: {said}"),
-            None => said.to_string(),
+        let status = event["status"].as_str().unwrap_or_default();
+        let ends = task_status_is_terminal(status);
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let held = event["task_id"].as_str().and_then(|id| match ends {
+                true => state.tasks.remove(id),
+                false => state.tasks.get(id).cloned(),
+            });
+            let mut minted = Vec::new();
+            if !said.is_empty() && held.as_deref() != Some(said) {
+                minted.push(match &held {
+                    Some(description) => format!("{description}: {said}"),
+                    None => said.to_string(),
+                });
+            }
+            if ends {
+                if let Some(description) = &held {
+                    minted.push(ended_summary(status, description, event));
+                }
+            }
+            minted
         };
-        self.mint_task_updates(vec![summary]);
+        self.mint_task_updates(minted);
     }
 
     /// Send one row per transition, in the order the transitions happened, each
@@ -1043,26 +1067,41 @@ fn task_description(event: &Value, id: &str) -> String {
 ///
 /// Named rather than inferred from the absence of a running status, so an
 /// unrecognised status leaves the task in the set instead of closing it — where
-/// the roster, which is the source of truth, will close it on the child's own
-/// word.
+/// the roster, when one is coming, will close it on the child's own word.
+///
+/// `completed`, `failed`, `killed` and `stopped` are the four the live probes
+/// turned up; the rest are the shapes their names imply, recognised so a task
+/// ending under one of them is not held open waiting for a roster that, for a
+/// foreground task, never comes.
 fn task_status_is_terminal(status: &str) -> bool {
     matches!(
         status,
-        "completed" | "failed" | "error" | "cancelled" | "canceled" | "killed" | "timed_out"
+        "completed"
+            | "failed"
+            | "error"
+            | "cancelled"
+            | "canceled"
+            | "killed"
+            | "stopped"
+            | "timed_out"
     )
 }
 
 /// The row a task's ending mints: `failed` when the event that ended it said
 /// so, with the error it named, and `finished` otherwise. A task that was
-/// cancelled or killed did not fail — something stopped it, which is not the
-/// same thing to read.
-fn ended_summary(status: &str, description: &str, patch: &Value) -> String {
+/// cancelled, killed or stopped did not fail — something ended it, which is not
+/// the same thing to read.
+///
+/// `ending` is whichever event carried the terminal status: a `task_updated`'s
+/// patch, or a `task_notification` itself, which carries its status at the top
+/// level and — as the probes recorded it — no error text at all.
+fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
     if !matches!(status, "failed" | "error" | "timed_out") {
         return format!("finished — {description}");
     }
-    let reported = patch["error"]
+    let reported = ending["error"]
         .as_str()
-        .or_else(|| patch["result"].as_str())
+        .or_else(|| ending["result"].as_str())
         .unwrap_or_default()
         .trim();
     match reported.is_empty() {
@@ -1164,6 +1203,42 @@ pub(crate) mod fake {
     /// What the recorded task calls itself — the human-readable half of every
     /// summary the reader mints for it.
     pub(crate) const TASK_DESCRIPTION: &str = "Sleep 12 seconds then echo woke";
+
+    /// A FOREGROUND Bash command is a task too, and it ends differently —
+    /// recorded from a second live probe against claude 2.1.236 on 2026-08-30:
+    /// one headless turn that ran a plain `sleep 10` and answered after it.
+    ///
+    /// The child emitted exactly two task lines for it, in this order:
+    /// `task_started`, then a `task_notification` carrying `status`
+    /// `completed`. No `task_updated` and no `background_tasks_changed`, ever —
+    /// so the notification is the ONLY event that says the work is over, and a
+    /// reader that took it for chatter would hold the task for the life of the
+    /// session. Note the `summary`: for a foreground task it is the
+    /// description, word for word, which is why text that only repeats the
+    /// task's own name mints no row of its own.
+    ///
+    /// The same substitutions as the recordings above and nothing else — the
+    /// `session_id`, `uuid` and `tool_use_id` values are swapped for this
+    /// module's. Every field the reader looks at is verbatim.
+    pub(crate) const FOREGROUND_TASK_STARTED: &str = r#"{"type":"system","subtype":"task_started","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","description":"Sleep for 10 seconds","task_type":"local_bash","uuid":"task-uuid-9","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","status":"completed","output_file":"","summary":"Sleep for 10 seconds","uuid":"task-uuid-10","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_DESCRIPTION: &str = "Sleep for 10 seconds";
+
+    /// The same shape from the same probe run, for a foreground command that
+    /// EXITED NON-ZERO: `sleep 3; exit 7`. Two task lines again, and the
+    /// notification's status is `failed` — with no error text anywhere on it,
+    /// which is why the row it mints names the work and stops there.
+    pub(crate) const FOREGROUND_TASK_FAILED_STARTED: &str = r#"{"type":"system","subtype":"task_started","task_id":"boq8sla8p","tool_use_id":"toolu_fg2","description":"sleep 3; exit 7","task_type":"local_bash","uuid":"task-uuid-11","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION_FAILED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"boq8sla8p","tool_use_id":"toolu_fg2","status":"failed","output_file":"","summary":"sleep 3; exit 7","uuid":"task-uuid-12","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_FAILED_DESCRIPTION: &str = "sleep 3; exit 7";
+
+    /// A third terminal status the same probe run turned up, from a task the
+    /// child killed when its turn ended: `stopped`. Recorded from that
+    /// notification with its task id, `tool_use_id`, `summary` and
+    /// `output_file` swapped for the completed foreground recording's, so one
+    /// `task_started` line above serves this ending too. Its `status` — the one
+    /// field this recording exists to pin — is verbatim.
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION_STOPPED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","status":"stopped","output_file":"","summary":"Sleep for 10 seconds","uuid":"task-uuid-13","session_id":"sess-adk"}"#;
 
     /// Which request the child names in the `control_response` it answers an
     /// interrupt with.
@@ -1824,10 +1899,15 @@ mod tests {
 
     /// A notification is the task saying something worth reading, so its text is
     /// minted under the task's own name — collapsed onto one line, because this
-    /// is operational text rather than the agent speaking.
+    /// is operational text rather than the agent speaking — and, when the status
+    /// it carries is terminal, it closes the task as well: the text first, then
+    /// the ending it announces.
     ///
-    /// A patch that moves neither membership nor any human-readable text is a
-    /// progress counter ticking, and mints nothing.
+    /// The second notification lands with the set already empty, so it mints its
+    /// text on its own and closes nothing: one row per transition, and by then
+    /// nothing moves. A patch that moves neither membership nor any
+    /// human-readable text is a progress counter ticking, and mints nothing at
+    /// all.
     #[tokio::test]
     async fn a_task_notification_is_minted_and_a_progress_patch_is_not() {
         let session = open(&stream_json_harness(&[
@@ -1860,9 +1940,16 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("{TASK_DESCRIPTION}: Background command completed woke"),
+                summary: format!("finished — {TASK_DESCRIPTION}"),
             },
-            "several lines of output are one row, the way a tool answer is"
+            "the status it carried was terminal, so the notification ended the task"
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: "Background command completed woke".to_string(),
+            },
+            "several lines of output are one row, the way a tool answer is — and the set no longer holds a name to speak it under"
         );
         assert_eq!(
             next_activity(&mut activity).await,
@@ -1870,6 +1957,113 @@ mod tests {
                 summary: "dropped the index".to_string()
             }
         );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// A FOREGROUND Bash command, replayed in the order the live child emitted
+    /// it: `task_started`, then a `task_notification` carrying a terminal
+    /// status — and no roster and no `task_updated`, because the child sends
+    /// neither for one.
+    ///
+    /// So the notification is the only event that says the work is over, and it
+    /// has to close the task: a reader that took it for chatter would hold the
+    /// task for the life of the session and report `Working` over an agent that
+    /// has been idle for hours — the inverse of the failure this step exists to
+    /// close. The `Waiting` at the end is that regression's fence.
+    ///
+    /// Its text mints nothing of its own here because a foreground
+    /// notification's summary IS the task's description, and a row reading
+    /// `Sleep for 10 seconds: Sleep for 10 seconds` says nothing the ending row
+    /// did not.
+    #[tokio::test]
+    async fn a_foreground_tasks_notification_closes_it_and_the_session_waits_again() {
+        let session = open(&stream_json_harness(&[
+            FOREGROUND_TASK_STARTED,
+            FOREGROUND_TASK_NOTIFICATION,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new("sleep for ten seconds"))
+            .unwrap();
+
+        let mut minted = Vec::new();
+        for _ in 0..3 {
+            minted.push(next_activity(&mut activity).await);
+        }
+        assert_eq!(
+            minted,
+            vec![
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::Narration {
+                    summary: "dropped the index".to_string()
+                },
+            ]
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// The other two terminal statuses a foreground notification carries, both
+    /// live-recorded: `failed`, which reads as a failure and names no error
+    /// because the notification carries none, and `stopped`, which does not —
+    /// something ended that work, which is not the same thing to read.
+    ///
+    /// Both must remove. An unrecognised status would leave its task in the set
+    /// with no roster coming to clear it, which is the same pin under a
+    /// different name.
+    #[tokio::test]
+    async fn a_failed_foreground_notification_fails_and_a_stopped_one_finishes() {
+        let session = open(&stream_json_harness(&[
+            FOREGROUND_TASK_FAILED_STARTED,
+            FOREGROUND_TASK_NOTIFICATION_FAILED,
+            FOREGROUND_TASK_STARTED,
+            FOREGROUND_TASK_NOTIFICATION_STOPPED,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new("run the two commands"))
+            .unwrap();
+
+        let mut minted = Vec::new();
+        for _ in 0..5 {
+            minted.push(next_activity(&mut activity).await);
+        }
+        assert_eq!(
+            minted,
+            vec![
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("failed — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::Narration {
+                    summary: "dropped the index".to_string()
+                },
+            ]
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
         session.end();
     }
 

@@ -353,6 +353,25 @@ mod tests {
             .contains("does not support effort ultra"));
     }
 
+    /// The catalog is machine truth — an entity persisted on either claude
+    /// carrier needs its models served under its own id — but what it calls
+    /// them is what a human reads. Both claude carriers are "Claude Code", and
+    /// no label anywhere names the difference between them.
+    #[test]
+    fn every_catalog_label_a_human_reads_is_the_name_they_know() {
+        for catalog in provider_catalogs() {
+            assert!(
+                !catalog.label.to_lowercase().contains("headless"),
+                "{:?} is labeled {:?}",
+                catalog.id,
+                catalog.label
+            );
+        }
+        for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            assert_eq!(carrier.label(), "Claude Code");
+        }
+    }
+
     /// The mode names a carrier, and the wire spelling is the serde spelling —
     /// a mode read back out of the config file has to be the same word a
     /// client can send.

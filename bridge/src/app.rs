@@ -31694,6 +31694,10 @@ mod tests {
         assert_eq!(refused["ok"], false, "{refused:?}");
         let error = refused["error"].as_str().unwrap();
         assert!(error.contains("stop the current session"), "{error}");
+        assert!(
+            !error.to_lowercase().contains("headless"),
+            "the refusal prints provider labels, and no label names a carrier: {error}"
+        );
         let s = state.lock().unwrap();
         assert_eq!(
             s.runs["run-live-c"].model_choice.provider,

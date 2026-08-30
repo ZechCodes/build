@@ -3215,11 +3215,13 @@ of reaching for `first()`:
 | `for_recovery` (`app.rs:959`) | `agents.first()` | `primary()` — a recovery only exists for an entity that ran, but an empty roster refuses rather than panics |
 | the router's branch delivery (`default_agent_provider` caller, `app.rs:8815`) | roster's first | `ensure_primary_agent` on the routed-to entity |
 | `run.message` (`app.rs:12040`) / `run_stage_fix`-family posts | Deref `post_user` | `ensure_primary_agent`, then post to it |
-| `run_stage_dispatch` (`app.rs:11567`) | `resolve(addressed)` + `first()` compare | `resolve` unchanged; the "is first" compare reads `primary()` |
+| `run_request_changes` (fn at `app.rs:11553`) | `resolve(addressed)` (`11567`) + `first()` compare (`11568`) | `resolve` unchanged; the `addresses_first_agent` compare reads `primary()` |
 | branch dispatch (`app.rs:13318`) | `first()` or `add` | empty roster takes the `add` arm — same code, one less special case |
 | the idle sweep (`app.rs:6161/6174`) | tab of `agents.first()` | skip entities whose roster is empty (nothing can be idle that does not exist) |
-| `retire_issue_session` (`app.rs:16524`) | `agents.first()` | `primary()` — issues always have one |
-| `thread_of` / `request_changes` Issue-swap (`app.rs:10941`, `11015`, `3037`) | `first()` | `primary()`, refusing on an empty run roster |
+| `issue_session` (fn at `app.rs:16522`, the free fn read before a session-ending verb) | `active.agents.first()` (`16524`) | `primary()` with the issue expect — issues always have one. (`retire_issue_session`, `app.rs:8161`, only delegates to `retire_agent` and needs nothing.) |
+| `offering_thread` (fn at `app.rs:10927`) | the ISSUE roster's `first().thread` (`10941`) | `primary()` with the issue expect; the run arm's `resolve` is unchanged |
+| `thread_post`'s `ImplementationTarget` (fn at `app.rs:10946`) | the implementation run's `first().id` / `.choice` (`11015–11016`) | `primary()` — an empty implementation roster yields no target, so the Issue's post stays on the Issue |
+| `close_turn_of_dead_agent` (fn at `app.rs:3013`) | `active.agents.first().id == agent_id` (`3037`) | `primary().is_some_and(…)` — false on an empty roster, so the death is recorded on the agent's own thread |
 
 **Entity-level events on an empty roster are not minted.** The Deref sites
 that push lifecycle/git events onto "the" thread (`app.rs:2344`, `10229`,
@@ -3292,10 +3294,18 @@ agent with no message is the `+` bubble's normal product). Bridge-side,
 `ensure_primary_agent` remains the door for callers that never name a choice
 — an old client's bare `thread.post` still works, on the default harness.
 
-`adoption.js`'s `createStartingAdoptingCall` path and the rail's `startAgent`
-keep working unchanged for entities that HAVE agents; the generic-token send
-they used to rely on now means "the default harness" only where no agent
-exists to be locked.
+**The other two start paths keep their shape.** The rail's `startAgent`
+(`agentRail.js:938`) — `ensureEntity()` then `agent.start { id, agent_id?,
+provider? }` — and `adoption.js`'s `startAdoptedAgent` (`adoption.js:118`,
+which seeds `run.adopt`'s `provider` param and forwards the same token on the
+start; today only `test/agentStart.test.js` drives it) are unchanged code. What
+changes underneath them is only the bridge's reading: for an entity that HAS
+agents the start respawns the locked harness, and a named provider is the
+switch it always was; for one with none, the named provider persists through
+`set_entity_model_choice` and `ensure_primary_agent` mints the primary on it,
+while a bare start mints on the default harness. So `run.adopt` no longer
+minting an agent costs these paths nothing — the adopt-time `provider` param
+survives as the entity's persisted choice and the first agent is created on it.
 
 #### 14.6 The composer's model menu
 
@@ -3429,6 +3439,36 @@ the roster, or the fake harness):
     migrates onto the derived first agent; one with an empty agents array
     restores empty;
 14. the idle sweep skips an agentless working entity instead of panicking.
+
+**Step-13 tests whose premise step 14 deletes** — each goes with the behaviour
+it asserted, and the new test that covers what survives is named beside it, so
+none of this coverage is dropped silently:
+
+- `claude_and_silence_both_resolve_to_the_carrier_the_account_chose`
+  (`app.rs:18938`) — asserted `"claude"` and silence BOTH land on the account's
+  carrier. Rewritten as new test 4: silence still follows the default harness,
+  `"claude"` is concretely the TUI carrier.
+- `the_router_runs_on_the_carrier_the_account_chose` (`app.rs:19038`) —
+  asserted the router follows `claude_mode`. Replaced by new test 9: the router
+  pins `ClaudeAdk` under every setting.
+- `agent_start_naming_claude_re_carriers_an_idle_entity_onto_the_accounts_answer`
+  (`app.rs:31653`) — the idle re-carriering that §14.2 kills by construction.
+  Deleted; new test 4 covers the token's new meaning and new test 11 covers what
+  `agent.start` may still change on an idle entity.
+- `a_generic_start_cannot_re_carrier_a_live_agent` (`app.rs:31684`) —
+  **deleted, not rewritten in place.** It starts a LIVE TUI run with
+  `provider: "claude"` and asserts a refusal. Under step 14 that token names the
+  carrier the entity is already on, so `set_entity_model_choice`'s
+  same-choice short-circuit (`app.rs:3770`) passes it through and no refusal is
+  produced — the assertion would be not merely stale but backwards. The live
+  refusal it was protecting is kept, on the scenario that still exists, by new
+  test 11's "`agent.start` naming a DIFFERENT provider while live still
+  refuses", which also keeps the no-"headless"-in-the-refusal assertion.
+- the settings tests `settings_report_the_claude_mode_and_the_locked_codex_one`
+  (`app.rs:18785`), `a_chosen_claude_mode_survives_a_reload_and_leaves_the_projects_dir_alone`
+  (`18802`) and `an_unknown_claude_mode_is_refused_and_changes_nothing`
+  (`18845`) are rewritten onto `default_harness` as new tests 1–3, which keep
+  their `claude_mode` assertions as the compat leg.
 
 SPA (`npm test`):
 
@@ -3574,6 +3614,19 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 14's citations corrected.** A read-back against the
+  source fixed four misnamed call sites in §14.3's migration table and §14.5 —
+  the `.first()` site at `app.rs:16524` is `issue_session`, not
+  `retire_issue_session` (which only delegates to `retire_agent`); the
+  `resolve` + first-compare at `11567–11568` is `run_request_changes`, not
+  `run_stage_dispatch`; the Issue-swap trio at `10941`/`11015`/`3037` is
+  `offering_thread`/`thread_post`/`close_turn_of_dead_agent`, now three rows
+  with their three different empty-roster answers; and §14.5 named
+  `createStartingAdoptingCall`, which does not exist — the real paths are the
+  rail's `startAgent` and `adoption.js`'s `startAdoptedAgent`. §14.10 gains the
+  roll of step-13 tests step 14 deletes, chief among them
+  `a_generic_start_cannot_re_carrier_a_live_agent` (`app.rs:31684`), whose
+  assertion inverts once `"claude"` is concrete. No decision changed.
 - **2026-08-30, step 14 specified — agents lock to their harness, and
   branches start with none** (branch `build/new-agent-flow`). Supersedes
   step 13's carrier-follows-setting half: an agent is locked to the harness

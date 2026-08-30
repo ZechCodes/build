@@ -8043,7 +8043,7 @@ impl AppState {
         // The provider is parsed before anything is touched, so an unrunnable
         // one refuses instead of leaving an agent nothing can start.
         let choice = if has_agent_choice(params) {
-            model_choice_from(params)?
+            model_choice_from(params, self.claude_carrier())?
         } else {
             self.entity_model_choice(&entity_id)?
         };
@@ -8857,9 +8857,15 @@ impl AppState {
     }
 
     /// The provider a device routes on when nothing has been configured: the
-    /// same default `models.list` reports as the account's.
+    /// carrier this account's Claude Code opens.
     fn default_agent_provider(&self) -> AgentProvider {
-        AgentProvider::default()
+        self.claude_carrier()
+    }
+
+    /// What the token "claude" opens on this account — the setting's one
+    /// consequence, read by every site that mints a model choice.
+    fn claude_carrier(&self) -> AgentProvider {
+        self.claude_mode.carrier()
     }
 
     /// The capture a router session speaks for, from the agent id its harness
@@ -9410,7 +9416,7 @@ impl AppState {
             None => self.default_project()?,
         };
         let base = self.base_for(&project_id)?;
-        let model_choice = model_choice_from(params)?;
+        let model_choice = model_choice_from(params, self.claude_carrier())?;
         self.require_store()?;
         let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
         if !params
@@ -10548,7 +10554,7 @@ impl AppState {
             return self.run_create_in_worktree(&plan_id, &worktree_id, params);
         }
         let source_plan_id = plan_id.clone();
-        let requested_choice = model_choice_from(params)?;
+        let requested_choice = model_choice_from(params, self.claude_carrier())?;
         let base_override = params
             .get("base_branch")
             .and_then(Value::as_str)
@@ -10619,7 +10625,7 @@ impl AppState {
             return Err("unknown plan_id".to_string());
         }
         let project_id = self.project_of(issue_id)?;
-        let requested_choice = model_choice_from(params)?;
+        let requested_choice = model_choice_from(params, self.claude_carrier())?;
         let run_id = match self.run_on_worktree(&project_id, worktree_id) {
             Some(run_id) => {
                 // The primary checkout is the repository, not a worktree to
@@ -11621,7 +11627,7 @@ impl AppState {
         let run_id = require_str(params, "run_id")?;
         let stage_id = require_str(params, "stage_id")?;
         let model_override = if has_agent_choice(params) {
-            Some(model_choice_from(params)?)
+            Some(model_choice_from(params, self.claude_carrier())?)
         } else {
             None
         };
@@ -12237,7 +12243,7 @@ impl AppState {
     /// that already owns it.
     fn run_adopt(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let model_choice = model_choice_from(params)?;
+        let model_choice = model_choice_from(params, self.claude_carrier())?;
         let base = self.base_for(&project_id)?;
         let adopting_primary = params
             .get("primary")
@@ -13232,7 +13238,7 @@ impl AppState {
         // The provider is parsed before anything is created, so an unrunnable
         // one refuses instead of leaving a branch nothing can work on.
         if has_agent_choice(params) {
-            model_choice_from(params)?;
+            model_choice_from(params, self.claude_carrier())?;
         }
 
         let mut created = BranchDispatchCreations::default();
@@ -13302,7 +13308,7 @@ impl AppState {
         // Parsed before the run leaves the map, so a choice that cannot run
         // never strands a run outside it.
         let choice = if has_agent_choice(params) {
-            model_choice_from(params)?
+            model_choice_from(params, self.claude_carrier())?
         } else {
             self.entity_model_choice(&run_id)?
         };
@@ -14848,10 +14854,19 @@ fn git_default_branch(dir: &std::path::Path) -> Option<String> {
     (!branch.is_empty() && branch != "HEAD").then_some(branch)
 }
 
-/// Parse and validate the optional provider/model/effort params of a request.
-fn model_choice_from(params: &Value) -> Result<ModelChoice, String> {
+/// Parse and validate the optional provider/model/effort params of a request,
+/// resolving the generic token `"claude"` to `claude_means` — the carrier this
+/// account's `claude_mode` names.
+///
+/// This is the one place a wire provider becomes a persisted one, so it is the
+/// one place resolution may happen. What it mints is always concrete: a record
+/// names the carrier it runs, so every later resume spends that carrier instead
+/// of asking the setting again.
+fn model_choice_from(params: &Value, claude_means: AgentProvider) -> Result<ModelChoice, String> {
     let provider = match params.get("provider").and_then(Value::as_str) {
-        None | Some("") => AgentProvider::default(),
+        // Silence and the generic token say the same thing — "Claude Code" —
+        // and the setting is what Claude Code means.
+        None | Some("") | Some("claude") => claude_means,
         Some(named) => AgentProvider::from_wire(named)
             .ok_or_else(|| format!("unknown agent provider: {named}"))?,
     };
@@ -17385,12 +17400,6 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         .filter(|id| !id.is_empty())
         .map(str::to_string)
         .ok_or("missing id")?;
-    // The Agent tab's provider picker rides the start itself. Parsed before
-    // anything is touched, so an unrunnable provider refuses instead of opening
-    // an agent on the old one.
-    let requested_choice = has_agent_choice(params)
-        .then(|| model_choice_from(params))
-        .transpose()?;
     let requested_agent = params
         .get("agent_id")
         .and_then(Value::as_str)
@@ -17398,6 +17407,13 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         .map(str::to_string);
     let (turn, waiting) = {
         let mut s = state.lock().unwrap();
+        // The Agent tab's provider picker rides the start itself. Parsed under
+        // the lock — what "claude" opens is the account's setting to answer —
+        // but still before anything is touched, so an unrunnable provider
+        // refuses instead of opening an agent on the old one.
+        let requested_choice = has_agent_choice(params)
+            .then(|| model_choice_from(params, s.claude_carrier()))
+            .transpose()?;
         if let Some(choice) = requested_choice {
             s.set_entity_model_choice(&entity_id, choice)?;
         }
@@ -18915,6 +18931,118 @@ mod tests {
         );
     }
 
+    /// The setting's one consequence: the generic token a client sends — and
+    /// the silence that means the same thing — becomes a concrete carrier at
+    /// the single site where a model choice is minted.
+    #[test]
+    fn claude_and_silence_both_resolve_to_the_carrier_the_account_chose() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let carrier_of = |state: &mut AppState, params: Value| {
+            let filed = state.handle(req("plan.create", params));
+            assert_eq!(filed["ok"], true, "{filed:?}");
+            state.plans[&plan_id_of(&filed)].model_choice.provider
+        };
+
+        assert_eq!(
+            carrier_of(
+                &mut state,
+                json!({ "goal": "headless by default", "dispatch": false, "provider": "claude" })
+            ),
+            AgentProvider::ClaudeAdk
+        );
+        assert_eq!(
+            carrier_of(
+                &mut state,
+                json!({ "goal": "and so does silence", "dispatch": false })
+            ),
+            AgentProvider::ClaudeAdk
+        );
+
+        let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(
+            carrier_of(
+                &mut state,
+                json!({ "goal": "tui once chosen", "dispatch": false, "provider": "claude" })
+            ),
+            AgentProvider::Claude
+        );
+        assert_eq!(
+            carrier_of(
+                &mut state,
+                json!({ "goal": "silence follows it", "dispatch": false })
+            ),
+            AgentProvider::Claude
+        );
+    }
+
+    /// A client that names a concrete carrier gets that carrier. The setting
+    /// answers the generic question only — it is not a veto over a caller who
+    /// already knows what it wants.
+    #[test]
+    fn a_concretely_named_provider_is_honored_whatever_the_setting_says() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let carrier_of = |state: &mut AppState, goal: &str, provider: &str| {
+            let filed = state.handle(req(
+                "plan.create",
+                json!({ "goal": goal, "dispatch": false, "provider": provider }),
+            ));
+            assert_eq!(filed["ok"], true, "{filed:?}");
+            state.plans[&plan_id_of(&filed)].model_choice.provider
+        };
+
+        for mode in ["headless", "tui"] {
+            let set = state.handle(req("settings.set", json!({ "claude_mode": mode })));
+            assert_eq!(set["ok"], true, "{set:?}");
+            assert_eq!(
+                carrier_of(&mut state, &format!("adk under {mode}"), "claude_adk"),
+                AgentProvider::ClaudeAdk
+            );
+            assert_eq!(
+                carrier_of(&mut state, &format!("codex under {mode}"), "codex"),
+                AgentProvider::Codex
+            );
+        }
+    }
+
+    /// Resolution happens when a choice is minted and never again, so changing
+    /// the account setting moves no work that already exists: every entity
+    /// keeps the concrete carrier its record names.
+    #[test]
+    fn changing_the_setting_migrates_no_entity_that_already_exists() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let filed = state.handle(req(
+            "plan.create",
+            json!({ "goal": "filed while headless", "dispatch": false, "provider": "claude" }),
+        ));
+        let plan_id = plan_id_of(&filed);
+        let before = state.entity_model_choice(&plan_id).unwrap();
+        assert_eq!(before.provider, AgentProvider::ClaudeAdk);
+
+        let set = state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        assert_eq!(set["ok"], true, "{set:?}");
+
+        assert_eq!(
+            state.entity_model_choice(&plan_id).unwrap(),
+            before,
+            "the choice a later start and every resume read is untouched"
+        );
+    }
+
+    /// The router is a Claude Code job like any other, so it opens whatever
+    /// Claude Code means here.
+    #[test]
+    fn the_router_runs_on_the_carrier_the_account_chose() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
+        state.handle(req("settings.set", json!({ "claude_mode": "tui" })));
+        assert_eq!(state.default_agent_provider(), AgentProvider::Claude);
+    }
+
     #[tokio::test]
     async fn stream_resume_reconstructs_full_output() {
         let (dir, repo) = init_repo();
@@ -18982,6 +19110,14 @@ mod tests {
 
     /// Shared state + handler for the keyed-terminal tests: the handler drives
     /// the RPC surface while the state handle lets tests inspect internals.
+    /// Point a fixture's account at the carrier with a terminal. A test that
+    /// reaches for an agent's pid, or spawns the warm TUI spec, is a test about
+    /// a PTY session — so it says which carrier it means instead of riding
+    /// whatever the account's Claude Code mode happens to be.
+    fn on_the_terminal_carrier(state: &Arc<Mutex<AppState>>) {
+        state.lock().unwrap().claude_mode = ClaudeMode::Tui;
+    }
+
     fn shared_state_and_handler(
         repo: &std::path::Path,
         dir: &std::path::Path,
@@ -25266,6 +25402,7 @@ mod tests {
     async fn run_all_delivers_the_next_stages_prompt_to_the_same_agent_process() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
         let (run_id, root) = {
             let mut s = state.lock().unwrap();
             run_at_the_stage_gate_after_a_real_first_stage(&mut s, "run them all", true)
@@ -25319,6 +25456,7 @@ mod tests {
     async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
         let plan = call(&handler, "plan.create", json!({ "goal": "one agent" }));
         let plan_id = plan_id_of(&plan);
         for stage_id in ["first-half", "second-half"] {
@@ -25384,6 +25522,7 @@ mod tests {
     async fn a_second_request_changes_reaches_the_same_agent_process() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
         // The fixture only needs state, so it goes through the synchronous
         // path; the change requests below go through the frame handler, which
         // is what actually delivers a queued turn.
@@ -26230,6 +26369,7 @@ mod tests {
     async fn a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
         let (run_id, root) = {
             // The fixture only needs state; the frame handler below is what
             // delivered the dispatch turn that opened the agent.
@@ -26467,6 +26607,7 @@ mod tests {
     async fn every_plan_verb_reaches_the_issues_one_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
         let plan = call(&handler, "plan.create", json!({ "goal": "one plan agent" }));
         assert_eq!(plan["ok"], true, "{plan:?}");
         let plan_id = plan_id_of(&plan);
@@ -31491,6 +31632,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
+        // The live run is on the TUI carrier, so "claude" has to mean that one
+        // for this start to be the same provider being re-asserted.
+        call(&handler, "settings.set", json!({ "claude_mode": "tui" }));
 
         let again = call(
             &handler,
@@ -31499,6 +31643,64 @@ mod tests {
         );
         assert_eq!(again["ok"], true, "{again:?}");
         assert_eq!(again["result"]["spawned"], "warm", "{again:?}");
+    }
+
+    /// A start is the moment the setting may have its say: an idle entity
+    /// whose record names the other claude carrier is re-carriered onto the
+    /// account's answer, because a restart is a start and "Claude Code" is
+    /// what the account says it is.
+    #[tokio::test]
+    async fn agent_start_naming_claude_re_carriers_an_idle_entity_onto_the_accounts_answer() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-recarrier");
+        assert_eq!(
+            state.lock().unwrap().runs["run-recarrier"]
+                .model_choice
+                .provider,
+            AgentProvider::Claude,
+            "the record starts on the TUI carrier"
+        );
+
+        let started = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "run-recarrier", "provider": "claude" }),
+        );
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            state.lock().unwrap().runs["run-recarrier"]
+                .model_choice
+                .provider,
+            AgentProvider::ClaudeAdk,
+            "the account runs Claude Code headless, so that is what a start opens"
+        );
+    }
+
+    /// The setting has its say at a start, not under a running harness: a
+    /// generic "claude" that would re-carrier a LIVE agent is refused exactly
+    /// as a named switch is.
+    #[tokio::test]
+    async fn a_generic_start_cannot_re_carrier_a_live_agent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (key, _wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-live-c");
+
+        let refused = call(
+            &handler,
+            "agent.start",
+            json!({ "id": "run-live-c", "provider": "claude" }),
+        );
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let error = refused["error"].as_str().unwrap();
+        assert!(error.contains("stop the current session"), "{error}");
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.runs["run-live-c"].model_choice.provider,
+            AgentProvider::Claude,
+            "a refused start leaves the record alone"
+        );
+        assert!(s.tabs[&key].live, "and the running harness where it was");
     }
 
     /// Attaching to an entity's agent finds the tab of the WORKTREE it works
@@ -38119,6 +38321,9 @@ mod tests {
     fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
+        // This half of the test is about the carrier that HAS a basement, so
+        // the account names it rather than riding the default.
+        state.claude_mode = ClaudeMode::Tui;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
         let agent_id = state.runs[&run_id].agents.first().id.clone();
         let root = state
@@ -38130,10 +38335,10 @@ mod tests {
         };
 
         // Nothing has started yet, so the PROVIDER answers: it knows which
-        // carrier its spawn will open, before there is a session to ask. Every
-        // provider today has a terminal, so the answer is the one this digest
-        // has always given — and the day one does not, the rail stops offering
-        // a basement the spawn would refuse, with no second place to fix.
+        // carrier its spawn will open, before there is a session to ask. This
+        // run's provider is the one with a terminal, so the answer is yes —
+        // and on a provider without one the rail stops offering a basement the
+        // spawn would refuse, with no second place to fix.
         let idle = bubble(&mut state);
         let provider = state.runs[&run_id].model_choice.provider;
         assert_eq!(

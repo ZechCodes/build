@@ -168,6 +168,15 @@ pub trait AgentSession: Send + Sync {
     /// two cannot disagree — a control the client offers and the session then
     /// refuses is worse than no control at all.
     ///
+    /// The rule runs ONE way, and the second half of the question is why: this
+    /// asks whether the carrier can stop a turn AND whether there is a turn to
+    /// stop. A refusal always means `false`; a `false` may instead mean there
+    /// was nothing running, which [`interrupt`](AgentSession::interrupt)
+    /// answers with the satisfied no-op rather than a refusal. So a session
+    /// reported working with no turn of its own open — background work
+    /// outliving the turn that started it — is `working: true` with
+    /// `can_interrupt: false`, which the composer renders as the plain Send.
+    ///
     /// A defaulted method rather than [`terminal`](AgentSession::terminal)'s
     /// `Option` capability, because this one is announced at RUNTIME — a
     /// protocol carrier learns it from the child's own `init` line, so the same
@@ -374,12 +383,17 @@ mod tests {
         );
     }
 
-    /// The flag and the call answer from ONE value, so the SPA can never offer
-    /// a control the session then refuses.
+    /// A refusal implies the flag was false, so the SPA can never offer a
+    /// control the session then refuses.
+    ///
+    /// One way only: a false flag does NOT imply a refusal, because it also
+    /// covers a session with no turn to stop — which the call answers with the
+    /// satisfied no-op.
     #[test]
-    fn a_session_can_interrupt_exactly_when_its_interrupt_does_not_refuse() {
+    fn a_session_that_refuses_an_interrupt_never_offered_one() {
         let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
-        assert_eq!(session.can_interrupt(), session.interrupt().is_ok());
+        assert!(session.interrupt().is_err());
+        assert!(!session.can_interrupt());
     }
 
     /// The capability defaults to absent, so a harness that is not opaque gets

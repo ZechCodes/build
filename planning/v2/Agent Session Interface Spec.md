@@ -2622,6 +2622,32 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-29, step 11's bridge half shipped — the payloads are pinned.**
+  One probe against claude 2.1.236 (a headless turn that backgrounded
+  `sleep 12 && echo woke`) produced all four events, and their shapes are
+  now recorded in `adk::fake` — `TASK_ROSTER` / `TASK_STARTED` /
+  `TASK_ROSTER_EMPTY` / `TASK_UPDATED_DONE` / `TASK_NOTIFICATION` — which is
+  what the tests hold the reader to. What the probe settled:
+  `background_tasks_changed` carries the **roster** (`tasks: [{task_id,
+  task_type, description}]`, empty when nothing is live), so §11.1's
+  replace-the-set rule stands as written rather than its delta fallback;
+  `task_started` carries `task_id` + `description`; `task_updated` carries
+  `task_id` + a `patch` of `{status, end_time}` and NO description of its
+  own; `task_notification` carries the human-readable line in `summary`. The
+  live child emitted them roster-first — roster, `task_started`, `result`,
+  empty roster, `task_updated`, `task_notification` — so it is the ROSTER
+  that inserts and removes, and `task_started` / `task_updated` mostly move
+  nothing, which is exactly the one-row-per-transition rule doing its job.
+  Two readings the shapes forced: a `task_updated` that moves no membership
+  mints nothing (its patch carries no human-readable line to mint — a
+  `description` in it renames the task for later rows instead), and a
+  notification that lands after the roster already closed its task mints its
+  own text without a name the set no longer holds. Also amended: a terminal
+  status is a NAMED set (`completed`/`failed`/`error`/`cancelled`/`killed`/
+  `timed_out`) so an unrecognised one leaves the task for the roster to
+  close, and `cancelled`/`killed` read as `finished`, not `failed`. Still
+  outstanding: §11.4, the SPA's one activity-map entry.
+
 - **2026-08-29, step 11 specified — background tasks are visible, and the
   agent stays Working.** The headless-looks-idle finding, closed by design:
   the stream's `system` task events (`task_started`, `task_updated`,

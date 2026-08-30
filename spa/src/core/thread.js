@@ -53,7 +53,12 @@ const EVENT_META = {
   // session, which is why `activity` folds them (see activityHtml). None of
   // them carries a tone: not one of them is asking the reader for anything.
   reasoning: { label: "Agent thought", icon: "◌", activity: true },
+  // A call and its answer are one row: the call mints it, and the answer
+  // completes it in place (see `toolOutcomeHtml`).
   tool_use: { label: "Agent called a tool", icon: "▸", activity: true },
+  // A row of its own, still minted for an answer whose call the daemon could
+  // not pair — and the kind every conversation recorded before the two became
+  // one row is full of. Stored rows render forever.
   tool_result: { label: "Tool answered", icon: "◂", activity: true },
   narration: { label: "Agent narrated", icon: "◦", activity: true },
   // Work the agent left running behind its own turn. The label names the task
@@ -712,6 +717,34 @@ function firstLine(summary) {
   return summary.split("\n").find((line) => line.trim()) || "";
 }
 
+/// What a tool call's answer reported, as a mark on the call's own row.
+///
+/// The call and the answer are one row, so the row has three states to say and
+/// says them here rather than as a second row underneath. Only the error mark
+/// takes a colour, and only the MARK does: the row stays toneless, because
+/// activity asks the reader for nothing and a tool call that failed still
+/// doesn't — the agent was told, and the agent calling the human is what a
+/// blocker is for.
+const TOOL_OUTCOME_MARKS = {
+  ok: { glyph: "✓", label: "The tool answered" },
+  error: { glyph: "✕", label: "The tool reported an error", tone: "blocked" },
+  unanswered: { glyph: "⊘", label: "No answer arrived" },
+};
+
+/// The mark, or nothing at all.
+///
+/// Nothing is the PENDING state — the call is still running — and it is what an
+/// unanswered-so-far row carries, what every row written before calls and
+/// answers were one row carries, and what a state this build has no name for
+/// carries: the additive wire read in the client's direction, where the safe
+/// reading of a token from a newer daemon is the one that claims nothing.
+function toolOutcomeHtml(outcome) {
+  const mark = TOOL_OUTCOME_MARKS[outcome];
+  if (!mark) return "";
+  return `<span class="thread-activity-outcome ${mark.tone || ""}" data-outcome="${esc(outcome)}"
+    role="img" aria-label="${esc(mark.label)}">${mark.glyph}</span>`;
+}
+
 /// Activity, folded.
 ///
 /// Reasoning, tool calls, tool results, narration and background tasks are the
@@ -723,13 +756,19 @@ function firstLine(summary) {
 /// A row with nothing behind it is not a fold. An event carrying neither a
 /// summary nor links would otherwise offer a disclosure triangle onto an empty
 /// box, which is a worse answer than the plain line it has always been.
+///
+/// A tool call's row is completed in place when its answer arrives, so the head
+/// gains a state mark and the summary gains the answer as a second line. The
+/// preview is the FIRST line either way, which is what keeps the head still
+/// under a reader watching the call run.
 function activityHtml(event, meta, agentLabel) {
   const label = meta.label.replace(/^Agent\b/, agentLabel);
   const summary = String(event.summary || "").trim();
   const head = `<span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <span class="thread-activity-what">${esc(label)}</span>
     ${summary ? `<span class="thread-activity-preview">${esc(firstLine(summary))}</span>` : ""}
-    ${timeHtml(event.created_at)}`;
+    ${timeHtml(event.created_at)}
+    ${toolOutcomeHtml(event.outcome)}`;
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
   if (!body) return `<div class="thread-event thread-activity">${head}</div>`;

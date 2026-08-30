@@ -122,6 +122,98 @@ describe("activity in the timeline", () => {
   });
 });
 
+// A tool call and its answer are ONE row: the call mints it, and the answer
+// completes it in place. So the row has three states to say, and it says them
+// with a mark on its own head rather than with a second row underneath.
+describe("a tool call's own row", () => {
+  const toolCall = (data) =>
+    threadHtml({ items: [{ type: "event", data: { event: "tool_use", ...data } }] });
+
+  // Absence is the pending state. It is what a call that has not been answered
+  // yet carries, and also what every row written before calls and answers were
+  // one row carries — so the unmarked row has to read exactly as it always did.
+  it("carries no mark while the call is still running", () => {
+    document.body.innerHTML = toolCall({ summary: "Read bridge/src/app.rs" });
+
+    const fold = document.querySelector(".thread-activity");
+    expect(fold.querySelector(".thread-activity-outcome")).toBe(null);
+    expect(fold.querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+  });
+
+  it("marks an answered call, and keeps the answer inside the fold", () => {
+    document.body.innerHTML = toolCall({
+      summary: "Read bridge/src/app.rs\n→ fn main() {}",
+      outcome: "ok",
+    });
+
+    const fold = document.querySelector(".thread-activity");
+    const mark = fold.querySelector(".thread-activity-outcome");
+    expect(mark.dataset.outcome).toBe("ok");
+    expect(mark.textContent).toBe("✓");
+    // The head stays what it was: the answer suffix is a second line, so the
+    // preview does not move when it lands.
+    expect(fold.querySelector(".thread-activity-preview").textContent).toBe("Read bridge/src/app.rs");
+    expect(fold.querySelector(".thread-event-detail").textContent).toContain("→ fn main() {}");
+  });
+
+  // A failed tool call is still the agent working. It asks the reader for
+  // nothing — the agent was told, and the agent calling the human is what a
+  // blocker is for — so the colour is on the mark and the row stays toneless.
+  it("colours the mark on a failed call, and nothing else about the row", () => {
+    document.body.innerHTML = toolCall({
+      summary: "Bash npm test\n→ 3 tests failed",
+      outcome: "error",
+    });
+
+    const fold = document.querySelector(".thread-activity");
+    const mark = fold.querySelector(".thread-activity-outcome");
+    expect(mark.dataset.outcome).toBe("error");
+    expect(mark.textContent).toBe("✕");
+    expect(mark.classList.contains("blocked")).toBe(true);
+    expect(fold.classList.contains("blocked")).toBe(false);
+    expect(fold.querySelector(".thread-event-icon").textContent).toBe("▸");
+  });
+
+  // Pending is a claim too — "this is still running" — so a call nothing ever
+  // answered closes rather than dangling, and the body names the boundary that
+  // closed it.
+  it("closes an unanswered call, and says which boundary closed it", () => {
+    document.body.innerHTML = toolCall({
+      summary: "Read bridge/src/app.rs\n→ no answer — turn ended",
+      outcome: "unanswered",
+    });
+
+    const fold = document.querySelector(".thread-activity");
+    const mark = fold.querySelector(".thread-activity-outcome");
+    expect(mark.dataset.outcome).toBe("unanswered");
+    expect(mark.textContent).toBe("⊘");
+    expect(mark.classList.contains("blocked")).toBe(false);
+    expect(fold.querySelector(".thread-event-detail").textContent).toContain("no answer — turn ended");
+  });
+
+  // The wire is additive in the client's direction too: a daemon is free to
+  // name a state this build predates, and the safe reading of a row whose state
+  // this build cannot name is the one that claims nothing.
+  it("renders an outcome token it has never heard of as pending", () => {
+    document.body.innerHTML = toolCall({ summary: "Read bridge/src/app.rs", outcome: "deferred" });
+
+    expect(document.querySelector(".thread-activity-outcome")).toBe(null);
+  });
+
+  // Stored rows must render forever, and the orphan fallback still mints them:
+  // a `tool_result` row is its own row, with no mark and its own label.
+  it("leaves a standalone tool_result row exactly as it was", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "tool_result", summary: "17 matches" } }],
+    });
+
+    const fold = document.querySelector(".thread-activity");
+    expect(fold.querySelector(".thread-activity-what").textContent).toBe("Tool answered");
+    expect(fold.querySelector(".thread-activity-preview").textContent).toBe("17 matches");
+    expect(fold.querySelector(".thread-activity-outcome")).toBe(null);
+  });
+});
+
 // The conversation is re-rendered on every poll and patched into the live tree.
 // The render always ships a fold shut, so `open` is on the live element only
 // because the reader put it there — and a patch that took it back would shut
@@ -137,5 +229,39 @@ describe("a fold the reader opened", () => {
     patchElement(live, rendered.querySelector(".thread-items"));
 
     expect(live.querySelector(".thread-activity").open).toBe(true);
+  });
+
+  // The one repaint that changes the row under an open fold: the answer landing
+  // on the call the reader opened to watch. The mark and the answer arrive, and
+  // the fold stays open — otherwise watching a call run would shut the fold at
+  // the exact moment it had something to show.
+  it("stays open when the call's answer lands under it", () => {
+    const pending = threadHtml({
+      items: [{ type: "event", data: { sequence: 2, event: "tool_use", summary: "Bash npm test" } }],
+    });
+    const answered = threadHtml({
+      items: [{
+        type: "event",
+        data: {
+          sequence: 2,
+          updated_sequence: 3,
+          event: "tool_use",
+          summary: "Bash npm test\n→ 412 passed",
+          outcome: "ok",
+        },
+      }],
+    });
+    document.body.innerHTML = pending;
+    const live = document.querySelector(".thread-items");
+    live.querySelector(".thread-activity").open = true;
+
+    const rendered = document.createElement("div");
+    rendered.innerHTML = answered;
+    patchElement(live, rendered.querySelector(".thread-items"));
+
+    const fold = live.querySelector(".thread-activity");
+    expect(fold.open).toBe(true);
+    expect(fold.querySelector(".thread-activity-outcome").dataset.outcome).toBe("ok");
+    expect(fold.querySelector(".thread-event-detail").textContent).toContain("412 passed");
   });
 });

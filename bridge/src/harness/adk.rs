@@ -21,7 +21,7 @@
 //! out loud, which is what keeps the scope doc's no-scraping rule intact for a
 //! carrier that has no screen to scrape.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -237,6 +237,15 @@ struct ProtocolState {
     reported_error: Option<String>,
     /// The last thing the child said on stderr, for a death with no result.
     last_stderr_line: Option<String>,
+    /// The background work the child says is live right now — its task id
+    /// against the description it goes by.
+    ///
+    /// Reconciled against the child's own roster rather than bookkept from the
+    /// start and end events, so it cannot drift from what the harness says is
+    /// running. Sorted rather than hashed because the rows it mints are read by
+    /// a human in the order they are minted, and a hash order would shuffle two
+    /// tasks ending together from run to run.
+    tasks: BTreeMap<String, String>,
 }
 
 impl ProtocolState {
@@ -250,20 +259,39 @@ impl ProtocolState {
             pending_interrupt: None,
             reported_error: None,
             last_stderr_line: None,
+            tasks: BTreeMap::new(),
         }
     }
 
     /// What a session that has not exited is doing, straight from its own turn
     /// boundaries: starting until it announces itself, working while a turn it
-    /// accepted is unanswered, waiting for the human otherwise.
+    /// accepted is unanswered OR background work it started is still running,
+    /// waiting for the human otherwise.
+    ///
+    /// The task half is what ends the headless-looks-idle failure: a turn can
+    /// close over work that outlives it, and an agent reported `Waiting` there
+    /// went dark on the rail while it was still doing something. Nothing else
+    /// clears the set — reconciliation, a terminal task event and the session
+    /// ending are its only exits — so a session cannot be pinned `Working` by
+    /// work that is over.
     fn live_status(&self) -> AgentStatus {
-        if self.turn_open {
+        if self.turn_open || !self.tasks.is_empty() {
             AgentStatus::Working
         } else if self.announced {
             AgentStatus::Waiting
         } else {
             AgentStatus::Starting
         }
+    }
+
+    /// Whether the child announced it can stop a turn. Asked apart from
+    /// [`AgentSession::can_interrupt`] because the two questions differ: this
+    /// one decides whether Build may write a `control_request` at all, and the
+    /// public one also asks whether there is a turn to spend it on.
+    fn announces_interrupt(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|announced| announced == INTERRUPT_CAPABILITY)
     }
 }
 
@@ -457,16 +485,19 @@ impl AgentSession for AdkSession {
     }
 
     /// Announced by the child in its own `init` line, so the same provider
-    /// answers differently on two versions of the same CLI — and a session that
-    /// has not announced yet answers no, which is also true: it has no turn to
-    /// stop.
+    /// answers differently on two versions of the same CLI — and only while
+    /// there is a turn to stop.
+    ///
+    /// The interrupt ends a TURN, and background work is not one: a session
+    /// whose turn closed over a live task is `Working` and cannot be
+    /// interrupted, which is a legal pair and always was — the PTY has reported
+    /// it since the field landed, and the composer's gate is `working &&
+    /// can_interrupt`, so what it offers there is the plain Send. Both halves
+    /// are read under one lock, so this can never disagree with the guard
+    /// [`interrupt`](AdkSession::interrupt) reads.
     fn can_interrupt(&self) -> bool {
-        self.state
-            .lock()
-            .unwrap()
-            .capabilities
-            .iter()
-            .any(|announced| announced == INTERRUPT_CAPABILITY)
+        let state = self.state.lock().unwrap();
+        state.turn_open && state.announces_interrupt()
     }
 
     /// One `control_request` line on the same pipe the turns go down, and back.
@@ -489,7 +520,7 @@ impl AgentSession for AdkSession {
     /// announced `interrupt_cancel_queued_v1` a request that could take the
     /// queued turn with it.
     fn interrupt(&self) -> Result<(), HarnessError> {
-        if !self.can_interrupt() {
+        if !self.state.lock().unwrap().announces_interrupt() {
             return Err(HarnessError::Unsupported(
                 "this claude advertises no interrupt — send the message instead: it reaches the running turn at its next step boundary".to_string(),
             ));
@@ -658,12 +689,22 @@ impl ProtocolReader {
         }
     }
 
-    /// The lifecycle line. `init` is when the child can take a turn, and it
-    /// carries the session id a respawn resumes by.
+    /// The lifecycle line, and the background-task lines that ride the same
+    /// subtype. Anything else on `system` is not this session's business.
     fn read_system(&mut self, event: &Value) {
-        if event["subtype"].as_str() != Some("init") {
-            return;
+        match event["subtype"].as_str() {
+            Some("init") => self.read_init(event),
+            Some("background_tasks_changed") => self.read_task_roster(event),
+            Some("task_started") => self.read_task_started(event),
+            Some("task_updated") => self.read_task_updated(event),
+            Some("task_notification") => self.read_task_notification(event),
+            _ => {}
         }
+    }
+
+    /// `init` is when the child can take a turn, and it carries the session id a
+    /// respawn resumes by.
+    fn read_init(&mut self, event: &Value) {
         let mut state = self.state.lock().unwrap();
         state.announced = true;
         if let Some(id) = event["session_id"].as_str() {
@@ -674,6 +715,157 @@ impl ProtocolReader {
                 .iter()
                 .filter_map(|entry| entry.as_str().map(str::to_string))
                 .collect();
+        }
+    }
+
+    /// The child's own statement of what background work is live, which
+    /// REPLACES the set rather than merging into it.
+    ///
+    /// A reconciled set cannot drift from the harness: a task Build somehow
+    /// never saw start is inserted here, and a task whose end never got its own
+    /// event is removed here. Both are membership transitions, so both mint.
+    fn read_task_roster(&mut self, event: &Value) {
+        let listed: Vec<(String, String)> = event["tasks"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|task| {
+                let id = task["task_id"].as_str()?;
+                Some((id.to_string(), task_description(task, id)))
+            })
+            .collect();
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let mut minted = Vec::new();
+            for (id, description) in &listed {
+                if !state.tasks.contains_key(id) {
+                    minted.push(format!("started — {description}"));
+                }
+            }
+            for (id, description) in &state.tasks {
+                if !listed.iter().any(|(listed, _)| listed == id) {
+                    minted.push(format!("finished — {description}"));
+                }
+            }
+            state.tasks = listed.into_iter().collect();
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// A task announcing itself. The minting trigger for a start, and the reason
+    /// status flips to `Working` without waiting for the next roster — but only
+    /// when it actually inserts, because a roster that already listed this task
+    /// has said the same thing once.
+    fn read_task_started(&mut self, event: &Value) {
+        let Some(id) = event["task_id"].as_str() else {
+            return;
+        };
+        let description = task_description(event, id);
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            match state.tasks.insert(id.to_string(), description.clone()) {
+                Some(_) => Vec::new(),
+                None => vec![format!("started — {description}")],
+            }
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// A patch against one task. A terminal status ends it; anything else is
+    /// progress and touches membership not at all.
+    ///
+    /// A progress patch mints nothing. The pinned payload carries only a status
+    /// and an end time — no human-readable line of its own — so a patch that
+    /// moves no membership has nothing to say that the task's own name did not
+    /// already say. A `description` it does carry renames the task for the rows
+    /// still to come rather than minting a row about the rename.
+    fn read_task_updated(&mut self, event: &Value) {
+        let Some(id) = event["task_id"].as_str() else {
+            return;
+        };
+        let patch = &event["patch"];
+        let status = patch["status"]
+            .as_str()
+            .or_else(|| event["status"].as_str())
+            .unwrap_or_default();
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            if !task_status_is_terminal(status) {
+                if let Some(renamed) = patch["description"].as_str() {
+                    if let Some(held) = state.tasks.get_mut(id) {
+                        *held = renamed.to_string();
+                    }
+                }
+                Vec::new()
+            } else {
+                match state.tasks.remove(id) {
+                    Some(description) => vec![ended_summary(status, &description, patch)],
+                    None => Vec::new(),
+                }
+            }
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// The task saying something worth reading — and, when it carries a
+    /// terminal status, the only word some tasks ever get that the work is over.
+    ///
+    /// A FOREGROUND Bash command is a task too, and the child closes it with a
+    /// notification alone: no `task_updated`, no roster, ever (probe,
+    /// 2026-08-30). A reader that took every notification for chatter would
+    /// hold that task for the life of the session and report `Working` over an
+    /// agent idle for hours — the inverse of the failure this step closes. So a
+    /// terminal status here IS a membership removal, and mints the ending row
+    /// the way the roster and the terminal patch do.
+    ///
+    /// Its text is minted under the task's own name while the set still holds
+    /// it, and on its own after that: the child empties the roster before it
+    /// delivers a background task's notification, and a name the set no longer
+    /// holds is not a name to speak with — the text says which task it is
+    /// either way. Text that only repeats the task's own name mints nothing,
+    /// because a foreground notification's summary IS the description, and a
+    /// row reading `X: X` says nothing the ending row did not.
+    fn read_task_notification(&mut self, event: &Value) {
+        let said = event["summary"]
+            .as_str()
+            .or_else(|| event["message"].as_str())
+            .unwrap_or_default()
+            .trim();
+        let status = event["status"].as_str().unwrap_or_default();
+        let ends = task_status_is_terminal(status);
+        let minted = {
+            let mut state = self.state.lock().unwrap();
+            let held = event["task_id"].as_str().and_then(|id| match ends {
+                true => state.tasks.remove(id),
+                false => state.tasks.get(id).cloned(),
+            });
+            let mut minted = Vec::new();
+            if !said.is_empty() && held.as_deref() != Some(said) {
+                minted.push(match &held {
+                    Some(description) => format!("{description}: {said}"),
+                    None => said.to_string(),
+                });
+            }
+            if ends {
+                if let Some(description) = &held {
+                    minted.push(ended_summary(status, description, event));
+                }
+            }
+            minted
+        };
+        self.mint_task_updates(minted);
+    }
+
+    /// Send one row per transition, in the order the transitions happened, each
+    /// clipped the way a tool summary is: this is operational text about the
+    /// work, not the agent speaking.
+    fn mint_task_updates(&self, summaries: Vec<String>) {
+        for summary in summaries {
+            self.emit(AgentActivity::TaskUpdate {
+                summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
+            });
         }
     }
 
@@ -860,6 +1052,64 @@ fn tool_result_text(block: &Value) -> String {
     }
 }
 
+/// What a task goes by in the timeline: the description the child gave it,
+/// falling back to its id. A row reading `started — bi1jfa1kd` says less than
+/// one naming the work, and far more than `started — `.
+fn task_description(event: &Value, id: &str) -> String {
+    let described = event["description"].as_str().unwrap_or_default().trim();
+    match described.is_empty() {
+        false => described.to_string(),
+        true => id.to_string(),
+    }
+}
+
+/// Whether a reported task status means the work is over.
+///
+/// Named rather than inferred from the absence of a running status, so an
+/// unrecognised status leaves the task in the set instead of closing it — where
+/// the roster, when one is coming, will close it on the child's own word.
+///
+/// `completed`, `failed`, `killed` and `stopped` are the four the live probes
+/// turned up; the rest are the shapes their names imply, recognised so a task
+/// ending under one of them is not held open waiting for a roster that, for a
+/// foreground task, never comes.
+fn task_status_is_terminal(status: &str) -> bool {
+    matches!(
+        status,
+        "completed"
+            | "failed"
+            | "error"
+            | "cancelled"
+            | "canceled"
+            | "killed"
+            | "stopped"
+            | "timed_out"
+    )
+}
+
+/// The row a task's ending mints: `failed` when the event that ended it said
+/// so, with the error it named, and `finished` otherwise. A task that was
+/// cancelled, killed or stopped did not fail — something ended it, which is not
+/// the same thing to read.
+///
+/// `ending` is whichever event carried the terminal status: a `task_updated`'s
+/// patch, or a `task_notification` itself, which carries its status at the top
+/// level and — as the probes recorded it — no error text at all.
+fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
+    if !matches!(status, "failed" | "error" | "timed_out") {
+        return format!("finished — {description}");
+    }
+    let reported = ending["error"]
+        .as_str()
+        .or_else(|| ending["result"].as_str())
+        .unwrap_or_default()
+        .trim();
+    match reported.is_empty() {
+        true => format!("failed — {description}"),
+        false => format!("failed — {description}: {reported}"),
+    }
+}
+
 /// The error text a failed result carried, falling back to its subtype: an
 /// epitaph naming `error_max_turns` explains more than an empty string does.
 fn result_error_text(event: &Value) -> String {
@@ -922,6 +1172,74 @@ pub(crate) mod fake {
     pub(crate) const SUBAGENT_TEXT: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"a subagent talking"}]},"parent_tool_use_id":"toolu_1"}"#;
     pub(crate) const FAILED_RESULT: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the tool call was refused","session_id":"sess-adk"}"#;
 
+    /// The background-task lines, recorded from a live probe against claude
+    /// 2.1.236 on 2026-08-29: one headless turn that put `sleep 12 && echo
+    /// woke` in the background and wrote two lines of haiku.
+    ///
+    /// The child emitted them in exactly this order — roster, `task_started`,
+    /// the turn's `result`, empty roster, `task_updated`, `task_notification`
+    /// — which is what [`the_probes_own_order_mints_one_row_per_transition`]
+    /// replays. Two substitutions and nothing else: the recorded `session_id`
+    /// and `uuid` values are swapped for this module's, and the notification's
+    /// `output_file` for a short path, so the recordings read as one session
+    /// and carry no machine paths. Every field the reader looks at is verbatim.
+    pub(crate) const TASK_ROSTER: &str = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bi1jfa1kd","task_type":"local_bash","description":"Sleep 12 seconds then echo woke"}],"uuid":"task-uuid-1","session_id":"sess-adk"}"#;
+    pub(crate) const TASK_STARTED: &str = r#"{"type":"system","subtype":"task_started","task_id":"bi1jfa1kd","tool_use_id":"toolu_bg","description":"Sleep 12 seconds then echo woke","task_type":"local_bash","uuid":"task-uuid-2","session_id":"sess-adk"}"#;
+    /// The roster with nothing on it — how the live child says the work is
+    /// over, ahead of the `task_updated` that says which way it went.
+    pub(crate) const TASK_ROSTER_EMPTY: &str = r#"{"type":"system","subtype":"background_tasks_changed","tasks":[],"uuid":"task-uuid-3","session_id":"sess-adk"}"#;
+    pub(crate) const TASK_UPDATED_DONE: &str = r#"{"type":"system","subtype":"task_updated","task_id":"bi1jfa1kd","patch":{"status":"completed","end_time":1788057950364},"uuid":"task-uuid-4","session_id":"sess-adk"}"#;
+    pub(crate) const TASK_NOTIFICATION: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bi1jfa1kd","tool_use_id":"toolu_bg","status":"completed","output_file":"/tmp/tasks/bi1jfa1kd.output","summary":"Background command \"Sleep 12 seconds then echo woke\" completed (exit code 0)","uuid":"task-uuid-5","session_id":"sess-adk"}"#;
+
+    /// Three the probe's own command had no reason to produce, each the
+    /// recorded shape above with one field changed and nothing else: a task
+    /// that FAILED rather than completed, a patch that reports progress rather
+    /// than an ending, and a notification whose text runs over several lines
+    /// the way a command quoting its own output would.
+    pub(crate) const TASK_UPDATED_FAILED: &str = r#"{"type":"system","subtype":"task_updated","task_id":"bi1jfa1kd","patch":{"status":"failed","error":"exit code 1","end_time":1788057950364},"uuid":"task-uuid-6","session_id":"sess-adk"}"#;
+    pub(crate) const TASK_UPDATED_PROGRESS: &str = r#"{"type":"system","subtype":"task_updated","task_id":"bi1jfa1kd","patch":{"output_lines":12},"uuid":"task-uuid-7","session_id":"sess-adk"}"#;
+    pub(crate) const TASK_NOTIFICATION_MULTILINE: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bi1jfa1kd","tool_use_id":"toolu_bg","status":"completed","output_file":"/tmp/tasks/bi1jfa1kd.output","summary":"Background command completed\n\n  woke\n","uuid":"task-uuid-8","session_id":"sess-adk"}"#;
+
+    /// What the recorded task calls itself — the human-readable half of every
+    /// summary the reader mints for it.
+    pub(crate) const TASK_DESCRIPTION: &str = "Sleep 12 seconds then echo woke";
+
+    /// A FOREGROUND Bash command is a task too, and it ends differently —
+    /// recorded from a second live probe against claude 2.1.236 on 2026-08-30:
+    /// one headless turn that ran a plain `sleep 10` and answered after it.
+    ///
+    /// The child emitted exactly two task lines for it, in this order:
+    /// `task_started`, then a `task_notification` carrying `status`
+    /// `completed`. No `task_updated` and no `background_tasks_changed`, ever —
+    /// so the notification is the ONLY event that says the work is over, and a
+    /// reader that took it for chatter would hold the task for the life of the
+    /// session. Note the `summary`: for a foreground task it is the
+    /// description, word for word, which is why text that only repeats the
+    /// task's own name mints no row of its own.
+    ///
+    /// The same substitutions as the recordings above and nothing else — the
+    /// `session_id`, `uuid` and `tool_use_id` values are swapped for this
+    /// module's. Every field the reader looks at is verbatim.
+    pub(crate) const FOREGROUND_TASK_STARTED: &str = r#"{"type":"system","subtype":"task_started","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","description":"Sleep for 10 seconds","task_type":"local_bash","uuid":"task-uuid-9","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","status":"completed","output_file":"","summary":"Sleep for 10 seconds","uuid":"task-uuid-10","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_DESCRIPTION: &str = "Sleep for 10 seconds";
+
+    /// The same shape from the same probe run, for a foreground command that
+    /// EXITED NON-ZERO: `sleep 3; exit 7`. Two task lines again, and the
+    /// notification's status is `failed` — with no error text anywhere on it,
+    /// which is why the row it mints names the work and stops there.
+    pub(crate) const FOREGROUND_TASK_FAILED_STARTED: &str = r#"{"type":"system","subtype":"task_started","task_id":"boq8sla8p","tool_use_id":"toolu_fg2","description":"sleep 3; exit 7","task_type":"local_bash","uuid":"task-uuid-11","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION_FAILED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"boq8sla8p","tool_use_id":"toolu_fg2","status":"failed","output_file":"","summary":"sleep 3; exit 7","uuid":"task-uuid-12","session_id":"sess-adk"}"#;
+    pub(crate) const FOREGROUND_TASK_FAILED_DESCRIPTION: &str = "sleep 3; exit 7";
+
+    /// A third terminal status the same probe run turned up, from a task the
+    /// child killed when its turn ended: `stopped`. Recorded from that
+    /// notification with its task id, `tool_use_id`, `summary` and
+    /// `output_file` swapped for the completed foreground recording's, so one
+    /// `task_started` line above serves this ending too. Its `status` — the one
+    /// field this recording exists to pin — is verbatim.
+    pub(crate) const FOREGROUND_TASK_NOTIFICATION_STOPPED: &str = r#"{"type":"system","subtype":"task_notification","task_id":"bwhwgc2zw","tool_use_id":"toolu_fg","status":"stopped","output_file":"","summary":"Sleep for 10 seconds","uuid":"task-uuid-13","session_id":"sess-adk"}"#;
+
     /// Which request the child names in the `control_response` it answers an
     /// interrupt with.
     enum Acknowledged {
@@ -950,7 +1268,7 @@ pub(crate) mod fake {
     /// `error_during_execution` result that closes the turn it stopped, and
     /// only then does the loop read the next queued turn.
     pub(crate) fn stream_json_harness(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, None)
+        harness_replaying(INIT, &[per_turn], true, Acknowledged::TheOneAsked, None)
     }
 
     /// The same child, appending every line written to its stdin to `heard`.
@@ -963,14 +1281,20 @@ pub(crate) mod fake {
         per_turn: &[&str],
         heard: &std::path::Path,
     ) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::TheOneAsked, Some(heard))
+        harness_replaying(
+            INIT,
+            &[per_turn],
+            true,
+            Acknowledged::TheOneAsked,
+            Some(heard),
+        )
     }
 
     /// The same child, for one turn only: it answers, then leaves the way a
     /// real one does when its work is over. That departure closes its stream,
     /// which is what a no-terminal session's death rites hang off.
     pub(crate) fn stream_json_harness_that_leaves(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, false, Acknowledged::TheOneAsked, None)
+        harness_replaying(INIT, &[per_turn], false, Acknowledged::TheOneAsked, None)
     }
 
     /// A CLI that announces no interrupt. Build never sends it a
@@ -979,7 +1303,7 @@ pub(crate) mod fake {
     pub(crate) fn stream_json_harness_without_interrupt(per_turn: &[&str]) -> HarnessSpec {
         harness_replaying(
             INIT_WITHOUT_INTERRUPT,
-            per_turn,
+            &[per_turn],
             true,
             Acknowledged::TheOneAsked,
             None,
@@ -989,7 +1313,7 @@ pub(crate) mod fake {
     /// A child that answers an interrupt by naming a request nobody made, and
     /// then fails the turn on its own account.
     pub(crate) fn stream_json_harness_answering_another_request(per_turn: &[&str]) -> HarnessSpec {
-        harness_replaying(INIT, per_turn, true, Acknowledged::AnotherRequest, None)
+        harness_replaying(INIT, &[per_turn], true, Acknowledged::AnotherRequest, None)
     }
 
     /// A recording child with nothing to stop: it acks a `control_request` and
@@ -1003,28 +1327,63 @@ pub(crate) mod fake {
     ) -> HarnessSpec {
         harness_replaying(
             INIT,
-            per_turn,
+            &[per_turn],
             true,
             Acknowledged::WithNoTurnToStop,
             Some(heard),
         )
     }
 
+    /// A child that answers each turn with its OWN recording — the first turn
+    /// with the first, the second with the second, and every turn after that
+    /// with the last one.
+    ///
+    /// What a single recording cannot express: work that is live after one turn
+    /// and over after the next, which is the whole shape the idle sweep has to
+    /// tell apart.
+    pub(crate) fn stream_json_harness_turn_by_turn(turns: &[&[&str]]) -> HarnessSpec {
+        harness_replaying(INIT, turns, true, Acknowledged::TheOneAsked, None)
+    }
+
     fn harness_replaying(
         init: &str,
-        per_turn: &[&str],
+        turns: &[&[&str]],
         turn_after_turn: bool,
         acknowledged: Acknowledged,
         heard: Option<&std::path::Path>,
     ) -> HarnessSpec {
-        let mut replay = String::new();
-        for line in per_turn {
-            assert!(
-                !line.contains('\''),
-                "a recorded protocol line may not carry a single quote: {line}"
-            );
-            replay.push_str(&format!("printf '%s\\n' '{line}'\n"));
-        }
+        let recorded = |lines: &[&str]| {
+            let mut replay = String::new();
+            for line in lines {
+                assert!(
+                    !line.contains('\''),
+                    "a recorded protocol line may not carry a single quote: {line}"
+                );
+                replay.push_str(&format!("printf '%s\\n' '{line}'\n"));
+            }
+            replay
+        };
+        // One recording needs no counter and produces the script it always did.
+        // Several are answered by a `case` on how many turns have been read, in
+        // which the last recording is the catch-all — so a child asked for more
+        // turns than were recorded keeps answering rather than falling silent.
+        let (counter, replay) = match turns {
+            [only] => (String::new(), recorded(only)),
+            _ => {
+                let mut arms = String::new();
+                for (index, lines) in turns.iter().enumerate() {
+                    let label = match index == turns.len() - 1 {
+                        true => "*".to_string(),
+                        false => (index + 1).to_string(),
+                    };
+                    arms.push_str(&format!("{label})\n{}\n;;\n", recorded(lines)));
+                }
+                (
+                    "turns=0\n".to_string(),
+                    format!("turns=$((turns+1))\ncase \"$turns\" in\n{arms}esac\n"),
+                )
+            }
+        };
         // The one place the script interpolates rather than quoting a recording:
         // the id it echoes is a value it read at runtime.
         let echoed = match acknowledged {
@@ -1037,7 +1396,7 @@ pub(crate) mod fake {
             Acknowledged::WithNoTurnToStop => String::new(),
             _ => format!("printf '%s\\n' '{FAILED_RESULT}'\n"),
         };
-        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n");
+        let mut script = format!("sleep 0.2\nprintf '%s\\n' '{init}'\n{counter}");
         script.push_str(match turn_after_turn {
             true => "while IFS= read -r turn; do\n",
             false => "if IFS= read -r turn; then\n",
@@ -1408,6 +1767,358 @@ mod tests {
         session.end();
     }
 
+    /// The row a background task mints when it starts, and the whole reason
+    /// this step exists: the turn that started the work is over and the work is
+    /// not, so a session with nothing open is still `Working`.
+    ///
+    /// The `background_tasks_changed` roster that follows lists the same task,
+    /// and mints NOTHING — one row per transition, however many events describe
+    /// it. The narration behind it is the fence that proves so: if the roster
+    /// had minted, it would be sitting where the narration is.
+    #[tokio::test]
+    async fn a_started_task_mints_once_and_keeps_a_turnless_session_working() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_ROSTER,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("started — {TASK_DESCRIPTION}"),
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            },
+            "the roster listing a task already live moved nothing, so it minted nothing"
+        );
+
+        // The narration arrived after the result, so the turn is closed — said
+        // through the control the composer reads, which is tied to an open turn
+        // and to nothing else.
+        assert!(
+            !session.can_interrupt(),
+            "a background task is not a turn, and the interrupt stops a turn"
+        );
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "the work outlived the turn that started it"
+        );
+        session.end();
+    }
+
+    /// The roster is the source of truth, in both directions: a task it stops
+    /// listing is over, whether or not an event ever said so. The timeline never
+    /// shows work that started and never ended, and the set clears rather than
+    /// pinning `Working` forever.
+    #[tokio::test]
+    async fn a_roster_that_drops_a_task_closes_it_once_and_the_session_waits_again() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            RESULT,
+            TASK_ROSTER_EMPTY,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("started — {TASK_DESCRIPTION}"),
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("finished — {TASK_DESCRIPTION}"),
+            },
+            "a roster that quietly drops a task still closes it in the timeline"
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            },
+            "and closes it exactly once"
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// A `task_updated` that carries a terminal status ends the task itself —
+    /// `failed` when it said so, with the error it named — and the roster that
+    /// later omits the id mints nothing more, because by then nothing moves.
+    #[tokio::test]
+    async fn a_terminal_task_update_fails_the_task_once() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_UPDATED_FAILED,
+            TASK_ROSTER_EMPTY,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("started — {TASK_DESCRIPTION}"),
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("failed — {TASK_DESCRIPTION}: exit code 1"),
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            },
+            "the roster that follows a task already ended moves nothing"
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// A notification is the task saying something worth reading, so its text is
+    /// minted under the task's own name — collapsed onto one line, because this
+    /// is operational text rather than the agent speaking — and, when the status
+    /// it carries is terminal, it closes the task as well: the text first, then
+    /// the ending it announces.
+    ///
+    /// The second notification lands with the set already empty, so it mints its
+    /// text on its own and closes nothing: one row per transition, and by then
+    /// nothing moves. A patch that moves neither membership nor any
+    /// human-readable text is a progress counter ticking, and mints nothing at
+    /// all.
+    #[tokio::test]
+    async fn a_task_notification_is_minted_and_a_progress_patch_is_not() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_UPDATED_PROGRESS,
+            TASK_NOTIFICATION,
+            TASK_NOTIFICATION_MULTILINE,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("started — {TASK_DESCRIPTION}"),
+            }
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!(
+                    "{TASK_DESCRIPTION}: Background command \"{TASK_DESCRIPTION}\" completed (exit code 0)"
+                ),
+            },
+            "the progress patch before it moved nothing and said nothing new"
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: format!("finished — {TASK_DESCRIPTION}"),
+            },
+            "the status it carried was terminal, so the notification ended the task"
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::TaskUpdate {
+                summary: "Background command completed woke".to_string(),
+            },
+            "several lines of output are one row, the way a tool answer is — and the set no longer holds a name to speak it under"
+        );
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            }
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// A FOREGROUND Bash command, replayed in the order the live child emitted
+    /// it: `task_started`, then a `task_notification` carrying a terminal
+    /// status — and no roster and no `task_updated`, because the child sends
+    /// neither for one.
+    ///
+    /// So the notification is the only event that says the work is over, and it
+    /// has to close the task: a reader that took it for chatter would hold the
+    /// task for the life of the session and report `Working` over an agent that
+    /// has been idle for hours — the inverse of the failure this step exists to
+    /// close. The `Waiting` at the end is that regression's fence.
+    ///
+    /// Its text mints nothing of its own here because a foreground
+    /// notification's summary IS the task's description, and a row reading
+    /// `Sleep for 10 seconds: Sleep for 10 seconds` says nothing the ending row
+    /// did not.
+    #[tokio::test]
+    async fn a_foreground_tasks_notification_closes_it_and_the_session_waits_again() {
+        let session = open(&stream_json_harness(&[
+            FOREGROUND_TASK_STARTED,
+            FOREGROUND_TASK_NOTIFICATION,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new("sleep for ten seconds"))
+            .unwrap();
+
+        let mut minted = Vec::new();
+        for _ in 0..3 {
+            minted.push(next_activity(&mut activity).await);
+        }
+        assert_eq!(
+            minted,
+            vec![
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::Narration {
+                    summary: "dropped the index".to_string()
+                },
+            ]
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// The other two terminal statuses a foreground notification carries, both
+    /// live-recorded: `failed`, which reads as a failure and names no error
+    /// because the notification carries none, and `stopped`, which does not —
+    /// something ended that work, which is not the same thing to read.
+    ///
+    /// Both must remove. An unrecognised status would leave its task in the set
+    /// with no roster coming to clear it, which is the same pin under a
+    /// different name.
+    #[tokio::test]
+    async fn a_failed_foreground_notification_fails_and_a_stopped_one_finishes() {
+        let session = open(&stream_json_harness(&[
+            FOREGROUND_TASK_FAILED_STARTED,
+            FOREGROUND_TASK_NOTIFICATION_FAILED,
+            FOREGROUND_TASK_STARTED,
+            FOREGROUND_TASK_NOTIFICATION_STOPPED,
+            RESULT,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session
+            .send_turn(&Turn::new("run the two commands"))
+            .unwrap();
+
+        let mut minted = Vec::new();
+        for _ in 0..5 {
+            minted.push(next_activity(&mut activity).await);
+        }
+        assert_eq!(
+            minted,
+            vec![
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("failed — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                },
+                AgentActivity::Narration {
+                    summary: "dropped the index".to_string()
+                },
+            ]
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
+    /// The recorded probe, replayed in the order the live child emitted it:
+    /// roster, `task_started`, the turn's `result`, empty roster,
+    /// `task_updated`, `task_notification`.
+    ///
+    /// Two of those six events move the set and four do not, so the timeline
+    /// gets exactly three rows — the start, the end, and what the task said.
+    /// The notification arrives after the roster already closed the task, which
+    /// is why it reads as its own text rather than under a name the set no
+    /// longer holds.
+    #[tokio::test]
+    async fn the_probes_own_order_mints_one_row_per_transition() {
+        let session = open(&stream_json_harness(&[
+            TASK_ROSTER,
+            TASK_STARTED,
+            RESULT,
+            TASK_ROSTER_EMPTY,
+            TASK_UPDATED_DONE,
+            TASK_NOTIFICATION,
+            NARRATION,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        let mut minted = Vec::new();
+        for _ in 0..4 {
+            minted.push(next_activity(&mut activity).await);
+        }
+        assert_eq!(
+            minted,
+            vec![
+                AgentActivity::TaskUpdate {
+                    summary: format!("started — {TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!("finished — {TASK_DESCRIPTION}"),
+                },
+                AgentActivity::TaskUpdate {
+                    summary: format!(
+                        "Background command \"{TASK_DESCRIPTION}\" completed (exit code 0)"
+                    ),
+                },
+                AgentActivity::Narration {
+                    summary: "dropped the index".to_string()
+                },
+            ]
+        );
+
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.end();
+    }
+
     /// Build's own tools already arrive as themselves over the MCP socket —
     /// `done` posts a completion, `post_thread_message` posts a message. Minting
     /// the call as well would tell the timeline the same thing twice, so neither
@@ -1582,10 +2293,16 @@ mod tests {
     /// The capability is the CHILD's answer, not the provider's: the same CLI
     /// advertises an interrupt on one version and not on the next, so the
     /// question is asked of the `init` line rather than of a version number.
-    /// A session that has not announced yet answers no — it has no turn to stop
-    /// either.
+    /// And it is offered only while there is a turn to spend it on, because
+    /// what an interrupt ends is a turn.
+    ///
+    /// The equivalence between the flag and the call runs one way and is
+    /// asserted as such: a refusal implies the flag is false, and a false flag
+    /// with a turn open implies a refusal. Between turns the flag is false and
+    /// the call is the satisfied no-op — the turn the human meant to stop is
+    /// already over, which is an answer rather than an error.
     #[test]
-    fn stopping_a_turn_is_offered_exactly_when_the_child_announced_it() {
+    fn stopping_a_turn_is_offered_exactly_when_the_child_announced_it_and_a_turn_is_open() {
         let announced = open(&stream_json_harness(&[THINKING]));
         assert!(
             !announced.can_interrupt(),
@@ -1593,17 +2310,32 @@ mod tests {
         );
         assert!(
             matches!(announced.interrupt(), Err(HarnessError::Unsupported(_))),
-            "and the flag and the call answer from the same value"
+            "and a refusal always means the flag was false"
         );
 
         wait_for_status(&announced, AgentStatus::Waiting);
+        assert!(
+            !announced.can_interrupt(),
+            "announced, but idle at its prompt: there is no turn to stop"
+        );
+        assert!(
+            announced.interrupt().is_ok(),
+            "and the press that lands there is satisfied, not refused"
+        );
+
+        // A turn the child never answers, so it is still open to be stopped.
+        announced.send_turn(&Turn::new("drop the index")).unwrap();
         assert!(announced.can_interrupt());
         assert!(announced.interrupt().is_ok());
         announced.end();
 
         let silent = open(&stream_json_harness_without_interrupt(&[THINKING]));
         wait_for_status(&silent, AgentStatus::Waiting);
-        assert!(!silent.can_interrupt());
+        silent.send_turn(&Turn::new("drop the index")).unwrap();
+        assert!(
+            !silent.can_interrupt(),
+            "a turn is open, so a false flag here is the carrier's refusal"
+        );
         assert!(matches!(
             silent.interrupt(),
             Err(HarnessError::Unsupported(_))
@@ -1919,6 +2651,7 @@ mod tests {
                         AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
                     eprintln!("[activity] {line}");
                     seen.lock().unwrap().push(line);
@@ -2017,6 +2750,15 @@ mod tests {
     /// interrupt would leave `error_during_execution` reading as a crash), the
     /// stopped tool never finishes, and the conversation survives its own stop.
     ///
+    /// The parked tool is a python sleep rather than a plain `sleep 90`
+    /// because the installed CLI BLOCKS a standalone sleep outright — "Blocked:
+    /// standalone sleep 90 … use run_in_background" — and the model, told no,
+    /// obligingly reruns it in the background, where nothing is parked at all
+    /// and the turn ends immediately. This command the CLI runs in the
+    /// foreground, timeout and all, which is what parks the turn (verified on
+    /// the wire, 2026-08-30: tool call at 9s, still running at 12s, and the
+    /// interrupt cut it there).
+    ///
     /// Ignored by default for the same reason as the steering test above; run
     /// with the same `cargo test --lib real_adk -- --ignored --nocapture`.
     #[test]
@@ -2061,6 +2803,7 @@ mod tests {
                         AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
                         AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
                     };
                     eprintln!("[activity] {line}");
                     seen.lock().unwrap().push(line);
@@ -2077,14 +2820,17 @@ mod tests {
         };
 
         // A turn that parks inside a tool long enough to be stopped: if the
-        // interrupt were silently ignored, this sleep runs its full two minutes
-        // and the deadline math below catches it.
+        // interrupt were silently ignored, this command runs its full ninety
+        // seconds and the deadline math below catches it.
         session
             .send_turn(&Turn::new(concat!(
                 "You are being driven by an automated test. Do exactly this and nothing ",
-                "else, then stop. First, use the Bash tool to run exactly: sleep 120\n",
-                "After the sleep finishes, write a file named answer.txt in the current ",
-                "directory whose entire contents are exactly the single word: APPLE",
+                "else, then stop. First, use the Bash tool to run exactly this command ",
+                "in the FOREGROUND, and do NOT set run_in_background: ",
+                "python3 -c \"import time; time.sleep(90)\"\n",
+                "Set the tool timeout to 150000. After it finishes, write a file named ",
+                "answer.txt in the current directory whose entire contents are exactly ",
+                "the single word: APPLE",
             )))
             .unwrap();
         // The turn just written holds status at `Working`, so init's arrival is
@@ -2101,7 +2847,7 @@ mod tests {
             seen.lock()
                 .unwrap()
                 .iter()
-                .any(|line| line.starts_with("tool_use") && line.contains("sleep"))
+                .any(|line| line.starts_with("tool_use") && line.contains("time.sleep"))
         });
 
         // The same berth the steering test gives the CLI's loop transition.
@@ -2138,9 +2884,13 @@ mod tests {
             settled_after.as_millis(),
             session.epitaph(),
         );
+        // The stopped command still had some eighty-seven of its ninety seconds
+        // to run, so an interrupt the child ignored cannot settle inside this
+        // window however fast the steering turn is. On the wire the whole
+        // stop-and-steer takes about five seconds.
         assert!(
-            settled_after < Duration::from_secs(110),
-            "the whole stop-and-steer took {}ms — longer than the sleep it was meant to cut short, so the turn was never stopped",
+            settled_after < Duration::from_secs(60),
+            "the whole stop-and-steer took {}ms — the parked command had eighty-seven seconds left, so the turn was never stopped",
             settled_after.as_millis()
         );
         assert_eq!(
@@ -2156,6 +2906,147 @@ mod tests {
         assert!(
             !matches!(session.status(), AgentStatus::Ended { .. }),
             "an interrupted session is the same session, still alive"
+        );
+        session.end();
+    }
+
+    /// Step 11's live claim: a REAL background task, on the real wire. The
+    /// recorded fixtures pin what one probe emitted; this leg holds the shipped
+    /// reader to a fresh child — the task events still arrive on `system`, the
+    /// reader mints the started and finished rows, and the session reports
+    /// `Working` with `can_interrupt` false while its turn is closed and the
+    /// task lives, then `Waiting` once the roster empties.
+    ///
+    /// Ignored by default for the same reason as the two legs above; run with
+    /// the same `cargo test --lib real_adk -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "spawns the real claude binary; needs auth + network + a model turn"]
+    fn real_adk_session_reports_a_background_task_and_stays_working() {
+        use crate::harness::Harness;
+
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().join("fresh-worktree");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mcp = workspace.join("mcp.json");
+        std::fs::write(
+            &mcp,
+            serde_json::to_vec_pretty(&json!({ "mcpServers": {} })).unwrap(),
+        )
+        .unwrap();
+        AdkHarness.prepare_workspace(&workspace);
+
+        let spec = HarnessSpec::new("claude")
+            .arg("-p")
+            .arg("--input-format")
+            .arg("stream-json")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--verbose")
+            .arg("--mcp-config")
+            .arg(mcp.to_string_lossy())
+            .arg("--strict-mcp-config")
+            .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg("haiku");
+
+        let (session, mut activity) =
+            AdkSession::spawn(&spec, Some(workspace.clone())).expect("claude should spawn");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        {
+            let seen = std::sync::Arc::clone(&seen);
+            std::thread::spawn(move || {
+                while let Ok(event) = activity.blocking_recv() {
+                    let line = match &event {
+                        AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
+                        AgentActivity::ToolUse { summary } => format!("tool_use: {summary}"),
+                        AgentActivity::ToolResult { summary } => format!("tool_result: {summary}"),
+                        AgentActivity::Narration { summary } => format!("narration: {summary}"),
+                        AgentActivity::TaskUpdate { summary } => format!("task_update: {summary}"),
+                    };
+                    eprintln!("[activity] {line}");
+                    seen.lock().unwrap().push(line);
+                }
+            });
+        }
+
+        let wait_until = |what: &str, deadline: Duration, test: &dyn Fn() -> bool| {
+            let started = Instant::now();
+            while !test() {
+                assert!(started.elapsed() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        let task_rows = |prefix: &str| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with(&format!("task_update: {prefix}")))
+                .count()
+        };
+
+        // A turn that puts a sleep in the BACKGROUND and answers without
+        // waiting on it, so the turn's result closes over live work — the exact
+        // shape the headless-looks-idle finding described.
+        session
+            .send_turn(&Turn::new(concat!(
+                "You are being driven by an automated test. Do exactly this and nothing ",
+                "else. Use the Bash tool with run_in_background set to true to run ",
+                "exactly: sleep 15 && echo woke\n",
+                "Do NOT wait for it, do NOT check on it, do NOT use any other tool. ",
+                "Immediately after starting it, reply with a two-line haiku and stop.",
+            )))
+            .unwrap();
+        wait_until("init", Duration::from_secs(30), &|| {
+            !matches!(session.status(), AgentStatus::Starting)
+        });
+        wait_until("the started task row", Duration::from_secs(120), &|| {
+            task_rows("started — ") == 1
+        });
+
+        // The result must close the turn while the task lives. The turn's edge
+        // is read through the control tied to it: `can_interrupt` goes false
+        // when the turn closes, while the live task holds status at `Working` —
+        // the legal pair the digest pins, observed on the real wire.
+        wait_until(
+            "the turn to close over the live task",
+            Duration::from_secs(120),
+            &|| !session.can_interrupt(),
+        );
+        assert_eq!(
+            session.status(),
+            AgentStatus::Working,
+            "the turn is closed and the sleep is not: this session is mid-work, not idle"
+        );
+
+        // The sleep ends; the roster empties; the reader closes the task in the
+        // timeline and the session finally waits.
+        wait_until(
+            "the task to finish in the timeline",
+            Duration::from_secs(120),
+            &|| task_rows("finished — ") + task_rows("failed — ") >= 1,
+        );
+        wait_until(
+            "the session to wait once the roster empties",
+            Duration::from_secs(60),
+            &|| matches!(session.status(), AgentStatus::Waiting),
+        );
+        eprintln!(
+            "[verdict] task rows: {:?}",
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|line| line.starts_with("task_update:"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            task_rows("started — "),
+            1,
+            "one start, one row — however many events described it"
+        );
+        assert_eq!(
+            task_rows("finished — "),
+            1,
+            "the task completed, so its ending reads as finished, minted once"
         );
         session.end();
     }

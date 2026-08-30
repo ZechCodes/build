@@ -18150,8 +18150,8 @@ fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
     }
 }
 
-/// The conversation event one reported activity becomes. The four kinds are the
-/// same four, named once here so the mapping cannot drift.
+/// The conversation event one reported activity becomes. The five kinds are the
+/// same five, named once here so the mapping cannot drift.
 fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::thread::ThreadEventKind {
     use crate::harness::AgentActivity;
     use crate::thread::ThreadEventKind;
@@ -18160,6 +18160,7 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
         AgentActivity::ToolUse { .. } => ThreadEventKind::ToolUse,
         AgentActivity::ToolResult { .. } => ThreadEventKind::ToolResult,
         AgentActivity::Narration { .. } => ThreadEventKind::Narration,
+        AgentActivity::TaskUpdate { .. } => ThreadEventKind::TaskUpdate,
     }
 }
 
@@ -33477,16 +33478,17 @@ mod tests {
                         | crate::thread::ThreadEventKind::ToolUse
                         | crate::thread::ThreadEventKind::ToolResult
                         | crate::thread::ThreadEventKind::Narration
+                        | crate::thread::ThreadEventKind::TaskUpdate
                 )
             })
             .collect()
     }
 
     /// What a session with no terminal has instead of a screen: its reasoning,
-    /// tool calls and narration, landing in the conversation the human already
-    /// reads.
+    /// tool calls, narration and background work, landing in the conversation
+    /// the human already reads.
     ///
-    /// The four kinds are `Status`, so an agent thinking out loud moves no
+    /// The five kinds are `Status`, so an agent thinking out loud moves no
     /// unread count — that is the property that makes putting activity in the
     /// conversation safe, and it is asserted here rather than assumed.
     #[tokio::test]
@@ -33526,6 +33528,9 @@ mod tests {
             crate::harness::AgentActivity::Narration {
                 summary: "dropped the index".into(),
             },
+            crate::harness::AgentActivity::TaskUpdate {
+                summary: "started — reindex the archive".into(),
+            },
         ] {
             activity.send(reported).expect("the pump is listening");
         }
@@ -33533,10 +33538,10 @@ mod tests {
         let reported = wait_for(Duration::from_secs(5), || {
             let s = state.lock().unwrap();
             let reported = activity_of(&s.runs["run-activity"].agents);
-            (reported.len() == 4).then_some(reported)
+            (reported.len() == 5).then_some(reported)
         })
         .await
-        .expect("the four events reach the conversation");
+        .expect("the five events reach the conversation");
         assert_eq!(
             reported,
             vec![
@@ -33555,6 +33560,10 @@ mod tests {
                 (
                     crate::thread::ThreadEventKind::Narration,
                     "dropped the index".to_string()
+                ),
+                (
+                    crate::thread::ThreadEventKind::TaskUpdate,
+                    "started — reindex the archive".to_string()
                 ),
             ],
             "in the order the agent did them"
@@ -33761,6 +33770,222 @@ mod tests {
             .iter()
             .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::Reasoning)
             .count()
+    }
+
+    /// What the conversation says about this agent's background work, in the
+    /// order it was said — the human's only window onto a headless agent's
+    /// tasks.
+    fn background_rows(state: &Arc<Mutex<AppState>>, run_id: &str) -> Vec<String> {
+        let s = state.lock().unwrap();
+        activity_of(&s.runs[run_id].agents)
+            .into_iter()
+            .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::TaskUpdate)
+            .map(|(_, summary)| summary)
+            .collect()
+    }
+
+    /// Age an agent's tab past the sweep's threshold on BOTH clocks the sweep
+    /// reads — how long since the child said anything, and how long since Build
+    /// handed it a turn — so the only thing left that can spare it is what its
+    /// own status says.
+    fn age_past_the_idle_threshold(state: &Arc<Mutex<AppState>>, key: &TabKey) {
+        let mut s = state.lock().unwrap();
+        s.tabs[key]
+            .session
+            .backdate_last_output(Duration::from_secs(600));
+        s.tabs.get_mut(key).unwrap().last_delivered_at =
+            Some(std::time::Instant::now() - Duration::from_secs(600));
+    }
+
+    /// The failure this step ends, from the sweep's side: a headless agent whose
+    /// turn closed while background work ran reported `Waiting`, so five quiet
+    /// minutes later the sweep demoted it to `idle_unreported` — an agent
+    /// mid-work explained as an anomaly.
+    ///
+    /// No new sweep code: §11 q4's demotion rule already short-circuits on
+    /// `Working`, and a session holding a live task now IS working. The second
+    /// half is what proves the set clears rather than pinning `Working` forever
+    /// — the same session, quiet just as long, is demoted once its roster
+    /// empties.
+    #[tokio::test]
+    async fn the_idle_sweep_spares_an_agent_holding_a_background_task_and_no_other() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root =
+            insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-background");
+        let key = first_agent_key(&root, "run-background");
+        use crate::harness::adk::fake;
+        // Turn one starts work that outlives it; turn two is answered by the
+        // roster saying the work is over.
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-background",
+            fake::stream_json_harness_turn_by_turn(&[
+                &[fake::TASK_STARTED, fake::RESULT],
+                &[fake::TASK_ROSTER_EMPTY, fake::RESULT],
+            ]),
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-background", "body": "kick off the reindex" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (background_rows(&state, "run-background").len() == 1).then_some(())
+        })
+        .await
+        .expect("the task the turn started reaches the conversation");
+        assert_eq!(
+            background_rows(&state, "run-background"),
+            vec![format!("started — {}", fake::TASK_DESCRIPTION)],
+        );
+
+        age_past_the_idle_threshold(&state, &key);
+        assert!(
+            state
+                .lock()
+                .unwrap()
+                .mark_idle_tasks(Duration::from_secs(300))
+                .is_empty(),
+            "the turn is over and the work is not: silence here is not an anomaly"
+        );
+        let got = call(&handler, "run.get", json!({ "run_id": "run-background" }));
+        assert_eq!(got["result"]["state"], "building", "{got:?}");
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-background", "body": "and now stop" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (background_rows(&state, "run-background").len() == 2).then_some(())
+        })
+        .await
+        .expect("the roster that drops the task closes it in the conversation");
+        assert_eq!(
+            background_rows(&state, "run-background")[1],
+            format!("finished — {}", fake::TASK_DESCRIPTION),
+        );
+
+        age_past_the_idle_threshold(&state, &key);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .mark_idle_tasks(Duration::from_secs(300)),
+            vec!["run-background".to_string()],
+            "with nothing live and nothing said, the sweep demotes as it always did"
+        );
+        let got = call(&handler, "run.get", json!({ "run_id": "run-background" }));
+        assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
+    }
+
+    /// The digest pair this step makes reachable on a headless carrier, pinned:
+    /// `working: true` with `can_interrupt: false`.
+    ///
+    /// It is legal and always was — the PTY has reported it since the field
+    /// landed — because an interrupt stops a TURN and background work is not
+    /// one. The shipped SPA gates the control on `working && can_interrupt`, so
+    /// what the composer offers here is the plain Send.
+    #[tokio::test]
+    async fn an_agent_working_only_a_background_task_offers_no_interrupt() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-tasks-only");
+        use crate::harness::adk::fake;
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-tasks-only",
+            fake::stream_json_harness(&[fake::TASK_STARTED, fake::RESULT]),
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-tasks-only", "body": "kick off the reindex" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (background_rows(&state, "run-tasks-only").len() == 1).then_some(())
+        })
+        .await
+        .expect("the task reaches the conversation");
+
+        // The result closed the turn behind the task line, so what the digest
+        // reports as working can only be the task.
+        let bubble = wait_for(Duration::from_secs(10), || {
+            let listed = call(
+                &handler,
+                "agent.list",
+                json!({ "entity_id": "run-tasks-only" }),
+            );
+            let bubble = listed["result"]["agents"][0].clone();
+            (bubble["can_interrupt"] == false).then_some(bubble)
+        })
+        .await
+        .expect("the turn closes and the control goes with it");
+        assert_eq!(
+            bubble["working"], true,
+            "the work outlived the turn, and the rail dot keeps pulsing: {bubble:?}"
+        );
+        assert_eq!(
+            bubble["has_terminal"], false,
+            "this carrier has no basement to fall back on: {bubble:?}"
+        );
+    }
+
+    /// `Ended` wins over a live roster: `status()` reads the exit code before
+    /// the live state, so a child that dies with work outstanding is over.
+    ///
+    /// And the death rites are untouched — the tab stops reading as live and the
+    /// conversation's session lineage closes. Nothing waits on, drains or mourns
+    /// the tasks: they died with the child that was running them.
+    #[tokio::test]
+    async fn a_child_that_exits_with_a_task_live_is_ended_and_gets_the_usual_rites() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-outlived");
+        let key = first_agent_key(&root, "run-outlived");
+        use crate::harness::adk::fake;
+        // It starts the work, never answers the turn, and leaves.
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-outlived",
+            fake::stream_json_harness_that_leaves(&[fake::TASK_STARTED]),
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-outlived", "body": "kick off the reindex" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        wait_for(Duration::from_secs(10), || {
+            (open_session_count(&state, "run-outlived") == 0).then_some(())
+        })
+        .await
+        .expect("the stream closing ends the session Build opened");
+
+        assert_eq!(
+            background_rows(&state, "run-outlived"),
+            vec![format!("started — {}", fake::TASK_DESCRIPTION)],
+            "the work it started is in the timeline, and nothing closes it for it"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            matches!(
+                s.tabs[&key].session.status(),
+                AgentStatus::Ended { code: Some(_) }
+            ),
+            "a roster outstanding does not keep a dead child working"
+        );
+        assert!(!s.tabs[&key].live, "the tab stops reading as live");
     }
 
     /// Everything the conversation says happened, so a test can assert what did

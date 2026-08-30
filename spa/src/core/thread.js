@@ -50,12 +50,16 @@ const EVENT_META = {
   // Activity: the agent working, rather than the agent speaking. A harness that
   // reports its own reasoning and tool calls has no terminal for them to scroll
   // past in, so they ride the conversation — and they arrive hundreds to a
-  // session, which is why `activity` folds them (see activityHtml). None of the
-  // four carries a tone: not one of them is asking the reader for anything.
+  // session, which is why `activity` folds them (see activityHtml). None of
+  // them carries a tone: not one of them is asking the reader for anything.
   reasoning: { label: "Agent thought", icon: "◌", activity: true },
   tool_use: { label: "Agent called a tool", icon: "▸", activity: true },
   tool_result: { label: "Tool answered", icon: "◂", activity: true },
   narration: { label: "Agent narrated", icon: "◦", activity: true },
+  // Work the agent left running behind its own turn. The label names the task
+  // rather than the harness, because the row says what a task is doing and the
+  // provider's name in front of it would carry nothing.
+  task_update: { label: "Background task", icon: "⧉", activity: true },
 };
 
 const MINUTE_MS = 60_000;
@@ -710,11 +714,11 @@ function firstLine(summary) {
 
 /// Activity, folded.
 ///
-/// Reasoning, tool calls, tool results and narration are the agent working, not
-/// the agent addressing anyone — the daemon classes all four as status, so they
-/// move no unread count and pull nobody in, and the timeline says the same
-/// thing in the way it draws them: a dim single line, shut, opening onto the
-/// whole of what was said only when the reader asks.
+/// Reasoning, tool calls, tool results, narration and background tasks are the
+/// agent working, not the agent addressing anyone — the daemon classes them all
+/// as status, so they move no unread count and pull nobody in, and the timeline
+/// says the same thing in the way it draws them: a dim single line, shut,
+/// opening onto the whole of what was said only when the reader asks.
 ///
 /// A row with nothing behind it is not a fold. An event carrying neither a
 /// summary nor links would otherwise offer a disclosure triangle onto an empty

@@ -667,12 +667,19 @@ pub enum ThreadEventKind {
     /// The agent narrated. Distinct from a `post_thread_message`, which is the
     /// agent deliberately addressing the human.
     Narration,
+    /// Background work the harness runs beyond the turn moved — started,
+    /// finished, failed, or said something worth reading.
+    ///
+    /// The conversation is the only visibility a human has into a headless
+    /// agent, and a task that outlives the turn that started it would otherwise
+    /// be work nothing in the timeline says exists.
+    TaskUpdate,
 }
 
 impl ThreadEventKind {
     /// Every variant, so the wire-token and class rules can be checked over the
     /// whole enum instead of a sample of it.
-    pub const ALL: [ThreadEventKind; 36] = [
+    pub const ALL: [ThreadEventKind; 37] = [
         ThreadEventKind::SessionStarted,
         ThreadEventKind::SessionEnded,
         ThreadEventKind::RunStarted,
@@ -709,6 +716,7 @@ impl ThreadEventKind {
         ThreadEventKind::ToolUse,
         ThreadEventKind::ToolResult,
         ThreadEventKind::Narration,
+        ThreadEventKind::TaskUpdate,
     ];
 
     /// Whether this event needs the human, or merely tells them where things
@@ -758,6 +766,7 @@ impl ThreadEventKind {
             | ThreadEventKind::ToolUse
             | ThreadEventKind::ToolResult
             | ThreadEventKind::Narration
+            | ThreadEventKind::TaskUpdate
             | ThreadEventKind::Pushed => EventClass::Status,
         }
     }
@@ -802,6 +811,7 @@ impl ThreadEventKind {
             ThreadEventKind::ToolUse => "tool_use",
             ThreadEventKind::ToolResult => "tool_result",
             ThreadEventKind::Narration => "narration",
+            ThreadEventKind::TaskUpdate => "task_update",
         }
     }
 }
@@ -2740,18 +2750,38 @@ mod attention_class_tests {
     }
 }
 
-/// The four kinds an event-stream harness fills a conversation with, and the
+/// The five kinds an event-stream harness fills a conversation with, and the
 /// packet a resumed agent is handed once they exist.
 #[cfg(test)]
 mod agent_activity_tests {
     use super::*;
 
-    const ACTIVITY: [ThreadEventKind; 4] = [
+    const ACTIVITY: [ThreadEventKind; 5] = [
         ThreadEventKind::Reasoning,
         ThreadEventKind::ToolUse,
         ThreadEventKind::ToolResult,
         ThreadEventKind::Narration,
+        ThreadEventKind::TaskUpdate,
     ];
+
+    /// The fifth kind is the four's equal in every rule the roster of kinds
+    /// already carries: it is on `ALL`, it is `Status`, and its wire token is
+    /// the snake_case of its name — so the class split, the Issue mirror and
+    /// the counted predicate cover it with no new code.
+    #[test]
+    fn background_task_updates_join_the_activity_kinds() {
+        assert_eq!(ThreadEventKind::TaskUpdate.as_str(), "task_update");
+        assert_eq!(ThreadEventKind::TaskUpdate.class(), EventClass::Status);
+        assert!(
+            ThreadEventKind::ALL.contains(&ThreadEventKind::TaskUpdate),
+            "a kind off ALL is a kind every rule tested over the roster misses"
+        );
+        assert_eq!(
+            serde_json::to_value(ThreadEventKind::TaskUpdate).unwrap(),
+            serde_json::json!("task_update"),
+            "the token it serializes as is the token it names"
+        );
+    }
 
     /// The property that makes activity safe to put in the conversation: an
     /// agent thinking out loud updates the entry underneath the human and
@@ -2771,7 +2801,7 @@ mod agent_activity_tests {
             );
         }
 
-        assert_eq!(thread.items.len(), 4);
+        assert_eq!(thread.items.len(), ACTIVITY.len());
         for item in &thread.items {
             assert_eq!(item.attention_reason(), None, "{item:?}");
         }
@@ -3225,6 +3255,7 @@ mod counted_item_tests {
             ThreadEventKind::ToolUse,
             ThreadEventKind::ToolResult,
             ThreadEventKind::Narration,
+            ThreadEventKind::TaskUpdate,
             ThreadEventKind::Triaged,
         ] {
             thread.push_event(kind, None, None, None, "2026-08-29T09:01:00Z");
@@ -3240,7 +3271,7 @@ mod counted_item_tests {
         let counted: Vec<bool> = thread.items.iter().map(ThreadItem::counted).collect();
         assert_eq!(
             counted,
-            vec![true, false, false, false, false, false, true],
+            vec![true, false, false, false, false, false, false, true],
             "{:?}",
             thread.items
         );

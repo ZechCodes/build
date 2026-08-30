@@ -7,7 +7,7 @@ having — a terminal off its harness's own transcript tree — so a respawn
 resumes by name and a brand-new agent record starts fresh (see §10)
 **Last updated:** August 29, 2026
 **Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
-(step 10)
+(step 10); `build/background-visibility` (step 11, specified)
 
 ---
 
@@ -300,6 +300,10 @@ pub trait AgentSession: Send + Sync {
   `can_interrupt` is the flag `terminal()` avoided, and it is safe here only
   because the implementation answers both from ONE value, held to it by a test
   asserting `interrupt()` refuses exactly when `can_interrupt()` is false.
+  *(Amended by step 11: once `Working` can outlive the turn, `can_interrupt`
+  answers "is there a turn to stop AND can this child stop one" — a refusal
+  still implies `false`, but a `false` may also mean "no turn open", the case
+  §8.1's stale-press guard already answers with the satisfied no-op.)*
 
 - **`session_id` was first written protocol-only, and step 10 widens it.** The
   doc originally read "never out of a transcript directory", which drew the
@@ -374,6 +378,9 @@ pub enum ThreadEventKind {
     /// The agent narrated. Distinct from a `post_thread_message`, which is the
     /// agent deliberately addressing the human.
     Narration,
+    /// Background work the harness runs beyond the turn moved — started,
+    /// finished, failed, or said something worth reading. (step 11)
+    TaskUpdate,
 }
 ```
 
@@ -397,7 +404,9 @@ because it is what the first draft of this spec got wrong.
 `Attention` marks the entry unread and says why; `Status` updates it underneath
 the human and stays quiet. The class is intrinsic to the kind, decided once.
 
-All four new kinds are **`Status`**. So:
+All four new kinds are **`Status`** — and the fifth, `TaskUpdate` (step 11),
+joins them for the same reason: background work moving is the agent working,
+never the agent addressing anyone. So:
 
 - No unread badge from an agent thinking. The rail bubble's count is unmoved.
 - No attention pull, no notification, no inbox reshuffle.
@@ -820,7 +829,7 @@ Everything that must become conditional. This is the actual size of the work.
 | Site | Today | Change |
 |---|---|---|
 | `agentRail.js:177` | Chat / TUI switch | **TUI button shown only when `has_terminal`** — shipped |
-| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds; folded by default — shipped |
+| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the five activity kinds; folded by default — shipped |
 | `surfaceTabs.js` | mounts the agent's PTY pane | unchanged — it is simply not reached for a no-terminal agent |
 | `terminal/manager.js` | one shared socket, demuxed by `term_id` | unchanged |
 | `console.js` | the human's own shells | unchanged; the console was never the agent's |
@@ -863,7 +872,8 @@ would be told the turn was stopped while it ran on. Absence means "no" for a
 capability that is new, and "yes" for one that predates the question.
 
 ```json
-// thread items — four new event kinds, in the envelope every event already has
+// thread items — the activity event kinds (step 4's four; step 11 adds
+// task_update), in the envelope every event already has
 { "type": "event",
   "data": { "id": "event-41", "sequence": 41, "event": "tool_use",
             "created_at": "…", "summary": "Read bridge/src/app.rs" } }
@@ -1316,6 +1326,20 @@ Each step compiles, ships and is green on its own.
     adoption's continue-pickup preserved by the flag adoption already sets.
     Detail below. **Shipped 2026-08-29** in `6d937fc`, `178085d`, `480d3a8`
     and `55e7f10` — see the note after §10.5.
+11. **Background tasks are visible, and the agent stays Working while they
+    run.** Headless carrier only. The stream's `system` task events —
+    `task_started`, `task_updated`, `task_notification` and
+    `background_tasks_changed` (all observed live 2026-08-29; payloads pinned
+    at implementation, not here) — reconcile a live-task set on
+    `ProtocolState` with `background_tasks_changed` as the source of truth;
+    membership transitions mint the fifth activity kind, `TaskUpdate` (wire
+    `task_update`, class `Status`, riding the existing pump and §6.3's free
+    ride); and `status()` reports `Working` while a turn is open OR the set
+    is non-empty, which the idle sweep's existing short-circuit honours with
+    NO new sweep code. `can_interrupt` stays tied to an open turn, `Ended`
+    still wins, the death rites are untouched. Detail below.
+    **Shipped** — the bridge half 2026-08-29, the SPA's one activity-map
+    entry 2026-08-30.
 
 > **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
 > designed in §6.3. The two failures it exists for are the two tests that
@@ -2317,6 +2341,192 @@ tempdir fake:
 > to its old rollout or cuts a new one; the locator tolerates both, and the
 > observed answer belongs here after the first real codex restart.
 
+### Step 11 in detail — background tasks are visible, and the agent stays Working
+
+Grounded in live probes (2026-08-29), not in guesses about the protocol: a
+headless claude that starts background work announces it on the same stdout
+stream, as `system` lines — `task_started`, `task_updated`,
+`task_notification`, and `background_tasks_changed` carrying the set of live
+tasks — all four observed live and recorded in the step-6 probe transcripts.
+**Headless carrier only**: the conversation is the human's ONLY visibility
+into a headless agent, while a PTY harness paints its background churn into
+the terminal it already has — so `ClaudeHarness` and `CodexHarness` are
+untouched and the reader below is `adk.rs`'s alone (`read_system`, which
+today returns unless the subtype is `init`, grows the four arms).
+
+The failure this step ends is the open headless-looks-idle finding: a
+headless agent whose turn closed while background work ran reported
+`Waiting` — the rail dot went dark over an agent mid-work, the digest's
+`working` followed it, and nothing in the conversation said the work
+existed.
+
+**The payloads are pinned at implementation, not here.** The four subtypes
+and the reading below are what the probes showed; the field names are not
+normative. Before writing the reader, the implementer re-verifies the four
+events against the installed CLI — its `--help` / stream-json docs, or a
+no-model-turn probe — and records the verified lines into `adk::fake`, which
+is what the tests then hold the reader to. If a shape differs from the
+probes (a moved field, a delta where the probes read a roster), the rules
+below stand and only the reading moves.
+
+#### 11.1 The task set — reconciled, not bookkept
+
+`ProtocolState` gains the live-task set: a map from the task's id to its
+human-readable description. Events move it, **membership transitions mint**,
+and `background_tasks_changed` is the source of truth.
+
+- **`background_tasks_changed` replaces the set** with the roster it
+  carries, every time. Not a merge: the event is the harness's own statement
+  of what is live, and a reconciled set cannot drift from it — a task Build
+  somehow never saw start is inserted, a task whose end never got its own
+  event is removed. (Should the pinned payload turn out to carry a delta
+  rather than the roster, the set applies the delta; the transition rule
+  below is unchanged.)
+- **`task_started` inserts its task** — the minting trigger for a start, and
+  the reason status flips to `Working` without waiting for the next roster.
+- **`task_updated` carrying a terminal status removes its task**; one that
+  does not is progress, and touches membership not at all.
+- **`task_notification` carrying a terminal status removes its task**, and
+  one that does not never changes membership. (Amended 2026-08-30 under this
+  section's own escape hatch — the rules stand, the reading moved. A
+  FOREGROUND Bash command is a task too, and the live child closes it with a
+  notification ALONE: no `task_updated`, no roster, ever. Taking every
+  notification for chatter held that task for the life of the session and
+  pinned the agent `Working` while it sat idle — the exact inverse of the
+  failure this step closes.) Either way it is also the task saying something
+  worth reading.
+
+**Minting follows the transition, not the event name.** One row per
+transition, however many events describe it:
+
+- every insertion mints a started `TaskUpdate` — whether `task_started` or a
+  roster the task first appeared in did the inserting;
+- every removal mints an ended one — `failed` when the removing event said
+  so, `finished` otherwise — so a roster that quietly drops a task still
+  closes it in the timeline, and the timeline never shows work that started
+  and never ends;
+- a `task_started` followed by a roster listing the same task mints ONCE,
+  because the second event moved nothing;
+- `task_notification` mints its text, and then its ending row when the
+  status it carried removed the task; a `task_updated` that changes neither
+  membership nor carries new human-readable text mints nothing — a progress
+  counter ticking is not a meaningful change. Text that only repeats the
+  task's own name mints nothing either: a foreground notification's `summary`
+  IS the description, and a row reading `X: X` says nothing the ending row
+  did not.
+
+**The summary lines**, in the shape the tool summaries set — one line,
+clipped by `one_line` at `TOOL_SUMMARY_LIMIT`, because this is operational
+text rather than the agent speaking: `started — <description>`,
+`finished — <description>`, `failed — <description>: <error>`, and a
+notification as `<description>: <text>`.
+
+A `result` line does not touch the set: tasks outliving the turn is the
+entire point. Nothing else clears it either — reconciliation, terminal task
+events, and the session ending are the only exits.
+
+#### 11.2 The fifth activity kind
+
+Additive per §8, exactly as the four were: `AgentActivity::TaskUpdate
+{ summary }` in `session.rs`, `ThreadEventKind::TaskUpdate` with wire token
+`task_update`, class `Status`, intrinsic like the other four, and on
+`ThreadEventKind::ALL` — so every rule tested over the roster of kinds (the
+class split, the Issue mirror, the counted predicate) covers it with no new
+code. It is minted by the reader above, rides the existing activity pump
+(`record_agent_activity` gains the arm), and lands in the thread as an
+ordinary `Status` row: no unread badge, no notification, and no slot bought
+against §6.3's two bounds — `message = 0`, `attention = 0`, so it rides free
+under the shipped predicate and **nothing about persistence changes**
+(§6.3's paging already lets activity ride free).
+
+#### 11.3 Working while tasks live
+
+`AdkSession::status()` reports `Working` while a turn is open **or** the
+reconciled set is non-empty — `live_status()` becomes `turn_open ||
+!tasks.is_empty()`, then `Waiting` / `Starting` as today. The consequences,
+each stated because each is a place the shipped code already decides
+something:
+
+- **The digest's `working` follows with no new code.** `agent_is_working`
+  has read `status()` since step 2, so the rail dot keeps pulsing and the
+  feed row's working clock keeps running over an agent whose turn closed
+  with tasks live.
+- **The idle sweep needs NO new sweep code — and a test proving it.** §11
+  q4's demotion rule already short-circuits on `Working`, so a session
+  holding a live task is never demoted however long it is quiet. The
+  required test: a session that is quiet past the threshold, turn-closed,
+  and holding a live task is not demoted — and the same session IS demoted
+  once the roster empties and the clock runs out, which is what proves the
+  set clears rather than pinning `Working` forever.
+- **`can_interrupt` stays tied to an open turn.** The interrupt stops a
+  TURN — §8.1's guard already answers a turn-less press with the satisfied
+  no-op — and a background task is not one, so `can_interrupt()` becomes
+  `capability && turn_open`, read under the same lock the guard reads.
+  `working: true, can_interrupt: false` is therefore a **legal digest** — it
+  always was: the PTY has shipped that pair since the field landed — and the
+  shipped SPA already renders it as the plain Send, since its gate is
+  `working && can_interrupt`. For every state a client could observe before
+  this step the answer is unchanged: `Working` implied an open turn on this
+  carrier, and the composer never offers the control to a non-working
+  agent. §3's one-value equivalence narrows (amended there): a refusal still
+  implies `false`, and §8.5 test 5's assertion becomes that direction plus
+  "`false` with a turn open implies a refusal".
+- **`Ended` still wins.** `status()` reads the exit code before the live
+  state, so a child that exits with tasks open reports `Ended { code }`,
+  roster notwithstanding — and the death rites are untouched: the activity
+  stream closes with the child's stdout, the pump marks the tab not live
+  and runs `record_agent_session_end`, and nothing waits on, drains, or
+  mourns the tasks.
+
+#### 11.4 SPA
+
+`task_update` renders exactly as the other four kinds do — a folded, quiet
+row, one entry added to `core/thread.js`'s activity map — with its own quiet
+label, "Background task". Nothing else: no badge, no panel, no gating, and
+every other kind, known or unknown, renders as it did.
+
+> **Shipped.** The entry is `task_update: { label: "Background task", icon:
+> "⧉", activity: true }` and there is no other change: the fold, the head's
+> first-line preview, the fold-survives-the-repaint patch and the
+> unknown-kind fallback are the shipped code, reached with no new branch.
+> The label does NOT carry the harness's name — `activityHtml` swaps a
+> leading `Agent` for the provider, and "Background task" has none to swap,
+> which is the wanted answer: the row says what a task is doing, and
+> "Claude Code background task" would say nothing more.
+
+#### 11.5 The fake harness, and the tests
+
+`adk::fake` grows recorded lines for the four events — a start, a terminal
+update, a notification, a roster, and an empty roster — plus the FOREGROUND
+pair a second probe turned up: a start and the terminal notification that is
+the only word that task's ending ever gets. All recorded from the probes
+rather than typed from this spec, under the module's standing single-quote
+rule. Every test below runs against that child; none runs a model turn.
+
+1. a `task_started` mints one started row and flips a turn-closed session to
+   `Working`; the `background_tasks_changed` listing the same task mints
+   nothing further;
+2. reconciliation is the source of truth: a roster dropping a task the
+   timeline saw started mints exactly one finished row, and with the set
+   empty and no turn open the session reports `Waiting`;
+3. a `task_updated` with a terminal status mints failed once; the roster
+   that later omits the id mints nothing more;
+4. a `task_notification`'s text is minted, clipped to one line; a
+   `task_updated` changing neither membership nor text mints nothing; and a
+   FOREGROUND task — a `task_started` closed by a terminal
+   `task_notification`, with no roster and no `task_updated` ever arriving —
+   mints its started and ended rows and lets the session report `Waiting`
+   again, which is the fence against the pin that reading cost;
+5. through the daemon: the idle sweep leaves a quiet, turn-closed session
+   holding a live task alone (quiet clock aged past the threshold, no new
+   sweep code), and demotes the same session once its roster empties;
+6. the digest reads `working: true, can_interrupt: false` off a tasks-only
+   session — the legal pair, pinned;
+7. `Ended` wins: a child that exits with tasks open reports `Ended` and the
+   death rites run exactly as they do today;
+8. in the SPA: `task_update` folds shut with its own label, and every other
+   kind renders untouched.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -2439,6 +2649,93 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 11's review fixes — a foreground command is a task too.**
+  Running the whole live family turned up a defect the background probe could
+  not see, and the fix took §11.1's own escape hatch: the rules stand, the
+  reading moved. A FOREGROUND Bash command gets `task_started` like any other
+  task, and is closed by a `task_notification` carrying a terminal status —
+  **alone**: no `task_updated`, no `background_tasks_changed`, ever
+  (raw-wire probes against claude 2.1.236, both a `completed` and a `failed`
+  one, now recorded in `adk::fake` as `FOREGROUND_TASK_*`). Both lines arrive
+  together when the command finishes, so the shipped reader inserted the task
+  and had nothing that could ever remove it: the session reported `Working`
+  for the rest of its life, the sweep never demoted it, and the rail dot
+  pulsed over an idle agent — the inverse of the failure this step closes,
+  and what made `real_adk_session_steers_mid_turn` hang waiting for
+  `Waiting`. So a terminal notification IS a membership removal and mints the
+  ending row; its text still mints first, unless the text merely repeats the
+  task's own name, which is exactly what a foreground notification's
+  `summary` is. `stopped` joined the terminal statuses — the same probe run
+  turned it up on a task the child killed. An interrupted foreground command
+  emits no task lines at all, so a stopped turn leaves nothing in the set.
+  Separately, `real_adk_session_interrupts_mid_tool`'s premise was rebuilt:
+  the installed CLI now BLOCKS a standalone `sleep`, the model reruns it in
+  the background, and nothing is parked — so the leg parks the turn in
+  `python3 -c "import time; time.sleep(90)"`, which the CLI runs in the
+  foreground, and asserts the stop-and-steer settles inside sixty seconds (it
+  takes about five). All three live legs pass.
+
+- **2026-08-29, step 11's bridge half shipped — the payloads are pinned.**
+  One probe against claude 2.1.236 (a headless turn that backgrounded
+  `sleep 12 && echo woke`) produced all four events, and their shapes are
+  now recorded in `adk::fake` — `TASK_ROSTER` / `TASK_STARTED` /
+  `TASK_ROSTER_EMPTY` / `TASK_UPDATED_DONE` / `TASK_NOTIFICATION` — which is
+  what the tests hold the reader to. What the probe settled:
+  `background_tasks_changed` carries the **roster** (`tasks: [{task_id,
+  task_type, description}]`, empty when nothing is live), so §11.1's
+  replace-the-set rule stands as written rather than its delta fallback;
+  `task_started` carries `task_id` + `description`; `task_updated` carries
+  `task_id` + a `patch` of `{status, end_time}` and NO description of its
+  own; `task_notification` carries the human-readable line in `summary`. The
+  live child emitted them roster-first — roster, `task_started`, `result`,
+  empty roster, `task_updated`, `task_notification` — so it is the ROSTER
+  that inserts and removes, and `task_started` / `task_updated` mostly move
+  nothing, which is exactly the one-row-per-transition rule doing its job.
+  Two readings the shapes forced: a `task_updated` that moves no membership
+  mints nothing (its patch carries no human-readable line to mint — a
+  `description` in it renames the task for later rows instead), and a
+  notification that lands after the roster already closed its task mints its
+  own text without a name the set no longer holds. Also amended: a terminal
+  status is a NAMED set (`completed`/`failed`/`error`/`cancelled`/`killed`/
+  `timed_out`) so an unrecognised one leaves the task for the roster to
+  close, and `cancelled`/`killed` read as `finished`, not `failed`.
+
+- **2026-08-30, step 11's SPA half shipped — step 11 is complete.** §11.4
+  cost exactly what it was specified to cost: one entry on
+  `core/thread.js`'s activity map, `task_update` labelled "Background task",
+  and no other line of client code. It folds shut like the other four, its
+  head previews the summary's first line, a fold the reader opened survives
+  the repaint under it, and an unknown kind still renders as the plain row
+  it always did. The label carries no provider name, because
+  `activityHtml` only swaps a leading `Agent` and this label has none —
+  the row names the task, not the harness.
+
+- **2026-08-29, step 11 specified — background tasks are visible, and the
+  agent stays Working.** The headless-looks-idle finding, closed by design:
+  the stream's `system` task events (`task_started`, `task_updated`,
+  `task_notification`, `background_tasks_changed` — all observed live
+  2026-08-29; payload shapes to be pinned at implementation against the
+  installed CLI or a no-model-turn probe, never taken from this spec)
+  reconcile a live-task set on `ProtocolState`, with
+  `background_tasks_changed` replacing the set as the source of truth and
+  membership transitions minting the fifth activity kind — `TaskUpdate`,
+  wire `task_update`, class `Status`, intrinsic like the other four, riding
+  the existing pump, thread rows and §6.3 free ride, with started / finished
+  / failed always minted and notification text when it carries something
+  human-readable. `AdkSession::status()` reports `Working` while a turn is
+  open OR the set is non-empty, so the digest's `working` follows with no
+  new code and the idle sweep's existing short-circuit stops demotion with
+  no new sweep code (a required test holds a quiet, turn-closed session
+  with a live task undemoted, and demoted once the roster empties).
+  `can_interrupt` stays tied to an open turn — `capability && turn_open`,
+  making `working: true, can_interrupt: false` a legal digest the shipped
+  SPA already renders as the plain Send — `Ended` still wins on exit with
+  tasks open, and the death rites are untouched. Headless carrier only: a
+  PTY's terminal already shows its churn. The SPA folds `task_update` like
+  the other kinds under its own quiet label, and `adk::fake` grows the
+  recorded task-event lines so every test runs without a model turn. §5 and
+  §8 gain the fifth kind; §3's one-value note is amended; §10 gains step 11
+  with the test list.
 - **2026-08-29, step 10 shipped — every carrier names its conversation, and a
   fresh agent starts fresh.** `6d937fc` (the locators over each harness's own
   transcript tree, `holds_conversation`, and both PTY carriers' three-way

@@ -871,10 +871,11 @@ function eventHtml(event, agentLabel = "Agent") {
 /// are standing in the work, and they change every second — so they live on the
 /// toolbar (core/toolbar.js) and the conversation keeps its own record: the
 /// messages, the events, and whether the agent has read you.
-/// Returns the timeline's top-level rows, and how many conversation items they
-/// were rendered from — which is not the same number any more: a run of
-/// activity is many items and one row, and the count on the conversation's
-/// title counts what was said and done rather than how it fell into runs.
+///
+/// Returns the top-level rows, and how many conversation items they were
+/// rendered from — which is not the same number any more: a run of activity is
+/// many items and one row, and the count on the conversation's title counts
+/// what was said and done rather than how it fell into runs.
 function timelineHtml(items, agentLabel, threadId) {
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit

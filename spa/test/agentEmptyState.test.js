@@ -283,9 +283,9 @@ describe("an agent that exited", () => {
 
   // The bridge records which carrier a session actually opened, and that record
   // outlives the account setting that chose it. The offer names the agent the
-  // human knows and restarts exactly what ran — the carrier stays the bridge's
-  // business, never a second Claude Code on the picker.
-  it("names a claude carrier the picker does not list as Claude Code, and restarts it", async () => {
+  // human knows and starts it generically: a restart is a start, so the account
+  // setting gets its say again rather than the last session pinning a carrier.
+  it("leads with Claude Code for a carrier the picker does not list, and starts it generically", async () => {
     attachAgent.mockResolvedValue({
       term_id: "agent:wt-4",
       live: false,
@@ -300,10 +300,11 @@ describe("an agent that exited", () => {
 
     expect(labelOf(lead(el))).toBe("Claude Code");
     expect(lead(el).textContent).toContain("ran here last");
+    expect(lead(el).dataset.provider).toBe("claude");
     expect(cards(el).map(labelOf)).toEqual(["Claude Code", "Codex"]);
     lead(el).click();
     await tick();
-    expect(onStart).toHaveBeenCalledWith("claude_adk");
+    expect(onStart).toHaveBeenCalledWith("claude");
   });
 
   it("leads with the default when the bridge names no harness", async () => {

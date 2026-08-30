@@ -34,7 +34,7 @@ use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
     ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
-    ReportConsumed, ReportOutcome, RunSource, SpawnOptions, TranscriptProbe,
+    ReportConsumed, ReportOutcome, RunSource, SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -752,6 +752,11 @@ impl Tab {
     /// with no terminal paints nothing, so there is no screen to hold and no
     /// byte pump to run — its work reaches the conversation through the
     /// activity pump instead.
+    ///
+    /// `locator` is how the session opened here will name the conversation it
+    /// is having, and it arrives from the caller because it has to be built
+    /// before this: it snapshots the harness's transcript tree, and a snapshot
+    /// taken after the child started could contain the child's own file.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -759,6 +764,7 @@ impl Tab {
         root: std::path::PathBuf,
         cols: u16,
         rows: u16,
+        locator: Option<Box<dyn crate::harness::SessionLocator>>,
     ) -> Result<(Tab, SessionOutput), String> {
         let size = PtySize {
             rows,
@@ -779,10 +785,14 @@ impl Tab {
             TabRole::Agent { .. } => Carrier::Terminal {
                 size,
                 turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                locator,
             },
+            // The human's own shell is having no conversation, so there is no
+            // name for a locator to find.
             TabRole::Shell => Carrier::Terminal {
                 size,
                 turn_ready_grace: None,
+                locator: None,
             },
         };
         let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
@@ -1782,6 +1792,13 @@ fn default_transcript_probe() -> TranscriptProbe {
     })
 }
 
+fn default_session_locator_factory() -> SessionLocatorFactory {
+    Arc::new(|cwd: &std::path::Path, provider| {
+        let home = std::env::var("HOME").ok()?;
+        harness_for(provider).session_locator(std::path::Path::new(&home), cwd)
+    })
+}
+
 /// What a mutation tail found on the conversation it just wrote: the thread it
 /// looked at, how far that thread has got, and the newest attention-class item
 /// to land since a tail last looked (`None` when nothing did, or when this is
@@ -1979,6 +1996,11 @@ pub struct AppState {
     /// looked at it, are the same case, and both want the transcript picked
     /// back up. Never true in QA mode.
     transcript_probe: TranscriptProbe,
+    /// Builds the watcher that names the conversation a spawning session is
+    /// having — consulted once per agent-tab spawn, before the child exists.
+    /// Never builds one in QA mode: the scripted harness has no transcript
+    /// tree to watch.
+    session_locator_factory: SessionLocatorFactory,
     /// Web-push notifier for attention transitions, if configured. Content-free
     /// by contract — it only ever says "a task needs you".
     notifier: Option<Notifier>,
@@ -2049,6 +2071,11 @@ impl AppState {
         } else {
             default_transcript_probe()
         };
+        let session_locator_factory: SessionLocatorFactory = if qa_agent {
+            Arc::new(|_, _| None)
+        } else {
+            default_session_locator_factory()
+        };
         let mut state = AppState {
             projects: Vec::new(),
             entity_project: HashMap::new(),
@@ -2098,6 +2125,7 @@ impl AppState {
             next_project: 1,
             qa_agent,
             transcript_probe,
+            session_locator_factory,
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
@@ -17010,6 +17038,7 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             root,
             cols,
             rows,
+            None,
         )?;
         s.tabs.insert(key.clone(), tab);
         (key, rx)
@@ -17424,6 +17453,9 @@ fn ensure_agent_tab(
                     }
                     Err(unknown) => return Err(unknown),
                 };
+                // Built here, before the child exists, so the transcripts it
+                // snapshots as "not mine" cannot include the child's own.
+                let locator = (s.session_locator_factory)(&root, model_choice.provider);
                 let orch = s.orch_for(&project_id)?;
                 // Unconditional: under `--strict-mcp-config` a missing config
                 // kills the harness before it reads a byte of the prompt, and
@@ -17452,11 +17484,11 @@ fn ensure_agent_tab(
                 s.mcp_session_tokens
                     .insert(agent_id.to_string(), session_token.clone());
                 s.agent_spawns_in_flight.insert(key.clone());
-                Some((spec, size, carried, session_token))
+                Some((spec, size, carried, session_token, locator))
             }
         };
 
-        let Some((spec, size, carried, session_token)) = reserved else {
+        let Some((spec, size, carried, session_token, locator)) = reserved else {
             // Someone else is spawning this root's agent: wait for their tab
             // rather than start a second harness beside it.
             if std::time::Instant::now() >= deadline {
@@ -17480,6 +17512,7 @@ fn ensure_agent_tab(
             root.clone(),
             size.cols,
             size.rows,
+            locator,
         );
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
@@ -19613,6 +19646,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
@@ -19934,6 +19968,7 @@ mod tests {
             shell_root,
             80,
             24,
+            None,
         )
         .expect("a shell tab spawns");
         state.lock().unwrap().tabs.insert(shell_key, shell_tab);
@@ -28037,6 +28072,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
@@ -28521,6 +28557,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
@@ -28827,6 +28864,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
@@ -29724,6 +29762,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -29935,6 +29974,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -30331,6 +30371,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, run_id);
@@ -31061,6 +31102,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
@@ -31116,6 +31158,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         let key = first_agent_key(&root, "run-codex");
@@ -33067,6 +33110,7 @@ mod tests {
             shell_root.clone(),
             80,
             24,
+            None,
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
@@ -36266,6 +36310,7 @@ mod tests {
             root.clone(),
             80,
             24,
+            None,
         )
         .unwrap();
         tab.session
@@ -36398,6 +36443,7 @@ mod tests {
             root.clone(),
             120,
             40,
+            None,
         )
         .expect("the agent tab spawns");
         state.tabs.insert(TabKey::agent(&root, &agent_id), tab);

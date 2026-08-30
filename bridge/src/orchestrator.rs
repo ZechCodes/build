@@ -598,6 +598,16 @@ pub type WarmBuilder =
 /// never touch the real home directory.
 pub type TranscriptProbe = std::sync::Arc<dyn Fn(&Path, AgentProvider) -> bool + Send + Sync>;
 
+/// Builds the watcher that will name the conversation a session about to open
+/// in a worktree cwd is having. Called at the spawn reservation, BEFORE the
+/// child exists, so what the harness already wrote there can be told from what
+/// the child writes. `None` for a provider whose session names its own
+/// conversation. Injectable for the same reason the probe is: tests never read
+/// the developer's real transcript tree.
+pub type SessionLocatorFactory = std::sync::Arc<
+    dyn Fn(&Path, AgentProvider) -> Option<Box<dyn crate::harness::SessionLocator>> + Send + Sync,
+>;
+
 const THREAD_NOTIFICATION: &str = "New reviewer messages are available. Call `read_unread_messages` now and act on every unread message.";
 
 /// How long a failed prompt write waits for the harness's exit status to

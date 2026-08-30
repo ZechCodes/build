@@ -215,7 +215,6 @@ pub(crate) fn is_a_filename(id: &str) -> bool {
 /// decision travels in, so the two arms carry only what their own carrier has
 /// an answer for: a grid and a readiness wait belong to a terminal, and a
 /// session protocol has neither.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Carrier {
     /// A full PTY around an opaque CLI wrapper.
     ///
@@ -223,9 +222,16 @@ pub enum Carrier {
     /// take a turn, and `None` is for a session Build will never hand one to
     /// (the human's own shell): waiting on a login shell for a signal it may
     /// never send would stall the caller for the whole grace.
+    ///
+    /// `locator` is how this carrier answers
+    /// [`AgentSession::session_id`] — the provider's watcher over its own
+    /// transcript tree, built by the caller BEFORE the child exists so the
+    /// child's own record can be told from what was already there. `None` for
+    /// the human's shell, which is having no conversation to name.
     Terminal {
         size: PtySize,
         turn_ready_grace: Option<Duration>,
+        locator: Option<Box<dyn SessionLocator>>,
     },
     /// A session protocol over piped stdio. There is no readiness dance: a
     /// turn is a value, and the child says for itself when it can take one.
@@ -265,8 +271,9 @@ pub fn open_session(
         Carrier::Terminal {
             size,
             turn_ready_grace,
+            locator,
         } => {
-            let session = PtySession::spawn(spec, Some(root), size)?;
+            let session = PtySession::spawn(spec, Some(root), size)?.named_by(locator);
             let output = match session.terminal() {
                 Some(terminal) => SessionOutput::painting(terminal.subscribe()),
                 None => SessionOutput::silent(),
@@ -479,6 +486,7 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
+                locator: None,
             },
         )
         .expect("the session opens");
@@ -506,6 +514,7 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
+                locator: None,
             },
         )
         .expect("the session opens");
@@ -515,6 +524,47 @@ mod tests {
             waited < Duration::from_millis(200),
             "opening a session nobody will speak to waited {waited:?} for readiness"
         );
+    }
+
+    /// The locator travels with the carrier that has a use for it: a terminal
+    /// hands its answers back as its own, and a session Build opens with none
+    /// — the human's shell, and every carrier that names its conversation
+    /// itself — names nothing.
+    #[tokio::test]
+    async fn only_a_terminal_opened_with_a_locator_names_its_conversation() {
+        struct Says(&'static str);
+        impl SessionLocator for Says {
+            fn session_id(&self) -> Option<String> {
+                Some(self.0.to_string())
+            }
+        }
+
+        let root = tempfile::tempdir().expect("temp worktree");
+        let (named, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            Carrier::Terminal {
+                size: one_pty(),
+                turn_ready_grace: None,
+                locator: Some(Box::new(Says("sess-located"))),
+            },
+        )
+        .expect("the session opens");
+        assert_eq!(named.session_id().as_deref(), Some("sess-located"));
+        named.end();
+
+        let (unnamed, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            Carrier::Terminal {
+                size: one_pty(),
+                turn_ready_grace: None,
+                locator: None,
+            },
+        )
+        .expect("the session opens");
+        assert_eq!(unnamed.session_id(), None);
+        unnamed.end();
     }
 
     /// A fake stream-json harness: it announces its session, then sits with its

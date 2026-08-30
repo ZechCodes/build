@@ -5,7 +5,11 @@ import {
   effortOptionsHtml,
   effortSupported,
   modelParams,
+  normalizeModelCatalog,
+  providerLabel,
   providerOptionsHtml,
+  DEFAULT_START_PROVIDER,
+  STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
 
 // The selectors are fed by the bridge's models.list RPC (the catalog ships with
@@ -33,13 +37,34 @@ const CATALOG = {
   ],
 };
 
-describe("the harnesses a start can name", () => {
-  it("offers the headless claude carrier beside the two CLIs, under the bridge's own label", async () => {
-    const { STARTABLE_PROVIDERS, DEFAULT_START_PROVIDER } = await import("../src/core/modelPicker.js");
-    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude", "claude_adk", "codex"]);
-    expect(STARTABLE_PROVIDERS.find((provider) => provider.id === "claude_adk").label).toBe("Claude Code (headless)");
-    // The full PTY harness stays the obvious start; headless is an offer, not a default.
+describe("the agents a start can name", () => {
+  it("offers one card per agent a person knows, not one per carrier", () => {
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude", "codex"]);
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.label)).toEqual(["Claude Code", "Codex"]);
+    // Which program "Claude Code" opens is the account's answer, so a start
+    // names the agent and the bridge resolves the rest.
     expect(DEFAULT_START_PROVIDER).toBe("claude");
+  });
+
+  it("calls both claude carriers Claude Code — nothing user-facing tells them apart", () => {
+    expect(providerLabel("claude")).toBe("Claude Code");
+    expect(providerLabel("claude_adk")).toBe("Claude Code");
+    expect(providerLabel("codex")).toBe("Codex");
+  });
+
+  it("says what an unnamed or unknown provider is, rather than nothing", () => {
+    expect(providerLabel("")).toBe("Agent");
+    expect(providerLabel("gemini")).toBe("gemini");
+  });
+
+  it("never says how a carrier runs", () => {
+    const shown = [
+      ...STARTABLE_PROVIDERS.map((provider) => provider.label),
+      providerLabel("claude"),
+      providerLabel("claude_adk"),
+      providerLabel("codex"),
+    ].join(" ");
+    expect(shown).not.toMatch(/headless/i);
   });
 });
 
@@ -47,6 +72,36 @@ describe("provider catalog", () => {
   it("renders providers and resolves a provider-specific model catalog", () => {
     expect(providerOptionsHtml(CATALOG.providers, "codex")).toContain('value="codex" selected');
     expect(catalogForProvider(CATALOG, "codex").models[0].id).toBe("gpt-5.6-sol");
+  });
+
+  it("keeps one Claude Code in the catalog, however many carriers the bridge lists", () => {
+    // The bridge serves a catalog per carrier — an entity persisted on either
+    // one needs its models under its own id — but a person picking an agent
+    // must not be shown the same name twice.
+    const normalized = normalizeModelCatalog({
+      default_provider: "claude",
+      providers: [
+        { id: "claude", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+        { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+      ],
+    });
+    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude", "codex"]);
+    expect(normalized.default_provider).toBe("claude");
+  });
+
+  it("still offers Claude Code when the only carrier the bridge lists is the other one", () => {
+    // Folding is by name, not by id: whichever carrier arrives first keeps the
+    // name, so no catalog can leave a person with no way to pick Claude Code.
+    const normalized = normalizeModelCatalog({
+      default_provider: "claude_adk",
+      providers: [
+        { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+      ],
+    });
+    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+    expect(normalized.default_provider).toBe("claude_adk");
   });
 
   it("uses the selected model's reasoning levels", () => {

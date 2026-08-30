@@ -10,7 +10,7 @@
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, providerCardsHtml } from "./modelPicker.js";
+import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, providerCardsHtml, providerLabel } from "./modelPicker.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -167,7 +167,6 @@ export function mountAgentTab(
   const message = host.querySelector("#agentOverlayMsg");
   const choices = host.querySelector("#agentStartChoices");
   const labelOf = (card) => card.querySelector(".chooser-card-label");
-  const providerLabel = (id) => STARTABLE_PROVIDERS.find((provider) => provider.id === id).label;
   const allCards = () => (choices ? [...choices.querySelectorAll(".chooser-card")] : []);
 
   // The harness this worktree's tab last ran, as the attach reported it — the

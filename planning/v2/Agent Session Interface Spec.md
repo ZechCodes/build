@@ -5,9 +5,10 @@ carrier with no terminal, an outcome is a status on the agent's own message,
 activity floods neither bound, and every carrier names the conversation it is
 having — a terminal off its harness's own transcript tree — so a respawn
 resumes by name and a brand-new agent record starts fresh (see §10)
-**Last updated:** August 29, 2026
+**Last updated:** August 30, 2026
 **Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
-(step 10); `build/background-visibility` (step 11, specified)
+(step 10); `build/background-visibility` (step 11, specified);
+`build/new-agent-flow` (step 14, specified)
 
 ---
 
@@ -3038,6 +3039,419 @@ SPA (`npm test`):
    absent `claude_mode` renders as the default, and the Codex control is
    disabled.
 
+### Step 14 in detail — agents lock to their harness, and branches start with none
+
+*Specified 2026-08-30. Branch `build/new-agent-flow`.* Step 13 shipped the
+account setting and then taught the SPA to treat the two claude carriers as one
+agent — a restart sent the generic token and the setting chose the carrier
+again. Living with it showed the cost: a TUI agent restarted under a headless
+setting is a NEW process on a different carrier wearing the same bubble, and
+whether its chat history survives depends on a resume probe the human never
+sees. Step 14 reverses that half and keeps the good half. **An agent is locked
+to the harness it was created on, forever — the harness is part of the agent's
+identity, so its conversation provably stays its own. The account setting stops
+choosing a carrier at every start and instead names the DEFAULT harness a new
+agent is created on. Branches start with no agents at all; the first send
+creates one, and the system creates one itself only when it must deliver.**
+
+Three of step 13's decisions are superseded, by name:
+
+- **Carrier-follows-setting is dead.** The generic token `"claude"` no longer
+  resolves through the setting; nothing re-carriers an entity at start time;
+  the restart-is-a-start lead card that "starts generic" is gone. A restart
+  respawns exactly the harness the agent is locked to.
+- **The label fold is reversed.** Two carriers under one name made sense only
+  while the account hid one of them. With both creatable side by side they
+  need names: **"Claude Code"** is the headless carrier (`claude_adk`),
+  **"Claude Code TUI"** is the terminal one (`claude`), **"Codex"** is codex.
+  The word "headless" stays banned from every user-facing string — the default
+  carrier simply owns the plain name.
+- **`claude_mode` is replaced by `default_harness`**, with the old keys kept
+  as compat aliases (§14.1).
+
+Unmoved from step 13: the setting lives on the bridge, persisted in the config
+file, served by `settings.get`/field-wise `settings.set`; persisted choices are
+concrete and never migrate; resolution of wire tokens happens at
+`model_choice_from` and nowhere else.
+
+#### 14.1 The setting: one default harness
+
+`AppState.claude_mode` (`app.rs:1844`) becomes `default_harness:
+AgentProvider`, default `ClaudeAdk`. The wire value is a concrete provider
+token — the same vocabulary every other provider field speaks, so there is no
+second enum to keep in sync:
+
+```json
+// settings.get — the full answer after this step
+{ "projects_dir": "/Users/…/Projects",
+  "default_harness": "claude_adk",   // or "claude" / "codex"; absent = claude_adk
+  "claude_mode": "headless",         // compat alias, derived: "tui" iff default_harness = claude
+  "codex_mode":  "tui" }             // compat alias, synthesized as before
+```
+
+`settings.set` stays field-wise and gains `default_harness`, validated through
+`AgentProvider::from_wire` and refused with
+`unknown default_harness {value:?} (expected "claude_adk", "claude" or
+"codex")`. The compat story is read-and-write, chosen because it is the
+smallest thing that keeps step-13 clients whole:
+
+- **`settings.set { claude_mode }` keeps working**: `"headless"` maps to
+  `default_harness = ClaudeAdk`, `"tui"` to `Claude` — the exact
+  `ClaudeMode::carrier()` mapping (`models.rs:93`), which survives as one
+  small function beside `CODEX_ONLY_MODE` after the `ClaudeMode` enum and its
+  `AppState` field are deleted. `codex_mode` keeps its idempotent accept and
+  its exact refusal sentence.
+- **`settings.get` keeps serving both old keys**, derived from
+  `default_harness` (a codex default answers `claude_mode: "headless"`, which
+  is the old default and the honest "not tui"). An old Account page still
+  paints and still saves.
+- **The config file** mints `default_harness` and `persist()` (`app.rs:3550`)
+  writes only it. Loading reads `default_harness` first and falls back to a
+  stored `claude_mode` through the same mapping — a bridge upgraded in place
+  keeps its choice with no migration step, and the old key is simply never
+  written again.
+
+**The Account page shows ONE select.** `agentModePanelHtml` /
+`mountAgentMode` (`core/agentMode.js`) collapse to a single field — label
+"Default agent", options rendered from **`STARTABLE_PROVIDERS`** via the
+existing `providerOptionsHtml`, so the select and the new-agent view's cards
+share one options array and cannot drift. The Codex select, its lock note,
+`CLAUDE_MODES` and `CODEX_MODES` are deleted. The panel keeps its
+paint-from-`settings.get`, save-on-change, "Saved." idiom; it saves
+`{ default_harness: value }` and falls back to `{ claude_mode }` only if the
+bridge refuses the new key (an old bridge under a new client — the two claude
+options still work there; a chosen Codex default is refused with the bridge's
+sentence, honestly).
+
+#### 14.2 Locked agents — resolution without a mode
+
+`model_choice_from` (`app.rs:14865`) keeps its parameter and changes what it
+means: `model_choice_from(params, default: AgentProvider)` where the callers
+pass `self.default_harness`. The match becomes:
+
+- **absent / empty** → `default` — no preference means the account's default
+  harness;
+- **any named token** → `AgentProvider::from_wire` — `"claude"` is the TUI
+  carrier again, concretely; `"claude_adk"` and `"codex"` as themselves.
+
+`claude_carrier()` (`app.rs:8867`) is deleted with the enum. Its nine callers
+pass `self.default_harness`. `default_agent_provider` (`app.rs:8861`, the
+router's carrier) stops following the setting and pins
+`AgentProvider::ClaudeAdk`: the router is a headless-shaped job and there is
+exactly one headless carrier — a Codex default must not strand routing on a
+TUI. `agent_start`'s re-carriering edge from step 13 (naming `"claude"` on an
+idle entity re-carriers it) dies by construction: every token is concrete, so
+`set_entity_model_choice` only ever sees a provider move the human explicitly
+named, and its while-live refusal narrows to exactly that case (§14.6).
+
+**Labels.** `ClaudeHarness::label()` (`harness/claude.rs:34`) becomes
+`"Claude Code TUI"`; `AdkHarness::label()` (`harness/adk.rs:63`) stays
+`"Claude Code"`; `CodexHarness::label()` (`harness/codex.rs:31`) becomes
+`"Codex"` — one vocabulary, three names, and the settings select, the
+new-agent cards, the rail bubbles and every refusal that prints a label all
+read them from the same place (`provider_catalogs` / `AgentProvider::label`).
+The step-13 test that asserted both claude labels equal is inverted: every
+catalog label is asserted **distinct**, and still free of "headless".
+
+**SPA vocabulary.** In `core/modelPicker.js`: `STARTABLE_PROVIDERS` becomes
+three entries — `claude_adk` "Claude Code", `claude` "Claude Code TUI",
+`codex` "Codex" — and `PROVIDER_LABELS` matches. `CARRIED_AGENTS`,
+`genericProviderId`, `oneProviderPerName` and `defaultAmong` are deleted:
+every carrier is an agent now, so there is nothing to alias or fold, and
+`startableCatalogProviders` reduces to an id filter against
+`STARTABLE_PROVIDERS`. `DEFAULT_START_PROVIDER` dies too — what a start leads
+with is the account's answer, read off `models.list`, whose
+`default_provider` (`app.rs:5732`) starts serving `self.default_harness` (and
+whose top-level `models`/`efforts` compat fields serve that default's
+catalog). `loadAgentDefaults` (`core/agentDefaults.js`) stops aliasing a
+stored `claude_adk` — it is a first-class preference again. Every deleted
+helper's call sites (`agentRailModel.js:23` `providerLabel` import path,
+`thread.js:483` `harnessLabel`, `surfaceTabs.js`, `views/settings.js`) read
+the concrete id straight.
+
+#### 14.3 Agentless branches, and the primary at index 0
+
+**Creation mints no agent.** Of the three `AgentRoster::with_first` sites
+(`orchestrator.rs:913`, `1483`, `2442`):
+
+- **`create_plan` (913) is untouched.** An issue carries exactly one agent
+  and its agent IS its conversation; nothing in this step is about issues.
+- **`adopt_run` (2442) mints an empty roster.** Adoption is git and records;
+  no one is being spoken to. The `pending_continuation` grant and the
+  adoption-time choice params stop minting an agent and instead wait for the
+  first one (the derived pickup rule of step 10 — "the first session after
+  adoption" — now reads "the first agent ever added to an adopted entity").
+- **`dispatch_run` (1483) keeps minting one**, with the dispatch's own
+  choice: a dispatched build is case (b) below — the system is about to
+  deliver, and minting at dispatch IS the auto-add, done where the choice is
+  in hand.
+
+**The roster may be empty, and index 0 is the primary.** `AgentRoster` drops
+its non-empty invariant: `first()`/`first_mut()` and the `Deref`/`DerefMut`
+to the first agent's thread (`agent.rs:118–189`) are deleted — a `Deref` that
+can panic is a trap every new call site walks into. In their place:
+
+- `primary()` / `primary_mut()` → `Option<&Agent>` — the agent at index 0;
+- `resolve(None)` → the primary, or a refusal
+  (`no agent on {owner} — send a message to create one`) for read paths;
+- `is_empty()` becomes the real answer.
+
+Issues always construct `with_first`, so plan paths unwrap `primary()` with
+an expect naming the invariant that still holds there
+(`"an issue always holds its one agent"`).
+
+**The auto-add door is one helper.** `AppState::ensure_primary_agent(entity_id)
+-> Result<agent_id>`: if the roster is empty, add an agent with
+`ModelChoice { provider: self.default_harness, ..Default::default() }` (falling
+back to the entity's persisted choice when one names a provider), persist, and
+return index 0's id. Every path where the system must deliver calls it instead
+of reaching for `first()`:
+
+| Site | Today | Change |
+|---|---|---|
+| `thread_post` (`app.rs:10946`) | `roster.resolve(addressed)` | no `agent_id` + empty roster → `ensure_primary_agent` (a post must be heard) |
+| `agent_start` (`app.rs:17420`) | `resolve_agent` | same door — a start with no agent creates the default one |
+| `PendingAgentTurn::for_run` (`app.rs:900`) | `agents.first()` | callers pass the id from `ensure_primary_agent` / the primary |
+| `for_recovery` (`app.rs:959`) | `agents.first()` | `primary()` — a recovery only exists for an entity that ran, but an empty roster refuses rather than panics |
+| the router's branch delivery (`default_agent_provider` caller, `app.rs:8815`) | roster's first | `ensure_primary_agent` on the routed-to entity |
+| `run.message` (`app.rs:12040`) / `run_stage_fix`-family posts | Deref `post_user` | `ensure_primary_agent`, then post to it |
+| `run_stage_dispatch` (`app.rs:11567`) | `resolve(addressed)` + `first()` compare | `resolve` unchanged; the "is first" compare reads `primary()` |
+| branch dispatch (`app.rs:13318`) | `first()` or `add` | empty roster takes the `add` arm — same code, one less special case |
+| the idle sweep (`app.rs:6161/6174`) | tab of `agents.first()` | skip entities whose roster is empty (nothing can be idle that does not exist) |
+| `retire_issue_session` (`app.rs:16524`) | `agents.first()` | `primary()` — issues always have one |
+| `thread_of` / `request_changes` Issue-swap (`app.rs:10941`, `11015`, `3037`) | `first()` | `primary()`, refusing on an empty run roster |
+
+**Entity-level events on an empty roster are not minted.** The Deref sites
+that push lifecycle/git events onto "the" thread (`app.rs:2344`, `10229`,
+`10283`, `10392`, `11951`, `12091`, and the doc-comment/user-post family) go
+through `primary_mut()` and skip when there is no one to tell. Owned
+honestly: an agentless branch's history lives in git and the store — the
+places that actually record it — and the first agent starts a fresh
+conversation anyway (step 10's rule), opening with the human's first message
+rather than a backlog of events nobody was there to hear. No event minted on
+an agentless branch today is attention-classed except `Merged`, and the human
+who merges an agentless branch did it with their own hands.
+
+**Restore tells "never had agents" from "predates agents".**
+`AgentRoster::restore` (`agent.rs:153`) currently manufactures a derived
+first agent whenever the stored list is empty. That stays correct only for
+the pre-agent-era migration, so the store passes whether the record carried
+an agents field at all: absent → the derived-id migration exactly as today;
+present-but-empty → an empty roster, restored as such. `derived_agent_id`
+survives solely for that migration; every agent created after this step is
+minted (`new_agent_id`), first or not.
+
+#### 14.4 Remove-all
+
+Every guard protecting the last/first agent goes:
+
+- **`AgentRoster::remove`** (`agent.rs:273`): the `index == 0` refusal is
+  deleted — remove is a position lookup and a `Vec::remove`, any index.
+- **`agent_remove`** (`app.rs:8080`): the issue refusal stays (an issue's
+  agent is the issue); the "FIRST agent is not removable" doc paragraph is
+  rewritten to the new rule. `retire_agent` already does the last rites and
+  needs nothing.
+- **SPA `canRemoveAgent`** (`agentRailModel.js:153`): drops
+  `agents.length < 2` and the `agents[0].id === agentId` check — it becomes
+  "a branch, and the id names an agent on it". `removeAgentConfirm` is
+  unchanged; its outline already says exactly what removal costs.
+
+Removing the last agent leaves a working entity: `railBubbles` already
+renders the ghost bubble for an empty roster, `selectAgentId` already answers
+`null`, and `paintPanel` already paints the "New agent" head — the chat panel
+under it becomes the new-agent view (§14.5). The rail's `agentlessOnce`
+say-it-twice guard stays: a poll hiccup still says it once, and a real
+remove-all says it every tick.
+
+#### 14.5 The new-agent view
+
+The chat tab of an entity with no agent (an adoptable checkout, an adopted
+branch nobody has spoken to, a branch whose agents were all removed) shows,
+inside `#rail-body` where the timeline would be:
+
+- **the three harness options**, rendered with the existing
+  `providerCardsHtml(STARTABLE_PROVIDERS, chosenId)` (`modelPicker.js:92`) —
+  the same cards, chrome and `data-provider` wiring the Agent tab's offer
+  uses, no lead card; `chosenId` starts as the account default
+  (`models.list`'s `default_provider`) and a press on a card just moves the
+  highlight;
+- **the live composer** below, exactly as it stands — placeholder "Send a
+  message to start an agent here…", attachments working (they already adopt
+  on upload).
+
+**A send is one action to the human and three existing verbs on the wire** —
+no call gains a field, which is the DRY answer: the rail's `post()`
+(`agentRail.js:789`) already composes adopt-if-needed + `thread.post` +
+`agent.start`, and `addAgent()` (`agentRail.js:862`) already composes
+`agent.add` with a choice. The empty-roster send runs, in order:
+`ensureEntity()` (adopts; `run.adopt` now mints no agent), `agent.add
+{ entity_id, provider: chosenId, …model/effort from §14.6 }`, `thread.post
+{ agent_id }`, `agent.start { agent_id }` — then selects the new bubble. A
+failure between calls leaves exactly the states that already exist (an idle
+agent with no message is the `+` bubble's normal product). Bridge-side,
+`ensure_primary_agent` remains the door for callers that never name a choice
+— an old client's bare `thread.post` still works, on the default harness.
+
+`adoption.js`'s `createStartingAdoptingCall` path and the rail's `startAgent`
+keep working unchanged for entities that HAVE agents; the generic-token send
+they used to rely on now means "the default harness" only where no agent
+exists to be locked.
+
+#### 14.6 The composer's model menu
+
+The composer row gains one control on the LEFT of `composer-bar`, opposite
+the send button: a mini menu button reading the current selection ("Model ·
+effort", or "Default model" when nothing is chosen). Pressing it opens one
+menu — built with the split-button idiom's menu half, `mountSplitMenu` /
+`splitmenu` markup (`core/splitButton.js:74`), the same machinery the
+interrupt send wears — listing:
+
+- the agent's own catalog's models (`catalogForProvider` +
+  `modelOptionsHtml`'s data, `modelPicker.js`), current one marked;
+- the effort levels below them (`effortOptionsHtml`'s data), shown only
+  while `effortSupported` holds for the chosen model, and reconciled through
+  `reconcileAgentChoice` (`core/agentChoice.js`) when the model changes.
+
+No provider entry — the agent is locked, so the menu asks only what is still
+a question. `composerHtml` (`composer.js:155`) gains the slot behind an
+optional `modelMenu` config the way `attachable` works; surfaces that pass
+nothing render exactly today's row.
+
+**The write is a new thin verb, because no existing one fits and the spec
+says so rather than pretending:** the only RPC that persists a choice today
+is `agent.start` (which spawns) — read out of the handle table
+(`app.rs:5729–17086`). So: **`agent.choose { entity_id, model?, effort? }`**,
+which parses through the existing `model_choice_from` (provider field
+refused: `agent.choose: the agent is locked to {label} — model and effort
+only`), keeps the entity's persisted provider, and lands in the existing
+`set_entity_model_choice` (`app.rs:3765`). That function's while-live refusal
+narrows to provider moves only — which is precisely the "live session
+untouched until its next start" rule: a model edit under a live session
+persists and simply waits for the next spawn to spend it
+(`entity_model_choice` at `app.rs:17431` already does the spending).
+
+**With no agent yet**, the menu configures what the first send will create:
+the selection is held in the rail's draft state and travels on §14.5's
+`agent.add` params (`modelParams`, `modelPicker.js:187`). Nothing is written
+to the bridge until the agent exists — there is no entity choice worth
+writing for a checkout that may never be adopted.
+
+#### 14.7 The stopped TUI resumes
+
+A stopped TUI session's chat tab needs nothing: a send already resumes — the
+turn respawns the locked harness, which resumes by recorded session id (§10
+step 10). The TUI pane's offer changes: `mountAgentTab`'s `renderChoices`
+(`surfaceTabs.js:180`) — the lead card plus the card row — is replaced by
+**one button, "Resume"**, when the pane's agent exists: it calls
+`onStart()` with no provider at all, which the rail's `startAgent`
+(`agentRail.js:938`) forwards as a bare `agent.start { id, agent_id }` — the
+locked harness, the same conversation. `STARTABLE_PROVIDERS`,
+`DEFAULT_START_PROVIDER`, `providerCardsHtml` and the `ranProvider` lead
+logic leave this file entirely; the busy/disabled/failure handling
+(`startAgent`'s single-flight and the standing-offer reset) is kept for the
+one button. The rail only mounts the TUI pane for an existing agent with a
+terminal, so the pane never needs a card picker again — creating agents is
+the chat tab's job now (§14.5).
+
+#### 14.8 Opus 5
+
+`ClaudeHarness::models()` (`harness/claude.rs:38`) gains, between Fable 5 and
+Opus 4.8:
+
+```rust
+ModelOption { id: "claude-opus-5", label: "Claude Opus 5",
+              supports_effort: true, efforts: &EFFORT_LEVELS },
+```
+
+Both claude carriers share it by construction — `AdkHarness::models()`
+delegates (`adk.rs:67`). The existing
+`unknown_but_sane_model_id_passes_through` test already proves old bridges
+accept the id; the catalog test grows the assertion that both carriers list
+it.
+
+#### 14.9 DRY inventory — what gets reused, never copied
+
+| Need | The one implementation | Reused by |
+|---|---|---|
+| harness options + labels | `STARTABLE_PROVIDERS` (`modelPicker.js`) | new-agent cards, Account select, tests |
+| option markup | `providerOptionsHtml` / `providerCardsHtml` / `providerCardHtml` | Account select / new-agent view |
+| card→id wiring | `data-provider` + delegated click (the Agent-tab idiom) | new-agent view |
+| menu open/close/outside-press | `mountSplitMenu` (`splitButton.js`) | composer model menu (and the interrupt send, as today) |
+| catalog reads | `catalogForProvider`, `modelInCatalog`, `effortSupported`, `reconcileAgentChoice`, `modelParams` | composer menu, Account defaults panel, issue sheet |
+| composer markup | `composerHtml`'s one template, extended with the optional left slot | every conversation surface |
+| send composition | the rail's `ensureEntity` / `post()` / `addAgent()` / `startAgent()` | new-agent send (no parallel path) |
+| wire-token parse | `AgentProvider::from_wire` / `model_choice_from` | `settings.set`, `agent.choose`, every minting verb |
+| choice persistence | `set_entity_model_choice` | `agent.choose`, `agent.start` |
+| auto-add | `ensure_primary_agent` | `thread.post`, `agent.start`, the router, `run.message`, recovery |
+| last rites | `retire_agent` | `agent.remove` (unchanged) |
+| labels | `Harness::label()` via `AgentProvider::label` | catalogs, refusals, digests |
+
+#### 14.10 The tests
+
+Bridge (`cargo test`, no model turns — everything drives `AppState::handle`,
+the roster, or the fake harness):
+
+1. fresh state: `settings.get` answers `default_harness` `"claude_adk"`,
+   compat `claude_mode` `"headless"`, `codex_mode` `"tui"`;
+2. `settings.set { default_harness: "claude" }` persists across a reload,
+   leaves `projects_dir` unmoved, and derives `claude_mode` `"tui"`; an
+   unknown value is refused with the expected-tokens sentence and changes
+   nothing;
+3. compat: `settings.set { claude_mode: "tui" }` still lands
+   (`default_harness` reads `"claude"` after), `codex_mode` keeps its
+   idempotent accept and exact refusal; a config file holding only the old
+   `claude_mode` key loads the mapped default, one holding both prefers
+   `default_harness`;
+4. `model_choice_from`: absent provider → the default harness; `"claude"` →
+   `Claude` concretely whatever the setting says; `"claude_adk"` / `"codex"`
+   as themselves;
+5. `run.adopt` mints no agent: the roster is empty, `branch.get` answers
+   `agents: []`, and no event panics on the way;
+6. `thread.post` with no `agent_id` on an empty roster creates one agent on
+   the default harness, delivers to it, and the agent sits at index 0;
+   `agent.start` on an empty roster does the same;
+7. dispatch still mints its agent with the dispatch's own choice;
+8. `agent.remove` takes the FIRST agent, and the last: the entity survives,
+   `agent.list` answers empty, the session is retired; a post after
+   remove-all mints a fresh agent whose conversation starts empty (resumes
+   nothing — step 10's rule, asserted through the locator);
+9. the router's `default_agent_provider` is `ClaudeAdk` under every setting;
+10. labels: the three catalog labels are `"Claude Code"`,
+    `"Claude Code TUI"`, `"Codex"`, pairwise distinct, none containing
+    "headless"; the switch-refusal message prints the locked names;
+11. `agent.choose` persists model/effort on an idle entity; under a LIVE
+    session it persists without touching the session and the next start
+    spends it; a provider field is refused with the locked sentence;
+    `agent.start` naming a different provider while live still refuses;
+12. `claude-opus-5` is in both claude carriers' catalogs, `supports_effort`
+    true;
+13. restore: a stored record with no agents field and a legacy thread still
+    migrates onto the derived first agent; one with an empty agents array
+    restores empty;
+14. the idle sweep skips an agentless working entity instead of panicking.
+
+SPA (`npm test`):
+
+1. `STARTABLE_PROVIDERS` is exactly the three concrete providers with the
+   three names; `providerLabel("claude_adk")` is "Claude Code",
+   `providerLabel("claude")` is "Claude Code TUI"; no alias helper survives;
+2. `canRemoveAgent` answers true for a branch's only agent and its first,
+   false on issues and for unknown ids;
+3. the empty-roster chat panel renders the three cards with the account
+   default highlighted; picking a card and sending composes `agent.add`
+   (chosen provider) → `thread.post` → `agent.start`, in order, and selects
+   the new agent;
+4. the composer's model menu renders at the row's left from the agent's own
+   catalog, offers no provider, drops effort for a model that does not
+   support it, and calls `agent.choose`; with no agent it feeds the pending
+   `agent.add` params instead and calls nothing;
+5. the stopped-TUI pane offers exactly one Resume button whose press calls
+   `agent.start` with the agent id and no provider;
+6. the Account panel is one select whose options read exactly the three
+   names, saving `default_harness` with the "Saved." note, and falling back
+   to `claude_mode` when the bridge refuses the new key;
+7. `loadAgentDefaults` returns a stored `claude_adk` unaliased.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -3160,6 +3574,41 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 14 specified — agents lock to their harness, and
+  branches start with none** (branch `build/new-agent-flow`). Supersedes
+  step 13's carrier-follows-setting half: an agent is locked to the harness
+  it was created on, so its conversation provably stays its own — nothing
+  re-carriers at start time, and the label fold reverses into three names,
+  "Claude Code" (the headless carrier), "Claude Code TUI", "Codex", with
+  "headless" still banned from user-facing strings. The account setting
+  becomes `default_harness` (a concrete provider token, default
+  `claude_adk`), persisted in place of `claude_mode`, with the old
+  `claude_mode`/`codex_mode` keys kept as derived read/write compat aliases
+  and the config file falling back to a stored `claude_mode` on load; the
+  Account page collapses to one select sharing `STARTABLE_PROVIDERS`'
+  vocabulary. `model_choice_from` resolves absent → the default and every
+  named token concretely; the router pins `ClaudeAdk`. Branches start with
+  NO agents: adoption mints an empty roster (dispatch keeps minting, since
+  it delivers), `AgentRoster` drops its non-empty invariant and its
+  first-agent `Deref` for `primary()`/`Option`, entity-level events on an
+  empty roster are skipped, and `ensure_primary_agent` is the one door
+  through which the system auto-adds (default harness) when it must deliver
+  — `thread.post`, `agent.start`, the router, recovery. Remove-all: the
+  roster's index-0 refusal and the SPA's `canRemoveAgent` guards go;
+  removing the last agent leaves the entity on the new-agent view — the
+  empty chat tab renders the three harness cards (`providerCardsHtml`,
+  account default highlighted) over the live composer, and a send composes
+  the existing `agent.add` → `thread.post` → `agent.start`, no call gaining
+  a field. The composer gains a combined model+effort menu at the row's left
+  (split-button menu machinery + the modelPicker catalog helpers), writing
+  through the new thin `agent.choose` into `set_entity_model_choice`, whose
+  while-live refusal narrows to provider moves — a live session is untouched
+  until its next start; with no agent the menu configures the first send's
+  `agent.add`. The stopped-TUI pane's card offer becomes one Resume button
+  (bare `agent.start` — same harness, same conversation). Opus 5 joins the
+  shared claude catalog (`claude-opus-5`, "Claude Opus 5", effort-capable).
+  §10 gains step 14 with the DRY inventory and the test list; no test runs a
+  model turn.
 - **2026-08-30, step 13 specified — the account chooses Claude Code's
   carrier.** An account setting on the bridge decides which carrier "Claude
   Code" means: `settings.get`/`settings.set` gain `claude_mode`

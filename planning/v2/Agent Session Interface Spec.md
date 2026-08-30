@@ -1,9 +1,10 @@
 # Agent Session Interface — Spec
 
-**Status:** Draft — steps 0–9 shipped: the ADK is a provider and the first
+**Status:** Draft — steps 0–10 shipped: the ADK is a provider and the first
 carrier with no terminal, an outcome is a status on the agent's own message,
-and activity floods neither bound. Step 10 — the polymorphic session id and
-the fresh-spawn rule — is specified, not started (see §10)
+activity floods neither bound, and every carrier names the conversation it is
+having — a terminal off its harness's own transcript tree — so a respawn
+resumes by name and a brand-new agent record starts fresh (see §10)
 **Last updated:** August 29, 2026
 **Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
 (step 10)
@@ -1313,7 +1314,8 @@ Each step compiles, ships and is green on its own.
     rule: a persisted id resumes exactly; an agent record with history keeps
     the `--continue` guess; a brand-new agent record resumes NOTHING — with
     adoption's continue-pickup preserved by the flag adoption already sets.
-    Detail below. **Specified 2026-08-29, not started.**
+    Detail below. **Shipped 2026-08-29** in `6d937fc`, `178085d`, `480d3a8`
+    and `55e7f10` — see the note after §10.5.
 
 > **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
 > designed in §6.3. The two failures it exists for are the two tests that
@@ -2240,6 +2242,40 @@ shipped it, no schema change; the `sessions` array a thread ships is
 it is the daemon respawning the same conversation, which a client
 experiences as nothing having happened.
 
+> **Step 10 shipped in `6d937fc`, `178085d`, `480d3a8` and `55e7f10`**, as
+> designed above. Four things worth knowing, all of them places the code had
+> to be more specific than the design.
+>
+> **The codex walk needed a bound that survives midnight.** The design says
+> "only date directories on or after the construction date"; the code compares
+> a directory's path relative to the sessions root (`2026/08/29`), which is
+> zero-padded and so orders lexicographically the way the dates order — and it
+> descends into a directory that is a PREFIX of the bound as well as one at or
+> past it, or the walk would never reach the bound's own leaves. A session that
+> opens at 23:59 and writes its rollout after midnight lands in a later dated
+> directory, which is `>=` the bound and therefore walked.
+>
+> **A candidate with no readable name still counts as a candidate.** The
+> locator's rule is "exactly one, or none", and a rollout that matched the cwd
+> but yielded neither a header id nor a filename uuid is still one of this
+> checkout's new conversations. Counting it keeps two such rollouts refusing
+> rather than letting an unnamed one wave a named one through.
+>
+> **The pump-side capture and the sweep are literally one function.**
+> `note_announced_conversation` became `note_named_conversation`: the activity
+> pump, the byte pump's close arm and the sweep all call it, so the compare
+> before the write and the "a name that has not arrived leaves the record
+> alone" rule exist once. `capture_conversation_names` is the sweep half —
+> collect under the lock, ask with it released, write back what moved.
+>
+> **One existing test changed meaning rather than being adjusted around.**
+> `an_agent_tab_spawns_the_harness_the_orchestrator_built` spawns for an owner
+> that holds no record at all — the shape a router has — and asserted the
+> unconditional probe's `--continue`. Under rule 3 that owner inherits nothing,
+> so the assertion is now `!continue_session`, which is the router case §10.4
+> names. The revival test kept its subject by giving both its agents history,
+> so the transcript probe is the only thing separating them.
+
 The tests, written first, no real model turn, every transcript tree a
 tempdir fake:
 
@@ -2393,6 +2429,23 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-29, step 10 shipped — every carrier names its conversation, and a
+  fresh agent starts fresh.** `6d937fc` (the locators over each harness's own
+  transcript tree, `holds_conversation`, and both PTY carriers' three-way
+  resume argv — claude in flag shape, codex as a subcommand behind the
+  `--config` overrides), `178085d` (`Carrier::Terminal` carries a locator,
+  `PtySession` answers `session_id` by delegating to it, built at the
+  reservation before the child exists so the snapshot cannot contain the
+  child's own file), `480d3a8` (the ordered spawn rule: a recorded name
+  verified and cleared where it fails, the cwd guess gated on the agent's own
+  history or an adopted entity whose lineage has never opened, fresh
+  otherwise — routers included) and `55e7f10` (the capture: the idle sweep
+  asks each live session with the lock released and writes through
+  `note_named_conversation`, the one record path both carriers now use, plus
+  the byte pump's final reading at close, which records and never clears).
+  The 2026-08-29 misdelivery is pinned by a test: a brand-new agent record
+  over a checkout holding an old transcript gets neither `--resume` nor
+  `--continue`. No wire or SPA change, as designed.
 - **2026-08-29, step 10 specified — the polymorphic session id, and the
   fresh spawn.** Every carrier can now answer `session_id`, from its own
   durable artifacts and never from a screen: the `Harness` supplies a

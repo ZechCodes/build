@@ -5,10 +5,11 @@
 //! choice, its display ordinal and above all its conversation outlive it.
 //!
 //! One conversation per agent (spec: UX Redesign Decisions, "Agents and
-//! conversations"). A branch can carry several agents working the same
-//! checkout; an issue carries exactly one. So an entity holds a
-//! [`AgentRoster`] rather than a thread, and the roster's FIRST agent is the
-//! one every entity-level event still speaks to.
+//! conversations"). A branch can carry any number of agents working the same
+//! checkout — including none, which is what a branch starts with — while an
+//! issue carries exactly one. So an entity holds an [`AgentRoster`] rather
+//! than a thread, and the agent at index 0 is the PRIMARY: the one every
+//! entity-level event speaks to, and the one a verb that names no agent means.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -104,33 +105,25 @@ impl Agent {
     }
 }
 
-/// An entity's agents, in rail order, guaranteed non-empty.
+/// An entity's agents, in rail order — possibly none of them.
 ///
-/// The roster dereferences to its first agent's conversation: entity-level
-/// events (lifecycle, git) have no agent of their own to speak to, so they
-/// speak to the first one — the agent the entity was created with.
+/// A branch starts with no agents and may be emptied back to none; an issue
+/// always holds exactly one. The agent at index 0 is the PRIMARY: the one
+/// entity-level events speak to, and the one a verb that names no agent means.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AgentRoster {
     agents: Vec<Agent>,
 }
 
-impl std::ops::Deref for AgentRoster {
-    type Target = Thread;
-
-    fn deref(&self) -> &Thread {
-        &self.first().thread
-    }
-}
-
-impl std::ops::DerefMut for AgentRoster {
-    fn deref_mut(&mut self) -> &mut Thread {
-        &mut self.first_mut().thread
-    }
-}
-
 impl AgentRoster {
-    /// A roster holding one freshly minted agent — what a new entity gets.
+    /// A roster with nobody on it — what a branch is created with.
+    pub fn empty() -> AgentRoster {
+        AgentRoster { agents: Vec::new() }
+    }
+
+    /// A roster holding one freshly minted agent — what an issue gets, and
+    /// what a dispatch that is about to speak gets.
     pub fn with_first(owner_id: &str, choice: ModelChoice, now: &str) -> AgentRoster {
         AgentRoster {
             agents: vec![Agent::new(
@@ -150,6 +143,11 @@ impl AgentRoster {
     /// that agent — and because the first agent's id is DERIVED from the owner,
     /// running this again on an already-migrated record produces the same
     /// roster rather than a second agent.
+    ///
+    /// A record with no agents and no legacy conversation is not a record from
+    /// before agents: it is an entity whose agents were all removed, or one
+    /// created without any. It restores as the empty roster it is — the
+    /// migration only ever runs where there is a conversation to carry across.
     pub fn restore(
         owner_id: &str,
         agents: Vec<Agent>,
@@ -157,7 +155,7 @@ impl AgentRoster {
         choice: ModelChoice,
         created_at: &str,
     ) -> AgentRoster {
-        if agents.is_empty() {
+        if agents.is_empty() && !legacy.is_empty() {
             let id = derived_agent_id(owner_id);
             let mut thread = legacy;
             thread.rekey_to_agent(&id);
@@ -175,17 +173,46 @@ impl AgentRoster {
         AgentRoster { agents }
     }
 
-    /// The agent every entity-level event speaks to.
-    pub fn first(&self) -> &Agent {
-        self.agents
-            .first()
-            .expect("a roster always holds at least one agent")
+    /// The agent at index 0 — the one entity-level events speak to and the one
+    /// a verb that names no agent means. `None` on an agentless entity, where
+    /// there is nobody to tell and nothing to address.
+    pub fn primary(&self) -> Option<&Agent> {
+        self.agents.first()
     }
 
-    pub fn first_mut(&mut self) -> &mut Agent {
-        self.agents
-            .first_mut()
-            .expect("a roster always holds at least one agent")
+    pub fn primary_mut(&mut self) -> Option<&mut Agent> {
+        self.agents.first_mut()
+    }
+
+    /// Whether `agent_id` is the primary — the agent whose conversation is the
+    /// entity's own, and the one every verb that names no agent reaches. False
+    /// on an agentless roster: nobody speaks for it.
+    pub fn is_primary(&self, agent_id: &str) -> bool {
+        self.primary().is_some_and(|primary| primary.id == agent_id)
+    }
+
+    /// The one agent of an issue. An issue is created with its agent and can
+    /// neither gain nor lose one, so this holds by construction — named once
+    /// here rather than spelled out at every plan site.
+    pub fn sole(&self) -> &Agent {
+        self.primary().expect(ISSUE_HOLDS_ITS_ONE_AGENT)
+    }
+
+    pub fn sole_mut(&mut self) -> &mut Agent {
+        self.primary_mut().expect(ISSUE_HOLDS_ITS_ONE_AGENT)
+    }
+
+    /// The agent the system delivers to: the primary, or a freshly minted one
+    /// when the human has left nobody here.
+    ///
+    /// The one door for every path that MUST be heard — a post, a start, a
+    /// dispatched turn, a report coming back. `choice` is the entity's own, so
+    /// the agent Build mints runs what the entity was set up to run.
+    pub fn ensure_primary(&mut self, owner_id: &str, choice: ModelChoice, now: &str) -> &mut Agent {
+        if self.agents.is_empty() {
+            self.add(owner_id, choice, now);
+        }
+        self.primary_mut().expect("just ensured")
     }
 
     pub fn agents(&self) -> &[Agent] {
@@ -204,10 +231,8 @@ impl AgentRoster {
         self.agents.len()
     }
 
-    /// Never empty — the invariant this whole type exists to hold. Present so
-    /// `len()` does not read as a collection that might be.
     pub fn is_empty(&self) -> bool {
-        false
+        self.agents.is_empty()
     }
 
     pub fn by_id(&self, agent_id: &str) -> Option<&Agent> {
@@ -218,11 +243,14 @@ impl AgentRoster {
         self.agents.iter_mut().find(|agent| agent.id == agent_id)
     }
 
-    /// Which agent a verb means: the one it named, or the first — so every verb
-    /// that predates agents keeps addressing the conversation it always did.
+    /// Which agent a verb means: the one it named, or the primary — so every
+    /// verb that predates agents keeps addressing the conversation it always
+    /// did. A read of an agentless entity is refused rather than answered with
+    /// somebody else's conversation; the paths that must be heard mint one
+    /// instead, through [`ensure_primary`](AgentRoster::ensure_primary).
     pub fn resolve(&self, agent_id: Option<&str>) -> Result<&Agent, String> {
         match agent_id.filter(|id| !id.is_empty()) {
-            None => Ok(self.first()),
+            None => self.primary().ok_or_else(|| NO_AGENT_YET.to_string()),
             Some(id) => self
                 .by_id(id)
                 .ok_or_else(|| format!("unknown agent_id: {id}")),
@@ -231,7 +259,7 @@ impl AgentRoster {
 
     pub fn resolve_mut(&mut self, agent_id: Option<&str>) -> Result<&mut Agent, String> {
         match agent_id.filter(|id| !id.is_empty()) {
-            None => Ok(self.first_mut()),
+            None => self.primary_mut().ok_or_else(|| NO_AGENT_YET.to_string()),
             Some(id) => {
                 if self.by_id(id).is_none() {
                     return Err(format!("unknown agent_id: {id}"));
@@ -260,11 +288,9 @@ impl AgentRoster {
     /// Take an agent off the entity, handing back the record that was removed
     /// (its conversation included, for the caller to do the last rites on).
     ///
-    /// The FIRST agent is never removable. It owns the conversation this roster
-    /// dereferences to — the one every entity-level event speaks to — so
-    /// removing it would silently re-home that conversation onto an agent that
-    /// never heard a word of it. It is also what makes the non-empty invariant
-    /// hold without a second rule: the last agent left is always the first.
+    /// Any agent, the primary and the last one included: a branch with no
+    /// agents is a working branch that shows the new-agent view, and the next
+    /// thing the system has to say to it mints one.
     ///
     /// The ordinals of the agents beside it are left alone. An ordinal is the
     /// rail's label for an agent, not its position, and a label that shifted
@@ -276,16 +302,15 @@ impl AgentRoster {
             .iter()
             .position(|agent| agent.id == agent_id)
             .ok_or_else(|| format!("unknown agent_id: {agent_id}"))?;
-        if index == 0 {
-            return Err(format!(
-                "{agent_id} is the first agent of {} and owns its conversation, so it cannot be \
-                 removed — remove the agents added beside it instead",
-                self.agents[0].owner_id
-            ));
-        }
         Ok(self.agents.remove(index))
     }
 }
+
+/// What an issue's roster holds, named where the unwrap that relies on it is.
+const ISSUE_HOLDS_ITS_ONE_AGENT: &str = "an issue always holds its one agent";
+
+/// What a read of an agentless entity is told.
+const NO_AGENT_YET: &str = "no agent here yet — send a message to create one";
 
 /// A fresh, time-ordered agent id. Two agents minted in the same millisecond
 /// still differ (80 bits of randomness), and ids minted later sort later.
@@ -399,7 +424,7 @@ mod roster_tests {
     #[test]
     fn the_first_agent_owns_the_entitys_conversation() {
         let roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
-        let first = roster.first();
+        let first = roster.primary().expect("the entity's agent");
         assert_eq!(first.ordinal, 1);
         assert_eq!(first.owner_id, "run-1");
         assert_eq!(first.state, AgentLifecycle::Idle);
@@ -407,13 +432,13 @@ mod roster_tests {
         assert_eq!(first.thread.agent.id, first.id);
         // The roster IS that conversation to everything that has no agent of
         // its own to speak to.
-        assert_eq!(roster.id, first.thread.id);
+        assert_eq!(roster.primary().unwrap().thread.id, first.thread.id);
     }
 
     #[test]
     fn a_second_agent_gets_its_own_conversation_and_the_next_ordinal() {
         let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
-        let first_id = roster.first().id.clone();
+        let first_id = roster.primary().unwrap().id.clone();
         let added = roster.add("run-1", codex(), "2026-08-13T10:00:00Z").clone();
 
         assert_eq!(added.ordinal, 2);
@@ -428,7 +453,7 @@ mod roster_tests {
             .expect("the agent is on the roster")
             .thread
             .post_user("only agent two hears this", None, NOW);
-        assert_eq!(roster.first().thread.items.len(), 0);
+        assert_eq!(roster.primary().unwrap().thread.items.len(), 0);
         assert_eq!(roster.by_id(&added.id).unwrap().thread.items.len(), 1);
     }
 
@@ -461,7 +486,7 @@ mod roster_tests {
             ModelChoice::default(),
             NOW,
         );
-        let first = roster.first();
+        let first = roster.primary().expect("the migrated agent");
         assert_eq!(first.id, derived_agent_id("run-1"));
         assert_eq!(first.thread.id, format!("thread:{}", first.id));
         assert_eq!(first.thread.agent.id, first.id);
@@ -478,12 +503,28 @@ mod roster_tests {
         assert_eq!(again.len(), 1);
     }
 
+    /// The migration exists for a conversation written before agents did.
+    /// A record with no conversation to carry across and no agents left is an
+    /// entity whose agents were removed — it restores as what it is.
+    #[test]
+    fn a_record_with_nothing_to_migrate_restores_empty() {
+        let roster = AgentRoster::restore(
+            "run-1",
+            Vec::new(),
+            Thread::default(),
+            ModelChoice::default(),
+            NOW,
+        );
+        assert!(roster.is_empty());
+        assert_eq!(roster.agents(), &[]);
+    }
+
     /// Removing an agent takes it off the rail and leaves every other label
     /// exactly where it was — the ordinal is a name, not a position.
     #[test]
     fn remove_takes_one_agent_off_without_renumbering_the_others() {
         let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
-        let first = roster.first().id.clone();
+        let first = roster.primary().unwrap().id.clone();
         let second = roster.add("run-1", codex(), NOW).id.clone();
         let third = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
 
@@ -494,7 +535,7 @@ mod roster_tests {
         assert_eq!(removed.ordinal, 2);
         assert_eq!(roster.len(), 2);
         assert!(roster.by_id(&second).is_none());
-        assert_eq!(roster.first().id, first);
+        assert_eq!(roster.primary().unwrap().id, first);
         assert_eq!(roster.by_id(&third).expect("still here").ordinal, 3);
 
         // The next agent continues past the highest ordinal ever handed out
@@ -502,20 +543,58 @@ mod roster_tests {
         assert_eq!(roster.add("run-1", ModelChoice::default(), NOW).ordinal, 4);
     }
 
-    /// The first agent owns the entity's conversation, so it is not removable —
-    /// and because the last agent left is always the first, that is also what
-    /// keeps a roster from ever being emptied.
+    /// Every agent is removable, the primary and the last one included. A
+    /// branch with no agents is a working branch: it shows the new-agent view,
+    /// and the next thing said to it creates one.
     #[test]
-    fn the_first_agent_is_not_removable_and_neither_is_the_only_one() {
+    fn every_agent_is_removable_down_to_none() {
         let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
-        let only = roster.first().id.clone();
-        let refused = roster.remove(&only).unwrap_err();
-        assert!(refused.contains("conversation"), "{refused}");
+        let first = roster.primary().expect("just created").id.clone();
+        let second = roster.add("run-1", codex(), NOW).id.clone();
+
+        assert_eq!(roster.remove(&first).expect("removable").id, first);
+        assert_eq!(
+            roster.primary().expect("the second agent is now first").id,
+            second
+        );
+
+        roster.remove(&second).expect("the last one goes too");
+        assert!(roster.is_empty());
+        assert_eq!(roster.primary(), None);
+        assert!(roster.resolve(None).unwrap_err().contains("no agent"));
+    }
+
+    /// The door every path takes when the system must be heard: the agent at
+    /// index 0, or one minted on the entity's own choice when the human has
+    /// left nobody there.
+    #[test]
+    fn ensure_primary_answers_index_zero_or_mints_one() {
+        let mut roster = AgentRoster::empty();
+        let minted = roster
+            .ensure_primary("run-1", codex(), "2026-08-30T09:00:00Z")
+            .clone();
+        assert_eq!(minted.choice, codex());
+        assert_eq!(minted.ordinal, 1);
         assert_eq!(roster.len(), 1);
 
-        roster.add("run-1", codex(), NOW);
-        assert!(roster.remove(&only).is_err(), "still the first agent");
+        let second = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+        assert_eq!(
+            roster.ensure_primary("run-1", codex(), NOW).id,
+            minted.id,
+            "an occupied roster mints nobody"
+        );
         assert_eq!(roster.len(), 2);
+        assert_ne!(second, minted.id);
+    }
+
+    /// A minted agent is minted, first or not: only the pre-agent migration
+    /// derives an id, and it is the only thing that may.
+    #[test]
+    fn an_agent_added_to_an_empty_roster_is_minted_not_derived() {
+        let mut roster = AgentRoster::empty();
+        let added = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
+        assert_ne!(added, derived_agent_id("run-1"));
+        assert_eq!(roster.primary().expect("just added").id, added);
     }
 
     #[test]

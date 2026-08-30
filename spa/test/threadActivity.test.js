@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-// Agent activity in the timeline: reasoning, tool calls, tool results and
-// narration.
+// Agent activity in the timeline: reasoning, tool calls, tool results,
+// narration, and background tasks.
 //
 // A harness that reports its own work has no terminal to report it in, so the
 // work goes into the conversation — the same timeline, the same events, the
 // same cursor. What makes that safe to read is that activity is FOLDED: it
-// arrives hundreds of items to a session, and the four messages between them
-// have to stay findable.
+// arrives hundreds of items to a session, and the messages between them have to
+// stay findable.
 
 import { describe, expect, it } from "vitest";
 import { threadHtml } from "../src/core/thread.js";
@@ -19,15 +19,16 @@ const activity = () =>
       { type: "event", data: { event: "tool_use", summary: "Read bridge/src/app.rs", created_at: "2026-08-23T12:00:01Z" } },
       { type: "event", data: { event: "tool_result", summary: "17 matches", created_at: "2026-08-23T12:00:02Z" } },
       { type: "event", data: { event: "narration", summary: "Running the suite once more.", created_at: "2026-08-23T12:00:03Z" } },
+      { type: "event", data: { event: "task_update", summary: "started — run the full suite", created_at: "2026-08-23T12:00:04Z" } },
     ],
   });
 
 describe("activity in the timeline", () => {
-  it("renders the four kinds folded, and says which is which", () => {
+  it("renders the five kinds folded, and says which is which", () => {
     document.body.innerHTML = activity();
 
     const folds = [...document.querySelectorAll(".thread-activity")];
-    expect(folds).toHaveLength(4);
+    expect(folds).toHaveLength(5);
     expect(folds.every((fold) => fold.tagName === "DETAILS")).toBe(true);
     // Folded: not one of them is open on arrival.
     expect(folds.every((fold) => fold.open)).toBe(false);
@@ -36,7 +37,26 @@ describe("activity in the timeline", () => {
       "Agent called a tool",
       "Tool answered",
       "Agent narrated",
+      "Background task",
     ]);
+  });
+
+  // Work the agent left running behind its own turn. It is the same quiet row
+  // as the other four — the label is the whole difference — and it names the
+  // task rather than the harness, because a background task is not the agent
+  // speaking and the provider's name in front of it would say nothing.
+  it("folds a background task shut under its own label, and shows what the task is", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "task_update", summary: "finished — run the full suite\n\n412 passed" } }],
+      sessions: [{ provider: "claude" }],
+    });
+
+    const fold = document.querySelector(".thread-activity");
+    expect(fold.tagName).toBe("DETAILS");
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector(".thread-activity-what").textContent).toBe("Background task");
+    expect(fold.querySelector(".thread-activity-preview").textContent).toBe("finished — run the full suite");
+    expect(fold.querySelector(".thread-event-detail").textContent).toContain("412 passed");
   });
 
   // The fold's head is what a reader scans past. A stack of rows all saying

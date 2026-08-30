@@ -829,7 +829,7 @@ Everything that must become conditional. This is the actual size of the work.
 | Site | Today | Change |
 |---|---|---|
 | `agentRail.js:177` | Chat / TUI switch | **TUI button shown only when `has_terminal`** — shipped |
-| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the four activity kinds; folded by default — shipped |
+| thread rendering (`core/thread.js`) | messages + lifecycle events | renders the five activity kinds; folded by default — shipped |
 | `surfaceTabs.js` | mounts the agent's PTY pane | unchanged — it is simply not reached for a no-terminal agent |
 | `terminal/manager.js` | one shared socket, demuxed by `term_id` | unchanged |
 | `console.js` | the human's own shells | unchanged; the console was never the agent's |
@@ -1338,6 +1338,8 @@ Each step compiles, ships and is green on its own.
     is non-empty, which the idle sweep's existing short-circuit honours with
     NO new sweep code. `can_interrupt` stays tied to an open turn, `Ended`
     still wins, the death rites are untouched. Detail below.
+    **Shipped** — the bridge half 2026-08-29, the SPA's one activity-map
+    entry 2026-08-30.
 
 > **Step 9 shipped in `51c6d0b`, `48d3933`, `50f2cb7` and `a7efeb8`**, as
 > designed in §6.3. The two failures it exists for are the two tests that
@@ -2472,6 +2474,15 @@ row, one entry added to `core/thread.js`'s activity map — with its own quiet
 label, "Background task". Nothing else: no badge, no panel, no gating, and
 every other kind, known or unknown, renders as it did.
 
+> **Shipped.** The entry is `task_update: { label: "Background task", icon:
+> "⧉", activity: true }` and there is no other change: the fold, the head's
+> first-line preview, the fold-survives-the-repaint patch and the
+> unknown-kind fallback are the shipped code, reached with no new branch.
+> The label does NOT carry the harness's name — `activityHtml` swaps a
+> leading `Agent` for the provider, and "Background task" has none to swap,
+> which is the wanted answer: the row says what a task is doing, and
+> "Claude Code background task" would say nothing more.
+
 #### 11.5 The fake harness, and the tests
 
 `adk::fake` grows recorded lines for the four events — a start, a terminal
@@ -2645,8 +2656,17 @@ sections cite (§11 q3, §11 q4) must not move.
   own text without a name the set no longer holds. Also amended: a terminal
   status is a NAMED set (`completed`/`failed`/`error`/`cancelled`/`killed`/
   `timed_out`) so an unrecognised one leaves the task for the roster to
-  close, and `cancelled`/`killed` read as `finished`, not `failed`. Still
-  outstanding: §11.4, the SPA's one activity-map entry.
+  close, and `cancelled`/`killed` read as `finished`, not `failed`.
+
+- **2026-08-30, step 11's SPA half shipped — step 11 is complete.** §11.4
+  cost exactly what it was specified to cost: one entry on
+  `core/thread.js`'s activity map, `task_update` labelled "Background task",
+  and no other line of client code. It folds shut like the other four, its
+  head previews the summary's first line, a fold the reader opened survives
+  the repaint under it, and an unknown kind still renders as the plain row
+  it always did. The label carries no provider name, because
+  `activityHtml` only swaps a leading `Agent` and this label has none —
+  the row names the task, not the harness.
 
 - **2026-08-29, step 11 specified — background tasks are visible, and the
   agent stays Working.** The headless-looks-idle finding, closed by design:

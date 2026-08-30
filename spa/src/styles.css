@@ -1074,7 +1074,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-event.blocked .thread-event-icon { border-color:var(--bg); background:color-mix(in srgb, var(--red) 15%, var(--panel)); color:var(--red); }
 .thread-event.blocked .thread-event-content strong { color:var(--red); }
 .thread-event.success .thread-event-icon { background:color-mix(in srgb, var(--green) 15%, var(--panel)); color:var(--green); }
-/* Agent activity — reasoning, tool calls, tool results, narration. The agent
+/* Agent activity — reasoning, tool calls, tool results, narration, background
+   tasks. The agent
    working rather than the agent speaking, and it arrives hundreds of items to a
    session, so the row is shut, smaller and dimmer than the lifecycle events
    beside it: one line the reader scans past, opening onto the whole of what was

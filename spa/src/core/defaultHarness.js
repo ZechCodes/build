@@ -60,10 +60,10 @@ export async function mountDefaultHarness(host, { callRpc }) {
     select.innerHTML = providerOptionsHtml(STARTABLE_PROVIDERS, defaultHarnessOf(settings));
   };
 
-  /// The save, and the same save in the words an older bridge speaks. A bridge
-  /// that does not know `default_harness` refuses it; the two claude harnesses
-  /// are still sayable there, and a Codex default honestly is not — that
-  /// bridge's own refusal is what the human reads.
+  // The save, and the same save in the words an older bridge speaks. A bridge
+  // that does not know `default_harness` refuses it; the two claude harnesses
+  // are still sayable there, and a Codex default honestly is not — that
+  // bridge's own refusal is what the human reads.
   const save = async (harness) => {
     try {
       return await callRpc("settings.set", { default_harness: harness });

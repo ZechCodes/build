@@ -924,7 +924,7 @@ impl PendingAgentTurn {
             root: AppState::canonical_root(&active.worktree.path),
             owner: owner.to_string(),
             agent_id: agent_id.to_string(),
-            model_choice: active.model_choice.clone(),
+            model_choice: active.agents.turn_choice(agent_id, &active.model_choice),
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
@@ -938,11 +938,12 @@ impl PendingAgentTurn {
     /// state rather than a tab that cannot exist.
     fn for_plan(owner: &str, active: &ActivePlan, turn: AgentTurn) -> Option<Self> {
         let workspace = active.workspace.as_ref()?;
+        let agent_id = active.agents.sole().id.clone();
         Some(PendingAgentTurn {
             root: AppState::canonical_root(&workspace.checkout),
             owner: owner.to_string(),
-            agent_id: active.agents.sole().id.clone(),
-            model_choice: active.model_choice.clone(),
+            model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
+            agent_id,
             cold: turn.cold,
             warm: turn.warm,
             phase: turn.phase,
@@ -970,11 +971,12 @@ impl PendingAgentTurn {
         // warm recovery is a live process that lived this conversation, and
         // the protocol block it keeps already tells it to read what it missed.
         let primed = crate::orchestrator::conversation_prompt(&prompt);
+        let agent_id = active.agents.primary()?.id.clone();
         Some(PendingAgentTurn {
             root: AppState::canonical_root(project_root),
             owner: owner.to_string(),
-            agent_id: active.agents.primary()?.id.clone(),
-            model_choice: active.model_choice.clone(),
+            model_choice: active.agents.turn_choice(&agent_id, &active.model_choice),
+            agent_id,
             cold: primed.clone(),
             warm: primed,
             phase: "recover",
@@ -8143,6 +8145,13 @@ impl AppState {
     /// implementing an issue is a handoff to a new agent on a branch rather
     /// than a second agent on the issue itself. The agent is a record and a
     /// conversation; no process is spawned until something is said to it.
+    ///
+    /// The FIRST agent of a branch that had none carries the branch with it:
+    /// its choice becomes the entity's, so the harness the human picked out of
+    /// the new-agent cards is what the branch is set to and what the model menu
+    /// then edits. A branch that already runs agents keeps its own — the new
+    /// one may be on another harness entirely, and the entity's choice belongs
+    /// to the primary.
     fn agent_add(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
         if self.plans.contains_key(&entity_id) {
@@ -8161,6 +8170,9 @@ impl AppState {
         } else {
             self.entity_model_choice(&entity_id)?
         };
+        if self.entity_agents(&entity_id)?.is_empty() {
+            self.set_entity_model_choice(&entity_id, choice.clone())?;
+        }
         let mut active = self.take_run(&entity_id)?;
         let added = active
             .agents
@@ -11191,7 +11203,9 @@ impl AppState {
                                 run_id,
                                 worktree_path: run.worktree.path.clone(),
                                 agent_id: primary.id.clone(),
-                                model_choice: primary.choice.clone(),
+                                model_choice: run
+                                    .agents
+                                    .turn_choice(&primary.id, &run.model_choice),
                             })
                         })
                     });
@@ -11243,12 +11257,12 @@ impl AppState {
                     })
                     .map(|_| run_id);
             } else if let Some(workspace) = &active.workspace {
-                let agent = active.agents.resolve(Some(&agent_id))?;
+                active.agents.resolve(Some(&agent_id))?;
                 self.tell_the_agent_a_message_is_waiting(
                     &workspace.checkout,
                     &agent_id,
                     &entity_id,
-                    agent.choice.clone(),
+                    active.agents.turn_choice(&agent_id, &active.model_choice),
                     interrupt,
                 );
             }
@@ -11298,8 +11312,9 @@ impl AppState {
             let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
             let worktree_path = active.worktree.path.clone();
             // Read before the run leaves the map: reviving this agent needs the
-            // provider it runs on, and the run is borrowed from `self`.
-            let agent_choice = active.agents.resolve(Some(&agent_id))?.choice.clone();
+            // harness it runs on, and the run is borrowed from `self`.
+            active.agents.resolve(Some(&agent_id))?;
+            let agent_choice = active.agents.turn_choice(&agent_id, &active.model_choice);
             // The branch is what the user is talking to, and — when the message
             // lands on the issue's conversation, which is where a planned
             // implementation speaks — the issue heard it too. Both while their
@@ -17648,17 +17663,21 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             None => s.ensure_primary_agent(&entity_id)?,
             named => s.resolve_agent(&entity_id, named)?.id,
         };
-        let thread = &s
-            .entity_agents(&entity_id)?
+        let roster = s.entity_agents(&entity_id)?;
+        let thread = &roster
             .by_id(&agent_id)
             .expect("the agent was just resolved on this roster")
             .thread;
+        // The agent's own harness, not the entity's: the Resume the TUI pane
+        // offers names no provider precisely because the agent is locked to
+        // one, and a branch's several agents need not share it.
+        let model_choice = roster.turn_choice(&agent_id, &s.entity_model_choice(&entity_id)?);
         (
             PendingAgentTurn {
                 root: s.entity_agent_root(&entity_id)?,
                 owner: entity_id.clone(),
                 agent_id: agent_id.clone(),
-                model_choice: s.entity_model_choice(&entity_id)?,
+                model_choice,
                 // Only sent when something is actually waiting (below). A hand-
                 // started agent has no context, so it gets the cold form: the
                 // conversation protocol and the catch-up packet around the nudge.
@@ -23114,6 +23133,20 @@ mod tests {
     /// That agent's tab key.
     fn primary_agent_key(state: &AppState, root: &std::path::Path, entity_id: &str) -> TabKey {
         TabKey::agent(root, &primary_agent_id(state, entity_id))
+    }
+
+    /// The harness an agent's session was actually opened on. The tab records
+    /// what it spawned, so this is what a start really spent — and unlike the
+    /// attach's answer it holds for a carrier with no terminal.
+    fn spawned_provider(
+        state: &Arc<Mutex<AppState>>,
+        root: &std::path::Path,
+        agent_id: &str,
+    ) -> AgentProvider {
+        match state.lock().unwrap().tabs[&TabKey::agent(root, agent_id)].role {
+            TabRole::Agent { provider, .. } => provider,
+            TabRole::Shell => panic!("{agent_id} opened a shell, not an agent session"),
+        }
     }
 
     /// An issue filed with `dispatch: false` is a record and nothing else: the
@@ -30889,6 +30922,159 @@ mod tests {
                 .any(|turn| turn.owner == run_id && turn.agent_id == minted.id),
             "and the turn is addressed to it"
         );
+    }
+
+    /// The new-agent view's flagship send: a branch with no agents gets its
+    /// first one on the harness the human picked out of the cards. That harness
+    /// is the branch's from then on — the entity was adopted on the account's
+    /// default, and nothing may respawn this agent on it.
+    #[tokio::test]
+    async fn adding_the_first_agent_on_a_named_harness_moves_the_branch_onto_it() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let adopted = call(
+            &handler,
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        let run_id = run_id_of(&adopted);
+
+        let added = call(
+            &handler,
+            "agent.add",
+            json!({ "entity_id": run_id, "provider": "claude" }),
+        );
+        assert_eq!(added["ok"], true, "{added:?}");
+        let agent_id = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            state.lock().unwrap().runs[&run_id].model_choice.provider,
+            AgentProvider::Claude,
+            "the branch had nobody, so its first agent's harness is the branch's"
+        );
+
+        // The TUI pane's Resume: no provider named, because the agent is
+        // locked to one. It must come back on the harness it was created on.
+        let started = call(
+            &handler,
+            "agent.start",
+            json!({ "id": run_id, "agent_id": agent_id }),
+        );
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(started["result"]["spawned"], "fresh", "{started:?}");
+        let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
+        assert_eq!(
+            spawned_provider(&state, &root, &agent_id),
+            AgentProvider::Claude,
+            "a bare start respawns the harness the agent is locked to"
+        );
+    }
+
+    /// A branch running two harnesses: the entity carries one choice and the
+    /// agents carry their own. A start that names the second agent respawns
+    /// THAT agent's harness — spending the branch's would hand its conversation
+    /// to a different carrier.
+    #[tokio::test]
+    async fn a_start_respawns_the_named_agents_harness_on_a_mixed_branch() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let adopted = call(
+            &handler,
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        let run_id = run_id_of(&adopted);
+        call(&handler, "agent.add", json!({ "entity_id": run_id }));
+        let added = call(
+            &handler,
+            "agent.add",
+            json!({ "entity_id": run_id, "provider": "codex" }),
+        );
+        let second = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let started = call(
+            &handler,
+            "agent.start",
+            json!({ "id": run_id, "agent_id": second }),
+        );
+        assert_eq!(started["ok"], true, "{started:?}");
+        let root = AppState::canonical_root(&state.lock().unwrap().runs[&run_id].worktree.path);
+        assert_eq!(
+            spawned_provider(&state, &root, &second),
+            AgentProvider::Codex
+        );
+        assert_eq!(
+            state.lock().unwrap().runs[&run_id].model_choice.provider,
+            AgentProvider::ClaudeAdk,
+            "and the branch's own choice — the primary's harness — did not move"
+        );
+    }
+
+    /// The same rule for a turn Build queues rather than a start the human
+    /// pressed — for the agent a verb NAMES, and for the primary a verb that
+    /// names none reaches. Either way the harness is the agent's own; what the
+    /// branch is set to is only the primary's, and here not even that.
+    #[test]
+    fn a_queued_turn_spends_the_agents_own_harness() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_issue_id, run_id) = planned_run_in_review(&mut state, "review on two harnesses");
+        let planted = primary_agent_id(&state, &run_id);
+        let added = state.handle(req(
+            "agent.add",
+            json!({ "entity_id": run_id, "provider": "codex" }),
+        ));
+        let codex_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        // Addressed to the agent whose bubble the reviewer had open.
+        let addressed = state.handle(req(
+            "run.request_changes",
+            json!({
+                "run_id": run_id,
+                "agent_id": codex_agent,
+                "messages": [{ "body": "tighten the parser", "anchor": null }]
+            }),
+        ));
+        assert_eq!(addressed["ok"], true, "{addressed:?}");
+        let queued = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.agent_id == codex_agent)
+            .expect("the turn is addressed to the agent the comments named");
+        assert_eq!(
+            queued.model_choice.provider,
+            AgentProvider::Codex,
+            "the branch's harness is not this agent's, and the turn is this agent's"
+        );
+        assert_eq!(
+            state.runs[&run_id].model_choice.provider,
+            AgentProvider::ClaudeAdk,
+            "and nothing moved the branch's own choice"
+        );
+
+        // And with the first agent gone, the codex agent IS the primary — the
+        // agent every verb that names none now reaches.
+        state.pending_agent_turns.clear();
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": planted }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        // Off the review gate, where a freeform message is what the branch
+        // hears next.
+        state.runs.get_mut(&run_id).unwrap().run.state = RunState::Building;
+        let messaged = state.handle(req(
+            "run.message",
+            json!({ "run_id": run_id, "message": "pick this back up" }),
+        ));
+        assert_eq!(messaged["ok"], true, "{messaged:?}");
+        let queued = state
+            .pending_agent_turns
+            .iter()
+            .find(|turn| turn.agent_id == codex_agent)
+            .expect("the turn is addressed to the agent that is left");
+        assert_eq!(queued.model_choice.provider, AgentProvider::Codex);
     }
 
     /// A dispatch is the system about to speak, so it mints its agent where

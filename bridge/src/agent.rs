@@ -226,6 +226,29 @@ impl AgentRoster {
         self.primary_mut().expect("just ensured")
     }
 
+    /// What a turn addressed to `agent_id` spends.
+    ///
+    /// The harness is the AGENT's own. An agent never moves off the harness it
+    /// was created on — that lock is what keeps its chat history where the
+    /// human left it — so no entity-level choice may respawn it somewhere else.
+    ///
+    /// The model and reasoning effort are the ENTITY's: that is what the
+    /// composer's menu edits, and the menu's promise is that the next start
+    /// spends it. The one exception is an agent running a different harness
+    /// than the entity, where the entity's model id is written in a vocabulary
+    /// this harness does not speak; there the agent keeps its own selection
+    /// whole.
+    ///
+    /// An id nobody on the roster answers to leaves only the entity's choice to
+    /// spend — every caller resolves the agent first, so this is the shape of
+    /// the fallback rather than a case that happens.
+    pub fn turn_choice(&self, agent_id: &str, entity: &ModelChoice) -> ModelChoice {
+        match self.by_id(agent_id) {
+            Some(agent) if agent.choice.provider != entity.provider => agent.choice.clone(),
+            _ => entity.clone(),
+        }
+    }
+
     pub fn agents(&self) -> &[Agent] {
         &self.agents
     }
@@ -606,6 +629,46 @@ mod roster_tests {
         let added = roster.add("run-1", ModelChoice::default(), NOW).id.clone();
         assert_ne!(added, derived_agent_id("run-1"));
         assert_eq!(roster.primary().expect("just added").id, added);
+    }
+
+    /// What a turn spends is split on purpose: the harness is the agent's own
+    /// and never moves, while the model and effort are the entity's — those
+    /// are what the composer's menu edits, and what the next start is meant to
+    /// spend.
+    #[test]
+    fn a_turn_spends_the_agents_harness_with_the_entitys_model() {
+        let roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        let first = roster.primary().expect("the entity's agent").id.clone();
+        let entity = ModelChoice {
+            provider: AgentProvider::Claude,
+            model: Some("claude-opus-5".into()),
+            effort: Some("high".into()),
+        };
+
+        assert_eq!(roster.turn_choice(&first, &entity), entity);
+    }
+
+    /// An agent that runs another harness than the entity keeps its own
+    /// selection whole: a model id written in one harness's vocabulary names
+    /// nothing in another's, so the entity's is not spent here.
+    #[test]
+    fn an_agent_on_another_harness_keeps_its_own_model() {
+        let mut roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        let codex_agent = roster.add("run-1", codex(), NOW).id.clone();
+        let entity = ModelChoice {
+            provider: AgentProvider::Claude,
+            model: Some("claude-opus-5".into()),
+            effort: Some("high".into()),
+        };
+
+        assert_eq!(roster.turn_choice(&codex_agent, &entity), codex());
+    }
+
+    /// Nobody by that name: the entity's own choice is all there is to spend.
+    #[test]
+    fn a_turn_addressed_to_no_one_spends_the_entitys_choice() {
+        let roster = AgentRoster::with_first("run-1", ModelChoice::default(), NOW);
+        assert_eq!(roster.turn_choice("agent-NOPE", &codex()), codex());
     }
 
     #[test]

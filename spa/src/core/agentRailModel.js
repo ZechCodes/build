@@ -18,9 +18,9 @@ import { entityIdOf } from "./entityId.js";
 import { unreadReasonText } from "./inbox.js";
 import { providerLabel } from "./modelPicker.js";
 
-// One naming table for the whole client (core/modelPicker.js): the picker's
-// cards, the rail's bubbles and the tab's restart offer all say the same word
-// for the same agent, including for a carrier the picker no longer lists.
+// One naming table for the whole client (core/modelPicker.js): the new-agent
+// cards, the Account select and the rail's bubbles all say the same word for
+// the same harness.
 export { providerLabel };
 
 /** Which agent this is, in words: the harness and its place on the strip. */

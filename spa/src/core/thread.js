@@ -13,7 +13,7 @@ import {
   sendControlHtml,
 } from "./composer.js";
 import { mountSplitMenu } from "./splitButton.js";
-import { genericProviderId } from "./modelPicker.js";
+import { providerLabel } from "./modelPicker.js";
 
 const EVENT_META = {
   session_started: { label: "Agent session started", icon: "▶" },
@@ -480,13 +480,13 @@ function anchorLabel(anchor) {
   return `<div class="thread-anchor">${esc(path + lines + heading)}${anchor.snippet ? ` · “${esc(anchor.snippet.replace(/\s+/g, " ").slice(0, 120))}”` : ""}</div>`;
 }
 
+// What the bridge called a harness before it had wire tokens for them. Kept so
+// a conversation recorded then still reads as the harness it ran on.
+const LEGACY_PROVIDER_IDS = { "Codex CLI": "codex", Claude: "claude" };
+
 function harnessLabel(thread, override) {
-  const raw = override || (thread && thread.sessions && thread.sessions.at(-1)?.provider) || "Agent";
-  if (raw === "codex" || raw === "Codex CLI") return "Codex";
-  // Claude is Claude: a session the bridge recorded on either carrier is the
-  // same agent to the reader, so the conversation says the one name for both.
-  if (raw === "Claude" || genericProviderId(raw) === "claude") return "Claude Code";
-  return raw;
+  const raw = override || (thread && thread.sessions && thread.sessions.at(-1)?.provider) || "";
+  return providerLabel(LEGACY_PROVIDER_IDS[raw] || raw);
 }
 
 function linkLocation(link) {

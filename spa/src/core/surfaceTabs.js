@@ -10,7 +10,6 @@
 import { terminalManager, subscribeTerminalStatus } from "../terminal/manager.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
-import { DEFAULT_START_PROVIDER, STARTABLE_PROVIDERS, genericProviderId, providerCardsHtml, providerLabel } from "./modelPicker.js";
 
 /** What every surface says while the machine is out of reach. One sentence, in
  *  the chip over a live pane and in the place of a pane that could not attach. */
@@ -141,21 +140,13 @@ export function mountAgentPane(host, target, { onLive, onExit }) {
  *  attaches to an empty screen and shows `idleLabel`. An agent begins when a
  *  human→agent verb delivers a turn, never because a tab was opened.
  *
- *  `onStart(provider)` receives the harness the human picked — always named,
- *  from whichever of the three controls was pressed. `selectedProvider` marks
- *  the card an earlier answer already chose. Omitting `onStart` leaves the tab
- *  a viewer.
+ *  `onStart()` puts the agent back on its screen, naming no harness: the pane
+ *  belongs to an agent that already exists, and an agent is locked to the
+ *  harness it was created on for the life of its conversation. Omitting
+ *  `onStart` leaves the tab a viewer.
  *
  *  Returns { dispose() } — tears down the client view only. */
-export function mountAgentTab(
-  host,
-  target,
-  {
-    idleLabel = "No agent is currently running",
-    onStart,
-    selectedProvider = null,
-  } = {},
-) {
+export function mountAgentTab(host, target, { idleLabel = "No agent is currently running", onStart } = {}) {
   host.innerHTML = `<div class="agentwrap">
     <div class="termpane" id="agentpane"></div>
     <div class="agent-overlay" id="agentOverlay" hidden>
@@ -166,31 +157,14 @@ export function mountAgentTab(
   const shade = host.querySelector("#agentOverlay");
   const message = host.querySelector("#agentOverlayMsg");
   const choices = host.querySelector("#agentStartChoices");
-  const labelOf = (card) => card.querySelector(".chooser-card-label");
-  const allCards = () => (choices ? [...choices.querySelectorAll(".chooser-card")] : []);
+  const resumeButton = () => choices && choices.querySelector("#agentResume");
 
-  // The harness this worktree's tab last ran, as the attach reported it — the
-  // retained screen of a dead agent is the only record of which one painted it,
-  // and the entity's own model choice can have moved since.
-  let ranProvider = null;
-
-  // The offer, in both silences: the obvious harness as a wide button, with
-  // both providers under it. A restart IS a start — what exiting changes is
-  // which one is obvious, and that is a label, not a different control.
+  // The offer, in both silences: one button. Which harness it opens is not a
+  // question — the agent is locked to the one it was created on, and its
+  // conversation is waiting there.
   const renderChoices = () => {
-    // The lead names the agent, not the program that carried it: a restart is a
-    // start, so it sends the generic token and the account setting decides what
-    // Claude Code opens this time.
-    const leadProvider = genericProviderId(ranProvider) || DEFAULT_START_PROVIDER;
     choices.hidden = false;
-    choices.innerHTML = providerCardsHtml(STARTABLE_PROVIDERS, selectedProvider, {
-      leadId: "agentStartLead",
-      lead: {
-        id: leadProvider,
-        label: providerLabel(leadProvider),
-        description: ranProvider ? "ran here last" : "the default",
-      },
-    });
+    choices.innerHTML = `<button type="button" class="btn primary agent-resume" id="agentResume">Resume</button>`;
   };
 
   // Which silence this is. `exited` is the one with a screen behind it worth
@@ -222,15 +196,16 @@ export function mountAgentTab(
     if (onStart && !starting) renderChoices();
   };
 
-  // One start path for all three controls. `busy` is what the pressed one says
-  // while the harness comes up; every other control goes inert, since a second
-  // press in flight would race two harnesses over one worktree.
-  const startAgent = async (provider, busy) => {
-    for (const card of allCards()) card.disabled = true;
-    busy();
+  // The resume, from the one button that offers it. It goes inert while the
+  // harness comes up: a second press in flight would race two of them over one
+  // worktree.
+  const startAgent = async () => {
+    const button = resumeButton();
+    button.disabled = true;
+    button.textContent = "Resuming…";
     starting = true;
     try {
-      await onStart(provider);
+      await onStart();
       starting = false;
       // The agent is up. Its first frame would clear this anyway (the pane is
       // already attached to the screen it is born onto), but not waiting for a
@@ -244,16 +219,13 @@ export function mountAgentTab(
     }
   };
 
-  // Delegated, because the offer is re-rendered on every state change: the
-  // pressed card names its own harness, so no control ever starts an unnamed
-  // one.
+  // Delegated, because the offer is re-rendered on every state change and the
+  // button a press lands on is a new element each time.
   if (choices) {
     choices.onclick = (event) => {
-      const card = event.target.closest(".chooser-card");
-      if (!card || card.disabled) return;
-      startAgent(card.dataset.provider, () => {
-        labelOf(card).textContent = "Starting…";
-      });
+      const button = event.target.closest("#agentResume");
+      if (!button || button.disabled) return;
+      startAgent();
     };
   }
 
@@ -263,11 +235,10 @@ export function mountAgentTab(
   const mountPane = () => {
     reconnectWatch = null;
     mountAgentPane(host.querySelector("#agentpane"), target, {
-      // A retained screen with no live session is a harness that ran and stopped;
-      // an empty one never ran at all. Either way the attach names the harness
-      // the tab runs, which is what the offer leads with once it is gone.
+      // A retained screen with no live session is a harness that ran and
+      // stopped; an empty one never ran at all. The message differs; the offer
+      // does not.
       onLive: (live, attached) => {
-        if (attached && attached.provider) ranProvider = attached.provider;
         show(live ? "live" : hasScreen(attached) ? "exited" : "idle");
       },
       onExit: (reason) => {

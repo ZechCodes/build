@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
+import * as modelPicker from "../src/core/modelPicker.js";
 import {
   catalogForProvider,
-  genericProviderId,
   modelOptionsHtml,
   effortOptionsHtml,
   effortSupported,
@@ -9,7 +9,7 @@ import {
   normalizeModelCatalog,
   providerLabel,
   providerOptionsHtml,
-  DEFAULT_START_PROVIDER,
+  startableCatalogProviders,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
 
@@ -38,29 +38,25 @@ const CATALOG = {
   ],
 };
 
-describe("the agents a start can name", () => {
-  it("offers one card per agent a person knows, not one per carrier", () => {
-    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude", "codex"]);
-    expect(STARTABLE_PROVIDERS.map((provider) => provider.label)).toEqual(["Claude Code", "Codex"]);
-    // Which program "Claude Code" opens is the account's answer, so a start
-    // names the agent and the bridge resolves the rest.
-    expect(DEFAULT_START_PROVIDER).toBe("claude");
+describe("the harnesses an agent can be created on", () => {
+  it("offers one card per harness — an agent is locked to the one it was made on", () => {
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.label)).toEqual([
+      "Claude Code",
+      "Claude Code TUI",
+      "Codex",
+    ]);
   });
 
-  it("calls both claude carriers Claude Code — nothing user-facing tells them apart", () => {
-    expect(providerLabel("claude")).toBe("Claude Code");
+  it("gives every harness its own name, so no two agents read alike", () => {
     expect(providerLabel("claude_adk")).toBe("Claude Code");
+    expect(providerLabel("claude")).toBe("Claude Code TUI");
     expect(providerLabel("codex")).toBe("Codex");
   });
 
-  it("resolves a carrier to the agent a start names", () => {
-    // The bridge records which program a session opened; a start names the
-    // agent and lets the account setting choose the program again.
-    expect(genericProviderId("claude_adk")).toBe("claude");
-    expect(genericProviderId("claude")).toBe("claude");
-    expect(genericProviderId("codex")).toBe("codex");
-    expect(genericProviderId("")).toBe("");
-    expect(genericProviderId(null)).toBe("");
+  it("keeps no alias between the two claude harnesses — each one is an agent", () => {
+    expect(modelPicker.genericProviderId).toBeUndefined();
+    expect(modelPicker.DEFAULT_START_PROVIDER).toBeUndefined();
   });
 
   it("says what an unnamed or unknown provider is, rather than nothing", () => {
@@ -68,7 +64,7 @@ describe("the agents a start can name", () => {
     expect(providerLabel("gemini")).toBe("gemini");
   });
 
-  it("never says how a carrier runs", () => {
+  it("never says how a harness runs", () => {
     const shown = [
       ...STARTABLE_PROVIDERS.map((provider) => provider.label),
       providerLabel("claude"),
@@ -76,6 +72,19 @@ describe("the agents a start can name", () => {
       providerLabel("codex"),
     ].join(" ");
     expect(shown).not.toMatch(/headless/i);
+  });
+
+  it("keeps the catalog entries a picker may offer, under one vocabulary", () => {
+    const kept = startableCatalogProviders([
+      { id: "claude_adk", label: "Claude Code", models: MODELS },
+      { id: "claude", label: "Claude Code", models: MODELS },
+      { id: "codex", label: "Codex", models: [] },
+      { id: "gemini", label: "Gemini", models: [] },
+    ]);
+    expect(kept.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+    // The labels are the client's one naming table, so an older bridge that
+    // called both claude carriers the same thing cannot show the name twice.
+    expect(kept.map((provider) => provider.label)).toEqual(["Claude Code", "Claude Code TUI", "Codex"]);
   });
 });
 
@@ -85,33 +94,26 @@ describe("provider catalog", () => {
     expect(catalogForProvider(CATALOG, "codex").models[0].id).toBe("gpt-5.6-sol");
   });
 
-  it("keeps one Claude Code in the catalog, however many carriers the bridge lists", () => {
-    // The bridge serves a catalog per carrier — an entity persisted on either
-    // one needs its models under its own id — but a person picking an agent
-    // must not be shown the same name twice.
-    const normalized = normalizeModelCatalog({
-      default_provider: "claude",
-      providers: [
-        { id: "claude", label: "Claude Code", models: MODELS, efforts: EFFORTS },
-        { id: "codex", label: "Codex", models: [], efforts: [] },
-        { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
-      ],
-    });
-    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude", "codex"]);
-    expect(normalized.default_provider).toBe("claude");
-  });
-
-  it("still offers Claude Code when the only carrier the bridge lists is the other one", () => {
-    // Folding is by name, not by id: whichever carrier arrives first keeps the
-    // name, so no catalog can leave a person with no way to pick Claude Code.
+  it("keeps every harness the bridge lists, each as itself", () => {
+    // Every harness is an agent a person can create, so nothing is folded away:
+    // an agent locked to one of them needs its own models under its own id.
     const normalized = normalizeModelCatalog({
       default_provider: "claude_adk",
       providers: [
         { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+        { id: "claude", label: "Claude Code TUI", models: MODELS, efforts: EFFORTS },
         { id: "codex", label: "Codex", models: [], efforts: [] },
       ],
     });
-    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+    expect(normalized.default_provider).toBe("claude_adk");
+  });
+
+  it("stands one provider up out of a bridge too old to list any", () => {
+    const normalized = normalizeModelCatalog({ models: MODELS, efforts: EFFORTS });
+    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude_adk"]);
+    expect(normalized.providers[0].label).toBe("Claude Code");
+    expect(normalized.providers[0].models).toEqual(MODELS);
     expect(normalized.default_provider).toBe("claude_adk");
   });
 

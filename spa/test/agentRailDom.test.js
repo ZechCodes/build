@@ -77,7 +77,7 @@ const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
 
 const agent = (over = {}) => ({
-  id: "ag-1", ordinal: 1, provider: "claude", state: "live",
+  id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live",
   unread_count: 0, unread_reason: null, working: false, ...over,
 });
 

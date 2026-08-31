@@ -4,64 +4,40 @@
 
 import { esc } from "./text.js";
 
-/** The agents a start can name. The catalog RPC is the authority for models and
- *  efforts, but a start needs only a provider — so the Agent tab's picker
- *  renders with the pane, not after a round trip.
+/** The harnesses an agent can be created on. The catalog RPC is the authority
+ *  for models and efforts, but creating an agent needs only a harness — so a
+ *  picker renders with its surface, not after a round trip.
  *
- *  One card per agent a person knows, not one per carrier: Claude Code runs two
- *  carriers, and which one a start opens is the account's answer (Account →
- *  Settings), resolved by the bridge. A start names "claude" and gets whichever
- *  program the account says that is. */
+ *  One entry per harness, because an agent is LOCKED to the one it was created
+ *  on: its conversation lives in that program, so it never moves. Which harness
+ *  a NEW agent is created on where nobody said is the account's answer
+ *  (`models.list`'s `default_provider`). */
 export const STARTABLE_PROVIDERS = [
-  { id: "claude", label: "Claude Code" },
+  { id: "claude_adk", label: "Claude Code" },
+  { id: "claude", label: "Claude Code TUI" },
   { id: "codex", label: "Codex" },
 ];
 
-/** What a start leads with where nothing has run yet to say otherwise. */
-export const DEFAULT_START_PROVIDER = "claude";
+/** Every harness the bridge can name, and what a person calls it. */
+const PROVIDER_LABELS = Object.fromEntries(
+  STARTABLE_PROVIDERS.map((provider) => [provider.id, provider.label]),
+);
 
-/** The carrier ids the bridge records, and the agent each one carries. Claude
- *  Code runs two programs; a record persisted on either is the same agent to the
- *  human, and which one a start opens is the account's answer, never a client's.
- *  So every client-side read of a provider goes through here first: the concrete
- *  carrier is the bridge's business, and the agent is what a person sees and
- *  what a start names. */
-const CARRIED_AGENTS = { claude_adk: "claude" };
-
-/** The agent a carrier id belongs to; every other id is already an agent. */
-export function genericProviderId(provider) {
-  if (!provider) return "";
-  return CARRIED_AGENTS[provider] || String(provider);
-}
-
-/** Every agent the bridge can name, and what a person calls it. */
-const PROVIDER_LABELS = {
-  claude: "Claude Code",
-  codex: "Codex",
-};
-
-/** The provider's name as a person says it. An unknown provider is shown as the
+/** The harness's name as a person says it. An unknown provider is shown as the
  *  bridge named it — a new harness must read as itself, not as "Agent". */
 export function providerLabel(provider) {
   if (!provider) return "Agent";
-  const agent = genericProviderId(provider);
-  return PROVIDER_LABELS[agent] || agent;
+  return PROVIDER_LABELS[provider] || String(provider);
 }
 
-/** The catalog entries a picker may offer: one per agent a start can name, under
- *  the generic id a start sends. The catalog itself keeps an entry per carrier —
- *  an agent persisted on either one needs its models served under its own id —
- *  but a picker saving a carrier id would save a preference the account setting
- *  can never answer for, so a carrier entry is folded onto its agent here. */
+/** The catalog entries a picker may offer: the harnesses an agent can be
+ *  created on, in the client's own vocabulary — an older bridge that called
+ *  both claude harnesses the same thing must not offer one name twice. */
 export function startableCatalogProviders(providers) {
   const startable = STARTABLE_PROVIDERS.map((provider) => provider.id);
-  const kept = [];
-  for (const provider of providers || []) {
-    const id = genericProviderId(provider.id);
-    if (!startable.includes(id) || kept.some((entry) => entry.id === id)) continue;
-    kept.push({ ...provider, id, label: providerLabel(id) });
-  }
-  return kept;
+  return (providers || [])
+    .filter((provider) => startable.includes(provider.id))
+    .map((provider) => ({ ...provider, label: providerLabel(provider.id) }));
 }
 
 export function providerOptionsHtml(providers, selectedId) {
@@ -105,40 +81,19 @@ export function catalogForProvider(catalog, providerId) {
   return providers.find((provider) => provider.id === providerId) || providers[0] || { models: [], efforts: [] };
 }
 
-/** The name a catalog entry is offered under. */
-const catalogName = (provider) => provider.label || providerLabel(provider.id);
-
-/** The catalog carries one entry per carrier — a run persisted on either claude
- *  carrier needs its models served under its own id — but two entries under one
- *  name is a picker asking a question with the same answer twice. Keep the first
- *  of each name; whichever carrier the bridge lists first is the one a fresh
- *  choice is made on, and the account setting decides what it opens. */
-function oneProviderPerName(providers) {
-  const kept = [];
-  for (const provider of providers) {
-    if (!kept.some((entry) => catalogName(entry) === catalogName(provider))) kept.push(provider);
-  }
-  return kept;
-}
-
-/** The default, moved onto the entry that survived the fold when the bridge's
- *  default was the carrier that did not. */
-function defaultAmong(providers, defaultProvider) {
-  if (!defaultProvider || providers.some((provider) => provider.id === defaultProvider)) return defaultProvider;
-  const folded = providers.find((provider) => providerLabel(provider.id) === providerLabel(defaultProvider));
-  return folded ? folded.id : defaultProvider;
-}
-
+/** The catalog every picker reads. A bridge that lists its harnesses is taken
+ *  as it stands — each one is an agent a person can create, and an agent locked
+ *  to one of them needs its own models under its own id. A bridge too old to
+ *  list any answers with one flat catalog, which stands up as the default
+ *  harness's. */
 export function normalizeModelCatalog(catalog) {
-  if (catalog && Array.isArray(catalog.providers) && catalog.providers.length) {
-    const providers = oneProviderPerName(catalog.providers);
-    return { ...catalog, providers, default_provider: defaultAmong(providers, catalog.default_provider) };
-  }
+  if (catalog && Array.isArray(catalog.providers) && catalog.providers.length) return { ...catalog };
+  const id = (catalog && catalog.default_provider) || STARTABLE_PROVIDERS[0].id;
   return {
-    default_provider: "claude",
+    default_provider: id,
     providers: [{
-      id: "claude",
-      label: "Claude Code",
+      id,
+      label: providerLabel(id),
       models: (catalog && catalog.models) || [],
       efforts: (catalog && catalog.efforts) || [],
     }],

@@ -25,7 +25,7 @@ const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 const agent = (over = {}) => ({
   id: "ag-1",
   ordinal: 1,
-  provider: "claude",
+  provider: "claude_adk",
   state: "idle",
   unread_count: 0,
   unread_reason: null,
@@ -35,10 +35,11 @@ const agent = (over = {}) => ({
 
 describe("who an agent is", () => {
   it("names the harness and which one of it this is", () => {
-    expect(providerLabel("claude")).toBe("Claude Code");
-    expect(providerLabel("codex")).toBe("Codex");
-    // Claude is Claude: the carrier the account chose is not the bubble's business.
     expect(providerLabel("claude_adk")).toBe("Claude Code");
+    expect(providerLabel("codex")).toBe("Codex");
+    // An agent is locked to its harness, so the two claude harnesses are two
+    // agents and the bubble says which one it is.
+    expect(providerLabel("claude")).toBe("Claude Code TUI");
     expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex 2");
   });
 

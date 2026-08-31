@@ -48,7 +48,7 @@ describe("activity in the timeline", () => {
   it("folds a background task shut under its own label, and shows what the task is", () => {
     document.body.innerHTML = threadHtml({
       items: [{ type: "event", data: { event: "task_update", summary: "finished — run the full suite\n\n412 passed" } }],
-      sessions: [{ provider: "claude" }],
+      sessions: [{ provider: "claude_adk" }],
     });
 
     const fold = document.querySelector(".thread-activity");
@@ -95,7 +95,7 @@ describe("activity in the timeline", () => {
   it("names the harness the way every other event does", () => {
     document.body.innerHTML = threadHtml({
       items: [{ type: "event", data: { event: "reasoning", summary: "Checking the lock order." } }],
-      sessions: [{ provider: "claude" }],
+      sessions: [{ provider: "claude_adk" }],
     });
 
     expect(document.querySelector(".thread-activity-what").textContent).toBe("Claude Code thought");

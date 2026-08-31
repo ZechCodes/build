@@ -980,18 +980,11 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .agent-overlay.over-screen { background:color-mix(in srgb, var(--bg) 78%, transparent);
   backdrop-filter:blur(1.5px); }
 .agent-overlay.over-screen .agent-overlay-msg { color:var(--fg); font-weight:500; }
-/* Starting an agent is a choice of harness, so BOTH empty states offer the same
-   bordered card picker the new-worktree sheet asks with — capped and centred
-   here, where it stands in an open pane rather than a sheet's field column. An
-   agent that exited differs only in which harness leads it. */
+/* The pane's whole offer is one button — the agent it belongs to is locked to
+   its harness, so there is nothing to choose. It carries room, standing alone
+   in an open pane rather than in a row of controls. */
 #agentStartChoices[hidden] { display:none; }
-.agent-overlay .chooser { width:min(100%, 380px); }
-/* Buttons here are the pane's whole content, so they carry room: generous
-   padding, content centered both ways, and the lead half again as tall as the
-   pair it is chosen from (96px vs 64px). */
-.agent-overlay .chooser-card { align-items:center; justify-content:center;
-  text-align:center; padding:20px 24px; min-height:64px; }
-.agent-overlay .chooser-card-lead { min-height:96px; }
+.agent-resume { padding:12px 28px; font-size:14px; }
 /* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
    exact steps that will run, then ask Confirm/Cancel. */
 .modal-scrim { position:fixed; inset:0; background:var(--scrim); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }

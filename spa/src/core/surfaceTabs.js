@@ -151,20 +151,20 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
     <div class="termpane" id="agentpane"></div>
     <div class="agent-overlay" id="agentOverlay" hidden>
       <p class="agent-overlay-msg" id="agentOverlayMsg"></p>
-      ${onStart ? `<div id="agentStartChoices" hidden></div>` : ""}
+      ${onStart ? `<div id="agentStartOffer" hidden></div>` : ""}
     </div>
   </div>`;
   const shade = host.querySelector("#agentOverlay");
   const message = host.querySelector("#agentOverlayMsg");
-  const choices = host.querySelector("#agentStartChoices");
-  const resumeButton = () => choices && choices.querySelector("#agentResume");
+  const startOffer = host.querySelector("#agentStartOffer");
+  const resumeButton = () => startOffer && startOffer.querySelector("#agentResume");
 
   // The offer, in both silences: one button. Which harness it opens is not a
   // question — the agent is locked to the one it was created on, and its
   // conversation is waiting there.
-  const renderChoices = () => {
-    choices.hidden = false;
-    choices.innerHTML = `<button type="button" class="btn primary agent-resume" id="agentResume">Resume</button>`;
+  const renderStartOffer = () => {
+    startOffer.hidden = false;
+    startOffer.innerHTML = `<button type="button" class="btn primary agent-resume" id="agentResume">Resume</button>`;
   };
 
   // Which silence this is. `exited` is the one with a screen behind it worth
@@ -185,15 +185,16 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
     shade.hidden = false;
     shade.classList.toggle("over-screen", exited);
     // An exited state says nothing of its own: the retained screen behind the
-    // overlay is the explanation, and the picker is the whole offer. The line
-    // still speaks for a start failure (reason) and for the inert idle pane.
+    // overlay is the explanation, and the resume button is the whole offer.
+    // The line still speaks for a start failure (reason) and for the inert
+    // idle pane.
     message.textContent = reason || (exited ? "" : idleLabel);
     message.hidden = !message.textContent;
     // Re-rendering IS the reset: every label and disabled flag comes back with
     // the fresh markup, so a failed start needs no cleanup of its own. The one
     // moment it must not is while a start is in flight — the offer is standing
     // there in its busy state on purpose, and it resets when the start settles.
-    if (onStart && !starting) renderChoices();
+    if (onStart && !starting) renderStartOffer();
   };
 
   // The resume, from the one button that offers it. It goes inert while the
@@ -221,8 +222,8 @@ export function mountAgentTab(host, target, { idleLabel = "No agent is currently
 
   // Delegated, because the offer is re-rendered on every state change and the
   // button a press lands on is a new element each time.
-  if (choices) {
-    choices.onclick = (event) => {
+  if (startOffer) {
+    startOffer.onclick = (event) => {
       const button = event.target.closest("#agentResume");
       if (!button || button.disabled) return;
       startAgent();

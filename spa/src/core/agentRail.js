@@ -1039,17 +1039,19 @@ export function mountAgentRail(host, context) {
       : { project_id: entity.projectId, ...(entity.worktreeId ? { worktree_id: entity.worktreeId } : {}) };
     tui = mountAgentTab(body, target, {
       idleLabel: "No agent session is running here",
-      onStart: (provider) => startAgent(provider),
+      onStart: startAgent,
     });
   };
 
-  const startAgent = async (provider) => {
+  /** Put the open agent back on its screen. It names no harness: the agent is
+   *  locked to the one it was created on, and its conversation is waiting
+   *  there. */
+  const startAgent = async () => {
     const entityId = await ensureEntity();
     const agent = agentOf(selectedId);
     const started = await App.call("agent.start", {
       id: entityId,
       ...(agent ? { agent_id: agent.id } : {}),
-      ...(provider ? { provider } : {}),
     });
     if (started && started.agent_id) {
       selectedId = started.agent_id;

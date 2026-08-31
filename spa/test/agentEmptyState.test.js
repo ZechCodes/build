@@ -175,7 +175,7 @@ describe("an agent that exited", () => {
     // happened, and the one button is the whole offer.
     expect(message(el)).toBe("");
     expect(el.querySelector("#agentOverlayMsg").hidden).toBe(true);
-    expect(el.querySelector("#agentStartChoices").hidden).toBe(false);
+    expect(el.querySelector("#agentStartOffer").hidden).toBe(false);
     expect(resume(el).textContent).toBe("Resume");
     // Nothing here asks which harness: this agent has one already.
     expect(el.textContent).not.toContain("Claude Code");
@@ -236,7 +236,7 @@ describe("a surface with nothing that could own an agent", () => {
     expect(overlay(el).hidden).toBe(false);
     expect(message(el)).toBe("No agent is currently running");
     expect(resume(el)).toBeNull();
-    expect(el.querySelector("#agentStartChoices")).toBeNull();
+    expect(el.querySelector("#agentStartOffer")).toBeNull();
   });
 
   it("still stands the offer up when the attach itself fails", async () => {

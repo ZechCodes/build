@@ -976,7 +976,7 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* The pane's whole offer is one button — the agent it belongs to is locked to
    its harness, so there is nothing to choose. It carries room, standing alone
    in an open pane rather than in a row of controls. */
-#agentStartChoices[hidden] { display:none; }
+#agentStartOffer[hidden] { display:none; }
 .agent-resume { padding:12px 28px; font-size:14px; }
 /* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
    exact steps that will run, then ask Confirm/Cancel. */

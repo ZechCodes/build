@@ -390,7 +390,7 @@ impl ActivePlan {
     /// Open comments on one stage, insertion order. Read off the Issue
     /// conversation, where the comments live as posts.
     pub fn open_comments_for(&self, stage_id: &str) -> Vec<DocComment> {
-        self.agents.open_doc_comments_for(stage_id)
+        self.agents.sole_thread().open_doc_comments_for(stage_id)
     }
 }
 
@@ -911,7 +911,9 @@ impl Orchestrator {
         let plan = Plan::new(id, goal);
         let now = crate::store::now_rfc3339();
         let mut agents = AgentRoster::with_first(&plan.id.0, model_choice.clone(), &now);
-        agents.post_user(plan.goal.clone(), None, &now);
+        agents
+            .sole_thread_mut()
+            .post_user(plan.goal.clone(), None, &now);
         ActivePlan {
             plan,
             workspace: None,
@@ -947,7 +949,10 @@ impl Orchestrator {
         active.workspace = Some(workspace);
         // Everything the user said before this moment is what the session is
         // being started to answer, so the dispatch reads all of it.
-        let _ = active.agents.read_unread(&crate::store::now_rfc3339());
+        let _ = active
+            .agents
+            .sole_thread_mut()
+            .read_unread(&crate::store::now_rfc3339());
         let prompt = self.render_plan(&self.templates.plan, active, "");
         Ok(AgentTurn::dispatched(prompt, "plan"))
     }
@@ -1115,6 +1120,7 @@ impl Orchestrator {
                 if !answers_this_stage
                     || !active
                         .agents
+                        .sole_thread_mut()
                         .resolve_doc_comment(&resolution.comment_id, &resolution.response)
                 {
                     eprintln!(
@@ -2439,11 +2445,10 @@ impl Orchestrator {
         run.apply(RunEvent::Dispatch)?;
         run.apply(RunEvent::BuildReady)?;
 
-        let agents = AgentRoster::with_first(
-            &run.id.0,
-            model_choice.clone(),
-            &crate::store::now_rfc3339(),
-        );
+        // Adoption speaks to nobody: it is git and records. The branch starts
+        // with no agents, its chat tab shows the new-agent view, and the first
+        // thing said to it creates the agent that hears it — on `model_choice`,
+        // which is what the adopting caller named.
         Ok(ActiveRun {
             run,
             worktree,
@@ -2461,7 +2466,7 @@ impl Orchestrator {
             recovery: None,
             publication_attempt: None,
             model_choice,
-            agents,
+            agents: AgentRoster::empty(),
             last_summary: None,
             last_error: None,
         })
@@ -2638,6 +2643,7 @@ impl Orchestrator {
                 if !answers_this_stage
                     || !plan
                         .agents
+                        .sole_thread_mut()
                         .resolve_doc_comment(&resolution.comment_id, &resolution.response)
                 {
                     eprintln!(
@@ -3152,7 +3158,7 @@ mod tests {
             .map(|stage| stage.path.clone())
             .unwrap_or_default();
         let issue_id = plan.plan.id.0.clone();
-        plan.agents.post_doc_comment(
+        plan.agents.primary_mut().unwrap().thread.post_doc_comment(
             &issue_id,
             stage_id,
             &path,
@@ -3165,6 +3171,7 @@ mod tests {
     /// One comment as the conversation now holds it.
     fn comment_by_id(plan: &ActivePlan, comment_id: &str) -> crate::thread::DocComment {
         plan.agents
+            .sole_thread()
             .doc_comments()
             .into_iter()
             .find(|comment| comment.id == comment_id)
@@ -3939,7 +3946,7 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
-            agents: Vec::new(),
+            agents: crate::agent::stored_agents("plan-1"),
             legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("planned it".into()),
             last_error: Some("boom".into()),
@@ -3988,7 +3995,7 @@ mod tests {
             provider: crate::models::AgentProvider::Claude,
             model: None,
             effort: Some("high".into()),
-            agents: Vec::new(),
+            agents: crate::agent::stored_agents("run-1"),
             legacy_thread: crate::thread::Thread::default(),
             last_summary: Some("built it".into()),
             last_error: None,

@@ -873,11 +873,17 @@ mod tests {
         // unsynchronised PATH snapshots made this test environment-sensitive.
         let marker = format!("inherit-{}", uuid::Uuid::new_v4());
         std::env::set_var("BUILD_BRIDGE_ENV_INHERITANCE_TEST", &marker);
+        // The harness waits for a line before it prints, as
+        // `prompt_roundtrips_through_the_pty`'s does. A harness that printed on
+        // spawn could be finished before `subscribe` ran — a subscriber only
+        // sees what is sent after it, so on a loaded machine this test read an
+        // already-closed stream and called an inherited variable missing.
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf 'MARKER[%s]' \"$BUILD_BRIDGE_ENV_INHERITANCE_TEST\"");
+            .arg("read _; printf 'MARKER[%s]' \"$BUILD_BRIDGE_ENV_INHERITANCE_TEST\"");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         let mut rx = session.subscribe();
+        session.write_input(b"go\r").unwrap();
 
         let out = read_until(&mut rx, "MARKER[").await;
         assert!(
@@ -931,12 +937,15 @@ mod tests {
 
     #[tokio::test]
     async fn spec_env_overrides_the_inherited_value() {
+        // Waits for a line for the same reason the test above does: output sent
+        // before `subscribe` is output this test can never read.
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf 'TERM[%s]' \"$TERM\"")
+            .arg("read _; printf 'TERM[%s]' \"$TERM\"")
             .env("TERM", "build-test-term");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         let mut rx = session.subscribe();
+        session.write_input(b"go\r").unwrap();
 
         let out = read_until(&mut rx, "TERM[").await;
         assert!(out.contains("TERM[build-test-term]"), "got: {out:?}");
@@ -1150,6 +1159,19 @@ mod tests {
         for _ in 0..8_000 {
             nested = format!("\u{1b}[20{nested}0~");
         }
+        // The budget is calibrated on this machine rather than fixed in
+        // milliseconds: the same byte count with no nesting at all is what a
+        // linear sanitizer costs here and now, so the comparison absorbs
+        // whatever CPU the rest of the suite has left. A fixed budget cannot,
+        // and this test used to fail under a full parallel run purely for
+        // being descheduled. The added floor keeps a very fast baseline from
+        // turning ordinary jitter into a failure.
+        let flat = "a".repeat(nested.chars().count());
+        let flat_started = std::time::Instant::now();
+        let flat_sanitized = strip_bracketed_paste_markers(&flat);
+        let linear_cost = flat_started.elapsed();
+        assert_eq!(flat_sanitized.len(), flat.len(), "plain text is untouched");
+
         let started = std::time::Instant::now();
         let sanitized = strip_bracketed_paste_markers(&nested);
         let elapsed = started.elapsed();
@@ -1158,9 +1180,12 @@ mod tests {
             !sanitized.contains(PASTE_START) && !sanitized.contains(PASTE_END),
             "no marker may survive or re-form"
         );
+        let budget = linear_cost * 20 + Duration::from_millis(250);
         assert!(
-            elapsed < Duration::from_millis(250),
-            "sanitizing {} bytes took {elapsed:?}; a nesting-sensitive scan stalls the bridge",
+            elapsed < budget,
+            "sanitizing {} nested bytes took {elapsed:?} against a {budget:?} budget \
+             ({linear_cost:?} for the same bytes unnested); a nesting-sensitive scan \
+             stalls the bridge",
             nested.len()
         );
     }

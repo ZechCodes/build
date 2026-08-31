@@ -166,7 +166,7 @@ describe("the rail's poll", () => {
     branch: "build/login",
     run_id: "run-3",
     worktree_id: "wt-3",
-    agents: [{ id: "ag-1", ordinal: 1, provider: "claude", state: "live", unread_count: 0, working: false }],
+    agents: [{ id: "ag-1", ordinal: 1, provider: "claude_adk", state: "live", unread_count: 0, working: false }],
     run: { run_id: "run-3", thread: { items, sessions: [] } },
   });
 
@@ -249,7 +249,7 @@ describe("a work item that keeps losing its agent", () => {
     branch: "build/login",
     run_id: "run-3",
     worktree_id: "wt-3",
-    agents: [{ id: "ag-1", ordinal: 1, provider: "claude", state: "exited", unread_count: 0, working: false }],
+    agents: [{ id: "ag-1", ordinal: 1, provider: "claude_adk", state: "exited", unread_count: 0, working: false }],
     run: { run_id: "run-3", thread: { items: [], sessions: [] } },
   });
 

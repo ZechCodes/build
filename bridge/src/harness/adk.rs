@@ -55,11 +55,9 @@ impl Harness for AdkHarness {
         AgentProvider::ClaudeAdk
     }
 
-    /// Claude is Claude. Both carriers of this CLI are called by the one name
-    /// the human knows, because the account setting is what decides which one
-    /// they get — so two of them never sit side by side needing to be told
-    /// apart, and no human is ever shown the word the code uses for the
-    /// difference.
+    /// The default carrier of this CLI, so it owns the plain name the human
+    /// knows. The terminal carrier beside it is "Claude Code TUI" — the
+    /// difference a human can see, never the word the code uses for it.
     fn label(&self) -> &'static str {
         "Claude Code"
     }

@@ -30,8 +30,11 @@ impl Harness for ClaudeHarness {
         AgentProvider::Claude
     }
 
+    /// The terminal carrier of this CLI, named apart from the headless one
+    /// because both are creatable side by side and an agent is locked to the
+    /// one it was created on.
     fn label(&self) -> &'static str {
-        "Claude Code"
+        "Claude Code TUI"
     }
 
     /// The curated catalog, most capable first. (cached: 2026-07)
@@ -40,6 +43,12 @@ impl Harness for ClaudeHarness {
             ModelOption {
                 id: "claude-fable-5",
                 label: "Claude Fable 5",
+                supports_effort: true,
+                efforts: &EFFORT_LEVELS,
+            },
+            ModelOption {
+                id: "claude-opus-5",
+                label: "Claude Opus 5",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
             },

@@ -14,7 +14,8 @@
 
 import { esc } from "./text.js";
 import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
-import { splitButtonMarkup } from "./splitButton.js";
+import { menuButtonMarkup, mountSplitMenu, splitButtonMarkup } from "./splitButton.js";
+import { modelMenuLabel, modelMenuOptions, modelMenuSelection } from "./agentChoice.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -116,6 +117,7 @@ export const composerPartIds = (inputId) => ({
   attach: `${inputId}attach`,
   file: `${inputId}file`,
   sendControl: `${inputId}sendcontrol`,
+  modelMenu: `${inputId}model`,
 });
 
 /// The two ways one message can reach an agent that is already working.
@@ -149,10 +151,20 @@ export function sendControlHtml({ sendId, canInterrupt = false }) {
 }
 
 /// The composer's markup. `attachable` adds the paperclip and the tray; a
-/// surface with no upload path renders the plain box. `canInterrupt` is what
-/// the send control is showing right now — a poll moves it in place rather
-/// than rebuilding the box around it.
-export function composerHtml({ inputId, sendId, hintId, placeholder, attachable = false, canInterrupt = false }) {
+/// surface with no upload path renders the plain box. `modelMenu` opens the
+/// slot on the row's left for the model menu (`mountComposerModelMenu` fills
+/// it); a surface that passes neither renders the row it always did.
+/// `canInterrupt` is what the send control is showing right now — a poll moves
+/// it in place rather than rebuilding the box around it.
+export function composerHtml({
+  inputId,
+  sendId,
+  hintId,
+  placeholder,
+  attachable = false,
+  canInterrupt = false,
+  modelMenu = false,
+}) {
   const parts = composerPartIds(inputId);
   const attachControls = attachable
     ? `<input type="file" id="${esc(parts.file)}" class="composer-file" multiple hidden>
@@ -163,6 +175,7 @@ export function composerHtml({ inputId, sendId, hintId, placeholder, attachable 
       ${attachable ? `<div class="composer-tray" id="${esc(parts.tray)}" hidden></div>` : ""}
       <textarea id="${esc(inputId)}" rows="1" placeholder="${esc(placeholder)}"></textarea>
       <div class="composer-bar">
+        ${modelMenu ? `<div class="composer-model" id="${esc(parts.modelMenu)}"></div>` : ""}
         <span class="hint" id="${esc(hintId)}"></span>
         <span class="composer-shortcut" aria-hidden="true">⌘↵</span>
         <div class="composer-actions">
@@ -173,6 +186,54 @@ export function composerHtml({ inputId, sendId, hintId, placeholder, attachable 
       ${attachable ? '<div class="composer-dropmask" aria-hidden="true"><span>Drop to attach</span></div>' : ""}
     </div>
   </div>`;
+}
+
+// ---- the model menu -------------------------------------------------------
+
+/// What one painting of the menu says, as one string to compare the next
+/// against.
+const choiceKey = (provider, choice) => [provider, choice.model || "", choice.effort || ""].join("/");
+
+/// Wire the menu on the composer's left: what the NEXT turn will run on.
+///
+/// `onChoose(next)` gets the whole reconciled choice — the caller decides where
+/// it goes, which is the bridge for an agent that exists and a draft for one
+/// the first send will create. Returns a controller whose `set(catalog,
+/// provider, choice)` paints it; a call that would change nothing repaints
+/// nothing, because a poll must not shut a menu the human just opened.
+export function mountComposerModelMenu(root, { ids, onChoose }) {
+  const slot = root.querySelector(`#${composerPartIds(ids.input).modelMenu}`);
+  if (!slot) return null;
+
+  // What the menu on screen was painted from: the choice, in words, and the
+  // catalog it was read out of — which lands after the first paint and brings
+  // the models with it.
+  let painted = null;
+  let paintedCatalog = null;
+
+  const render = (catalog, provider, choice) => {
+    painted = choiceKey(provider, choice);
+    paintedCatalog = catalog;
+    slot.innerHTML = menuButtonMarkup(
+      modelMenuLabel(catalog, provider, choice),
+      modelMenuOptions(catalog, provider, choice),
+      { title: "Model and reasoning effort" },
+    );
+    mountSplitMenu(slot, {
+      onChoose: (action) => {
+        const next = modelMenuSelection(action, choice);
+        render(catalog, provider, next);
+        onChoose(next);
+      },
+    });
+  };
+
+  return {
+    set(catalog, provider, choice) {
+      if (choiceKey(provider, choice) === painted && catalog === paintedCatalog) return;
+      render(catalog, provider, choice);
+    },
+  };
 }
 
 // ---- the tray -------------------------------------------------------------

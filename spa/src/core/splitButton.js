@@ -14,6 +14,32 @@ const VARIANT_BUTTON_CLASS = {
   mini: "btn mini",
 };
 
+/** The menu half's rows: one per option, its name and what it does.
+ *
+ *  `danger` marks a destructive verb where it is READ, in the list beside the
+ *  ones it is chosen over. `selected` marks the one in use — a menu that is a
+ *  selection rather than a verb (the composer's model menu) has to say which
+ *  answer is standing. */
+function menuItemsHtml(options) {
+  return options
+    .map(
+      (o) =>
+        `<div class="mi${o.danger ? " danger" : ""}${o.selected ? " on" : ""}" data-action="${esc(o.id)}"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
+    )
+    .join("");
+}
+
+/** Pure markup for the menu half ALONE: one button that opens it, and the same
+ *  rows a split button's caret drops. For a menu that is a selection rather
+ *  than a verb — there is no default action to press, so there is no primary
+ *  button to press it with. Wire it with `mountSplitMenu`. */
+export function menuButtonMarkup(label, options, { title = "" } = {}) {
+  return `<div class="splitbtn">
+    <button type="button" class="btn mini caret"${title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : ""}>${esc(label)} ▾</button>
+    <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
+  </div>`;
+}
+
 /** Pure markup for a GitHub-style split button. options[0] is the default.
  *  option: { id, label, menuLabel?, description, busyLabel, danger? }
  *  With one option: a plain button, no caret, no menu. All strings escaped.
@@ -31,13 +57,7 @@ export function splitButtonMarkup(options, { variant = "primary", primaryId = ""
   const primary = options[0];
   const primaryButton = `<button class="${buttonClass}"${primaryId ? ` id="${esc(primaryId)}"` : ""} data-action="${esc(primary.id)}">${esc(primary.label ?? primary.menuLabel)}</button>`;
   if (options.length === 1) return `<div class="splitbtn">${primaryButton}</div>`;
-  const items = options
-    .map(
-      (o) =>
-        `<div class="mi${o.danger ? " danger" : ""}" data-action="${esc(o.id)}"><span class="mt">${esc(o.menuLabel ?? o.label)}</span><span class="md">${esc(o.description)}</span></div>`,
-    )
-    .join("");
-  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${items}</div></div>`;
+  return `<div class="splitbtn">${primaryButton}<button class="${buttonClass} caret" title="More actions">▾</button><div class="splitmenu" hidden>${menuItemsHtml(options)}</div></div>`;
 }
 
 /** Pure single-flight latch: begin() arms and returns true, or returns false

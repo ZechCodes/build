@@ -25,7 +25,7 @@ const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 const agent = (over = {}) => ({
   id: "ag-1",
   ordinal: 1,
-  provider: "claude",
+  provider: "claude_adk",
   state: "idle",
   unread_count: 0,
   unread_reason: null,
@@ -35,10 +35,11 @@ const agent = (over = {}) => ({
 
 describe("who an agent is", () => {
   it("names the harness and which one of it this is", () => {
-    expect(providerLabel("claude")).toBe("Claude Code");
-    expect(providerLabel("codex")).toBe("Codex");
-    // Claude is Claude: the carrier the account chose is not the bubble's business.
     expect(providerLabel("claude_adk")).toBe("Claude Code");
+    expect(providerLabel("codex")).toBe("Codex");
+    // An agent is locked to its harness, so the two claude harnesses are two
+    // agents and the bubble says which one it is.
+    expect(providerLabel("claude")).toBe("Claude Code TUI");
     expect(agentTitle(agent({ ordinal: 2, provider: "codex" }))).toBe("Codex 2");
   });
 
@@ -153,10 +154,13 @@ describe("which conversation is open", () => {
 describe("which agent can be taken back off", () => {
   const agents = [agent(), agent({ id: "ag-2", ordinal: 2 }), agent({ id: "ag-3", ordinal: 3 })];
 
-  it("offers removal for an agent added beside the first, and never for the first", () => {
+  it("offers removal for every agent on a branch, the first and the last included", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-1", kind: "branch" })).toBe(true);
     expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "branch" })).toBe(true);
     expect(canRemoveAgent({ agents, agentId: "ag-3", kind: "branch" })).toBe(true);
-    expect(canRemoveAgent({ agents, agentId: "ag-1", kind: "branch" })).toBe(false);
+    // A branch with no agent at all is a working branch: its chat tab asks
+    // which agent to start one on.
+    expect(canRemoveAgent({ agents: [agent()], agentId: "ag-1", kind: "branch" })).toBe(true);
   });
 
   it("offers nothing on an issue, whose one agent is the issue's own conversation", () => {

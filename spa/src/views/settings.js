@@ -14,13 +14,12 @@ import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
-import { agentModePanelHtml, mountAgentMode } from "../core/agentMode.js";
+import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
 import { loadModelCatalog } from "../app.js";
 import {
   catalogForProvider,
   effortOptionsHtml,
   effortSupported,
-  genericProviderId,
   modelInCatalog,
   modelOptionsHtml,
   providerOptionsHtml,
@@ -65,7 +64,7 @@ export async function renderSettings() {
       </div>
       <div class="dim" id="defsaved" style="font-size:12px;min-height:16px"></div>
     </div>
-    ${agentModePanelHtml()}
+    ${defaultHarnessPanelHtml()}
     <div class="panel">
       <h3>🎨 Appearance</h3>
       <div class="dim" style="font-size:13px;margin-bottom:10px">System follows your OS, and keeps following it — including when it turns dark at dusk.</div>
@@ -115,7 +114,7 @@ export async function renderSettings() {
     }
   };
   await refresh();
-  await mountAgentMode($("#root"), { callRpc: (method, params) => App.call(method, params) });
+  await mountDefaultHarness($("#root"), { callRpc: (method, params) => App.call(method, params) });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);
@@ -136,13 +135,12 @@ export async function renderSettings() {
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 
-    // The catalog names carriers; this picker names agents. Which program
-    // "Claude Code" opens is the account's answer (How agents run), so a
-    // default saved here must never carry one.
+    // The harnesses an agent can be created on, out of the catalog the bridge
+    // serves — which also lists harnesses no picker offers.
     const offered = { ...catalog, providers: startableCatalogProviders(catalog.providers) };
 
     const paint = () => {
-      providerSelect.innerHTML = providerOptionsHtml(offered.providers, current.provider || genericProviderId(offered.default_provider));
+      providerSelect.innerHTML = providerOptionsHtml(offered.providers, current.provider || offered.default_provider);
       const providerCatalog = catalogForProvider(offered, providerSelect.value);
       $("#defmodel").innerHTML = modelOptionsHtml(providerCatalog.models, modelInCatalog(providerCatalog.models, current.model));
       const supported = effortSupported(providerCatalog.models, $("#defmodel").value);

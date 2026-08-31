@@ -17,7 +17,7 @@
 // polls the bridge for it (branch.get / issue.get), and every agent it renders
 // comes off that payload's agents[].
 
-import { App, go } from "../app.js";
+import { App, go, loadModelCatalog } from "../app.js";
 import { createPatternRenderer } from "./agentCanvas.js";
 import { hashString } from "./patternMotion.js";
 import { watchChanges } from "./changeEvents.js";
@@ -36,8 +36,10 @@ import {
   selectAgentId,
 } from "./agentRailModel.js";
 import { createAgentSelection } from "./agentSelection.js";
+import { NO_AGENT_CHOICE, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
-import { composerHtml } from "./composer.js";
+import { composerHtml, mountComposerModelMenu } from "./composer.js";
+import { catalogForProvider, modelParams, providerCardsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -115,6 +117,11 @@ const faceKey = (type, agentId) => (type === "agent" ? `agent:${agentId || ""}` 
 // sent — are kept here rather than in the DOM that is about to be replaced.
 const drafts = new Map(); // `${entityId}:${agentId}` → { body, attachments }
 const chosenAgent = new Map(); // entity key → agent id the human last opened
+// What the next agent on a work item will be created as — the harness card the
+// human pressed and the model menu's selection, held until there is an agent to
+// write them to. Nothing goes to the bridge until then: there is no entity
+// choice worth writing for a checkout that may never be adopted.
+const newAgentChoices = new Map(); // entity key → { provider, model, effort }
 // Chat or TUI, per work item: the terminal is the basement, so walking into a
 // different branch or issue starts you in the conversation whatever face of the
 // last one you were looking at.
@@ -126,6 +133,7 @@ export function resetAgentRailMemory() {
   drafts.clear();
   chosenAgent.clear();
   panelModes.clear();
+  newAgentChoices.clear();
 }
 
 const railKey = (context) =>
@@ -300,6 +308,7 @@ export function mountAgentRail(host, context) {
   // words must not be drawn under the new one's name.
   let threadOwner = null;
   let adopting = null;
+  let catalog = null; // models.list, once it lands: the harnesses and their models
   let sending = false; // a first message is adopting/starting — do not repaint over it
   let paintedStrip = null; // the markup the bubble strip currently stands on
   // The painter behind each bubble's face, keyed by `faceKey`, carrying the ink
@@ -313,10 +322,11 @@ export function mountAgentRail(host, context) {
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
   // must not keep yanking focus back while the human is doing something else.
   let autofocusComposerPending = context.autofocusComposer === true;
-  // The pinned box's controller, for the one thing on it a poll can move: which
-  // shape the send control is wearing. Null whenever the panel is not showing
-  // the conversation.
+  // The pinned box's controllers: the send, for the one thing on it a poll can
+  // move — which shape it is wearing — and the model menu on the other side of
+  // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
+  let composerModelMenu = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -330,6 +340,29 @@ export function mountAgentRail(host, context) {
   const draftKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
   const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
   const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
+
+  // ---- the agent that does not exist yet -------------------------------------
+
+  /** What the first send on this work item will create: whatever the human has
+   *  said here, over the account's default harness (`models.list`'s
+   *  `default_provider`) until a card is pressed. Resolved once, so the cards,
+   *  the composer's menu and the `agent.add` params cannot disagree. */
+  const newAgentChoice = () => {
+    const said = newAgentChoices.get(key) || NO_AGENT_CHOICE;
+    return {
+      ...said,
+      provider: said.provider || (catalog && catalog.default_provider) || STARTABLE_PROVIDERS[0].id,
+    };
+  };
+  const writeNewAgentChoice = (next) => newAgentChoices.set(key, next);
+
+  /** That choice as `agent.add` params: empties omitted, so the harness's own
+   *  default stands where nothing was said. */
+  const newAgentParams = () => {
+    const choice = newAgentChoice();
+    const { models } = catalogForProvider(catalog || {}, choice.provider);
+    return modelParams(models || [], choice.model, choice.effort, choice.provider);
+  };
 
   /** The adopting caller for a checkout Build owns nothing in.
    *
@@ -544,6 +577,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.body = wantedBody;
       wireHead(panel);
       composerControl = null;
+      composerModelMenu = null;
       if (shownMode === "tui") mountTui();
       else {
         wireComposer(panel);
@@ -644,9 +678,37 @@ export function mountAgentRail(host, context) {
     }
   };
 
+  /// The chat tab of a work item with no agent: which harness to make one on,
+  /// where the conversation would be. The composer below it is the live one —
+  /// sending is what creates the highlighted agent and speaks to it.
+  ///
+  /// Rewritten only when the highlight moves, for the same reason the strip is:
+  /// a poll that replaced these buttons would swallow the press landing on one.
+  const paintNewAgent = (body) => {
+    const chosen = newAgentChoice().provider;
+    if (body.dataset.newAgent === chosen) return;
+    body.innerHTML = `<div class="rail-newagent">${providerCardsHtml(STARTABLE_PROVIDERS, chosen)}</div>`;
+    body.dataset.newAgent = chosen;
+    body.querySelector(".rail-newagent").onclick = (event) => {
+      const card = event.target.closest(".chooser-card");
+      if (!card) return;
+      // A model belongs to its harness, so moving the highlight drops one
+      // chosen under the harness beside it.
+      writeNewAgentChoice(
+        reconcileAgentChoice({ ...newAgentChoice(), provider: card.dataset.provider }, { providerChanged: true }),
+      );
+      paintChat();
+    };
+  };
+
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
+    if (!entity.agents.length) {
+      paintNewAgent(body);
+      syncComposer();
+      return;
+    }
     const thread = threadFor();
     const agent = agentOf(selectedId);
     paintThreadKeepingPlace(body, () => {
@@ -667,11 +729,8 @@ export function mountAgentRail(host, context) {
     reportRead(body);
   };
 
-  const composerPlaceholder = () => {
-    if (entity.adoptable) return "Send a message to start an agent here…";
-    if (!entity.agents.length) return "Send a message to start the agent…";
-    return "Send a message to this agent…";
-  };
+  const composerPlaceholder = () =>
+    entity.agents.length ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
@@ -687,18 +746,49 @@ export function mountAgentRail(host, context) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
+        modelMenu: true,
         canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>`;
 
-  /// The two things on the composer a poll can change: the placeholder — a
-  /// checkout Build owned nothing in a second ago now has an agent to talk to —
-  /// and whether the send offers to stop the turn in flight, which moves every
-  /// time an agent starts or finishes one. The box itself is never rebuilt for
-  /// either: a rebuild would take the draft and the focus with it, mid-sentence.
+  /// The one thing on the composer a poll can change: whether the send offers
+  /// to stop the turn in flight, which moves every time an agent starts or
+  /// finishes one. The box itself is never rebuilt for it — a rebuild would
+  /// take the draft and the focus with it, mid-sentence. (The placeholder
+  /// cannot move under a poll: it says whether there is an agent to talk to,
+  /// and gaining one rebuilds the panel around a conversation.)
   const syncComposer = () => {
-    const input = host.querySelector(`#${COMPOSER_IDS.input}`);
-    if (input) input.placeholder = composerPlaceholder();
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentOf(selectedId)));
+    if (!composerModelMenu) return;
+    const choice = composerChoice();
+    composerModelMenu.set(catalog, choice.provider, choice);
+  };
+
+  /** What the composer's model menu is editing: the open agent's own choice —
+   *  its harness names the catalog — or, before there is an agent, what the
+   *  first send will create one with. */
+  const composerChoice = () => {
+    const agent = agentOf(selectedId);
+    if (!agent) return newAgentChoice();
+    return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
+  };
+
+  /** A model or effort picked from that menu.
+   *
+   *  With an agent it is the entity's persisted choice, which the NEXT start
+   *  spends — the session running right now is never touched, which is what
+   *  makes the menu safe to press mid-turn. With none there is nothing on the
+   *  bridge to write to yet, so it waits for the send that creates one. */
+  const chooseModel = async (next) => {
+    if (!agentOf(selectedId)) {
+      writeNewAgentChoice(next);
+      return;
+    }
+    try {
+      await App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort });
+    } catch (error) {
+      notifyError("Could not set the model", error.message);
+    }
+    await refresh();
   };
 
   const wireTimeline = (body) => {
@@ -734,6 +824,8 @@ export function mountAgentRail(host, context) {
       onSubmit: (message, attachments, options) => send(message, attachments, options),
       onError: (error) => notifyError("Message failed", error.message),
     });
+    composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    syncComposer();
   };
 
   /** A reference in the conversation goes where it points, as far as the two
@@ -776,21 +868,30 @@ export function mountAgentRail(host, context) {
     return adopt.adopt();
   };
 
+  /** The agent a message on an agentless branch is for: the one the send
+   *  creates, on the harness the new-agent view has highlighted. An issue
+   *  dispatches its own planning agent on its first message, so it needs
+   *  none of this. */
+  const agentForMessage = async (entityId) => {
+    const open = agentOf(selectedId);
+    if (open || entity.kind !== "branch" || entity.agents.length) return open;
+    return addAgent({ entity_id: entityId, ...newAgentParams() });
+  };
+
   /**
    * Send, and make sure something is listening.
    *
    * A message is durable the moment it is posted; whether an agent hears it is
-   * a second question. On a branch with no live session — including one with no
-   * agent at all, where the post has just adopted the checkout — the start is
-   * what delivers it, and it answers with the agent that now owns this
-   * conversation. An issue needs none of that: the daemon dispatches its
-   * planning agent on the first message.
+   * a second question. On a branch with no live session — including one whose
+   * agent this send has just created — the start is what delivers it, and it
+   * answers with the agent that now owns this conversation. An issue needs none
+   * of that: the daemon dispatches its planning agent on the first message.
    */
   const post = async (message) => {
     sending = true;
     try {
       const entityId = await ensureEntity();
-      const agent = agentOf(selectedId);
+      const agent = await agentForMessage(entityId);
       await App.call("thread.post", {
         entity_id: entityId,
         ...(agent ? { agent_id: agent.id } : {}),
@@ -832,15 +933,11 @@ export function mountAgentRail(host, context) {
 
   const pressBubble = (type, agentId) => {
     if (type === "add") {
-      addAgent();
+      pressAddBubble();
       return;
     }
     if (type === "agent" && agentId && agentId !== selectedId) {
-      chooseAgent(agentId);
-      threadCache.reset();
-      threadAgentId = agentId;
-      expanded = true;
-      writeExpanded(true);
+      openAgent(agentId);
       paint();
       // …and ask for this agent's conversation NOW. Waiting for the watcher is
       // what made the switch look broken: with the bridge pushing change events
@@ -856,10 +953,29 @@ export function mountAgentRail(host, context) {
     paint();
   };
 
-  /** Another agent on this branch, with its own conversation. It starts on the
-   *  account's chosen harness (an empty preference sends nothing and the
-   *  daemon's own default stands) and nothing runs until it is spoken to. */
-  const addAgent = async () => {
+  /** Open this agent's conversation in the panel, with the panel out. */
+  const openAgent = (agentId) => {
+    chooseAgent(agentId);
+    threadCache.reset();
+    threadAgentId = agentId;
+    expanded = true;
+    writeExpanded(true);
+  };
+
+  /** Put an agent on this branch and open it. The `+` bubble and the
+   *  new-agent view's first send are the same act — a harness named, an agent
+   *  created, its conversation opened — so they compose it here. */
+  const addAgent = async (params) => {
+    const added = await App.call("agent.add", params);
+    const agent = (added && added.agent) || null;
+    if (agent) openAgent(agent.id);
+    return agent;
+  };
+
+  /** Another agent on this branch, beside the ones already here. It starts on
+   *  the harness this browser prefers (an empty preference sends nothing and
+   *  the daemon's own default stands) and nothing runs until it is spoken to. */
+  const pressAddBubble = async () => {
     if (!entity.entityId) return;
     const defaults = loadAgentDefaults();
     const params = { entity_id: entity.entityId };
@@ -867,15 +983,7 @@ export function mountAgentRail(host, context) {
       if (defaults[field]) params[field] = defaults[field];
     }
     try {
-      const added = await App.call("agent.add", params);
-      if (added && added.agent) {
-        selectedId = added.agent.id;
-        chosenAgent.set(key, selectedId);
-        threadCache.reset();
-        threadAgentId = selectedId;
-        expanded = true;
-        writeExpanded(true);
-      }
+      await addAgent(params);
       await refresh();
     } catch (error) {
       notifyError("Could not add an agent", error.message);
@@ -931,17 +1039,19 @@ export function mountAgentRail(host, context) {
       : { project_id: entity.projectId, ...(entity.worktreeId ? { worktree_id: entity.worktreeId } : {}) };
     tui = mountAgentTab(body, target, {
       idleLabel: "No agent session is running here",
-      onStart: (provider) => startAgent(provider),
+      onStart: startAgent,
     });
   };
 
-  const startAgent = async (provider) => {
+  /** Put the open agent back on its screen. It names no harness: the agent is
+   *  locked to the one it was created on, and its conversation is waiting
+   *  there. */
+  const startAgent = async () => {
     const entityId = await ensureEntity();
     const agent = agentOf(selectedId);
     const started = await App.call("agent.start", {
       id: entityId,
       ...(agent ? { agent_id: agent.id } : {}),
-      ...(provider ? { provider } : {}),
     });
     if (started && started.agent_id) {
       selectedId = started.agent_id;
@@ -961,6 +1071,15 @@ export function mountAgentRail(host, context) {
 
   paint();
   refresh();
+  // The harnesses and their models, fetched once per session (app.js caches it).
+  // The new-agent view leads with the account's default, which is this answer's
+  // to give, so a paint that lands before it holds the client's own first
+  // harness and moves when the answer does.
+  loadModelCatalog().then((answer) => {
+    if (disposed) return;
+    catalog = answer;
+    paint();
+  });
   // Read at delivery, not here: the rail learns which entity it is standing on
   // from its first answer, and a branch that has to be adopted has no entity id
   // at all until something mutates it.

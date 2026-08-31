@@ -460,27 +460,47 @@ async fn heartbeating_and_reading_device_outlives_the_liveness_deadline() {
     let api = mock_api().await;
     let device = identity::generate("healthy");
     mount_device_record(&api, &device, "u1").await;
-    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "1")]);
+    let relay = RelayProcess::start_with(&api.uri(), &[("RELAY_DEVICE_LIVENESS_S", "2")]);
 
-    let mut device_ws = authed_device(&relay, &device).await;
-    // A healthy device both writes (heartbeats) and reads (which answers the
-    // relay's pings). Keep doing both well past several liveness windows: the
-    // connection must hold.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    while tokio::time::Instant::now() < deadline {
-        device_ws
-            .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
-            .await
-            .expect("heartbeat sends on a live connection");
-        // Poll the socket briefly: this is what a live read loop does, and it is
-        // what lets the WebSocket library answer the relay's pings.
-        match tokio::time::timeout(Duration::from_millis(200), device_ws.next()).await {
-            Ok(None) | Ok(Some(Ok(Message::Close(_)))) | Ok(Some(Err(_))) => {
-                panic!("relay severed a healthy device")
+    let mut client = authed_client(&relay).await;
+    let device_ws = authed_device(&relay, &device).await;
+    assert_eq!(recv_json(&mut client).await["type"], "device_online");
+
+    // A healthy device both writes (heartbeats) and reads — reading is what lets
+    // the WebSocket library answer the relay's pings. Give each half its own
+    // task, as the bridge does, so neither half waits on the other: taking turns
+    // on one task spent the whole liveness window on a loaded machine and the
+    // relay severed a device this test calls healthy.
+    let (mut sink, mut source) = device_ws.split();
+    let reading = tokio::spawn(async move {
+        while let Some(Ok(message)) = source.next().await {
+            if matches!(message, Message::Close(_)) {
+                break;
             }
-            _ => {}
         }
-    }
+        // Reading ends only when the relay severs the device.
+    });
+    let heartbeating = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if sink
+                .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
+                .await
+                .is_err()
+            {
+                return; // severed: the assertion below reports it
+            }
+        }
+    });
+
+    // Keep both halves alive well past several liveness windows.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(!reading.is_finished(), "relay severed a healthy device");
+    // …and the owner's browsers were never told the device went offline.
+    expect_silence(&mut client).await;
+
+    reading.abort();
+    heartbeating.abort();
 }
 
 #[tokio::test]

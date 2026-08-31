@@ -72,46 +72,27 @@ impl AgentProvider {
 /// answer `settings.get` synthesizes and the only value `settings.set` takes.
 pub const CODEX_ONLY_MODE: &str = "tui";
 
-/// Which program "Claude Code" opens — the account's answer, not a per-start
-/// question. Both modes are the same CLI, the same account and the same
-/// transcripts; what differs is the carrier, which is why the human is asked
-/// once on the Account page instead of at every start.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ClaudeMode {
-    #[default]
-    Headless,
-    Tui,
+/// The two words the older `claude_mode` setting spoke, and the carriers they
+/// name. Kept as a compat alias, not as a second vocabulary: the account
+/// setting is a provider token now, and this is only how a client or config
+/// file written before that still says the same thing.
+///
+/// A mode this bridge has no carrier for answers `None`.
+pub fn carrier_of_claude_mode(mode: &str) -> Option<AgentProvider> {
+    match mode {
+        "headless" => Some(AgentProvider::ClaudeAdk),
+        "tui" => Some(AgentProvider::Claude),
+        _ => None,
+    }
 }
 
-impl ClaudeMode {
-    /// Every mode, so the wire vocabulary is enumerated once.
-    pub const ALL: [ClaudeMode; 2] = [ClaudeMode::Headless, ClaudeMode::Tui];
-
-    /// The provider this mode opens. The whole point of the setting: the
-    /// generic token "claude" becomes a concrete carrier here and nowhere else.
-    pub fn carrier(self) -> AgentProvider {
-        match self {
-            ClaudeMode::Headless => AgentProvider::ClaudeAdk,
-            ClaudeMode::Tui => AgentProvider::Claude,
-        }
-    }
-
-    /// How a mode is spelled on the wire and in the config file. Matches the
-    /// serde representation, so a saved setting and an RPC param agree.
-    pub fn wire_id(self) -> &'static str {
-        match self {
-            ClaudeMode::Headless => "headless",
-            ClaudeMode::Tui => "tui",
-        }
-    }
-
-    /// The mode a client named, or `None` for a word this bridge has no mode
-    /// for.
-    pub fn from_wire(id: &str) -> Option<ClaudeMode> {
-        ClaudeMode::ALL
-            .into_iter()
-            .find(|mode| mode.wire_id() == id)
+/// The same mapping backwards, for the old key `settings.get` keeps serving.
+/// Only the terminal carrier is "tui"; every other default is the honest "not
+/// tui", which is also what the old key defaulted to.
+pub fn claude_mode_of_harness(harness: AgentProvider) -> &'static str {
+    match harness {
+        AgentProvider::Claude => "tui",
+        _ => "headless",
     }
 }
 
@@ -301,7 +282,7 @@ mod tests {
             .find(|provider| provider.id == AgentProvider::Codex)
             .unwrap();
 
-        assert_eq!(claude.label, "Claude Code");
+        assert_eq!(claude.label, "Claude Code TUI");
         assert!(claude
             .models
             .iter()
@@ -311,7 +292,7 @@ mod tests {
             .iter()
             .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(codex.label, "Codex CLI");
+        assert_eq!(codex.label, "Codex");
         assert!(sol.efforts.contains(&"ultra"));
         let luna = codex
             .models
@@ -353,42 +334,65 @@ mod tests {
             .contains("does not support effort ultra"));
     }
 
-    /// The catalog is machine truth — an entity persisted on either claude
-    /// carrier needs its models served under its own id — but what it calls
-    /// them is what a human reads. Both claude carriers are "Claude Code", and
-    /// no label anywhere names the difference between them.
+    /// An agent is locked to its harness, so the three harnesses sit side by
+    /// side and each needs a name of its own. The default carrier owns the
+    /// plain name; the word the code uses for the difference stays out of every
+    /// label a human reads.
     #[test]
-    fn every_catalog_label_a_human_reads_is_the_name_they_know() {
-        for catalog in provider_catalogs() {
+    fn every_catalog_label_a_human_reads_is_distinct_and_free_of_jargon() {
+        let labels: Vec<&str> = provider_catalogs()
+            .iter()
+            .map(|catalog| catalog.label)
+            .collect();
+        for label in &labels {
             assert!(
-                !catalog.label.to_lowercase().contains("headless"),
-                "{:?} is labeled {:?}",
-                catalog.id,
-                catalog.label
+                !label.to_lowercase().contains("headless"),
+                "{label:?} names the carrier the way the code does"
             );
         }
+        let distinct: std::collections::BTreeSet<&&str> = labels.iter().collect();
+        assert_eq!(distinct.len(), labels.len(), "{labels:?} are not distinct");
+        assert_eq!(AgentProvider::ClaudeAdk.label(), "Claude Code");
+        assert_eq!(AgentProvider::Claude.label(), "Claude Code TUI");
+        assert_eq!(AgentProvider::Codex.label(), "Codex");
+    }
+
+    /// Both claude carriers run the same CLI, so a model released for one is
+    /// available on the other by construction.
+    #[test]
+    fn opus_5_is_in_both_claude_carriers_catalogs_with_effort() {
         for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
-            assert_eq!(carrier.label(), "Claude Code");
+            let catalog = provider_catalogs()
+                .into_iter()
+                .find(|catalog| catalog.id == carrier)
+                .expect("every provider has a catalog");
+            let opus = catalog
+                .models
+                .iter()
+                .find(|model| model.id == "claude-opus-5")
+                .unwrap_or_else(|| panic!("{carrier:?} does not offer Claude Opus 5"));
+            assert_eq!(opus.label, "Claude Opus 5");
+            assert!(opus.supports_effort);
         }
     }
 
-    /// The mode names a carrier, and the wire spelling is the serde spelling —
-    /// a mode read back out of the config file has to be the same word a
-    /// client can send.
+    /// The compat alias round trips both ways for the two carriers it can
+    /// name, and answers the old default for everything else.
     #[test]
-    fn a_claude_mode_names_its_carrier_and_round_trips_through_its_wire_id() {
-        assert_eq!(ClaudeMode::default(), ClaudeMode::Headless);
-        assert_eq!(ClaudeMode::Headless.carrier(), AgentProvider::ClaudeAdk);
-        assert_eq!(ClaudeMode::Tui.carrier(), AgentProvider::Claude);
-        for mode in ClaudeMode::ALL {
-            let id = mode.wire_id();
-            assert_eq!(ClaudeMode::from_wire(id), Some(mode));
+    fn the_old_claude_mode_words_map_to_carriers_and_back() {
+        assert_eq!(carrier_of_claude_mode("tui"), Some(AgentProvider::Claude));
+        assert_eq!(
+            carrier_of_claude_mode("headless"),
+            Some(AgentProvider::ClaudeAdk)
+        );
+        assert_eq!(carrier_of_claude_mode("codex"), None);
+        for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
             assert_eq!(
-                serde_json::to_value(mode).unwrap(),
-                serde_json::Value::String(id.to_string())
+                carrier_of_claude_mode(claude_mode_of_harness(carrier)),
+                Some(carrier)
             );
         }
-        assert_eq!(ClaudeMode::from_wire("adk"), None);
+        assert_eq!(claude_mode_of_harness(AgentProvider::Codex), "headless");
     }
 
     #[test]

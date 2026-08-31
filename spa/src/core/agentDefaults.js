@@ -9,8 +9,6 @@
 // Browser-scoped (localStorage), like every other preference this client keeps:
 // the device picker, read state, the collapsed rail.
 
-import { genericProviderId } from "./modelPicker.js";
-
 export const AGENT_DEFAULTS_KEY = "build.agentDefaults";
 
 const EMPTY = { provider: "", model: "", effort: "" };
@@ -21,15 +19,15 @@ const clean = (value) => (typeof value === "string" ? value : "");
  *  reads as "no preference", which is the same thing the app did before it had
  *  any preferences at all.
  *
- *  A provider saved when the picker offered a card per carrier reads as the
- *  agent that carries it — the preference always meant "Claude Code", and which
- *  program that opens is the account's answer now, not this browser's. */
+ *  A stored harness is kept as it was saved: every harness is an agent of its
+ *  own, and an agent is locked to the one it was created on, so there is
+ *  nothing here to resolve. */
 export function loadAgentDefaults(storage = localStorage) {
   try {
     const parsed = JSON.parse(storage.getItem(AGENT_DEFAULTS_KEY) || "{}");
     if (!parsed || typeof parsed !== "object") return { ...EMPTY };
     return {
-      provider: genericProviderId(clean(parsed.provider)),
+      provider: clean(parsed.provider),
       model: clean(parsed.model),
       effort: clean(parsed.effort),
     };

@@ -125,8 +125,9 @@ describe("the assignment overlay", () => {
       getCatalog: () => held,
       getWorktrees: () => [],
     });
-    // Until it lands the picker offers only the stand-in it falls back to.
-    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude"]);
+    // Until it lands the picker offers only the stand-in it falls back to: the
+    // default harness, which is what a bridge too old to list any would run.
+    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude_adk"]);
     const worktree = document.querySelector("#assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));

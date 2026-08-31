@@ -64,6 +64,16 @@ for that worktree.
    appended to the `claude` argv; no transcript → fresh session, silently. Later
    sessions are always fresh (the existing "cold agent" discipline). The QA agent
    (`Agent::Warm`) never sees the flag.
+
+   > **SUPERSEDED 2026-08-31 — adoption no longer inherits the human's session;
+   > Build cannot show its history.** A new agent's conversation view starts at
+   > sequence 1, so an agent resumed onto the session the human was having
+   > before the adoption answers out of a history no view of Build's holds. The
+   > pickup is deleted with the flag: `pending_continuation` is gone from
+   > `ActiveRun` and `PersistedRun`, and the spawn rule
+   > (Agent Session Interface Spec §10.4) resumes only what Build named
+   > (`--resume <id>`) or an agent's own recorded history (`--continue`).
+   > `adopted: bool` (item 6) stays, for everything else it gates.
 8. **The scan is cached per project at a 10 s cadence** (`EXTERNAL_SCAN_INTERVAL`),
    never per poll. `task.adopt` forces a fresh scan (adoption must see current
    bindings); adopt/release explicitly invalidate the cache so cards

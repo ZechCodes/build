@@ -1150,6 +1150,19 @@ mod tests {
         for _ in 0..8_000 {
             nested = format!("\u{1b}[20{nested}0~");
         }
+        // The budget is calibrated on this machine rather than fixed in
+        // milliseconds: the same byte count with no nesting at all is what a
+        // linear sanitizer costs here and now, so the comparison absorbs
+        // whatever CPU the rest of the suite has left. A fixed budget cannot,
+        // and this test used to fail under a full parallel run purely for
+        // being descheduled. The added floor keeps a very fast baseline from
+        // turning ordinary jitter into a failure.
+        let flat = "a".repeat(nested.chars().count());
+        let flat_started = std::time::Instant::now();
+        let flat_sanitized = strip_bracketed_paste_markers(&flat);
+        let linear_cost = flat_started.elapsed();
+        assert_eq!(flat_sanitized.len(), flat.len(), "plain text is untouched");
+
         let started = std::time::Instant::now();
         let sanitized = strip_bracketed_paste_markers(&nested);
         let elapsed = started.elapsed();
@@ -1158,9 +1171,12 @@ mod tests {
             !sanitized.contains(PASTE_START) && !sanitized.contains(PASTE_END),
             "no marker may survive or re-form"
         );
+        let budget = linear_cost * 20 + Duration::from_millis(250);
         assert!(
-            elapsed < Duration::from_millis(250),
-            "sanitizing {} bytes took {elapsed:?}; a nesting-sensitive scan stalls the bridge",
+            elapsed < budget,
+            "sanitizing {} nested bytes took {elapsed:?} against a {budget:?} budget \
+             ({linear_cost:?} for the same bytes unnested); a nesting-sensitive scan \
+             stalls the bridge",
             nested.len()
         );
     }

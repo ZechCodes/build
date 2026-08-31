@@ -53,6 +53,10 @@ const EVENT_META = {
   // past in, so they ride the conversation — and they arrive hundreds to a
   // session, which is why `activity` folds them (see activityHtml). None of
   // them carries a tone: not one of them is asking the reader for anything.
+  //
+  // Their labels are never printed. An activity row is its content, so the
+  // label has exactly two jobs left: what the icon says to a screen reader, and
+  // the line a row with no summary of its own falls back to.
   reasoning: { label: "Agent thought", icon: "◌", activity: true },
   // A call and its answer are one row: the call mints it, and the answer
   // completes it in place (see `toolOutcomeHtml`).
@@ -720,6 +724,16 @@ function firstLine(summary) {
   return summary.split("\n").find((line) => line.trim()) || "";
 }
 
+/// An event kind's label, spoken in the name of the harness that raised it —
+/// "Claude Code called a tool" rather than "Agent called a tool".
+///
+/// On a lifecycle row this is the row's own text. On an activity row it is not
+/// text at all: it is what the icon says to a screen reader, and what a row
+/// with no summary of its own falls back to.
+function eventLabel(meta, agentLabel) {
+  return meta.label.replace(/^Agent\b/, agentLabel);
+}
+
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
 /// The call and the answer are one row, so the row has three states to say and
@@ -764,14 +778,18 @@ function toolOutcomeHtml(outcome) {
 /// gains a state mark and the summary gains the answer as a second line. The
 /// preview is the FIRST line either way, which is what keeps the head still
 /// under a reader watching the call run.
+///
+/// The row carries no label. "Claude Code called a tool Bas…" spends the line
+/// announcing a category and truncates the only part worth reading, so the row
+/// IS its content — the same line the collapsed run shows, through the same
+/// `activityMeat` — with the kind on the icon for a reader who cannot see it,
+/// and the mark riding the content it is a fact about.
 function activityHtml(event, meta, agentLabel) {
-  const label = meta.label.replace(/^Agent\b/, agentLabel);
   const summary = String(event.summary || "").trim();
-  const head = `<span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
-    <span class="thread-activity-what">${esc(label)}</span>
-    ${summary ? `<span class="thread-activity-preview">${esc(firstLine(summary))}</span>` : ""}
-    ${timeHtml(event.created_at)}
-    ${toolOutcomeHtml(event.outcome)}`;
+  const head = `<span class="thread-event-icon" role="img" aria-label="${esc(eventLabel(meta, agentLabel))}">${esc(meta.icon)}</span>
+    <span class="thread-activity-preview">${esc(activityMeat(event, meta, agentLabel))}</span>
+    ${toolOutcomeHtml(event.outcome)}
+    ${timeHtml(event.created_at)}`;
   // renderMarkdown escapes all input before adding its fixed safe tag set.
   const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
   if (!body) return `<div class="thread-event thread-activity">${head}</div>`;
@@ -794,13 +812,17 @@ const activityMetaOf = (event) => {
   return meta && meta.activity ? meta : null;
 };
 
-/// The line a collapsed run shows for one item: the first line of what the
-/// agent actually did, with no label in front of it. An item that carried no
-/// summary at all has only its label to show, and showing the label is better
-/// than showing a blank line.
+/// The line an activity row shows: the first line of what the agent actually
+/// did, with no label in front of it. An item that carried no summary at all
+/// has only its label to show, and showing the label is better than showing a
+/// blank line.
+///
+/// One implementation for both places a row's line is drawn — the row's own
+/// head and the collapsed run's — so an open run and the line that folds it can
+/// never disagree about what a row says.
 function activityMeat(event, meta, agentLabel) {
   const summary = String(event.summary || "").trim();
-  return summary ? firstLine(summary) : meta.label.replace(/^Agent\b/, agentLabel);
+  return summary ? firstLine(summary) : eventLabel(meta, agentLabel);
 }
 
 /// A run of activity, collapsed to one line.
@@ -825,8 +847,8 @@ function activityRunHtml(run) {
       <span class="thread-event-icon" aria-hidden="true">${esc(latest.icon)}</span>
       <span class="thread-activity-count">${run.length}</span>
       <span class="thread-activity-preview">${esc(latest.meat)}</span>
-      ${timeHtml(latest.createdAt)}
       ${toolOutcomeHtml(latest.outcome)}
+      ${timeHtml(latest.createdAt)}
     </summary>
     <div class="thread-activity-group-list">${run.map((entry) => entry.html).join("")}</div>
   </details>`;
@@ -857,7 +879,7 @@ function foldActivityRuns(entries) {
 function eventHtml(event, agentLabel = "Agent") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
   if (meta.activity) return activityHtml(event, meta, agentLabel);
-  const label = meta.label.replace(/^Agent\b/, agentLabel);
+  const label = eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
     : event.event !== "done" && event.summary ? renderMarkdown(event.summary) : "";

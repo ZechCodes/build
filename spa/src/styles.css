@@ -1070,7 +1070,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-activity-head::-webkit-details-marker { display:none; }
 .thread-activity .thread-event-icon { left:8px; width:22px; height:22px; border-width:2px;
   background:var(--bg); color:var(--dim); font-size:10px; font-weight:600; }
-.thread-activity-what { flex:none; color:var(--dim); }
 .thread-activity-preview { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;
   color:var(--dim); opacity:.8; }
 .thread-activity-head time { flex:none; }

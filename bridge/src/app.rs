@@ -19905,7 +19905,7 @@ mod tests {
         assert_eq!(refused["error"], "cannot close an agent terminal");
 
         let s = state.lock().unwrap();
-        let key = first_agent_key(&AppState::canonical_root(&root), "run-unclosable");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-unclosable");
         let tab = s.tabs.get(&key).expect("the agent tab is still registered");
         assert!(tab.live, "and its session was never killed");
         assert!(tab.session_is_live());
@@ -20886,7 +20886,7 @@ mod tests {
         );
         let s = state.lock().unwrap();
         assert!(
-            s.tabs.contains_key(&first_agent_key(
+            s.tabs.contains_key(&derived_agent_key(
                 &AppState::canonical_root(&root),
                 "run-exits"
             )),
@@ -22975,9 +22975,11 @@ mod tests {
         handler(SessionSender::detached("qa"), req(method, params))
     }
 
-    /// The tab key of an entity's FIRST agent — the agent every surface that
-    /// predates the rail means, and the one whose id is derived from its owner.
-    fn first_agent_key(root: &std::path::Path, entity_id: &str) -> TabKey {
+    /// The tab key of the agent whose id is DERIVED from its owner — the one
+    /// the pre-agent migration mints, and the one an issue holds. A branch
+    /// whose agent was added rather than migrated has a minted id instead, and
+    /// its key is `primary_agent_key`.
+    fn derived_agent_key(root: &std::path::Path, entity_id: &str) -> TabKey {
         TabKey::agent(root, &crate::agent::derived_agent_id(entity_id))
     }
 
@@ -23096,18 +23098,22 @@ mod tests {
         run_id
     }
 
-    /// The tab key of an entity's primary agent — for a branch whose agent was
-    /// minted rather than derived from the owner.
+    /// The id of an entity's primary agent — the one a verb that names none
+    /// reaches. Whichever kind of entity the id names, and whether its agent
+    /// was minted or derived from the owner.
+    fn primary_agent_id(state: &AppState, entity_id: &str) -> String {
+        state
+            .entity_agents(entity_id)
+            .expect("the entity is on the board")
+            .primary()
+            .expect("and holds an agent")
+            .id
+            .clone()
+    }
+
+    /// That agent's tab key.
     fn primary_agent_key(state: &AppState, root: &std::path::Path, entity_id: &str) -> TabKey {
-        TabKey::agent(
-            root,
-            &state
-                .entity_agents(entity_id)
-                .expect("the entity is on the board")
-                .primary()
-                .expect("and holds an agent")
-                .id,
-        )
+        TabKey::agent(root, &primary_agent_id(state, entity_id))
     }
 
     /// An issue filed with `dispatch: false` is a record and nothing else: the
@@ -23819,7 +23825,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-target");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
         let worktree_id = worktree_id_of_run(&state, &run_id);
         let worktree_path = state.runs[&run_id].worktree.path.clone();
         let issue_id = issue_ready_to_implement(&mut state, "target an existing branch");
@@ -23848,7 +23854,7 @@ mod tests {
         // never the one handed the work.
         assert_eq!(active.agents.len(), 2, "{:?}", active.agents.agents());
         let implementing = active.agents.agents()[1].id.clone();
-        assert_ne!(implementing, first_agent);
+        assert_ne!(implementing, primary_agent);
         assert!(
             state
                 .pending_agent_turns
@@ -25777,7 +25783,7 @@ mod tests {
         // handler is the thing that delivers, and delivering opens the agent.
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
-        let key = first_agent_key(&root, &run_id);
+        let key = derived_agent_key(&root, &run_id);
         let first_stage_pid = {
             let s = state.lock().unwrap();
             agent_pid(
@@ -25838,7 +25844,7 @@ mod tests {
         let run_id = run_id_of(&run);
         let key = {
             let s = state.lock().unwrap();
-            first_agent_key(
+            derived_agent_key(
                 &AppState::canonical_root(&s.runs[&run_id].worktree.path),
                 &run_id,
             )
@@ -25897,7 +25903,7 @@ mod tests {
             let s = state.lock().unwrap();
             AppState::canonical_root(&s.runs[&run_id].worktree.path)
         };
-        let key = first_agent_key(&root, &run_id);
+        let key = derived_agent_key(&root, &run_id);
 
         let first = call(
             &handler,
@@ -26746,7 +26752,7 @@ mod tests {
         // turn is still queued; the handler is the thing that delivers.
         let opened = call(&handler, "run.get", json!({ "run_id": run_id }));
         assert_eq!(opened["ok"], true, "{opened:?}");
-        let key = first_agent_key(&root, &run_id);
+        let key = derived_agent_key(&root, &run_id);
         let (build_pid, session_token) = {
             let s = state.lock().unwrap();
             let tab = s
@@ -26986,7 +26992,7 @@ mod tests {
         let plan_id = plan_id_of(&plan);
         let key = {
             let s = state.lock().unwrap();
-            first_agent_key(
+            derived_agent_key(
                 &AppState::canonical_root(
                     &s.plans[&plan_id]
                         .workspace
@@ -29080,7 +29086,7 @@ mod tests {
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
-        state.tabs.insert(first_agent_key(&root, &run_id), tab);
+        state.tabs.insert(derived_agent_key(&root, &run_id), tab);
 
         let posted = state.handle(req(
             "thread.post",
@@ -29564,7 +29570,7 @@ mod tests {
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
-        state.tabs.insert(first_agent_key(&root, &run_id), tab);
+        state.tabs.insert(derived_agent_key(&root, &run_id), tab);
         primary_thread_mut(&mut state.runs.get_mut(&run_id).unwrap().agents).start_session(
             "claude",
             None,
@@ -29590,7 +29596,7 @@ mod tests {
             "this test is only meaningful while the failed cleanup leaves the worktree behind"
         );
         assert!(
-            !state.tabs.contains_key(&first_agent_key(&root, &run_id)),
+            !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
             "an abandoned run's agent is gone from the registry"
         );
         assert!(
@@ -29869,7 +29875,7 @@ mod tests {
             None,
         )
         .expect("the agent tab spawns");
-        let key = first_agent_key(&root, run_id);
+        let key = derived_agent_key(&root, run_id);
         state.tabs.insert(key.clone(), tab);
         drain_pty_into_screen(state, &key, &mut rx.bytes.expect("a PTY session paints"));
         key
@@ -29983,7 +29989,7 @@ mod tests {
             RunState::Building,
         );
         let agent_id = crate::agent::derived_agent_id("run-mid-turn");
-        let key = first_agent_key(&root, "run-mid-turn");
+        let key = derived_agent_key(&root, "run-mid-turn");
         let quiet = Duration::from_secs(2400);
         state.tabs.insert(
             key.clone(),
@@ -30200,7 +30206,7 @@ mod tests {
         .expect("the turn reaches an agent");
         assert_eq!(spawned, Spawned::Fresh, "the tab did not exist yet");
 
-        let key = first_agent_key(&root, "run-spoken-to");
+        let key = derived_agent_key(&root, "run-spoken-to");
         // The tty echoes a written prompt back through the reader thread, so
         // wait for the PTY to go quiet before speaking about its silence.
         wait_for_pty_quiet(&state, &key, Duration::from_millis(200)).await;
@@ -30503,7 +30509,7 @@ mod tests {
     }
 
     /// The one agent a stored record carries. Derived from its owner, the way
-    /// the pre-agent migration named it, so `first_agent_key` finds its tab.
+    /// the pre-agent migration named it, so `derived_agent_key` finds its tab.
     fn stored_agents(owner_id: &str) -> Vec<crate::agent::Agent> {
         vec![crate::agent::Agent::new(
             crate::agent::derived_agent_id(owner_id),
@@ -30803,7 +30809,7 @@ mod tests {
         ));
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-first-word");
         // Back to the state adoption leaves: the fixture's agent goes away.
-        let planted = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let planted = primary_agent_id(&state, &run_id);
         state.handle(req(
             "agent.remove",
             json!({ "entity_id": run_id, "agent_id": planted }),
@@ -30904,7 +30910,7 @@ mod tests {
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
-        state.tabs.insert(first_agent_key(&root, &run_id), tab);
+        state.tabs.insert(derived_agent_key(&root, &run_id), tab);
 
         // Release drops the record, keeps the files.
         let released = state.handle(req("run.release", json!({ "run_id": run_id })));
@@ -30917,7 +30923,7 @@ mod tests {
         // …and takes Build's agent with it: an agent whose owner is gone would
         // report `done` into the unknown-entity log forever.
         assert!(
-            !state.tabs.contains_key(&first_agent_key(&root, &run_id)),
+            !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
             "releasing a run closes the agent it owned"
         );
         assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
@@ -31116,7 +31122,7 @@ mod tests {
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
-        state.tabs.insert(first_agent_key(&root, &run_id), tab);
+        state.tabs.insert(derived_agent_key(&root, &run_id), tab);
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
         assert_eq!(abandoned["ok"], true, "{abandoned:?}");
@@ -31126,7 +31132,7 @@ mod tests {
             "abandoning a primary run must never delete the repository"
         );
         assert!(
-            !state.tabs.contains_key(&first_agent_key(&root, &run_id)),
+            !state.tabs.contains_key(&derived_agent_key(&root, &run_id)),
             "the agent goes with the owner that hosted it"
         );
         assert!(process_reaped(agent_pid), "the agent is killed AND reaped");
@@ -31520,7 +31526,7 @@ mod tests {
             None,
         )
         .expect("the agent tab spawns");
-        let key = first_agent_key(&root, run_id);
+        let key = derived_agent_key(&root, run_id);
         let wire_id = tab.wire_id();
         {
             let mut s = state.lock().unwrap();
@@ -31580,7 +31586,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-start");
-        let key = first_agent_key(&root, "run-start");
+        let key = derived_agent_key(&root, "run-start");
         assert!(
             !state.lock().unwrap().tabs.contains_key(&key),
             "the worktree has no agent until someone asks for one"
@@ -31624,7 +31630,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-restart");
-        let key = first_agent_key(&root, "run-restart");
+        let key = derived_agent_key(&root, "run-restart");
 
         let first = call(&handler, "agent.start", json!({ "id": "run-restart" }));
         assert_eq!(first["ok"], true, "{first:?}");
@@ -31670,7 +31676,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-revive");
-        let key = first_agent_key(&root, "run-revive");
+        let key = derived_agent_key(&root, "run-revive");
         let started = call(&handler, "agent.start", json!({ "id": "run-revive" }));
         assert_eq!(started["ok"], true, "{started:?}");
         let dead_pid = agent_pid(&state.lock().unwrap().tabs[&key]);
@@ -31731,7 +31737,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
         let root = state.entity_agent_root(&run_id).unwrap();
-        let agent_id = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &run_id);
         state.pending_agent_turns.clear();
         state
             .agent_spawns_in_flight
@@ -32090,7 +32096,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .tabs
-                .contains_key(&first_agent_key(&root, "run-bogus")),
+                .contains_key(&derived_agent_key(&root, "run-bogus")),
             "a refused start opens no agent"
         );
     }
@@ -32379,7 +32385,7 @@ mod tests {
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
-        let key = first_agent_key(&root, "run-x");
+        let key = derived_agent_key(&root, "run-x");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
@@ -32434,7 +32440,7 @@ mod tests {
             None,
         )
         .expect("the agent tab spawns");
-        let key = first_agent_key(&root, "run-codex");
+        let key = derived_agent_key(&root, "run-codex");
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
@@ -32551,7 +32557,7 @@ mod tests {
 
         let s = state.lock().unwrap();
         let screen = screen_of(
-            &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
+            &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
         );
         assert_eq!(
             (screen.cols, screen.rows),
@@ -32573,7 +32579,7 @@ mod tests {
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-respawn-race");
         let choice = ModelChoice::default();
         let canonical = AppState::canonical_root(&root);
-        let key = first_agent_key(&canonical, "run-respawn-race");
+        let key = derived_agent_key(&canonical, "run-respawn-race");
 
         // A first session paints, then dies: its screen and cursor are retained.
         deliver(
@@ -32680,7 +32686,7 @@ mod tests {
             crate::harness::adk::fake::stream_json_harness(&[crate::harness::adk::fake::RESULT]),
         );
         let agent_id = crate::agent::derived_agent_id("run-headless-wait");
-        let key = first_agent_key(&AppState::canonical_root(&root), "run-headless-wait");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-headless-wait");
 
         let (sender, mut pushes, session_key) = SessionSender::observable("waiting");
         {
@@ -32740,7 +32746,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-carrier-swap");
         let agent_id = crate::agent::derived_agent_id("run-carrier-swap");
-        let key = first_agent_key(&AppState::canonical_root(&root), "run-carrier-swap");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-carrier-swap");
 
         // A terminal session, watched by a client, that then dies.
         deliver(
@@ -32814,7 +32820,7 @@ mod tests {
         let vanishing = dir.path().join("vanishing");
         std::fs::create_dir_all(&vanishing).unwrap();
         let root = AppState::canonical_root(&vanishing);
-        let key = first_agent_key(&root, "run-vanishing");
+        let key = derived_agent_key(&root, "run-vanishing");
         let wire_id = key.tab_id.clone();
 
         let (sender, mut pushes, session_key) = SessionSender::observable("s1");
@@ -33355,7 +33361,8 @@ mod tests {
         .expect("the delivery spawns the worktree's agent");
 
         let s = state.lock().unwrap();
-        let tab = &s.tabs[&first_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
+        let tab =
+            &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
         assert!(
             screen_of(tab).attached.is_empty(),
             "a session that ended is never carried onto the agent it waited for"
@@ -33912,7 +33919,7 @@ mod tests {
             "issue.create",
             json!({ "goal": goal, "dispatch": false }),
         )));
-        let agent_id = state.plans[&issue_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(state, &issue_id);
         state
             .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
                 thread.post_user(said, None, "2026-08-29T09:00:00Z");
@@ -34039,7 +34046,7 @@ mod tests {
                 "issue.create",
                 json!({ "goal": "trim the retry loop", "dispatch": false }),
             )));
-            let agent_id = state.plans[&issue_id].agents.primary().unwrap().id.clone();
+            let agent_id = primary_agent_id(&state, &issue_id);
             state
                 .edit_agent_conversation(&issue_id, &agent_id, |thread, _| {
                     for turn in 0..40 {
@@ -34331,7 +34338,7 @@ mod tests {
         )
         .unwrap();
 
-        let key = first_agent_key(&AppState::canonical_root(&root), "run-pulse");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-pulse");
         let mut s = state.lock().unwrap();
         let agent = s.tabs.get(&key).expect("the agent tab");
         assert!(
@@ -34600,7 +34607,7 @@ mod tests {
             RunState::Building,
         );
         let agent_id = crate::agent::derived_agent_id("run-activity");
-        let key = first_agent_key(&root, "run-activity");
+        let key = derived_agent_key(&root, "run-activity");
         app.tabs.insert(
             key.clone(),
             terminal_free_agent_tab(&root, "run-activity", &agent_id),
@@ -34689,7 +34696,7 @@ mod tests {
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), "run-rites", RunState::Building);
         let agent_id = crate::agent::derived_agent_id("run-rites");
-        let key = first_agent_key(&root, "run-rites");
+        let key = derived_agent_key(&root, "run-rites");
         app.tabs.insert(
             key.clone(),
             terminal_free_agent_tab(&root, "run-rites", &agent_id),
@@ -34760,7 +34767,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-headless");
-        let key = first_agent_key(&root, "run-headless");
+        let key = derived_agent_key(&root, "run-headless");
         use crate::harness::adk::fake;
         run_on_a_headless_provider(
             &state,
@@ -35086,7 +35093,7 @@ mod tests {
         let mut app = qa_state(&repo, dir.path());
         let root = insert_run(&mut app, &repo, dir.path(), "run-died", RunState::Building);
         let agent_id = crate::agent::derived_agent_id("run-died");
-        let key = first_agent_key(&root, "run-died");
+        let key = derived_agent_key(&root, "run-died");
         app.tabs.insert(
             key.clone(),
             terminal_free_agent_tab(&root, "run-died", &agent_id),
@@ -35327,7 +35334,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root =
             insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-background");
-        let key = first_agent_key(&root, "run-background");
+        let key = derived_agent_key(&root, "run-background");
         use crate::harness::adk::fake;
         // Turn one starts work that outlives it; turn two is answered by the
         // roster saying the work is over.
@@ -35464,7 +35471,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-outlived");
-        let key = first_agent_key(&root, "run-outlived");
+        let key = derived_agent_key(&root, "run-outlived");
         use crate::harness::adk::fake;
         // It starts the work, never answers the turn, and leaves.
         run_on_a_headless_provider(
@@ -36195,7 +36202,7 @@ mod tests {
 
         // The harness dies. The next message is a respawn, and it opens on the
         // conversation by name.
-        let key = first_agent_key(&root, "run-pty");
+        let key = derived_agent_key(&root, "run-pty");
         state
             .lock()
             .unwrap()
@@ -36290,7 +36297,7 @@ mod tests {
             json!({ "entity_id": "run-brief", "body": "one quick thing" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
-        let key = first_agent_key(&root, "run-brief");
+        let key = derived_agent_key(&root, "run-brief");
         wait_for(Duration::from_secs(10), || {
             let s = state.lock().unwrap();
             (!s.tabs.get(&key)?.live).then_some(())
@@ -36352,7 +36359,7 @@ mod tests {
             json!({ "entity_id": "run-quiet", "body": "carry on" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
-        let key = first_agent_key(&root, "run-quiet");
+        let key = derived_agent_key(&root, "run-quiet");
         wait_for(Duration::from_secs(10), || {
             let s = state.lock().unwrap();
             (!s.tabs.get(&key)?.live).then_some(())
@@ -36498,7 +36505,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refused");
-        let key = first_agent_key(&root, "run-refused");
+        let key = derived_agent_key(&root, "run-refused");
         use crate::harness::adk::fake;
         run_on_a_headless_provider(
             &state,
@@ -37003,7 +37010,7 @@ mod tests {
         );
         assert_eq!(entry_of(&state)["can_finish"], false);
 
-        let key = first_agent_key(&AppState::canonical_root(&root), "run-in-the-worktree");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-in-the-worktree");
         state.lock().unwrap().tabs[&key]
             .session
             .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
@@ -37077,7 +37084,7 @@ mod tests {
             !has_branch_row(&state),
             "an agent happening to be live in it is not the same as Build having adopted it"
         );
-        let key = first_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "agent-in-the-worktree");
         state.lock().unwrap().tabs[&key].session.end();
 
         let adopted = state.lock().unwrap().handle(req(
@@ -38803,7 +38810,7 @@ mod tests {
         .unwrap();
         tab.session
             .backdate_last_output(AGENT_WORKING_WINDOW + Duration::from_secs(1));
-        let key = first_agent_key(&root, "idle-agent-owner");
+        let key = derived_agent_key(&root, "idle-agent-owner");
         state.tabs.insert(key.clone(), tab);
 
         let board = state.handle(req("board.list", json!({})));
@@ -38873,7 +38880,7 @@ mod tests {
         // the account names it rather than riding the default.
         state.default_harness = AgentProvider::Claude;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
-        let agent_id = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &run_id);
         let root = state
             .entity_agent_root(&run_id)
             .expect("the adopted worktree");
@@ -38968,7 +38975,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-two-agents");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
 
         let added = state.handle(req(
             "agent.add",
@@ -38976,7 +38983,7 @@ mod tests {
         ));
         assert_eq!(added["ok"], true, "{added:?}");
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
-        assert_ne!(second_agent, first_agent);
+        assert_ne!(second_agent, primary_agent);
         assert!(second_agent.starts_with("agent-"), "{second_agent}");
         assert_eq!(added["result"]["agent"]["ordinal"], 2);
         assert_eq!(added["result"]["agent"]["provider"], "codex");
@@ -38985,7 +38992,7 @@ mod tests {
         let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
         let agents = listed["result"]["agents"].as_array().unwrap();
         assert_eq!(agents.len(), 2, "{listed:?}");
-        assert_eq!(agents[0]["id"], first_agent);
+        assert_eq!(agents[0]["id"], primary_agent);
         assert_eq!(agents[1]["id"], second_agent);
 
         // The rail renders from the entity's row, so the strip has to ride the
@@ -39067,12 +39074,12 @@ mod tests {
     fn agent_remove_takes_an_added_agent_back_off_the_branch() {
         let (dir, repo) = init_repo();
         let run_id;
-        let first_agent;
+        let primary_agent;
         let second_agent;
         {
             let mut state = qa_state(&repo, dir.path());
             run_id = adopted_run(&mut state, &repo, dir.path(), "feature-remove-agent");
-            first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+            primary_agent = primary_agent_id(&state, &run_id);
             let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
             assert_eq!(added["ok"], true, "{added:?}");
             second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
@@ -39101,7 +39108,7 @@ mod tests {
             // The rail repaints from the answer, so it carries what is left.
             let left = removed["result"]["agents"].as_array().unwrap();
             assert_eq!(left.len(), 1, "{removed:?}");
-            assert_eq!(left[0]["id"], first_agent);
+            assert_eq!(left[0]["id"], primary_agent);
             assert_eq!(left[0]["ordinal"], 1);
 
             let listed = state.handle(req("agent.list", json!({ "entity_id": run_id })));
@@ -39132,7 +39139,7 @@ mod tests {
         let listed = reloaded.handle(req("agent.list", json!({ "entity_id": run_id })));
         let agents = listed["result"]["agents"].as_array().unwrap();
         assert_eq!(agents.len(), 1, "the removal was persisted: {listed:?}");
-        assert_eq!(agents[0]["id"], first_agent);
+        assert_eq!(agents[0]["id"], primary_agent);
     }
 
     /// `agent.remove` refuses exactly what `agent.add` refuses: an unknown
@@ -39143,7 +39150,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-remove-all");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
         let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
 
@@ -39170,7 +39177,7 @@ mod tests {
         // remove there, only an issue to abandon.
         let plan = state.handle(req("plan.create", json!({ "goal": "one agent only" })));
         let plan_id = plan_id_of(&plan);
-        let issue_agent = state.plans[&plan_id].agents.primary().unwrap().id.clone();
+        let issue_agent = primary_agent_id(&state, &plan_id);
         let issue = state.handle(req(
             "agent.remove",
             json!({ "entity_id": plan_id, "agent_id": issue_agent }),
@@ -39186,7 +39193,7 @@ mod tests {
         // place; then that one goes too, and the branch survives with none.
         let primary_gone = state.handle(req(
             "agent.remove",
-            json!({ "entity_id": run_id, "agent_id": first_agent }),
+            json!({ "entity_id": run_id, "agent_id": primary_agent }),
         ));
         assert_eq!(primary_gone["ok"], true, "{primary_gone:?}");
         assert_eq!(
@@ -39218,7 +39225,7 @@ mod tests {
         let roster = &state.runs[&run_id].agents;
         assert_eq!(roster.len(), 1, "the post minted exactly one agent");
         let minted = roster.primary().unwrap();
-        assert_ne!(minted.id, first_agent);
+        assert_ne!(minted.id, primary_agent);
         assert_ne!(minted.id, second_agent);
         assert_eq!(
             minted.resume_session_id, None,
@@ -39244,7 +39251,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-retire");
-        let first_agent = state.lock().unwrap().runs["run-retire"]
+        let primary_agent = state.lock().unwrap().runs["run-retire"]
             .agents
             .primary()
             .unwrap()
@@ -39253,7 +39260,7 @@ mod tests {
         let added = call(&handler, "agent.add", json!({ "entity_id": "run-retire" }));
         assert_eq!(added["ok"], true, "{added:?}");
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
-        for agent_id in [&first_agent, &second_agent] {
+        for agent_id in [&primary_agent, &second_agent] {
             let started = call(
                 &handler,
                 "agent.start",
@@ -39278,7 +39285,7 @@ mod tests {
                 "the removed agent's PTY is gone"
             );
             assert!(
-                s.tabs.contains_key(&TabKey::agent(&root, &first_agent)),
+                s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)),
                 "the agent beside it kept running"
             );
             assert!(
@@ -39286,7 +39293,7 @@ mod tests {
                 "and its capability with it: {:?}",
                 s.mcp_session_tokens
             );
-            assert!(s.mcp_session_tokens.contains_key(&first_agent));
+            assert!(s.mcp_session_tokens.contains_key(&primary_agent));
             assert_eq!(s.runs["run-retire"].agents.len(), 1);
         }
         assert!(process_reaped(pid), "the harness must be killed AND reaped");
@@ -39302,7 +39309,7 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-unread");
         let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
 
         // The human has read everything that exists so far.
         state.handle(req("entity.seen", json!({ "entity_id": run_id })));
@@ -39310,7 +39317,7 @@ mod tests {
         assert_eq!(view["result"]["unread_count"], 0, "{view:?}");
 
         // Each agent says something; both are attention-class.
-        for agent_id in [&first_agent, &second_agent] {
+        for agent_id in [&primary_agent, &second_agent] {
             let mut run = state.take_run(&run_id).unwrap();
             run.agents
                 .resolve_mut(Some(agent_id))
@@ -39344,7 +39351,7 @@ mod tests {
                 .map(|digest| digest["unread_count"].as_u64().unwrap())
                 .unwrap()
         };
-        assert_eq!(unread_of(&first_agent), 1);
+        assert_eq!(unread_of(&primary_agent), 1);
         assert_eq!(unread_of(&second_agent), 0);
     }
 
@@ -39359,7 +39366,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-window");
-        let agent_id = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &run_id);
         state.handle(req("entity.seen", json!({ "entity_id": run_id })));
 
         // One message that calls the human, then enough conversation after it
@@ -39427,7 +39434,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-pair");
-        let first_agent = state.lock().unwrap().runs["run-pair"]
+        let primary_agent = state.lock().unwrap().runs["run-pair"]
             .agents
             .primary()
             .unwrap()
@@ -39440,7 +39447,7 @@ mod tests {
         let one = call(&handler, "agent.start", json!({ "id": "run-pair" }));
         assert_eq!(one["ok"], true, "{one:?}");
         assert_eq!(
-            one["result"]["agent_id"], first_agent,
+            one["result"]["agent_id"], primary_agent,
             "the default is the first agent"
         );
         let two = call(
@@ -39452,7 +39459,7 @@ mod tests {
         assert_ne!(two["result"]["term_id"], one["result"]["term_id"]);
 
         let s = state.lock().unwrap();
-        assert!(s.tabs.contains_key(&TabKey::agent(&root, &first_agent)));
+        assert!(s.tabs.contains_key(&TabKey::agent(&root, &primary_agent)));
         assert!(s.tabs.contains_key(&TabKey::agent(&root, &second_agent)));
         assert_eq!(
             s.tabs.keys().filter(|key| key.is_agent()).count(),
@@ -39460,9 +39467,9 @@ mod tests {
             "the one-agent-per-worktree rule is gone for branches"
         );
         let tokens = &s.mcp_session_tokens;
-        assert!(tokens.contains_key(&first_agent), "{tokens:?}");
+        assert!(tokens.contains_key(&primary_agent), "{tokens:?}");
         assert!(tokens.contains_key(&second_agent), "{tokens:?}");
-        assert_ne!(tokens[&first_agent], tokens[&second_agent]);
+        assert_ne!(tokens[&primary_agent], tokens[&second_agent]);
         // Each agent's harness reports through its own config file.
         assert!(root
             .join(crate::orchestrator::mcp_config_path(&second_agent))
@@ -39496,12 +39503,12 @@ mod tests {
         branch: &str,
     ) -> (String, String, String) {
         let run_id = adopted_run(state, repo, dir, branch);
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(state, &run_id);
         let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
         assert_eq!(added["ok"], true, "{added:?}");
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
         for (agent_id, body) in [
-            (&first_agent, "first-agent-marker"),
+            (&primary_agent, "first-agent-marker"),
             (&second_agent, "second-agent-marker"),
         ] {
             let posted = state.handle(req(
@@ -39510,7 +39517,7 @@ mod tests {
             ));
             assert_eq!(posted["ok"], true, "{posted:?}");
         }
-        (run_id, first_agent, second_agent)
+        (run_id, primary_agent, second_agent)
     }
 
     /// A detail poll answers with the conversation of the agent it named. The
@@ -39521,7 +39528,7 @@ mod tests {
     fn a_detail_poll_answers_with_the_named_agents_conversation() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let (run_id, first_agent, second_agent) =
+        let (run_id, primary_agent, second_agent) =
             branch_with_two_conversations(&mut state, &repo, dir.path(), "feature-two-threads");
 
         // Named nothing: the conversation every surface before the rail asked
@@ -39535,7 +39542,7 @@ mod tests {
 
         let first_view = state.handle(req(
             "run.get",
-            json!({ "run_id": run_id, "agent_id": first_agent }),
+            json!({ "run_id": run_id, "agent_id": primary_agent }),
         ));
         assert_eq!(
             thread_bodies(&first_view["result"]["thread"]),
@@ -39629,7 +39636,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-bounded-branch");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
         let held = {
             let active = state.runs.get_mut(&run_id).unwrap();
             for turn in 0..250 {
@@ -39643,7 +39650,7 @@ mod tests {
         };
         let project_id = state.projects[0].id.clone();
 
-        for scope in [json!({}), json!({ "agent_id": first_agent })] {
+        for scope in [json!({}), json!({ "agent_id": primary_agent })] {
             let mut params = json!({
                 "project_id": project_id,
                 "branch": "feature-bounded-branch",
@@ -39725,7 +39732,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let issue = state.handle(req("plan.create", json!({ "goal": "one conversation" })));
         let issue_id = plan_id_of(&issue);
-        let agent_id = state.plans[&issue_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &issue_id);
 
         let named = state.handle(req(
             "issue.get",
@@ -39761,7 +39768,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "review with two agents");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
         let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
         let second_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
 
@@ -39800,7 +39807,7 @@ mod tests {
             .last()
             .expect("a change request is a turn");
         assert_eq!(queued.agent_id, second_agent);
-        assert_ne!(queued.agent_id, first_agent);
+        assert_ne!(queued.agent_id, primary_agent);
         let delivered =
             state.cold_prompt_with_catch_up(&queued.owner, &queued.agent_id, &queued.cold);
         assert!(
@@ -39829,7 +39836,7 @@ mod tests {
         );
         assert_eq!(
             state.pending_agent_turns.last().unwrap().agent_id,
-            first_agent
+            primary_agent
         );
 
         let unknown = state.handle(req(
@@ -40974,7 +40981,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-in-flight");
-        let first_agent = state.runs[&run_id].agents.primary().unwrap().id.clone();
+        let primary_agent = primary_agent_id(&state, &run_id);
         let worktree = state.runs[&run_id].worktree.path.clone();
 
         let dispatched = state.handle(req(
@@ -40993,7 +41000,7 @@ mod tests {
         assert_eq!(result["branch"], "feature-in-flight", "{result:?}");
         let agent_id = result["agent_id"].as_str().unwrap().to_string();
         assert_ne!(
-            agent_id, first_agent,
+            agent_id, primary_agent,
             "a dispatch never joins a conversation"
         );
 
@@ -41905,7 +41912,7 @@ mod tests {
             )
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-        let agent_id = state.plans[&issue_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &issue_id);
         let key = TabKey::agent(&AppState::canonical_root(&repo), &agent_id);
 
         // The turn from the route is still queued.
@@ -42293,7 +42300,7 @@ mod tests {
     fn an_answer_re_fires_the_router_with_the_answer_in_hand() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let (capture_id, first_agent) = captured(&mut state, "make the thing faster");
+        let (capture_id, primary_agent) = captured(&mut state, "make the thing faster");
         state
             .on_router_mcp_action(
                 &capture_id,
@@ -42331,7 +42338,7 @@ mod tests {
 
         let session = state.router_sessions[&capture_id].clone();
         assert_ne!(
-            session.agent_id, first_agent,
+            session.agent_id, primary_agent,
             "a fresh session decides again"
         );
         let turn = state
@@ -42489,7 +42496,7 @@ mod tests {
             )
             .unwrap();
         let guessed = filed["issue_id"].as_str().unwrap().to_string();
-        let agent_id = state.plans[&guessed].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &guessed);
         assert!(
             state
                 .pending_agent_turns
@@ -42549,7 +42556,7 @@ mod tests {
             )
             .unwrap();
         let issue_id = filed["issue_id"].as_str().unwrap().to_string();
-        let agent_id = state.plans[&issue_id].agents.primary().unwrap().id.clone();
+        let agent_id = primary_agent_id(&state, &issue_id);
         // The user opened it and said something: no longer a guess nobody read.
         let spoken_to = state.handle(req(
             "thread.post",
@@ -42658,7 +42665,7 @@ mod tests {
     fn a_reroute_with_no_destination_re_fires_the_router() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let (capture_id, first_agent) = captured(&mut state, "ship it");
+        let (capture_id, primary_agent) = captured(&mut state, "ship it");
         state.on_router_done(
             &capture_id,
             DoneReport {
@@ -42674,7 +42681,7 @@ mod tests {
         let retried = state.handle(req("capture.reroute", json!({ "capture_id": capture_id })));
         assert_eq!(retried["ok"], true, "{retried:?}");
         assert_eq!(retried["result"]["state"], "routing");
-        assert_ne!(state.router_sessions[&capture_id].agent_id, first_agent);
+        assert_ne!(state.router_sessions[&capture_id].agent_id, primary_agent);
         assert!(state
             .pending_agent_turns
             .iter()

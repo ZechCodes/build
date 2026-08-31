@@ -4960,19 +4960,7 @@ impl AppState {
         let mut issue = issue_id
             .as_ref()
             .and_then(|issue_id| self.plans.remove(issue_id));
-        let conversation = match issue.as_mut() {
-            Some(issue) => &mut issue.agents.sole_mut().thread,
-            // The report came from an agent of this run, so the door mints
-            // nobody here — going through it is what keeps a report from being
-            // dropped on a roster somebody emptied mid-turn.
-            None => {
-                let choice = active.model_choice.clone();
-                &mut active
-                    .agents
-                    .ensure_primary(run_id, choice, &now_rfc3339())
-                    .thread
-            }
-        };
+        let conversation = run_report_conversation(run_id, &mut active, issue.as_mut());
         record_report_in_thread(
             conversation,
             &report_for_thread,
@@ -5285,30 +5273,15 @@ impl AppState {
         if let Err(e) = &outcome {
             eprintln!("on_agent_done {run_id}: {e}");
         }
-        // The Issue's thread when there is one: that is the conversation a
-        // planned run's surfaces render, and a report written to the run's own
-        // thread would never be seen.
         record_report_in_thread(
-            match plan.as_mut() {
-                Some(plan) => &mut plan.agents.sole_mut().thread,
-                // The report came from an agent of this run, so the door mints
-                // nobody here — going through it is what keeps a report from being
-                // dropped on a roster somebody emptied mid-turn.
-                None => {
-                    let choice = active.model_choice.clone();
-                    &mut active
-                        .agents
-                        .ensure_primary(run_id, choice, &now_rfc3339())
-                        .thread
-                }
-            },
+            run_report_conversation(run_id, &mut active, plan.as_mut()),
             &report_for_thread,
             outcome.as_ref().err().map(String::as_str),
         );
         if outcome.is_ok() {
             if let (Some(pid), Some(plan_ref)) = (plan_id.as_deref(), plan.as_mut()) {
                 if let Some(contents) = self.plan_revision_contents(pid, plan_ref) {
-                    plan_ref.agents.sole_mut().thread.add_revision(
+                    plan_ref.agents.sole_thread_mut().add_revision(
                         crate::thread::ArtifactKind::Plan,
                         &contents,
                         &now_rfc3339(),
@@ -17049,6 +17022,30 @@ fn triage_override_summary(
 enum ReportRecord {
     Outcome(crate::thread::MessageOutcome, String),
     Event(crate::thread::ThreadEventKind, String),
+}
+
+/// The conversation a RUN's report is written on: the owning Issue's when the
+/// run is a planned one — that is the conversation its surfaces render, and a
+/// report on the run's own thread would never be seen — else the run's own.
+///
+/// The run's own is reached through the mint door: the report came from an
+/// agent of this run, so it must land somewhere even if the human emptied the
+/// roster mid-turn.
+fn run_report_conversation<'a>(
+    run_id: &str,
+    active: &'a mut ActiveRun,
+    issue: Option<&'a mut ActivePlan>,
+) -> &'a mut crate::thread::Thread {
+    match issue {
+        Some(issue) => issue.agents.sole_thread_mut(),
+        None => {
+            let choice = active.model_choice.clone();
+            &mut active
+                .agents
+                .ensure_primary(run_id, choice, &now_rfc3339())
+                .thread
+        }
+    }
 }
 
 fn record_report_in_thread(

@@ -390,7 +390,7 @@ impl ActivePlan {
     /// Open comments on one stage, insertion order. Read off the Issue
     /// conversation, where the comments live as posts.
     pub fn open_comments_for(&self, stage_id: &str) -> Vec<DocComment> {
-        self.agents.sole().thread.open_doc_comments_for(stage_id)
+        self.agents.sole_thread().open_doc_comments_for(stage_id)
     }
 }
 
@@ -912,8 +912,7 @@ impl Orchestrator {
         let now = crate::store::now_rfc3339();
         let mut agents = AgentRoster::with_first(&plan.id.0, model_choice.clone(), &now);
         agents
-            .sole_mut()
-            .thread
+            .sole_thread_mut()
             .post_user(plan.goal.clone(), None, &now);
         ActivePlan {
             plan,
@@ -952,8 +951,7 @@ impl Orchestrator {
         // being started to answer, so the dispatch reads all of it.
         let _ = active
             .agents
-            .sole_mut()
-            .thread
+            .sole_thread_mut()
             .read_unread(&crate::store::now_rfc3339());
         let prompt = self.render_plan(&self.templates.plan, active, "");
         Ok(AgentTurn::dispatched(prompt, "plan"))
@@ -1122,8 +1120,7 @@ impl Orchestrator {
                 if !answers_this_stage
                     || !active
                         .agents
-                        .sole_mut()
-                        .thread
+                        .sole_thread_mut()
                         .resolve_doc_comment(&resolution.comment_id, &resolution.response)
                 {
                     eprintln!(
@@ -2646,8 +2643,7 @@ impl Orchestrator {
                 if !answers_this_stage
                     || !plan
                         .agents
-                        .sole_mut()
-                        .thread
+                        .sole_thread_mut()
                         .resolve_doc_comment(&resolution.comment_id, &resolution.response)
                 {
                     eprintln!(
@@ -3175,8 +3171,7 @@ mod tests {
     /// One comment as the conversation now holds it.
     fn comment_by_id(plan: &ActivePlan, comment_id: &str) -> crate::thread::DocComment {
         plan.agents
-            .sole()
-            .thread
+            .sole_thread()
             .doc_comments()
             .into_iter()
             .find(|comment| comment.id == comment_id)

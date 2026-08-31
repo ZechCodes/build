@@ -202,6 +202,17 @@ impl AgentRoster {
         self.primary_mut().expect(ISSUE_HOLDS_ITS_ONE_AGENT)
     }
 
+    /// An issue's conversation. Almost every caller of [`sole`](Self::sole)
+    /// wants the thread rather than the agent around it, so the walk is named
+    /// once here instead of being spelled out at each of them.
+    pub fn sole_thread(&self) -> &Thread {
+        &self.sole().thread
+    }
+
+    pub fn sole_thread_mut(&mut self) -> &mut Thread {
+        &mut self.sole_mut().thread
+    }
+
     /// The agent the system delivers to: the primary, or a freshly minted one
     /// when the human has left nobody here.
     ///

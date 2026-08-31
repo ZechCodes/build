@@ -824,6 +824,7 @@ fn tracing_protocol_error(err: &RelayError) {
 mod dispatcher_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc as blocking_channel;
     use std::sync::Mutex;
 
     fn request(id: u64, method: &str, params: Value) -> Frame {
@@ -850,14 +851,76 @@ mod dispatcher_tests {
         SessionSender::decrypt_push(key, &message)
     }
 
+    /// How long a test waits for something it expects to happen. Generous on
+    /// purpose: these tests assert an order of events, never a speed, so the
+    /// deadline only has to outlast a loaded machine.
+    const PATIENTLY: Duration = Duration::from_secs(10);
+
+    /// The test half of a handler gate. A gated handler announces that it is
+    /// running and then blocks until [`HandlerGate::release`] lets it go, so a
+    /// test can say "the other frame overtook this one" as a fact about order
+    /// rather than a bet on wall-clock time.
+    struct HandlerGate {
+        held: blocking_channel::Receiver<()>,
+        release: blocking_channel::Sender<()>,
+    }
+
+    /// The handler half of a gate, captured by the handler closure.
+    struct GatedHandler {
+        held: blocking_channel::SyncSender<()>,
+        release: Mutex<blocking_channel::Receiver<()>>,
+    }
+
+    impl HandlerGate {
+        fn new() -> (Self, GatedHandler) {
+            let (held_tx, held_rx) = blocking_channel::sync_channel(1);
+            let (release_tx, release_rx) = blocking_channel::channel();
+            (
+                HandlerGate {
+                    held: held_rx,
+                    release: release_tx,
+                },
+                GatedHandler {
+                    held: held_tx,
+                    release: Mutex::new(release_rx),
+                },
+            )
+        }
+
+        /// Block until the gated handler is running. Fails the test rather than
+        /// hanging it if the dispatcher never gets there.
+        fn wait_until_held(&self) {
+            self.held
+                .recv_timeout(PATIENTLY)
+                .expect("the gated handler is running");
+        }
+
+        fn release(&self) {
+            self.release
+                .send(())
+                .expect("the gated handler is waiting to be released");
+        }
+    }
+
+    impl GatedHandler {
+        /// Occupy this worker until the test releases us.
+        fn hold(&self) {
+            self.held.send(()).expect("the test is still watching");
+            // Only ever one frame is held at a time, so blocking while holding
+            // the lock is the point: the worker running us stays occupied.
+            let _ = self.release.lock().unwrap().recv();
+        }
+    }
+
     /// The incident in one test: a handler that takes seconds must not keep the
     /// next frame from being handled. Frames are dispatched from one task (as the
     /// read loop does), so a stall here is a stall of the socket.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_slow_handler_does_not_hold_up_the_next_frame() {
-        let handler: FrameHandler = Arc::new(|_sender, frame| {
+        let (gate, gated) = HandlerGate::new();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
             if frame.payload["method"] == "slow" {
-                std::thread::sleep(Duration::from_millis(750));
+                gated.hold();
             }
             json!({ "id": frame.payload["id"], "ok": true })
         });
@@ -872,20 +935,20 @@ mod dispatcher_tests {
         dispatcher
             .dispatch(fast_sender, request(2, "fast", json!({})))
             .await;
+        gate.wait_until_held();
 
-        let fast = next_push(&mut fast_rx, &fast_key, Duration::from_millis(250)).await;
+        let fast = next_push(&mut fast_rx, &fast_key, PATIENTLY).await;
         assert_eq!(
             fast["id"], 2,
             "the fast frame answered while the slow one ran"
         );
         assert!(
-            tokio::time::timeout(Duration::from_millis(10), slow_rx.recv())
-                .await
-                .is_err(),
+            slow_rx.try_recv().is_err(),
             "the slow handler is still running — this is what the fast frame overtook"
         );
 
-        let slow = next_push(&mut slow_rx, &slow_key, Duration::from_secs(5)).await;
+        gate.release();
+        let slow = next_push(&mut slow_rx, &slow_key, PATIENTLY).await;
         assert_eq!(slow["id"], 1, "the slow frame still gets its answer");
     }
 
@@ -896,12 +959,13 @@ mod dispatcher_tests {
     async fn frames_for_one_terminal_keep_their_order() {
         let seen: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
+        let (gate, gated) = HandlerGate::new();
         let handler: FrameHandler = Arc::new(move |_sender, frame| {
             let id = frame.payload["id"].as_u64().unwrap_or_default();
-            // The first frame is the slow one: without a serial lane the ones
+            // The first frame is the held one: without a serial lane the ones
             // behind it would finish first and record out of order.
             if id == 0 {
-                std::thread::sleep(Duration::from_millis(300));
+                gated.hold();
             }
             recorder.lock().unwrap().push(id);
             json!({ "id": id, "ok": true })
@@ -918,7 +982,7 @@ mod dispatcher_tests {
                 .await;
         }
         // A second terminal is a second lane: it answers without waiting for the
-        // slow frame ahead of it on the first.
+        // held frame ahead of it on the first.
         let (other, mut other_rx, other_key) = SessionSender::observable("s-1");
         dispatcher
             .dispatch(
@@ -926,14 +990,21 @@ mod dispatcher_tests {
                 request(99, "term.input", json!({ "term_id": "term-2" })),
             )
             .await;
-        let overtaking = next_push(&mut other_rx, &other_key, Duration::from_millis(200)).await;
+        gate.wait_until_held();
+
+        let overtaking = next_push(&mut other_rx, &other_key, PATIENTLY).await;
         assert_eq!(
             overtaking["id"], 99,
             "a different terminal runs concurrently"
         );
+        assert!(
+            rx.try_recv().is_err(),
+            "nothing on the first terminal answered past the frame that is still running"
+        );
 
+        gate.release();
         for id in 0..12u64 {
-            let answered = next_push(&mut rx, &key, Duration::from_secs(5)).await;
+            let answered = next_push(&mut rx, &key, PATIENTLY).await;
             assert_eq!(answered["id"], id, "responses come back in order");
         }
         let on_the_lane: Vec<u64> = seen

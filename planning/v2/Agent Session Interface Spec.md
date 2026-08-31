@@ -8,7 +8,7 @@ resumes by name and a brand-new agent record starts fresh (see §10)
 **Last updated:** August 30, 2026
 **Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
 (step 10); `build/background-visibility` (step 11, specified);
-`build/new-agent-flow` (step 14, specified)
+`build/new-agent-flow` (step 14, specified); `build/chat-polish` (step 15)
 
 ---
 
@@ -3991,6 +3991,20 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, step 15's SPA half built.** As specified, with three additions
+  the build found. `syncValues` (`assignmentOverlay.js`) writes the held
+  assignment back over the painted markup, so a stored `"claude"` emptied the
+  Provider select the narrowing had just clamped — a select is now only handed
+  a value one of its options carries, which is the same "the offer is where it
+  clamps" rule the panel markup follows. The `+` bubble
+  (`agentRail.pressAddBubble`) spends the browser-local agent defaults
+  straight on the wire and was the one create path that could still dispatch
+  the carrier no surface offers; it takes `chosenProviderId` over the narrowed
+  catalog, guarded so an empty preference still sends no `provider` at all. And
+  the Default agent panel's copy gained one sentence — choosing Claude Code TUI
+  there is what gives a new Claude Code agent a terminal of its own — because
+  the two-card offer leaves that select as the only screen that can say it; the
+  control itself is untouched, and "headless" stays unsaid.
 - **2026-08-31, step 15 specified — a row is its content, and two agents to
   choose from** (branch `build/chat-polish`). Two screenshots showed the kind
   labels eating the activity lines and the three-card new-agent view putting a

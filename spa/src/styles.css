@@ -1062,8 +1062,9 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
    working rather than the agent speaking, and it arrives hundreds of items to a
    session, so the row is shut, smaller and dimmer than the lifecycle events
    beside it: one line the reader scans past, opening onto the whole of what was
-   said only when they ask for it. The preview is the summary's first line and
-   is dropped once the fold is open, where the detail says it in full. */
+   said only when they ask for it. The line is the summary's first line — no
+   label in front of it, since the icon carries the kind — and it is dropped
+   once the fold is open, where the detail says it in full. */
 .thread-activity { min-height:24px; padding-top:1px; padding-bottom:1px; font-size:11.5px; }
 .thread-activity-head { display:flex; align-items:baseline; gap:7px; min-width:0; cursor:pointer;
   list-style:none; }

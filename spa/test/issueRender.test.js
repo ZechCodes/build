@@ -12,6 +12,7 @@ import {
   docCommentCardHtml,
   docMarkerParts,
 } from "../src/core/issueRender.js";
+import { implementParams } from "../src/core/issueModel.js";
 
 const issue = (overrides = {}) => ({
   issue_id: "issue-1",
@@ -172,6 +173,48 @@ describe("assignmentPanelHtml", () => {
     expect(html).not.toContain('id="assignbase"');
     expect(html).toContain('value="wt-1" selected');
     expect(html).toContain("feature-y");
+  });
+});
+
+// The panel paints an offer of two agents, and the dispatch it sits above has
+// to send the one it painted: a select saying "Claude Code" that creates a TUI
+// agent is the mismatch this pair exists to catch.
+describe("the assignment's agent select and the dispatch under it", () => {
+  const threeHarnesses = {
+    default_provider: "claude_adk",
+    providers: [
+      {
+        id: "claude_adk",
+        label: "Claude Code",
+        models: [{ id: "opus", label: "Opus", supports_effort: true }],
+        efforts: ["high"],
+      },
+      { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
+      { id: "codex", label: "Codex", models: [], efforts: [] },
+    ],
+  };
+  const stale = { ...assignment, provider: "claude", model: "opus", effort: "high" };
+
+  it("offers the two agents, painting a stale carrier as the one it clamps to", () => {
+    const html = assignmentPanelHtml({ assignment: stale, catalog: threeHarnesses });
+    expect(html).toContain('<option value="claude_adk" selected>Claude Code</option>');
+    expect(html).toContain('<option value="codex">Codex</option>');
+    expect(html).not.toContain("Claude Code TUI");
+  });
+
+  it("dispatches the agent the select painted, not the stale token behind it", () => {
+    expect(implementParams("issue-1", stale, { catalog: threeHarnesses })).toEqual({
+      issue_id: "issue-1",
+      provider: "claude_adk",
+      model: "opus",
+      effort: "high",
+    });
+  });
+
+  it("leaves a dispatch that named no agent on the harness's own default", () => {
+    expect(implementParams("issue-1", { ...assignment, provider: "" }, { catalog: threeHarnesses })).toEqual({
+      issue_id: "issue-1",
+    });
   });
 });
 

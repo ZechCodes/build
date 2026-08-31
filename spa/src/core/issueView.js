@@ -413,7 +413,7 @@ export function mountIssueView(
           throw new Error("cancelled");
         const result = await guarded(() =>
           callRpc("issue.implement_all", {
-            ...implementParams(issueId, assignment, { models: providerModels() }),
+            ...implementParams(issueId, assignment, { catalog }),
             ...MUTATION_THREAD_PAGE,
           }),
         );
@@ -431,12 +431,6 @@ export function mountIssueView(
       gone = true;
       onGone();
     });
-  };
-
-  const providerModels = () => {
-    const providers = (catalog && catalog.providers) || [];
-    const entry = providers.find((provider) => provider.id === assignment.provider) || providers[0];
-    return (entry && entry.models) || [];
   };
 
   /** The rail's assignment line: one row saying what the handoff would be, which
@@ -556,7 +550,7 @@ export function mountIssueView(
     bindAction(viewerHost.querySelector("#implementstage"), "starting…", async () => {
       const result = await guarded(() =>
         callRpc("issue.implement_stage", {
-          ...implementParams(issueId, assignment, { models: providerModels(), stageId: stage.id }),
+          ...implementParams(issueId, assignment, { catalog, stageId: stage.id }),
           ...MUTATION_THREAD_PAGE,
         }),
       );

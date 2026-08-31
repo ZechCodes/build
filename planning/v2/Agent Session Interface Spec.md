@@ -3723,7 +3723,14 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
      of the fallback chain, ending in a hardcoded token — becomes
      `chosenProviderId(full, assignment)`, imported from `agentChoice.js`,
      which imports only `text.js` and `modelPicker.js`, so no cycle;
-  6. **the Agent defaults panel** (`views/settings.js:140`):
+  6. **that select's own dispatch** (`implementParams`, `issueModel.js:241`,
+     called from `issueView.js:416/553`): takes the catalog the panel painted
+     from instead of a pre-picked models array and delegates to
+     `agentChoiceParams(normalizeModelCatalog(catalog), assignment)`, so the
+     Implement send carries the CLAMPED id for the same reason item 4 does.
+     `issueView`'s `providerModels` — a fourth hand-rolled provider lookup,
+     and the one that kept the stale token alive on this path — goes with it;
+  7. **the Agent defaults panel** (`views/settings.js:140`):
      `const offered = creatableCatalog(catalog)` replaces the spread plus
      filter.
 - **A stored preference naming the other claude carrier clamps, through code
@@ -3759,7 +3766,8 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
 | clipping | `one_line` / `TOOL_SUMMARY_LIMIT` | tool summaries, task rows, unchanged |
 | a task row's ending words | `ended_summary` | the terminal patch and the terminal notification |
 | the two-agent list | `creatableAgents` (`modelPicker.js`) | `creatableCatalog`, and nothing else calls it directly |
-| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, issue assignment, Agent defaults panel |
+| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, issue assignment AND its Implement dispatch, Agent defaults panel |
+| a choice as create/dispatch params | `agentChoiceParams` (`agentChoice.js`) | the compose/toolbar panel AND `implementParams` — one clamp, so no surface can paint one agent and send another |
 | card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the narrowed catalog |
 | offer clamping | `chosenProviderId`'s membership fallback, over the narrowed catalog | rail highlight, panel paint, panel params, issue assignment — three bespoke fallback chains deleted |
 | full label vocabulary | `STARTABLE_PROVIDERS` / `providerLabel` | bubbles, Account select, refusals |
@@ -3848,10 +3856,16 @@ SPA (`npm test`):
    `agentChoiceParams` for that same stale choice sends
    `provider: "claude_adk"` — while a choice with no provider sends no
    `provider` key at all;
-8. the rail's `newAgentChoice` under that same stale `"claude"` highlights the
+8. the same pair for the issue path, asserted together in
+   `test/issueRender.test.js`: the assignment panel paints
+   `value="claude_adk" selected` under a stale `"claude"` and no "Claude Code
+   TUI" option, and `implementParams` for that same assignment sends
+   `provider: "claude_adk"` — an assignment naming no agent still sends no
+   `provider` key;
+9. the rail's `newAgentChoice` under that same stale `"claude"` highlights the
    Claude Code card (one card carries `chosen`, never zero);
-9. the Account select still offers the three distinct names (unchanged), and
-   `providerLabel("claude")` still reads "Claude Code TUI".
+10. the Account select still offers the three distinct names (unchanged), and
+    `providerLabel("claude")` still reads "Claude Code TUI".
 
 **SPA tests this step deletes or rewrites**:
 
@@ -3991,6 +4005,16 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, the issue's Implement dispatch joined the clamp.** Review found
+  the one create path the SPA half missed, which is why the entry below is
+  wrong to call the `+` bubble the last of them: `assignmentPanelHtml` painted
+  the clamped agent while `implementParams` still spent `assignment.provider`
+  raw, so an issue holding `"claude"` under a `claude_adk` account showed
+  "Claude Code" and created a TUI agent on Implement. `implementParams` now
+  takes the catalog the panel paints from and delegates to `agentChoiceParams`,
+  which deletes `issueView`'s `providerModels` — the fourth hand-rolled
+  provider lookup — and leaves one function answering "what does this choice
+  send" for every create surface (§15.3 item 6, §15.5 item 8).
 - **2026-08-31, step 15's SPA half built.** As specified, with three additions
   the build found. `syncValues` (`assignmentOverlay.js`) writes the held
   assignment back over the painted markup, so a stored `"claude"` emptied the

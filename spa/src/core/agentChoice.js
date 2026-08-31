@@ -93,6 +93,9 @@ export function agentChoiceParams(catalog, choice) {
 // and what to.
 
 const MENU_FIELD_SEPARATOR = ":";
+/** What every effort row says about itself. The menu is one list, and this is
+ *  what tells its second half from the models above it. */
+const EFFORT_ROW = "reasoning effort";
 const menuOption = (field, value, label, description, selected) => ({
   id: `${field}${MENU_FIELD_SEPARATOR}${value}`,
   label,
@@ -115,8 +118,8 @@ export function modelMenuOptions(catalog, providerId, choice) {
   const levels = effortLevels(forProvider.efforts, modelInCatalog(models, choice.model));
   return [
     ...rows,
-    menuOption("effort", "", "Default effort", "reasoning effort", !choice.effort),
-    ...levels.map((level) => menuOption("effort", level, level, "reasoning effort", level === choice.effort)),
+    menuOption("effort", "", "Default effort", EFFORT_ROW, !choice.effort),
+    ...levels.map((level) => menuOption("effort", level, level, EFFORT_ROW, level === choice.effort)),
   ];
 }
 

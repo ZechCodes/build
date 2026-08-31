@@ -30597,18 +30597,6 @@ mod tests {
         );
     }
 
-    /// The one agent a stored record carries. Derived from its owner, the way
-    /// the pre-agent migration named it, so `derived_agent_key` finds its tab.
-    fn stored_agents(owner_id: &str) -> Vec<crate::agent::Agent> {
-        vec![crate::agent::Agent::new(
-            crate::agent::derived_agent_id(owner_id),
-            owner_id,
-            ModelChoice::default(),
-            1,
-            "2026-07-01T10:00:00Z",
-        )]
-    }
-
     fn fake_run_record(id: &str) -> PersistedRun {
         PersistedRun {
             id: id.into(),
@@ -30633,7 +30621,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            agents: stored_agents(id),
+            agents: crate::agent::stored_agents(id),
             legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,
@@ -30786,7 +30774,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            agents: stored_agents(id),
+            agents: crate::agent::stored_agents(id),
             legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,
@@ -30820,7 +30808,7 @@ mod tests {
             provider: AgentProvider::Claude,
             model: None,
             effort: None,
-            agents: stored_agents(id),
+            agents: crate::agent::stored_agents(id),
             legacy_thread: crate::thread::Thread::default(),
             last_summary: None,
             last_error: None,

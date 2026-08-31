@@ -380,6 +380,24 @@ pub fn derived_agent_id(owner_id: &str) -> String {
     )
 }
 
+/// The roster a stored record carries, for a test that needs one on a record
+/// it builds by hand. One agent, its id derived from its owner the way the
+/// pre-agent migration named it — so a tab key derived from the owner finds
+/// its session — on the harness defaults.
+///
+/// Records are assembled in both `app`'s and `orchestrator`'s tests, which is
+/// why this stands here rather than in either of them.
+#[cfg(test)]
+pub fn stored_agents(owner_id: &str) -> Vec<Agent> {
+    vec![Agent::new(
+        derived_agent_id(owner_id),
+        owner_id,
+        ModelChoice::default(),
+        1,
+        "2026-07-01T10:00:00Z",
+    )]
+}
+
 /// 128 bits as 26 Crockford base32 characters, most significant first.
 fn crockford_base32(value: u128) -> String {
     let mut out = [b'0'; ULID_LEN];

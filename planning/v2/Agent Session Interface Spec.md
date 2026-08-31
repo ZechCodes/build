@@ -3384,7 +3384,7 @@ it.
 | Need | The one implementation | Reused by |
 |---|---|---|
 | harness options + labels | `STARTABLE_PROVIDERS` (`modelPicker.js`) | new-agent cards, Account select, tests |
-| option markup | `providerOptionsHtml` / `providerCardsHtml` / `providerCardHtml` | Account select / new-agent view |
+| option markup | `providerOptionsHtml` / `providerCardsHtml` | Account select / new-agent view |
 | card→id wiring | `data-provider` + delegated click (the Agent-tab idiom) | new-agent view |
 | menu open/close/outside-press | `mountSplitMenu` (`splitButton.js`) | composer model menu (and the interrupt send, as today) |
 | catalog reads | `catalogForProvider`, `modelInCatalog`, `effortSupported`, `reconcileAgentChoice`, `modelParams` | composer menu, Account defaults panel, issue sheet |
@@ -3614,6 +3614,23 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, step 14 read back for reuse.** Six consolidations, no behaviour
+  moved. Dropping the roster's `Deref` had left 111 sites walking by hand from
+  an entity to the thread its agent owns: `AgentRoster::sole_thread` /
+  `sole_thread_mut` name the walk for an issue, and the tests' `primary_thread`
+  gained the mutable twin the writing sites needed. The choice between the
+  owning Issue's conversation and a run's own — with the mint door for the
+  second — was copied into `on_run_agent_done` and
+  `consume_run_stage_revision`; it is `run_report_conversation` now.
+  `settings_set`'s local holding what `claude_mode` resolved to is named for
+  the harness it carries. On the client, the rail derived the new agent's
+  harness in three separate expressions and now resolves it once;
+  `mountAgentTab`'s internals stopped calling their one Resume button a
+  "picker", and the rail stopped handing its start a provider the pane no
+  longer passes; and the lead card's leftovers went with it —
+  `providerCardHtml` (folded into its only caller), the description slot no
+  caller fills, the disabled-card styling nothing disables, and the
+  `.chooser-head` rule the rail had to override to undo.
 - **2026-08-30, step 14's SPA half built.** As specified, with three naming
   corrections worth recording. The Account panel's module is
   `core/defaultHarness.js` (`defaultHarnessPanelHtml` / `mountDefaultHarness` /

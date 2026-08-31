@@ -49,4 +49,15 @@ export default defineConfig({
     emptyOutDir: true,
     target: "es2022",
   },
+  test: {
+    // The DOM suites open with `await import("../src/app.js")`, which makes
+    // the worker transform and execute the whole client module graph before
+    // the first assertion. That is work, not waiting — and with the suite's
+    // files running in parallel on a busy machine the work alone outran
+    // vitest's 10 s hook / 5 s test defaults, failing a different handful of
+    // files on every run. The budgets below are sized for the work so a
+    // timeout means something is genuinely stuck.
+    hookTimeout: 60_000,
+    testTimeout: 20_000,
+  },
 });

@@ -467,13 +467,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-body .thread-title { display:none; }
 .rail-body .thread-revision-view { margin-left:0; }
 /* Where the conversation would be, on a branch that has no agent yet: which
-   agent to start one on. The cards stack — the rail is a column 400px wide,
-   and three names side by side would each be an initial — and the question
-   above them is said out loud here, unlike in a sheet whose field label
-   already asks it. */
+   agent to start one on. Only the layout is said here — the cards stack,
+   because the rail is a column 400px wide and three names side by side would
+   each be an initial. How a card looks is the picker's own (styles.css). */
 .rail-newagent { display:flex; height:100%; align-items:center; justify-content:center; }
 .rail-newagent .chooser { width:100%; }
-.rail-newagent .chooser-head { display:block; color:var(--dim); font-size:12.5px; text-align:center; }
 .rail-newagent .chooser-cards { flex-direction:column; }
 
 /* The pinned box. Out of the scroll entirely, so its bottom edge is the

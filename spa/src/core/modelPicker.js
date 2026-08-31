@@ -46,23 +46,19 @@ export function providerOptionsHtml(providers, selectedId) {
     .join("");
 }
 
-/** Pure: one provider as a picker card — a real button carrying its id, so a
- *  click reads the answer straight off `dataset.provider`. */
-export function providerCardHtml(provider, { selected = false } = {}) {
-  return `<button class="chooser-card${selected ? " chosen" : ""}" type="button" data-provider="${esc(provider.id)}">
-          <span class="chooser-card-label">${esc(provider.label)}</span>${
-            provider.description ? `<span class="chooser-card-desc">${esc(provider.description)}</span>` : ""
-          }
-        </button>`;
-}
-
-/** Pure: the providers as a card picker. Used where the choice is made BEFORE
- *  the thing it configures exists — the new-worktree sheet, and the chat tab of
- *  a work item with no agent — so there is nothing yet to hang a `<select>`
- *  off. `selectedId` marks the chosen card. */
+/** Pure: the harnesses as a card picker. Used where the choice is made BEFORE
+ *  the thing it configures exists — the chat tab of a work item with no agent —
+ *  so there is nothing yet to hang a `<select>` off. Each card is a real button
+ *  carrying its id, so a press reads the answer straight off
+ *  `dataset.provider`; `selectedId` marks the chosen one. */
 export function providerCardsHtml(providers, selectedId) {
   const cards = (providers || [])
-    .map((provider) => providerCardHtml(provider, { selected: provider.id === selectedId }))
+    .map(
+      (provider) =>
+        `<button class="chooser-card${provider.id === selectedId ? " chosen" : ""}" type="button" data-provider="${esc(provider.id)}">
+          <span class="chooser-card-label">${esc(provider.label)}</span>
+        </button>`,
+    )
     .join("");
   return `<div class="chooser">
     <div class="chooser-head">Which agent works here?</div>

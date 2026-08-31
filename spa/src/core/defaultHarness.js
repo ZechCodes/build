@@ -14,7 +14,7 @@
 import { providerOptionsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
 
 /** What a bridge that has never been told means. */
-export const DEFAULT_HARNESS = STARTABLE_PROVIDERS[0].id;
+const DEFAULT_HARNESS = STARTABLE_PROVIDERS[0].id;
 
 /** The words a bridge that predates `default_harness` speaks, both ways. Only
  *  the two claude harnesses are sayable in them — a bridge that old has no

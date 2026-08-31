@@ -3596,7 +3596,12 @@ collapsed run line — is its content:
   `{description} — failed: {error}` (`ended_summary`, `adk.rs:1137`). The
   notification row (`{description}: {said}`, `adk.rs:853`) is already
   description-first and is untouched. Rows persisted in the old wording
-  render forever as minted, same rule as tool summaries.
+  render forever as minted, same rule as tool summaries. Every test that
+  spelled the old words moves with the mint — the seven fixture legs, the live
+  `#[ignore]`d background-task leg whose `task_rows` helper matches on a
+  `started — ` PREFIX, and `task_description`'s doc comment — all named in
+  §15.5, because a wording flip that leaves a hand-run test hanging is a broken
+  test nobody sees fail.
 - **Non-activity events are untouched.** `session_started`, `committed`,
   `done` and the rest keep their bold labels — they are the conversation's
   record of things that happened, not the working ticker, and their rows are
@@ -3644,30 +3649,100 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
   }
   ```
 
-- **Every startable list reads it.** The new-agent cards
-  (`agentRail.js:690`, `providerCardsHtml(creatableAgents(…), chosen)` — the
-  card markup and `data-provider` wiring unchanged), the rail's
-  `newAgentChoice` fallback (`agentRail.js:354`), the compose/dispatch panel's
-  Agent select (`agentChoicePanelHtml`, `agentChoice.js:55`), the issue
-  assignment select (`issueRender.js:126`), and the Agent defaults panel
-  (`views/settings.js:140`) — whose `startableCatalogProviders`
-  (`modelPicker.js:36`) changes from "filter the catalog to
-  `STARTABLE_PROVIDERS`" to "filter the catalog to
-  `creatableAgents(catalog.default_provider)`, labeled as the cards label
-  them", taking the catalog whole since both call sites hold one.
+- **One narrowing — `creatableCatalog` — and every startable list takes it.**
+  There is exactly ONE caller of `startableCatalogProviders`
+  (`modelPicker.js:36`) today — the Agent defaults panel
+  (`views/settings.js:140`) — and the other startable lists do not filter at
+  all: `agentChoicePanelHtml` builds its Agent select from
+  `providersOf(catalog)` (`agentChoice.js:24/56`, the raw catalog) and
+  `assignmentPanelHtml` from `full.providers` (`issueRender.js:97/126`, the
+  normalized catalog, equally raw). Since step 14 the catalog carries all
+  three concrete providers under three distinct labels, so changing only the
+  filter's contents would leave "Claude Code TUI" standing as a third option
+  in both of those selects — the exact outcome this step exists to end. So the
+  filter is replaced by a catalog-in / catalog-out narrowing, and each list is
+  moved onto it by name. `startableCatalogProviders` is deleted; its argument
+  was a providers array, and the account's answer travels on the catalog
+  (`default_provider`), so a caller holding only the array cannot ask the
+  question:
+
+  ```js
+  /** The catalog a create surface offers: exactly the two agents, each carrying
+   *  the models the bridge listed for the carrier behind it. Two entries even
+   *  before models.list answers — creating an agent needs only a harness. */
+  export function creatableCatalog(catalog) {
+    const served = (catalog && catalog.providers) || [];
+    const providers = creatableAgents(catalog && catalog.default_provider).map((agent) => {
+      const listed = served.find((provider) => provider.id === agent.id) || {};
+      return { ...agent, models: listed.models || [], efforts: listed.efforts || [] };
+    });
+    return { ...catalog, providers };
+  }
+  ```
+
+  The list is BUILT from `creatableAgents` rather than filtered out of the
+  catalog: the offer is exactly two whether or not `models.list` has answered
+  yet (the rail paints its cards before the round trip), and the labels are the
+  client's own vocabulary, so an older bridge that calls both claude carriers
+  the same thing still cannot print one name twice — the property the deleted
+  filter owned. The narrowed catalog's `default_provider` needs no rewriting:
+  `creatableAgents` returns the `claude` id exactly when the account's default
+  IS `claude`, so the default is always one of the two entries.
+
+  Every call site, each moved by name:
+
+  1. **new-agent cards** (`agentRail.js:690`):
+     `providerCardsHtml(creatableCatalog(catalog || {}).providers, chosen)` —
+     card markup and `data-provider` wiring unchanged;
+  2. **the rail's `newAgentChoice`** (`agentRail.js:354`): the
+     `said.provider || catalog.default_provider || STARTABLE_PROVIDERS[0].id`
+     chain becomes `chosenProviderId(creatableCatalog(catalog || {}), said)` —
+     one clamp instead of a bespoke fallback, so a stored `"claude"` under a
+     `claude_adk` account highlights the Claude Code card instead of
+     highlighting none;
+  3. **the compose/dispatch panel** (`agentChoicePanelHtml`,
+     `agentChoice.js:45`, called from `composeView.js:201/307` and
+     `toolbar.js:417`): narrows ONCE at the top —
+     `const offered = creatableCatalog(catalog || {})` — and every read below
+     it (`chosenProviderId`, `catalogForProvider`, the Agent select's options)
+     takes `offered`. `providersOf` goes with its last caller. Both callers are
+     create/dispatch surfaces; a LOCKED agent's own picker is the composer's
+     model menu (`modelMenuOptions`), which never asks the harness question and
+     is untouched;
+  4. **that panel's params** (`agentChoiceParams`, `agentChoice.js:82`, called
+     from `composeView.js:408` and `toolbar.js:498`): narrows the same way and
+     sends the CLAMPED id —
+     `modelParams(models, choice.model, choice.effort, choice.provider ? chosenProviderId(offered, choice) : "")` —
+     so a stale stored `"claude"` cannot ride out on the wire under a select
+     that painted "Claude Code", while an empty provider still means the
+     harness's own default;
+  5. **the issue assignment select** (`assignmentPanelHtml`,
+     `issueRender.js:97/126`): `creatableCatalog(normalizeModelCatalog(catalog))`
+     is what `full` becomes, and its hand-rolled
+     `assignment.provider || full.default_provider || "claude"` — a third copy
+     of the fallback chain, ending in a hardcoded token — becomes
+     `chosenProviderId(full, assignment)`, imported from `agentChoice.js`,
+     which imports only `text.js` and `modelPicker.js`, so no cycle;
+  6. **the Agent defaults panel** (`views/settings.js:140`):
+     `const offered = creatableCatalog(catalog)` replaces the spread plus
+     filter.
 - **A stored preference naming the other claude carrier clamps, through code
   that already exists.** `chosenProviderId` (`agentChoice.js:28`) answers the
   named provider only when the offered list holds it, else the catalog
-  default — so a browser-local `"claude"` preference under a `claude_adk`
-  account default paints as the Claude Code entry with no new alias helper.
-  `loadAgentDefaults` stays unaliased (§14.10 test 7 stands): the stored
-  token is a record, the paint is where the offer clamps it.
+  default — and once every surface reads the narrowed catalog, the offered list
+  never holds the other carrier, so a browser-local `"claude"` preference under
+  a `claude_adk` account default paints AND dispatches as the Claude Code entry
+  with no new alias helper. `loadAgentDefaults` stays unaliased (§14.10 test 7
+  stands): the stored token is a record, the offer is where it clamps.
 - **`STARTABLE_PROVIDERS` survives as the full vocabulary** — three entries,
   three distinct labels — for what it still owns: `providerLabel` (a TUI
   agent's bubble still reads "Claude Code TUI"; the lock makes side-by-side
   carriers real, so their names stay distinct per step 14), and the Account
   select's options via `defaultHarnessOf`/`providerOptionsHtml`. "headless"
   stays banned from every user-facing string; "Claude Code" keeps "Code".
+  `agentRail.js` stops importing it — both of its uses became
+  `creatableCatalog`/`chosenProviderId` — so the three-name list is left with
+  the two jobs that are honestly about naming a harness, not offering one.
 - **The lock, the auto-add, and agentless branches are unchanged by
   construction.** `agent.add` gets a concrete provider from the card;
   `ensure_primary_agent` and the router already spend `self.default_harness`
@@ -3683,9 +3758,10 @@ Code's carrier) into one stored field. Nothing bridge-side moves:
 | a call's summary | `tool_call_summary` + the meat-key table (`adk.rs`) | every minted row; the SPA never re-parses one |
 | clipping | `one_line` / `TOOL_SUMMARY_LIMIT` | tool summaries, task rows, unchanged |
 | a task row's ending words | `ended_summary` | the terminal patch and the terminal notification |
-| the two-card list | `creatableAgents` (`modelPicker.js`) | new-agent cards, compose/dispatch select, issue assignment, Agent defaults panel |
-| card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the new list |
-| offer clamping | `chosenProviderId`'s membership fallback | stored-preference edge, no new alias |
+| the two-agent list | `creatableAgents` (`modelPicker.js`) | `creatableCatalog`, and nothing else calls it directly |
+| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, issue assignment, Agent defaults panel |
+| card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the narrowed catalog |
+| offer clamping | `chosenProviderId`'s membership fallback, over the narrowed catalog | rail highlight, panel paint, panel params, issue assignment — three bespoke fallback chains deleted |
 | full label vocabulary | `STARTABLE_PROVIDERS` / `providerLabel` | bubbles, Account select, refusals |
 | the account's answer | `default_harness`, read as `models.list.default_provider` | `creatableAgents` at every paint; the bridge's own auto-add |
 
@@ -3712,6 +3788,40 @@ are free functions, and the pump legs drive `adk::fake`):
 7. through the fake (recording probe-recorded, per the module's rule): a
    `Bash` `tool_use` lands a thread row whose summary is the command line.
 
+The two-card half adds no bridge test because it changes no bridge line: step
+14's harness tests (§14.10) are exactly what still guards it.
+
+**Bridge tests the task-mint flip rewrites** — §15.2 changes the words a task
+row is minted with, so every test that spelled the old words is part of the
+change, named here so none of it is discovered by a red run:
+
+- the seven task legs that assert full summaries against fixtures
+  (`adk.rs:1987–2299`):
+  `a_started_task_mints_once_and_keeps_a_turnless_session_working`,
+  `a_roster_that_drops_a_task_closes_it_once_and_the_session_waits_again`,
+  `a_terminal_task_update_fails_the_task_once`,
+  `a_task_notification_is_minted_and_a_progress_patch_is_not`,
+  `a_foreground_tasks_notification_closes_it_and_the_session_waits_again`,
+  `a_failed_foreground_notification_fails_and_a_stopped_one_finishes`,
+  `the_probes_own_order_mints_one_row_per_transition` — each expectation flips
+  from `format!("started — {DESC}")` to `format!("{DESC} — started")` and so
+  on. The assertions keep their shape; only the wording moves, and item 6
+  above is what pins the new wording deliberately rather than incidentally;
+- the live `#[ignore]`d leg
+  `real_adk_session_reports_a_background_task_and_stays_working`
+  (`adk.rs:~3150`), which counts rows with
+  `line.starts_with(&format!("task_update: {prefix}"))` for the prefixes
+  `"started — "`, `"finished — "` and `"failed — "`. Description-first mints
+  never start with those words, so this leg would hang on its first
+  `wait_until` when it is next run by hand. Its helper becomes a marker match —
+  `line.starts_with("task_update: ") && line.contains(marker)` for `" — started"`,
+  `" — finished"` and `" — failed"` — which keeps the `task_update:` guard,
+  survives the failed row's trailing `: {error}`, and does not care where in
+  the line the words land;
+- `task_description`'s doc comment (`adk.rs:1095`), which teaches the rule
+  with `started — bi1jfa1kd` / `started — ` examples: rewritten in the new
+  wording, since a comment that contradicts its function is a future bug.
+
 SPA (`npm test`):
 
 1. an expanded activity row renders no label span; its head text is the
@@ -3725,11 +3835,39 @@ SPA (`npm test`):
    `data-provider="claude"`, under `"claude_adk"` and `"codex"` it carries
    `"claude_adk"`; the send composes `agent.add` with the card's concrete
    provider;
-6. the compose/dispatch and issue selects offer the two entries; a stored
-   provider `"claude"` under a `claude_adk` default paints the Claude Code
-   entry;
-7. the Account select still offers the three distinct names (unchanged), and
+6. `creatableCatalog` alone: two entries out of a three-provider catalog, ids
+   `["claude_adk", "codex"]` under a `claude_adk` or `codex` default and
+   `["claude", "codex"]` under a `"claude"` default, labels always
+   `["Claude Code", "Codex"]`; each entry carries the models the catalog listed
+   for that id; an empty catalog (`models.list` not answered) still yields the
+   two entries with empty model lists; the rendered options contain no
+   "Claude Code TUI" and no "headless";
+7. the compose/dispatch panel and the issue assignment panel each render an
+   Agent select of exactly the two entries; a stored provider `"claude"` under
+   a `claude_adk` default paints the Claude Code entry as selected, and
+   `agentChoiceParams` for that same stale choice sends
+   `provider: "claude_adk"` — while a choice with no provider sends no
+   `provider` key at all;
+8. the rail's `newAgentChoice` under that same stale `"claude"` highlights the
+   Claude Code card (one card carries `chosen`, never zero);
+9. the Account select still offers the three distinct names (unchanged), and
    `providerLabel("claude")` still reads "Claude Code TUI".
+
+**SPA tests this step deletes or rewrites**:
+
+- `"keeps the catalog entries a picker may offer, under one vocabulary"`
+  (`test/modelPicker.test.js:78`) goes with `startableCatalogProviders`. What
+  it actually asserted — the client's own labels win over the bridge's, so an
+  older bridge cannot print one name twice — is carried by item 6's label
+  assertion, which makes the same claim about the function that replaced it;
+- the three-name and "never says how a harness runs" tests above it
+  (`modelPicker.test.js:41–75`) stand unchanged: `STARTABLE_PROVIDERS` is
+  still the naming vocabulary;
+- `test/threadActivity.test.js`'s `"started — run the full suite"` fixtures
+  need no flip. They are persisted rows as a browser receives them, and §15.2's
+  rule is that a row renders as it was minted — so they go on asserting the
+  paint. One of them doubles as documentation of the old label ("Background
+  task — started — …") and its comment is restated for a label-free row.
 
 ---
 
@@ -3861,14 +3999,19 @@ sections cite (§11 q3, §11 q4) must not move.
   the collapsed run line reads, so the line has one implementation — with the
   outcome mark moved inline after the text in both heads, the label surviving
   only as the icon's `aria-label` and the no-summary fallback, and
-  `task_update` mints flipped description-first (`{description} — started`).
+  `task_update` mints flipped description-first (`{description} — started`),
+  which rewrites the seven task legs' fixtures and the live background-task
+  leg's prefix matcher — both listed in §15.5 rather than left to a red run.
   Tool summaries are minted per tool at `tool_call_summary`: a meat-key table
   (Bash → `command`, file tools → `file_path`, `Glob`/`Grep` → `pattern`, …),
   Bash's description dropped, the name still leading, and the JSON fallback
   replaced by first-string-field-or-bare-name — braces never; legacy rows
   render as minted, the SPA prettifies nothing. The harness choice becomes
-  two cards, "Claude Code" and "Codex", via one `creatableAgents` helper fed
-  to every startable list; the account's existing three-token
+  two cards, "Claude Code" and "Codex", via one `creatableAgents` helper and
+  one `creatableCatalog` narrowing that REPLACES `startableCatalogProviders` —
+  named at all five call sites, because two of them (the compose/dispatch panel
+  and the issue assignment select) never filtered the catalog at all and would
+  otherwise keep offering a third card; the account's existing three-token
   `default_harness` IS the mode setting (its claude token decides what the
   Claude Code card creates; under a Codex default the plain name means
   `claude_adk`), so the bridge, the wire, the compat aliases and the Settings

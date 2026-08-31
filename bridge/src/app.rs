@@ -34866,7 +34866,7 @@ mod tests {
                 summary: "dropped the index".into(),
             },
             crate::harness::AgentActivity::TaskUpdate {
-                summary: "started — reindex the archive".into(),
+                summary: "reindex the archive — started".into(),
             },
         ] {
             activity.send(reported).expect("the pump is listening");
@@ -34898,7 +34898,7 @@ mod tests {
                 ),
                 (
                     crate::thread::ThreadEventKind::TaskUpdate,
-                    "started — reindex the archive".to_string()
+                    "reindex the archive — started".to_string()
                 ),
             ],
             "in the order the agent did them"
@@ -35591,7 +35591,7 @@ mod tests {
         .expect("the task the turn started reaches the conversation");
         assert_eq!(
             background_rows(&state, "run-background"),
-            vec![format!("started — {}", fake::TASK_DESCRIPTION)],
+            vec![format!("{} — started", fake::TASK_DESCRIPTION)],
         );
 
         age_past_the_idle_threshold(&state, &key);
@@ -35619,7 +35619,7 @@ mod tests {
         .expect("the roster that drops the task closes it in the conversation");
         assert_eq!(
             background_rows(&state, "run-background")[1],
-            format!("finished — {}", fake::TASK_DESCRIPTION),
+            format!("{} — finished", fake::TASK_DESCRIPTION),
         );
 
         age_past_the_idle_threshold(&state, &key);
@@ -35725,7 +35725,7 @@ mod tests {
 
         assert_eq!(
             background_rows(&state, "run-outlived"),
-            vec![format!("started — {}", fake::TASK_DESCRIPTION)],
+            vec![format!("{} — started", fake::TASK_DESCRIPTION)],
             "the work it started is in the timeline, and nothing closes it for it"
         );
         let s = state.lock().unwrap();

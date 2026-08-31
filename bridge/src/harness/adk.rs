@@ -746,12 +746,12 @@ impl ProtocolReader {
             let mut minted = Vec::new();
             for (id, description) in &listed {
                 if !state.tasks.contains_key(id) {
-                    minted.push(format!("started — {description}"));
+                    minted.push(format!("{description} — started"));
                 }
             }
             for (id, description) in &state.tasks {
                 if !listed.iter().any(|(listed, _)| listed == id) {
-                    minted.push(format!("finished — {description}"));
+                    minted.push(format!("{description} — finished"));
                 }
             }
             state.tasks = listed.into_iter().collect();
@@ -773,7 +773,7 @@ impl ProtocolReader {
             let mut state = self.state.lock().unwrap();
             match state.tasks.insert(id.to_string(), description.clone()) {
                 Some(_) => Vec::new(),
-                None => vec![format!("started — {description}")],
+                None => vec![format!("{description} — started")],
             }
         };
         self.mint_task_updates(minted);
@@ -1123,8 +1123,8 @@ fn tool_result_text(block: &Value) -> String {
 }
 
 /// What a task goes by in the timeline: the description the child gave it,
-/// falling back to its id. A row reading `started — bi1jfa1kd` says less than
-/// one naming the work, and far more than `started — `.
+/// falling back to its id. A row reading `bi1jfa1kd — started` says less than
+/// one naming the work, and far more than ` — started`.
 fn task_description(event: &Value, id: &str) -> String {
     let described = event["description"].as_str().unwrap_or_default().trim();
     match described.is_empty() {
@@ -1167,7 +1167,7 @@ fn task_status_is_terminal(status: &str) -> bool {
 /// level and — as the probes recorded it — no error text at all.
 fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
     if !matches!(status, "failed" | "error" | "timed_out") {
-        return format!("finished — {description}");
+        return format!("{description} — finished");
     }
     let reported = ending["error"]
         .as_str()
@@ -1175,8 +1175,8 @@ fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
         .unwrap_or_default()
         .trim();
     match reported.is_empty() {
-        true => format!("failed — {description}"),
-        false => format!("failed — {description}: {reported}"),
+        true => format!("{description} — failed"),
+        false => format!("{description} — failed: {reported}"),
     }
 }
 
@@ -2124,6 +2124,49 @@ mod tests {
         session.end();
     }
 
+    /// Every task row leads with the work it names and ends with what happened
+    /// to it. A row carries no label in front of it any more, so a row that led
+    /// with `started` would spend its first word on its least informative one —
+    /// and the description is what a reader is scanning for.
+    ///
+    /// One leg for all four mints, because they are one wording: a task
+    /// announcing itself, a patch that fails it, a roster that inserts it, a
+    /// roster that drops it, and the notification row — which was
+    /// description-first already and does not move.
+    #[tokio::test]
+    async fn task_rows_lead_with_the_work_and_end_with_what_happened() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_UPDATED_FAILED,
+            TASK_ROSTER,
+            TASK_ROSTER_EMPTY,
+            TASK_STARTED,
+            TASK_NOTIFICATION_MULTILINE,
+            RESULT,
+        ]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the reindex")).unwrap();
+
+        for want in [
+            format!("{TASK_DESCRIPTION} — started"),
+            format!("{TASK_DESCRIPTION} — failed: exit code 1"),
+            format!("{TASK_DESCRIPTION} — started"),
+            format!("{TASK_DESCRIPTION} — finished"),
+            format!("{TASK_DESCRIPTION} — started"),
+            format!("{TASK_DESCRIPTION}: Background command completed woke"),
+            format!("{TASK_DESCRIPTION} — finished"),
+        ] {
+            assert_eq!(
+                next_activity(&mut activity).await,
+                AgentActivity::TaskUpdate {
+                    summary: want.clone()
+                },
+            );
+        }
+        session.end();
+    }
+
     /// The row a background task mints when it starts, and the whole reason
     /// this step exists: the turn that started the work is over and the work is
     /// not, so a session with nothing open is still `Working`.
@@ -2147,7 +2190,7 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("started — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — started"),
             }
         );
         assert_eq!(
@@ -2192,13 +2235,13 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("started — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — started"),
             }
         );
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("finished — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — finished"),
             },
             "a roster that quietly drops a task still closes it in the timeline"
         );
@@ -2233,13 +2276,13 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("started — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — started"),
             }
         );
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("failed — {TASK_DESCRIPTION}: exit code 1"),
+                summary: format!("{TASK_DESCRIPTION} — failed: exit code 1"),
             }
         );
         assert_eq!(
@@ -2282,7 +2325,7 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("started — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — started"),
             }
         );
         assert_eq!(
@@ -2297,7 +2340,7 @@ mod tests {
         assert_eq!(
             next_activity(&mut activity).await,
             AgentActivity::TaskUpdate {
-                summary: format!("finished — {TASK_DESCRIPTION}"),
+                summary: format!("{TASK_DESCRIPTION} — finished"),
             },
             "the status it carried was terminal, so the notification ended the task"
         );
@@ -2356,10 +2399,10 @@ mod tests {
             minted,
             vec![
                 AgentActivity::TaskUpdate {
-                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_DESCRIPTION} — started"),
                 },
                 AgentActivity::TaskUpdate {
-                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_DESCRIPTION} — finished"),
                 },
                 AgentActivity::Narration {
                     summary: "dropped the index".to_string()
@@ -2403,16 +2446,16 @@ mod tests {
             minted,
             vec![
                 AgentActivity::TaskUpdate {
-                    summary: format!("started — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_FAILED_DESCRIPTION} — started"),
                 },
                 AgentActivity::TaskUpdate {
-                    summary: format!("failed — {FOREGROUND_TASK_FAILED_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_FAILED_DESCRIPTION} — failed"),
                 },
                 AgentActivity::TaskUpdate {
-                    summary: format!("started — {FOREGROUND_TASK_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_DESCRIPTION} — started"),
                 },
                 AgentActivity::TaskUpdate {
-                    summary: format!("finished — {FOREGROUND_TASK_DESCRIPTION}"),
+                    summary: format!("{FOREGROUND_TASK_DESCRIPTION} — finished"),
                 },
                 AgentActivity::Narration {
                     summary: "dropped the index".to_string()
@@ -2456,10 +2499,10 @@ mod tests {
             minted,
             vec![
                 AgentActivity::TaskUpdate {
-                    summary: format!("started — {TASK_DESCRIPTION}"),
+                    summary: format!("{TASK_DESCRIPTION} — started"),
                 },
                 AgentActivity::TaskUpdate {
-                    summary: format!("finished — {TASK_DESCRIPTION}"),
+                    summary: format!("{TASK_DESCRIPTION} — finished"),
                 },
                 AgentActivity::TaskUpdate {
                     summary: format!(
@@ -3371,11 +3414,14 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(100));
             }
         };
-        let task_rows = |prefix: &str| {
+        // A task row names its work first and what happened to it after, and a
+        // failed one carries the error behind that — so the ending is looked
+        // for anywhere in the line, with the `task_update:` guard kept.
+        let task_rows = |marker: &str| {
             seen.lock()
                 .unwrap()
                 .iter()
-                .filter(|line| line.starts_with(&format!("task_update: {prefix}")))
+                .filter(|line| line.starts_with("task_update: ") && line.contains(marker))
                 .count()
         };
 
@@ -3395,7 +3441,7 @@ mod tests {
             !matches!(session.status(), AgentStatus::Starting)
         });
         wait_until("the started task row", Duration::from_secs(120), &|| {
-            task_rows("started — ") == 1
+            task_rows(" — started") == 1
         });
 
         // The result must close the turn while the task lives. The turn's edge
@@ -3418,7 +3464,7 @@ mod tests {
         wait_until(
             "the task to finish in the timeline",
             Duration::from_secs(120),
-            &|| task_rows("finished — ") + task_rows("failed — ") >= 1,
+            &|| task_rows(" — finished") + task_rows(" — failed") >= 1,
         );
         wait_until(
             "the session to wait once the roster empties",
@@ -3434,12 +3480,12 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            task_rows("started — "),
+            task_rows(" — started"),
             1,
             "one start, one row — however many events described it"
         );
         assert_eq!(
-            task_rows("finished — "),
+            task_rows(" — finished"),
             1,
             "the task completed, so its ending reads as finished, minted once"
         );

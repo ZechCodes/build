@@ -571,6 +571,19 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBe(null);
   });
 
+  // The pane's offer is Resume, and resuming names no harness: the agent is
+  // locked to the one it was created on, and its conversation is waiting there.
+  it("resumes the agent the pane belongs to, on the harness it already has", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+
+    await mountAgentTab.mock.calls[0][2].onStart();
+
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
+  });
+
   // The terminal is a capability, not a guarantee. A harness that reports its
   // own reasoning and tool calls is not opaque, so it has no basement to drop
   // into — and the rail is where that shows: no TUI button, and no way to ask

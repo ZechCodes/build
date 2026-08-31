@@ -154,10 +154,13 @@ describe("which conversation is open", () => {
 describe("which agent can be taken back off", () => {
   const agents = [agent(), agent({ id: "ag-2", ordinal: 2 }), agent({ id: "ag-3", ordinal: 3 })];
 
-  it("offers removal for an agent added beside the first, and never for the first", () => {
+  it("offers removal for every agent on a branch, the first and the last included", () => {
+    expect(canRemoveAgent({ agents, agentId: "ag-1", kind: "branch" })).toBe(true);
     expect(canRemoveAgent({ agents, agentId: "ag-2", kind: "branch" })).toBe(true);
     expect(canRemoveAgent({ agents, agentId: "ag-3", kind: "branch" })).toBe(true);
-    expect(canRemoveAgent({ agents, agentId: "ag-1", kind: "branch" })).toBe(false);
+    // A branch with no agent at all is a working branch: its chat tab asks
+    // which agent to start one on.
+    expect(canRemoveAgent({ agents: [agent()], agentId: "ag-1", kind: "branch" })).toBe(true);
   });
 
   it("offers nothing on an issue, whose one agent is the issue's own conversation", () => {

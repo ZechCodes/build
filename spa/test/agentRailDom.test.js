@@ -430,14 +430,36 @@ describe("taking an agent back off the branch", () => {
     await flush();
   };
 
-  it("offers removal on an agent added beside the first, and never on the first", async () => {
+  it("offers removal on every agent, the first and the only one included", async () => {
     payload = twoAgents();
     await mount();
-    // The rail opens on the first agent, which owns the branch's conversation.
-    expect(removeButton()).toBe(null);
+    // The rail opens on the first agent, and that one may go too.
+    expect(removeButton()).toBeTruthy();
     bubbles()[1].click();
     await flush();
     expect(removeButton()).toBeTruthy();
+  });
+
+  it("leaves a branch whose last agent went with the view that asks for a new one", async () => {
+    await mount();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    payload = branchRow({ agents: [] });
+    await flush();
+    // An answer that loses the agents has to say it twice — a poll hiccup must
+    // not close the conversation under a reader. A real remove-all says it
+    // every tick.
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-1" });
+    // A working branch, not a broken one: the strip drops to its ghost and the
+    // panel head offers to start a new agent.
+    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(notifyError).not.toHaveBeenCalled();
   });
 
   it("offers no removal on an issue's one agent", async () => {

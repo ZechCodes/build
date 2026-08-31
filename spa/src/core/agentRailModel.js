@@ -143,16 +143,16 @@ export function railBubbles({ agents = [], selectedId = null, kind = "branch" } 
 
 /**
  * Whether this agent can be taken back off the work item — the mirror of the
- * `+` bubble, and it answers the same two questions the daemon does.
+ * `+` bubble, and it answers the same question the daemon does: is this a
+ * branch, and does the id name an agent on it?
  *
  * Branches only: an issue's one agent IS the issue's conversation, so there is
- * nothing to remove there, only an issue to abandon. And never the branch's
- * FIRST agent, which owns the branch's conversation — that is also what keeps a
- * branch from ever being left with no agent at all.
+ * nothing to remove there, only an issue to abandon. Every agent on a branch
+ * may go, the first and the last included — a branch left with none is a
+ * working branch whose chat tab asks which agent to start one on.
  */
 export function canRemoveAgent({ agents = [], agentId = null, kind = "branch" } = {}) {
-  if (kind !== "branch" || !agentId || agents.length < 2) return false;
-  if (agents[0].id === agentId) return false;
+  if (kind !== "branch" || !agentId) return false;
   return agents.some((agent) => agent.id === agentId);
 }
 

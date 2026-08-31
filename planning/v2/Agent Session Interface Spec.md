@@ -2250,15 +2250,17 @@ The reservation decides in order, and the order is the rule:
 2. **No id, but this agent's own record shows history — its
    `thread.sessions` is non-empty → today's continue-guess**, still gated
    on the transcript probe. This is the crash window (§8.2): a session that
-   died before capture, an agent from before this step shipped.
+   died before capture, an agent from before this step shipped. The SAME
+   agent continuing ITS OWN conversation, which is the only history Build
+   holds.
 3. **Otherwise fresh: no resume of any kind, on every carrier.** A
    brand-new agent record has no conversation to pick up, and the worktree's
-   old one belongs to whoever had it.
+   old one belongs to whoever had it — an adopted branch's first agent
+   included.
 
 - **The gate is one reading:** `may_pick_up = !agent.thread.sessions
-  .is_empty() || (entity is adopted && no session lineage has ever opened
-  on the entity)`, and `continue_session = recorded-id absent &&
-  may_pick_up && probe`.
+  .is_empty()`, and `continue_session = recorded-id absent && may_pick_up
+  && probe`.
 - **Whose `sessions` — stated exactly, because lineage is not per-agent
   today.** `record_agent_session_start` writes through `edit_owner_thread`
   (`app.rs:3000`), which edits the ROSTER's first agent's thread — so for
@@ -2268,30 +2270,29 @@ The reservation decides in order, and the order is the rule:
   newest conversation in the cwd, and on a shared checkout that is
   precisely the misattribution being retired; one sweep tick after its
   first session, rule 1 carries it by name instead.
-- **Adoption keeps its pickup, on the flag adoption already sets.** Both
-  adoption mints put their agent on an entity whose record says `adopted:
-  true` — `adopt_run` (`orchestrator.rs:2366`, `AgentRoster::with_first`,
-  reached by external-worktree adopt-on-first-mutation and the primary
-  checkout alike) and `adopt_implementation` (`orchestrator.rs:1494`,
-  `agents.add` on an already-adopted run). The gate's second disjunct —
-  adopted, and no session lineage has ever opened on the entity — is
-  exactly "the first session after adoption": the meaning
-  `pending_continuation` (`orchestrator.rs:436`) was minted for and lost.
-  Its own doc calls it VESTIGIAL because the unconditional probe replaced
-  it — and the reason it was retired, crash respawns needing `--continue`
-  too, is rule 2's job now. Deriving the disjunct from records rather than
-  reviving the mutated flag needs no clearing write and self-limits: an
-  adopted entity whose lineage has opened grants no more pickups, so an
-  agent added to an old adopted branch starts fresh. `pending_continuation`
-  stays vestigial; `adopted` is what the gate reads.
+- ~~**Adoption keeps its pickup, on the flag adoption already sets.**~~
+  **Retired 2026-08-31 — adoption inherits nothing.** The rule shipped with
+  a second disjunct (`entity is adopted && no session lineage has ever
+  opened on it`) so that an adopted branch's first agent opened on the
+  human's own conversation. It is deleted: **Build cannot show that
+  history.** Its conversation view for a new agent starts at sequence 1, so
+  a session resumed under it is an agent answering messages that are nowhere
+  on screen — and the derivation was not even stable, because the lineage it
+  read lives on the roster's threads, so removing every agent from an old
+  adopted branch made it read as freshly adopted again and granted the
+  pickup a second time (observed live 2026-08-31). What remains of the arm
+  is nothing: no `adopted` reading in the gate, no `pending_continuation`
+  (the flag it was derived from the retirement of is deleted with it), and
+  the `adopted` flag goes back to meaning what the rest of the daemon reads
+  it for — prune rules, boot-recovery parking, the release verb.
 - **Routers always spawn fresh**, by construction: no roster, no record,
   rule 3 — and rightly, since a router is one decision long and today's
   unconditional probe could hand it a stale conversation.
 - Two comments are corrected where they stand: the reservation's "the probe
   is unconditional too" (`app.rs:17433`) describes rule 2's gate instead,
   and `SpawnOptions.continue_session`'s "Set only for the first session
-  after adoption" (`orchestrator.rs:562`) becomes "the first session after
-  adoption, or a respawn of an agent with recorded history".
+  after adoption" (`orchestrator.rs:562`) becomes "a respawn of an agent
+  with recorded history" (as amended by the retirement above).
 
 #### 10.5 Wire, SPA, and the tests
 
@@ -2364,8 +2365,10 @@ tempdir fake:
 8. the spawn rule, three ways: a verified id resumes; history plus a
    transcript continues; a fresh agent record over a cwd with an old
    transcript gets NEITHER — the 2026-08-29 misdelivery, pinned;
-9. adoption: the adopted entity's first spawn keeps the pickup; the same
-   entity after one session does not; an agent added later does not;
+9. adoption: the adopted entity's first spawn gets NEITHER, and neither does
+   an agent added back to an old adopted branch after every agent on it was
+   removed (amended 2026-08-31 — these two pinned the pickup, and now pin
+   its absence);
 10. the alternatives hold shape: `session_locator` answers `Some` exactly
     where `has_terminal` is true, and `None` where the session announces
     its own id — asked over every provider, like the terminal test.
@@ -3179,8 +3182,9 @@ the concrete id straight.
 - **`adopt_run` (2442) mints an empty roster.** Adoption is git and records;
   no one is being spoken to. The `pending_continuation` grant and the
   adoption-time choice params stop minting an agent and instead wait for the
-  first one (the derived pickup rule of step 10 — "the first session after
-  adoption" — now reads "the first agent ever added to an adopted entity").
+  first one. *(The pickup that grant stood for is retired outright as of
+  2026-08-31 — see §10.4 — and `pending_continuation` is deleted with it: an
+  adopted branch's first agent starts a conversation of its own.)*
 - **`dispatch_run` (1483) keeps minting one**, with the dispatch's own
   choice: a dispatched build is case (b) below — the system is about to
   deliver, and minting at dispatch IS the auto-add, done where the choice is
@@ -3602,12 +3606,12 @@ sections cite (§11 q3, §11 q4) must not move.
    every carrier — the worktree's old conversation belongs to whoever had
    it, and a fresh agent inheriting it is the misdelivery this rule ends
    (hit live 2026-08-29: a new headless agent adopted the worktree's old
-   conversation). The one deliberate inheritance survives by derivation
+   conversation). ~~The one deliberate inheritance survives by derivation
    rather than by a new flag: an adopted entity on which no session has
-   ever opened grants its agent the pickup — which is "the first session
-   after adoption", the meaning the vestigial `pending_continuation` was
-   minted for, now read out of `adopted` plus the lineage instead of a
-   mutated bool. And the id itself is polymorphic: captured from `init`
+   ever opened grants its agent the pickup.~~ **Amended 2026-08-31: there is
+   no deliberate inheritance. Adoption grants nothing either, because Build
+   cannot show the history the human's own session carries — see §10.4.**
+   And the id itself is polymorphic: captured from `init`
    where the child announces one, located in the harness's durable records
    where it does not, persisted through one record path, spent as
    `--resume <id>` / `codex resume <id>`, and never, under any carrier,
@@ -3617,6 +3621,29 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, a new agent never resumes — adoption's pickup is deleted.**
+  §10.4's rule 2 carried a second disjunct: an entity whose record said
+  `adopted` and on which no session lineage had ever opened granted its agent
+  the `--continue` guess, so an adopted branch's first agent opened on the
+  conversation the human had been having in that checkout. It is gone, and the
+  reason is what Build can SHOW: a new agent's conversation view starts at
+  sequence 1, so an agent resumed onto a session Build never heard answers out
+  of a history nothing on screen holds. The derivation was unstable besides —
+  the lineage it read lives on the roster's threads, so removing every agent
+  from an old adopted branch made it read as freshly adopted again and hand the
+  next agent an entire prior session (observed live 2026-08-31). What remains is
+  a deletion, not a mechanism: `may_pick_up_a_conversation` is one reading of
+  the agent's own `thread.sessions`, and `pending_continuation` — the flag the
+  disjunct was derived from the retirement of — is deleted from `ActiveRun` and
+  `PersistedRun` (nothing read it; `#[serde(default)]` was never on the load
+  path for it and a dropped field is ignored on read). `adopted` keeps its other
+  readers: prune rules, boot-recovery parking, the release verb, the SPA's
+  option sets. Rules 1 and 4 are untouched — a verified id still `--resume`s,
+  and an agent with recorded history still `--continue`s ITS OWN conversation
+  across the crash window. Tests: the two that pinned the pickup now pin its
+  absence (the adopted branch's first spawn, and an agent added back after
+  remove-all on an old adopted branch — the live case), beside the unchanged
+  resume-by-name and continue-by-history arms.
 - **2026-08-31, the harness lock holds on every respawn.** Review found the
   lock §14 exists to hold broken by §14.5's own flagship flow: the lock is
   per-AGENT, but `agent.start`, `PendingAgentTurn::for_run`/`for_run_agent`/

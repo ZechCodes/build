@@ -2856,7 +2856,6 @@ impl AppState {
             revising_stage_id: active.revising_stage_id.clone(),
             auto_advance: active.auto_advance,
             adopted: active.adopted,
-            pending_continuation: active.pending_continuation,
             triage: active.triage.clone(),
             recovery: active.recovery.clone(),
             publication_attempt: active.publication_attempt.clone(),
@@ -3173,44 +3172,35 @@ impl AppState {
     /// named — the guess `--continue` makes, which reopens the newest
     /// conversation in the checkout whoever it belonged to.
     ///
-    /// Two readings, and both come off durable records rather than a flag some
-    /// earlier verb set:
+    /// One reading, off the agent's own durable record: its `thread.sessions`
+    /// is non-empty, so a session of its own has opened before and this spawn
+    /// is a respawn — the crash window where the name was never captured. The
+    /// conversation the guess lands on is then the one Build already holds and
+    /// shows, which is the only conversation an agent may be given.
     ///
-    /// - **The agent's own record shows history.** Its `thread.sessions` is
-    ///   non-empty, so a session of its own has opened before and this spawn is
-    ///   a respawn: the crash window where the name was never captured. Lineage
-    ///   is not per-agent today — [`AppState::record_agent_session_start`]
-    ///   writes through the ROSTER's primary agent — so for the primary its
-    ///   own `sessions` IS the entity's whole lineage and this reading is
-    ///   exact, while a non-first agent's is empty and starts FRESH.
-    ///   Deliberate: `--continue` guesses the newest conversation in the cwd,
-    ///   and on a checkout several agents share that is precisely the
-    ///   misattribution being retired. One capture after its first session, the
-    ///   name carries it instead.
-    /// - **It is the first session after an adoption.** The entity's record
-    ///   says `adopted` and no session lineage has ever opened on its primary —
-    ///   the first agent ever added to it — which is
-    ///   the meaning `pending_continuation` was minted for: the human's own
-    ///   conversation in a checkout they were already working in, which is the
-    ///   one conversation a fresh agent SHOULD inherit. Self-limiting — an
-    ///   adopted entity whose lineage has opened grants no more pickups — so an
-    ///   agent added to an old adopted branch starts fresh.
+    /// Everything else starts fresh, and an ADOPTED entity is not an exception:
+    /// the conversation the human was having in the checkout they adopted is
+    /// one Build never heard, so an agent handed it would answer out of a
+    /// history the conversation view cannot show.
+    ///
+    /// Lineage is not per-agent today — [`AppState::record_agent_session_start`]
+    /// writes through the ROSTER's primary agent — so for the primary its own
+    /// `sessions` IS the entity's whole lineage and this reading is exact,
+    /// while a non-first agent's is empty and starts FRESH. Deliberate:
+    /// `--continue` guesses the newest conversation in the cwd, and on a
+    /// checkout several agents share that is precisely the misattribution being
+    /// retired. One capture after its first session, the name carries it
+    /// instead.
     ///
     /// A router owns no record at all, so it falls through to `false` and
     /// always spawns fresh: a router is one decision long, and the newest
     /// conversation in a checkout is never it.
     fn may_pick_up_a_conversation(&self, owner: &str, agent_id: &str) -> bool {
-        let Ok(agents) = self.entity_agents(owner) else {
-            return false;
-        };
-        let has_run_before = agents
-            .by_id(agent_id)
-            .is_some_and(|agent| !agent.thread.sessions.is_empty());
-        let first_session_after_adoption = self.runs.get(owner).is_some_and(|run| run.adopted)
-            && agents
-                .primary()
-                .is_some_and(|primary| primary.thread.sessions.is_empty());
-        has_run_before || first_session_after_adoption
+        self.entity_agents(owner).is_ok_and(|agents| {
+            agents
+                .by_id(agent_id)
+                .is_some_and(|agent| !agent.thread.sessions.is_empty())
+        })
     }
 
     /// The name the agent's record says its conversation has — `None` for one
@@ -17891,13 +17881,14 @@ fn ensure_agent_tab(
                     }
                     None => None,
                 };
-                // 2. No name, but this agent's record shows history, or it is
-                //    the first session after an adoption: `--continue` guesses
-                //    the newest conversation in the checkout, still gated on
-                //    the transcript probe.
+                // 2. No name, but this agent's record shows history: the same
+                //    agent continuing its own conversation, which `--continue`
+                //    guesses at as the newest one in the checkout, still gated
+                //    on the transcript probe.
                 // 3. Otherwise fresh, on every carrier. A brand-new agent
                 //    record has no conversation to pick up, and the checkout's
-                //    old one belongs to whoever had it.
+                //    old one belongs to whoever had it — adoption included:
+                //    Build cannot show a history it never heard.
                 let continue_session = resume_session_id.is_none()
                     && s.may_pick_up_a_conversation(owner, agent_id)
                     && (s.transcript_probe)(&root, model_choice.provider);
@@ -30614,7 +30605,6 @@ mod tests {
             revising_stage_id: None,
             auto_advance: false,
             adopted: false,
-            pending_continuation: false,
             triage: None,
             recovery: None,
             publication_attempt: None,
@@ -30801,7 +30791,6 @@ mod tests {
             revising_stage_id: None,
             auto_advance: false,
             adopted: false,
-            pending_continuation: false,
             triage: None,
             recovery: None,
             publication_attempt: None,
@@ -36152,16 +36141,17 @@ mod tests {
         .expect("a session that announced nothing takes the name it was spawned with with it");
     }
 
-    /// The gate on the cwd guess, read off durable records rather than a flag
-    /// some earlier verb set.
+    /// The gate on the cwd guess: an agent's OWN recorded history, and nothing
+    /// else.
     ///
     /// `--continue` reopens the newest conversation in the checkout whoever was
-    /// having it, so it is offered only where a conversation of Build's own is
-    /// what it would land on: an agent whose record shows it has run before, or
-    /// the first session after an adoption — the human's own conversation in a
-    /// checkout they were already working in.
+    /// having it, so it is offered only where the conversation it would land on
+    /// is the one Build already holds — this agent continuing itself, across the
+    /// window where its name was never captured. Every other spawn is a new
+    /// conversation: adoption included, because Build cannot show a history it
+    /// never heard.
     #[tokio::test]
-    async fn only_history_or_a_freshly_adopted_entity_may_guess_at_a_conversation() {
+    async fn only_an_agents_own_history_may_guess_at_a_conversation() {
         let (dir, repo) = init_repo();
         let (state, _handler) = shared_state_and_handler(&repo, dir.path());
         insert_run_without_agent(&state, &repo, dir.path().join("fresh"), "run-fresh");
@@ -36199,10 +36189,9 @@ mod tests {
             "an agent that has run before is in the crash window the guess exists for"
         );
 
-        // Adoption's own pickup, on the flag adoption already sets. It is
-        // entity-wide while it lasts: an agent added to a checkout nobody has
-        // opened a session in yet is still the first session after the
-        // adoption.
+        // Adoption grants nothing. The conversation the human was having in the
+        // checkout they adopted is one Build never heard, so an agent handed it
+        // would open on a history the conversation view cannot show.
         s.runs.get_mut("run-adopted").expect("the run").adopted = true;
         let adopted_first = first(&s, "run-adopted");
         let added_agent = s
@@ -36218,28 +36207,12 @@ mod tests {
             .id
             .clone();
         assert!(
-            s.may_pick_up_a_conversation("run-adopted", &adopted_first),
-            "the first session after an adoption picks the human's conversation up"
+            !s.may_pick_up_a_conversation("run-adopted", &adopted_first),
+            "the first agent on an adopted branch starts a conversation of its own"
         );
-        assert!(
-            s.may_pick_up_a_conversation("run-adopted", &added_agent),
-            "and so does any agent on it, while no session has opened yet"
-        );
-
-        // And it self-limits: once a session has opened on the entity, the
-        // conversation in the checkout is Build's own, and only the record that
-        // holds it may guess at it.
-        primary_thread_mut(&mut s.runs.get_mut("run-adopted").expect("the run").agents)
-            .start_session(
-                "claude",
-                None,
-                None,
-                "implementation",
-                "2026-08-29T00:01:00Z",
-            );
         assert!(
             !s.may_pick_up_a_conversation("run-adopted", &added_agent),
-            "an agent added to an adopted entity that has already run starts fresh"
+            "and so does every agent added beside it"
         );
 
         assert!(
@@ -36609,40 +36582,56 @@ mod tests {
         );
     }
 
-    /// Adoption keeps its pickup, walked end to end.
+    /// Record every spawn this daemon's orchestrator builds, over a checkout
+    /// that already holds somebody's transcript — the setup both adoption
+    /// tests need to read what the spawn rule decided.
+    fn spawns_over_an_old_transcript(
+        state: &Arc<Mutex<AppState>>,
+        repo: &std::path::Path,
+    ) -> Arc<Mutex<Vec<SpawnOptions>>> {
+        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&specs_built);
+        let agent = Agent::WarmBuilder(Arc::new(
+            move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
+                recorder.lock().unwrap().push(options.clone());
+                warm_tui_spec()
+            },
+        ));
+        let mut s = state.lock().unwrap();
+        let worktrees = s.worktrees_root.clone();
+        s.transcript_probe = Arc::new(|_, _| true);
+        s.projects[0].orch =
+            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        drop(s);
+        specs_built
+    }
+
+    /// Adoption inherits nothing, walked end to end.
     ///
-    /// The one conversation a fresh agent SHOULD inherit is the human's own, in
-    /// a checkout they were already working in — which is what an adoption is.
-    /// The rule that stops a brand-new agent inheriting a stranger's
-    /// conversation must not take this one away with it.
+    /// The conversation the human was having in the checkout they adopted is one
+    /// Build never heard: its conversation view for this agent starts at
+    /// sequence 1, so a session resumed under it would show an agent answering
+    /// messages that are nowhere on screen. A new agent is a new conversation,
+    /// on an adopted branch like anywhere else.
     #[tokio::test]
-    async fn an_adopted_entitys_first_spawn_still_picks_the_humans_conversation_up() {
+    async fn an_adopted_entitys_first_spawn_starts_a_conversation_of_its_own() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-adoptee");
-
-        let specs_built: Arc<Mutex<Vec<SpawnOptions>>> = Arc::new(Mutex::new(Vec::new()));
-        {
-            let recorder = Arc::clone(&specs_built);
-            let agent = Agent::WarmBuilder(Arc::new(
-                move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
-                    recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
-                },
-            ));
-            let mut s = state.lock().unwrap();
-            let worktrees = s.worktrees_root.clone();
-            s.transcript_probe = Arc::new(|_, _| true);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
-            // What both adoption mints write down, and what the gate reads.
-            s.runs.get_mut("run-adoptee").expect("the run").adopted = true;
-        }
+        let specs_built = spawns_over_an_old_transcript(&state, &repo);
+        // What both adoption mints write down.
+        state
+            .lock()
+            .unwrap()
+            .runs
+            .get_mut("run-adoptee")
+            .expect("the run")
+            .adopted = true;
 
         let posted = call(
             &handler,
             "thread.post",
-            json!({ "entity_id": "run-adoptee", "body": "carry on where I left off" }),
+            json!({ "entity_id": "run-adoptee", "body": "have a look at this" }),
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
 
@@ -36654,9 +36643,78 @@ mod tests {
             .expect("the message starts the agent");
         assert_eq!(spawned.cwd, AppState::canonical_root(&root));
         assert!(
-            spawned.continue_session,
-            "the first session after an adoption opens on the human's own \
-             conversation: {spawned:?}"
+            !spawned.continue_session,
+            "the first agent on an adopted branch inherits no conversation: {spawned:?}"
+        );
+        assert_eq!(
+            spawned.resume_session_id, None,
+            "and names none either: {spawned:?}"
+        );
+    }
+
+    /// The live incoherence this rule ends: an adopted branch whose agents were
+    /// all removed and one added back inherited an entire prior session.
+    ///
+    /// Removing the roster took the session lineage with it, so the branch read
+    /// as freshly adopted again and the pickup fired a second time. The agent
+    /// the human then talked to answered out of a history no view of Build's
+    /// holds. A record with no sessions of its own is a fresh conversation,
+    /// whatever the entity has been through.
+    #[tokio::test]
+    async fn an_agent_added_back_to_an_old_adopted_branch_starts_fresh() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-readopted");
+        let specs_built = spawns_over_an_old_transcript(&state, &repo);
+        let removable = {
+            let mut s = state.lock().unwrap();
+            let run = s.runs.get_mut("run-readopted").expect("the run");
+            run.adopted = true;
+            // The branch has been worked in: a session of Build's own opened on
+            // it after the adoption.
+            primary_thread_mut(&mut run.agents).start_session(
+                "claude",
+                None,
+                None,
+                "implementation",
+                "2026-08-30T00:00:00Z",
+            );
+            run.agents
+                .agents()
+                .iter()
+                .map(|agent| agent.id.clone())
+                .collect::<Vec<_>>()
+        };
+        for agent_id in removable {
+            let removed = call(
+                &handler,
+                "agent.remove",
+                json!({ "entity_id": "run-readopted", "agent_id": agent_id }),
+            );
+            assert_eq!(removed["ok"], true, "{removed:?}");
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-readopted", "body": "start over" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+
+        let spawned = specs_built
+            .lock()
+            .unwrap()
+            .first()
+            .cloned()
+            .expect("the message creates the agent that hears it, and starts it");
+        assert!(
+            !spawned.continue_session,
+            "the agent that replaced the roster has a conversation of its own to \
+             have: {spawned:?}"
+        );
+        assert_eq!(
+            spawned.resume_session_id, None,
+            "and no name to spend: {spawned:?}"
         );
     }
 

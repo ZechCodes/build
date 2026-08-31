@@ -226,10 +226,6 @@ pub struct PersistedRun {
     /// True for a run minted around a pre-existing (user-created) worktree.
     #[serde(default)]
     pub adopted: bool,
-    /// Adoption's warm harness-continuation flag; consumed by the first
-    /// session spawn after adoption, persisted so a restart in between keeps it.
-    #[serde(default)]
-    pub pending_continuation: bool,
     /// The last triage pass over this run's diff. Presentational, so it is
     /// persisted purely so a restart does not throw away an ordering the
     /// reviewer was reading; nothing waits on it and nothing reads it back into
@@ -2069,7 +2065,6 @@ mod tests {
             revising_stage_id: None,
             auto_advance: false,
             adopted: false,
-            pending_continuation: false,
             triage: None,
             recovery: None,
             publication_attempt: None,

@@ -3614,6 +3614,21 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-30, step 14's SPA half built.** As specified, with three naming
+  corrections worth recording. The Account panel's module is
+  `core/defaultHarness.js` (`defaultHarnessPanelHtml` / `mountDefaultHarness` /
+  `defaultHarnessOf`), renamed from `core/agentMode.js` because the setting is
+  no longer a mode: it names the harness a new agent is created on. The
+  composer's menu markup is `menuButtonMarkup` — the menu half of the split
+  button standing alone, extracted beside `splitButtonMarkup` so the rows have
+  one implementation — and its catalog reads (`modelMenuOptions`,
+  `modelMenuLabel`, `modelMenuSelection`) live in `core/agentChoice.js`, beside
+  `reconcileAgentChoice`, which they use. `agent.choose` is sent with both
+  fields always (`model`, `effort`), empty meaning the harness default, which
+  is exactly what `model_choice_from` already reads an empty string as. The
+  `lead` card option of `providerCardsHtml` is deleted with the offer that used
+  it, and the rail's placeholder no longer moves under a poll — gaining an
+  agent rebuilds the panel around a conversation.
 - **2026-08-30, step 14's citations corrected.** A read-back against the
   source fixed four misnamed call sites in §14.3's migration table and §14.5 —
   the `.first()` site at `app.rs:16524` is `issue_session`, not

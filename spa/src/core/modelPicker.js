@@ -48,9 +48,8 @@ export function providerOptionsHtml(providers, selectedId) {
 
 /** Pure: one provider as a picker card — a real button carrying its id, so a
  *  click reads the answer straight off `dataset.provider`. */
-export function providerCardHtml(provider, { selected = false, className = "", id = "" } = {}) {
-  const classes = `chooser-card${selected ? " chosen" : ""}${className ? ` ${className}` : ""}`;
-  return `<button class="${classes}" type="button"${id ? ` id="${esc(id)}"` : ""} data-provider="${esc(provider.id)}">
+export function providerCardHtml(provider, { selected = false } = {}) {
+  return `<button class="chooser-card${selected ? " chosen" : ""}" type="button" data-provider="${esc(provider.id)}">
           <span class="chooser-card-label">${esc(provider.label)}</span>${
             provider.description ? `<span class="chooser-card-desc">${esc(provider.description)}</span>` : ""
           }
@@ -58,20 +57,15 @@ export function providerCardHtml(provider, { selected = false, className = "", i
 }
 
 /** Pure: the providers as a card picker. Used where the choice is made BEFORE
- *  the thing it configures exists (the new-worktree sheet), so there is nothing
- *  yet to hang a `<select>` off. `selectedId` marks the chosen card.
- *
- *  `options.lead` is one provider promoted above the row as a full-width card
- *  (`{ id, label, description }`, given `options.leadId` as its element id):
- *  the Agent tab leads with the harness that worktree already ran, without
- *  taking the other one away. */
-export function providerCardsHtml(providers, selectedId, { lead = null, leadId = "" } = {}) {
+ *  the thing it configures exists — the new-worktree sheet, and the chat tab of
+ *  a work item with no agent — so there is nothing yet to hang a `<select>`
+ *  off. `selectedId` marks the chosen card. */
+export function providerCardsHtml(providers, selectedId) {
   const cards = (providers || [])
     .map((provider) => providerCardHtml(provider, { selected: provider.id === selectedId }))
     .join("");
   return `<div class="chooser">
     <div class="chooser-head">Which agent works here?</div>
-    ${lead ? providerCardHtml(lead, { className: "chooser-card-lead", id: leadId }) : ""}
     <div class="chooser-cards">${cards}</div>
   </div>`;
 }

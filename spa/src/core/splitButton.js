@@ -33,9 +33,9 @@ function menuItemsHtml(options) {
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. */
-export function menuButtonMarkup(label, options, { id = "", title = "" } = {}) {
+export function menuButtonMarkup(label, options, { title = "" } = {}) {
   return `<div class="splitbtn">
-    <button type="button" class="btn mini caret"${id ? ` id="${esc(id)}"` : ""}${title ? ` title="${esc(title)}"` : ""}>${esc(label)} ▾</button>
+    <button type="button" class="btn mini caret"${title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : ""}>${esc(label)} ▾</button>
     <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
   </div>`;
 }

@@ -204,6 +204,7 @@ const choiceKey = (provider, choice) => [provider, choice.model || "", choice.ef
 export function mountComposerModelMenu(root, { ids, onChoose }) {
   const slot = root.querySelector(`#${composerPartIds(ids.input).modelMenu}`);
   if (!slot) return null;
+
   // What the menu on screen was painted from: the choice, in words, and the
   // catalog it was read out of — which lands after the first paint and brings
   // the models with it.
@@ -216,7 +217,7 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
     slot.innerHTML = menuButtonMarkup(
       modelMenuLabel(catalog, provider, choice),
       modelMenuOptions(catalog, provider, choice),
-      { id: composerPartIds(ids.input).modelMenu + "button", title: "Model and reasoning effort" },
+      { title: "Model and reasoning effort" },
     );
     mountSplitMenu(slot, {
       onChoose: (action) => {

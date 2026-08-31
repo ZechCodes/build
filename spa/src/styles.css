@@ -787,16 +787,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* The picked one is the answer, not a hover — it holds the accent on its own. */
 .chooser-card.chosen { border-color:var(--accent); background:var(--accent-soft); }
 .chooser-card.chosen .chooser-card-label { color:var(--accent); }
-/* One provider promoted above the row: the obvious answer, spanning the width
-   of the two it is chosen from, so the eye lands on it first without the other
-   one being taken away. */
-.chooser-card-lead { width:100%; align-items:center; text-align:center;
-  border-color:var(--accent); background:var(--accent-soft);
-  /* The lead sits directly in the column-flex .chooser, where the shared
-     flex-basis of 150px would read as HEIGHT and stretch it into a slab. */
-  flex:0 0 auto; }
-.chooser-card-lead .chooser-card-label { color:var(--accent); font-size:14px; }
-.chooser-card-lead:disabled { border-color:var(--line); background:var(--bg); }
 
 .srow.snav { font-weight:550; color:var(--ink2); padding:5px 6px; }
 .srow.snav.active { background:var(--accent-soft); color:var(--accent); }

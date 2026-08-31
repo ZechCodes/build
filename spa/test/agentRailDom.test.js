@@ -118,6 +118,8 @@ const CATALOG = {
 };
 
 const railHost = () => document.getElementById("agent-rail");
+const modelMenuButton = () => railHost().querySelector(".composer-model .caret");
+const menuItem = (action) => railHost().querySelector(`.composer-model .mi[data-action="${action}"]`);
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
@@ -1105,6 +1107,24 @@ describe("the chat tab of a branch with no agent", () => {
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-9", agent_id: "ag-2" });
   });
 
+  it("holds the model the menu chose until the send that creates the agent", async () => {
+    payload = agentless();
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    // Nothing on the wire: there is no agent yet to hold a choice, and this
+    // checkout may never be adopted at all.
+    expect(callsTo("agent.choose")).toEqual([]);
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toEqual({
+      entity_id: "run-3", provider: "claude_adk", model: "claude-opus-5",
+    });
+  });
+
   it("leaves the cards alone on a tick that says the same thing", async () => {
     payload = agentless();
     await mount();
@@ -1114,6 +1134,57 @@ describe("the chat tab of a branch with no agent", () => {
     await flush();
 
     expect(cards().every((entry, index) => entry === before[index])).toBe(true);
+  });
+});
+
+// The model menu sits on the composer's left, opposite the send. It edits what
+// the agent's NEXT turn runs on — a live session keeps what it opened with —
+// and it never asks which harness: the agent is locked to the one it was made
+// on, so the menu asks only what is still a question.
+describe("the composer's model menu", () => {
+  it("offers the open agent's own catalog, and says what the next turn runs on", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "low" })] });
+    await mount();
+
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · low");
+    modelMenuButton().click();
+    expect([...railHost().querySelectorAll(".composer-model .mi")].map((mi) => mi.dataset.action)).toEqual([
+      "model:", "model:claude-opus-5", "model:claude-haiku-4-5", "effort:", "effort:low", "effort:high",
+    ]);
+  });
+
+  it("persists the choice on the entity, saying nothing about the harness", async () => {
+    payload = branchRow({ agents: [agent()] });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+
+    expect(callsTo("agent.choose")[0].params).toEqual({
+      entity_id: "run-3", model: "claude-opus-5", effort: "",
+    });
+  });
+
+  it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.choose") throw new Error("agent.choose: the agent is locked to Claude Code");
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+
+    expect(notifyError).toHaveBeenCalledWith(
+      "Could not set the model",
+      "agent.choose: the agent is locked to Claude Code",
+    );
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
   });
 });
 

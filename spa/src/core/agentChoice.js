@@ -9,6 +9,7 @@
 import { esc } from "./text.js";
 import {
   catalogForProvider,
+  effortLevels,
   effortOptionsHtml,
   effortSupported,
   modelInCatalog,
@@ -81,6 +82,66 @@ export function readAgentChoice(root, prefix = "agent-choice") {
 export function agentChoiceParams(catalog, choice) {
   const models = catalogForProvider(catalog || {}, chosenProviderId(catalog, choice)).models || [];
   return modelParams(models, choice.model, choice.effort, choice.provider);
+}
+
+// ---- the composer's model menu ---------------------------------------------
+//
+// The same question the panel above asks, minus the harness: an agent is locked
+// to the one it was created on, so the composer's menu asks only what is still
+// open. The rows are the split button's menu half (core/splitButton.js), and
+// each one's id carries the field it sets, so a press says both what changed
+// and what to.
+
+const MENU_FIELD_SEPARATOR = ":";
+const menuOption = (field, value, label, description, selected) => ({
+  id: `${field}${MENU_FIELD_SEPARATOR}${value}`,
+  label,
+  description,
+  selected,
+});
+
+/** The menu's rows for one agent: its harness's models, then the reasoning
+ *  levels the chosen model takes — a model that takes none is not asked. */
+export function modelMenuOptions(catalog, providerId, choice) {
+  const forProvider = catalogForProvider(catalog || {}, providerId);
+  const models = forProvider.models || [];
+  const rows = [
+    menuOption("model", "", "Harness default", "the model the agent's own config picks", !choice.model),
+    ...models.map((model) =>
+      menuOption("model", model.id, model.label, "", model.id === choice.model),
+    ),
+  ];
+  if (!effortSupported(models, choice.model)) return rows;
+  const levels = effortLevels(forProvider.efforts, modelInCatalog(models, choice.model));
+  return [
+    ...rows,
+    menuOption("effort", "", "Default effort", "reasoning effort", !choice.effort),
+    ...levels.map((level) => menuOption("effort", level, level, "reasoning effort", level === choice.effort)),
+  ];
+}
+
+/** What the menu's button says: the model the next turn will run on and how
+ *  hard it will think, or that neither has been answered. A model the catalog
+ *  does not carry reads as the id the bridge holds — a choice made on a newer
+ *  bridge must not read as no choice at all. */
+export function modelMenuLabel(catalog, providerId, choice) {
+  if (!choice.model) return "Default model";
+  const model = modelInCatalog(catalogForProvider(catalog || {}, providerId).models || [], choice.model);
+  const name = model ? model.label : choice.model;
+  return choice.effort ? `${name} · ${choice.effort}` : name;
+}
+
+/** The choice one press makes, reconciled: a model change drops the effort that
+ *  hung off the model before it. The harness is never touched. */
+export function modelMenuSelection(actionId, choice) {
+  const separator = String(actionId || "").indexOf(MENU_FIELD_SEPARATOR);
+  const current = { ...NO_AGENT_CHOICE, ...choice };
+  if (separator === -1) return current;
+  const field = actionId.slice(0, separator);
+  const value = actionId.slice(separator + 1);
+  if (field === "model") return reconcileAgentChoice({ ...current, model: value }, { modelChanged: true });
+  if (field === "effort") return { ...current, effort: value };
+  return current;
 }
 
 /** A model belongs to its provider and an effort to its model, so changing one

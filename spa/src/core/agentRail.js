@@ -38,7 +38,7 @@ import {
 import { createAgentSelection } from "./agentSelection.js";
 import { reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
-import { composerHtml } from "./composer.js";
+import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, modelParams, providerCardsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
@@ -322,10 +322,11 @@ export function mountAgentRail(host, context) {
   // again — a poll rebuilding the panel later (a new agent, a mode switch)
   // must not keep yanking focus back while the human is doing something else.
   let autofocusComposerPending = context.autofocusComposer === true;
-  // The pinned box's controller, for the one thing on it a poll can move: which
-  // shape the send control is wearing. Null whenever the panel is not showing
-  // the conversation.
+  // The pinned box's controllers: the send, for the one thing on it a poll can
+  // move — which shape it is wearing — and the model menu on the other side of
+  // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
+  let composerModelMenu = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -572,6 +573,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.body = wantedBody;
       wireHead(panel);
       composerControl = null;
+      composerModelMenu = null;
       if (shownMode === "tui") mountTui();
       else {
         wireComposer(panel);
@@ -740,6 +742,7 @@ export function mountAgentRail(host, context) {
         hintId: COMPOSER_IDS.hint,
         placeholder: composerPlaceholder(),
         attachable: true,
+        modelMenu: true,
         canInterrupt: agentCanInterrupt(agentOf(selectedId)),
       })}</div>`;
 
@@ -751,6 +754,37 @@ export function mountAgentRail(host, context) {
   /// and gaining one rebuilds the panel around a conversation.)
   const syncComposer = () => {
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentOf(selectedId)));
+    if (!composerModelMenu) return;
+    const choice = composerChoice();
+    composerModelMenu.set(catalog, choice.provider, choice);
+  };
+
+  /** What the composer's model menu is editing: the open agent's own choice —
+   *  its harness names the catalog — or, before there is an agent, what the
+   *  first send will create one with. */
+  const composerChoice = () => {
+    const agent = agentOf(selectedId);
+    if (!agent) return { ...newAgentChoice(), provider: newAgentProvider() };
+    return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
+  };
+
+  /** A model or effort picked from that menu.
+   *
+   *  With an agent it is the entity's persisted choice, which the NEXT start
+   *  spends — the session running right now is never touched, which is what
+   *  makes the menu safe to press mid-turn. With none there is nothing on the
+   *  bridge to write to yet, so it waits for the send that creates one. */
+  const chooseModel = async (next) => {
+    if (!agentOf(selectedId)) {
+      writeNewAgentChoice(next);
+      return;
+    }
+    try {
+      await App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort });
+    } catch (error) {
+      notifyError("Could not set the model", error.message);
+    }
+    await refresh();
   };
 
   const wireTimeline = (body) => {
@@ -786,6 +820,8 @@ export function mountAgentRail(host, context) {
       onSubmit: (message, attachments, options) => send(message, attachments, options),
       onError: (error) => notifyError("Message failed", error.message),
     });
+    composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    syncComposer();
   };
 
   /** A reference in the conversation goes where it points, as far as the two

@@ -606,6 +606,9 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 /* A destructive option (force push) is named in red where it is READ — in the
    list, next to the ones it is being chosen over — never on the button chrome. */
 .splitmenu .mi.danger .mt { color:var(--red); }
+/* A menu that is a SELECTION rather than a verb (the composer's model menu)
+   marks the answer standing now, in the same place the answer is read. */
+.splitmenu .mi.on .mt { color:var(--accent); }
 /* The git bar sits at the top of its pane: a menu opening upward from it runs
    under the navigation bar and is cut off, so its menus open downward. */
 .gp-toolbar .splitmenu { top:calc(100% + 6px); bottom:auto; }
@@ -1150,6 +1153,18 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .composer-actions .splitbtn .btn { border-radius:9px; padding:6px 12px; font-size:12.5px; }
 .composer-actions .splitbtn .btn:not(.caret) { border-top-right-radius:0; border-bottom-right-radius:0; }
 .composer-actions .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; padding:6px 9px; }
+/* The model menu sits at the row's other end, opposite the send: what the next
+   turn will run on. It states a standing answer rather than asking for a press,
+   so it is the quietest control on the row — the mini vocabulary in dim ink,
+   with its chrome arriving on hover. */
+.composer-model { flex:0 0 auto; }
+.composer-model .btn.mini { max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  color:var(--dim); background:none; border-color:transparent; }
+.composer-model .btn.mini:hover { color:var(--ink2); border-color:var(--line); }
+/* One button, so it keeps its own left edge and its own corners. */
+.composer-model .splitbtn .caret { border-left:0; border-radius:8px; }
+/* Anchored to the left edge it hangs from, unlike the send's menu at the right. */
+.composer-model .splitmenu { left:0; right:auto; max-height:280px; overflow-y:auto; }
 .composer-attach { flex:0 0 auto; display:grid; place-items:center; width:30px; height:30px;
   border:0; border-radius:8px; background:none; color:var(--dim); cursor:pointer; }
 .composer-attach:hover { background:var(--panel); color:var(--ink2); }

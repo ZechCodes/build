@@ -128,12 +128,17 @@ export function effortSupported(models, selectedId) {
   return entry ? entry.supports_effort : true;
 }
 
+/** The reasoning levels on offer: the chosen model's own where it names them,
+ *  else the harness's. */
+export function effortLevels(efforts, model) {
+  return (model && Array.isArray(model.efforts) ? model.efforts : efforts) || [];
+}
+
 export function effortOptionsHtml(efforts, selected, model = null) {
-  const available = model && Array.isArray(model.efforts) ? model.efforts : efforts;
   const sel = (v) => (v === (selected || "") ? " selected" : "");
   return [
     `<option value=""${sel("")}>Default effort</option>`,
-    ...available.map((e) => `<option value="${esc(e)}"${sel(e)}>${esc(e)}</option>`),
+    ...effortLevels(efforts, model).map((e) => `<option value="${esc(e)}"${sel(e)}>${esc(e)}</option>`),
   ].join("");
 }
 

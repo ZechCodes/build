@@ -3495,6 +3495,242 @@ SPA (`npm test`):
    to `claude_mode` when the bridge refuses the new key;
 7. `loadAgentDefaults` returns a stored `claude_adk` unaliased.
 
+### Step 15 in detail — a row is its content, and two agents to choose from
+
+*Specified 2026-08-31. Branch `build/chat-polish`.* Two screenshots of the
+shipped work say the same thing about two different surfaces: the interface
+spends its space announcing categories instead of showing content. The
+expanded activity list reads "Claude Code called a tool Bas…", "Claude Code
+narrated The de…", "Background task started — P…" — the kind label eats the
+line and the meat is what gets truncated, with the outcome mark parked off to
+the right past the timestamp. And the new-agent view offers three cards —
+"Claude Code", "Claude Code TUI", "Codex" — putting a carrier question in
+front of every human that step 13 already judged, rightly, to be an
+account-level question. Step 15 fixes both. **An activity row is its content:
+the icon carries the kind, the outcome mark rides the line directly after the
+text, and a tool call reads as the thing it ran — `Bash cargo test`, never a
+JSON object. And the harness choice is two cards, "Claude Code" and "Codex";
+the account setting decides which carrier a new Claude Code agent gets.**
+Step 14's lock is untouched: an agent keeps the harness it was created on,
+forever — the setting has its say once, at creation, and never again.
+
+#### 15.1 Per-tool summaries, minted at the source
+
+`tool_call_summary` (`adk.rs:1062`) renders a call as its single string
+argument when there is exactly one, and as compact JSON otherwise — which is
+how the timeline came to read `Bash {"command":"cargo test","description":…}`
+the moment a call carried a second field. The JSON arm dies. The new rule,
+still in the one free function:
+
+- **A table names each tool's one human argument** — the meat key, matched on
+  the protocol's tool name:
+
+  | tool | meat key |
+  |---|---|
+  | `Bash` | `command` |
+  | `Read`, `Write`, `Edit` | `file_path` |
+  | `NotebookEdit` | `notebook_path` |
+  | `Glob`, `Grep` | `pattern` |
+  | `WebFetch` | `url` |
+  | `WebSearch` | `query` |
+  | `Task` | `description` |
+
+  A listed tool whose key holds a string mints `{tool} {value}`. Everything
+  else the call carried is **dropped** — including Bash's `description`,
+  deliberately: the description is the model's paraphrase and the command is
+  the record, and a row is one quiet line, not two claims about the same act.
+- **The fallback never prints braces.** A tool not in the table — an MCP tool,
+  a tool newer than this table — mints `{tool} {first string-valued field of
+  the input object}`, in the object's own order; with no string field
+  anywhere, the tool name alone. This generalizes the shipped
+  single-string-arg rule (a lone string arg IS the first string field) and
+  reverses the old "anything else keeps its shape as compact JSON" stance by
+  name: that stance held that picking one of three arguments would misdescribe
+  the call, but the screenshot shows what JSON buys instead — a line of
+  punctuation nobody can scan. The row is a scent; the diff and the fold body
+  are the record. A truncated-but-human line beats braces every time.
+- **The tool name still leads.** `Bash cargo test`, `Read bridge/src/app.rs` —
+  the screenshot's density argues for dropping it, but the icon carries only
+  "tool call", not which tool, and `Edit foo.rs` versus `Read foo.rs` is a
+  distinction worth five characters. One shape for every call, which is
+  exactly the shape single-string calls already mint, so half the persisted
+  rows already read this way.
+- **Old rows keep their minted text, and the SPA prettifies nothing.** A
+  display-only regex over legacy `{tool} {json}` summaries is cheap, but it is
+  a second half-copy of the parse that would then need to agree with the mint
+  forever. Persisted summaries are records; `tool_call_summary` is the single
+  author; a row minted before this step reads as it was minted. Same call on
+  clipping: `one_line` / `TOOL_SUMMARY_LIMIT` (`adk.rs:182/1172`) apply
+  unchanged after the meat is chosen.
+
+#### 15.2 Label-free rows, and the mark on the line
+
+The kind labels go. Every activity row — expanded in an open run, and the
+collapsed run line — is its content:
+
+- **`activityHtml`** (`core/thread.js:767`) drops the
+  `thread-activity-what` span. Its head text becomes
+  `activityMeat(event, meta, agentLabel)` (`thread.js:801`) — the exact
+  function the collapsed run line already reads, so "the line a row shows" has
+  ONE implementation and the expanded row and the run head can never disagree.
+  `activityMeat`'s own fallback already answers the no-summary edge: an event
+  with no summary shows its label, because a blank line is worse.
+- **The head's order is icon, meat, mark, time.** `toolOutcomeHtml`
+  (`thread.js:744`) moves from after `timeHtml` to directly after the preview
+  span, in both `activityHtml` and `activityRunHtml` (`thread.js:821`) — the
+  outcome is a fact about the content, so it sits with the content, and the
+  timestamp goes back to being the line's quiet right edge. The marks
+  themselves (`TOOL_OUTCOME_MARKS`, the pending-is-absence rule, error tone on
+  the mark alone) are unchanged.
+- **The label survives as metadata, not as text.** The icon span trades
+  `aria-hidden` for `role="img"` + `aria-label` carrying the kind's label on
+  the expanded row, so a screen reader still hears "Claude Code called a
+  tool"; the run head's icon stays decorative. `EVENT_META`'s activity labels
+  (`thread.js:18`) are kept for exactly these two jobs — aria and the
+  no-summary fallback — and nothing else.
+- **`task_update` mints flip description-first.** `started — Deploy watch`
+  was written for a row whose label said whose line it was; label-free it
+  leads with its least informative word. The mints become
+  `{description} — started` (`read_task_roster`/`read_task_started`,
+  `adk.rs:749/776`), `{description} — finished` and
+  `{description} — failed: {error}` (`ended_summary`, `adk.rs:1137`). The
+  notification row (`{description}: {said}`, `adk.rs:853`) is already
+  description-first and is untouched. Rows persisted in the old wording
+  render forever as minted, same rule as tool summaries.
+- **Non-activity events are untouched.** `session_started`, `committed`,
+  `done` and the rest keep their bold labels — they are the conversation's
+  record of things that happened, not the working ticker, and their rows are
+  the label.
+
+#### 15.3 Two cards, and the setting is the mode
+
+The user-facing harness vocabulary is two agents: **"Claude Code"** and
+**"Codex"**. Whether Claude Code opens headless or as the TUI is the
+account's `default_harness` setting — which already holds the answer, because
+its three concrete tokens fold the two questions (default agent × Claude
+Code's carrier) into one stored field. Nothing bridge-side moves:
+
+- **The setting, the wire, and the Settings page are untouched.**
+  `default_harness` (`app.rs:1864`), `settings_get`/`settings_set`
+  (`app.rs:6579/6593`) with the `claude_mode`/`codex_mode` compat aliases,
+  `model_choice_from` (`app.rs:15080`, absent → default, named → concrete),
+  `ensure_primary_agent`, the roster's `turn_choice` lock, and the Account
+  page's one three-option select (`core/defaultHarness.js`) all stand as
+  step 14 built them. The three-option select IS the mode control: choosing
+  "Claude Code TUI" as the default is what makes a new Claude Code agent a
+  TUI one. The two-control alternative (default agent + a separate Claude
+  Code mode) would exist to express one combination — a Codex default whose
+  Claude Code card creates TUI agents — and that combination buys a second
+  stored field, a second panel, and a second compat story for a preference
+  nobody has voiced. Cut, and owned: under a Codex default, "Claude Code"
+  means the plain name's own carrier, `claude_adk`.
+- **The SPA sends the concrete token, and the bridge stays literal.** Of the
+  two revivals on offer — the bridge re-learning a generic `"claude"`
+  resolution at the mint chokepoint (step 13's machinery), or the client
+  naming the carrier — the client naming it is the one with a single
+  authority: the authority is `default_harness`, the client reads it through
+  `models.list`'s `default_provider` (already fetched wherever a picker
+  paints, `app.rs:5827`), and the wire keeps step 14's every-token-concrete
+  rule, so no token means two things across verbs and the lock machinery
+  never meets an ambiguous name. One helper in `modelPicker.js`:
+
+  ```js
+  /** The two agents a person can create, with the account's answer folded in:
+   *  the Claude Code card carries the TUI carrier only when the account's own
+   *  default IS the TUI carrier. */
+  export function creatableAgents(defaultProviderId) {
+    const claudeId = defaultProviderId === "claude" ? "claude" : "claude_adk";
+    return [{ id: claudeId, label: "Claude Code" }, { id: "codex", label: "Codex" }];
+  }
+  ```
+
+- **Every startable list reads it.** The new-agent cards
+  (`agentRail.js:690`, `providerCardsHtml(creatableAgents(…), chosen)` — the
+  card markup and `data-provider` wiring unchanged), the rail's
+  `newAgentChoice` fallback (`agentRail.js:354`), the compose/dispatch panel's
+  Agent select (`agentChoicePanelHtml`, `agentChoice.js:55`), the issue
+  assignment select (`issueRender.js:126`), and the Agent defaults panel
+  (`views/settings.js:140`) — whose `startableCatalogProviders`
+  (`modelPicker.js:36`) changes from "filter the catalog to
+  `STARTABLE_PROVIDERS`" to "filter the catalog to
+  `creatableAgents(catalog.default_provider)`, labeled as the cards label
+  them", taking the catalog whole since both call sites hold one.
+- **A stored preference naming the other claude carrier clamps, through code
+  that already exists.** `chosenProviderId` (`agentChoice.js:28`) answers the
+  named provider only when the offered list holds it, else the catalog
+  default — so a browser-local `"claude"` preference under a `claude_adk`
+  account default paints as the Claude Code entry with no new alias helper.
+  `loadAgentDefaults` stays unaliased (§14.10 test 7 stands): the stored
+  token is a record, the paint is where the offer clamps it.
+- **`STARTABLE_PROVIDERS` survives as the full vocabulary** — three entries,
+  three distinct labels — for what it still owns: `providerLabel` (a TUI
+  agent's bubble still reads "Claude Code TUI"; the lock makes side-by-side
+  carriers real, so their names stay distinct per step 14), and the Account
+  select's options via `defaultHarnessOf`/`providerOptionsHtml`. "headless"
+  stays banned from every user-facing string; "Claude Code" keeps "Code".
+- **The lock, the auto-add, and agentless branches are unchanged by
+  construction.** `agent.add` gets a concrete provider from the card;
+  `ensure_primary_agent` and the router already spend `self.default_harness`
+  concretely; `turn_choice` respawns the locked harness. No bridge line
+  changes in this half of the step.
+
+#### 15.4 DRY inventory — what gets reused, never copied
+
+| Need | The one implementation | Reused by |
+|---|---|---|
+| the line a row shows | `activityMeat` (`thread.js`) | expanded row head AND collapsed run head |
+| the outcome mark | `toolOutcomeHtml` | both heads, position moved in both |
+| a call's summary | `tool_call_summary` + the meat-key table (`adk.rs`) | every minted row; the SPA never re-parses one |
+| clipping | `one_line` / `TOOL_SUMMARY_LIMIT` | tool summaries, task rows, unchanged |
+| a task row's ending words | `ended_summary` | the terminal patch and the terminal notification |
+| the two-card list | `creatableAgents` (`modelPicker.js`) | new-agent cards, compose/dispatch select, issue assignment, Agent defaults panel |
+| card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the new list |
+| offer clamping | `chosenProviderId`'s membership fallback | stored-preference edge, no new alias |
+| full label vocabulary | `STARTABLE_PROVIDERS` / `providerLabel` | bubbles, Account select, refusals |
+| the account's answer | `default_harness`, read as `models.list.default_provider` | `creatableAgents` at every paint; the bridge's own auto-add |
+
+#### 15.5 The tests
+
+Bridge (`cargo test`, no model turns — `tool_call_summary` and the task mints
+are free functions, and the pump legs drive `adk::fake`):
+
+1. `Bash` with `command` and `description` mints `Bash {command}` exactly —
+   no description, no brace;
+2. each listed tool mints `{tool} {meat}`: `Read`/`Write`/`Edit` the
+   `file_path`, `Glob`/`Grep` the `pattern`, `WebFetch` the `url`,
+   `WebSearch` the `query`, `Task` the `description`,
+   `NotebookEdit` the `notebook_path`;
+3. an unlisted multi-field tool mints its first string-valued field after the
+   name, and the summary contains no `{`;
+4. an unlisted tool with no string field mints the bare tool name; a listed
+   tool whose meat key is absent falls through to the same fallback;
+5. a 500-character command clips at `TOOL_SUMMARY_LIMIT` with the ellipsis;
+6. task rows mint description-first: roster insert and `task_started` mint
+   `{description} — started`, roster removal `{description} — finished`, a
+   failed terminal patch `{description} — failed: {error}`, and the
+   notification row (`{description}: {said}`) is unchanged;
+7. through the fake (recording probe-recorded, per the module's rule): a
+   `Bash` `tool_use` lands a thread row whose summary is the command line.
+
+SPA (`npm test`):
+
+1. an expanded activity row renders no label span; its head text is the
+   summary's first line; the icon carries the kind's label as `aria-label`;
+2. an activity event with no summary shows the label as its line;
+3. in both the expanded head and the run head, the outcome mark follows the
+   preview and precedes the time — the order asserted on the markup;
+4. a legacy row whose persisted summary is `Tool {"a":1}` renders verbatim;
+5. the new-agent view renders exactly two cards, "Claude Code" and "Codex";
+   under `default_provider` `"claude"` the Claude Code card carries
+   `data-provider="claude"`, under `"claude_adk"` and `"codex"` it carries
+   `"claude_adk"`; the send composes `agent.add` with the card's concrete
+   provider;
+6. the compose/dispatch and issue selects offer the two entries; a stored
+   provider `"claude"` under a `claude_adk` default paints the Claude Code
+   entry;
+7. the Account select still offers the three distinct names (unchanged), and
+   `providerLabel("claude")` still reads "Claude Code TUI".
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -3617,6 +3853,29 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, step 15 specified — a row is its content, and two agents to
+  choose from** (branch `build/chat-polish`). Two screenshots showed the kind
+  labels eating the activity lines and the three-card new-agent view putting a
+  carrier question back in front of every human. Activity rows drop every
+  label: the expanded head reads through `activityMeat` — the same function
+  the collapsed run line reads, so the line has one implementation — with the
+  outcome mark moved inline after the text in both heads, the label surviving
+  only as the icon's `aria-label` and the no-summary fallback, and
+  `task_update` mints flipped description-first (`{description} — started`).
+  Tool summaries are minted per tool at `tool_call_summary`: a meat-key table
+  (Bash → `command`, file tools → `file_path`, `Glob`/`Grep` → `pattern`, …),
+  Bash's description dropped, the name still leading, and the JSON fallback
+  replaced by first-string-field-or-bare-name — braces never; legacy rows
+  render as minted, the SPA prettifies nothing. The harness choice becomes
+  two cards, "Claude Code" and "Codex", via one `creatableAgents` helper fed
+  to every startable list; the account's existing three-token
+  `default_harness` IS the mode setting (its claude token decides what the
+  Claude Code card creates; under a Codex default the plain name means
+  `claude_adk`), so the bridge, the wire, the compat aliases and the Settings
+  page are untouched, the SPA keeps sending concrete tokens, and step 14's
+  lock, auto-add and agentless-branch machinery stand unchanged. This
+  supersedes §14.5's three-card view and revives the substance of step 13's
+  mode setting without its generic-token resolution.
 - **2026-08-31, the harness lock holds on every respawn.** Review found the
   lock §14 exists to hold broken by §14.5's own flagship flow: the lock is
   per-AGENT, but `agent.start`, `PendingAgentTurn::for_run`/`for_run_agent`/

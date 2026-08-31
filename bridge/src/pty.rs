@@ -873,11 +873,17 @@ mod tests {
         // unsynchronised PATH snapshots made this test environment-sensitive.
         let marker = format!("inherit-{}", uuid::Uuid::new_v4());
         std::env::set_var("BUILD_BRIDGE_ENV_INHERITANCE_TEST", &marker);
+        // The harness waits for a line before it prints, as
+        // `prompt_roundtrips_through_the_pty`'s does. A harness that printed on
+        // spawn could be finished before `subscribe` ran — a subscriber only
+        // sees what is sent after it, so on a loaded machine this test read an
+        // already-closed stream and called an inherited variable missing.
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf 'MARKER[%s]' \"$BUILD_BRIDGE_ENV_INHERITANCE_TEST\"");
+            .arg("read _; printf 'MARKER[%s]' \"$BUILD_BRIDGE_ENV_INHERITANCE_TEST\"");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         let mut rx = session.subscribe();
+        session.write_input(b"go\r").unwrap();
 
         let out = read_until(&mut rx, "MARKER[").await;
         assert!(
@@ -931,12 +937,15 @@ mod tests {
 
     #[tokio::test]
     async fn spec_env_overrides_the_inherited_value() {
+        // Waits for a line for the same reason the test above does: output sent
+        // before `subscribe` is output this test can never read.
         let spec = HarnessSpec::new("sh")
             .arg("-c")
-            .arg("printf 'TERM[%s]' \"$TERM\"")
+            .arg("read _; printf 'TERM[%s]' \"$TERM\"")
             .env("TERM", "build-test-term");
         let session = PtySession::spawn(&spec, None, small_pty()).unwrap();
         let mut rx = session.subscribe();
+        session.write_input(b"go\r").unwrap();
 
         let out = read_until(&mut rx, "TERM[").await;
         assert!(out.contains("TERM[build-test-term]"), "got: {out:?}");

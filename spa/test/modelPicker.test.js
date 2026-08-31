@@ -9,7 +9,7 @@ import {
   normalizeModelCatalog,
   providerLabel,
   providerOptionsHtml,
-  startableCatalogProviders,
+  creatableCatalog,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
 
@@ -73,18 +73,62 @@ describe("the harnesses an agent can be created on", () => {
     ].join(" ");
     expect(shown).not.toMatch(/headless/i);
   });
+});
 
-  it("keeps the catalog entries a picker may offer, under one vocabulary", () => {
-    const kept = startableCatalogProviders([
-      { id: "claude_adk", label: "Claude Code", models: MODELS },
-      { id: "claude", label: "Claude Code", models: MODELS },
-      { id: "codex", label: "Codex", models: [] },
-      { id: "gemini", label: "Gemini", models: [] },
-    ]);
-    expect(kept.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+// What a create surface offers is two agents, never three. Whether Claude Code
+// opens as the TUI is the account's question, answered once in Settings, and
+// asking it again in front of every new agent is the thing this narrowing ends.
+describe("the catalog a create surface offers", () => {
+  const threeProviders = (defaultProvider) => ({
+    default_provider: defaultProvider,
+    providers: [
+      { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+      { id: "claude", label: "Claude Code", models: [], efforts: [] },
+      { id: "codex", label: "Codex CLI", models: [{ id: "gpt-5.6-sol", label: "GPT-5.6-Sol" }], efforts: ["low"] },
+    ],
+  });
+
+  it("offers two agents out of the three the bridge serves", () => {
+    const offered = creatableCatalog(threeProviders("claude_adk"));
+
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
     // The labels are the client's one naming table, so an older bridge that
     // called both claude carriers the same thing cannot show the name twice.
-    expect(kept.map((provider) => provider.label)).toEqual(["Claude Code", "Claude Code TUI", "Codex"]);
+    expect(offered.providers.map((provider) => provider.label)).toEqual(["Claude Code", "Codex"]);
+  });
+
+  it("gives the Claude Code card the carrier the account chose, and only then", () => {
+    const claudeIds = (defaultProvider) =>
+      creatableCatalog(threeProviders(defaultProvider)).providers.map((provider) => provider.id);
+
+    expect(claudeIds("claude")).toEqual(["claude", "codex"]);
+    expect(claudeIds("claude_adk")).toEqual(["claude_adk", "codex"]);
+    // Under a Codex default, "Claude Code" means the plain name's own carrier.
+    expect(claudeIds("codex")).toEqual(["claude_adk", "codex"]);
+  });
+
+  it("carries each agent the models the bridge listed for the carrier behind it", () => {
+    const offered = creatableCatalog(threeProviders("claude_adk"));
+
+    expect(offered.providers[0].models).toEqual(MODELS);
+    expect(offered.providers[0].efforts).toEqual(EFFORTS);
+    expect(offered.providers[1].models.map((model) => model.id)).toEqual(["gpt-5.6-sol"]);
+  });
+
+  // Creating an agent needs only a harness, and the cards paint before the
+  // models.list round trip answers — so the offer is two either way.
+  it("offers both agents before the bridge has listed a single model", () => {
+    const offered = creatableCatalog({});
+
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+    expect(offered.providers.every((provider) => provider.models.length === 0)).toBe(true);
+  });
+
+  it("never puts the carrier question in front of a person", () => {
+    const shown = providerOptionsHtml(creatableCatalog(threeProviders("claude_adk")).providers, "claude_adk");
+
+    expect(shown).not.toContain("Claude Code TUI");
+    expect(shown).not.toMatch(/headless/i);
   });
 });
 

@@ -9,6 +9,7 @@
 import { esc } from "./text.js";
 import {
   catalogForProvider,
+  creatableCatalog,
   effortLevels,
   effortOptionsHtml,
   effortSupported,
@@ -21,12 +22,14 @@ import {
 /** The empty choice: whatever the daemon's catalog says is default. */
 export const NO_AGENT_CHOICE = { provider: "", model: "", effort: "" };
 
-const providersOf = (catalog) => (catalog && catalog.providers) || [];
-
 /** The provider a choice is really on: the one it named, else the catalog's
- *  default, else the first the daemon offers. */
+ *  default, else the first the daemon offers.
+ *
+ *  Over a narrowed catalog this is also what clamps a stale preference: a token
+ *  the offer does not hold is answered with the default, so a provider stored
+ *  when a third harness was on offer paints and dispatches as one of the two. */
 export function chosenProviderId(catalog, choice) {
-  const providers = providersOf(catalog);
+  const providers = (catalog && catalog.providers) || [];
   const named = choice && choice.provider;
   if (named && providers.some((provider) => provider.id === named)) return named;
   const fallback = catalog && catalog.default_provider;
@@ -41,10 +44,16 @@ export function chosenProviderId(catalog, choice) {
  *
  * `prefix` names the three controls, so two panels can be open at once without
  * either one answering for the other.
+ *
+ * Both callers create or dispatch, so the Agent select offers the two agents a
+ * person can create — never the carrier question behind Claude Code, which the
+ * account has already answered. An agent that already exists is locked to its
+ * own harness and asks none of this: its picker is the composer's model menu.
  */
 export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice", open = false } = {}) {
-  const providerId = chosenProviderId(catalog, choice);
-  const forProvider = catalogForProvider(catalog || {}, providerId);
+  const offered = creatableCatalog(catalog || {});
+  const providerId = chosenProviderId(offered, choice);
+  const forProvider = catalogForProvider(offered, providerId);
   const models = forProvider.models || [];
   const model = modelInCatalog(models, choice.model);
   return `<div class="agent-choice">
@@ -52,10 +61,7 @@ export function agentChoicePanelHtml(catalog, choice, { prefix = "agent-choice",
       ${open ? "▾" : "▸"} Agent, model and effort</button>
     <div class="agent-choice-fields"${open ? "" : " hidden"}>
       <label for="${esc(prefix)}-provider">Agent</label>
-      <select id="${esc(prefix)}-provider">${providerOptionsHtml(
-        providersOf(catalog).map((provider) => ({ id: provider.id, label: provider.label || provider.id })),
-        providerId,
-      )}</select>
+      <select id="${esc(prefix)}-provider">${providerOptionsHtml(offered.providers, providerId)}</select>
       <label for="${esc(prefix)}-model">Model</label>
       <select id="${esc(prefix)}-model">${modelOptionsHtml(models, choice.model)}</select>
       <label for="${esc(prefix)}-effort">Effort</label>
@@ -78,10 +84,16 @@ export function readAgentChoice(root, prefix = "agent-choice") {
 }
 
 /** The choice as create/dispatch params: empties are omitted (the harness's own
- *  default stands), and an effort the model does not support is dropped. */
+ *  default stands), and an effort the model does not support is dropped.
+ *
+ *  The provider sent is the CLAMPED one — what the select painted — so a stale
+ *  token cannot ride out on the wire under a control that showed another name.
+ *  An empty provider still means the harness's own default and stays empty. */
 export function agentChoiceParams(catalog, choice) {
-  const models = catalogForProvider(catalog || {}, chosenProviderId(catalog, choice)).models || [];
-  return modelParams(models, choice.model, choice.effort, choice.provider);
+  const offered = creatableCatalog(catalog || {});
+  const providerId = chosenProviderId(offered, choice);
+  const models = catalogForProvider(offered, providerId).models || [];
+  return modelParams(models, choice.model, choice.effort, choice.provider ? providerId : "");
 }
 
 // ---- the composer's model menu ---------------------------------------------

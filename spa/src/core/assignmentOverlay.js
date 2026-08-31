@@ -118,14 +118,20 @@ export function openAssignmentOverlay({
    *
    *  An assignment that names nothing for a field is not an empty field: it is
    *  the catalog's own default, which the markup has already selected. Only a
-   *  value the reviewer chose is written back over it. */
+   *  value the reviewer chose is written back over it — and only one the field
+   *  can actually show: a select handed a value none of its options carries
+   *  goes blank, which is how a preference the offer no longer holds would
+   *  empty the control the markup had already clamped. */
+  const showable = (field, value) =>
+    field.tagName !== "SELECT" || [...field.options].some((option) => option.value === value);
+
   const syncValues = () => {
     const assignment = getAssignment();
     for (const [selector, key] of FIELDS) {
       const field = inner.querySelector(selector);
       if (!field) continue;
       const wanted = assignment[key] == null ? "" : String(assignment[key]);
-      if (wanted !== "" && field.value !== wanted) field.value = wanted;
+      if (wanted !== "" && field.value !== wanted && showable(field, wanted)) field.value = wanted;
     }
   };
 

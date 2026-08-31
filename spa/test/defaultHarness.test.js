@@ -49,7 +49,7 @@ describe("the harness a settings payload names", () => {
 });
 
 describe("the default-agent panel", () => {
-  it("is one select, naming the three agents in the words the cards use", async () => {
+  it("is one select, naming all three agents — the one place a carrier is chosen", async () => {
     const callRpc = vi.fn(async () => ({ default_harness: "claude_adk", claude_mode: "headless" }));
     const host = panel();
     await mountDefaultHarness(host, { callRpc });
@@ -62,6 +62,19 @@ describe("the default-agent panel", () => {
     // Not one visible word about how any of them is carried.
     expect(host.textContent).not.toMatch(/headless/i);
     expect(host.textContent).not.toMatch(/carrier/i);
+  });
+
+  // Everywhere an agent is created offers two: Claude Code and Codex. This
+  // select is the only place the third name appears, so it is the only place
+  // that can say what choosing it does.
+  it("says what choosing Claude Code TUI does, since no other screen can", async () => {
+    const host = panel();
+    await mountDefaultHarness(host, { callRpc: vi.fn(async () => ({ default_harness: "claude_adk" })) });
+    await flush();
+
+    expect(host.textContent).toContain("Claude Code TUI");
+    expect(host.textContent).toContain("terminal");
+    expect(host.textContent).not.toMatch(/headless/i);
   });
 
   it("saves the chosen harness on the bridge and repaints from what it answers", async () => {
@@ -186,7 +199,10 @@ describe("the Settings page", () => {
     expect(document.getElementById("root").textContent).not.toMatch(/headless/i);
   }, SLOW_IMPORT_MS);
 
-  it("offers the agent defaults one per harness", async () => {
+  // These defaults are spent creating agents, so they offer what every create
+  // surface offers — the two agents. Which carrier "Claude Code" means is the
+  // Default agent panel's question, and it is asked exactly once.
+  it("offers the agent defaults the two agents, not the three harnesses", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
@@ -204,8 +220,10 @@ describe("the Settings page", () => {
     });
 
     const defaults = document.getElementById("defprovider");
-    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "claude", "codex"]);
-    expect([...defaults.options].map((option) => option.textContent)).toEqual([
+    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
+    // The account's own question is still asked, once, in its own panel.
+    expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([
       "Claude Code",
       "Claude Code TUI",
       "Codex",

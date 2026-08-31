@@ -36,10 +36,10 @@ import {
   selectAgentId,
 } from "./agentRailModel.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { NO_AGENT_CHOICE, reconcileAgentChoice } from "./agentChoice.js";
+import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
-import { catalogForProvider, modelParams, providerCardsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
+import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
@@ -343,16 +343,20 @@ export function mountAgentRail(host, context) {
 
   // ---- the agent that does not exist yet -------------------------------------
 
+  /** The two agents this view offers, with the account's answer folded in: one
+   *  of them IS the account's default harness (`models.list`'s
+   *  `default_provider`), so the carrier question is never asked here. */
+  const creatable = () => creatableCatalog(catalog || {});
+
   /** What the first send on this work item will create: whatever the human has
-   *  said here, over the account's default harness (`models.list`'s
-   *  `default_provider`) until a card is pressed. Resolved once, so the cards,
-   *  the composer's menu and the `agent.add` params cannot disagree. */
+   *  said here, over the account's default harness until a card is pressed —
+   *  and clamped onto what is actually offered, so a choice held from before
+   *  the account moved its default highlights a card rather than none.
+   *  Resolved once, so the cards, the composer's menu and the `agent.add`
+   *  params cannot disagree. */
   const newAgentChoice = () => {
     const said = newAgentChoices.get(key) || NO_AGENT_CHOICE;
-    return {
-      ...said,
-      provider: said.provider || (catalog && catalog.default_provider) || STARTABLE_PROVIDERS[0].id,
-    };
+    return { ...said, provider: chosenProviderId(creatable(), said) };
   };
   const writeNewAgentChoice = (next) => newAgentChoices.set(key, next);
 
@@ -687,7 +691,7 @@ export function mountAgentRail(host, context) {
   const paintNewAgent = (body) => {
     const chosen = newAgentChoice().provider;
     if (body.dataset.newAgent === chosen) return;
-    body.innerHTML = `<div class="rail-newagent">${providerCardsHtml(STARTABLE_PROVIDERS, chosen)}</div>`;
+    body.innerHTML = `<div class="rail-newagent">${providerCardsHtml(creatable().providers, chosen)}</div>`;
     body.dataset.newAgent = chosen;
     body.querySelector(".rail-newagent").onclick = (event) => {
       const card = event.target.closest(".chooser-card");
@@ -974,7 +978,11 @@ export function mountAgentRail(host, context) {
 
   /** Another agent on this branch, beside the ones already here. It starts on
    *  the harness this browser prefers (an empty preference sends nothing and
-   *  the daemon's own default stands) and nothing runs until it is spoken to. */
+   *  the daemon's own default stands) and nothing runs until it is spoken to.
+   *
+   *  The preference is a record and the offer is where it clamps: a browser
+   *  that stored the carrier no surface offers any more creates the agent every
+   *  other surface would have created. */
   const pressAddBubble = async () => {
     if (!entity.entityId) return;
     const defaults = loadAgentDefaults();
@@ -982,6 +990,7 @@ export function mountAgentRail(host, context) {
     for (const field of ["provider", "model", "effort"]) {
       if (defaults[field]) params[field] = defaults[field];
     }
+    if (params.provider) params.provider = chosenProviderId(creatable(), defaults);
     try {
       await addAgent(params);
       await refresh();

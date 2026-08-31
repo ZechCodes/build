@@ -31,6 +31,17 @@ const catalog = {
   ],
 };
 
+/** What a bridge since step 14 serves: three harnesses, under an account whose
+ *  default is the plain Claude Code one. */
+const threeHarnesses = {
+  default_provider: "claude_adk",
+  providers: [
+    { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+    { id: "claude", label: "Claude Code", models: [], efforts: [] },
+    { id: "codex", label: "Codex", models: [], efforts: [] },
+  ],
+};
+
 const mount = (html) => {
   const host = document.createElement("div");
   host.innerHTML = html;
@@ -66,6 +77,25 @@ describe("the panel", () => {
     expect(host.querySelector("#agent-choice-effort").disabled).toBe(true);
   });
 
+  // The panel is a create/dispatch surface, so it asks which agent, never which
+  // carrier: the bridge serves three harnesses and the select offers two.
+  it("offers the two agents, out of the three the bridge serves", () => {
+    const host = mount(agentChoicePanelHtml(threeHarnesses, NO_AGENT_CHOICE, { open: true }));
+
+    const options = [...host.querySelectorAll("#agent-choice-provider option")];
+    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
+  });
+
+  // A preference stored when the other carrier was on offer. It is a record,
+  // and the offer is where it clamps: the panel paints the Claude Code entry
+  // rather than painting nothing selected.
+  it("paints a stored preference for the other claude carrier as Claude Code", () => {
+    const host = mount(agentChoicePanelHtml(threeHarnesses, { provider: "claude", model: "", effort: "" }, { open: true }));
+
+    expect(host.querySelector("#agent-choice-provider").value).toBe("claude_adk");
+  });
+
   it("keeps two panels apart by their own prefix", () => {
     const host = mount(agentChoicePanelHtml(catalog, NO_AGENT_CHOICE, { prefix: "tb-choice", open: true }));
     expect(host.querySelector("#tb-choice-provider")).toBeTruthy();
@@ -88,6 +118,15 @@ describe("the choice as params", () => {
       provider: "claude",
       model: "haiku",
     });
+  });
+
+  // What the select painted is what the send carries. A stale token cannot ride
+  // out on the wire under a control that showed the reader a different name.
+  it("sends the agent the panel painted, not the stale token behind it", () => {
+    expect(agentChoiceParams(threeHarnesses, { provider: "claude", model: "", effort: "" })).toEqual({
+      provider: "claude_adk",
+    });
+    expect(agentChoiceParams(threeHarnesses, NO_AGENT_CHOICE)).toEqual({});
   });
 });
 

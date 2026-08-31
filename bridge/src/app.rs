@@ -6593,10 +6593,11 @@ impl AppState {
             Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
             None => None,
         };
-        // A step-13 client names the same setting in an older vocabulary. Both
-        // are parsed; the new key wins when a client sends both, because that
-        // is the one this bridge writes back.
-        let claude_mode = match params.get("claude_mode") {
+        // A step-13 client names the same setting in an older vocabulary, so
+        // `claude_mode` is parsed into the harness it means. Both are parsed;
+        // the new key wins when a client sends both, because that is the one
+        // this bridge writes back.
+        let harness_named_as_a_claude_mode = match params.get("claude_mode") {
             Some(named) => {
                 let named = named.as_str().unwrap_or_default();
                 Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
@@ -6615,7 +6616,7 @@ impl AppState {
                     )
                 })?)
             }
-            None => claude_mode,
+            None => harness_named_as_a_claude_mode,
         };
         // Wired like a real field so the Account page has one idiom, hard-locked
         // because there is no other Codex to open.

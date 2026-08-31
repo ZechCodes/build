@@ -3300,10 +3300,13 @@ provider? }` — and `adoption.js`'s `startAdoptedAgent` (`adoption.js:118`,
 which seeds `run.adopt`'s `provider` param and forwards the same token on the
 start; today only `test/agentStart.test.js` drives it) are unchanged code. What
 changes underneath them is only the bridge's reading: for an entity that HAS
-agents the start respawns the locked harness, and a named provider is the
-switch it always was; for one with none, the named provider persists through
-`set_entity_model_choice` and `ensure_primary_agent` mints the primary on it,
-while a bare start mints on the default harness. So `run.adopt` no longer
+agents the start respawns the harness the named agent is locked to — a
+provider named alongside still moves the entity's record, but it cannot
+re-carrier an agent that already exists; for one with none, the named provider
+persists through `set_entity_model_choice` and `ensure_primary_agent` mints the
+primary on it, while a bare start mints on the default harness. `agent.add`
+onto an empty roster persists its own choice the same way, so a branch and its
+primary never disagree about what the branch runs. So `run.adopt` no longer
 minting an agent costs these paths nothing — the adopt-time `provider` param
 survives as the entity's persisted choice and the first agent is created on it.
 
@@ -3614,6 +3617,27 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, the harness lock holds on every respawn.** Review found the
+  lock §14 exists to hold broken by §14.5's own flagship flow: the lock is
+  per-AGENT, but `agent.start`, `PendingAgentTurn::for_run`/`for_run_agent`/
+  `for_plan`/`for_recovery` all spawned from the ENTITY's choice. Pick the
+  "Claude Code TUI" card on a branch adopted on the default and the first
+  delivery was right while the pane's Resume — and every later turn —
+  reopened the other carrier; the same wrong source broke the Resume of any
+  non-primary agent on a mixed-harness branch. Fixed in the roster, where the
+  lock lives: `AgentRoster::turn_choice(agent_id, entity)` answers what a turn
+  addressed to one agent spends — that agent's harness, carrying the entity's
+  model and effort (what §14.6's menu edits), or the agent's own selection
+  whole where the entity is set to a harness whose vocabulary its model id is
+  not in — and every path addressing an existing agent reads it, `thread.post`
+  included. `agent.add` onto a branch with NO agents now persists its choice
+  through `set_entity_model_choice`, so the harness picked in the new-agent
+  view is the branch's too and `agent.choose`'s refusal names the lock the
+  human is actually under. A start that NAMES a provider still moves the
+  entity's record; what it can no longer do is re-carrier an agent that
+  already exists. Tests: add-with-provider-then-bare-start (which nothing
+  covered), a start naming the second agent of a mixed branch, and a queued
+  turn — named agent and primary alike — on the agent's own harness.
 - **2026-08-31, step 14 read back for reuse.** Six consolidations, no behaviour
   moved. Dropping the roster's `Deref` had left 111 sites walking by hand from
   an entity to the thread its agent owns: `AgentRoster::sole_thread` /

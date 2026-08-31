@@ -128,20 +128,20 @@ describe("the conversation panel's column", () => {
     expect(scroller().textContent).toContain("the agent replied");
   });
 
-  // The checkout was Build's by the time the next tick answered — an adopt a
-  // sibling surface made while this box was being typed into. Only the words in
-  // the placeholder changed, so only the words move.
-  it("moves a changed placeholder onto the box rather than rebuilding it", async () => {
-    payload = { ...branchRow(), run_id: null };
+  // A second agent arriving on the branch — added from another device, or by a
+  // dispatch — moves the strip, not the box being typed into.
+  it("keeps the pinned box through a poll that brings another agent", async () => {
     await mount();
     const input = document.getElementById("railinput");
-    expect(input.placeholder).toBe("Send a message to start an agent here…");
+    input.value = "half a thought";
 
     payload = branchRow();
+    payload.agents = [...payload.agents, { ...payload.agents[0], id: "ag-2", ordinal: 2 }];
     vi.advanceTimersByTime(2000);
     await flush();
 
     expect(document.getElementById("railinput")).toBe(input);
+    expect(input.value).toBe("half a thought");
     expect(input.placeholder).toBe("Send a message to this agent…");
   });
 

@@ -100,6 +100,23 @@ const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
 };
 
+const CATALOG = {
+  default_provider: "claude_adk",
+  providers: [
+    {
+      id: "claude_adk",
+      label: "Claude Code",
+      models: [
+        { id: "claude-opus-5", label: "Claude Opus 5", supports_effort: true },
+        { id: "claude-haiku-4-5", label: "Claude Haiku 4.5", supports_effort: false },
+      ],
+      efforts: ["low", "high"],
+    },
+    { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
+    { id: "codex", label: "Codex", models: [], efforts: [] },
+  ],
+};
+
 const railHost = () => document.getElementById("agent-rail");
 const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
@@ -132,8 +149,10 @@ beforeEach(() => {
   markSeen.mockClear();
   mountAgentTab.mockClear();
   notifyError.mockClear();
+  App.modelCatalog = null; // fetched once per session; each test gets its own
   App.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
+    if (method === "models.list") return CATALOG;
     if (method === "branch.get") return payload;
     if (method === "issue.get") return payload;
     if (method === "run.adopt") return { run_id: "run-9" };
@@ -982,18 +1001,6 @@ describe("the first message", () => {
     expect(callsTo("agent.start")).toEqual([]);
   });
 
-  it("adopts a checkout Build owns nothing in, then speaks, then starts the agent it made", async () => {
-    payload = branchRow({ run_id: null, run: null, agents: [] });
-    await mount();
-    panel().querySelector("#railinput").value = "start here";
-    panel().querySelector("#railsend").click();
-    await flush();
-    expect(callsTo("run.adopt")[0].params).toMatchObject({ project_id: "p1", worktree_id: "wt-3" });
-    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", body: "start here" });
-    expect(callsTo("thread.post")[0].params.agent_id).toBeUndefined();
-    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-9" });
-  });
-
   // The rail is one of two surfaces on a branch that can mutate first, so the
   // view above it owns the adopter and hands it down. Adopting on its own here
   // would mint a second owner of the checkout the Changes review just claimed.
@@ -1019,6 +1026,94 @@ describe("the first message", () => {
     await flush();
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "plan-1", agent_id: "ag-1" });
     expect(callsTo("agent.start")).toEqual([]);
+  });
+});
+
+// A branch starts with no agents at all, and so does one whose agents were all
+// removed. Its chat tab is where an agent is created: the harnesses on offer,
+// the account's default already highlighted, over the same composer every
+// conversation has. Sending is the one act that creates one and speaks to it.
+describe("the chat tab of a branch with no agent", () => {
+  const agentless = () => branchRow({ agents: [] });
+  const cards = () => [...railHost().querySelectorAll(".rail-newagent .chooser-card")];
+  const card = (provider) => cards().find((entry) => entry.dataset.provider === provider);
+  const chosenCard = () => cards().find((entry) => entry.classList.contains("chosen"));
+  const send = async (body) => {
+    panel().querySelector("#railinput").value = body;
+    panel().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("offers the three harnesses, with the account's default already chosen", async () => {
+    payload = agentless();
+    await mount();
+
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "claude", "codex"]);
+    expect(cards().map((entry) => entry.textContent.trim())).toEqual([
+      "Claude Code",
+      "Claude Code TUI",
+      "Codex",
+    ]);
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+    // No conversation to show: there is no agent whose conversation it would be.
+    expect(railHost().querySelector(".thread-items")).toBe(null);
+    expect(panel().querySelector("#railinput").placeholder).toContain("start an agent");
+  });
+
+  it("creates the chosen agent, delivers to it, starts it, and opens its bubble", async () => {
+    payload = agentless();
+    await mount();
+
+    await send("start here");
+
+    expect(calls.filter((call) => call.method.startsWith("agent.") || call.method === "thread.post")
+      .map((call) => call.method)).toEqual(["agent.add", "thread.post", "agent.start"]);
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-2", body: "start here",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-2" });
+
+    // The branch has the agent the send made, and the panel is open on it.
+    payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2 })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+  });
+
+  it("moves the highlight to the card that is pressed, and creates that one", async () => {
+    payload = agentless();
+    await mount();
+
+    card("codex").click();
+    await flush();
+    expect(chosenCard().dataset.provider).toBe("codex");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
+  });
+
+  it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
+    payload = branchRow({ run_id: null, run: null, agents: [] });
+    await mount();
+
+    await send("start here");
+
+    expect(callsTo("run.adopt")[0].params).toMatchObject({ project_id: "p1", worktree_id: "wt-3" });
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-9", provider: "claude_adk" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-9", agent_id: "ag-2", body: "start here" });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-9", agent_id: "ag-2" });
+  });
+
+  it("leaves the cards alone on a tick that says the same thing", async () => {
+    payload = agentless();
+    await mount();
+    const before = cards();
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(cards().every((entry, index) => entry === before[index])).toBe(true);
   });
 });
 

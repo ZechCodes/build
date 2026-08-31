@@ -432,19 +432,12 @@ pub struct ActiveRun {
     pub auto_advance: bool,
     /// True for a run minted around a pre-existing (user-created) worktree.
     ///
-    /// Read by the spawn rule: an adopted entity whose session lineage has
-    /// never opened is having its first session after the adoption, and that is
-    /// the one case where a fresh agent SHOULD inherit the checkout's
-    /// conversation — it is the human's own, in a checkout they were already
-    /// working in.
+    /// Read by the prune rules, boot-recovery parking, the release verb and the
+    /// SPA's option sets — and by nothing about conversations: an adopted
+    /// branch's first agent starts a conversation of its own like any other,
+    /// because the one the human was already having is one Build never heard
+    /// and cannot show.
     pub adopted: bool,
-    /// VESTIGIAL. Set at adoption, and nothing reads it: the meaning it was
-    /// minted for — the first session after an adoption picks the human's
-    /// conversation up — is derived from `adopted` plus an empty session
-    /// lineage now, which needs no clearing write and cannot be left set on an
-    /// entity that has moved on. Kept because it is on every `PersistedRun` on
-    /// disk and dropping it needs a store migration.
-    pub pending_continuation: bool,
     /// The last triage pass over this run's diff, with the revision it read.
     /// Presentational: nothing in the lifecycle reads it, and a stale one still
     /// ships (the SPA labels it) until the re-triage lands.
@@ -494,7 +487,6 @@ impl ActiveRun {
             revising_stage_id: record.revising_stage_id.clone(),
             auto_advance: record.auto_advance,
             adopted: record.adopted,
-            pending_continuation: record.pending_continuation,
             triage: record.triage.clone(),
             recovery: record.recovery.clone(),
             publication_attempt: record.publication_attempt.clone(),
@@ -568,8 +560,8 @@ pub struct SpawnOptions {
     /// Resume the harness's own most-recent conversation for this cwd (claude:
     /// `--continue`, codex: `resume --last`) — a GUESS, since what it reopens
     /// is the newest conversation in the checkout whoever was having it. Set
-    /// for the first session after adoption, or for a respawn of an agent with
-    /// recorded history, and never for a brand-new agent.
+    /// for a respawn of an agent with recorded history, which is that agent
+    /// continuing its own conversation, and never for a brand-new agent.
     pub continue_session: bool,
     /// Resume the conversation the agent's last session NAMED (claude:
     /// `--resume <id>`, codex: `resume <SESSION_ID>`), when one was recorded
@@ -1501,7 +1493,6 @@ impl Orchestrator {
             revising_stage_id: None,
             auto_advance: false,
             adopted: false,
-            pending_continuation: false,
             triage: None,
             recovery: None,
             publication_attempt: None,
@@ -2461,7 +2452,6 @@ impl Orchestrator {
             revising_stage_id: None,
             auto_advance: false,
             adopted: true,
-            pending_continuation: true,
             triage: None,
             recovery: None,
             publication_attempt: None,
@@ -3988,7 +3978,6 @@ mod tests {
             revising_stage_id: None,
             auto_advance: true,
             adopted: true,
-            pending_continuation: true,
             triage: None,
             recovery: None,
             publication_attempt: None,
@@ -4017,7 +4006,6 @@ mod tests {
         assert_eq!(active.current_stage_id.as_deref(), Some("first"));
         assert!(active.auto_advance);
         assert!(active.adopted);
-        assert!(active.pending_continuation);
         assert_eq!(active.model_choice.effort.as_deref(), Some("high"));
     }
 
@@ -5428,7 +5416,6 @@ mod tests {
             "adopted runs baseline on the merge-base"
         );
         assert!(run.adopted);
-        assert!(run.pending_continuation);
         assert_eq!(
             last_commit_subject(&external.path),
             "Checkpoint: adopted by Build"

@@ -1052,29 +1052,60 @@ fn spoken(text: Option<&str>) -> Option<String> {
     }
 }
 
-/// A tool call on one line: the tool's name, plus its input.
+/// The one argument each tool is worth reading by — its meat key, matched on
+/// the name the protocol calls the tool.
 ///
-/// A call with a single string argument reads as that argument — `Read
-/// bridge/src/app.rs` — because that is the call as a human would say it.
-/// Anything else keeps its shape as compact JSON rather than being guessed at:
-/// a summary that silently picked one of three arguments would be a different
-/// call than the one that ran.
+/// One table, read by one function: a row is one quiet line, so a call named
+/// here mints this field and drops everything else it carried. `Bash`'s
+/// `description` is dropped deliberately — it is the model's paraphrase where
+/// the command is the record, and two claims about one act are worse than one.
+const TOOL_MEAT_KEYS: &[(&str, &str)] = &[
+    ("Bash", "command"),
+    ("Read", "file_path"),
+    ("Write", "file_path"),
+    ("Edit", "file_path"),
+    ("NotebookEdit", "notebook_path"),
+    ("Glob", "pattern"),
+    ("Grep", "pattern"),
+    ("WebFetch", "url"),
+    ("WebSearch", "query"),
+    ("Task", "description"),
+];
+
+/// A tool call on one line: the tool's name, plus the thing it acted on —
+/// `Bash cargo test`, `Read bridge/src/app.rs`.
+///
+/// The name still leads, because the row's icon says only "a tool call" and
+/// `Edit foo.rs` against `Read foo.rs` is a distinction worth five characters.
 fn tool_call_summary(tool: &str, input: &Value) -> String {
-    let rendered = match input.as_object() {
-        Some(fields) => match fields.values().next() {
-            Some(Value::String(only)) if fields.len() == 1 => only.clone(),
-            _ => input.to_string(),
-        },
-        None => match input {
-            Value::Null => String::new(),
-            other => other.to_string(),
-        },
-    };
-    let rendered = one_line(&rendered, TOOL_SUMMARY_LIMIT);
-    match rendered.is_empty() {
+    let meat = one_line(&tool_call_meat(tool, input), TOOL_SUMMARY_LIMIT);
+    match meat.is_empty() {
         true => tool.to_string(),
-        false => format!("{tool} {rendered}"),
+        false => format!("{tool} {meat}"),
     }
+}
+
+/// What a call is worth reading: its tool's meat key when [`TOOL_MEAT_KEYS`]
+/// names one and the call carried it as a string, else the first string-valued
+/// field the input holds, else nothing at all.
+///
+/// Never JSON. A tool the table has not heard of — an MCP tool, or one newer
+/// than this table — is guessed at rather than rendered as an object, because a
+/// truncated-but-human line beats a line of punctuation nobody can scan: the row
+/// is a scent, and the fold body and the diff are the record. Fields iterate in
+/// key order, so which one a guess lands on is a property of the call rather
+/// than of how the child happened to spell it.
+fn tool_call_meat(tool: &str, input: &Value) -> String {
+    let Some(fields) = input.as_object() else {
+        return input.as_str().unwrap_or_default().to_string();
+    };
+    TOOL_MEAT_KEYS
+        .iter()
+        .find(|(named, _)| *named == tool)
+        .and_then(|(_, key)| fields.get(*key)?.as_str())
+        .or_else(|| fields.values().find_map(Value::as_str))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// What a tool answered. The protocol allows both shapes — a plain string, or
@@ -1204,6 +1235,11 @@ pub(crate) mod fake {
     pub(crate) const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
+    /// A call carrying more than one argument — the recorded shape above with
+    /// its id, tool name and input swapped for the two fields the `Bash` tool
+    /// takes, as the live CLI sends them. What a row minted from a multi-field
+    /// call is read against: the command, and not the model's paraphrase of it.
+    pub(crate) const BASH_TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bash","name":"Bash","input":{"command":"cargo test","description":"Run the test suite"}}]},"parent_tool_use_id":null}"#;
     /// An answer that FAILED — recorded from a live probe against claude
     /// 2.1.236 on 2026-08-30: one headless turn that read a path which does not
     /// exist. `is_error` is the whole of what says so, and the block carries no
@@ -1957,6 +1993,133 @@ mod tests {
                 summary: "pub struct Thread".to_string()
             },
             "and the next turn starts against an empty map"
+        );
+        session.end();
+    }
+
+    /// A call reads as the thing it ran, and `Bash` runs a command. The
+    /// `description` beside it is the model's paraphrase of the same act, and a
+    /// row is one quiet line rather than two claims about it — so the command is
+    /// what survives.
+    #[test]
+    fn a_bash_call_reads_as_the_command_it_ran() {
+        assert_eq!(
+            tool_call_summary(
+                "Bash",
+                &json!({ "command": "cargo test", "description": "Run the test suite" }),
+            ),
+            "Bash cargo test",
+        );
+    }
+
+    /// Every tool the table names mints its own one human argument, whatever
+    /// else the call carried beside it.
+    #[test]
+    fn each_named_tool_mints_the_argument_a_developer_would_read() {
+        for (tool, input, want) in [
+            (
+                "Read",
+                json!({ "file_path": "bridge/src/app.rs", "offset": 40 }),
+                "Read bridge/src/app.rs",
+            ),
+            (
+                "Write",
+                json!({ "file_path": "spa/src/core/thread.js", "content": "export const x = 1;" }),
+                "Write spa/src/core/thread.js",
+            ),
+            (
+                "Edit",
+                json!({ "file_path": "bridge/src/harness/adk.rs", "old_string": "a", "new_string": "b" }),
+                "Edit bridge/src/harness/adk.rs",
+            ),
+            (
+                "NotebookEdit",
+                json!({ "notebook_path": "analysis.ipynb", "new_source": "print(1)" }),
+                "NotebookEdit analysis.ipynb",
+            ),
+            (
+                "Glob",
+                json!({ "pattern": "**/*.rs", "path": "bridge" }),
+                "Glob **/*.rs",
+            ),
+            (
+                "Grep",
+                json!({ "pattern": "tool_call_summary", "output_mode": "content" }),
+                "Grep tool_call_summary",
+            ),
+            (
+                "WebFetch",
+                json!({ "url": "https://example.com/spec", "prompt": "what changed?" }),
+                "WebFetch https://example.com/spec",
+            ),
+            (
+                "WebSearch",
+                json!({ "query": "stream-json protocol", "allowed_domains": ["example.com"] }),
+                "WebSearch stream-json protocol",
+            ),
+            (
+                "Task",
+                json!({ "description": "audit the readers", "prompt": "read every reader" }),
+                "Task audit the readers",
+            ),
+        ] {
+            assert_eq!(tool_call_summary(tool, &input), want, "{tool}");
+        }
+    }
+
+    /// A tool the table never heard of — an MCP tool, or one newer than the
+    /// table — still reads as words rather than punctuation: the first
+    /// string-valued field it carried, and never a brace.
+    #[test]
+    fn an_unlisted_tool_mints_its_first_string_field_and_no_braces() {
+        let summary = tool_call_summary(
+            "mcp__linear__create_issue",
+            &json!({ "estimate": 3, "title": "the pump drops rows", "labels": ["bug"] }),
+        );
+        assert_eq!(summary, "mcp__linear__create_issue the pump drops rows");
+        assert!(!summary.contains('{'), "{summary}");
+    }
+
+    /// With no words anywhere in the call, the tool's name is the whole row —
+    /// and a listed tool whose meat key the call omitted falls through to the
+    /// same fallback rather than inventing one.
+    #[test]
+    fn a_call_with_no_words_mints_the_tool_name_alone() {
+        assert_eq!(tool_call_summary("Ping", &json!({ "attempts": 3 })), "Ping");
+        assert_eq!(tool_call_summary("Bash", &json!({})), "Bash");
+        assert_eq!(
+            tool_call_summary("Read", &json!({ "offset": 10, "reason": "audit the pump" })),
+            "Read audit the pump",
+            "a listed tool without its own key takes the unlisted rule",
+        );
+    }
+
+    /// The meat is clipped the way every summary is: one line, and the limit
+    /// with an ellipsis behind it.
+    #[test]
+    fn a_long_command_clips_at_the_summary_limit() {
+        let command = "x".repeat(500);
+        assert_eq!(
+            tool_call_summary("Bash", &json!({ "command": command })),
+            format!("Bash {}…", "x".repeat(TOOL_SUMMARY_LIMIT)),
+        );
+    }
+
+    /// The same rule through the pump the child actually speaks to: a recorded
+    /// `Bash` call lands one row, and that row is the command line.
+    #[tokio::test]
+    async fn a_bash_call_reaches_the_conversation_as_its_command_line() {
+        let session = open(&stream_json_harness(&[BASH_TOOL_USE, RESULT]));
+        let mut activity = session.activity().expect("a reporting session");
+        wait_for_status(&session, AgentStatus::Waiting);
+        session.send_turn(&Turn::new("run the suite")).unwrap();
+
+        assert_eq!(
+            next_activity(&mut activity).await,
+            AgentActivity::ToolUse {
+                call_id: "toolu_bash".to_string(),
+                summary: "Bash cargo test".to_string(),
+            }
         );
         session.end();
     }

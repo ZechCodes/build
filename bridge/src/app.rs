@@ -29860,6 +29860,42 @@ mod tests {
         run_state: RunState,
         spec: HarnessSpec,
     ) -> TabKey {
+        let (key, mut painted) =
+            spawn_run_with_agent_tab(state, repo, side_root, run_id, run_state, spec);
+        drain_pty_into_screen(state, &key, &mut painted, ScreenDrain::WhateverHasArrived);
+        key
+    }
+
+    /// The same run and tab for a harness that ENDS ON ITS OWN: the screen is
+    /// fed until the PTY closes, so the test speaks about the harness's
+    /// complete last words instead of whatever a short deadline caught. Under a
+    /// loaded suite a child can still be starting when that deadline is up,
+    /// which is how a crash's epitaph went missing. A warm harness never
+    /// reaches EOF and must use the call above.
+    fn insert_run_with_dying_agent_tab(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        side_root: &std::path::Path,
+        run_id: &str,
+        run_state: RunState,
+        spec: HarnessSpec,
+    ) -> TabKey {
+        let (key, mut painted) =
+            spawn_run_with_agent_tab(state, repo, side_root, run_id, run_state, spec);
+        drain_pty_into_screen(state, &key, &mut painted, ScreenDrain::EverythingUpToEof);
+        key
+    }
+
+    /// The run, the tab, and the byte stream the tab's screen is fed from —
+    /// how far to drain it is the caller's to say.
+    fn spawn_run_with_agent_tab(
+        state: &mut AppState,
+        repo: &std::path::Path,
+        side_root: &std::path::Path,
+        run_id: &str,
+        run_state: RunState,
+        spec: HarnessSpec,
+    ) -> (TabKey, broadcast::Receiver<Vec<u8>>) {
         let root = insert_run(state, repo, side_root, run_id, run_state);
         let (tab, rx) = Tab::spawn(
             TabRole::Agent {
@@ -29877,19 +29913,33 @@ mod tests {
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
         state.tabs.insert(key.clone(), tab);
-        drain_pty_into_screen(state, &key, &mut rx.bytes.expect("a PTY session paints"));
-        key
+        (key, rx.bytes.expect("a PTY session paints"))
     }
 
-    /// Feed whatever the harness has already painted into its tab's screen —
-    /// what `spawn_tab_pump` does in the daemon, done synchronously here so a
-    /// test without a runtime can still speak about the retained screen.
+    /// How far [`drain_pty_into_screen`] feeds the screen.
+    enum ScreenDrain {
+        /// Whatever has arrived by a short deadline — the only answer a warm
+        /// harness, which never exits, can give.
+        WhateverHasArrived,
+        /// Every byte the harness ever painted, up to the EOF one that ends on
+        /// its own reaches. A harness still open at the deadline fails the test.
+        EverythingUpToEof,
+    }
+
+    /// Feed what the harness painted into its tab's screen — what
+    /// `spawn_tab_pump` does in the daemon, done synchronously here so a test
+    /// without a runtime can still speak about the retained screen.
     fn drain_pty_into_screen(
         state: &mut AppState,
         key: &TabKey,
         rx: &mut broadcast::Receiver<Vec<u8>>,
+        drain: ScreenDrain,
     ) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let budget = match drain {
+            ScreenDrain::WhateverHasArrived => Duration::from_secs(2),
+            ScreenDrain::EverythingUpToEof => Duration::from_secs(30),
+        };
+        let deadline = std::time::Instant::now() + budget;
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(chunk) => {
@@ -29912,6 +29962,11 @@ mod tests {
                 Err(_) => return,
             }
         }
+        assert!(
+            matches!(drain, ScreenDrain::WhateverHasArrived),
+            "the harness was still running after {budget:?}; a test that waits for its \
+             last words has none to read"
+        );
     }
 
     /// The warm stand-in for a real TUI: it enables bracketed-paste mode (so a
@@ -30122,7 +30177,9 @@ mod tests {
     fn a_crashed_agent_reports_what_it_printed_before_it_died() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        insert_run_with_agent_tab(
+        // Fed to EOF rather than paused for a fixed 300ms: the pause read an
+        // empty screen whenever a loaded machine was slow to start the child.
+        insert_run_with_dying_agent_tab(
             &mut state,
             &repo,
             dir.path(),
@@ -30132,8 +30189,6 @@ mod tests {
                 .arg("-c")
                 .arg("printf 'MCP server build failed to start\n'; exit 1"),
         );
-        // Let the harness paint its last words and die.
-        std::thread::sleep(Duration::from_millis(300));
 
         assert_eq!(
             state.mark_idle_tasks(Duration::from_millis(50)),
@@ -30282,8 +30337,10 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         // A Building run whose agent exits immediately → demoted, with the exit
-        // code recorded (the quiescence rule: silence is never completion).
-        insert_run_with_agent_tab(
+        // code recorded (the quiescence rule: silence is never completion). The
+        // spawn returns at the PTY's EOF, so the agent has provably died before
+        // the sweep asks — no pause is being raced.
+        insert_run_with_dying_agent_tab(
             &mut state,
             &repo,
             dir.path(),
@@ -30291,7 +30348,6 @@ mod tests {
             RunState::Building,
             HarnessSpec::new("sh").arg("-c").arg("exit 7"),
         );
-        std::thread::sleep(Duration::from_millis(300));
         let demoted = state.mark_idle_tasks(Duration::from_secs(3600));
         assert!(demoted.contains(&"run-idle".to_string()), "{demoted:?}");
         let got = state.handle(req("run.get", json!({ "run_id": "run-idle" })));

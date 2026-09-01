@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -136,6 +136,7 @@ pub struct SurfaceLedger {
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
     shell_outputs: HashMap<String, PathBuf>,
+    shells_closed_by_notification: HashSet<String>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
@@ -152,7 +153,7 @@ enum ShellReport {
         output_path: PathBuf,
     },
     Closed {
-        state: Option<&'static str>,
+        state: &'static str,
         exit_code: Option<i32>,
     },
     Tailed(ShellTail),
@@ -275,8 +276,9 @@ impl SurfaceLedger {
                     None => false,
                 }
             }
-            "task_updated" => self.close_workflow(task_id, event["patch"]["status"].as_str()),
-            "task_notification" => self.close_workflow(task_id, event["status"].as_str()),
+            "task_updated" | "task_notification" => {
+                self.close_workflow(task_id, status_reported_by(subtype, event))
+            }
             _ => false,
         }
     }
@@ -320,10 +322,12 @@ impl SurfaceLedger {
                 }
                 None => false,
             },
-            "task_updated" => self.close_subagent(task_id, event["patch"]["status"].as_str(), None),
+            "task_updated" => {
+                self.close_subagent(task_id, status_reported_by(subtype, event), None)
+            }
             "task_notification" => self.close_subagent(
                 task_id,
-                event["status"].as_str(),
+                status_reported_by(subtype, event),
                 bounded_text(event, "summary"),
             ),
             _ => false,
@@ -404,36 +408,45 @@ impl SurfaceLedger {
                 }
                 false => false,
             },
-            ShellReport::Closed { state, exit_code } => match self.shell_named(shell_id) {
-                Some(held) => {
-                    let closed = SurfaceShell {
-                        state: state.map(str::to_string).or_else(|| held.state.clone()),
-                        exit_code: exit_code.or(held.exit_code),
-                        ..held.clone()
-                    };
-                    replace_when_changed(held, closed)
+            ShellReport::Closed { state, exit_code } => {
+                if self.holds_shell(shell_id) {
+                    self.shells_closed_by_notification
+                        .insert(shell_id.to_string());
                 }
-                None => false,
-            },
-            ShellReport::Tailed(tail) => match self.shell_named(shell_id) {
-                Some(held) => {
-                    let marked = match held.exit_code {
-                        Some(_) => None,
-                        None => tail.exit_code,
-                    };
-                    let read = SurfaceShell {
-                        tail: tail.lines,
-                        exit_code: marked.or(held.exit_code),
-                        state: match marked {
-                            Some(_) => Some(SHELL_DONE.to_string()),
-                            None => held.state.clone(),
-                        },
-                        ..held.clone()
-                    };
-                    replace_when_changed(held, read)
+                match self.shell_named(shell_id) {
+                    Some(held) => {
+                        let closed = SurfaceShell {
+                            state: Some(state.to_string()),
+                            exit_code,
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, closed)
+                    }
+                    None => false,
                 }
-                None => false,
-            },
+            }
+            ShellReport::Tailed(tail) => {
+                let closed_by_notification = self.shells_closed_by_notification.contains(shell_id);
+                match self.shell_named(shell_id) {
+                    Some(held) => {
+                        let marked = match closed_by_notification {
+                            true => None,
+                            false => tail.exit_code,
+                        };
+                        let tailed = SurfaceShell {
+                            tail: tail.lines,
+                            exit_code: marked.or(held.exit_code),
+                            state: match marked {
+                                Some(_) => Some(SHELL_DONE.to_string()),
+                                None => held.state.clone(),
+                            },
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, tailed)
+                    }
+                    None => false,
+                }
+            }
         }
     }
 
@@ -518,18 +531,20 @@ impl SurfaceLedger {
     }
 }
 
-fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> {
+fn status_reported_by<'event>(subtype: &str, event: &'event Value) -> Option<&'event str> {
     match subtype {
-        "task_updated" => Some(ShellReport::Closed {
-            state: event["patch"]["status"].as_str().and_then(wire_task_state),
-            exit_code: None,
-        }),
-        "task_notification" => Some(ShellReport::Closed {
-            state: event["status"].as_str().and_then(wire_task_state),
-            exit_code: event["summary"].as_str().and_then(exit_code_reported_in),
-        }),
+        "task_updated" => event["patch"]["status"].as_str(),
+        "task_notification" => event["status"].as_str(),
         _ => None,
     }
+}
+
+fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> {
+    let state = status_reported_by(subtype, event).and_then(wire_task_state)?;
+    Some(ShellReport::Closed {
+        state,
+        exit_code: event["summary"].as_str().and_then(exit_code_reported_in),
+    })
 }
 
 fn answered_text(event: &Value, call_id: &str) -> String {
@@ -1671,6 +1686,47 @@ mod tests {
             "the notification is authoritative"
         );
         assert_eq!(closed.tail, vec!["finished", "[exited with code 3]"]);
+    }
+
+    #[test]
+    fn a_marker_arriving_after_a_notification_that_named_no_code_claims_nothing() {
+        let mut ledger = ledger_through_the_launched_shell();
+        assert!(feed(
+            &mut ledger,
+            &the_notification_reporting("failed", "Background command was killed")
+        ));
+
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["tick 9", "[exited with code 137]"], Some(137))
+        ));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(
+            closed.state.as_deref(),
+            Some("failed"),
+            "the notification is authoritative even when it named no exit code"
+        );
+        assert_eq!(closed.exit_code, None);
+        assert_eq!(closed.tail, vec!["tick 9", "[exited with code 137]"]);
+    }
+
+    #[test]
+    fn a_notification_naming_no_code_clears_an_exit_code_the_marker_wrote() {
+        let mut ledger = ledger_through_the_launched_shell();
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["[exited with code 3]"], Some(3))
+        ));
+
+        assert!(feed(
+            &mut ledger,
+            &the_notification_reporting("failed", "Background command was killed")
+        ));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(closed.state.as_deref(), Some("failed"));
+        assert_eq!(closed.exit_code, None);
     }
 
     const FIRST_CREATE_CALL_ID: &str = "toolu_01V6RPmcsmyRyEVKSdcpKTMJ";

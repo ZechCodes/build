@@ -4,6 +4,9 @@ use std::path::Path;
 
 pub const SHELL_TAIL_LINES: usize = 20;
 
+const MOST_CHARS_IN_A_TAIL_LINE: usize = 2 * 1024;
+const CLIPPED_LINE_MARK: char = '…';
+
 const SEEK_BACK_CHUNK_BYTES: u64 = 8 * 1024;
 const MOST_BYTES_READ_WHILE_SEEKING_BACK: usize = 256 * 1024;
 
@@ -55,16 +58,30 @@ fn line_breaks_in(held: &[u8]) -> usize {
     held.iter().filter(|byte| **byte == b'\n').count()
 }
 
-fn tail_of(held: &str, reached_the_start: bool) -> ShellTail {
-    let mut lines: Vec<String> = held.lines().map(str::to_string).collect();
-    if !reached_the_start && !lines.is_empty() {
+fn tail_of(read_back: &str, reached_the_start: bool) -> ShellTail {
+    let mut lines: Vec<String> = read_back.lines().map(str::to_string).collect();
+    if !reached_the_start && lines.len() > 1 {
         lines.remove(0);
     }
     if lines.len() > SHELL_TAIL_LINES {
         lines = lines.split_off(lines.len() - SHELL_TAIL_LINES);
     }
     let exit_code = lines.last().and_then(|last| exit_code_marked_by(last));
-    ShellTail { lines, exit_code }
+    ShellTail {
+        lines: lines.iter().map(|line| clipped(line)).collect(),
+        exit_code,
+    }
+}
+
+fn clipped(line: &str) -> String {
+    match line.chars().count() <= MOST_CHARS_IN_A_TAIL_LINE {
+        true => line.to_string(),
+        false => {
+            let mut kept: String = line.chars().take(MOST_CHARS_IN_A_TAIL_LINE).collect();
+            kept.push(CLIPPED_LINE_MARK);
+            kept
+        }
+    }
 }
 
 fn exit_code_marked_by(line: &str) -> Option<i32> {
@@ -202,6 +219,43 @@ mod tests {
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
         assert_eq!(tailed.exit_code, None);
+    }
+
+    #[test]
+    fn one_line_longer_than_the_whole_byte_cap_still_comes_back() {
+        let unbroken = "x".repeat(MOST_BYTES_READ_WHILE_SEEKING_BACK * 2);
+        let (_directory, path) = file_holding(&unbroken);
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        assert_eq!(tailed.lines.len(), 1, "{:?}", tailed.lines);
+    }
+
+    #[test]
+    fn a_line_far_past_the_per_line_cap_comes_back_clipped() {
+        let (_directory, path) = file_holding(&format!(
+            "tick 1\n{}\n",
+            "y".repeat(MOST_CHARS_IN_A_TAIL_LINE * 4)
+        ));
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        let last = tailed.lines.last().expect("a last line");
+        assert_eq!(last.chars().count(), MOST_CHARS_IN_A_TAIL_LINE + 1);
+        assert!(last.ends_with(CLIPPED_LINE_MARK), "{last}");
+        assert_eq!(tailed.lines.first().map(String::as_str), Some("tick 1"));
+    }
+
+    #[test]
+    fn a_marker_on_a_line_far_past_the_per_line_cap_is_still_the_exit_code() {
+        let (_directory, path) = file_holding(&format!(
+            "{}[exited with code 4]\n",
+            "z".repeat(MOST_CHARS_IN_A_TAIL_LINE * 2)
+        ));
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        assert_eq!(tailed.exit_code, Some(4));
     }
 
     #[test]

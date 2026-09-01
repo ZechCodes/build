@@ -40,12 +40,24 @@ beforeEach(async () => {
 });
 
 describe("the saved aggregate diff", () => {
-  it("paints read-only while the live one is being fetched", async () => {
-    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH });
-    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1" });
+  it("paints whole — tray included — while the live one is being fetched", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, commentable: true });
+    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
     plug.mount(host);
     await settle();
     expect(host.textContent).toContain("cached line");
+    // The chrome is not a round trip late: the tray the last live paint had.
+    expect(host.querySelector(".csactions")).toBeTruthy();
+    plug.unmount();
+  });
+
+  it("stays read-only when the last live paint said so", async () => {
+    await writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: PATCH, commentable: false });
+    plug = createReviewPlug({ fetchDiff: vi.fn(() => new Promise(() => {})), entity: "run-1", submit: vi.fn() });
+    plug.mount(host);
+    await settle();
+    expect(host.textContent).toContain("cached line");
+    expect(host.querySelector(".fcmt")).toBeNull();
     plug.unmount();
   });
 

@@ -264,17 +264,18 @@ export function createReviewPlug({
   };
   let livePainted = false; // a live payload outranks whatever the cache held
 
-  /** The saved diff, painted read-only while the live one is being fetched.
-   *  Read-only because commentability is live task state — the cache cannot
-   *  vouch for it, and a comment must never be drafted against a state the
-   *  bridge would refuse. */
+  /** The saved diff, painted whole — comment tray and verbs included, from the
+   *  commentability the last live paint recorded. A comment is drafted locally
+   *  and every send re-verifies against the bridge, so the cost of a state
+   *  that moved while away is one refused send, not a wrong write; the cost of
+   *  hiding the chrome was the whole actionbar popping in a round trip late. */
   const seedFromCache = async () => {
     const address = diffAddress();
     const record = address ? await readCached(address) : undefined;
     if (!record || !host || livePainted) return;
     renderedFiles = parseDiff(record.value.patch);
     renderedPatch = record.value.patch || "";
-    commentableNow = false;
+    commentableNow = record.value.commentable !== false && Boolean(commentLayer);
     triageReport = record.value.triage || null;
     if (record.value.projectId && record.value.projectId !== triageProject) {
       triageProject = record.value.projectId;
@@ -324,6 +325,7 @@ export function createReviewPlug({
     if (address)
       writeCached(address, {
         patch: payload.patch,
+        commentable: payload.commentable !== false,
         triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
         projectId: payload.projectId || null,
       });

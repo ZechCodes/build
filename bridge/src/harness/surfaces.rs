@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::adk::{one_line, task_status_failed, task_status_is_terminal, TOOL_SUMMARY_LIMIT};
+use super::adk::{
+    one_line, task_status_failed, task_status_is_terminal, tool_result_text, TOOL_SUMMARY_LIMIT,
+};
+use super::shell_tail::ShellTail;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentSurfaces {
@@ -133,10 +136,28 @@ pub struct SurfaceLedger {
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
     shell_outputs: HashMap<String, PathBuf>,
+    shells_with_a_notified_exit: HashSet<String>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
 const SHELL_RUNNING: &str = "running";
+const SHELL_DONE: &str = "done";
+const OUTPUT_PATH_PREAMBLE: &str = "Output is being written to: ";
+const EXIT_CODE_PREAMBLE: &str = "exit code ";
+
+enum ShellReport {
+    Started {
+        description: Option<String>,
+    },
+    Launched {
+        output_path: PathBuf,
+    },
+    Closed {
+        state: Option<&'static str>,
+        exit_code: Option<i32>,
+    },
+    Tailed(ShellTail),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingChecklistCreate {
@@ -154,15 +175,27 @@ impl SurfaceLedger {
             "task_started" => match event["task_type"].as_str() {
                 Some("local_workflow") => self.apply_workflow(subtype, &task_id, event),
                 Some("local_agent") => self.apply_subagent(subtype, &task_id, event),
+                Some("local_bash") => self.apply_shell(
+                    &task_id,
+                    ShellReport::Started {
+                        description: bounded_text(event, "description"),
+                    },
+                ),
                 _ => false,
             },
-            "task_progress" | "task_updated" | "task_notification" => {
-                match (self.holds_workflow(&task_id), self.holds_subagent(&task_id)) {
-                    (true, _) => self.apply_workflow(subtype, &task_id, event),
-                    (_, true) => self.apply_subagent(subtype, &task_id, event),
-                    _ => false,
-                }
-            }
+            "task_progress" | "task_updated" | "task_notification" => match (
+                self.holds_workflow(&task_id),
+                self.holds_subagent(&task_id),
+                self.holds_shell(&task_id),
+            ) {
+                (true, _, _) => self.apply_workflow(subtype, &task_id, event),
+                (_, true, _) => self.apply_subagent(subtype, &task_id, event),
+                (_, _, true) => match shell_close_reported_by(subtype, event) {
+                    Some(closed) => self.apply_shell(&task_id, closed),
+                    None => false,
+                },
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -172,7 +205,14 @@ impl SurfaceLedger {
     }
 
     pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, whole_event: &Value) -> bool {
-        self.apply_checklist_answer(tool, call_id, whole_event)
+        match tool {
+            "Bash" => self.apply_shell_launch(call_id, whole_event),
+            _ => self.apply_checklist_answer(tool, call_id, whole_event),
+        }
+    }
+
+    pub fn read_shell_tail(&mut self, shell_id: &str, tail: ShellTail) -> bool {
+        self.apply_shell(shell_id, ShellReport::Tailed(tail))
     }
 
     pub fn running_shell_outputs(&self) -> Vec<(String, PathBuf)> {
@@ -318,6 +358,96 @@ impl SurfaceLedger {
         self.subagents.iter_mut().find(|held| held.id == task_id)
     }
 
+    fn holds_shell(&self, task_id: &str) -> bool {
+        self.shells.iter().any(|held| held.id == task_id)
+    }
+
+    fn shell_named(&mut self, shell_id: &str) -> Option<&mut SurfaceShell> {
+        self.shells.iter_mut().find(|held| held.id == shell_id)
+    }
+
+    fn apply_shell_launch(&mut self, call_id: &str, event: &Value) -> bool {
+        let shell_id = match event["tool_use_result"]["backgroundTaskId"].as_str() {
+            Some(named) => named.to_string(),
+            None => return false,
+        };
+        let output_path = match output_path_named_in(&answered_text(event, call_id)) {
+            Some(named) => named,
+            None => return false,
+        };
+        self.apply_shell(&shell_id, ShellReport::Launched { output_path })
+    }
+
+    fn apply_shell(&mut self, shell_id: &str, reported: ShellReport) -> bool {
+        match reported {
+            ShellReport::Started { description } => {
+                let started = SurfaceShell {
+                    id: shell_id.to_string(),
+                    description,
+                    state: Some(SHELL_RUNNING.to_string()),
+                    exit_code: None,
+                    tail: Vec::new(),
+                };
+                match self.shell_named(shell_id) {
+                    Some(held) => replace_when_changed(held, started),
+                    None => {
+                        self.shells.push(started);
+                        true
+                    }
+                }
+            }
+            ShellReport::Launched { output_path } => match self.holds_shell(shell_id) {
+                true => {
+                    let named_before = self
+                        .shell_outputs
+                        .insert(shell_id.to_string(), output_path.clone());
+                    named_before.as_ref() != Some(&output_path)
+                }
+                false => false,
+            },
+            ShellReport::Closed { state, exit_code } => {
+                let moved = match self.shell_named(shell_id) {
+                    Some(held) => {
+                        let closed = SurfaceShell {
+                            state: state.map(str::to_string).or_else(|| held.state.clone()),
+                            exit_code: exit_code.or(held.exit_code),
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, closed)
+                    }
+                    None => return false,
+                };
+                if exit_code.is_some() {
+                    self.shells_with_a_notified_exit
+                        .insert(shell_id.to_string());
+                }
+                moved
+            }
+            ShellReport::Tailed(tail) => {
+                let notified = self.shells_with_a_notified_exit.contains(shell_id);
+                match self.shell_named(shell_id) {
+                    Some(held) => {
+                        let marked = match notified {
+                            true => None,
+                            false => tail.exit_code,
+                        };
+                        let read = SurfaceShell {
+                            tail: tail.lines,
+                            exit_code: marked.or(held.exit_code),
+                            state: match marked {
+                                Some(_) => Some(SHELL_DONE.to_string()),
+                                None => held.state.clone(),
+                            },
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, read)
+                    }
+                    None => false,
+                }
+            }
+        }
+    }
+
     fn apply_checklist_call(&mut self, tool: &str, block: &Value) -> bool {
         match tool {
             "TaskCreate" => {
@@ -397,6 +527,53 @@ impl SurfaceLedger {
     fn checklist_item_named(&mut self, id: &str) -> Option<&mut SurfaceChecklistItem> {
         self.checklist.iter_mut().find(|held| held.id == id)
     }
+}
+
+fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> {
+    match subtype {
+        "task_updated" => Some(ShellReport::Closed {
+            state: event["patch"]["status"].as_str().and_then(wire_task_state),
+            exit_code: None,
+        }),
+        "task_notification" => Some(ShellReport::Closed {
+            state: event["status"].as_str().and_then(wire_task_state),
+            exit_code: event["summary"].as_str().and_then(exit_code_reported_in),
+        }),
+        _ => None,
+    }
+}
+
+fn answered_text(event: &Value, call_id: &str) -> String {
+    event["message"]["content"]
+        .as_array()
+        .and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|block| block["tool_use_id"].as_str() == Some(call_id))
+        })
+        .map(tool_result_text)
+        .unwrap_or_default()
+}
+
+fn output_path_named_in(answered: &str) -> Option<PathBuf> {
+    let (_, after_the_preamble) = answered.split_once(OUTPUT_PATH_PREAMBLE)?;
+    let named = after_the_preamble
+        .split_whitespace()
+        .next()?
+        .trim_end_matches('.');
+    match named.is_empty() {
+        true => None,
+        false => Some(PathBuf::from(named)),
+    }
+}
+
+fn exit_code_reported_in(summary: &str) -> Option<i32> {
+    let (_, after_the_preamble) = summary.split_once(EXIT_CODE_PREAMBLE)?;
+    let stated: String = after_the_preamble
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    stated.parse().ok()
 }
 
 fn read_todo_list(todos: &[Value]) -> Vec<SurfaceChecklistItem> {
@@ -1284,15 +1461,184 @@ mod tests {
         assert_eq!(keys, vec!["subagents".to_string()]);
     }
 
+    const SHELL_TASK_ID: &str = "bn93ge6bt";
+    const SHELL_LAUNCH_CALL_LINE: usize = 40;
+    const SHELL_STARTED_LINE: usize = 42;
+    const SHELL_LAUNCH_ANSWER_LINE: usize = 43;
+    const SHELL_UPDATED_LINE: usize = 83;
+    const SHELL_NOTIFICATION_LINE: usize = 84;
+    const SHELL_OUTPUT_PATH: &str = "/private/tmp/claude-501/-private-tmp-claude-501--Users-zech--superconductor-worktrees-Build-sc-trapped-dewar-4eba-61c19380-be59-489a-9244-b8f732217cc1-scratchpad-probe/fb1738ea-687c-4b18-b494-944dc64dda8c/tasks/bn93ge6bt.output";
+
+    fn feed_shell_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
+        feed(
+            ledger,
+            &fixture_line(SHELL_AND_CHECKLIST_FIXTURE, line_number),
+        )
+    }
+
+    fn feed_the_launch_answer(ledger: &mut SurfaceLedger, answer: &Value) -> bool {
+        let call_id = tool_call_block(SHELL_LAUNCH_CALL_LINE)["id"]
+            .as_str()
+            .expect("the launching Bash call carries a call id")
+            .to_string();
+        ledger.read_tool_answer(&tool_named_by(SHELL_LAUNCH_CALL_LINE), &call_id, answer)
+    }
+
+    fn the_launch_answer() -> Value {
+        fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE)
+    }
+
+    fn the_only_shell(ledger: &SurfaceLedger) -> SurfaceShell {
+        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
+        assert_eq!(snapshot.shells.len(), 1, "{snapshot:?}");
+        snapshot.shells[0].clone()
+    }
+
+    fn ledger_through_the_launched_shell() -> SurfaceLedger {
+        let mut ledger = SurfaceLedger::default();
+        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        feed_the_launch_answer(&mut ledger, &the_launch_answer());
+        ledger
+    }
+
+    fn tail_reading(lines: &[&str], exit_code: Option<i32>) -> ShellTail {
+        ShellTail {
+            lines: lines.iter().map(|line| line.to_string()).collect(),
+            exit_code,
+        }
+    }
+
     #[test]
-    fn a_started_background_shell_is_no_business_of_the_workflow_parser() {
+    fn a_started_background_shell_is_running_with_nothing_to_tail_yet() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed(
-            &mut ledger,
-            &fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 42)
+        assert!(feed_shell_line(&mut ledger, SHELL_STARTED_LINE));
+
+        assert_eq!(
+            the_only_shell(&ledger),
+            SurfaceShell {
+                id: SHELL_TASK_ID.to_string(),
+                description: Some("Background job with ticks and finished message".to_string()),
+                state: Some(SHELL_RUNNING.to_string()),
+                exit_code: None,
+                tail: Vec::new(),
+            }
+        );
+        assert!(
+            ledger.running_shell_outputs().is_empty(),
+            "no path has been named yet, so there is nothing to tail"
+        );
+    }
+
+    #[test]
+    fn the_launching_answer_names_the_one_file_the_poller_tails() {
+        let mut ledger = SurfaceLedger::default();
+        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+
+        assert!(feed_the_launch_answer(&mut ledger, &the_launch_answer()));
+
+        assert_eq!(
+            ledger.running_shell_outputs(),
+            vec![(SHELL_TASK_ID.to_string(), PathBuf::from(SHELL_OUTPUT_PATH))]
+        );
+        assert!(
+            !written(&ledger).contains(".output"),
+            "the path is the ledger's alone: {}",
+            written(&ledger)
+        );
+    }
+
+    #[test]
+    fn a_launching_answer_naming_no_output_path_records_none() {
+        let mut ledger = SurfaceLedger::default();
+        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        let mut pathless = the_launch_answer();
+        pathless["message"]["content"][0]["content"] =
+            json!("Command running in background with ID: bn93ge6bt.");
+
+        assert!(!feed_the_launch_answer(&mut ledger, &pathless));
+
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_launching_answer_for_a_shell_the_ledger_never_started_records_none() {
+        let mut ledger = SurfaceLedger::default();
+        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        let mut a_stranger = the_launch_answer();
+        a_stranger["tool_use_result"]["backgroundTaskId"] = json!("someone-elses-shell");
+
+        assert!(!feed_the_launch_answer(&mut ledger, &a_stranger));
+
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_tail_repeating_what_the_shell_already_holds_moves_nothing() {
+        let mut ledger = ledger_through_the_launched_shell();
+        let ticking = tail_reading(&["tick 1", "tick 2"], None);
+
+        assert!(ledger.read_shell_tail(SHELL_TASK_ID, ticking.clone()));
+        assert_eq!(the_only_shell(&ledger).tail, vec!["tick 1", "tick 2"]);
+
+        assert!(!ledger.read_shell_tail(SHELL_TASK_ID, ticking));
+    }
+
+    #[test]
+    fn a_tail_for_a_shell_the_ledger_does_not_hold_moves_nothing() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(!ledger.read_shell_tail("never-started", tail_reading(&["tick 1"], None)));
+
+        assert_eq!(the_only_shell(&ledger).tail, Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_marker_closes_a_shell_no_notification_has_closed() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
-        assert!(ledger.snapshot().is_none());
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(closed.exit_code, Some(3));
+        assert_eq!(closed.state.as_deref(), Some("done"));
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn the_notification_closes_the_shell_and_ends_the_tailing() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(feed_shell_line(&mut ledger, SHELL_UPDATED_LINE));
+        assert!(feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(closed.state.as_deref(), Some("done"));
+        assert_eq!(closed.exit_code, Some(0));
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_marker_arriving_after_the_notification_claims_no_exit_code() {
+        let mut ledger = ledger_through_the_launched_shell();
+        feed_shell_line(&mut ledger, SHELL_UPDATED_LINE);
+        feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE);
+
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["finished", "[exited with code 3]"], Some(3))
+        ));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(
+            closed.exit_code,
+            Some(0),
+            "the notification is authoritative"
+        );
+        assert_eq!(closed.tail, vec!["finished", "[exited with code 3]"]);
     }
 
     const FIRST_CREATE_CALL_ID: &str = "toolu_01V6RPmcsmyRyEVKSdcpKTMJ";

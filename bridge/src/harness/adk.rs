@@ -1114,7 +1114,7 @@ fn tool_call_meat(tool: &str, input: &Value) -> String {
 
 /// What a tool answered. The protocol allows both shapes — a plain string, or
 /// the content blocks a richer tool returns — so both are read.
-fn tool_result_text(block: &Value) -> String {
+pub(crate) fn tool_result_text(block: &Value) -> String {
     match &block["content"] {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => blocks

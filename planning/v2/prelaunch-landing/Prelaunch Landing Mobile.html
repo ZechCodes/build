@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build — early access</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--g:#00ff88;--bg:#030604;--bd:rgba(0,255,136,.16);--bd2:rgba(255,255,255,.08);--t1:#f2fff8;--t2:#8fa89a;--t3:#54655c}
+html{overflow-x:hidden}
+body{background:var(--bg);color:var(--t1);font-family:'JetBrains Mono',monospace;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body::after{content:"";position:fixed;inset:0;z-index:50;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);opacity:.45}
+a{color:var(--g);text-decoration:none}a:hover{color:#7dffc0}
+.wrap{padding:0 20px}
+nav{position:fixed;left:0;right:0;top:0;z-index:20;background:transparent;border-bottom:1px solid transparent;transition:background .3s,border-color .3s}
+nav.solid,nav:has(.menu.open){background:rgba(3,6,4,.86);backdrop-filter:blur(14px);border-bottom-color:var(--bd2)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:52px}
+.brand{display:flex;align-items:center;gap:8px;font:600 14px 'JetBrains Mono',monospace;letter-spacing:.04em;color:var(--t1)}
+.navcta{font:600 12px 'JetBrains Mono',monospace;color:#02130a;background:var(--g);padding:9px 14px}
+.navright{display:flex;align-items:center;gap:10px}
+.burger{display:flex;flex-direction:column;justify-content:center;gap:4px;width:44px;height:44px;align-items:flex-end;background:none;border:0;cursor:pointer;padding:0}
+.burger span{display:block;width:17px;height:1.5px;background:var(--t2);transition:transform .2s,opacity .2s}
+.burger[aria-expanded="true"] span:nth-child(1){transform:translateY(5.5px) rotate(45deg);background:var(--g)}
+.burger[aria-expanded="true"] span:nth-child(2){opacity:0}
+.burger[aria-expanded="true"] span:nth-child(3){transform:translateY(-5.5px) rotate(-45deg);background:var(--g)}
+.menu{display:none;position:absolute;left:0;right:0;top:100%;z-index:21;border-top:1px solid var(--bd2);border-bottom:1px solid var(--bd2);background:rgba(3,6,4,.96);backdrop-filter:blur(14px)}
+.menu.open{display:block}
+.menu a{display:block;padding:16px 20px;font:500 13px 'JetBrains Mono',monospace;color:var(--t2);border-bottom:1px solid var(--bd2);letter-spacing:.04em}
+.menu a:last-child{border-bottom:0}
+.hero{position:relative;border-bottom:1px solid var(--bd2);min-height:100vh;display:flex;align-items:center;padding:56px 0 48px;overflow:hidden;text-align:center}
+.hero .field{position:absolute;inset:0;z-index:0;pointer-events:none}
+.hero .field canvas{display:block}
+.hero .sub{margin-left:auto;margin-right:auto}
+.hero .wrap{position:relative;z-index:1;width:100%}
+.stat{font:500 10.5px 'JetBrains Mono',monospace;color:var(--g);letter-spacing:.1em;margin-bottom:18px;line-height:1.6}
+h1{font:700 34px/1.08 'JetBrains Mono',monospace;letter-spacing:-0.02em;text-transform:uppercase}
+h1 span{color:var(--g);text-shadow:0 0 24px rgba(0,255,136,.45)}
+.sub{font:400 13.5px/1.75 'JetBrains Mono',monospace;color:var(--t2);margin-top:18px}
+.wait{display:flex;flex-direction:column;gap:10px;margin-top:26px}
+.wait input{background:rgba(255,255,255,.03);border:1px solid var(--bd2);color:var(--t1);font:400 14px 'JetBrains Mono',monospace;padding:15px 14px;outline:none;width:100%}
+.wait input::placeholder{color:var(--t3)}
+.wait input:focus{border-color:var(--bd)}
+.wait button{font:600 13px 'JetBrains Mono',monospace;color:#02130a;background:var(--g);border:0;padding:16px 20px;cursor:pointer;box-shadow:0 0 32px rgba(0,255,136,.22);letter-spacing:.04em}
+.waitnote{font:400 11px/1.7 'JetBrains Mono',monospace;color:var(--t3);margin-top:12px;letter-spacing:.03em}
+.done{font:500 13px 'JetBrains Mono',monospace;color:var(--g);margin-top:26px;letter-spacing:.03em;line-height:1.6}
+.shotsec{position:relative;padding:34px 0}
+.shotsec::before{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 70% 45% at 50% 50%,rgba(0,255,136,.06),transparent 70%)}
+.shotsec img{width:100%;display:block;position:relative}
+.agents{border-top:1px solid var(--bd2);border-bottom:1px solid var(--bd2)}
+.agents .lbl{font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:var(--t3);padding:16px 20px 0}
+.agents .grid{display:grid;grid-template-columns:1fr 1fr}
+.agents .cell{padding:16px 20px;font:600 12.5px 'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.03em;border-top:1px solid var(--bd2)}
+.agents .cell:nth-child(even){border-left:1px solid var(--bd2)}
+.agents .cell i{display:block;font:400 11px 'JetBrains Mono',monospace;font-style:normal;color:var(--t3);margin-top:4px;text-transform:none;letter-spacing:0}
+section.feats{padding:44px 0;border-bottom:1px solid var(--bd2)}
+.sechead{margin-bottom:22px}
+.sechead h2{font:700 22px/1.24 'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:-0.01em}
+.sechead h2 span{color:var(--g)}
+.sechead .k{display:block;font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:var(--t3);margin-top:12px}
+section.feats .wrap{padding-right:0}
+.rail{display:flex;gap:14px;overflow-x:auto;scroll-snap-type:x mandatory;padding:18px 20px 22px 0;margin-left:-20px;padding-left:20px;perspective:900px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.rail::-webkit-scrollbar{display:none}
+.rail::after{content:"";flex:0 0 6px}
+.bcard{position:relative;flex:0 0 78vw;max-width:300px;scroll-snap-align:center;background:rgba(3,6,4,.88);border:1px solid var(--bd2);padding:22px 18px 26px;transform-style:preserve-3d;transition:border-color .3s,box-shadow .3s;will-change:transform;overflow:hidden}
+.bcard.on{border-color:var(--bd);box-shadow:0 0 40px rgba(0,255,136,.12),inset 0 0 0 1px rgba(0,255,136,.06)}
+.bcard::after{content:"";position:absolute;inset:0;background:linear-gradient(105deg,transparent 30%,rgba(0,255,136,.14) 50%,transparent 70%);transform:translateX(calc(var(--sh,0) * 1%));opacity:var(--so,0);pointer-events:none}
+.bcard>*{position:relative;z-index:1}
+.dots{display:flex;gap:6px;margin-top:6px}
+.dots i{width:14px;height:2px;background:var(--bd2);transition:background .3s}
+.dots i.on{background:var(--g)}
+.bcard .num{display:flex;justify-content:space-between;font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.1em;color:var(--g);margin-bottom:14px}
+.bcard .num i{font-style:normal;color:var(--t3)}
+.bcard h3{font:600 14.5px/1.35 'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.02em;margin-bottom:9px}
+.bcard p{font:400 13px/1.75 'JetBrains Mono',monospace;color:var(--t2)}
+.cta2{text-align:center;padding:56px 20px;min-height:100vh;display:flex;flex-direction:column;justify-content:center}
+.cta2 h2{font:700 28px/1.12 'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:-0.01em}
+.cta2 h2 span{color:var(--g);text-shadow:0 0 24px rgba(0,255,136,.45)}
+.cta2 .note{font:400 10.5px/1.7 'JetBrains Mono',monospace;color:var(--t2);margin-top:14px;letter-spacing:.06em}
+.cta2 .wait{margin-top:24px;text-align:left}
+footer{border-top:1px solid var(--bd2)}
+footer .wrap{display:flex;flex-direction:column;gap:6px;padding:16px 20px;font:500 10.5px 'JetBrains Mono',monospace;color:var(--t3);letter-spacing:.07em}
+</style>
+</head>
+<body>
+<nav><div class="wrap">
+<div class="brand"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00ff88" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8.5 5v10L12 22l-8.5-5V7L12 2z"></path><path d="M3.5 7L12 12l8.5-5M12 12v10"></path></svg>build_</div>
+<div class="navright"><a class="navcta" href="#waitlist">REQUEST ACCESS</a><button class="burger" id="burger" aria-expanded="false" aria-label="Menu"><span></span><span></span><span></span></button></div>
+</div>
+<div class="menu" id="menu"><a href="#">[features]</a><a href="#">[agents]</a><a href="#">[docs]</a></div>
+</nav>
+
+<div class="hero"><div class="field"><canvas id="cvL" data-gap="24"></canvas></div><div class="wrap">
+<div class="stat">PRIVATE BETA — INVITES<br>GOING OUT WEEKLY</div>
+<h1>Ship more.<br><span>Babysit less.</span></h1>
+<p class="sub">Build is the agentic coding IDE for teams. It surfaces the work that needs you — reviews, decisions, direction — and dispatches everything else to your agents. Not public yet.</p>
+<form class="wait" id="w1" novalidate><input type="email" placeholder="you@company.com" required><button type="submit">REQUEST ACCESS</button></form>
+<p class="waitnote">One email when your invite is ready. Nothing else.</p>
+</div>
+</div>
+
+<div class="shotsec"><img src="assets/build-ide-screenshot.png" alt="The Build IDE — commit history, diff review, and a live agent conversation"></div>
+
+<div class="agents">
+<div class="lbl">RUNS YOUR AGENTS</div>
+<div class="grid">
+<div class="cell">Claude Code<i>supported</i></div>
+<div class="cell">Codex<i>supported</i></div>
+<div class="cell">Pi<i>supported</i></div>
+<div class="cell">OpenCode<i>supported</i></div>
+</div></div>
+
+<section class="feats"><div class="wrap">
+<div class="sechead"><h2>Everything agents need.<br>Nothing <span>you don't.</span></h2><span class="k">FEATURES /05</span></div>
+<div class="rail" id="rail">
+<div class="bcard"><div class="num">/01<i>ISSUES</i></div><h3>An inbox, not a backlog</h3><p>Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.</p></div>
+<div class="bcard"><div class="num">/02<i>VERSION CONTROL</i></div><h3>Worktrees that manage themselves</h3><p>Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.</p></div>
+<div class="bcard"><div class="num">/03<i>REVIEW</i></div><h3>Diff-first review</h3><p>Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.</p></div>
+<div class="bcard"><div class="num">/04<i>WORKFLOWS · RLM</i></div><h3>Workflows that reshape around the work</h3><p>The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.</p></div>
+<div class="bcard"><div class="num">/05<i>AGENTS</i></div><h3>Any agent, side by side</h3><p>Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, one shared history, one place to look.</p></div>
+</div>
+<div class="dots" id="dots"><i class="on"></i><i></i><i></i><i></i><i></i></div>
+</div></section>
+
+<div class="cta2" id="waitlist">
+<h2>Get in <span>early.</span></h2>
+<p class="note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
+<form class="wait" id="w2" novalidate><input type="email" placeholder="you@company.com" required><button type="submit">REQUEST ACCESS</button></form>
+</div>
+
+<footer><div class="wrap"><span>LOCAL-FIRST // E2E ENCRYPTED</span><span>© 2026 BUILD · GETBUILD.ING</span></div></footer>
+
+<script>
+{const b=document.getElementById('burger'),mn=document.getElementById('menu');
+ b.addEventListener('click',()=>{const o=mn.classList.toggle('open');b.setAttribute('aria-expanded',o)});
+ mn.addEventListener('click',()=>{mn.classList.remove('open');b.setAttribute('aria-expanded','false')})}
+for(const f of [document.getElementById('w1'),document.getElementById('w2')]){
+ f.addEventListener('submit',e=>{e.preventDefault();const v=f.querySelector('input');if(!v.checkValidity())return;const d=document.createElement('p');d.className='done';d.textContent='\u2713 YOU\u2019RE ON THE LIST — '+v.value;f.replaceWith(d)})}
+</script>
+<script>
+// features rail: cards deform with scroll velocity — tilt, lean and a light sweep while moving, settle flat at rest
+(function(){
+const rail=document.getElementById('rail'),cards=[...rail.querySelectorAll('.bcard')],dots=[...document.querySelectorAll('#dots i')];
+let lastX=rail.scrollLeft,lastT=performance.now(),vel=0,sv=0,running=false;
+function frame(t){
+ const dt=Math.max(1,t-lastT),x=rail.scrollLeft;vel=(x-lastX)/dt*16;lastX=x;lastT=t;
+ sv+=(vel-sv)*.08;const v=Math.max(-1,Math.min(1,sv/60)),av=Math.abs(v);
+ const r=rail.getBoundingClientRect(),cx=r.left+r.width/2;let best=0,bd=1e9;
+ cards.forEach((c,i)=>{const b=c.getBoundingClientRect(),d=(b.left+b.width/2-cx)/r.width,ad=Math.abs(d);
+  const ry=-v*16,sc=1-av*.03;
+  c.style.transform='perspective(900px) rotateY('+ry.toFixed(2)+'deg) scale('+sc.toFixed(3)+')';
+  c.style.setProperty('--sh',(v*120).toFixed(1));c.style.setProperty('--so',(av*.9).toFixed(2));
+  c.style.borderColor=av>.05?'rgba(0,255,136,'+(.08+av*.3).toFixed(2)+')':'';
+  if(ad<bd){bd=ad;best=i}});
+ cards.forEach((c,i)=>c.classList.toggle('on',i===best));dots.forEach((d,i)=>d.classList.toggle('on',i===best));
+ if(Math.abs(vel)>.02||Math.abs(sv)>.2)requestAnimationFrame(frame);else{running=false;sv=0;cards.forEach(c=>{c.style.transform='';c.style.borderColor='';c.style.setProperty('--so','0')})}}
+rail.addEventListener('scroll',()=>{if(!running){running=true;lastT=performance.now();requestAnimationFrame(frame)}},{passive:true});
+cards.forEach(c=>c.style.transition='transform .5s cubic-bezier(.16,1,.3,1),border-color .4s,box-shadow .4s');
+})();
+</script>
+<script>{const nv=document.querySelector("nav"),hr=document.querySelector(".hero");new IntersectionObserver(([e])=>nv.classList.toggle("solid",!e.isIntersecting),{rootMargin:"-52px 0px 0px 0px",threshold:0}).observe(hr)}</script>
+<script src="dotfield.js"></script>
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#030604"/><g transform="translate(50 50)" fill="none" stroke="#00ff88" stroke-width="2.4" stroke-linejoin="round"><path d="M0 -22L19 -11V11L0 22L-19 11V-11L0 -22Z"/><path d="M-19 -11L0 0L19 -11M0 0V22"/></g><text x="50" y="88" fill="#00ff88" font-family="monospace" font-size="9" text-anchor="middle">build_ / m</text></svg></template>
+</body>
+</html>

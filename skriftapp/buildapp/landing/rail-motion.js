@@ -10,7 +10,6 @@ export const BORDER_ALPHA_SCALE = 0.3;
 export const BORDER_ACTIVATION_THRESHOLD = 0.05;
 export const SETTLE_VELOCITY_THRESHOLD = 0.02;
 export const SETTLE_SMOOTHED_THRESHOLD = 0.2;
-export const ACCENT_CHANNELS = "0, 255, 136";
 
 export function sampleVelocity(scrollDelta, elapsedMilliseconds) {
   return (scrollDelta / Math.max(1, elapsedMilliseconds)) * VELOCITY_SAMPLE_SCALE;
@@ -24,19 +23,19 @@ export function normalizeVelocity(smoothedVelocity) {
   return Math.max(-1, Math.min(1, smoothedVelocity / VELOCITY_NORMALIZER));
 }
 
-export function cardTiltTransform(normalizedVelocity) {
+export function cardTiltTransform(normalizedVelocity, perspectivePixels) {
   const tiltDegrees = (-normalizedVelocity * MAX_TILT_DEGREES).toFixed(2);
   const scale = (1 - Math.abs(normalizedVelocity) * MAX_SCALE_REDUCTION).toFixed(3);
-  return `perspective(900px) rotateY(${tiltDegrees}deg) scale(${scale})`;
+  return `perspective(${perspectivePixels}px) rotateY(${tiltDegrees}deg) scale(${scale})`;
 }
 
-export function cardBorderColor(normalizedVelocity) {
+export function cardBorderColor(normalizedVelocity, accentChannels) {
   if (Math.abs(normalizedVelocity) <= BORDER_ACTIVATION_THRESHOLD) return "";
   const alpha = (
     BORDER_ALPHA_BASE +
     Math.abs(normalizedVelocity) * BORDER_ALPHA_SCALE
   ).toFixed(2);
-  return `rgba(${ACCENT_CHANNELS}, ${alpha})`;
+  return `rgba(${accentChannels}, ${alpha})`;
 }
 
 export function sweepOffsetPercent(normalizedVelocity) {

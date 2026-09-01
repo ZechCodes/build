@@ -1,3 +1,4 @@
+import { readNumericToken, readToken } from "./css-token.js";
 import { prefersReducedMotion } from "./motion-preference.js";
 import {
   sampleVelocity,
@@ -15,9 +16,14 @@ export const ACTIVE_CLASS = "is-active";
 export const SWEEP_OFFSET_PROPERTY = "--sweep-offset";
 export const SWEEP_OPACITY_PROPERTY = "--sweep-opacity";
 
+const ACCENT_CHANNELS_TOKEN = "--color-accent-channels";
+const PERSPECTIVE_TOKEN = "--rail-perspective";
+const RESTING_SWEEP_OFFSET = "0";
 const RESTING_SWEEP_OPACITY = "0";
 
 export function installFeatureRail({ railElement, cardElements, dashElements }) {
+  const accentChannels = readToken(railElement, ACCENT_CHANNELS_TOKEN);
+  const perspectivePixels = readNumericToken(railElement, PERSPECTIVE_TOKEN);
   let lastScrollLeft = railElement.scrollLeft;
   let lastTimestamp = 0;
   let smoothedVelocity = 0;
@@ -39,7 +45,10 @@ export function installFeatureRail({ railElement, cardElements, dashElements }) 
 
   function paintMotion(normalizedVelocity) {
     for (const cardElement of cardElements) {
-      cardElement.style.transform = cardTiltTransform(normalizedVelocity);
+      cardElement.style.transform = cardTiltTransform(
+        normalizedVelocity,
+        perspectivePixels,
+      );
       cardElement.style.setProperty(
         SWEEP_OFFSET_PROPERTY,
         sweepOffsetPercent(normalizedVelocity),
@@ -48,7 +57,10 @@ export function installFeatureRail({ railElement, cardElements, dashElements }) 
         SWEEP_OPACITY_PROPERTY,
         sweepOpacity(normalizedVelocity),
       );
-      cardElement.style.borderColor = cardBorderColor(normalizedVelocity);
+      cardElement.style.borderColor = cardBorderColor(
+        normalizedVelocity,
+        accentChannels,
+      );
     }
   }
 
@@ -56,6 +68,7 @@ export function installFeatureRail({ railElement, cardElements, dashElements }) 
     for (const cardElement of cardElements) {
       cardElement.style.transform = "";
       cardElement.style.borderColor = "";
+      cardElement.style.setProperty(SWEEP_OFFSET_PROPERTY, RESTING_SWEEP_OFFSET);
       cardElement.style.setProperty(SWEEP_OPACITY_PROPERTY, RESTING_SWEEP_OPACITY);
     }
   }

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import sqlalchemy as sa
 
 from buildapp.models import WaitlistSignup
+from buildapp.waitlist_email import MAX_WAITLIST_EMAIL_LENGTH
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parent.parent
@@ -70,8 +71,8 @@ def test_downgrade_drops_the_table():
     drop_table.assert_called_once_with("waitlist_signups")
 
 
-def test_model_email_column_is_unique_and_capped_at_254():
+def test_model_email_column_is_unique_and_capped_at_the_normalizer_maximum():
     email_column = WaitlistSignup.__table__.columns["email"]
     assert email_column.unique is True
     assert email_column.nullable is False
-    assert email_column.type.length == 254
+    assert email_column.type.length == MAX_WAITLIST_EMAIL_LENGTH

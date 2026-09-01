@@ -1,7 +1,7 @@
 export function installWaitlist({ wrapperElement, submitWaitlistEmail }) {
-  const form = wrapperElement.querySelector("form");
-  const input = form.querySelector("input");
-  const submitButton = form.querySelector("button");
+  const form = wrapperElement.querySelector(".waitlist-form");
+  const input = form.querySelector(".waitlist-input");
+  const submitButton = form.querySelector(".button-primary--form");
   const errorElement = wrapperElement.querySelector(".waitlist-error");
   const successElement = wrapperElement.querySelector(".waitlist-success");
   const emailSlot = wrapperElement.querySelector("[data-waitlist-email]");

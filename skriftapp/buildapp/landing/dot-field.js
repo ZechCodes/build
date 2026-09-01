@@ -1,4 +1,4 @@
-import { readNumericToken } from "./css-token.js";
+import { readNumericToken, readToken } from "./css-token.js";
 import { prefersReducedMotion } from "./motion-preference.js";
 import {
   vignetteDistance,
@@ -29,25 +29,28 @@ const FLAG_BRACKET_RADIUS = 10;
 const FLAG_BRACKET_ARM = 5;
 const FLAG_BRACKET_LINE_WIDTH = 1.5;
 const FLAG_DOT_RADIUS = 2.6;
+const FLAG_DOT_COLOR = "#ffffff";
 const FLAG_LABEL_OFFSET_X = 6;
 const FLAG_LABEL_OFFSET_Y = 3;
+const FLAG_LABEL_WEIGHT = 500;
+const FLAG_LABEL_SIZE = 10;
+const FLAG_LABEL = "NEEDS YOU";
 const FLAG_PICK_ATTEMPTS = 200;
 const GLOW_EXCITATION_THRESHOLD = 0.55;
+const GLOW_ALPHA = 0.8;
 const GLOW_BLUR = 8;
 const FULL_CIRCLE = Math.PI * 2;
-const ACCENT_CHANNELS = "0, 255, 136";
-const GLOW_COLOR = "rgba(0, 255, 136, .8)";
-const FLAG_DOT_COLOR = "#ffffff";
-const NEEDS_YOU_COLOR = "#eafff4";
-const NEEDS_YOU_LABEL = "NEEDS YOU";
-const NEEDS_YOU_LABEL_FONT = '500 10px "JetBrains Mono"';
+const DOT_ALPHA_PRECISION = 3;
+const ACCENT_CHANNELS_TOKEN = "--color-accent-channels";
+const FLAG_COLOR_TOKEN = "--color-alert";
+const FONT_FAMILY_TOKEN = "--font-mono";
+const DOTFIELD_GAP_TOKEN = "--dotfield-gap";
 const BRACKET_CORNERS = [
   [-1, -1],
   [1, -1],
   [-1, 1],
   [1, 1],
 ];
-const DOT_ALPHA_PRECISION = 3;
 
 export function installDotField(canvasElement) {
   const drawing = canvasElement.getContext("2d");
@@ -56,11 +59,27 @@ export function installDotField(canvasElement) {
   let gap = 0;
   let columnCount = 0;
   let rowCount = 0;
+  let dotColorPrefix = "";
+  let glowColor = "";
+  let flagColor = "";
+  let flagLabelFont = "";
   let ripples = [];
   let flag = null;
   let nextRippleIn = 0;
   let nextFlagIn = FIRST_FLAG_DELAY;
   let lastTimestamp = 0;
+  let isAnimating = true;
+
+  function readPalette() {
+    const accentChannels = readToken(canvasElement, ACCENT_CHANNELS_TOKEN);
+    dotColorPrefix = `rgba(${accentChannels}, `;
+    glowColor = `rgba(${accentChannels}, ${GLOW_ALPHA})`;
+    flagColor = readToken(canvasElement, FLAG_COLOR_TOKEN);
+    flagLabelFont = `${FLAG_LABEL_WEIGHT} ${FLAG_LABEL_SIZE}px ${readToken(
+      canvasElement,
+      FONT_FAMILY_TOKEN,
+    )}`;
+  }
 
   function resizeField() {
     const pixelRatio = Math.min(MAX_DEVICE_PIXEL_RATIO, devicePixelRatio || 1);
@@ -72,13 +91,17 @@ export function installDotField(canvasElement) {
     canvasElement.style.width = `${fieldWidth}px`;
     canvasElement.style.height = `${fieldHeight}px`;
     drawing.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-    gap = readNumericToken(canvasElement, "--dotfield-gap");
+    gap = readNumericToken(canvasElement, DOTFIELD_GAP_TOKEN);
     columnCount = Math.ceil(fieldWidth / gap) + 1;
     rowCount = Math.ceil(fieldHeight / gap) + 1;
+    readPalette();
   }
 
-  function randomIndex(count) {
-    return Math.floor(Math.random() * count);
+  function randomGridPoint() {
+    return {
+      x: Math.floor(Math.random() * columnCount) * gap,
+      y: Math.floor(Math.random() * rowCount) * gap,
+    };
   }
 
   function spawnRipple(originX, originY, isBig) {
@@ -102,6 +125,21 @@ export function installDotField(canvasElement) {
       .filter((ripple) => ripple.alpha > 0);
   }
 
+  function advanceRippleSchedule(elapsed) {
+    nextRippleIn -= elapsed;
+    if (nextRippleIn > 0) return;
+    const origin = randomGridPoint();
+    spawnRipple(origin.x, origin.y, Math.random() < BIG_RIPPLE_CHANCE);
+    nextRippleIn = RIPPLE_INTERVAL_MINIMUM + Math.random() * RIPPLE_INTERVAL_SPREAD;
+  }
+
+  function advanceFlagSchedule(elapsed) {
+    nextFlagIn -= elapsed;
+    if (flag || nextFlagIn > 0) return;
+    flag = pickFlagPosition();
+    nextFlagIn = FLAG_INTERVAL_MINIMUM + Math.random() * FLAG_INTERVAL_SPREAD;
+  }
+
   function excitationAt(pixelX, pixelY) {
     return ripples.reduce(
       (strongest, ripple) =>
@@ -120,17 +158,16 @@ export function installDotField(canvasElement) {
           vignetteDistance(pixelX, pixelY, fieldWidth, fieldHeight),
         );
         if (excitation > GLOW_EXCITATION_THRESHOLD) {
-          drawing.shadowColor = GLOW_COLOR;
+          drawing.shadowColor = glowColor;
           drawing.shadowBlur = GLOW_BLUR;
         } else {
           drawing.shadowBlur = 0;
         }
         drawing.beginPath();
         drawing.arc(pixelX, pixelY, dotRadius(excitation), 0, FULL_CIRCLE);
-        drawing.fillStyle = `rgba(${ACCENT_CHANNELS}, ${dotAlpha(
-          excitation,
-          vignette,
-        ).toFixed(DOT_ALPHA_PRECISION)})`;
+        drawing.fillStyle = `${dotColorPrefix}${dotAlpha(excitation, vignette).toFixed(
+          DOT_ALPHA_PRECISION,
+        )})`;
         drawing.fill();
       }
     }
@@ -139,75 +176,72 @@ export function installDotField(canvasElement) {
 
   function pickFlagPosition() {
     for (let attempt = 0; attempt < FLAG_PICK_ATTEMPTS; attempt += 1) {
-      const pixelX = randomIndex(columnCount) * gap;
-      const pixelY = randomIndex(rowCount) * gap;
-      if (isEligibleFlagPosition(pixelX, pixelY, fieldWidth, fieldHeight)) {
-        return { x: pixelX, y: pixelY, age: 0 };
+      const candidate = randomGridPoint();
+      if (isEligibleFlagPosition(candidate.x, candidate.y, fieldWidth, fieldHeight)) {
+        return { x: candidate.x, y: candidate.y, age: 0 };
       }
     }
     return null;
   }
 
-  function drawFlagBrackets() {
-    drawing.strokeStyle = NEEDS_YOU_COLOR;
+  function drawFlagBrackets(currentFlag) {
+    drawing.strokeStyle = flagColor;
     drawing.lineWidth = FLAG_BRACKET_LINE_WIDTH;
     for (const [horizontalSign, verticalSign] of BRACKET_CORNERS) {
-      const cornerX = flag.x + horizontalSign * FLAG_BRACKET_RADIUS;
-      const cornerY = flag.y + verticalSign * FLAG_BRACKET_RADIUS;
+      const cornerX = currentFlag.x + horizontalSign * FLAG_BRACKET_RADIUS;
+      const cornerY = currentFlag.y + verticalSign * FLAG_BRACKET_RADIUS;
       drawing.beginPath();
       drawing.moveTo(cornerX, cornerY - verticalSign * FLAG_BRACKET_ARM);
       drawing.lineTo(cornerX, cornerY);
       drawing.lineTo(cornerX - horizontalSign * FLAG_BRACKET_ARM, cornerY);
       drawing.stroke();
     }
-    drawing.font = NEEDS_YOU_LABEL_FONT;
-    drawing.fillStyle = NEEDS_YOU_COLOR;
+    drawing.font = flagLabelFont;
+    drawing.fillStyle = flagColor;
     drawing.textAlign = "left";
     drawing.fillText(
-      NEEDS_YOU_LABEL,
-      flag.x + FLAG_BRACKET_RADIUS + FLAG_LABEL_OFFSET_X,
-      flag.y + FLAG_LABEL_OFFSET_Y,
+      FLAG_LABEL,
+      currentFlag.x + FLAG_BRACKET_RADIUS + FLAG_LABEL_OFFSET_X,
+      currentFlag.y + FLAG_LABEL_OFFSET_Y,
     );
   }
 
-  function drawFlag(elapsed) {
-    flag = { ...flag, age: flag.age + elapsed };
-    if (flag.age % FLAG_BLINK_PERIOD < FLAG_BLINK_ON) drawFlagBrackets();
+  function drawFlag(currentFlag) {
+    if (currentFlag.age % FLAG_BLINK_PERIOD < FLAG_BLINK_ON) {
+      drawFlagBrackets(currentFlag);
+    }
     drawing.beginPath();
-    drawing.arc(flag.x, flag.y, FLAG_DOT_RADIUS, 0, FULL_CIRCLE);
+    drawing.arc(currentFlag.x, currentFlag.y, FLAG_DOT_RADIUS, 0, FULL_CIRCLE);
     drawing.fillStyle = FLAG_DOT_COLOR;
     drawing.fill();
-    if (flag.age > FLAG_LIFETIME) {
-      spawnRipple(flag.x, flag.y, true);
-      flag = null;
-    }
   }
 
   function renderFrame(timestamp) {
     const elapsed = Math.min(MAX_FRAME_DELTA, timestamp - lastTimestamp);
     lastTimestamp = timestamp;
     drawing.clearRect(0, 0, fieldWidth, fieldHeight);
-    nextRippleIn -= elapsed;
-    if (nextRippleIn <= 0) {
-      spawnRipple(
-        randomIndex(columnCount) * gap,
-        randomIndex(rowCount) * gap,
-        Math.random() < BIG_RIPPLE_CHANCE,
-      );
-      nextRippleIn = RIPPLE_INTERVAL_MINIMUM + Math.random() * RIPPLE_INTERVAL_SPREAD;
-    }
+    advanceRippleSchedule(elapsed);
     ripples = advanceRipples(elapsed);
     drawDots();
-    nextFlagIn -= elapsed;
-    if (!flag && nextFlagIn <= 0) {
-      flag = pickFlagPosition();
-      nextFlagIn = FLAG_INTERVAL_MINIMUM + Math.random() * FLAG_INTERVAL_SPREAD;
+    advanceFlagSchedule(elapsed);
+    if (flag) {
+      flag = { ...flag, age: flag.age + elapsed };
+      drawFlag(flag);
+      if (flag.age > FLAG_LIFETIME) {
+        spawnRipple(flag.x, flag.y, true);
+        flag = null;
+      }
     }
-    if (flag) drawFlag(elapsed);
-    if (!prefersReducedMotion()) requestAnimationFrame(renderFrame);
+    isAnimating = !prefersReducedMotion();
+    if (isAnimating) requestAnimationFrame(renderFrame);
   }
 
   resizeField();
-  addEventListener("resize", resizeField);
+  addEventListener("resize", () => {
+    resizeField();
+    if (isAnimating) return;
+    isAnimating = true;
+    requestAnimationFrame(renderFrame);
+  });
   requestAnimationFrame(renderFrame);
 }

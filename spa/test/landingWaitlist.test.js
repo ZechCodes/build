@@ -4,13 +4,10 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { installWaitlist } from "../../skriftapp/buildapp/landing/waitlist-form.js";
 
-const LANDING_HTML = readFileSync(
-  resolve("../skriftapp/buildapp/landing/index.html"),
+const WAITLIST_MARKUP = readFileSync(
+  resolve("../skriftapp/buildapp/landing/waitlist.html"),
   "utf8",
 );
-const WAITLIST_MARKUP = LANDING_HTML.match(
-  /<div class="waitlist" data-waitlist>[\s\S]*?<\/div>/,
-)[0];
 const VALID_EMAIL = "someone@example.com";
 const INVALID_EMAIL = "not-an-email";
 
@@ -25,9 +22,9 @@ let emailSlot;
 function mountWaitlist(submitWaitlistEmail) {
   document.body.innerHTML = WAITLIST_MARKUP;
   wrapperElement = document.querySelector("[data-waitlist]");
-  form = wrapperElement.querySelector("form");
-  input = form.querySelector("input");
-  submitButton = form.querySelector("button");
+  form = wrapperElement.querySelector(".waitlist-form");
+  input = form.querySelector(".waitlist-input");
+  submitButton = form.querySelector(".button-primary--form");
   errorElement = wrapperElement.querySelector(".waitlist-error");
   successElement = wrapperElement.querySelector(".waitlist-success");
   emailSlot = wrapperElement.querySelector("[data-waitlist-email]");

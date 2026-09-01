@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it, beforeEach, vi } from "vitest";
+import { MOBILE_BREAKPOINT_QUERY } from "../../skriftapp/buildapp/landing/breakpoint.js";
 import {
   OPEN_MENU_CLASS,
   installMobileMenu,
@@ -8,8 +9,19 @@ import {
 let toggleButton;
 let menuElement;
 let menuLink;
+let breakpointListeners;
+let observedQuery;
 
 beforeEach(() => {
+  breakpointListeners = [];
+  observedQuery = "";
+  globalThis.matchMedia = vi.fn((query) => {
+    observedQuery = query;
+    return {
+      matches: false,
+      addEventListener: (eventName, listener) => breakpointListeners.push(listener),
+    };
+  });
   document.body.innerHTML = `
     <button data-nav-toggle aria-expanded="false"></button>
     <ul class="nav-links" data-nav-menu><li><a href="#features">[features]</a></li></ul>
@@ -35,6 +47,15 @@ describe("mobile menu", () => {
     toggleButton.click();
     expect(menuElement.classList.contains(OPEN_MENU_CLASS)).toBe(true);
     menuLink.click();
+    expect(menuElement.classList.contains(OPEN_MENU_CLASS)).toBe(false);
+    expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("crossing the mobile breakpoint closes the open menu so the desktop nav is not left solid", () => {
+    expect(observedQuery).toBe(MOBILE_BREAKPOINT_QUERY);
+    toggleButton.click();
+    expect(menuElement.classList.contains(OPEN_MENU_CLASS)).toBe(true);
+    for (const listener of breakpointListeners) listener();
     expect(menuElement.classList.contains(OPEN_MENU_CLASS)).toBe(false);
     expect(toggleButton.getAttribute("aria-expanded")).toBe("false");
   });

@@ -12,7 +12,6 @@ import {
   BORDER_ACTIVATION_THRESHOLD,
   SETTLE_VELOCITY_THRESHOLD,
   SETTLE_SMOOTHED_THRESHOLD,
-  ACCENT_CHANNELS,
   sampleVelocity,
   smoothVelocity,
   normalizeVelocity,
@@ -23,6 +22,9 @@ import {
   nearestCardIndex,
   motionHasSettled,
 } from "../../skriftapp/buildapp/landing/rail-motion.js";
+
+const ACCENT_CHANNELS = "1, 2, 3";
+const PERSPECTIVE_PIXELS = 900;
 
 describe("rail motion math", () => {
   it("sampled velocity scales scroll distance per frame and never divides by less than one millisecond", () => {
@@ -49,33 +51,34 @@ describe("rail motion math", () => {
 
   it("tilt rotates opposite the scroll direction", () => {
     expect(MAX_TILT_DEGREES).toBe(16);
-    expect(cardTiltTransform(0.5)).toContain("rotateY(-8.00deg)");
-    expect(cardTiltTransform(-0.5)).toContain("rotateY(8.00deg)");
-    expect(cardTiltTransform(1)).toContain("perspective(900px)");
+    expect(cardTiltTransform(0.5, PERSPECTIVE_PIXELS)).toContain("rotateY(-8.00deg)");
+    expect(cardTiltTransform(-0.5, PERSPECTIVE_PIXELS)).toContain("rotateY(8.00deg)");
+    expect(cardTiltTransform(1, PERSPECTIVE_PIXELS)).toContain("perspective(900px)");
+    expect(cardTiltTransform(1, 1200)).toContain("perspective(1200px)");
   });
 
   it("scale shrinks with speed and returns to one at rest", () => {
     expect(MAX_SCALE_REDUCTION).toBe(0.03);
-    expect(cardTiltTransform(1)).toContain("scale(0.970)");
-    expect(cardTiltTransform(-1)).toContain("scale(0.970)");
-    expect(cardTiltTransform(0)).toBe(
+    expect(cardTiltTransform(1, PERSPECTIVE_PIXELS)).toContain("scale(0.970)");
+    expect(cardTiltTransform(-1, PERSPECTIVE_PIXELS)).toContain("scale(0.970)");
+    expect(cardTiltTransform(0, PERSPECTIVE_PIXELS)).toBe(
       "perspective(900px) rotateY(0.00deg) scale(1.000)",
     );
   });
 
   it("border colour is empty at or below the activation threshold", () => {
     expect(BORDER_ACTIVATION_THRESHOLD).toBe(0.05);
-    expect(cardBorderColor(0)).toBe("");
-    expect(cardBorderColor(0.05)).toBe("");
-    expect(cardBorderColor(-0.05)).toBe("");
+    expect(cardBorderColor(0, ACCENT_CHANNELS)).toBe("");
+    expect(cardBorderColor(0.05, ACCENT_CHANNELS)).toBe("");
+    expect(cardBorderColor(-0.05, ACCENT_CHANNELS)).toBe("");
   });
 
   it("border alpha grows from the base with speed", () => {
     expect(BORDER_ALPHA_BASE).toBe(0.08);
     expect(BORDER_ALPHA_SCALE).toBe(0.3);
-    expect(cardBorderColor(0.5)).toBe(`rgba(${ACCENT_CHANNELS}, 0.23)`);
-    expect(cardBorderColor(-0.5)).toBe(`rgba(${ACCENT_CHANNELS}, 0.23)`);
-    expect(cardBorderColor(1)).toBe(`rgba(${ACCENT_CHANNELS}, 0.38)`);
+    expect(cardBorderColor(0.5, ACCENT_CHANNELS)).toBe(`rgba(${ACCENT_CHANNELS}, 0.23)`);
+    expect(cardBorderColor(-0.5, ACCENT_CHANNELS)).toBe(`rgba(${ACCENT_CHANNELS}, 0.23)`);
+    expect(cardBorderColor(1, ACCENT_CHANNELS)).toBe(`rgba(${ACCENT_CHANNELS}, 0.38)`);
   });
 
   it("sweep offset and opacity track the signed and absolute velocity", () => {

@@ -14,7 +14,13 @@ import pytest
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
-from buildapp.root_controller import LANDING_DIR, RootController
+from buildapp.root_controller import (
+    LANDING_DIR,
+    LANDING_PAGE_NAME,
+    WAITLIST_FRAGMENT_NAME,
+    WAITLIST_PLACEHOLDER,
+    RootController,
+)
 
 STYLESHEET_NAME = "landing.css"
 ENTRY_MODULE_NAME = "main.js"
@@ -25,6 +31,13 @@ SCREENSHOT_NAMES = (
     "assets/build-ide-screenshot-1860.png",
 )
 SCREENSHOT_BYTE_BUDGET = 400_000
+ASSET_MEDIA_TYPES = (
+    (STYLESHEET_NAME, "text/css"),
+    (ENTRY_MODULE_NAME, "text/javascript"),
+    (FONT_NAME, "font/woff2"),
+    (BRAND_MARK_NAME, "image/svg+xml"),
+    *((screenshot_name, "image/png") for screenshot_name in SCREENSHOT_NAMES),
+)
 RETIRED_SCRIPT_NAME = "landing.js"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
@@ -66,11 +79,14 @@ SAME_ORIGIN_URL_PREFIX = '"/landing/'
 STYLESHEET_URL_PATTERN = r"url\(([^)]*)\)"
 ROOT_BLOCK_PATTERN = r":root\{[^}]*\}"
 COLOUR_LITERAL_PATTERN = r"#[0-9a-fA-F]{3,8}\b|rgba?\(|gradient\("
+MEDIA_PRELUDE_PATTERN = r"@media[^{]*\{"
+SIZE_LITERAL_PATTERN = r"\d(?:\.\d+)?(?:px|rem|em|vw|vh)\b"
 BLOCK_COMMENT_OPENER = "/*"
 LINE_COMMENT_OPENER = "//"
 COMMENTABLE_SOURCE_SUFFIXES = (".css", ".js")
 
 DESIGN_TOKENS = (
+    "--color-accent-channels",
     "--color-accent",
     "--color-accent-hover",
     "--color-background",
@@ -82,12 +98,16 @@ DESIGN_TOKENS = (
     "--color-text-muted",
     "--hairline-accent",
     "--hairline-neutral",
+    "--hairline",
+    "--hairline-transparent",
     "--surface-card",
     "--surface-card-hover",
     "--surface-input",
     "--surface-nav-solid",
     "--surface-menu",
+    "--surface-blur",
     "--scanline-overlay",
+    "--scanline-opacity",
     "--sweep-gradient",
     "--glow-text",
     "--glow-button",
@@ -120,17 +140,31 @@ DESIGN_TOKENS = (
     "--footer-padding",
     "--card-padding",
     "--agent-cell-padding",
+    "--agents-label-column",
     "--nav-link-padding",
     "--nav-cta-padding",
     "--nav-actions-gap",
     "--nav-links-gap",
+    "--menu-toggle-size",
+    "--menu-toggle-bar-width",
+    "--menu-toggle-bar-height",
+    "--menu-toggle-bar-gap",
+    "--menu-toggle-bar-offset",
     "--button-padding",
     "--input-padding",
     "--form-gap",
+    "--lead-max-width",
+    "--waitlist-max-width",
+    "--waitlist-input-min-width",
     "--bento-gap",
     "--rail-gap",
     "--rail-padding",
     "--rail-trailing-space",
+    "--rail-perspective",
+    "--rail-card-width",
+    "--rail-card-max-width",
+    "--rail-dash-width",
+    "--rail-dash-height",
     "--dash-gap",
     "--space-eyebrow-bottom",
     "--space-lead-top",
@@ -166,6 +200,7 @@ DESIGN_TOKENS = (
     "--font-size-nav-link",
     "--letter-spacing-nav-link",
     "--font-size-nav-cta",
+    "--letter-spacing-nav-cta",
     "--font-size-button",
     "--letter-spacing-button",
     "--font-size-input",
@@ -181,6 +216,7 @@ DESIGN_TOKENS = (
     "--font-size-agent-name",
     "--letter-spacing-agent-name",
     "--font-size-agent-support",
+    "--letter-spacing-agent-support",
     "--font-size-footer",
     "--letter-spacing-footer",
 )
@@ -191,11 +227,10 @@ HERO_EYEBROW_MARKUP = (
     '<p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES <br>GOING OUT WEEKLY</p>'
 )
 HERO_EYEBROW_BREAK_HIDDEN_RULE = ".hero-eyebrow br{display:none}"
-HERO_EYEBROW_SPACED_BREAK = "INVITES <br>GOING"
 HERO_EYEBROW_BREAK_SHOWN_RULE = ".hero-eyebrow br{display:inline}"
 HERO_TITLE_MARKUP = (
-    '<h1 class="hero-title">Ship more.<br>'
-    '<span class="title-accent">Babysit less.</span></h1>'
+    '<h1 class="section-title section-title--hero">Ship more.<br>'
+    '<span class="title-accent title-accent--glow">Babysit less.</span></h1>'
 )
 HERO_LEAD_MARKUP = (
     '<p class="lead">Build is the agentic coding IDE for teams. It surfaces the work '
@@ -203,7 +238,7 @@ HERO_LEAD_MARKUP = (
     "to your agents. Not public yet.</p>"
 )
 HERO_NOTE_MARKUP = (
-    '<p class="waitlist-note">One email when your invite is ready. Nothing else.</p>'
+    '<p class="note">One email when your invite is ready. Nothing else.</p>'
 )
 
 SCREENSHOT_MARKUP = (
@@ -215,10 +250,15 @@ SCREENSHOT_MARKUP = (
     'alt="The Build IDE — commit history, diff review, and a live agent conversation">'
 )
 
-AGENTS_LABEL_MARKUP = '<p class="eyebrow agents-label">RUNS YOUR AGENTS</p>'
+AGENTS_LABEL_MARKUP = (
+    '<p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>'
+)
 AGENTS_LABEL_RULE = (
-    ".agents-label{display:flex;align-items:center;color:var(--color-text-muted);"
-    "padding:var(--agent-cell-padding)}"
+    ".agents-label{display:flex;align-items:center;padding:var(--agent-cell-padding)}"
+)
+AGENTS_LABEL_MOBILE_RULE = ".agents-label{grid-column:1/-1;padding-bottom:0}"
+AGENTS_GRID_INTERMEDIATE_RULE = (
+    ".agents-grid{grid-template-columns:auto repeat(4,minmax(0,1fr))}"
 )
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
 AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
@@ -227,7 +267,9 @@ FEATURES_TITLE_MARKUP = (
     '<h2 class="section-title">Everything agents need.<br>'
     "Nothing <span class=\"title-accent\">you don't.</span></h2>"
 )
-FEATURES_LABEL_MARKUP = '<span class="eyebrow section-label">FEATURES /05</span>'
+FEATURES_LABEL_MARKUP = (
+    '<span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>'
+)
 FEATURE_CARDS = (
     (
         "/01",
@@ -272,46 +314,59 @@ SPAN_MODIFIER_PATTERN = r"--span-\d"
 
 ACTIVE_RAIL_DASH_MARKUP = '<i class="rail-dash is-active" data-rail-dash></i>'
 IDLE_RAIL_DASH_MARKUP = '<i class="rail-dash" data-rail-dash></i>'
-IDLE_RAIL_DASH_COUNT = 4
+IDLE_RAIL_DASH_COUNT = len(FEATURE_CARDS) - 1
 
 CTA_TITLE_MARKUP = (
-    '<h2 class="cta-title">Get in <span class="title-accent">early.</span></h2>'
+    '<h2 class="section-title section-title--cta">Get in '
+    '<span class="title-accent title-accent--glow">early.</span></h2>'
 )
 CTA_NOTE_MARKUP = (
-    '<p class="cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>'
+    '<p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>'
 )
+CTA_NOTE_RULE = (
+    ".cta-note{color:var(--color-text-secondary);"
+    "--font-size-note:var(--font-size-cta-note);"
+    "--line-height-note:var(--line-height-cta-note);"
+    "--letter-spacing-note:var(--letter-spacing-cta-note);"
+    "--space-note-top:var(--space-cta-note-top)}"
+)
+CTA_NOTE_DESKTOP_LINE_HEIGHT = "--line-height-cta-note:normal"
+CTA_NOTE_MOBILE_LINE_HEIGHT = "--line-height-cta-note:1.7"
+CTA_FORM_SPACING_RULE = "--space-form-top:var(--space-cta-form-top)}"
 
 WAITLIST_ERROR_MARKUP = (
-    '<p class="waitlist-error" role="alert" hidden>✗ COULDN’T ADD YOU — TRY AGAIN.</p>'
+    '<p class="note waitlist-error" role="alert" hidden>'
+    "✗ COULDN’T ADD YOU — TRY AGAIN.</p>"
 )
 WAITLIST_SUCCESS_MARKUP = (
     '<p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — '
     "<span data-waitlist-email></span></p>"
 )
 WAITLIST_WRAPPER_RULE = (
-    ".waitlist{margin:var(--space-form-top) auto 0;max-width:520px;width:fit-content}"
+    ".waitlist{margin:var(--space-form-top) auto 0;"
+    "max-width:var(--waitlist-max-width);width:fit-content}"
 )
-WAITLIST_WRAPPER_MOBILE_RULE = ".waitlist{margin-inline:0;max-width:none;width:auto}"
-CTA_NOTE_RULE = (
-    ".cta-note{color:var(--color-text-secondary);"
-    "font:400 var(--font-size-cta-note)/var(--line-height-cta-note) var(--font-mono);"
-    "margin-top:var(--space-cta-note-top);letter-spacing:var(--letter-spacing-cta-note)}"
-)
-CTA_NOTE_DESKTOP_LINE_HEIGHT = "--line-height-cta-note:normal"
-CTA_NOTE_MOBILE_LINE_HEIGHT = "--line-height-cta-note:1.7"
-WAITLIST_COMPONENT_PATTERN = r'<div class="waitlist" data-waitlist>.*?</div>'
+WAITLIST_WRAPPER_MOBILE_RULE = ".waitlist{margin-inline:0;width:auto}"
 WAITLIST_INSTANCE_COUNT = 2
 
 NAV_ELEMENT_PATTERN = r"<nav\b.*?</nav>"
 ANCHOR_HREF_PATTERN = r'href="#([^"]*)"'
 
+CLASS_ATTRIBUTE_PATTERN = r'class="([^"]+)"'
+CSS_CLASS_PATTERN = r"\.([A-Za-z][\w-]*)"
+
 MEDIA_BLOCK_OPENER = "@media"
 RULE_PATTERN = r"([^{}]+)\{[^{}]*\}"
 COMPONENT_LAYER_SELECTORS = (
     ".eyebrow",
+    ".eyebrow--muted",
+    ".note",
     ".section-header",
     ".section-title",
+    ".section-title--hero",
+    ".section-title--cta",
     ".title-accent",
+    ".title-accent--glow",
     ".rule-top",
     ".rule-bottom",
     ".button-primary",
@@ -319,7 +374,6 @@ COMPONENT_LAYER_SELECTORS = (
     ".waitlist",
     ".waitlist-form",
     ".waitlist-input",
-    ".waitlist-note",
     ".waitlist-success",
     ".waitlist-error",
     ".feature-cards",
@@ -328,7 +382,7 @@ COMPONENT_LAYER_SELECTORS = (
     ".feature-card--span-4",
     ".feature-card--span-6",
     ".card-header",
-    ".card-category",
+    ".card-number",
     ".card-title",
     ".card-body",
     ".rail-dashes",
@@ -398,32 +452,14 @@ def test_landing_page_references_only_same_origin_assets():
     assert "http://" not in html
 
 
-def test_landing_asset_serves_stylesheet_with_media_type():
-    response = RootController.landing_asset.fn(None, asset_path=STYLESHEET_NAME)
+@pytest.mark.parametrize("asset_path, expected_media_type", ASSET_MEDIA_TYPES)
+def test_landing_asset_serves_shipped_asset_with_media_type(
+    asset_path, expected_media_type
+):
+    response = RootController.landing_asset.fn(None, asset_path=asset_path)
     assert isinstance(response, Response)
-    assert response.media_type == "text/css"
-    assert (LANDING_DIR / STYLESHEET_NAME).is_file()
-
-
-def test_landing_asset_serves_font_with_media_type():
-    response = RootController.landing_asset.fn(None, asset_path=FONT_NAME)
-    assert isinstance(response, Response)
-    assert response.media_type == "font/woff2"
-    assert (LANDING_DIR / FONT_NAME).is_file()
-
-
-def test_landing_asset_serves_brand_mark_with_media_type():
-    response = RootController.landing_asset.fn(None, asset_path=BRAND_MARK_NAME)
-    assert isinstance(response, Response)
-    assert response.media_type == "image/svg+xml"
-    assert (LANDING_DIR / BRAND_MARK_NAME).is_file()
-
-
-def test_landing_asset_serves_screenshot_with_media_type():
-    for screenshot_name in SCREENSHOT_NAMES:
-        response = RootController.landing_asset.fn(None, asset_path=screenshot_name)
-        assert isinstance(response, Response)
-        assert response.media_type == "image/png"
+    assert response.media_type == expected_media_type
+    assert (LANDING_DIR / asset_path).is_file()
 
 
 def test_screenshot_renditions_stay_under_the_web_budget():
@@ -558,7 +594,7 @@ def test_every_feature_card_number_category_title_and_body_is_verbatim():
         assert (
             f'<div class="card-header eyebrow">'
             f'<span class="card-number">{number}</span>'
-            f'<span class="card-category">{category}</span></div>' in html
+            f'<span class="eyebrow--muted">{category}</span></div>' in html
         )
         assert f'<h3 class="card-title">{title}</h3>' in html
         assert f'<p class="card-body">{body}</p>' in html
@@ -591,10 +627,14 @@ def test_waitlist_error_and_success_copy_are_verbatim_and_hidden():
     assert html.count(WAITLIST_SUCCESS_MARKUP) == WAITLIST_INSTANCE_COUNT
 
 
-def test_both_waitlist_forms_use_identical_component_markup():
-    components = re.findall(WAITLIST_COMPONENT_PATTERN, _landing_html(), re.S)
-    assert len(components) == WAITLIST_INSTANCE_COUNT
-    assert components[0] == components[1]
+def test_the_waitlist_component_is_written_once_and_rendered_at_both_placeholders():
+    page_source = _landing_text(LANDING_PAGE_NAME)
+    fragment = _landing_text(WAITLIST_FRAGMENT_NAME).rstrip("\n")
+    assert page_source.count(WAITLIST_PLACEHOLDER) == WAITLIST_INSTANCE_COUNT
+    assert 'class="waitlist"' not in page_source
+    html = _landing_html()
+    assert html.count(fragment) == WAITLIST_INSTANCE_COUNT
+    assert WAITLIST_PLACEHOLDER not in html
 
 
 def test_anchored_sections_exist_for_every_nav_link():
@@ -624,13 +664,6 @@ def test_deploy_smoke_check_targets_shipped_landing_assets():
     for asset_path in smoke_checked_assets:
         assert (LANDING_DIR / asset_path).is_file()
     assert SMOKE_CHECK_PAGE_PHRASE in _landing_html()
-
-
-def test_landing_asset_serves_entry_module_with_media_type():
-    response = RootController.landing_asset.fn(None, asset_path=ENTRY_MODULE_NAME)
-    assert isinstance(response, Response)
-    assert response.media_type == "text/javascript"
-    assert (LANDING_DIR / ENTRY_MODULE_NAME).is_file()
 
 
 def test_page_loads_the_entry_module_as_a_same_origin_es_module():
@@ -666,10 +699,6 @@ def test_every_landing_module_is_referenced_from_the_entry_graph():
         assert module_path.name == ENTRY_MODULE_NAME or module_path.name in imported_names
 
 
-def test_hero_eyebrow_reads_as_one_line_when_the_break_is_hidden():
-    assert HERO_EYEBROW_SPACED_BREAK in _landing_html()
-
-
 def test_agents_label_shares_the_agent_cell_padding():
     css = _landing_text(STYLESHEET_NAME)
     assert AGENTS_LABEL_RULE in _rules_outside_media_blocks(css)
@@ -682,9 +711,55 @@ def test_waitlist_shrinks_to_its_content_and_fills_the_column_on_mobile():
     assert WAITLIST_WRAPPER_MOBILE_RULE not in _rules_outside_media_blocks(css)
 
 
-def test_cta_note_carries_its_own_line_height_at_both_breakpoints():
+def test_cta_note_repoints_the_note_tokens_at_both_breakpoints():
     css = _landing_text(STYLESHEET_NAME)
     assert CTA_NOTE_RULE in _rules_outside_media_blocks(css)
     assert CTA_NOTE_DESKTOP_LINE_HEIGHT in _rules_outside_media_blocks(css)
     assert CTA_NOTE_MOBILE_LINE_HEIGHT in css
     assert CTA_NOTE_MOBILE_LINE_HEIGHT not in _rules_outside_media_blocks(css)
+
+
+def test_the_cta_drives_the_waitlist_spacing_through_the_component_token():
+    css = _landing_text(STYLESHEET_NAME)
+    assert CTA_FORM_SPACING_RULE in _rules_outside_media_blocks(css)
+    assert ".cta-section .waitlist" not in css
+
+
+def test_size_literals_live_only_in_the_token_blocks():
+    css = _landing_text(STYLESHEET_NAME)
+    remainder = re.sub(MEDIA_PRELUDE_PATTERN, "", re.sub(ROOT_BLOCK_PATTERN, "", css))
+    assert re.search(SIZE_LITERAL_PATTERN, remainder) is None
+
+
+def test_the_hairline_is_one_token_every_rule_reuses():
+    remainder = re.sub(ROOT_BLOCK_PATTERN, "", _landing_text(STYLESHEET_NAME))
+    assert "1px solid" not in remainder
+
+
+def test_agents_label_keeps_the_cell_padding_on_mobile():
+    css = _landing_text(STYLESHEET_NAME)
+    assert AGENTS_LABEL_MOBILE_RULE in css
+    assert AGENTS_LABEL_MOBILE_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_agents_strip_label_column_shrinks_between_the_breakpoints():
+    css = _landing_text(STYLESHEET_NAME)
+    assert AGENTS_GRID_INTERMEDIATE_RULE in css
+    assert AGENTS_GRID_INTERMEDIATE_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():
+    markup_classes = {
+        class_name
+        for attribute in re.findall(CLASS_ATTRIBUTE_PATTERN, _landing_html())
+        for class_name in attribute.split()
+    }
+    stylesheet = _landing_text(STYLESHEET_NAME).replace(FONT_FACE_DECLARATION, "")
+    styled_classes = set(re.findall(CSS_CLASS_PATTERN, stylesheet))
+    module_sources = "".join(
+        module_path.read_text() for module_path in LANDING_DIR.rglob(MODULE_SUFFIX)
+    )
+    assert markup_classes
+    assert markup_classes <= styled_classes
+    for styled_class in styled_classes - markup_classes:
+        assert f'"{styled_class}"' in module_sources

@@ -28,57 +28,50 @@
   <div class="dot-field"><canvas data-dot-field></canvas></div>
   <div class="content-container hero-content">
     <p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES <br>GOING OUT WEEKLY</p>
-    <h1 class="hero-title">Ship more.<br><span class="title-accent">Babysit less.</span></h1>
+    <h1 class="section-title section-title--hero">Ship more.<br><span class="title-accent title-accent--glow">Babysit less.</span></h1>
     <p class="lead">Build is the agentic coding IDE for teams. It surfaces the work that needs you — reviews, decisions, direction — and dispatches everything else to your agents. Not public yet.</p>
-    <div class="waitlist" data-waitlist>
-      <form class="waitlist-form" novalidate>
-        <input class="waitlist-input" type="email" name="email" placeholder="you@company.com" autocomplete="email" aria-label="Email address" required>
-        <button class="button-primary button-primary--form" type="submit">REQUEST ACCESS</button>
-      </form>
-      <p class="waitlist-error" role="alert" hidden>✗ COULDN’T ADD YOU — TRY AGAIN.</p>
-      <p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — <span data-waitlist-email></span></p>
-    </div>
-    <p class="waitlist-note">One email when your invite is ready. Nothing else.</p>
+{{waitlist}}
+    <p class="note">One email when your invite is ready. Nothing else.</p>
   </div>
 </section>
 <section class="screenshot-section"><div class="content-container"><div class="screenshot-frame">
   <img src="/landing/assets/build-ide-screenshot-1240.png" srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, /landing/assets/build-ide-screenshot-1860.png 1860w" sizes="(max-width: 640px) 100vw, (max-width: 1280px) calc(100vw - 80px), 1160px" width="1860" height="1629" loading="lazy" decoding="async" alt="The Build IDE — commit history, diff review, and a live agent conversation">
 </div></div></section>
-<section class="agents-strip rule-top rule-bottom" id="agents"><div class="content-container agents-grid">
-  <p class="eyebrow agents-label">RUNS YOUR AGENTS</p>
+<section class="rule-top rule-bottom" id="agents"><div class="content-container agents-grid">
+  <p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>
   <div class="agent-cell">Claude Code<span class="agent-support">supported</span></div>
   <div class="agent-cell">Codex<span class="agent-support">supported</span></div>
   <div class="agent-cell">Pi<span class="agent-support">supported</span></div>
   <div class="agent-cell">OpenCode<span class="agent-support">supported</span></div>
 </div></section>
-<section class="features-section rule-bottom" id="features"><div class="content-container">
+<section class="features-section rule-bottom" id="features"><div class="content-container features-body">
   <div class="section-header">
     <h2 class="section-title">Everything agents need.<br>Nothing <span class="title-accent">you don't.</span></h2>
-    <span class="eyebrow section-label">FEATURES /05</span>
+    <span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>
   </div>
   <div class="feature-cards" data-feature-rail>
     <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="card-category">ISSUES</span></div>
+      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">ISSUES</span></div>
       <h3 class="card-title">An inbox, not a backlog</h3>
       <p class="card-body">Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.</p>
     </article>
     <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="card-category">VERSION CONTROL</span></div>
+      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">VERSION CONTROL</span></div>
       <h3 class="card-title">Worktrees that manage themselves</h3>
       <p class="card-body">Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.</p>
     </article>
     <article class="feature-card feature-card--span-2" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="card-category">REVIEW</span></div>
+      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">REVIEW</span></div>
       <h3 class="card-title">Diff-first review</h3>
       <p class="card-body">Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.</p>
     </article>
     <article class="feature-card feature-card--span-4" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="card-category">WORKFLOWS · RLM</span></div>
+      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">WORKFLOWS · RLM</span></div>
       <h3 class="card-title">Workflows that reshape around the work</h3>
       <p class="card-body">The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.</p>
     </article>
     <article class="feature-card feature-card--span-6" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="card-category">AGENTS</span></div>
+      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">AGENTS</span></div>
       <h3 class="card-title">Any agent, side by side</h3>
       <p class="card-body">Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, one shared history, one place to look.</p>
     </article>
@@ -86,18 +79,11 @@
   <div class="rail-dashes"><i class="rail-dash is-active" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i></div>
 </div></section>
 <section class="cta-section viewport-section" id="waitlist"><div class="content-container">
-    <h2 class="cta-title">Get in <span class="title-accent">early.</span></h2>
-    <p class="cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
-    <div class="waitlist" data-waitlist>
-      <form class="waitlist-form" novalidate>
-        <input class="waitlist-input" type="email" name="email" placeholder="you@company.com" autocomplete="email" aria-label="Email address" required>
-        <button class="button-primary button-primary--form" type="submit">REQUEST ACCESS</button>
-      </form>
-      <p class="waitlist-error" role="alert" hidden>✗ COULDN’T ADD YOU — TRY AGAIN.</p>
-      <p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — <span data-waitlist-email></span></p>
-    </div>
+    <h2 class="section-title section-title--cta">Get in <span class="title-accent title-accent--glow">early.</span></h2>
+    <p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
+{{waitlist}}
 </div></section>
-<footer class="site-footer rule-top"><div class="content-container footer-bar"><span>LOCAL-FIRST // E2E ENCRYPTED</span><span>© 2026 BUILD · GETBUILD.ING</span></div></footer>
+<footer class="rule-top"><div class="content-container footer-bar"><span>LOCAL-FIRST // E2E ENCRYPTED</span><span>© 2026 BUILD · GETBUILD.ING</span></div></footer>
 <script type="module" src="/landing/main.js"></script>
 </body>
 </html>

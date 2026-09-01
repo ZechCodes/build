@@ -1,37 +1,27 @@
 """Tests for the public waitlist endpoint: a new address is persisted normalised and
-committed, an address already on the list answers identically without writing, and a
-malformed body is a 400 rather than an unhandled error."""
+committed, an address already on the list answers identically, and a malformed or
+wrong-shaped body is a 400 rather than an unhandled error."""
 
 from __future__ import annotations
 
 import asyncio
 
 import pytest
-from litestar.exceptions import ClientException
+from litestar.exceptions import ClientException, SerializationException
 from sqlalchemy.exc import IntegrityError
 
 from buildapp.models import WaitlistSignup
 from buildapp.waitlist_controller import WaitlistController
 
-
-class _StubResult:
-    def __init__(self, row):
-        self._row = row
-
-    def scalar_one_or_none(self):
-        return self._row
+_DUPLICATE_EMAIL_ERROR = IntegrityError("INSERT", {}, Exception("duplicate"))
 
 
 class _StubSession:
-    def __init__(self, existing_row=None, commit_error=None):
-        self._existing_row = existing_row
+    def __init__(self, commit_error=None):
         self._commit_error = commit_error
         self.added: list = []
         self.committed = False
         self.rolled_back = False
-
-    async def execute(self, statement):
-        return _StubResult(self._existing_row)
 
     def add(self, instance):
         self.added.append(instance)
@@ -51,6 +41,11 @@ class _StubRequest:
 
     async def json(self):
         return self._body
+
+
+class _MalformedRequest:
+    async def json(self):
+        raise SerializationException("JSON is malformed")
 
 
 def _join(body, session):
@@ -80,18 +75,15 @@ def test_new_signup_answers_ok():
     assert response.content == {"ok": True}
 
 
-def test_existing_email_answers_identically_and_writes_nothing():
-    session = _StubSession(existing_row=WaitlistSignup(email="alice@example.com"))
+def test_existing_email_answers_identically_without_committing():
+    session = _StubSession(commit_error=_DUPLICATE_EMAIL_ERROR)
     response = _join({"email": "Alice@example.com"}, session)
-    assert session.added == []
     assert session.committed is False
     assert response.content == {"ok": True}
 
 
 def test_concurrent_duplicate_insert_rolls_back_and_answers_ok():
-    session = _StubSession(
-        commit_error=IntegrityError("INSERT", {}, Exception("duplicate"))
-    )
+    session = _StubSession(commit_error=_DUPLICATE_EMAIL_ERROR)
     response = _join({"email": "alice@example.com"}, session)
     assert session.rolled_back is True
     assert response.content == {"ok": True}
@@ -115,6 +107,22 @@ def test_non_string_email_raises_client_exception():
 def test_non_object_body_raises_client_exception():
     with pytest.raises(ClientException):
         _join(["alice@example.com"], _StubSession())
+
+
+def test_malformed_body_raises_client_exception():
+    with pytest.raises(ClientException):
+        asyncio.run(
+            WaitlistController.join.fn(
+                None, request=_MalformedRequest(), db_session=_StubSession()
+            )
+        )
+
+
+def test_a_rejected_address_never_reaches_the_session():
+    session = _StubSession()
+    with pytest.raises(ClientException):
+        _join({"email": {"nested": "object"}}, session)
+    assert session.added == []
 
 
 def test_join_route_is_public_and_carries_no_guard():

@@ -1143,7 +1143,7 @@ fn task_description(event: &Value, id: &str) -> String {
 /// turned up; the rest are the shapes their names imply, recognised so a task
 /// ending under one of them is not held open waiting for a roster that, for a
 /// foreground task, never comes.
-fn task_status_is_terminal(status: &str) -> bool {
+pub(crate) fn task_status_is_terminal(status: &str) -> bool {
     matches!(
         status,
         "completed"
@@ -1157,6 +1157,10 @@ fn task_status_is_terminal(status: &str) -> bool {
     )
 }
 
+pub(crate) fn task_status_failed(status: &str) -> bool {
+    matches!(status, "failed" | "error" | "timed_out")
+}
+
 /// The row a task's ending mints: `failed` when the event that ended it said
 /// so, with the error it named, and `finished` otherwise. A task that was
 /// cancelled, killed or stopped did not fail — something ended it, which is not
@@ -1166,7 +1170,7 @@ fn task_status_is_terminal(status: &str) -> bool {
 /// patch, or a `task_notification` itself, which carries its status at the top
 /// level and — as the probes recorded it — no error text at all.
 fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
-    if !matches!(status, "failed" | "error" | "timed_out") {
+    if !task_status_failed(status) {
         return format!("{description} — finished");
     }
     let reported = ending["error"]
@@ -1524,6 +1528,18 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+
+    #[test]
+    fn only_the_three_bad_endings_count_as_a_failure() {
+        for failed in ["failed", "error", "timed_out"] {
+            assert!(task_status_failed(failed), "{failed}");
+            assert!(task_status_is_terminal(failed), "{failed}");
+        }
+        for ended in ["completed", "killed", "stopped", "cancelled", "canceled"] {
+            assert!(!task_status_failed(ended), "{ended}");
+            assert!(task_status_is_terminal(ended), "{ended}");
+        }
+    }
 
     fn open(spec: &HarnessSpec) -> AdkSession {
         AdkSession::spawn(spec, None)

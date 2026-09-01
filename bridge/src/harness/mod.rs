@@ -32,6 +32,7 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
+pub mod surfaces;
 
 pub use session::{
     AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView,

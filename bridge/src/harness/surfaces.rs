@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::adk::{task_status_failed, task_status_is_terminal};
+use super::adk::{one_line, task_status_failed, task_status_is_terminal, TOOL_SUMMARY_LIMIT};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentSurfaces {
@@ -147,12 +147,14 @@ impl SurfaceLedger {
         match subtype {
             "task_started" => match event["task_type"].as_str() {
                 Some("local_workflow") => self.apply_workflow(subtype, &task_id, event),
+                Some("local_agent") => self.apply_subagent(subtype, &task_id, event),
                 _ => false,
             },
             "task_progress" | "task_updated" | "task_notification" => {
-                match self.holds_workflow(&task_id) {
-                    true => self.apply_workflow(subtype, &task_id, event),
-                    false => false,
+                match (self.holds_workflow(&task_id), self.holds_subagent(&task_id)) {
+                    (true, _) => self.apply_workflow(subtype, &task_id, event),
+                    (_, true) => self.apply_subagent(subtype, &task_id, event),
+                    _ => false,
                 }
             }
             _ => false,
@@ -223,6 +225,95 @@ impl SurfaceLedger {
 
     fn workflow_named(&mut self, task_id: &str) -> Option<&mut SurfaceWorkflow> {
         self.workflows.iter_mut().find(|held| held.id == task_id)
+    }
+
+    fn holds_subagent(&self, task_id: &str) -> bool {
+        self.subagents.iter().any(|held| held.id == task_id)
+    }
+
+    fn apply_subagent(&mut self, subtype: &str, task_id: &str, event: &Value) -> bool {
+        match subtype {
+            "task_started" => {
+                let started = started_subagent(task_id, event);
+                match self.subagent_named(task_id) {
+                    Some(held) => replace_when_changed(held, started),
+                    None => {
+                        self.subagents.push(started);
+                        true
+                    }
+                }
+            }
+            "task_progress" => match self.subagent_named(task_id) {
+                Some(held) => {
+                    let progressed = progressed_subagent(held, event);
+                    replace_when_changed(held, progressed)
+                }
+                None => false,
+            },
+            "task_updated" => self.close_subagent(task_id, event["patch"]["status"].as_str(), None),
+            "task_notification" => self.close_subagent(
+                task_id,
+                event["status"].as_str(),
+                read_text(event, "summary"),
+            ),
+            _ => false,
+        }
+    }
+
+    fn close_subagent(
+        &mut self,
+        task_id: &str,
+        status: Option<&str>,
+        summary: Option<String>,
+    ) -> bool {
+        let claimed = match status.and_then(wire_task_state) {
+            Some(state) => state,
+            None => return false,
+        };
+        match self.subagent_named(task_id) {
+            Some(held) => {
+                let closed = SurfaceAgent {
+                    state: Some(claimed.to_string()),
+                    result: summary
+                        .map(|reported| one_line(&reported, TOOL_SUMMARY_LIMIT))
+                        .or_else(|| held.result.clone()),
+                    ..held.clone()
+                };
+                replace_when_changed(held, closed)
+            }
+            None => false,
+        }
+    }
+
+    fn subagent_named(&mut self, task_id: &str) -> Option<&mut SurfaceAgent> {
+        self.subagents.iter_mut().find(|held| held.id == task_id)
+    }
+}
+
+fn started_subagent(task_id: &str, event: &Value) -> SurfaceAgent {
+    SurfaceAgent {
+        id: task_id.to_string(),
+        label: read_text(event, "description").unwrap_or_default(),
+        state: Some("running".to_string()),
+        started_at: event["start_time"].as_u64(),
+        spawning_call_id: read_text(event, "tool_use_id"),
+        ..SurfaceAgent::default()
+    }
+}
+
+fn progressed_subagent(held: &SurfaceAgent, event: &Value) -> SurfaceAgent {
+    let usage = &event["usage"];
+    SurfaceAgent {
+        last_tool: read_text(event, "last_tool_name")
+            .map(|name| SurfaceTool {
+                name,
+                summary: read_text(event, "description"),
+            })
+            .or_else(|| held.last_tool.clone()),
+        tokens: usage["total_tokens"].as_u64().or(held.tokens),
+        tool_calls: usage["tool_uses"].as_u64().or(held.tool_calls),
+        duration_ms: usage["duration_ms"].as_u64().or(held.duration_ms),
+        ..held.clone()
     }
 }
 
@@ -496,18 +587,35 @@ mod ledger_tests {
 
     const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
 
-    fn fixture_line(file_name: &str, line_number: usize) -> Value {
+    fn fixture_text(file_name: &str) -> String {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/claude-stream")
             .join(file_name);
-        let captured = std::fs::read_to_string(&path)
-            .unwrap_or_else(|why| panic!("the {file_name} fixture reads: {why}"));
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("the {file_name} fixture reads: {why}"))
+    }
+
+    fn fixture_line(file_name: &str, line_number: usize) -> Value {
+        let captured = fixture_text(file_name);
         let line = captured
             .lines()
             .nth(line_number - 1)
             .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"));
         serde_json::from_str(line)
             .unwrap_or_else(|why| panic!("{file_name}:{line_number} is one JSON event: {why}"))
+    }
+
+    fn fixture_events(file_name: &str) -> Vec<Value> {
+        fixture_text(file_name)
+            .lines()
+            .enumerate()
+            .map(|(position, line)| {
+                serde_json::from_str::<Value>(line).unwrap_or_else(|why| {
+                    panic!("{file_name}:{} is one JSON event: {why}", position + 1)
+                })
+            })
+            .filter(|event| event["subtype"].is_string())
+            .collect()
     }
 
     fn feed(ledger: &mut SurfaceLedger, event: &Value) -> bool {
@@ -772,8 +880,190 @@ mod ledger_tests {
     fn a_started_subagent_is_no_business_of_the_workflow_parser() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed(&mut ledger, &fixture_line("subagent.jsonl", 11)));
+        feed(&mut ledger, &fixture_line("subagent.jsonl", 11));
+
+        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
+        assert!(snapshot.workflows.is_empty(), "{snapshot:?}");
+    }
+
+    const SUBAGENT_TASK_ID: &str = "aba8d0dbf79bd05f1";
+    const SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
+
+    fn feed_subagent_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
+        feed(ledger, &fixture_line("subagent.jsonl", line_number))
+    }
+
+    fn the_only_subagent(ledger: &SurfaceLedger) -> SurfaceAgent {
+        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
+        assert_eq!(snapshot.subagents.len(), 1, "{snapshot:?}");
+        snapshot.subagents[0].clone()
+    }
+
+    fn ledger_through_the_started_subagent() -> SurfaceLedger {
+        let mut ledger = SurfaceLedger::default();
+        feed_subagent_line(&mut ledger, 11);
+        ledger
+    }
+
+    #[test]
+    fn a_started_local_agent_opens_a_running_subagent() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(feed_subagent_line(&mut ledger, 11));
+
+        let subagent = the_only_subagent(&ledger);
+        assert_eq!(subagent.id, SUBAGENT_TASK_ID);
+        assert_eq!(
+            subagent.label,
+            "Read README.md and report character count".to_string()
+        );
+        assert_eq!(subagent.state.as_deref(), Some("running"));
+        assert_eq!(subagent.spawning_call_id.as_deref(), Some(SPAWNING_CALL_ID));
+    }
+
+    #[test]
+    fn a_started_subagent_never_holds_the_prompt_or_the_call_that_spawned_it() {
+        let ledger = ledger_through_the_started_subagent();
+
+        let snapshot = written(&ledger);
+        for withheld in [
+            "Read the README.md file",
+            "subagent_type",
+            "general-purpose",
+            "spawning_call_id",
+            SPAWNING_CALL_ID,
+        ] {
+            assert!(
+                !snapshot.contains(withheld),
+                "{withheld} must not reach the snapshot: {snapshot}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_subagent_progress_line_takes_the_current_step_and_the_usage_totals() {
+        let mut ledger = ledger_through_the_started_subagent();
+
+        assert!(feed_subagent_line(&mut ledger, 25));
+
+        let subagent = the_only_subagent(&ledger);
+        assert_eq!(
+            subagent.last_tool,
+            Some(SurfaceTool {
+                name: "Read".to_string(),
+                summary: Some("Reading README.md".to_string()),
+            })
+        );
+        assert_eq!(subagent.tokens, Some(12_069));
+        assert_eq!(subagent.tool_calls, Some(1));
+        assert_eq!(subagent.duration_ms, Some(2_832));
+        assert_eq!(subagent.label, "Read README.md and report character count");
+    }
+
+    #[test]
+    fn the_same_subagent_progress_line_twice_moves_nothing_the_second_time() {
+        let mut ledger = ledger_through_the_started_subagent();
+        feed_subagent_line(&mut ledger, 25);
+        let before = written(&ledger);
+
+        assert!(!feed_subagent_line(&mut ledger, 25));
+
+        assert_eq!(written(&ledger), before);
+    }
+
+    #[test]
+    fn the_closing_lines_finish_the_subagent_and_take_its_answer() {
+        let mut ledger = ledger_through_the_started_subagent();
+        feed_subagent_line(&mut ledger, 25);
+
+        assert!(feed_subagent_line(&mut ledger, 30));
+        assert_eq!(the_only_subagent(&ledger).state.as_deref(), Some("done"));
+
+        assert!(feed_subagent_line(&mut ledger, 31));
+        let closed = the_only_subagent(&ledger);
+        assert_eq!(closed.state.as_deref(), Some("done"));
+        assert_eq!(closed.result.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn a_notification_for_a_subagent_that_never_started_mints_nothing() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed_subagent_line(&mut ledger, 31));
         assert!(ledger.snapshot().is_none());
+    }
+
+    #[test]
+    fn a_timed_out_subagent_reads_failed_and_an_unclaimed_status_changes_nothing() {
+        let mut ledger = ledger_through_the_started_subagent();
+
+        assert!(feed(
+            &mut ledger,
+            &json!({
+                "subtype": "task_notification",
+                "task_id": SUBAGENT_TASK_ID,
+                "status": "timed_out",
+                "summary": "the reader gave up",
+            })
+        ));
+        assert_eq!(the_only_subagent(&ledger).state.as_deref(), Some("failed"));
+
+        assert!(!feed(
+            &mut ledger,
+            &json!({
+                "subtype": "task_notification",
+                "task_id": SUBAGENT_TASK_ID,
+                "status": "reticulating",
+                "summary": "still going",
+            })
+        ));
+        let unclaimed = the_only_subagent(&ledger);
+        assert_eq!(unclaimed.state.as_deref(), Some("failed"));
+        assert_eq!(unclaimed.result.as_deref(), Some("the reader gave up"));
+    }
+
+    #[test]
+    fn a_notification_summary_reaches_the_snapshot_as_one_bounded_line() {
+        let mut ledger = ledger_through_the_started_subagent();
+
+        assert!(feed(
+            &mut ledger,
+            &json!({
+                "subtype": "task_notification",
+                "task_id": SUBAGENT_TASK_ID,
+                "status": "completed",
+                "summary": format!("first line\nsecond line\n{}", "x".repeat(400)),
+            })
+        ));
+
+        let result = the_only_subagent(&ledger)
+            .result
+            .expect("a completed subagent carries its answer");
+        assert!(!result.contains('\n'), "{result}");
+        assert_eq!(result.chars().count(), 241, "{result}");
+        assert!(result.starts_with("first line second line xxx"), "{result}");
+    }
+
+    #[test]
+    fn the_subagent_fixture_leaves_every_other_kind_empty() {
+        let mut ledger = SurfaceLedger::default();
+        for event in fixture_events("subagent.jsonl") {
+            feed(&mut ledger, &event);
+        }
+
+        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
+        assert!(snapshot.workflows.is_empty(), "{snapshot:?}");
+        assert!(snapshot.shells.is_empty(), "{snapshot:?}");
+        assert!(snapshot.checklist.is_empty(), "{snapshot:?}");
+
+        let keys: Vec<String> = snapshot
+            .wire_value(&no_call_sequence)
+            .as_object()
+            .expect("the snapshot writes an object")
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(keys, vec!["subagents".to_string()]);
     }
 
     #[test]

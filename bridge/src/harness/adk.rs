@@ -179,7 +179,7 @@ const BUILD_MCP_TOOL_PREFIX: &str = "mcp__build__";
 /// belongs in a conversation row whole. Reasoning and narration are NOT capped
 /// here — those are the agent's own words, and the conversation carries what an
 /// agent says whole.
-const TOOL_SUMMARY_LIMIT: usize = 240;
+pub(crate) const TOOL_SUMMARY_LIMIT: usize = 240;
 
 /// How large the activity backlog may grow before a slow subscriber loses the
 /// oldest events. Matches the byte pump's window: a turn that calls forty tools
@@ -1204,7 +1204,7 @@ fn result_error_text(event: &Value) -> String {
 /// `text` collapsed onto one line and clipped to `limit` characters. Clipped by
 /// characters rather than bytes: tool output is arbitrary UTF-8, and a byte
 /// truncation would split one.
-fn one_line(text: &str, limit: usize) -> String {
+pub(crate) fn one_line(text: &str, limit: usize) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= limit {
         return collapsed;

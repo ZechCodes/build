@@ -13,6 +13,7 @@ import {
   effortLevels,
   effortOptionsHtml,
   effortSupported,
+  matchCatalogModel,
   modelInCatalog,
   modelOptionsHtml,
   modelParams,
@@ -135,15 +136,45 @@ export function modelMenuOptions(catalog, providerId, choice) {
   ];
 }
 
-/** What the menu's button says: the model the next turn will run on and how
- *  hard it will think, or that neither has been answered. A model the catalog
- *  does not carry reads as the id the bridge holds — a choice made on a newer
- *  bridge must not read as no choice at all. */
-export function modelMenuLabel(catalog, providerId, choice) {
-  if (!choice.model) return "Default model";
+export function activeModelLabel(catalog, providerId, modelId) {
+  if (!modelId) return "";
+  const model = matchCatalogModel(catalogForProvider(catalog || {}, providerId).models || [], modelId);
+  return model ? model.label : modelId;
+}
+
+const withChoiceEffort = (name, choice) => (choice.effort ? `${name} · ${choice.effort}` : name);
+
+const pendingModelLabel = (catalog, providerId, choice) => {
   const model = modelInCatalog(catalogForProvider(catalog || {}, providerId).models || [], choice.model);
-  const name = model ? model.label : choice.model;
-  return choice.effort ? `${name} · ${choice.effort}` : name;
+  return withChoiceEffort(model ? model.label : choice.model, choice);
+};
+
+const runsThePendingModel = (catalog, providerId, choice, activeModel) => {
+  const models = catalogForProvider(catalog || {}, providerId).models || [];
+  const active = matchCatalogModel(models, activeModel);
+  const pending = modelInCatalog(models, choice.model);
+  if (active && pending) return active.id === pending.id;
+  return activeModel === choice.model;
+};
+
+export function modelMenuLabel(catalog, providerId, choice, activeModel = "") {
+  if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Default model";
+  const active = activeModelLabel(catalog, providerId, activeModel);
+  if (!choice.model || runsThePendingModel(catalog, providerId, choice, activeModel)) {
+    return withChoiceEffort(active, choice);
+  }
+  return `${active} → ${pendingModelLabel(catalog, providerId, choice)}`;
+}
+
+export function modelMenuTitle(catalog, providerId, choice, activeModel = "") {
+  const moving =
+    activeModel && choice.model && !runsThePendingModel(catalog, providerId, choice, activeModel);
+  if (!moving) return "Model and reasoning effort";
+  return `Running ${activeModelLabel(catalog, providerId, activeModel)}. ${pendingModelLabel(
+    catalog,
+    providerId,
+    choice,
+  )} at the next start.`;
 }
 
 /** The choice one press makes, reconciled: a model change drops the effort that

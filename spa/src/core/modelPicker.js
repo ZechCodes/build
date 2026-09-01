@@ -114,6 +114,14 @@ export function modelInCatalog(models, modelId) {
   return (models || []).find((model) => model.id === modelId) || null;
 }
 
+export function matchCatalogModel(models, modelId) {
+  if (!modelId) return null;
+  const exact = modelInCatalog(models, modelId);
+  if (exact) return exact;
+  const undated = modelId.replace(/-\d{6,8}$/, "");
+  return undated === modelId ? null : modelInCatalog(models, undated);
+}
+
 /** <option> list for the model select: harness default, catalog, and — when the
  *  current selection is not in the catalog (e.g. a task dispatched on a newer
  *  bridge) — the selection itself, so it never silently changes. */

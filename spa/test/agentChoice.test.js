@@ -11,6 +11,7 @@ import {
   modelMenuLabel,
   modelMenuOptions,
   modelMenuSelection,
+  modelMenuTitle,
   readAgentChoice,
   reconcileAgentChoice,
 } from "../src/core/agentChoice.js";
@@ -190,6 +191,46 @@ describe("the composer's model menu", () => {
     // A model the catalog does not carry — an entity dispatched on a newer
     // bridge — reads as the id the bridge holds rather than as nothing.
     expect(modelMenuLabel(catalog, "claude", { model: "claude-opus-5", effort: "" })).toBe("claude-opus-5");
+  });
+
+  it("says the model the agent is running on, not the choice behind it", () => {
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "opus")).toBe("Opus");
+    expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "" }, "opus-20260214")).toBe("Opus");
+  });
+
+  it("says Default model only for an agent that has never run and chose nothing", () => {
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "")).toBe("Default model");
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "haiku")).toBe("Haiku");
+    expect(modelMenuLabel(catalog, "claude", { model: "haiku", effort: "" }, "")).toBe("Haiku");
+  });
+
+  it("names both when the next start will spend a different model", () => {
+    expect(modelMenuLabel(catalog, "claude", { model: "haiku", effort: "" }, "opus")).toBe("Opus → Haiku");
+    expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "high" }, "haiku")).toBe("Haiku → Opus · high");
+  });
+
+  it("keeps the effort beside the model the menu is holding", () => {
+    expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "high" }, "opus")).toBe("Opus · high");
+    expect(modelMenuLabel(catalog, "claude", { model: "", effort: "high" }, "opus")).toBe("Opus · high");
+  });
+
+  it("reads an announced model the catalog does not carry as the id the bridge holds", () => {
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "claude-fable-5-1")).toBe("claude-fable-5-1");
+    expect(modelMenuLabel(catalog, "claude", { model: "opus", effort: "" }, "claude-fable-5-1")).toBe(
+      "claude-fable-5-1 → Opus",
+    );
+  });
+
+  it("says in words that the pending model waits for the next start", () => {
+    expect(modelMenuTitle(catalog, "claude", NO_AGENT_CHOICE, "")).toBe("Model and reasoning effort");
+    expect(modelMenuTitle(catalog, "claude", { model: "opus", effort: "" }, "opus")).toBe("Model and reasoning effort");
+    expect(modelMenuTitle(catalog, "claude", { model: "haiku", effort: "" }, "opus")).toBe(
+      "Running Opus. Haiku at the next start.",
+    );
+  });
+
+  it("marks the pending choice in the menu even while another model runs", () => {
+    expect(chosen({ provider: "claude", model: "haiku", effort: "" })).toEqual(["model:haiku"]);
   });
 
   it("turns a press into the next choice, keeping the harness out of it", () => {

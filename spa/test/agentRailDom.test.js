@@ -1269,6 +1269,47 @@ describe("the composer's model menu", () => {
     });
   });
 
+  it("says the model the open agent is actually running on, with no second round trip", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    await mount();
+
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(callsTo("agent.choose")).toEqual([]);
+  });
+
+  it("names the pending model beside it once the menu has chosen another", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        payload = branchRow({
+          agents: [agent({ model: params.model, effort: "", active_model: "claude-opus-5" })],
+        });
+        return {};
+      }
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+
+    expect(callsTo("agent.choose")[0].params).toEqual({
+      entity_id: "run-3", model: "claude-haiku-4-5", effort: "",
+    });
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
+    expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
+  });
+
+  it("says Default model for an agent that has never run and chose nothing", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
+    await mount();
+
+    expect(modelMenuButton().textContent).toContain("Default model");
+  });
+
   it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();

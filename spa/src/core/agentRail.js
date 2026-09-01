@@ -856,7 +856,7 @@ export function mountAgentRail(host, context) {
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
     if (!composerModelMenu) return;
     const choice = composerChoice();
-    composerModelMenu.set(catalog, choice.provider, choice);
+    composerModelMenu.set(catalog, choice.provider, choice, activeModelOf(agentInFocus()));
   };
 
   /** What the composer's model menu is editing: the open agent's own choice —
@@ -867,6 +867,8 @@ export function mountAgentRail(host, context) {
     if (!agent) return newAgentChoice();
     return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
   };
+
+  const activeModelOf = (agent) => (agent && agent.active_model) || "";
 
   /** A model or effort picked from that menu.
    *

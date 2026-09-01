@@ -178,6 +178,179 @@ DESIGN_TOKENS = (
 )
 
 
+DOT_FIELD_MARKUP = '<div class="dot-field"><canvas data-dot-field></canvas></div>'
+HERO_EYEBROW_MARKUP = (
+    '<p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES<br>GOING OUT WEEKLY</p>'
+)
+HERO_EYEBROW_BREAK_HIDDEN_RULE = ".hero-eyebrow br{display:none}"
+HERO_EYEBROW_BREAK_SHOWN_RULE = ".hero-eyebrow br{display:inline}"
+HERO_TITLE_MARKUP = (
+    '<h1 class="hero-title">Ship more.<br>'
+    '<span class="title-accent">Babysit less.</span></h1>'
+)
+HERO_LEAD_MARKUP = (
+    '<p class="lead">Build is the agentic coding IDE for teams. It surfaces the work '
+    "that needs you — reviews, decisions, direction — and dispatches everything else "
+    "to your agents. Not public yet.</p>"
+)
+HERO_NOTE_MARKUP = (
+    '<p class="waitlist-note">One email when your invite is ready. Nothing else.</p>'
+)
+
+SCREENSHOT_MARKUP = (
+    '<img src="/landing/assets/build-ide-screenshot-1240.png" '
+    'srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, '
+    '/landing/assets/build-ide-screenshot-1860.png 1860w" '
+    'sizes="(max-width: 640px) 100vw, (max-width: 1280px) calc(100vw - 80px), 1160px" '
+    'width="1860" height="1629" loading="lazy" decoding="async" '
+    'alt="The Build IDE — commit history, diff review, and a live agent conversation">'
+)
+
+AGENTS_LABEL_MARKUP = '<p class="eyebrow agents-label">RUNS YOUR AGENTS</p>'
+AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
+AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
+
+FEATURES_TITLE_MARKUP = (
+    '<h2 class="section-title">Everything agents need.<br>'
+    "Nothing <span class=\"title-accent\">you don't.</span></h2>"
+)
+FEATURES_LABEL_MARKUP = '<span class="eyebrow section-label">FEATURES /05</span>'
+FEATURE_CARDS = (
+    (
+        "/01",
+        "ISSUES",
+        "An inbox, not a backlog",
+        "Issues live next to the code. Agents pick them up on their own — your inbox "
+        "shows only the work waiting on a human. When it's empty, you're done.",
+    ),
+    (
+        "/02",
+        "VERSION CONTROL",
+        "Worktrees that manage themselves",
+        "Every agent works in its own worktree. Fetch, commit, review, merge — "
+        "without leaving the conversation.",
+    ),
+    (
+        "/03",
+        "REVIEW",
+        "Diff-first review",
+        "Inline comments on any line, threaded with your team and your agents. "
+        "Approve, redirect, or take over.",
+    ),
+    (
+        "/04",
+        "WORKFLOWS · RLM",
+        "Workflows that reshape around the work",
+        "The RLM routes tasks, retries failures, and re-plans as the work changes — "
+        "escalating only when it genuinely needs a human. Your team sees the same "
+        "board, live.",
+    ),
+    (
+        "/05",
+        "AGENTS",
+        "Any agent, side by side",
+        "Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, "
+        "one shared history, one place to look.",
+    ),
+)
+CARD_SPAN_MODIFIERS = ("", "", "--span-2", "--span-4", "--span-6")
+ARTICLE_TAG_PATTERN = r"<article[^>]*>"
+SPAN_MODIFIER_PATTERN = r"--span-\d"
+
+ACTIVE_RAIL_DASH_MARKUP = '<i class="rail-dash is-active" data-rail-dash></i>'
+IDLE_RAIL_DASH_MARKUP = '<i class="rail-dash" data-rail-dash></i>'
+IDLE_RAIL_DASH_COUNT = 4
+
+CTA_TITLE_MARKUP = (
+    '<h2 class="cta-title">Get in <span class="title-accent">early.</span></h2>'
+)
+CTA_NOTE_MARKUP = (
+    '<p class="cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>'
+)
+
+WAITLIST_ERROR_MARKUP = (
+    '<p class="waitlist-error" role="alert" hidden>✗ COULDN’T ADD YOU — TRY AGAIN.</p>'
+)
+WAITLIST_SUCCESS_MARKUP = (
+    '<p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — '
+    "<span data-waitlist-email></span></p>"
+)
+WAITLIST_COMPONENT_PATTERN = r'<div class="waitlist" data-waitlist>.*?</div>'
+WAITLIST_INSTANCE_COUNT = 2
+
+NAV_ELEMENT_PATTERN = r"<nav\b.*?</nav>"
+ANCHOR_HREF_PATTERN = r'href="#([^"]*)"'
+
+MEDIA_BLOCK_OPENER = "@media"
+RULE_PATTERN = r"([^{}]+)\{[^{}]*\}"
+COMPONENT_LAYER_SELECTORS = (
+    ".eyebrow",
+    ".section-header",
+    ".section-title",
+    ".title-accent",
+    ".rule-top",
+    ".rule-bottom",
+    ".button-primary",
+    ".button-primary--nav",
+    ".waitlist",
+    ".waitlist-form",
+    ".waitlist-input",
+    ".waitlist-note",
+    ".waitlist-success",
+    ".waitlist-error",
+    ".feature-cards",
+    ".feature-card",
+    ".feature-card--span-2",
+    ".feature-card--span-4",
+    ".feature-card--span-6",
+    ".card-header",
+    ".card-category",
+    ".card-title",
+    ".card-body",
+    ".rail-dashes",
+    ".agents-grid",
+    ".agents-label",
+    ".agent-cell",
+    ".agent-support",
+    ".nav-bar",
+    ".nav-links",
+    ".nav-actions",
+    ".nav-menu-toggle",
+    ".nav-menu-toggle-bar",
+)
+
+
+def _rules_outside_media_blocks(css: str) -> str:
+    kept: list[str] = []
+    index = 0
+    while index < len(css):
+        media_start = css.find(MEDIA_BLOCK_OPENER, index)
+        if media_start == -1:
+            kept.append(css[index:])
+            break
+        kept.append(css[index:media_start])
+        depth = 0
+        cursor = css.index("{", media_start)
+        while cursor < len(css):
+            if css[cursor] == "{":
+                depth += 1
+            elif css[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            cursor += 1
+        index = cursor + 1
+    return "".join(kept)
+
+
+def _declared_selectors(css: str) -> list[str]:
+    return [
+        selector.strip()
+        for selector_list in re.findall(RULE_PATTERN, css)
+        for selector in selector_list.split(",")
+    ]
+
+
 def _landing_text(name: str) -> str:
     return (LANDING_DIR / name).read_text()
 
@@ -316,6 +489,107 @@ def test_landing_sources_carry_no_comments():
         assert BLOCK_COMMENT_OPENER not in text
         for line in text.splitlines():
             assert not line.strip().startswith(LINE_COMMENT_OPENER)
+
+
+def test_hero_copy_is_verbatim():
+    html = _landing_html()
+    assert HERO_EYEBROW_MARKUP in html
+    assert HERO_TITLE_MARKUP in html
+    assert HERO_LEAD_MARKUP in html
+    assert HERO_NOTE_MARKUP in html
+
+
+def test_hero_eyebrow_carries_the_mobile_line_break():
+    css = _landing_text(STYLESHEET_NAME)
+    assert HERO_EYEBROW_BREAK_HIDDEN_RULE in css
+    assert HERO_EYEBROW_BREAK_SHOWN_RULE in css
+    assert HERO_EYEBROW_BREAK_SHOWN_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_hero_hosts_the_dot_field_canvas():
+    assert DOT_FIELD_MARKUP in _landing_html()
+
+
+def test_screenshot_uses_both_renditions_with_the_designed_alt_text():
+    assert SCREENSHOT_MARKUP in _landing_html()
+
+
+def test_every_agent_name_is_listed_with_supported():
+    html = _landing_html()
+    assert AGENTS_LABEL_MARKUP in html
+    for agent_name in AGENT_NAMES:
+        assert f'<div class="agent-cell">{agent_name}{AGENT_SUPPORT_LABEL}</div>' in html
+
+
+def test_features_header_copy_is_verbatim():
+    html = _landing_html()
+    assert FEATURES_TITLE_MARKUP in html
+    assert FEATURES_LABEL_MARKUP in html
+
+
+def test_every_feature_card_number_category_title_and_body_is_verbatim():
+    html = _landing_html()
+    for number, category, title, body in FEATURE_CARDS:
+        assert (
+            f'<div class="card-header eyebrow">'
+            f'<span class="card-number">{number}</span>'
+            f'<span class="card-category">{category}</span></div>' in html
+        )
+        assert f'<h3 class="card-title">{title}</h3>' in html
+        assert f'<p class="card-body">{body}</p>' in html
+
+
+def test_feature_cards_carry_the_designed_span_modifiers():
+    article_tags = re.findall(ARTICLE_TAG_PATTERN, _landing_html())
+    assert len(article_tags) == len(CARD_SPAN_MODIFIERS)
+    for article_tag, expected_modifier in zip(article_tags, CARD_SPAN_MODIFIERS):
+        found_modifiers = re.findall(SPAN_MODIFIER_PATTERN, article_tag)
+        assert found_modifiers == ([expected_modifier] if expected_modifier else [])
+
+
+def test_rail_has_five_dashes_with_the_first_active():
+    html = _landing_html()
+    assert html.count(ACTIVE_RAIL_DASH_MARKUP) == 1
+    assert html.count(IDLE_RAIL_DASH_MARKUP) == IDLE_RAIL_DASH_COUNT
+    assert html.index(ACTIVE_RAIL_DASH_MARKUP) < html.index(IDLE_RAIL_DASH_MARKUP)
+
+
+def test_cta_section_copy_is_verbatim():
+    html = _landing_html()
+    assert CTA_TITLE_MARKUP in html
+    assert CTA_NOTE_MARKUP in html
+
+
+def test_waitlist_error_and_success_copy_are_verbatim_and_hidden():
+    html = _landing_html()
+    assert html.count(WAITLIST_ERROR_MARKUP) == WAITLIST_INSTANCE_COUNT
+    assert html.count(WAITLIST_SUCCESS_MARKUP) == WAITLIST_INSTANCE_COUNT
+
+
+def test_both_waitlist_forms_use_identical_component_markup():
+    components = re.findall(WAITLIST_COMPONENT_PATTERN, _landing_html(), re.S)
+    assert len(components) == WAITLIST_INSTANCE_COUNT
+    assert components[0] == components[1]
+
+
+def test_anchored_sections_exist_for_every_nav_link():
+    html = _landing_html()
+    nav_element = re.search(NAV_ELEMENT_PATTERN, html, re.S)
+    assert nav_element is not None
+    anchored_names = [
+        name for name in re.findall(ANCHOR_HREF_PATTERN, nav_element.group(0)) if name
+    ]
+    assert anchored_names
+    for anchored_name in anchored_names:
+        assert f'id="{anchored_name}"' in html
+
+
+def test_section_rules_declare_no_selector_owned_by_the_component_layer():
+    declared = _declared_selectors(
+        _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+    )
+    for owned_selector in COMPONENT_LAYER_SELECTORS:
+        assert declared.count(owned_selector) == 1
 
 
 def test_deploy_smoke_check_targets_shipped_landing_assets():

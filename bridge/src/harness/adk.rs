@@ -302,9 +302,14 @@ impl ProtocolState {
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer
 /// stays as silent as the call was.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum RecordedCall {
-    Minted,
+    /// The tool the call named, so its answer can be routed by tool rather than
+    /// by a second call-id map kept somewhere else.
+    Minted {
+        #[allow(dead_code)]
+        tool: String,
+    },
     BuildsOwn,
 }
 
@@ -973,7 +978,8 @@ impl ProtocolReader {
             return;
         }
         let summary = tool_call_summary(&tool, &block["input"]);
-        self.calls.insert(call_id.clone(), RecordedCall::Minted);
+        self.calls
+            .insert(call_id.clone(), RecordedCall::Minted { tool });
         self.emit(AgentActivity::ToolUse { call_id, summary });
     }
 
@@ -1539,6 +1545,60 @@ mod tests {
             assert!(!task_status_failed(ended), "{ended}");
             assert!(task_status_is_terminal(ended), "{ended}");
         }
+    }
+
+    fn reader_over_a_silent_session() -> ProtocolReader {
+        ProtocolReader {
+            state: Arc::new(Mutex::new(ProtocolState::new())),
+            activity: Arc::new(Mutex::new(None)),
+            calls: HashMap::new(),
+        }
+    }
+
+    fn checklist_fixture_lines() -> Vec<String> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-stream/shell-and-checklist.jsonl");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("the shell-and-checklist fixture reads: {why}"))
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The call record carries the tool's name, so an answer — which names only
+    /// the call it replies to — can be routed by tool without a second map.
+    #[test]
+    fn a_minted_call_records_the_tool_its_answer_will_be_routed_by() {
+        let lines = checklist_fixture_lines();
+        let mut reader = reader_over_a_silent_session();
+
+        reader.read_line(&lines[26]);
+
+        assert_eq!(
+            reader.calls.get("toolu_01V6RPmcsmyRyEVKSdcpKTMJ"),
+            Some(&RecordedCall::Minted {
+                tool: "TaskCreate".to_string(),
+            })
+        );
+    }
+
+    /// The map is a pairing held only until the answer arrives: a session that
+    /// runs for hours must not accumulate one entry per call it ever made.
+    #[test]
+    fn a_replayed_stream_never_grows_the_call_map() {
+        let lines = checklist_fixture_lines();
+        let mut reader = reader_over_a_silent_session();
+
+        for line in &lines {
+            reader.read_line(line);
+        }
+        let after_one_pass = reader.calls.len();
+        for line in &lines {
+            reader.read_line(line);
+        }
+
+        assert_eq!(after_one_pass, 0, "every call in the fixture was answered");
+        assert_eq!(reader.calls.len(), after_one_pass);
     }
 
     fn open(spec: &HarnessSpec) -> AdkSession {

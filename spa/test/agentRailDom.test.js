@@ -6,6 +6,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+
+// The conversation cache writes through IndexedDB; give the module a fake one
+// before anything imports it.
+globalThis.indexedDB = new IDBFactory();
+globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 
@@ -71,6 +77,8 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
+const { setCacheDevice } = await import("../src/core/cacheScope.js");
+const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -138,10 +146,12 @@ const mount = async (context = { kind: "branch", projectId: "p1", branch: "build
   await flush();
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetAgentRailMemory();
+  setCacheDevice("dev-1");
+  await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   calls = [];
   payload = branchRow();
@@ -1326,5 +1336,46 @@ describe("interrupting the turn", () => {
     expect(splitSend()).toBe(null);
     expect(panel().querySelector("#railinput")).toBe(input);
     expect(input.value).toBe("half a sent");
+  });
+});
+
+describe("the conversation's local cache", () => {
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const threadItem = (sequence, body) => ({
+    id: `m-${sequence}`,
+    type: "message",
+    data: { sequence, role: "user", body, created_at: "2026-08-30T12:00:00Z" },
+  });
+
+  it("seeds the saved window, so opening the chat asks for a delta, history in hand", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      { items: [threadItem(1, "what was said before")], olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
+    );
+    feedSnapshot = { items: feedItems, projects: [] };
+    await mount();
+    await flush(); // the auto-selected agent's seed lands before the next poll
+    vi.advanceTimersByTime(1600);
+    await flush();
+    const delta = callsTo("branch.get").find((call) => call.params.agent_id === "ag-1");
+    expect(delta.params.thread_after_sequence).toBe(1);
+    expect(delta.params.thread_limit).toBeUndefined();
+  });
+
+  it("writes the conversation's window through for the next visit", async () => {
+    feedSnapshot = { items: feedItems, projects: [] };
+    payload = branchRow({
+      run: {
+        run_id: "run-3",
+        thread: { items: [threadItem(2, "fresh words")], has_more: false, thread_total: 1, thread_last_sequence: 2, sessions: [] },
+      },
+    });
+    await mount();
+    bubbles()[0].click();
+    await flush();
+    const record = await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" });
+    expect(record.value.items).toHaveLength(1);
+    expect(record.value.items[0].data.body).toBe("fresh words");
+    expect(record.value.deliveredSequence).toBe(2);
   });
 });

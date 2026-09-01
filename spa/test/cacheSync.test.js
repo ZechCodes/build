@@ -122,7 +122,7 @@ describe("keeping active branches warm", () => {
     await feed([branchItem()]);
     const status = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "status" });
     expect(status.value.head).toBe("abc");
-    expect(status.value.patch).toBeUndefined();
+    expect(status.value.patch).toBe("");
   });
 
   it("scopes a checkout Build does not own by project and worktree", async () => {
@@ -195,5 +195,56 @@ describe("the boot echo", () => {
     await flush();
     expect(App.call).not.toHaveBeenCalled();
     expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
+  });
+});
+
+describe("keeping warmed conversations fresh", () => {
+  it("re-reads a persisted branch thread on the entity's refresh", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    App.call = vi.fn(async (method) => {
+      if (method === "git.status") return { head: "abc", patch: "p" };
+      if (method === "git.log") return { commits: [] };
+      if (method === "branch.get")
+        return { run: { thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 } } };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).toHaveBeenCalledWith("branch.get", {
+      project_id: "p1",
+      branch: "build/login",
+      agent_id: "ag-1",
+      thread_limit: 60,
+    });
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" });
+    expect(record.value.deliveredSequence).toBe(2);
+  });
+
+  it("re-reads an issue's persisted thread through issue.get", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    App.call = vi.fn(async (method) =>
+      method === "issue.get"
+        ? { issue_id: "iss-1", thread: { items: [{ id: "m-3", data: { sequence: 3 } }], has_more: false, thread_total: 3 } }
+        : {},
+    );
+    sync.startCacheSync();
+    await feed([
+      { kind: "issue", project_id: "p2", issue_id: "iss-1", state: "plan_review", anchor: ago(2), last_activity: ago(2) },
+    ]);
+    expect(App.call).toHaveBeenCalledWith("issue.get", { issue_id: "iss-1", thread_limit: 60 });
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "iss-1", kind: "thread", sub: "" });
+    expect(record.value.deliveredSequence).toBe(3);
+  });
+
+  it("asks for no conversation that was never opened", async () => {
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).not.toHaveBeenCalledWith("branch.get", expect.anything());
   });
 });

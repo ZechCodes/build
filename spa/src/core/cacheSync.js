@@ -14,7 +14,9 @@ import { subscribeFeed } from "./taskFeed.js";
 import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
-import { cachedEntityIds, evictEntity, writeCached } from "./localCache.js";
+import { railEntity } from "./agentRailModel.js";
+import { FIRST_PAGE_ITEMS, windowFromThreadPayload } from "./thread.js";
+import { cachedEntityIds, cachedSubKeys, evictEntity, writeCached } from "./localCache.js";
 
 const SYNC_LOCK = "build.cacheSync";
 
@@ -42,21 +44,47 @@ function gitScopeOf(row) {
   return null;
 }
 
-/** Re-read one active branch's status and commit list into the cache. The
- *  uncommitted patch is dropped before the write — it loads on demand. */
+/** Re-read the conversations that were ever warmed on this entity — one full
+ *  first page per agent, stored as the saved window the rail seeds from. A
+ *  conversation never opened has no record here and is never asked for. */
+async function refreshThreads(deviceId, entityId, row) {
+  const isIssue = row.kind === "issue";
+  const detailParams = isIssue ? { issue_id: entityId } : { project_id: row.project_id, branch: row.branch };
+  for (const agentSub of await cachedSubKeys(deviceId, entityId, "thread")) {
+    try {
+      const payload = await App.call(isIssue ? "issue.get" : "branch.get", {
+        ...detailParams,
+        ...(agentSub ? { agent_id: agentSub } : {}),
+        thread_limit: FIRST_PAGE_ITEMS,
+      });
+      const shaped = windowFromThreadPayload(railEntity(payload, isIssue ? "issue" : "branch").thread);
+      if (shaped) await writeCached({ deviceId, entityId, kind: "thread", sub: agentSub }, shaped);
+    } catch {
+      /* transient, or the agent left — the next event tries again */
+    }
+  }
+}
+
+/** Re-read one active entity into the cache: a branch's status (with the
+ *  uncommitted patch emptied — it loads on demand) and commit list, and every
+ *  conversation that was ever warmed on it. */
 async function refreshEntity(entityId) {
   const deviceId = deviceIdNow();
   const row = activeRows.get(entityId);
-  const scope = row ? gitScopeOf(row) : null;
-  if (!deviceId || !scope || refreshing.has(entityId)) return;
+  if (!deviceId || !row || refreshing.has(entityId)) return;
   refreshing.add(entityId);
   try {
-    const [status, log] = await Promise.all([App.call("git.status", scope), App.call("git.log", scope)]);
-    const { patch, ...statusWithoutPatch } = status;
-    await writeCached({ deviceId, entityId, kind: "status" }, statusWithoutPatch);
-    await writeCached({ deviceId, entityId, kind: "log" }, log);
-  } catch {
-    /* offline or mid-switch — the next event or safety poll tries again */
+    const scope = gitScopeOf(row);
+    if (scope) {
+      try {
+        const [status, log] = await Promise.all([App.call("git.status", scope), App.call("git.log", scope)]);
+        await writeCached({ deviceId, entityId, kind: "status" }, { ...status, patch: "" });
+        await writeCached({ deviceId, entityId, kind: "log" }, log);
+      } catch {
+        /* offline or mid-switch — the next event or safety poll tries again */
+      }
+    }
+    await refreshThreads(deviceId, entityId, row);
   } finally {
     refreshing.delete(entityId);
   }
@@ -86,8 +114,8 @@ async function onSnapshot(snapshot) {
     watcher.dispose();
     entityWatchers.delete(id);
   }
-  for (const [id, row] of activeRows) {
-    if (entityWatchers.has(id) || !gitScopeOf(row)) continue;
+  for (const id of activeRows.keys()) {
+    if (entityWatchers.has(id)) continue;
     entityWatchers.set(id, watchChanges({ refresh: () => refreshEntity(id), intervalMs: ENTITY_REFRESH_MS, entity: id }));
     refreshEntity(id);
   }

@@ -130,6 +130,14 @@ export async function cachedEntityIds(deviceId) {
   return [...ids];
 }
 
+/** The sub-keys one entity holds under one kind — for the sync layer, whose
+ *  question is "which conversations were ever warmed here". */
+export async function cachedSubKeys(deviceId, entityId, kind) {
+  const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|${encodeURIComponent(kind)}|`;
+  const keys = (await inStore("readonly", (store) => store.getAllKeys(prefixRange(prefix)))) || [];
+  return keys.map((key) => decodeURIComponent(String(key).slice(prefix.length)));
+}
+
 /** Drop the whole database. For sign-out, and for a format change. */
 export function wipeCache() {
   return inStore("readwrite", (store) => {

@@ -466,6 +466,44 @@ export function createThreadCache() {
     reset() {
       forgetTheWindow();
     },
+    // The window as a value the local cache can hold across sessions, or null
+    // while none is open. What seedWindow takes back.
+    exportWindow() {
+      if (!accumulatedItems.length) return null;
+      return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems };
+    },
+    // Open a saved window in an empty cache. Only an empty one: a conversation
+    // already live outranks anything the disk remembers. After a seed the
+    // cursor is a forward delta, and the standing soundness checks self-heal
+    // whatever the time away made stale — a break refetches, invisibly.
+    seedWindow(saved) {
+      if (accumulatedItems.length || deliveredSequence) return false;
+      if (!saved || !Array.isArray(saved.items) || !saved.items.length) return false;
+      accumulatedItems = [...saved.items];
+      olderItemsRemain = !!saved.olderItemsRemain;
+      deliveredSequence = saved.deliveredSequence || highestCursorSequence(accumulatedItems);
+      knownTotalItems = saved.knownTotalItems ?? null;
+      return true;
+    },
+  };
+}
+
+/** A bare thread payload (a first page fetched out of band, with no cache in
+ *  hand) shaped as the saved window seedWindow takes — the background syncer's
+ *  way of refreshing a persisted conversation without owning one. Null for a
+ *  payload holding nothing: an empty window is not worth a seed. */
+export function windowFromThreadPayload(threadPayload) {
+  const items = (threadPayload && threadPayload.items) || [];
+  if (!items.length) return null;
+  const deliveredSequence = items.reduce(
+    (highest, item) => Math.max(highest, item.data?.sequence || 0, item.data?.updated_sequence || 0),
+    0,
+  );
+  return {
+    items,
+    olderItemsRemain: threadPayload.has_more === true,
+    deliveredSequence,
+    knownTotalItems: threadPayload.thread_total ?? null,
   };
 }
 

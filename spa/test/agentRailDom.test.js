@@ -752,6 +752,59 @@ describe("the conversation panel", () => {
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
   });
 
+  it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    mountAgentTab.mock.calls[0][2].onStart();
+    await flush();
+    panel().querySelector('[data-mode="chat"]').click();
+    await flush();
+    panel().querySelector("#railinput").value = "carry on";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(callsTo("agent.start")).toHaveLength(1);
+  });
+
+  it("puts the agent back where it was and says why when the start is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        throw new Error("no session could be spawned");
+      }
+      return answering(method, params);
+    });
+
+    await expect(mountAgentTab.mock.calls[0][2].onStart()).rejects.toThrow("no session could be spawned");
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no session could be spawned");
+
+    panel().querySelector('[data-mode="chat"]').click();
+    await flush();
+    panel().querySelector("#railinput").value = "try again";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("agent.start")).toHaveLength(2);
+  });
+
   // The terminal is a capability, not a guarantee. A harness that reports its
   // own reasoning and tool calls is not opaque, so it has no basement to drop
   // into — and the rail is where that shows: no TUI button, and no way to ask
@@ -1429,8 +1482,10 @@ describe("the composer's model menu", () => {
     await mount();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "agent.choose") return new Promise(() => {});
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
       return answering(method, params);
     });
 
@@ -1448,8 +1503,10 @@ describe("the composer's model menu", () => {
     await mount();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
-      calls.push({ method, params });
-      if (method === "agent.choose") return new Promise(() => {});
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
       return answering(method, params);
     });
 

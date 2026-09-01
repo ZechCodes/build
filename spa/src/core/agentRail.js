@@ -1268,17 +1268,30 @@ export function mountAgentRail(host, context) {
    *  locked to the one it was created on, and its conversation is waiting
    *  there. */
   const startAgent = async () => {
-    const entityId = await ensureEntity();
     const agent = agentOf(selectedId);
-    const started = await App.call("agent.start", {
-      id: entityId,
-      ...(agent ? { agent_id: agent.id } : {}),
+    let started = null;
+    let refusal = null;
+    const settled = await runOptimistic({
+      scope: pendingAgentsScope(),
+      records: agent ? [patchRecord(agent.id, { state: "live" })] : [],
+      call: async () => {
+        const entityId = await ensureEntity();
+        started = await App.call("agent.start", {
+          id: entityId,
+          ...(agent ? { agent_id: agent.id } : {}),
+        });
+      },
+      failureSummary: "Could not start the agent",
+      onRevert: (error) => {
+        refusal = error;
+      },
     });
     if (started && started.agent_id) {
       selectedId = started.agent_id;
       chosenAgent.set(key, selectedId);
     }
     await refresh();
+    if (!settled) throw refusal;
     return started;
   };
 

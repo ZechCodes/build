@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -136,7 +136,6 @@ pub struct SurfaceLedger {
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
     shell_outputs: HashMap<String, PathBuf>,
-    shells_with_a_notified_exit: HashSet<String>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
@@ -405,46 +404,36 @@ impl SurfaceLedger {
                 }
                 false => false,
             },
-            ShellReport::Closed { state, exit_code } => {
-                let moved = match self.shell_named(shell_id) {
-                    Some(held) => {
-                        let closed = SurfaceShell {
-                            state: state.map(str::to_string).or_else(|| held.state.clone()),
-                            exit_code: exit_code.or(held.exit_code),
-                            ..held.clone()
-                        };
-                        replace_when_changed(held, closed)
-                    }
-                    None => return false,
-                };
-                if exit_code.is_some() {
-                    self.shells_with_a_notified_exit
-                        .insert(shell_id.to_string());
+            ShellReport::Closed { state, exit_code } => match self.shell_named(shell_id) {
+                Some(held) => {
+                    let closed = SurfaceShell {
+                        state: state.map(str::to_string).or_else(|| held.state.clone()),
+                        exit_code: exit_code.or(held.exit_code),
+                        ..held.clone()
+                    };
+                    replace_when_changed(held, closed)
                 }
-                moved
-            }
-            ShellReport::Tailed(tail) => {
-                let notified = self.shells_with_a_notified_exit.contains(shell_id);
-                match self.shell_named(shell_id) {
-                    Some(held) => {
-                        let marked = match notified {
-                            true => None,
-                            false => tail.exit_code,
-                        };
-                        let read = SurfaceShell {
-                            tail: tail.lines,
-                            exit_code: marked.or(held.exit_code),
-                            state: match marked {
-                                Some(_) => Some(SHELL_DONE.to_string()),
-                                None => held.state.clone(),
-                            },
-                            ..held.clone()
-                        };
-                        replace_when_changed(held, read)
-                    }
-                    None => false,
+                None => false,
+            },
+            ShellReport::Tailed(tail) => match self.shell_named(shell_id) {
+                Some(held) => {
+                    let marked = match held.exit_code {
+                        Some(_) => None,
+                        None => tail.exit_code,
+                    };
+                    let read = SurfaceShell {
+                        tail: tail.lines,
+                        exit_code: marked.or(held.exit_code),
+                        state: match marked {
+                            Some(_) => Some(SHELL_DONE.to_string()),
+                            None => held.state.clone(),
+                        },
+                        ..held.clone()
+                    };
+                    replace_when_changed(held, read)
                 }
-            }
+                None => false,
+            },
         }
     }
 
@@ -1476,14 +1465,6 @@ mod tests {
         )
     }
 
-    fn feed_the_launch_answer(ledger: &mut SurfaceLedger, answer: &Value) -> bool {
-        let call_id = tool_call_block(SHELL_LAUNCH_CALL_LINE)["id"]
-            .as_str()
-            .expect("the launching Bash call carries a call id")
-            .to_string();
-        ledger.read_tool_answer(&tool_named_by(SHELL_LAUNCH_CALL_LINE), &call_id, answer)
-    }
-
     fn the_launch_answer() -> Value {
         fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE)
     }
@@ -1497,7 +1478,7 @@ mod tests {
     fn ledger_through_the_launched_shell() -> SurfaceLedger {
         let mut ledger = SurfaceLedger::default();
         feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
-        feed_the_launch_answer(&mut ledger, &the_launch_answer());
+        feed_tool_answer(&mut ledger, SHELL_LAUNCH_CALL_LINE, &the_launch_answer());
         ledger
     }
 
@@ -1535,7 +1516,11 @@ mod tests {
         let mut ledger = SurfaceLedger::default();
         feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
 
-        assert!(feed_the_launch_answer(&mut ledger, &the_launch_answer()));
+        assert!(feed_tool_answer(
+            &mut ledger,
+            SHELL_LAUNCH_CALL_LINE,
+            &the_launch_answer()
+        ));
 
         assert_eq!(
             ledger.running_shell_outputs(),
@@ -1556,7 +1541,11 @@ mod tests {
         pathless["message"]["content"][0]["content"] =
             json!("Command running in background with ID: bn93ge6bt.");
 
-        assert!(!feed_the_launch_answer(&mut ledger, &pathless));
+        assert!(!feed_tool_answer(
+            &mut ledger,
+            SHELL_LAUNCH_CALL_LINE,
+            &pathless
+        ));
 
         assert!(ledger.running_shell_outputs().is_empty());
     }
@@ -1568,7 +1557,11 @@ mod tests {
         let mut a_stranger = the_launch_answer();
         a_stranger["tool_use_result"]["backgroundTaskId"] = json!("someone-elses-shell");
 
-        assert!(!feed_the_launch_answer(&mut ledger, &a_stranger));
+        assert!(!feed_tool_answer(
+            &mut ledger,
+            SHELL_LAUNCH_CALL_LINE,
+            &a_stranger
+        ));
 
         assert!(ledger.running_shell_outputs().is_empty());
     }
@@ -1621,6 +1614,45 @@ mod tests {
         assert!(ledger.running_shell_outputs().is_empty());
     }
 
+    fn the_notification_reporting(status: &str, summary: &str) -> Value {
+        let mut notification = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_NOTIFICATION_LINE);
+        notification["status"] = json!(status);
+        notification["summary"] = json!(summary);
+        notification
+    }
+
+    #[test]
+    fn a_notification_reporting_a_failure_closes_the_shell_at_the_code_it_names() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(feed(
+            &mut ledger,
+            &the_notification_reporting(
+                "failed",
+                "Background command \"Background job with ticks and finished message\" completed (exit code 137)",
+            )
+        ));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(closed.state.as_deref(), Some("failed"));
+        assert_eq!(closed.exit_code, Some(137));
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_notification_naming_no_exit_code_claims_none() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(feed(
+            &mut ledger,
+            &the_notification_reporting("failed", "Background command was killed")
+        ));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(closed.state.as_deref(), Some("failed"));
+        assert_eq!(closed.exit_code, None);
+    }
+
     #[test]
     fn a_marker_arriving_after_the_notification_claims_no_exit_code() {
         let mut ledger = ledger_through_the_launched_shell();
@@ -1659,15 +1691,19 @@ mod tests {
         ledger.read_tool_call(&tool_named_by(call_line), &tool_call_block(call_line))
     }
 
-    fn feed_tool_answer_from_the_next_line(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
+    fn feed_tool_answer(ledger: &mut SurfaceLedger, call_line: usize, answer: &Value) -> bool {
         let call_id = tool_call_block(call_line)["id"]
             .as_str()
             .unwrap_or_else(|| {
                 panic!("{SHELL_AND_CHECKLIST_FIXTURE}:{call_line} carries a call id")
             })
             .to_string();
+        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, answer)
+    }
+
+    fn feed_tool_answer_from_the_next_line(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
         let answer = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, call_line + 1);
-        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, &answer)
+        feed_tool_answer(ledger, call_line, &answer)
     }
 
     fn feed_tool_pair(ledger: &mut SurfaceLedger, call_line: usize) -> bool {

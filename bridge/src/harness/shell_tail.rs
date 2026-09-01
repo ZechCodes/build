@@ -5,7 +5,7 @@ use std::path::Path;
 pub const SHELL_TAIL_LINES: usize = 20;
 
 const SEEK_BACK_CHUNK_BYTES: u64 = 8 * 1024;
-const MOST_BYTES_HELD_WHILE_SEEKING: usize = 256 * 1024;
+const MOST_BYTES_READ_WHILE_SEEKING_BACK: usize = 256 * 1024;
 
 const EXIT_MARKER_OPENING: &str = "[exited with code ";
 const EXIT_MARKER_CLOSING: char = ']';
@@ -18,18 +18,18 @@ pub struct ShellTail {
 
 impl ShellTail {
     pub fn read(path: &Path) -> Result<ShellTail, io::Error> {
-        let mut file = File::open(path).map_err(|why| failure_naming(path, why))?;
+        let mut file = File::open(path).map_err(|why| failure_naming_the_path(path, why))?;
         let length = file
             .metadata()
-            .map_err(|why| failure_naming(path, why))?
+            .map_err(|why| failure_naming_the_path(path, why))?
             .len();
-        let (held, reached_the_start) =
-            read_back_from_the_end(&mut file, length).map_err(|why| failure_naming(path, why))?;
+        let (held, reached_the_start) = read_back_from_the_end(&mut file, length)
+            .map_err(|why| failure_naming_the_path(path, why))?;
         Ok(tail_of(&String::from_utf8_lossy(&held), reached_the_start))
     }
 }
 
-fn failure_naming(path: &Path, why: io::Error) -> io::Error {
+fn failure_naming_the_path(path: &Path, why: io::Error) -> io::Error {
     io::Error::new(why.kind(), format!("{}: {why}", path.display()))
 }
 
@@ -38,7 +38,7 @@ fn read_back_from_the_end(file: &mut File, length: u64) -> Result<(Vec<u8>, bool
     let mut unread_before = length;
     while unread_before > 0
         && line_breaks_in(&held) <= SHELL_TAIL_LINES
-        && held.len() < MOST_BYTES_HELD_WHILE_SEEKING
+        && held.len() < MOST_BYTES_READ_WHILE_SEEKING_BACK
     {
         let chunk_starts_at = unread_before.saturating_sub(SEEK_BACK_CHUNK_BYTES);
         let mut chunk = vec![0u8; (unread_before - chunk_starts_at) as usize];
@@ -100,6 +100,59 @@ mod tests {
         assert_eq!(tailed.lines.first().map(String::as_str), Some("line 81"));
         assert_eq!(tailed.lines.last().map(String::as_str), Some("line 100"));
         assert_eq!(tailed.exit_code, None);
+    }
+
+    fn lines_far_wider_than_one_seek_chunk() -> String {
+        (1..=2000)
+            .map(|number| format!("line {number} {}\n", "padding".repeat(27)))
+            .collect::<String>()
+    }
+
+    #[test]
+    fn a_file_far_past_one_seek_chunk_comes_back_as_its_last_twenty_lines_in_file_order() {
+        let written = lines_far_wider_than_one_seek_chunk();
+        assert!(written.len() as u64 > SEEK_BACK_CHUNK_BYTES * 4);
+        let (_directory, path) = file_holding(&written);
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        let last_twenty: Vec<String> = written
+            .lines()
+            .skip(2000 - SHELL_TAIL_LINES)
+            .map(str::to_string)
+            .collect();
+        assert_eq!(tailed.lines, last_twenty);
+    }
+
+    #[test]
+    fn a_chunk_boundary_landing_on_a_line_start_loses_no_line() {
+        let (_directory, path) = file_holding(&"abcdefg\n".repeat(2048));
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        assert_eq!(tailed.lines.len(), SHELL_TAIL_LINES);
+        assert!(
+            tailed.lines.iter().all(|line| line == "abcdefg"),
+            "no line came back cut short: {:?}",
+            tailed.lines
+        );
+    }
+
+    #[test]
+    fn the_marker_ending_a_file_far_past_one_seek_chunk_is_the_exit_code() {
+        let (_directory, path) = file_holding(&format!(
+            "{}[exited with code 7]\n",
+            lines_far_wider_than_one_seek_chunk()
+        ));
+
+        let tailed = ShellTail::read(&path).expect("the output file reads");
+
+        assert_eq!(tailed.exit_code, Some(7));
+        assert_eq!(tailed.lines.len(), SHELL_TAIL_LINES);
+        assert_eq!(
+            tailed.lines.last().map(String::as_str),
+            Some("[exited with code 7]")
+        );
     }
 
     #[test]

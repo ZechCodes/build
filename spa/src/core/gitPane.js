@@ -39,6 +39,8 @@ import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
+import { cacheDeviceId } from "./cacheScope.js";
+import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
@@ -392,6 +394,22 @@ export function mountGitPane(
   let reviewMounted = false; // the review plug currently owns the detail host
   let hint = ""; // sticky action hint/error, re-applied after each repaint
   const showCache = new Map(); // hash → git.show payload (commits are immutable)
+  // The local cache's address for this checkout. A primary checkout names no
+  // entity, so it takes no part — nothing to key by, nothing evicted with it.
+  const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
+  const cacheAddress = (kind, sub) => {
+    const deviceId = cacheDeviceId();
+    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind, sub } : null;
+  };
+  const readThroughCache = async (kind, sub) => {
+    const address = cacheAddress(kind, sub);
+    const record = address ? await readCached(address) : undefined;
+    return record ? record.value : undefined;
+  };
+  const writeThroughCache = (kind, value, sub) => {
+    const address = cacheAddress(kind, sub);
+    if (address) writeCached(address, value); // fire and forget — never awaited
+  };
   const draftKey = gitDraftKey(scope); // the stash slot for this scope's draft
   let inFlightActions = 0; // commit/discard/sync RPCs currently awaited
   let scopeErrorShown = null; // the terminal scope error currently rendered
@@ -868,6 +886,15 @@ export function mountGitPane(
   };
 
   const fetchShow = async (hash) => {
+    // A commit is immutable, so the local cache answers for the bridge
+    // outright — no revalidation, no second ask, ever.
+    const cached = await readThroughCache("show", hash);
+    if (disposed) return;
+    if (cached) {
+      showCache.set(cached.hash, cached);
+      if (selected === hash) render();
+      return;
+    }
     let show;
     try {
       show = await callRpc("git.show", { ...scope, hash });
@@ -881,6 +908,7 @@ export function mountGitPane(
       return;
     }
     showCache.set(show.hash, show);
+    writeThroughCache("show", show, show.hash);
     if (!disposed && selected === hash) render();
   };
 
@@ -1156,6 +1184,10 @@ export function mountGitPane(
     lastHead = status.head;
     lastStatus = status;
     lastLog = log;
+    // Every live poll writes through, with the uncommitted patch emptied — the
+    // dirty file list and its weights are synced, the diff loads on demand.
+    writeThroughCache("status", { ...status, patch: "" });
+    writeThroughCache("log", log);
     // Where the surface opens is a function of what it has to show: the first
     // status picks it, and an empty selection falls back to the same place
     // afterwards.
@@ -1214,6 +1246,20 @@ export function mountGitPane(
   };
   document.addEventListener("pointerdown", onOutsidePointerDown);
 
+  /** The synced status and commit list, painted while the first poll is still
+   *  in flight. The live answer wins any race — a seed that arrives second
+   *  drops itself. */
+  const seedFromCache = async () => {
+    const [cachedStatus, cachedLog] = await Promise.all([readThroughCache("status"), readThroughCache("log")]);
+    if (disposed || lastStatus || !cachedStatus || !cachedLog) return;
+    lastHead = cachedStatus.head;
+    lastStatus = cachedStatus;
+    lastLog = cachedLog;
+    if (selected === undefined) selected = defaultSelection();
+    render();
+  };
+
+  seedFromCache();
   poll();
   // The pane reads one checkout, so it refetches when that checkout's entity
   // moves — the git watcher stales a run the instant files land in it. A

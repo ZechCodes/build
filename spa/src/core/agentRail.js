@@ -42,6 +42,7 @@ import {
   insertRecord,
   isPending,
   isProvisionalKey,
+  patchRecord,
   projectOptimistic,
   projectPending,
   provisionalKey,
@@ -881,15 +882,17 @@ export function mountAgentRail(host, context) {
    *  makes the menu safe to press mid-turn. With none there is nothing on the
    *  bridge to write to yet, so it waits for the send that creates one. */
   const chooseModel = async (next) => {
-    if (!settledAgentInFocus()) {
+    const agent = settledAgentInFocus();
+    if (!agent) {
       writeNewAgentChoice(next);
       return;
     }
-    try {
-      await App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort });
-    } catch (error) {
-      notifyError("Could not set the model", error.message);
-    }
+    await runOptimistic({
+      scope: pendingAgentsScope(),
+      records: [patchRecord(agent.id, { model: next.model, effort: next.effort })],
+      call: () => App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort }),
+      failureSummary: "Could not set the model",
+    });
     await refresh();
   };
 

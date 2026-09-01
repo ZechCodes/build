@@ -1424,6 +1424,47 @@ describe("the composer's model menu", () => {
     expect(modelMenuButton().textContent).toContain("Default model");
   });
 
+  it("moves the label the instant a model is picked, before agent.choose answers", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.choose") return new Promise(() => {});
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+    expect(callsTo("agent.choose")).toHaveLength(1);
+    await flush();
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+  });
+
+  it("keeps the pick through a branch.get that still names the old model", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.choose") return new Promise(() => {});
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+    modelMenuButton().click();
+    expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
+  });
+
   it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
     payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
     await mount();

@@ -8202,13 +8202,29 @@ impl AppState {
     /// choice without spawning anything.
     ///
     /// The provider is not a question here: an agent is locked to the harness
-    /// it was created on, so this keeps the entity's own and refuses a caller
-    /// that names one, by that harness's name. A live session is untouched —
+    /// it was created on, and a caller that names one is refused by that
+    /// harness's name. A live session is untouched —
     /// the choice is what the NEXT start spends, which is exactly what the
     /// menu offers.
     fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
-        let locked = self.entity_model_choice(&entity_id)?.provider;
+        let entity_provider = self.entity_model_choice(&entity_id)?.provider;
+        let on_another_harness = params
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|agent_id| !agent_id.is_empty())
+            .and_then(|agent_id| {
+                let provider = self
+                    .entity_agents(&entity_id)
+                    .ok()?
+                    .by_id(agent_id)?
+                    .choice
+                    .provider;
+                (provider != entity_provider).then(|| (agent_id.to_string(), provider))
+            });
+        let locked = on_another_harness
+            .as_ref()
+            .map_or(entity_provider, |(_, provider)| *provider);
         if let Some(named) = params.get("provider").and_then(Value::as_str) {
             if !named.is_empty() {
                 return Err(format!(
@@ -8218,13 +8234,25 @@ impl AppState {
             }
         }
         let choice = model_choice_from(params, locked)?;
-        self.set_entity_model_choice(&entity_id, choice.clone())?;
+        match on_another_harness {
+            Some((agent_id, _)) => {
+                self.set_agent_model_choice(&entity_id, &agent_id, choice.clone())
+            }
+            None => self.set_entity_model_choice(&entity_id, choice.clone())?,
+        }
         Ok(json!({
             "entity_id": entity_id,
             "provider": choice.provider,
             "model": choice.model,
             "effort": choice.effort,
         }))
+    }
+
+    fn set_agent_model_choice(&mut self, entity_id: &str, agent_id: &str, choice: ModelChoice) {
+        self.edit_agent_record("set_agent_model_choice", entity_id, agent_id, |agent| {
+            agent.choice = choice;
+        });
+        self.note_entity_changed(entity_id);
     }
 
     /// `agent.remove` — take an agent back off a branch's rail.
@@ -8386,9 +8414,13 @@ impl AppState {
             "id": agent.id,
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
-            "model": next_start.model,
-            "effort": next_start.effort,
-            "active_model": agent.active_model.clone().unwrap_or_default(),
+            "model": next_start.model.clone().unwrap_or_default(),
+            "effort": next_start.effort.clone().unwrap_or_default(),
+            "active_model": agent
+                .active_model
+                .clone()
+                .or(next_start.model)
+                .unwrap_or_default(),
             "state": if live {
                 crate::agent::AgentLifecycle::Live.as_str()
             } else {
@@ -32546,6 +32578,58 @@ mod tests {
         assert_eq!(unknown["ok"], false, "{unknown:?}");
     }
 
+    #[tokio::test]
+    async fn agent_choose_writes_on_the_named_agent_when_it_runs_another_harness() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let run_id = {
+            let mut held = state.lock().unwrap();
+            adopted_run(&mut held, &repo, dir.path(), "feature-two-harnesses")
+        };
+        let claude_agent = {
+            let held = state.lock().unwrap();
+            primary_agent_id(&held, &run_id)
+        };
+
+        let added = call(
+            &handler,
+            "agent.add",
+            json!({ "entity_id": run_id, "provider": "codex" }),
+        );
+        assert_eq!(added["ok"], true, "{added:?}");
+        let codex_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": run_id, "agent_id": codex_agent, "model": "gpt-5.6-sol" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+
+        let digests = state.lock().unwrap().agent_digests(&run_id);
+        let codex_digest = digests
+            .iter()
+            .find(|digest| digest["id"] == json!(codex_agent.clone()))
+            .expect("the codex agent is on the roster");
+        assert_eq!(codex_digest["model"], "gpt-5.6-sol");
+        let claude_digest = digests
+            .iter()
+            .find(|digest| digest["id"] == json!(claude_agent.clone()))
+            .expect("the claude agent is on the roster");
+        assert_eq!(
+            claude_digest["model"], "",
+            "the other harness's agent keeps what it had"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs[&run_id]
+                .model_choice
+                .model
+                .as_deref(),
+            None,
+            "the entity's own choice is not spent on another harness's agent"
+        );
+    }
+
     /// Switching provider under a running harness would leave that process
     /// running the old provider while the record claimed the new one — a
     /// stranded agent nobody owns. The switch is refused and the running
@@ -37362,6 +37446,54 @@ mod tests {
             state.agent_digests("run-active-model")[0]["active_model"],
             "claude-opus-5",
             "the newer announcement wins"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_announced_nothing_reports_the_model_its_next_start_spends() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-projected-model",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-projected-model");
+
+        let digest = state.agent_digests("run-projected-model")[0].clone();
+        assert_eq!(digest["model"], "");
+        assert_eq!(digest["effort"], "");
+        assert_eq!(digest["active_model"], "");
+
+        state
+            .set_entity_model_choice(
+                "run-projected-model",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: None,
+                },
+            )
+            .expect("the choice persists");
+        let digest = state.agent_digests("run-projected-model")[0].clone();
+        assert_eq!(digest["model"], "claude-opus-5");
+        assert_eq!(digest["effort"], "");
+        assert_eq!(
+            digest["active_model"], "claude-opus-5",
+            "with nothing announced, what the next start spends is what it runs"
+        );
+
+        state.record_agent_active_model(
+            "run-projected-model",
+            &agent_id,
+            Some("claude-haiku-4-5".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-projected-model")[0]["active_model"],
+            "claude-haiku-4-5",
+            "the session's own announcement outranks the projection"
         );
     }
 

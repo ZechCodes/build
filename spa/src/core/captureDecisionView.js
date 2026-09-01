@@ -280,10 +280,10 @@ export function mountCaptureDecision(host, captureId) {
       call: async () => {
         await App.call("capture.cancel", { capture_id: captureId });
         forgetCaptureRecord(captureId);
-        await refreshFeed();
       },
       failureSummary: "The capture could not be cancelled",
     });
+    await refreshFeed();
   }
 
   // ---- the read -----------------------------------------------------------------

@@ -43,6 +43,13 @@ export function retirePending(records, entries, { keyOf, nowMs }) {
   });
 }
 
+const overriddenBy = (older, next) => {
+  if (older.key !== next.key) return false;
+  if (next.kind === "remove") return true;
+  if (older.kind !== "patch" || next.kind !== "patch") return false;
+  return Object.keys(older.fields).every((name) => name in next.fields);
+};
+
 const recordsByScope = new Map();
 const listenersByScope = new Map();
 let provisionalCount = 0;
@@ -59,7 +66,7 @@ export function pendingIn(scope) {
 }
 
 export function isPending(scope, key) {
-  return pendingIn(scope).some((record) => record.key === String(key));
+  return pendingIn(scope).some((record) => !record.settledAt && record.key === String(key));
 }
 
 export function projectOptimistic(scope, entries, { keyOf }) {
@@ -103,10 +110,13 @@ export function resetOptimistic() {
   provisionalCount = 0;
 }
 
-export async function runOptimistic({ scope, records, call, failureSummary, onRevert = null }) {
+export async function runOptimistic({ scope, records, call, failureSummary, onRevert = null, notify = true }) {
   const held = records.map((record) => ({ scope: record.scope || scope, record: { ...record } }));
   const touched = new Set(held.map((entry) => entry.scope));
-  for (const entry of held) writeScope(entry.scope, [...pendingIn(entry.scope), entry.record]);
+  for (const entry of held) {
+    const standing = pendingIn(entry.scope).filter((older) => !overriddenBy(older, entry.record));
+    writeScope(entry.scope, [...standing, entry.record]);
+  }
   announce(touched);
 
   const replace = (entry, next) => {
@@ -162,7 +172,7 @@ export async function runOptimistic({ scope, records, call, failureSummary, onRe
     for (const entry of held.filter((standing) => !standing.record.settledAt)) take(entry);
     announce(touched);
     if (onRevert) onRevert(error);
-    notifyError(failureSummary, error.message);
+    if (notify) notifyError(failureSummary, error.message);
     return false;
   }
   const settledAt = Date.now();

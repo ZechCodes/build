@@ -229,8 +229,20 @@ describe("the composer's model menu", () => {
     );
   });
 
-  it("marks the pending choice in the menu even while another model runs", () => {
-    expect(chosen({ provider: "claude", model: "haiku", effort: "" })).toEqual(["model:haiku"]);
+  it("says in words that the next start takes the harness default, once the pick is cleared", () => {
+    expect(modelMenuTitle(catalog, "claude", NO_AGENT_CHOICE, "opus")).toBe(
+      "Running Opus. The harness default at the next start.",
+    );
+    expect(modelMenuLabel(catalog, "claude", NO_AGENT_CHOICE, "opus")).toBe("Opus");
+  });
+
+  it("names one model, not two of the same, for ids the catalog does not carry", () => {
+    expect(modelMenuLabel(catalog, "claude", { model: "claude-fable-5-1", effort: "" }, "claude-fable-5-1")).toBe(
+      "claude-fable-5-1",
+    );
+    expect(modelMenuTitle(catalog, "claude", { model: "claude-fable-5-1", effort: "" }, "claude-fable-5-1")).toBe(
+      "Model and reasoning effort",
+    );
   });
 
   it("turns a press into the next choice, keeping the harness out of it", () => {

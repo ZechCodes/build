@@ -227,7 +227,7 @@ describe("the registry", () => {
     expect(projectOptimistic("thread:ag-2", [], { keyOf }).map(keyOf)).toEqual(["pending-message-1"]);
   });
 
-  it("refuses a second press on a key already in flight", async () => {
+  it("refuses a second press only while the first is in flight", async () => {
     let inFlight = null;
     await runOptimistic({
       scope: "agents",
@@ -238,7 +238,8 @@ describe("the registry", () => {
       failureSummary: "Could not remove the agent",
     });
     expect(inFlight).toBe(true);
-    expect(isPending("agents", "a")).toBe(true);
+    expect(isPending("agents", "a")).toBe(false);
+    expect(pendingIn("agents").map((record) => record.key)).toEqual(["a"]);
 
     reconcileOptimistic("agents", [agent("b")], { keyOf });
     expect(isPending("agents", "a")).toBe(false);
@@ -252,6 +253,68 @@ describe("the registry", () => {
       failureSummary: "Could not remove the agent",
     });
     expect(isPending("agents", "a")).toBe(false);
+  });
+
+  it("lets a settled insert go by, so the key it named can be pressed again", async () => {
+    await runOptimistic({
+      scope: "agents",
+      records: [insertRecord("pending-agent-1", agent("pending-agent-1"))],
+      call: async (handle) => handle.rekey("pending-agent-1", "ag-2", agent("ag-2")),
+      failureSummary: "Could not start the agent",
+    });
+
+    expect(pendingIn("agents").map((record) => record.key)).toEqual(["ag-2"]);
+    expect(isPending("agents", "ag-2")).toBe(false);
+  });
+
+  it("supersedes a standing patch the new one covers, and leaves the rest alone", async () => {
+    const running = runOptimistic({
+      scope: "agents",
+      records: [patchRecord("a", { model: "opus", effort: "" })],
+      call: () => new Promise(() => {}),
+      failureSummary: "Could not set the model",
+    });
+    await runOptimistic({
+      scope: "agents",
+      records: [patchRecord("a", { model: "opus", effort: "high" })],
+      call: async () => {},
+      failureSummary: "Could not set the model",
+    });
+
+    expect(pendingIn("agents").map((record) => record.fields)).toEqual([{ model: "opus", effort: "high" }]);
+    expect(projectOptimistic("agents", [agent("a")], { keyOf })).toEqual([
+      { id: "a", ordinal: 1, model: "opus", effort: "high" },
+    ]);
+
+    await runOptimistic({
+      scope: "agents",
+      records: [patchRecord("a", { muted: true })],
+      call: async () => {},
+      failureSummary: "Could not mute",
+    });
+    expect(pendingIn("agents").map((record) => record.fields)).toEqual([
+      { model: "opus", effort: "high" },
+      { muted: true },
+    ]);
+    expect(running).toBeInstanceOf(Promise);
+  });
+
+  it("takes the standing records for a key out with the removal of it", async () => {
+    await runOptimistic({
+      scope: "agents",
+      records: [insertRecord("pending-agent-1", agent("pending-agent-1"))],
+      call: async (handle) => handle.rekey("pending-agent-1", "ag-2", agent("ag-2")),
+      failureSummary: "Could not start the agent",
+    });
+    await runOptimistic({
+      scope: "agents",
+      records: [removeRecord("ag-2")],
+      call: async () => {},
+      failureSummary: "Could not remove the agent",
+    });
+
+    expect(pendingIn("agents").map((record) => record.kind)).toEqual(["remove"]);
+    expect(projectOptimistic("agents", [], { keyOf })).toEqual([]);
   });
 
   it("keeps one scope's records out of another's", async () => {

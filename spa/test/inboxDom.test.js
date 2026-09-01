@@ -514,6 +514,22 @@ describe("the inbox rail", () => {
     expect(rowFor("run-1")).toBeTruthy();
   });
 
+  it("says which way the mute was going when it is refused", async () => {
+    feed([branchRow({ muted: true, unread: false })]);
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.mute") throw new Error("the relay is offline");
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-mute]").click();
+    await flush();
+
+    const notices = [...document.querySelectorAll("#notices .notice.error")];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toContain("Couldn't unmute build/login");
+  });
+
   it("offers to unmute a muted entry, and never navigates from the menu", async () => {
     feed([branchRow({ muted: true, unread: false })]);
     rowFor("run-1").querySelector("[data-menu]").click();
@@ -751,6 +767,30 @@ describe("captures on the rail", () => {
     captureRowFor("capture-1").click();
     await flush();
     expect(location.hash).toBe("#/capture/capture-1");
+  });
+
+  it("retries one failed route while another retry is still in flight", async () => {
+    const failed = (id) =>
+      captureFeedRow({
+        capture_id: id,
+        state: "failed",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "routing_failed",
+      });
+    feed([failed("capture-1"), failed("capture-2")]);
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.reroute") return new Promise(() => {});
+      return {};
+    });
+
+    captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    captureRowFor("capture-2").querySelector("[data-capture-retry]").click();
+    await flush();
+
+    const rerouted = App.call.mock.calls.filter(([method]) => method === "capture.reroute");
+    expect(rerouted.map(([, params]) => params.capture_id)).toEqual(["capture-1", "capture-2"]);
   });
 
   it("re-fires the router on a route that gave up", async () => {

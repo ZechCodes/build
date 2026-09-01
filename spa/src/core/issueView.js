@@ -436,12 +436,10 @@ export function mountIssueView(
       await runOptimistic({
         scope: INBOX_SCOPE,
         records: [removeRecord(entryKeyOf({ kind: "issue", issue_id: issueId, project_id: currentProjectId() }))],
-        call: async () => {
-          await callRpc("issue.delete", { issue_id: issueId });
-          await refreshFeed();
-        },
+        call: () => callRpc("issue.delete", { issue_id: issueId }),
         failureSummary: "Could not delete this issue",
       });
+      await refreshFeed();
     });
   };
 

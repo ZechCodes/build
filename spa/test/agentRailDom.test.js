@@ -690,7 +690,16 @@ describe("taking an agent back off the branch", () => {
   });
 
   it("puts the agent and its conversation back when the daemon refuses, and says so once", async () => {
-    await openSecondAgent();
+    payload = twoAgents({
+      run: {
+        run_id: "run-3",
+        thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
+      },
+    });
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     const held = holdRemove();
     removeButton().click();
     await flush();
@@ -703,9 +712,49 @@ describe("taking an agent back off the branch", () => {
 
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
     expect(removeButton()).toBeTruthy();
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "agent is mid-spawn");
+  });
+
+  it("stands the refused removal back up without waiting for a read that never answers", async () => {
+    await openSecondAgent();
+    const held = holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "branch.get") throw new Error("the bridge is not answering");
+      return answering(method, params);
+    });
+
+    held.refuse(new Error("agent is mid-spawn"));
+    await flush();
+
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+    expect(bubbles()[1].classList.contains("active")).toBe(true);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+  });
+
+  it("removes an agent the create record still names", async () => {
+    payload = branchRow({ agents: [] });
+    await mount();
+    panel().querySelector("#railinput").value = "start here";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
   });
 
   it("refuses a second removal of the same agent while the first is in flight", async () => {
@@ -793,8 +842,7 @@ describe("the conversation panel", () => {
     });
 
     await expect(mountAgentTab.mock.calls[0][2].onStart()).rejects.toThrow("no session could be spawned");
-    expect(notifyError).toHaveBeenCalledTimes(1);
-    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no session could be spawned");
+    expect(notifyError).not.toHaveBeenCalled();
 
     panel().querySelector('[data-mode="chat"]').click();
     await flush();
@@ -1432,8 +1480,26 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(callsTo("agent.choose")[0].params).toEqual({
-      entity_id: "run-3", model: "claude-opus-5", effort: "",
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-opus-5", effort: "",
     });
+  });
+
+  it("keeps the effort put on top of a pick the bridge has not caught up with", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "" })] });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    modelMenuButton().click();
+    menuItem("effort:high").click();
+    await flush();
+
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · high");
   });
 
   it("says the model the open agent is actually running on, with no second round trip", async () => {
@@ -1464,7 +1530,7 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(callsTo("agent.choose")[0].params).toEqual({
-      entity_id: "run-3", model: "claude-haiku-4-5", effort: "",
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-haiku-4-5", effort: "",
     });
     expect(modelMenuButton().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
     expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
@@ -1833,6 +1899,47 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-2" });
   });
 
+  it("keeps the sent message on screen while the post behind it is still in flight", async () => {
+    payload = agentless();
+    await mount();
+    let releasePost = null;
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      await new Promise((resolve) => {
+        releasePost = resolve;
+      });
+      return { posted_sequence: 7 };
+    });
+
+    await press("start here");
+
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+    expect(timeline().textContent).toContain("start here");
+
+    releasePost();
+    await flush();
+    expect(timeline().textContent).toContain("start here");
+  });
+
+  it("keeps the bubble it painted when the read that names the real agent lands", async () => {
+    payload = agentless();
+    await mount();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const painter = livePainters().at(-1);
+    bubble.focus();
+    payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2, state: "idle" })] });
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(painter.destroyed).toBe(false);
+    expect(document.activeElement).toBe(bubble);
+  });
+
   it("leaves the optimistic agent standing when a read lands mid-flight", async () => {
     payload = agentless();
     await mount();
@@ -1986,6 +2093,24 @@ describe("sending to an agent that is already there", () => {
     await flush();
 
     expect(copiesOf("look at the login flow")).toBe(1);
+  });
+
+  it("leaves a delivered message where it landed when only the wake is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.start") return answer(method, params);
+      calls.push({ method, params });
+      throw new Error("no session could be spawned");
+    });
+
+    await press("look at the login flow");
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).toHaveBeenCalledTimes(1);
   });
 
   it("puts the words back in the box and says why when thread.post is refused", async () => {

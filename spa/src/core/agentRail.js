@@ -377,6 +377,12 @@ export function mountAgentRail(host, context) {
   let composerModelMenu = null;
 
   const agentIdOf = (agent) => agent.id;
+
+  const openConversation = (agentId) => {
+    chooseAgent(agentId);
+    resetThreadCache();
+    threadAgentId = agentId;
+  };
   const pendingAgentsScope = () => `agents:${key}`;
   const pendingThreadScope = (agentId) => `thread:${key}:${agentId || ""}`;
   const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
@@ -497,9 +503,7 @@ export function mountAgentRail(host, context) {
       // the next tick reopens on whichever agent is here now. Without this the
       // rail would ask the same refused question forever.
       if (asked && !isProvisionalKey(asked) && /agent_id/.test((error && error.message) || "")) {
-        chooseAgent(null);
-        resetThreadCache();
-        threadAgentId = null;
+        openConversation(null);
       }
       // Anything else — a branch that stopped resolving (finished, renamed) —
       // leaves the rail as it was rather than blanking the conversation under
@@ -532,8 +536,8 @@ export function mountAgentRail(host, context) {
       return;
     }
     agentlessOnce = false;
-    reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
     entity = answered;
+    reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
     chooseAgent(selectAgentId(visibleAgents(), selectedId));
     // Whose conversation this payload carries: the agent we asked about, or —
     // when we asked about none, which is every first read — the entity's own,
@@ -890,7 +894,13 @@ export function mountAgentRail(host, context) {
     await runOptimistic({
       scope: pendingAgentsScope(),
       records: [patchRecord(agent.id, { model: next.model, effort: next.effort })],
-      call: () => App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort }),
+      call: () =>
+        App.call("agent.choose", {
+          entity_id: entity.entityId,
+          agent_id: agent.id,
+          model: next.model,
+          effort: next.effort,
+        }),
       failureSummary: "Could not set the model",
     });
     await refresh();
@@ -1025,6 +1035,18 @@ export function mountAgentRail(host, context) {
     else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
   };
 
+  const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
+    const posted = await App.call("thread.post", {
+      entity_id: entityId,
+      ...addressed,
+      ...message,
+      ...MUTATION_THREAD_PAGE,
+    });
+    rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+  };
+
+  const wakeAgent = (entityId, addressed) => App.call("agent.start", { id: entityId, ...addressed });
+
   const createAgentWithMessage = async (message) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
@@ -1046,44 +1068,42 @@ export function mountAgentRail(host, context) {
     const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, message);
     writeDraft({ body: "", attachments: [] });
     addingAgent = false;
-    chooseAgent(provisionalAgentId);
-    resetThreadCache();
-    threadAgentId = provisionalAgentId;
+    openConversation(provisionalAgentId);
     adoptPanelBody();
-    paint();
+    let messageDelivered = false;
 
     const call = async (handle) => {
       const entityId = await ensureEntity();
       const added = await App.call("agent.add", { entity_id: entityId, ...newAgentParams() });
       const createdAgent = (added && added.agent) || null;
       if (createdAgent) {
+        handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
         renameAgentIdentity(provisionalAgentId, createdAgent.id);
         handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, id: createdAgent.id });
-        handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
       }
       const addressed = createdAgent ? { agent_id: createdAgent.id } : {};
-      const posted = await App.call("thread.post", {
-        entity_id: entityId,
-        ...addressed,
-        ...message,
-        ...MUTATION_THREAD_PAGE,
+      await postMessage(handle, {
+        entityId,
+        addressed,
+        message,
+        messageKey: provisionalMessageKey,
+        provisionalMessage,
       });
-      rekeyPostedMessage(handle, provisionalMessageKey, provisionalMessage, posted);
-      await App.call("agent.start", { id: entityId, ...addressed });
+      messageDelivered = true;
+      await wakeAgent(entityId, addressed);
     };
 
     const onRevert = () => {
       if (isProvisionalKey(selectedId)) {
         addingAgent = addingBeforeCreate;
-        chooseAgent(selectedBeforeCreate);
-        resetThreadCache();
-        threadAgentId = selectedId;
+        openConversation(selectedBeforeCreate);
       }
+      if (messageDelivered) return;
       writeDraft({ body: message.body || "", attachments: message.attachments || [] });
       repaintComposerFromDraft();
     };
 
-    creating = runOptimistic({
+    const settling = runOptimistic({
       scope: pendingAgentsScope(),
       records: [
         insertRecord(provisionalAgentId, provisionalAgent),
@@ -1098,6 +1118,10 @@ export function mountAgentRail(host, context) {
       await refreshFeed();
       await refresh();
     });
+    creating = settling;
+    settling.finally(() => {
+      if (creating === settling) creating = null;
+    });
   };
 
   const deliverMessage = async (message) => {
@@ -1105,26 +1129,19 @@ export function mountAgentRail(host, context) {
     const provisionalMessage = provisionalMessageEntry(messageKey, message);
     const addressedAgentId = selectedId;
 
+    let messageDelivered = false;
+
     const call = async (handle) => {
       const entityId = await ensureEntity();
       const agent = agentInFocus();
-      const posted = await App.call("thread.post", {
-        entity_id: entityId,
-        ...(agent ? { agent_id: agent.id } : {}),
-        ...message,
-        ...MUTATION_THREAD_PAGE,
-      });
-      rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+      const addressed = agent ? { agent_id: agent.id } : {};
+      await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
+      messageDelivered = true;
       if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
-        const started = await App.call("agent.start", {
-          id: entityId,
-          ...(agent ? { agent_id: agent.id } : {}),
-        });
+        const started = await wakeAgent(entityId, addressed);
         if (started && started.agent_id) {
           handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(started.agent_id));
-          chooseAgent(started.agent_id);
-          resetThreadCache();
-          threadAgentId = selectedId;
+          openConversation(started.agent_id);
         }
       }
     };
@@ -1135,6 +1152,7 @@ export function mountAgentRail(host, context) {
       call,
       failureSummary: "Message failed",
       onRevert: () => {
+        if (messageDelivered) return;
         writeDraft({ body: message.body || "", attachments: message.attachments || [] });
         repaintComposerFromDraft();
       },
@@ -1192,9 +1210,7 @@ export function mountAgentRail(host, context) {
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
     addingAgent = false; // opening a real conversation ends the chooser
-    chooseAgent(agentId);
-    resetThreadCache();
-    threadAgentId = agentId;
+    openConversation(agentId);
     expanded = true;
     writeExpanded(true);
   };
@@ -1247,18 +1263,15 @@ export function mountAgentRail(host, context) {
     if (isPending(pendingAgentsScope(), agent.id)) return;
     const records = [removeRecord(agent.id)];
     const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
-    chooseAgent(selectAgentId(remaining, null));
-    resetThreadCache();
-    threadAgentId = null;
+    openConversation(selectAgentId(remaining, null));
     await runOptimistic({
       scope: pendingAgentsScope(),
       records,
       call: () => App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
       failureSummary: "Could not remove the agent",
       onRevert: () => {
-        chooseAgent(agent.id);
-        resetThreadCache();
-        threadAgentId = null;
+        openConversation(agent.id);
+        paint();
       },
     });
     await refreshFeed();
@@ -1304,7 +1317,7 @@ export function mountAgentRail(host, context) {
           ...(agent ? { agent_id: agent.id } : {}),
         });
       },
-      failureSummary: "Could not start the agent",
+      notify: false,
       onRevert: (error) => {
         refusal = error;
       },

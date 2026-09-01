@@ -23,7 +23,7 @@ import {
   recentToggleHtml,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
-import { BRANCH_DONE_OPTION, branchFinishParams } from "./branchFinish.js";
+import { BRANCH_DONE_OPTION, branchFinishFailureSummary, branchFinishParams } from "./branchFinish.js";
 import {
   isPending,
   patchRecord,
@@ -36,7 +36,6 @@ import {
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
-import { createSingleFlight } from "./splitButton.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 
@@ -49,7 +48,7 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-const rerouteFlight = createSingleFlight();
+const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
 
@@ -334,7 +333,8 @@ function branchFieldValue(control) {
 /** With a destination this routes by hand; with none it re-fires the router,
  *  which is what the retry on a failed route is. */
 async function rerouteCapture(captureId, destination) {
-  if (!rerouteFlight.begin()) return;
+  if (capturesBeingRerouted.has(captureId)) return;
+  capturesBeingRerouted.add(captureId);
   captureErrors.delete(captureId);
   try {
     const rerouted = await App.call("capture.reroute", rerouteParams(captureId, destination));
@@ -346,7 +346,7 @@ async function rerouteCapture(captureId, destination) {
   } catch (error) {
     captureErrors.set(captureId, messageOf(error));
   } finally {
-    rerouteFlight.end();
+    capturesBeingRerouted.delete(captureId);
     draw();
   }
 }
@@ -375,13 +375,11 @@ async function toggleMute(entry) {
   await runOptimistic({
     scope: INBOX_SCOPE,
     records: [patchRecord(entry.key, { muted })],
-    call: async () => {
-      await App.call("entity.mute", { entity_id: entry.entityId, muted });
-      await refreshFeed();
-    },
-    failureSummary: `Couldn't mute ${entry.branch || "this item"}`,
+    call: () => App.call("entity.mute", { entity_id: entry.entityId, muted }),
+    failureSummary: `Couldn't ${muted ? "mute" : "unmute"} ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
   });
+  await refreshFeed();
 }
 
 /** Clear the row off the inbox until something new needs the user. Nothing is
@@ -410,11 +408,11 @@ async function dismissEntry(entry) {
         await App.call("entity.seen", { entity_id: entry.entityId });
       }
       await App.call("entity.dismiss", params);
-      await refreshFeed();
     },
     failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
     onRevert: (error) => showRowError(entry.key, error),
   });
+  await refreshFeed();
 }
 
 /** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
@@ -429,7 +427,6 @@ export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   // behind is NOT: it comes back to the inbox asking for somebody, and the
   // event naming the branch it lost is the whole point of it coming back.
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
-  await refreshFeed();
 }
 
 async function finishEntry(entry) {
@@ -443,9 +440,10 @@ async function finishEntry(entry) {
     scope: INBOX_SCOPE,
     records: [removeRecord(entry.key)],
     call: () => finishWorkItem(entry),
-    failureSummary: `Couldn't finish ${entry.branch || "this item"}`,
+    failureSummary: branchFinishFailureSummary(entry.branch),
     onRevert: (error) => showRowError(entry.key, error),
   });
+  await refreshFeed();
 }
 
 function showRowError(key, error) {

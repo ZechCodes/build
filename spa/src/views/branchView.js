@@ -38,10 +38,16 @@ import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.j
 import { entityIdOf } from "../core/entityId.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
-import { subscribeFeed } from "../core/taskFeed.js";
+import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
-import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchInboxKey } from "../core/branchFinish.js";
-import { removeRecord, runOptimistic } from "../core/optimistic.js";
+import {
+  branchCloseout,
+  branchFinishConfirm,
+  branchFinishFacts,
+  branchFinishFailureSummary,
+  branchInboxKey,
+} from "../core/branchFinish.js";
+import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -185,9 +191,11 @@ export async function renderBranch() {
     const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
     if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
+    const inboxKey = branchInboxKey(row, { projectId, branch: name });
+    if (isPending(INBOX_SCOPE, inboxKey)) return;
     const finishing = runOptimistic({
       scope: INBOX_SCOPE,
-      records: [removeRecord(branchInboxKey(row, { projectId, branch: name }))],
+      records: [removeRecord(inboxKey)],
       call: () =>
         finishWorkItem(
           {
@@ -202,10 +210,11 @@ export async function renderBranch() {
           },
           optionId,
         ),
-      failureSummary: `Couldn't finish ${name}`,
+      failureSummary: branchFinishFailureSummary(name),
     });
     home();
     await finishing;
+    await refreshFeed();
   };
 
   // What the Done control was last painted from. The row poll runs every 1.6

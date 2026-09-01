@@ -69,6 +69,10 @@ export function branchFinishParams(optionId, { projectId, branch }) {
   return { project_id: projectId, branch, action };
 }
 
+export function branchFinishFailureSummary(name) {
+  return `Couldn't finish ${name || "this item"}`;
+}
+
 export function branchInboxKey(row, { projectId, branch }) {
   return entryKeyOf({
     ...row,

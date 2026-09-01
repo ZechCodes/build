@@ -157,24 +157,26 @@ const runsThePendingModel = (catalog, providerId, choice, activeModel) => {
   return activeModel === choice.model;
 };
 
+export function movesAtNextStart(catalog, providerId, choice, activeModel) {
+  if (!activeModel || !choice.model) return false;
+  return !runsThePendingModel(catalog, providerId, choice, activeModel);
+}
+
 export function modelMenuLabel(catalog, providerId, choice, activeModel = "") {
   if (!activeModel) return choice.model ? pendingModelLabel(catalog, providerId, choice) : "Default model";
   const active = activeModelLabel(catalog, providerId, activeModel);
-  if (!choice.model || runsThePendingModel(catalog, providerId, choice, activeModel)) {
-    return withChoiceEffort(active, choice);
-  }
+  if (!movesAtNextStart(catalog, providerId, choice, activeModel)) return withChoiceEffort(active, choice);
   return `${active} → ${pendingModelLabel(catalog, providerId, choice)}`;
 }
 
 export function modelMenuTitle(catalog, providerId, choice, activeModel = "") {
-  const moving =
-    activeModel && choice.model && !runsThePendingModel(catalog, providerId, choice, activeModel);
-  if (!moving) return "Model and reasoning effort";
-  return `Running ${activeModelLabel(catalog, providerId, activeModel)}. ${pendingModelLabel(
-    catalog,
-    providerId,
-    choice,
-  )} at the next start.`;
+  if (!activeModel) return "Model and reasoning effort";
+  const running = `Running ${activeModelLabel(catalog, providerId, activeModel)}.`;
+  if (movesAtNextStart(catalog, providerId, choice, activeModel)) {
+    return `${running} ${pendingModelLabel(catalog, providerId, choice)} at the next start.`;
+  }
+  if (!choice.model) return `${running} The harness default at the next start.`;
+  return "Model and reasoning effort";
 }
 
 /** The choice one press makes, reconciled: a model change drops the effort that

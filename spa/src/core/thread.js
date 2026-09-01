@@ -1355,9 +1355,9 @@ export function wireThreadLinks(root, openLink) {
 /// a wedged-looking box invites. Restoring the button here — before any
 /// repaint — keeps that true even when the caller's rebuild is frozen.
 ///
-/// `onSubmit(body, attachments, { interrupt })` does the transport and resolves
-/// when the post has landed — `interrupt` is true only where the send control
-/// offered the alternative and the writer chose it. `upload` (with the
+/// `onSubmit(body, attachments, { interrupt })` does the transport —
+/// `interrupt` is true only where the send control offered the alternative and
+/// the writer chose it. `upload` (with the
 /// `readAttachments`/`writeAttachments` draft pair) turns the box into one that
 /// takes files; without it the composer is the plain text box it always was.
 ///

@@ -347,6 +347,80 @@ describe("closing the branch out", () => {
     expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1"]);
   });
 
+  it("brings the row back to the inbox when the close-out is refused", async () => {
+    const boardRow = {
+      ...finishableRow({ run_id: "run-1" }),
+      unread: false,
+      unread_count: 0,
+      muted: false,
+      dismissed: false,
+    };
+    let refuse;
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get") return boardRow;
+      if (method === "board.list") return { items: [boardRow] };
+      if (method === "project.list") return { projects: [{ id: "p1", name: "relaydb" }] };
+      if (method === "branch.finish")
+        return new Promise((_, reject) => {
+          refuse = reject;
+        });
+      return {};
+    });
+    await renderBranch();
+    await flush();
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    await refreshFeed();
+    const { mountInboxList } = await import("../src/core/inboxView.js");
+    mountInboxList();
+    const inboxRow = () => document.querySelector('#inbox-list .inbox-entry[data-key="run-1"]');
+    expect(inboxRow()).toBeTruthy();
+
+    doneButton().click();
+    await answerConfirm(true);
+    expect(inboxRow()).toBeNull();
+
+    refuse(new Error("worktree.finish cleanup requires no uncommitted changes"));
+    await flush();
+
+    expect(inboxRow()).toBeTruthy();
+    stopFeed();
+  });
+
+  it("does not fire a second close-out for a branch the inbox is already finishing", async () => {
+    await mountWith(finishableRow({ run_id: "run-1" }), { "branch.finish": () => new Promise(() => {}) });
+    const { removeRecord, runOptimistic } = await import("../src/core/optimistic.js");
+    const { INBOX_SCOPE } = await import("../src/core/inboxView.js");
+    runOptimistic({
+      scope: INBOX_SCOPE,
+      records: [removeRecord("run-1")],
+      call: () => new Promise(() => {}),
+      failureSummary: "Couldn't finish build/login",
+    });
+
+    doneButton().click();
+    await answerConfirm(true);
+
+    expect(finishCalls()).toHaveLength(0);
+  });
+
+  it("clears the issue's cursor with the branch when the work landed", async () => {
+    let deleted;
+    await mountWith(finishableRow({ run_id: "run-1", issue_id: "iss-9", state: "merged" }), {
+      "branch.finish": () =>
+        new Promise((resolve) => {
+          deleted = resolve;
+        }),
+    });
+    const seenCalls = () => App.call.mock.calls.filter(([method]) => method === "entity.seen");
+    doneButton().click();
+    await answerConfirm(true);
+
+    deleted({ branch: "build/login" });
+    await flush();
+
+    expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1", "iss-9"]);
+  });
+
   it("reports a failed close-out as a notice, and does not come back to the branch", async () => {
     await mountWith(finishableRow({ run_id: "run-1" }), {
       "branch.finish": () => {

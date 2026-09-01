@@ -14,6 +14,8 @@
 // popover, and typed text, and a rebuild mid-action would wipe a busy button.
 
 import "../styles/surfaces.css";
+import { cacheDeviceId } from "./cacheScope.js";
+import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { parseDiff } from "./diff.js";
@@ -254,6 +256,33 @@ export function createReviewPlug({
     };
   }
 
+  // The local cache's slot for this surface's aggregate diff, keyed by the
+  // entity the diff belongs to. A surface that names none caches nothing.
+  const diffAddress = () => {
+    const deviceId = cacheDeviceId();
+    return deviceId && entity ? { deviceId, entityId: entity, kind: "diff" } : null;
+  };
+  let livePainted = false; // a live payload outranks whatever the cache held
+
+  /** The saved diff, painted read-only while the live one is being fetched.
+   *  Read-only because commentability is live task state — the cache cannot
+   *  vouch for it, and a comment must never be drafted against a state the
+   *  bridge would refuse. */
+  const seedFromCache = async () => {
+    const address = diffAddress();
+    const record = address ? await readCached(address) : undefined;
+    if (!record || !host || livePainted) return;
+    renderedFiles = parseDiff(record.value.patch);
+    renderedPatch = record.value.patch || "";
+    commentableNow = false;
+    triageReport = record.value.triage || null;
+    if (record.value.projectId && record.value.projectId !== triageProject) {
+      triageProject = record.value.projectId;
+      trustDial = loadTrustDial(triageProject);
+    }
+    render();
+  };
+
   const paint = async () => {
     if (!host || isOffline()) return;
     let payload;
@@ -263,6 +292,7 @@ export function createReviewPlug({
       return; // not readable yet (or a handed-off surface) — the poll retries
     }
     if (!host || !payload) return; // unmounted while the RPC was in flight
+    livePainted = true;
     renderedFiles = parseDiff(payload.patch);
     renderedPatch = payload.patch || "";
     commentableNow = payload.commentable !== false && Boolean(commentLayer);
@@ -288,6 +318,15 @@ export function createReviewPlug({
       return;
     }
     diffKey = key;
+    // Only a paint that changed anything rewrites the record — the skip branch
+    // above already filtered the every-1.6s sameness out.
+    const address = diffAddress();
+    if (address)
+      writeCached(address, {
+        patch: payload.patch,
+        triage: Object.hasOwn(payload, "triage") ? payload.triage || null : null,
+        projectId: payload.projectId || null,
+      });
     render();
   };
 
@@ -303,7 +342,9 @@ export function createReviewPlug({
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
       diffKey = null; // a fresh host always needs a first paint
+      livePainted = false;
       host.innerHTML = '<div class="empty">loading…</div>';
+      seedFromCache();
       paint();
       // `pausesWhileHidden: false`: this paint has never been visibility-gated,
       // and an event must not do less than the tick it replaced.

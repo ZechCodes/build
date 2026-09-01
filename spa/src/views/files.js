@@ -9,6 +9,8 @@
 // server fences the scope root and every path; this view never sends host paths.
 
 import { esc } from "../core/text.js";
+import { cacheDeviceId } from "../core/cacheScope.js";
+import { readCached, writeCached } from "../core/localCache.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { highlightCode, langForPath } from "../core/highlight.js";
 import { initPaneDrawer, paneDrawerHtml } from "../core/paneDrawer.js";
@@ -175,16 +177,45 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
     treeEl.querySelectorAll(".ffile").forEach((row) => (row.onclick = () => selectFile(joinPath(dir, row.dataset.file), row)));
   };
 
+  // The local cache's address for one directory's listing. A primary checkout
+  // names no entity and takes no part.
+  const cacheEntityId = (scope && (scope.run_id || scope.worktree_id)) || null;
+  const treeAddress = (path) => {
+    const deviceId = cacheDeviceId();
+    return deviceId && cacheEntityId ? { deviceId, entityId: cacheEntityId, kind: "tree", sub: path } : null;
+  };
+
+  let treeRequest = 0; // which navigation the paints below still speak for
+  let liveRenderedRequest = 0; // a live answer outranks the cache for its request
+  let cachePaintedRequest = 0; // whether the cache already painted this request
+
   const loadTree = async (nextDir) => {
+    const request = ++treeRequest;
+    const address = treeAddress(nextDir);
+    if (address) {
+      // The saved listing paints while the machine is being asked — never over
+      // a live answer, never for a directory the reader has already left. A
+      // machine that then cannot answer leaves the saved listing standing.
+      readCached(address).then((record) => {
+        if (!record || request !== treeRequest || liveRenderedRequest === request) return;
+        cachePaintedRequest = request;
+        dir = record.value.path || "";
+        renderTree(record.value.entries || []);
+      });
+    }
     let res;
     try {
       res = await callRpc("fs.tree", { ...scope, path: nextDir });
     } catch (e) {
+      if (request !== treeRequest || cachePaintedRequest === request) return;
       treeListEl.innerHTML = `<div class="empty">cannot list: ${esc((e && e.message) || "error")}</div>`;
       return;
     }
+    if (request !== treeRequest) return;
+    liveRenderedRequest = request;
     dir = res.path || "";
     renderTree(res.entries || []);
+    if (address) writeCached(address, { path: dir, entries: res.entries || [] });
   };
 
   const selectFile = async (path, row) => {

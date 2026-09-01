@@ -248,3 +248,52 @@ describe("keeping warmed conversations fresh", () => {
     expect(App.call).not.toHaveBeenCalledWith("branch.get", expect.anything());
   });
 });
+
+describe("keeping file listings warm", () => {
+  it("syncs the top-level directory for an active branch", async () => {
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "" });
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "" });
+    expect(record).toBeTruthy();
+  });
+
+  it("re-lists the directories the reader walked into", async () => {
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" }, { path: "src", entries: [] });
+    App.call = vi.fn(async (method, params) => {
+      if (method === "fs.tree") return { path: params.path, entries: [{ name: "fresh.js", kind: "file" }] };
+      if (method === "git.status") return { head: "abc" };
+      if (method === "git.log") return { commits: [] };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).toHaveBeenCalledWith("fs.tree", { run_id: "run-1", path: "src" });
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "tree", sub: "src" });
+    expect(record.value.entries).toHaveLength(1);
+  });
+});
+
+describe("keeping a warmed review diff fresh", () => {
+  it("re-reads run.diff only where the All-changes view was opened before", async () => {
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    expect(App.call).not.toHaveBeenCalledWith("run.diff", expect.anything());
+
+    await cache.writeCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" }, { patch: "old" });
+    App.call.mockClear();
+    const watcher = registeredWatchers.find((w) => w.entity === "run-1" && !w.disposed);
+    App.call.mockImplementation(async (method) => {
+      if (method === "run.diff") return { patch: "diff --git fresh" };
+      if (method === "git.status") return { head: "abc" };
+      if (method === "git.log") return { commits: [] };
+      if (method === "fs.tree") return { path: "", entries: [] };
+      return {};
+    });
+    watcher.refresh();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("run.diff", { run_id: "run-1" });
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "diff" });
+    expect(record.value.patch).toBe("diff --git fresh");
+  });
+});

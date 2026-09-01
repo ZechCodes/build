@@ -65,6 +65,37 @@ async function refreshThreads(deviceId, entityId, row) {
   }
 }
 
+/** Keep a branch's file listings warm: the top-level directory always — the
+ *  Files tab's first paint — plus whichever directories the reader has walked
+ *  into, which are the tree records the cache already holds. */
+async function refreshTrees(deviceId, entityId, scope) {
+  const visited = await cachedSubKeys(deviceId, entityId, "tree");
+  for (const path of new Set(["", ...visited])) {
+    try {
+      const listing = await App.call("fs.tree", { ...scope, path });
+      await writeCached({ deviceId, entityId, kind: "tree", sub: path }, { path: listing.path || "", entries: listing.entries || [] });
+    } catch {
+      /* transient, or the directory left with a branch switch */
+    }
+  }
+}
+
+/** Keep a warmed review diff fresh — only where the reader has opened the
+ *  All-changes view before, which is the record's existence. */
+async function refreshDiff(deviceId, entityId, row) {
+  if (row.kind === "issue") return;
+  const warmed = await cachedSubKeys(deviceId, entityId, "diff");
+  if (!warmed.length) return;
+  try {
+    const diff = row.run_id
+      ? await App.call("run.diff", { run_id: row.run_id })
+      : await App.call("worktree.diff", { project_id: row.project_id, worktree_id: row.worktree_id });
+    await writeCached({ deviceId, entityId, kind: "diff" }, { patch: diff.patch, triage: null, projectId: row.project_id || null });
+  } catch {
+    /* transient — the next event tries again */
+  }
+}
+
 /** Re-read one active entity into the cache: a branch's status (with the
  *  uncommitted patch emptied — it loads on demand) and commit list, and every
  *  conversation that was ever warmed on it. */
@@ -83,6 +114,8 @@ async function refreshEntity(entityId) {
       } catch {
         /* offline or mid-switch — the next event or safety poll tries again */
       }
+      await refreshTrees(deviceId, entityId, scope);
+      await refreshDiff(deviceId, entityId, row);
     }
     await refreshThreads(deviceId, entityId, row);
   } finally {

@@ -689,6 +689,15 @@ struct Tab {
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
     live: bool,
+    /// The harness's id for every tool call this session minted a row for,
+    /// against that row's sequence and whether its answer ever came.
+    ///
+    /// Kept for the session's life rather than dropped on the answer: an agent
+    /// this session spawned reports its own work long after the call that
+    /// spawned it was answered, and every one of those rows folds under that
+    /// same row. `answered` is what lets the stream's close resolve the calls
+    /// that died open without re-resolving every call that ended properly.
+    call_sequences: HashMap<String, MintedCallRow>,
     /// When Build last submitted a turn here.
     ///
     /// The quiescence rule ("silence is an anomaly, never completion") used to
@@ -697,6 +706,14 @@ struct Tab {
     /// life idle at a prompt, so silence only means something measured from the
     /// last thing Build asked of it.
     last_delivered_at: Option<std::time::Instant>,
+}
+
+/// The conversation row one tool call minted, and whether the call has been
+/// answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MintedCallRow {
+    sequence: u64,
+    answered: bool,
 }
 
 impl Tab {
@@ -810,6 +827,7 @@ impl Tab {
                 screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
                 session,
                 live: true,
+                call_sequences: HashMap::new(),
                 last_delivered_at: None,
             },
             rx,
@@ -3244,12 +3262,14 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         activity: &crate::harness::AgentActivity,
+        parent_sequence: Option<u64>,
     ) -> Option<u64> {
         self.record_activity_row(
             owner,
             agent_id,
             activity_event_kind(activity),
             activity.summary().to_string(),
+            parent_sequence,
         )
     }
 
@@ -3262,11 +3282,22 @@ impl AppState {
         agent_id: &str,
         event: crate::thread::ThreadEventKind,
         summary: String,
+        parent_sequence: Option<u64>,
     ) -> Option<u64> {
         let now = now_rfc3339();
         self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
             let session_id = open_session_id(thread);
-            Ok(thread.push_event(event, Some(summary), session_id, None, now))
+            Ok(thread.push_drafted_event(
+                crate::thread::ThreadEventDraft {
+                    event,
+                    summary: Some(summary),
+                    session_id,
+                    revision_id: None,
+                    links: Vec::new(),
+                    parent_sequence,
+                },
+                now,
+            ))
         })
         .ok()
     }
@@ -18332,10 +18363,11 @@ fn spawn_tab_pump(
 /// unread count, reach no Issue conversation and pull nobody in.
 ///
 /// A tool call is ONE row for its whole life: minted when the call is made and
-/// updated in place when its answer arrives, which is what `open_calls` below
-/// is for. The map is task-local, so it is per session by construction — a new
-/// session is a new pump with an empty map — and the protocol's call id never
-/// reaches the conversation: the pairing lives and dies with the session.
+/// updated in place when its answer arrives, which is what the tab's
+/// `call_sequences` is for. The map is emptied when this pump sees the stream
+/// close, so it is per session by construction, and the protocol's call id
+/// never reaches the conversation: the pairing lives and dies with the
+/// session.
 ///
 /// It owes the same death rites, minus the screen's half: on close the tab goes
 /// not live and the conversation's session lineage ends. There is no
@@ -18346,7 +18378,7 @@ fn spawn_tab_pump(
 fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
-    rx: Option<broadcast::Receiver<crate::harness::AgentActivity>>,
+    rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
 ) {
     let Some(mut rx) = rx else {
         return;
@@ -18358,18 +18390,15 @@ fn spawn_activity_pump(
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        // The call id the protocol used, against the sequence of the row it
-        // minted here.
-        let mut open_calls: HashMap<String, u64> = HashMap::new();
         loop {
             match rx.recv().await {
-                Ok(activity) => {
+                Ok(report) => {
                     let mut s = state.lock().unwrap();
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
                     note_named_conversation(&mut s, &key, &owner, &agent_id);
-                    record_activity(&mut s, &owner, &agent_id, &activity, &mut open_calls);
+                    record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
@@ -18380,9 +18409,13 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    if let Some(tab) = s.tabs.get_mut(&key) {
-                        tab.live = false;
-                    }
+                    let died_over = match s.tabs.get_mut(&key) {
+                        Some(tab) => {
+                            tab.live = false;
+                            take_unanswered_call_rows(tab)
+                        }
+                        None => Vec::new(),
+                    };
                     match named_conversation(&s, &key) {
                         Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
@@ -18400,7 +18433,7 @@ fn spawn_activity_pump(
                     // BEFORE the session ends — so the timeline reads
                     // calls-closed-then-session-ended rather than a session
                     // ending over work that still claims to run.
-                    for (_, sequence) in std::mem::take(&mut open_calls) {
+                    for sequence in died_over {
                         s.resolve_agent_tool_call(
                             &owner,
                             &agent_id,
@@ -18541,27 +18574,42 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
 const NO_ANSWER_TURN_ENDED: &str = "no answer — turn ended";
 const NO_ANSWER_SESSION_ENDED: &str = "no answer — session ended";
 
-/// Put one reported activity into the conversation, keeping `open_calls` — the
-/// pump's record of which row each live call minted — in step with it.
+/// Put one reported activity into the conversation, keeping the tab's
+/// `call_sequences` — the session's record of which row each call minted — in
+/// step with it.
 ///
 /// Three shapes, and the third is the one that keeps a stored row honest:
-/// a call mints a row and is remembered; its answer updates that row and is
-/// forgotten; and an answer to a call this pump never saw — one lost to
-/// broadcast lag, or minted by a session before this one — falls back to
-/// minting the standalone `tool_result` row every answer used to mint, so the
-/// answer reaches the human either way.
+/// a call mints a row and is remembered; its answer updates that row and marks
+/// it answered; and an answer to a call this session never minted a row for —
+/// one lost to broadcast lag, or minted by a session before this one — falls
+/// back to minting the standalone `tool_result` row every answer used to mint,
+/// so the answer reaches the human either way.
+///
+/// A report naming the call that spawned the agent making it lands folded
+/// under that call's row. A parent this session never minted a row for — one
+/// of Build's own MCP calls, which are silent by construction — leaves the row
+/// flat rather than dropping it.
 fn record_activity(
     state: &mut AppState,
+    key: &TabKey,
     owner: &str,
     agent_id: &str,
-    activity: &crate::harness::AgentActivity,
-    open_calls: &mut HashMap<String, u64>,
+    report: &crate::harness::ActivityReport,
 ) {
     use crate::harness::AgentActivity;
-    match activity {
+    let parent_sequence = parent_row_sequence(state, key, report.parent_call_id.as_deref());
+    match &report.activity {
         AgentActivity::ToolUse { call_id, .. } => {
-            if let Some(sequence) = state.record_agent_activity(owner, agent_id, activity) {
-                open_calls.insert(call_id.clone(), sequence);
+            let minted =
+                state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
+            if let (Some(sequence), Some(tab)) = (minted, state.tabs.get_mut(key)) {
+                tab.call_sequences.insert(
+                    call_id.clone(),
+                    MintedCallRow {
+                        sequence,
+                        answered: false,
+                    },
+                );
             }
         }
         AgentActivity::ToolResult {
@@ -18573,7 +18621,7 @@ fn record_activity(
                 crate::harness::ToolOutcome::Unanswered => NO_ANSWER_TURN_ENDED,
                 _ => summary.as_str(),
             };
-            let landed = open_calls.remove(call_id).is_some_and(|sequence| {
+            let landed = mark_call_answered(state, key, call_id).is_some_and(|sequence| {
                 state.resolve_agent_tool_call(
                     owner,
                     agent_id,
@@ -18590,13 +18638,47 @@ fn record_activity(
                     agent_id,
                     crate::thread::ThreadEventKind::ToolResult,
                     answer.to_string(),
+                    parent_sequence,
                 );
             }
         }
         _ => {
-            state.record_agent_activity(owner, agent_id, activity);
+            state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
         }
     }
+}
+
+/// The row `parent_call_id`'s call minted, which is the row a report folds
+/// under. `None` for a report of the session's own work, and for a parent this
+/// session minted no row for.
+fn parent_row_sequence(
+    state: &AppState,
+    key: &TabKey,
+    parent_call_id: Option<&str>,
+) -> Option<u64> {
+    let call_id = parent_call_id?;
+    Some(state.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
+}
+
+/// Mark the call's row answered and hand back its sequence. The entry stays:
+/// an agent's work reaches the conversation long after the call that spawned
+/// it was answered, and it folds under that same row.
+fn mark_call_answered(state: &mut AppState, key: &TabKey, call_id: &str) -> Option<u64> {
+    let row = state.tabs.get_mut(key)?.call_sequences.get_mut(call_id)?;
+    row.answered = true;
+    Some(row.sequence)
+}
+
+/// The rows of the calls the session died over, oldest first, with the tab's
+/// whole pairing map emptied: it lives and dies with the session.
+fn take_unanswered_call_rows(tab: &mut Tab) -> Vec<u64> {
+    let mut unanswered: Vec<u64> = std::mem::take(&mut tab.call_sequences)
+        .into_values()
+        .filter(|row| !row.answered)
+        .map(|row| row.sequence)
+        .collect();
+    unanswered.sort_unstable();
+    unanswered
 }
 
 /// The conversation's word for what the harness saw.
@@ -34714,6 +34796,7 @@ mod tests {
             // reality.
             screen: None,
             live: true,
+            call_sequences: HashMap::new(),
             last_delivered_at: None,
         }
     }
@@ -34757,6 +34840,7 @@ mod tests {
             session: Arc::new(session),
             screen: None,
             live: true,
+            call_sequences: HashMap::new(),
             last_delivered_at: None,
         }
     }
@@ -34858,7 +34942,9 @@ mod tests {
                 summary: "reindex the archive — started".into(),
             },
         ] {
-            activity.send(reported).expect("the pump is listening");
+            activity
+                .send(crate::harness::ActivityReport::own_work(reported))
+                .expect("the pump is listening");
         }
 
         // Four rows for five reports: the answer completes the call's row
@@ -35329,10 +35415,12 @@ mod tests {
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
         activity
-            .send(crate::harness::AgentActivity::ToolUse {
-                call_id: "toolu_1".into(),
-                summary: "Bash npm test".into(),
-            })
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::ToolUse {
+                    call_id: "toolu_1".into(),
+                    summary: "Bash npm test".into(),
+                },
+            ))
             .expect("the pump is listening");
         wait_for(Duration::from_secs(5), || {
             let s = state.lock().unwrap();

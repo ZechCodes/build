@@ -37,8 +37,8 @@ use crate::harness::claude::ClaudeHarness;
 use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
-    AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
-    SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
+    ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
+    HarnessError, SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -326,7 +326,7 @@ const SURFACE_TASK_SUBTYPES: [&str; 4] = [
 /// The close is load-bearing: a no-terminal session's death rites hang off it
 /// exactly the way the byte pump's hang off PTY EOF, so a stream that never
 /// closed would leave a dead agent's tab reading as live.
-type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<AgentActivity>>>>;
+type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<ActivityReport>>>>;
 
 const SHELL_TAIL_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -398,7 +398,7 @@ impl AdkSession {
     pub fn spawn(
         spec: &HarnessSpec,
         cwd: Option<PathBuf>,
-    ) -> Result<(AdkSession, broadcast::Receiver<AgentActivity>), HarnessError> {
+    ) -> Result<(AdkSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
         command.args(&spec.args);
         for key in &spec.unset {
@@ -695,7 +695,7 @@ impl AgentSession for AdkSession {
     /// Everything this session did, on its way to the conversation. It reports
     /// its own reasoning and tool calls, so this is the stream that stands in
     /// for the terminal it does not have.
-    fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+    fn activity(&self) -> Option<broadcast::Receiver<ActivityReport>> {
         Some(match self.activity.lock().unwrap().as_ref() {
             Some(sender) => sender.subscribe(),
             None => {
@@ -1058,12 +1058,10 @@ impl ProtocolReader {
     /// message carrying text is Build's own turn echoed back, and minting that
     /// would put the human's words in the timeline a second time as narration.
     fn read_message(&mut self, event: &Value, voice: Voice) {
-        // A subagent's own reasoning is folded into the tool call that spawned
-        // it rather than minted beside it: the human reads one tool call, not
-        // two conversations interleaved.
-        if event["parent_tool_use_id"].as_str().is_some() {
-            return;
-        }
+        // A subagent's own work is reported under the tool call that spawned
+        // it rather than beside it: the human reads one tool call with the
+        // agent's work folded into it, not two conversations interleaved.
+        let parent_call_id = event["parent_tool_use_id"].as_str();
         let Some(blocks) = event["message"]["content"].as_array() else {
             return;
         };
@@ -1071,22 +1069,24 @@ impl ProtocolReader {
             match (voice, block["type"].as_str()) {
                 (Voice::Assistant, Some("thinking")) => {
                     if let Some(summary) = spoken(block["thinking"].as_str()) {
-                        self.emit(AgentActivity::Reasoning { summary });
+                        self.report(AgentActivity::Reasoning { summary }, parent_call_id);
                     }
                 }
                 (Voice::Assistant, Some("text")) => {
                     if let Some(summary) = spoken(block["text"].as_str()) {
-                        self.emit(AgentActivity::Narration { summary });
+                        self.report(AgentActivity::Narration { summary }, parent_call_id);
                     }
                 }
-                (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block),
-                (Voice::User, Some("tool_result")) => self.read_tool_result(event, block),
+                (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block, parent_call_id),
+                (Voice::User, Some("tool_result")) => {
+                    self.read_tool_result(event, block, parent_call_id)
+                }
                 _ => {}
             }
         }
     }
 
-    fn read_tool_use(&mut self, block: &Value) {
+    fn read_tool_use(&mut self, block: &Value, parent_call_id: Option<&str>) {
         let tool = block["name"].as_str().unwrap_or_default().to_string();
         let call_id = block["id"].as_str().unwrap_or_default().to_string();
         if tool.starts_with(BUILD_MCP_TOOL_PREFIX) {
@@ -1103,7 +1103,7 @@ impl ProtocolReader {
         self.bump_revision_when(moved);
         self.calls
             .insert(call_id.clone(), RecordedCall::Minted { tool });
-        self.emit(AgentActivity::ToolUse { call_id, summary });
+        self.report(AgentActivity::ToolUse { call_id, summary }, parent_call_id);
     }
 
     /// One call's answer, reported as the completion of the call it names
@@ -1113,7 +1113,7 @@ impl ProtocolReader {
     /// The answer travels alone, without the tool's name in front of it: the row
     /// it lands on is the call, which said what tool this was when it was
     /// minted.
-    fn read_tool_result(&mut self, event: &Value, block: &Value) {
+    fn read_tool_result(&mut self, event: &Value, block: &Value, parent_call_id: Option<&str>) {
         let call_id = block["tool_use_id"]
             .as_str()
             .unwrap_or_default()
@@ -1138,11 +1138,14 @@ impl ProtocolReader {
             true => ToolOutcome::Error,
             false => ToolOutcome::Ok,
         };
-        self.emit(AgentActivity::ToolResult {
-            call_id,
-            outcome,
-            summary: one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT),
-        });
+        self.report(
+            AgentActivity::ToolResult {
+                call_id,
+                outcome,
+                summary: one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT),
+            },
+            parent_call_id,
+        );
     }
 
     /// Close every call the turn just ended left open.
@@ -1169,8 +1172,17 @@ impl ProtocolReader {
     /// backlog nobody drained, is not the child's problem: the protocol is read
     /// at the speed the child speaks it either way.
     fn emit(&self, activity: AgentActivity) {
+        self.report(activity, None);
+    }
+
+    /// The same, for work an agent this session spawned reported: the call that
+    /// spawned it rides beside the activity, so the row lands folded under it.
+    fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
-            let _ = sender.send(activity);
+            let _ = sender.send(ActivityReport {
+                activity,
+                parent_call_id: parent_call_id.map(str::to_string),
+            });
         }
     }
 }
@@ -1689,8 +1701,12 @@ mod tests {
         }
     }
 
-    fn row_kind(reported: &AgentActivity) -> &'static str {
-        match reported {
+    /// The Agent call on line 9 of the subagent fixture — the row every one of
+    /// that subagent's own rows folds under.
+    const SUBAGENT_SPAWNING_CALL: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
+
+    fn row_kind(reported: &ActivityReport) -> &'static str {
+        match &reported.activity {
             AgentActivity::Reasoning { .. } => "reasoning",
             AgentActivity::ToolUse { .. } => "tool_use",
             AgentActivity::ToolResult { .. } => "tool_result",
@@ -1699,7 +1715,7 @@ mod tests {
         }
     }
 
-    fn rows_minted_by(file_name: &str) -> Vec<AgentActivity> {
+    fn rows_minted_by(file_name: &str) -> Vec<ActivityReport> {
         let (sender, mut heard) = broadcast::channel(1024);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
         let mut reader = reader_reporting_into(Arc::clone(&activity));
@@ -1714,14 +1730,22 @@ mod tests {
         rows
     }
 
-    fn kinds_of(rows: &[AgentActivity]) -> Vec<&'static str> {
+    fn kinds_of(rows: &[ActivityReport]) -> Vec<&'static str> {
         rows.iter().map(row_kind).collect()
     }
 
-    fn task_rows_of(rows: &[AgentActivity]) -> Vec<String> {
+    /// Every row's kind beside the call it folds under — what a subagent's own
+    /// rows are told apart from the session's by.
+    fn kinds_and_parents_of(rows: &[ActivityReport]) -> Vec<(&'static str, Option<&str>)> {
+        rows.iter()
+            .map(|reported| (row_kind(reported), reported.parent_call_id.as_deref()))
+            .collect()
+    }
+
+    fn task_rows_of(rows: &[ActivityReport]) -> Vec<String> {
         rows.iter()
             .filter(|reported| row_kind(reported) == "task_update")
-            .map(|reported| reported.summary().to_string())
+            .map(|reported| reported.activity.summary().to_string())
             .collect()
     }
 
@@ -1752,23 +1776,34 @@ mod tests {
             ]);
     }
 
+    /// The Agent call on line 9 mints the row the subagent's own work folds
+    /// under, and every line the subagent spoke on — its reasoning on 17 and
+    /// 27, its Read call on 24, that call's answer on 26, its answer on 28 —
+    /// names that call. Line 12, the Agent call's own answer to the session
+    /// that made it, is the session's own row and names nothing.
     #[test]
-    fn the_subagent_fixture_mints_the_rows_it_always_minted() {
+    fn the_subagent_fixture_folds_the_subagents_own_rows_under_the_call_that_spawned_them() {
         let rows = rows_minted_by(SUBAGENT_FIXTURE);
+        let spawning_call = Some(SUBAGENT_SPAWNING_CALL);
 
         assert_eq!(
-            kinds_of(&rows),
+            kinds_and_parents_of(&rows),
             vec![
-                "reasoning",
-                "tool_use",
-                "task_update",
-                "tool_result",
-                "reasoning",
-                "narration",
-                "task_update",
-                "task_update",
-                "reasoning",
-                "narration",
+                ("reasoning", None),
+                ("tool_use", None),
+                ("task_update", None),
+                ("tool_result", None),
+                ("reasoning", spawning_call),
+                ("reasoning", None),
+                ("narration", None),
+                ("tool_use", spawning_call),
+                ("tool_result", spawning_call),
+                ("reasoning", spawning_call),
+                ("narration", spawning_call),
+                ("task_update", None),
+                ("task_update", None),
+                ("reasoning", None),
+                ("narration", None),
             ]
         );
         assert_eq!(
@@ -2367,9 +2402,13 @@ mod tests {
         session.end();
     }
 
-    async fn next_activity(rx: &mut broadcast::Receiver<AgentActivity>) -> AgentActivity {
+    async fn next_activity(rx: &mut broadcast::Receiver<ActivityReport>) -> AgentActivity {
+        next_report(rx).await.activity
+    }
+
+    async fn next_report(rx: &mut broadcast::Receiver<ActivityReport>) -> ActivityReport {
         match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
-            Ok(Ok(activity)) => activity,
+            Ok(Ok(report)) => report,
             Ok(Err(err)) => panic!("the activity stream ended before it reported: {err}"),
             Err(_) => panic!("no activity arrived within five seconds"),
         }
@@ -3364,22 +3403,33 @@ mod tests {
         session.end();
     }
 
-    /// A subagent's chatter is folded into the call that spawned it rather than
-    /// minted beside it: one tool call the human can read, not a second
-    /// conversation interleaved with the first.
+    /// A subagent's chatter is reported under the call that spawned it rather
+    /// than beside it: one tool call the human can read, with the agent's own
+    /// work folded into it, not a second conversation interleaved with the
+    /// first.
     #[tokio::test]
-    async fn subagent_events_are_folded_into_the_call_that_spawned_them() {
+    async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
         let session = open(&stream_json_harness(&[SUBAGENT_TEXT, NARRATION, RESULT]));
         let mut activity = session.activity().expect("a reporting session");
         wait_for_status(&session, AgentStatus::Waiting);
         session.send_turn(&Turn::new("delegate it")).unwrap();
 
         assert_eq!(
-            next_activity(&mut activity).await,
-            AgentActivity::Narration {
-                summary: "dropped the index".to_string()
+            next_report(&mut activity).await,
+            ActivityReport {
+                activity: AgentActivity::Narration {
+                    summary: "a subagent talking".to_string()
+                },
+                parent_call_id: Some("toolu_1".to_string()),
             },
-            "the subagent's own text is not a second voice in the conversation"
+            "the subagent's own text names the call it belongs under"
+        );
+        assert_eq!(
+            next_report(&mut activity).await,
+            ActivityReport::own_work(AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            }),
+            "and the session's own narration names nothing"
         );
         session.end();
     }
@@ -3862,7 +3912,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {
@@ -4016,7 +4066,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {
@@ -4208,7 +4258,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {

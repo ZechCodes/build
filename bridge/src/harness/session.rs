@@ -158,7 +158,7 @@ pub trait AgentSession: Send + Sync {
     ///
     /// Every subscriber sees each event from the moment it subscribes and
     /// observes `Closed` once the session's stream ends.
-    fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+    fn activity(&self) -> Option<broadcast::Receiver<ActivityReport>> {
         None
     }
 
@@ -301,6 +301,32 @@ impl AgentActivity {
     }
 }
 
+/// One reported activity, and the tool call whose agent reported it.
+///
+/// A subagent's reasoning is reasoning, so the parent rides BESIDE the five
+/// kinds rather than as a sixth field repeated on four of them: what makes a
+/// row a subagent's is which call it came out of, and nothing else.
+///
+/// `parent_call_id` is the harness's own id for that call — the same id its
+/// [`AgentActivity::ToolUse`] carried — so the layer that knows what a
+/// conversation row is can pair the two. The session layer holds the id and
+/// never a sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityReport {
+    pub activity: AgentActivity,
+    pub parent_call_id: Option<String>,
+}
+
+impl ActivityReport {
+    /// What the session did itself, rather than through an agent it spawned.
+    pub fn own_work(activity: AgentActivity) -> ActivityReport {
+        ActivityReport {
+            activity,
+            parent_call_id: None,
+        }
+    }
+}
+
 /// What a session says about itself, subscribed at the moment it opened.
 ///
 /// One stream per capability and never both: an opaque CLI wrapper paints
@@ -311,7 +337,7 @@ pub struct SessionOutput {
     /// The terminal's bytes, for a session that offers one.
     pub bytes: Option<broadcast::Receiver<Vec<u8>>>,
     /// The session's own account of its work, for one that keeps it.
-    pub activity: Option<broadcast::Receiver<AgentActivity>>,
+    pub activity: Option<broadcast::Receiver<ActivityReport>>,
 }
 
 impl SessionOutput {
@@ -324,7 +350,7 @@ impl SessionOutput {
     }
 
     /// The output of a session that reports what it is doing.
-    pub fn reporting(activity: broadcast::Receiver<AgentActivity>) -> SessionOutput {
+    pub fn reporting(activity: broadcast::Receiver<ActivityReport>) -> SessionOutput {
         SessionOutput {
             bytes: None,
             activity: Some(activity),

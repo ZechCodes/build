@@ -96,3 +96,14 @@ def test_production_csp_core_directives_are_self():
 
 def test_production_csp_nonce_enabled():
     assert _load("app.yaml")["security_headers"]["csp_nonce"] is True
+
+
+# ----- controllers ------------------------------------------------------------
+
+
+def test_waitlist_controller_registered_in_both_configs():
+    for config_name in ("app.yaml", "app.dev.yaml"):
+        controllers = _load(config_name)["controllers"]
+        assert "buildapp.waitlist_controller:WaitlistController" in controllers, (
+            f"{config_name} does not serve the public waitlist endpoint"
+        )

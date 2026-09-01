@@ -89,3 +89,9 @@ class AnnouncedAppVersion(Base):
     __tablename__ = "announced_app_versions"
 
     version: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+
+class WaitlistSignup(Base):
+    __tablename__ = "waitlist_signups"
+
+    email: Mapped[str] = mapped_column(String(254), unique=True, nullable=False)

@@ -257,10 +257,13 @@ describe("worktreeChoices", () => {
 });
 
 describe("implementParams", () => {
-  const models = [{ id: "gpt", label: "GPT", supports_effort: true }];
+  const catalog = {
+    default_provider: "claude_adk",
+    providers: [{ id: "codex", label: "Codex", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["high"] }],
+  };
 
   it("carries the issue and the assignment's overrides to implement_all", () => {
-    expect(implementParams("issue-1", { worktree: "new", agent: "new", base: "release", provider: "codex", model: "gpt", effort: "high" }, { models })).toEqual({
+    expect(implementParams("issue-1", { worktree: "new", agent: "new", base: "release", provider: "codex", model: "gpt", effort: "high" }, { catalog })).toEqual({
       issue_id: "issue-1",
       base_branch: "release",
       provider: "codex",
@@ -270,13 +273,13 @@ describe("implementParams", () => {
   });
 
   it("omits what was left at the default", () => {
-    expect(implementParams("issue-1", { worktree: "new", agent: "new", base: "  ", provider: "", model: "", effort: "" }, { models })).toEqual({
+    expect(implementParams("issue-1", { worktree: "new", agent: "new", base: "  ", provider: "", model: "", effort: "" }, { catalog })).toEqual({
       issue_id: "issue-1",
     });
   });
 
   it("names the stage when one stage is being implemented", () => {
-    expect(implementParams("issue-1", defaultAssignment(null), { models, stageId: "s2" })).toEqual({
+    expect(implementParams("issue-1", defaultAssignment(null), { catalog, stageId: "s2" })).toEqual({
       issue_id: "issue-1",
       stage_id: "s2",
     });
@@ -287,19 +290,19 @@ describe("implementParams", () => {
       implementParams(
         "issue-1",
         { ...defaultAssignment(null), worktree: "existing", worktreeId: "wt-1", base: "release" },
-        { models },
+        { catalog },
       ),
     ).toEqual({ issue_id: "issue-1", worktree_id: "wt-1" });
   });
 
   it("refuses to dispatch a target the bridge cannot honour", () => {
-    expect(() => implementParams("issue-1", { ...defaultAssignment(null), agent: "existing" }, { models })).toThrow(
+    expect(() => implementParams("issue-1", { ...defaultAssignment(null), agent: "existing" }, { catalog })).toThrow(
       /fresh agent/i,
     );
   });
 
   it("refuses an existing-worktree dispatch that names no worktree", () => {
-    expect(() => implementParams("issue-1", { ...defaultAssignment(null), worktree: "existing" }, { models })).toThrow(
+    expect(() => implementParams("issue-1", { ...defaultAssignment(null), worktree: "existing" }, { catalog })).toThrow(
       /choose the branch/i,
     );
   });

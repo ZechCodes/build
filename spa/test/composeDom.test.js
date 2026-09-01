@@ -312,7 +312,12 @@ describe("the advanced panel", () => {
   it("carries the harness picker — agent, model and effort — on the same panel", () => {
     openAdvanced();
     $("[data-agent-choice-toggle]").click();
-    expect([...document.querySelectorAll("#compose-choice-provider option")].map((option) => option.value)).toEqual(["claude"]);
+    // Both agents, whatever the bridge has listed models for: dispatching needs
+    // only a harness. The Claude Code entry is the carrier this account's
+    // default names, so the carrier question is never put to the writer.
+    const providers = [...document.querySelectorAll("#compose-choice-provider option")];
+    expect(providers.map((option) => option.value)).toEqual(["claude", "codex"]);
+    expect(providers.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
     expect($("#compose-choice-model")).toBeTruthy();
     expect($("#compose-choice-effort")).toBeTruthy();
   });

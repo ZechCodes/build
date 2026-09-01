@@ -7,9 +7,14 @@
 // which is the option the chat tab's new-agent view leads with and the one the
 // bridge falls back to when it has to deliver.
 //
+// It is also the only control that names a carrier. A create surface offers two
+// agents — Claude Code and Codex — so whether Claude Code opens as the TUI is
+// asked here, once, by choosing which of the three this account starts on.
+//
 // The bridge is the authority (settings.get / settings.set, persisted), so
-// every device gets the same answer. The options are the new-agent view's own
-// (core/modelPicker.js), so the two controls cannot drift apart.
+// every device gets the same answer. The names are the client's one naming
+// table (core/modelPicker.js), so this control and an agent's own bubble can
+// never call the same harness two different things.
 
 import { providerOptionsHtml, STARTABLE_PROVIDERS } from "./modelPicker.js";
 
@@ -37,7 +42,7 @@ export function defaultHarnessOf(settings) {
 export function defaultHarnessPanelHtml() {
   return `<div class="panel">
       <h3>🖥️ Default agent</h3>
-      <div class="dim" style="font-size:13px;margin-bottom:10px">The agent a new one is created on when nobody picks: the option a branch's first message leads with, and the one Build creates for itself when it has something to deliver. Every agent keeps the one it was created on, so its conversation stays where it started.</div>
+      <div class="dim" style="font-size:13px;margin-bottom:10px">The agent a new one is created on when nobody picks: the option a branch's first message leads with, and the one Build creates for itself when it has something to deliver. Every agent keeps the one it was created on, so its conversation stays where it started. Choose Claude Code TUI here and every new Claude Code agent runs in a terminal of its own, on its TUI tab.</div>
       <div class="field-row" style="display:flex;gap:10px;flex-wrap:wrap">
         <div class="field" style="flex:1;min-width:180px"><label for="defaultharness">Default agent</label>
           <select id="defaultharness" disabled><option>loading…</option></select></div>

@@ -4,14 +4,16 @@
 
 import { esc } from "./text.js";
 
-/** The harnesses an agent can be created on. The catalog RPC is the authority
- *  for models and efforts, but creating an agent needs only a harness — so a
- *  picker renders with its surface, not after a round trip.
+/** Every harness there is, and what a person calls each one.
  *
  *  One entry per harness, because an agent is LOCKED to the one it was created
- *  on: its conversation lives in that program, so it never moves. Which harness
- *  a NEW agent is created on where nobody said is the account's answer
- *  (`models.list`'s `default_provider`). */
+ *  on: its conversation lives in that program, so it never moves, and two
+ *  agents on the two claude carriers sit side by side and must not read alike.
+ *
+ *  This is the naming vocabulary, not an offer. What a create surface offers is
+ *  two agents (`creatableCatalog`); the third name is spoken only where a
+ *  harness is being NAMED — an agent's own bubble, and the Account setting that
+ *  decides which carrier a new Claude Code agent gets. */
 export const STARTABLE_PROVIDERS = [
   { id: "claude_adk", label: "Claude Code" },
   { id: "claude", label: "Claude Code TUI" },
@@ -30,14 +32,32 @@ export function providerLabel(provider) {
   return PROVIDER_LABELS[provider] || String(provider);
 }
 
-/** The catalog entries a picker may offer: the harnesses an agent can be
- *  created on, in the client's own vocabulary — an older bridge that called
- *  both claude harnesses the same thing must not offer one name twice. */
-export function startableCatalogProviders(providers) {
-  const startable = STARTABLE_PROVIDERS.map((provider) => provider.id);
-  return (providers || [])
-    .filter((provider) => startable.includes(provider.id))
-    .map((provider) => ({ ...provider, label: providerLabel(provider.id) }));
+/** The two agents a person can create, with the account's answer folded in: the
+ *  Claude Code card carries the TUI carrier only when the account's own default
+ *  IS the TUI carrier.
+ *
+ *  Whether Claude Code opens as the TUI is an account question, answered once
+ *  in Settings — so a create surface asks which agent, never which carrier. */
+export function creatableAgents(defaultProviderId) {
+  const claudeId = defaultProviderId === "claude" ? "claude" : "claude_adk";
+  return [{ id: claudeId, label: "Claude Code" }, { id: "codex", label: "Codex" }];
+}
+
+/** The catalog a create surface offers: exactly the two agents, each carrying
+ *  the models the bridge listed for the carrier behind it. Two entries even
+ *  before models.list answers — creating an agent needs only a harness, and the
+ *  cards paint before the round trip.
+ *
+ *  Built from `creatableAgents` rather than filtered out of the catalog, so the
+ *  labels are the client's own vocabulary: an older bridge that calls both
+ *  claude carriers the same thing still cannot print one name twice. */
+export function creatableCatalog(catalog) {
+  const served = (catalog && catalog.providers) || [];
+  const providers = creatableAgents(catalog && catalog.default_provider).map((agent) => {
+    const listed = served.find((provider) => provider.id === agent.id) || {};
+    return { ...agent, models: listed.models || [], efforts: listed.efforts || [] };
+  });
+  return { ...catalog, providers };
 }
 
 export function providerOptionsHtml(providers, selectedId) {

@@ -111,6 +111,35 @@ describe("the assignment overlay", () => {
     overlay.close();
   });
 
+  // Dispatching an issue creates an agent, so it asks the same question the
+  // new-agent cards ask: which of the two agents, never which carrier.
+  it("offers the two agents, out of the three the bridge serves", () => {
+    const anchor = document.createElement("button");
+    document.body.appendChild(anchor);
+    const overlay = openAssignmentOverlay({
+      getAnchor: () => anchor,
+      getAssignment: () => ({ ...baseAssignment, provider: "claude" }),
+      setAssignment: () => {},
+      getCatalog: () => ({
+        default_provider: "claude_adk",
+        providers: [
+          { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+          { id: "claude", label: "Claude Code", models: [], efforts: [] },
+          { id: "codex", label: "Codex", models: [], efforts: [] },
+        ],
+      }),
+      getWorktrees: () => [],
+    });
+
+    const options = [...document.querySelector("#assignprovider").options];
+    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
+    // A stored preference for the carrier no longer offered clamps onto the
+    // entry that is, rather than leaving the field on a name it cannot show.
+    expect(document.querySelector("#assignprovider").value).toBe("claude_adk");
+    overlay.close();
+  });
+
   it("shows the catalog the moment it arrives, without losing a choice already made", () => {
     const anchor = document.createElement("button");
     document.body.appendChild(anchor);
@@ -125,9 +154,9 @@ describe("the assignment overlay", () => {
       getCatalog: () => held,
       getWorktrees: () => [],
     });
-    // Until it lands the picker offers only the stand-in it falls back to: the
-    // default harness, which is what a bridge too old to list any would run.
-    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude_adk"]);
+    // Before it lands the picker still offers both agents — dispatching needs
+    // only a harness — with no models under either.
+    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     const worktree = document.querySelector("#assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));

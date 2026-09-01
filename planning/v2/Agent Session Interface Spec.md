@@ -8,7 +8,7 @@ resumes by name and a brand-new agent record starts fresh (see §10)
 **Last updated:** August 30, 2026
 **Branch:** `build/agent-polymorphism` (steps 0–9); `build/session-identity`
 (step 10); `build/background-visibility` (step 11, specified);
-`build/new-agent-flow` (step 14, specified)
+`build/new-agent-flow` (step 14, specified); `build/chat-polish` (step 15)
 
 ---
 
@@ -3499,6 +3499,394 @@ SPA (`npm test`):
    to `claude_mode` when the bridge refuses the new key;
 7. `loadAgentDefaults` returns a stored `claude_adk` unaliased.
 
+### Step 15 in detail — a row is its content, and two agents to choose from
+
+*Specified 2026-08-31. Branch `build/chat-polish`.* Two screenshots of the
+shipped work say the same thing about two different surfaces: the interface
+spends its space announcing categories instead of showing content. The
+expanded activity list reads "Claude Code called a tool Bas…", "Claude Code
+narrated The de…", "Background task started — P…" — the kind label eats the
+line and the meat is what gets truncated, with the outcome mark parked off to
+the right past the timestamp. And the new-agent view offers three cards —
+"Claude Code", "Claude Code TUI", "Codex" — putting a carrier question in
+front of every human that step 13 already judged, rightly, to be an
+account-level question. Step 15 fixes both. **An activity row is its content:
+the icon carries the kind, the outcome mark rides the line directly after the
+text, and a tool call reads as the thing it ran — `Bash cargo test`, never a
+JSON object. And the harness choice is two cards, "Claude Code" and "Codex";
+the account setting decides which carrier a new Claude Code agent gets.**
+Step 14's lock is untouched: an agent keeps the harness it was created on,
+forever — the setting has its say once, at creation, and never again.
+
+#### 15.1 Per-tool summaries, minted at the source
+
+`tool_call_summary` (`adk.rs:1062`) renders a call as its single string
+argument when there is exactly one, and as compact JSON otherwise — which is
+how the timeline came to read `Bash {"command":"cargo test","description":…}`
+the moment a call carried a second field. The JSON arm dies. The new rule,
+still in the one free function:
+
+- **A table names each tool's one human argument** — the meat key, matched on
+  the protocol's tool name:
+
+  | tool | meat key |
+  |---|---|
+  | `Bash` | `command` |
+  | `Read`, `Write`, `Edit` | `file_path` |
+  | `NotebookEdit` | `notebook_path` |
+  | `Glob`, `Grep` | `pattern` |
+  | `WebFetch` | `url` |
+  | `WebSearch` | `query` |
+  | `Task` | `description` |
+
+  A listed tool whose key holds a string mints `{tool} {value}`. Everything
+  else the call carried is **dropped** — including Bash's `description`,
+  deliberately: the description is the model's paraphrase and the command is
+  the record, and a row is one quiet line, not two claims about the same act.
+- **The fallback never prints braces.** A tool not in the table — an MCP tool,
+  a tool newer than this table — mints `{tool} {first string-valued field of
+  the input object}`, in the object's own order; with no string field
+  anywhere, the tool name alone. This generalizes the shipped
+  single-string-arg rule (a lone string arg IS the first string field) and
+  reverses the old "anything else keeps its shape as compact JSON" stance by
+  name: that stance held that picking one of three arguments would misdescribe
+  the call, but the screenshot shows what JSON buys instead — a line of
+  punctuation nobody can scan. The row is a scent; the diff and the fold body
+  are the record. A truncated-but-human line beats braces every time.
+- **The tool name still leads.** `Bash cargo test`, `Read bridge/src/app.rs` —
+  the screenshot's density argues for dropping it, but the icon carries only
+  "tool call", not which tool, and `Edit foo.rs` versus `Read foo.rs` is a
+  distinction worth five characters. One shape for every call, which is
+  exactly the shape single-string calls already mint, so half the persisted
+  rows already read this way.
+- **Old rows keep their minted text, and the SPA prettifies nothing.** A
+  display-only regex over legacy `{tool} {json}` summaries is cheap, but it is
+  a second half-copy of the parse that would then need to agree with the mint
+  forever. Persisted summaries are records; `tool_call_summary` is the single
+  author; a row minted before this step reads as it was minted. Same call on
+  clipping: `one_line` / `TOOL_SUMMARY_LIMIT` (`adk.rs:182/1172`) apply
+  unchanged after the meat is chosen.
+
+#### 15.2 Label-free rows, and the mark on the line
+
+The kind labels go. Every activity row — expanded in an open run, and the
+collapsed run line — is its content:
+
+- **`activityHtml`** (`core/thread.js:767`) drops the
+  `thread-activity-what` span. Its head text becomes
+  `activityMeat(event, meta, agentLabel)` (`thread.js:801`) — the exact
+  function the collapsed run line already reads, so "the line a row shows" has
+  ONE implementation and the expanded row and the run head can never disagree.
+  `activityMeat`'s own fallback already answers the no-summary edge: an event
+  with no summary shows its label, because a blank line is worse.
+- **The head's order is icon, meat, mark, time.** `toolOutcomeHtml`
+  (`thread.js:744`) moves from after `timeHtml` to directly after the preview
+  span, in both `activityHtml` and `activityRunHtml` (`thread.js:821`) — the
+  outcome is a fact about the content, so it sits with the content, and the
+  timestamp goes back to being the line's quiet right edge. The marks
+  themselves (`TOOL_OUTCOME_MARKS`, the pending-is-absence rule, error tone on
+  the mark alone) are unchanged.
+- **The label survives as metadata, not as text.** The icon span trades
+  `aria-hidden` for `role="img"` + `aria-label` carrying the kind's label on
+  the expanded row, so a screen reader still hears "Claude Code called a
+  tool"; the run head's icon stays decorative. `EVENT_META`'s activity labels
+  (`thread.js:18`) are kept for exactly these two jobs — aria and the
+  no-summary fallback — and nothing else.
+- **`task_update` mints flip description-first.** `started — Deploy watch`
+  was written for a row whose label said whose line it was; label-free it
+  leads with its least informative word. The mints become
+  `{description} — started` (`read_task_roster`/`read_task_started`,
+  `adk.rs:749/776`), `{description} — finished` and
+  `{description} — failed: {error}` (`ended_summary`, `adk.rs:1137`). The
+  notification row (`{description}: {said}`, `adk.rs:853`) is already
+  description-first and is untouched. Rows persisted in the old wording
+  render forever as minted, same rule as tool summaries. Every test that
+  spelled the old words moves with the mint — the seven fixture legs, the live
+  `#[ignore]`d background-task leg whose `task_rows` helper matches on a
+  `started — ` PREFIX, and `task_description`'s doc comment — all named in
+  §15.5, because a wording flip that leaves a hand-run test hanging is a broken
+  test nobody sees fail.
+- **Non-activity events are untouched.** `session_started`, `committed`,
+  `done` and the rest keep their bold labels — they are the conversation's
+  record of things that happened, not the working ticker, and their rows are
+  the label.
+
+#### 15.3 Two cards, and the setting is the mode
+
+The user-facing harness vocabulary is two agents: **"Claude Code"** and
+**"Codex"**. Whether Claude Code opens headless or as the TUI is the
+account's `default_harness` setting — which already holds the answer, because
+its three concrete tokens fold the two questions (default agent × Claude
+Code's carrier) into one stored field. Nothing bridge-side moves:
+
+- **The setting, the wire, and the Settings page are untouched.**
+  `default_harness` (`app.rs:1864`), `settings_get`/`settings_set`
+  (`app.rs:6579/6593`) with the `claude_mode`/`codex_mode` compat aliases,
+  `model_choice_from` (`app.rs:15080`, absent → default, named → concrete),
+  `ensure_primary_agent`, the roster's `turn_choice` lock, and the Account
+  page's one three-option select (`core/defaultHarness.js`) all stand as
+  step 14 built them. The three-option select IS the mode control: choosing
+  "Claude Code TUI" as the default is what makes a new Claude Code agent a
+  TUI one. The two-control alternative (default agent + a separate Claude
+  Code mode) would exist to express one combination — a Codex default whose
+  Claude Code card creates TUI agents — and that combination buys a second
+  stored field, a second panel, and a second compat story for a preference
+  nobody has voiced. Cut, and owned: under a Codex default, "Claude Code"
+  means the plain name's own carrier, `claude_adk`.
+- **The SPA sends the concrete token, and the bridge stays literal.** Of the
+  two revivals on offer — the bridge re-learning a generic `"claude"`
+  resolution at the mint chokepoint (step 13's machinery), or the client
+  naming the carrier — the client naming it is the one with a single
+  authority: the authority is `default_harness`, the client reads it through
+  `models.list`'s `default_provider` (already fetched wherever a picker
+  paints, `app.rs:5827`), and the wire keeps step 14's every-token-concrete
+  rule, so no token means two things across verbs and the lock machinery
+  never meets an ambiguous name. One helper in `modelPicker.js`:
+
+  ```js
+  /** The two agents a person can create, with the account's answer folded in:
+   *  the Claude Code card carries the TUI carrier only when the account's own
+   *  default IS the TUI carrier. */
+  export function creatableAgents(defaultProviderId) {
+    const claudeId = defaultProviderId === "claude" ? "claude" : "claude_adk";
+    return [{ id: claudeId, label: "Claude Code" }, { id: "codex", label: "Codex" }];
+  }
+  ```
+
+- **One narrowing — `creatableCatalog` — and every startable list takes it.**
+  There is exactly ONE caller of `startableCatalogProviders`
+  (`modelPicker.js:36`) today — the Agent defaults panel
+  (`views/settings.js:140`) — and the other startable lists do not filter at
+  all: `agentChoicePanelHtml` builds its Agent select from
+  `providersOf(catalog)` (`agentChoice.js:24/56`, the raw catalog) and
+  `assignmentPanelHtml` from `full.providers` (`issueRender.js:97/126`, the
+  normalized catalog, equally raw). Since step 14 the catalog carries all
+  three concrete providers under three distinct labels, so changing only the
+  filter's contents would leave "Claude Code TUI" standing as a third option
+  in both of those selects — the exact outcome this step exists to end. So the
+  filter is replaced by a catalog-in / catalog-out narrowing, and each list is
+  moved onto it by name. `startableCatalogProviders` is deleted; its argument
+  was a providers array, and the account's answer travels on the catalog
+  (`default_provider`), so a caller holding only the array cannot ask the
+  question:
+
+  ```js
+  /** The catalog a create surface offers: exactly the two agents, each carrying
+   *  the models the bridge listed for the carrier behind it. Two entries even
+   *  before models.list answers — creating an agent needs only a harness. */
+  export function creatableCatalog(catalog) {
+    const served = (catalog && catalog.providers) || [];
+    const providers = creatableAgents(catalog && catalog.default_provider).map((agent) => {
+      const listed = served.find((provider) => provider.id === agent.id) || {};
+      return { ...agent, models: listed.models || [], efforts: listed.efforts || [] };
+    });
+    return { ...catalog, providers };
+  }
+  ```
+
+  The list is BUILT from `creatableAgents` rather than filtered out of the
+  catalog: the offer is exactly two whether or not `models.list` has answered
+  yet (the rail paints its cards before the round trip), and the labels are the
+  client's own vocabulary, so an older bridge that calls both claude carriers
+  the same thing still cannot print one name twice — the property the deleted
+  filter owned. The narrowed catalog's `default_provider` needs no rewriting:
+  `creatableAgents` returns the `claude` id exactly when the account's default
+  IS `claude`, so the default is always one of the two entries.
+
+  Every call site, each moved by name:
+
+  1. **new-agent cards** (`agentRail.js:690`):
+     `providerCardsHtml(creatableCatalog(catalog || {}).providers, chosen)` —
+     card markup and `data-provider` wiring unchanged;
+  2. **the rail's `newAgentChoice`** (`agentRail.js:354`): the
+     `said.provider || catalog.default_provider || STARTABLE_PROVIDERS[0].id`
+     chain becomes `chosenProviderId(creatableCatalog(catalog || {}), said)` —
+     one clamp instead of a bespoke fallback, so a stored `"claude"` under a
+     `claude_adk` account highlights the Claude Code card instead of
+     highlighting none;
+  3. **the compose/dispatch panel** (`agentChoicePanelHtml`,
+     `agentChoice.js:45`, called from `composeView.js:201/307` and
+     `toolbar.js:417`): narrows ONCE at the top —
+     `const offered = creatableCatalog(catalog || {})` — and every read below
+     it (`chosenProviderId`, `catalogForProvider`, the Agent select's options)
+     takes `offered`. `providersOf` goes with its last caller. Both callers are
+     create/dispatch surfaces; a LOCKED agent's own picker is the composer's
+     model menu (`modelMenuOptions`), which never asks the harness question and
+     is untouched;
+  4. **that panel's params** (`agentChoiceParams`, `agentChoice.js:82`, called
+     from `composeView.js:408` and `toolbar.js:498`): narrows the same way and
+     sends the CLAMPED id —
+     `modelParams(models, choice.model, choice.effort, choice.provider ? chosenProviderId(offered, choice) : "")` —
+     so a stale stored `"claude"` cannot ride out on the wire under a select
+     that painted "Claude Code", while an empty provider still means the
+     harness's own default;
+  5. **the issue assignment select** (`assignmentPanelHtml`,
+     `issueRender.js:97/126`): `creatableCatalog(normalizeModelCatalog(catalog))`
+     is what `full` becomes, and its hand-rolled
+     `assignment.provider || full.default_provider || "claude"` — a third copy
+     of the fallback chain, ending in a hardcoded token — becomes
+     `chosenProviderId(full, assignment)`, imported from `agentChoice.js`,
+     which imports only `text.js` and `modelPicker.js`, so no cycle;
+  6. **that select's own dispatch** (`implementParams`, `issueModel.js:241`,
+     called from `issueView.js:416/553`): takes the catalog the panel painted
+     from instead of a pre-picked models array and delegates to
+     `agentChoiceParams(normalizeModelCatalog(catalog), assignment)`, so the
+     Implement send carries the CLAMPED id for the same reason item 4 does.
+     `issueView`'s `providerModels` — a fourth hand-rolled provider lookup,
+     and the one that kept the stale token alive on this path — goes with it;
+  7. **the Agent defaults panel** (`views/settings.js:140`):
+     `const offered = creatableCatalog(catalog)` replaces the spread plus
+     filter.
+- **A stored preference naming the other claude carrier clamps, through code
+  that already exists.** `chosenProviderId` (`agentChoice.js:28`) answers the
+  named provider only when the offered list holds it, else the catalog
+  default — and once every surface reads the narrowed catalog, the offered list
+  never holds the other carrier, so a browser-local `"claude"` preference under
+  a `claude_adk` account default paints AND dispatches as the Claude Code entry
+  with no new alias helper. `loadAgentDefaults` stays unaliased (§14.10 test 7
+  stands): the stored token is a record, the offer is where it clamps.
+- **`STARTABLE_PROVIDERS` survives as the full vocabulary** — three entries,
+  three distinct labels — for what it still owns: `providerLabel` (a TUI
+  agent's bubble still reads "Claude Code TUI"; the lock makes side-by-side
+  carriers real, so their names stay distinct per step 14), and the Account
+  select's options via `defaultHarnessOf`/`providerOptionsHtml`. "headless"
+  stays banned from every user-facing string; "Claude Code" keeps "Code".
+  `agentRail.js` stops importing it — both of its uses became
+  `creatableCatalog`/`chosenProviderId` — so the three-name list is left with
+  the two jobs that are honestly about naming a harness, not offering one.
+- **The lock, the auto-add, and agentless branches are unchanged by
+  construction.** `agent.add` gets a concrete provider from the card;
+  `ensure_primary_agent` and the router already spend `self.default_harness`
+  concretely; `turn_choice` respawns the locked harness. No bridge line
+  changes in this half of the step.
+
+#### 15.4 DRY inventory — what gets reused, never copied
+
+| Need | The one implementation | Reused by |
+|---|---|---|
+| the line a row shows | `activityMeat` (`thread.js`) | expanded row head AND collapsed run head |
+| the outcome mark | `toolOutcomeHtml` | both heads, position moved in both |
+| a call's summary | `tool_call_summary` + the meat-key table (`adk.rs`) | every minted row; the SPA never re-parses one |
+| clipping | `one_line` / `TOOL_SUMMARY_LIMIT` | tool summaries, task rows, unchanged |
+| a task row's ending words | `ended_summary` | the terminal patch and the terminal notification |
+| the two-agent list | `creatableAgents` (`modelPicker.js`) | `creatableCatalog`, and nothing else calls it directly |
+| the catalog a create surface offers | `creatableCatalog` (`modelPicker.js`, replacing `startableCatalogProviders`) | new-agent cards, rail highlight, compose/dispatch panel AND its params, issue assignment AND its Implement dispatch, Agent defaults panel |
+| a choice as create/dispatch params | `agentChoiceParams` (`agentChoice.js`) | the compose/toolbar panel AND `implementParams` — one clamp, so no surface can paint one agent and send another |
+| card / option markup | `providerCardsHtml` / `providerOptionsHtml` | unchanged, fed the narrowed catalog |
+| offer clamping | `chosenProviderId`'s membership fallback, over the narrowed catalog | rail highlight, panel paint, panel params, issue assignment — three bespoke fallback chains deleted |
+| full label vocabulary | `STARTABLE_PROVIDERS` / `providerLabel` | bubbles, Account select, refusals |
+| the account's answer | `default_harness`, read as `models.list.default_provider` | `creatableAgents` at every paint; the bridge's own auto-add |
+
+#### 15.5 The tests
+
+Bridge (`cargo test`, no model turns — `tool_call_summary` and the task mints
+are free functions, and the pump legs drive `adk::fake`):
+
+1. `Bash` with `command` and `description` mints `Bash {command}` exactly —
+   no description, no brace;
+2. each listed tool mints `{tool} {meat}`: `Read`/`Write`/`Edit` the
+   `file_path`, `Glob`/`Grep` the `pattern`, `WebFetch` the `url`,
+   `WebSearch` the `query`, `Task` the `description`,
+   `NotebookEdit` the `notebook_path`;
+3. an unlisted multi-field tool mints its first string-valued field after the
+   name, and the summary contains no `{`;
+4. an unlisted tool with no string field mints the bare tool name; a listed
+   tool whose meat key is absent falls through to the same fallback;
+5. a 500-character command clips at `TOOL_SUMMARY_LIMIT` with the ellipsis;
+6. task rows mint description-first: roster insert and `task_started` mint
+   `{description} — started`, roster removal `{description} — finished`, a
+   failed terminal patch `{description} — failed: {error}`, and the
+   notification row (`{description}: {said}`) is unchanged;
+7. through the fake (recording probe-recorded, per the module's rule): a
+   `Bash` `tool_use` lands a thread row whose summary is the command line.
+
+The two-card half adds no bridge test because it changes no bridge line: step
+14's harness tests (§14.10) are exactly what still guards it.
+
+**Bridge tests the task-mint flip rewrites** — §15.2 changes the words a task
+row is minted with, so every test that spelled the old words is part of the
+change, named here so none of it is discovered by a red run:
+
+- the seven task legs that assert full summaries against fixtures
+  (`adk.rs:1987–2299`):
+  `a_started_task_mints_once_and_keeps_a_turnless_session_working`,
+  `a_roster_that_drops_a_task_closes_it_once_and_the_session_waits_again`,
+  `a_terminal_task_update_fails_the_task_once`,
+  `a_task_notification_is_minted_and_a_progress_patch_is_not`,
+  `a_foreground_tasks_notification_closes_it_and_the_session_waits_again`,
+  `a_failed_foreground_notification_fails_and_a_stopped_one_finishes`,
+  `the_probes_own_order_mints_one_row_per_transition` — each expectation flips
+  from `format!("started — {DESC}")` to `format!("{DESC} — started")` and so
+  on. The assertions keep their shape; only the wording moves, and item 6
+  above is what pins the new wording deliberately rather than incidentally;
+- the live `#[ignore]`d leg
+  `real_adk_session_reports_a_background_task_and_stays_working`
+  (`adk.rs:~3150`), which counts rows with
+  `line.starts_with(&format!("task_update: {prefix}"))` for the prefixes
+  `"started — "`, `"finished — "` and `"failed — "`. Description-first mints
+  never start with those words, so this leg would hang on its first
+  `wait_until` when it is next run by hand. Its helper becomes a marker match —
+  `line.starts_with("task_update: ") && line.contains(marker)` for `" — started"`,
+  `" — finished"` and `" — failed"` — which keeps the `task_update:` guard,
+  survives the failed row's trailing `: {error}`, and does not care where in
+  the line the words land;
+- `task_description`'s doc comment (`adk.rs:1095`), which teaches the rule
+  with `started — bi1jfa1kd` / `started — ` examples: rewritten in the new
+  wording, since a comment that contradicts its function is a future bug.
+
+SPA (`npm test`):
+
+1. an expanded activity row renders no label span; its head text is the
+   summary's first line; the icon carries the kind's label as `aria-label`;
+2. an activity event with no summary shows the label as its line;
+3. in both the expanded head and the run head, the outcome mark follows the
+   preview and precedes the time — the order asserted on the markup;
+4. a legacy row whose persisted summary is `Tool {"a":1}` renders verbatim;
+5. the new-agent view renders exactly two cards, "Claude Code" and "Codex";
+   under `default_provider` `"claude"` the Claude Code card carries
+   `data-provider="claude"`, under `"claude_adk"` and `"codex"` it carries
+   `"claude_adk"`; the send composes `agent.add` with the card's concrete
+   provider;
+6. `creatableCatalog` alone: two entries out of a three-provider catalog, ids
+   `["claude_adk", "codex"]` under a `claude_adk` or `codex` default and
+   `["claude", "codex"]` under a `"claude"` default, labels always
+   `["Claude Code", "Codex"]`; each entry carries the models the catalog listed
+   for that id; an empty catalog (`models.list` not answered) still yields the
+   two entries with empty model lists; the rendered options contain no
+   "Claude Code TUI" and no "headless";
+7. the compose/dispatch panel and the issue assignment panel each render an
+   Agent select of exactly the two entries; a stored provider `"claude"` under
+   a `claude_adk` default paints the Claude Code entry as selected, and
+   `agentChoiceParams` for that same stale choice sends
+   `provider: "claude_adk"` — while a choice with no provider sends no
+   `provider` key at all;
+8. the same pair for the issue path, asserted together in
+   `test/issueRender.test.js`: the assignment panel paints
+   `value="claude_adk" selected` under a stale `"claude"` and no "Claude Code
+   TUI" option, and `implementParams` for that same assignment sends
+   `provider: "claude_adk"` — an assignment naming no agent still sends no
+   `provider` key;
+9. the rail's `newAgentChoice` under that same stale `"claude"` highlights the
+   Claude Code card (one card carries `chosen`, never zero);
+10. the Account select still offers the three distinct names (unchanged), and
+    `providerLabel("claude")` still reads "Claude Code TUI".
+
+**SPA tests this step deletes or rewrites**:
+
+- `"keeps the catalog entries a picker may offer, under one vocabulary"`
+  (`test/modelPicker.test.js:78`) goes with `startableCatalogProviders`. What
+  it actually asserted — the client's own labels win over the bridge's, so an
+  older bridge cannot print one name twice — is carried by item 6's label
+  assertion, which makes the same claim about the function that replaced it;
+- the three-name and "never says how a harness runs" tests above it
+  (`modelPicker.test.js:41–75`) stand unchanged: `STARTABLE_PROVIDERS` is
+  still the naming vocabulary;
+- `test/threadActivity.test.js`'s `"started — run the full suite"` fixtures
+  need no flip. They are persisted rows as a browser receives them, and §15.2's
+  rule is that a row renders as it was minted — so they go on asserting the
+  paint. One of them doubles as documentation of the old label ("Background
+  task — started — …") and its comment is restated for a label-free row.
+
 ---
 
 ## 11. Decisions needed before step 1
@@ -3621,6 +4009,58 @@ sections cite (§11 q3, §11 q4) must not move.
 
 ## 12. Revision history
 
+- **2026-08-31, the issue's Implement dispatch joined the clamp.** Review found
+  the one create path the SPA half missed, which is why the entry below is
+  wrong to call the `+` bubble the last of them: `assignmentPanelHtml` painted
+  the clamped agent while `implementParams` still spent `assignment.provider`
+  raw, so an issue holding `"claude"` under a `claude_adk` account showed
+  "Claude Code" and created a TUI agent on Implement. `implementParams` now
+  takes the catalog the panel paints from and delegates to `agentChoiceParams`,
+  which deletes `issueView`'s `providerModels` — the fourth hand-rolled
+  provider lookup — and leaves one function answering "what does this choice
+  send" for every create surface (§15.3 item 6, §15.5 item 8).
+- **2026-08-31, step 15's SPA half built.** As specified, with three additions
+  the build found. `syncValues` (`assignmentOverlay.js`) writes the held
+  assignment back over the painted markup, so a stored `"claude"` emptied the
+  Provider select the narrowing had just clamped — a select is now only handed
+  a value one of its options carries, which is the same "the offer is where it
+  clamps" rule the panel markup follows. The `+` bubble
+  (`agentRail.pressAddBubble`) spends the browser-local agent defaults
+  straight on the wire and was the one create path that could still dispatch
+  the carrier no surface offers; it takes `chosenProviderId` over the narrowed
+  catalog, guarded so an empty preference still sends no `provider` at all. And
+  the Default agent panel's copy gained one sentence — choosing Claude Code TUI
+  there is what gives a new Claude Code agent a terminal of its own — because
+  the two-card offer leaves that select as the only screen that can say it; the
+  control itself is untouched, and "headless" stays unsaid.
+- **2026-08-31, step 15 specified — a row is its content, and two agents to
+  choose from** (branch `build/chat-polish`). Two screenshots showed the kind
+  labels eating the activity lines and the three-card new-agent view putting a
+  carrier question back in front of every human. Activity rows drop every
+  label: the expanded head reads through `activityMeat` — the same function
+  the collapsed run line reads, so the line has one implementation — with the
+  outcome mark moved inline after the text in both heads, the label surviving
+  only as the icon's `aria-label` and the no-summary fallback, and
+  `task_update` mints flipped description-first (`{description} — started`),
+  which rewrites the seven task legs' fixtures and the live background-task
+  leg's prefix matcher — both listed in §15.5 rather than left to a red run.
+  Tool summaries are minted per tool at `tool_call_summary`: a meat-key table
+  (Bash → `command`, file tools → `file_path`, `Glob`/`Grep` → `pattern`, …),
+  Bash's description dropped, the name still leading, and the JSON fallback
+  replaced by first-string-field-or-bare-name — braces never; legacy rows
+  render as minted, the SPA prettifies nothing. The harness choice becomes
+  two cards, "Claude Code" and "Codex", via one `creatableAgents` helper and
+  one `creatableCatalog` narrowing that REPLACES `startableCatalogProviders` —
+  named at all five call sites, because two of them (the compose/dispatch panel
+  and the issue assignment select) never filtered the catalog at all and would
+  otherwise keep offering a third card; the account's existing three-token
+  `default_harness` IS the mode setting (its claude token decides what the
+  Claude Code card creates; under a Codex default the plain name means
+  `claude_adk`), so the bridge, the wire, the compat aliases and the Settings
+  page are untouched, the SPA keeps sending concrete tokens, and step 14's
+  lock, auto-add and agentless-branch machinery stand unchanged. This
+  supersedes §14.5's three-card view and revives the substance of step 13's
+  mode setting without its generic-token resolution.
 - **2026-08-31, a new agent never resumes — adoption's pickup is deleted.**
   §10.4's rule 2 carried a second disjunct: an entity whose record said
   `adopted` and on which no session lineage had ever opened granted its agent

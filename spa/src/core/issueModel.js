@@ -10,7 +10,8 @@
 // Pure: no DOM, no RPC, no module state.
 
 import { slugifyHeading } from "./anchors.js";
-import { modelParams } from "./modelPicker.js";
+import { agentChoiceParams } from "./agentChoice.js";
+import { normalizeModelCatalog } from "./modelPicker.js";
 
 /** The one vocabulary the stage list speaks: the doc's approval until the agent
  *  starts, then what execution has reached. `validated` is the end of the line. */
@@ -237,8 +238,14 @@ export function assignmentSummary(assignment, choices = []) {
  *
  * A named checkout carries no base branch: the branch it implements into already
  * exists, and its current HEAD is the baseline.
+ *
+ * The agent, model and effort are read off the same catalog the assignment
+ * panel paints from (`agentChoiceParams`, over the two agents a create surface
+ * offers), so the dispatch sends the agent the select showed — a stored
+ * preference naming the other claude carrier clamps in both places or in
+ * neither.
  */
-export function implementParams(issueId, assignment, { models = [], stageId = null } = {}) {
+export function implementParams(issueId, assignment, { catalog = {}, stageId = null } = {}) {
   const worktreeGap = unsupportedTargetReason(WORKTREE_TARGETS, assignment.worktree);
   if (worktreeGap) throw new Error(worktreeGap);
   const agentGap = unsupportedTargetReason(AGENT_TARGETS, assignment.agent);
@@ -252,7 +259,7 @@ export function implementParams(issueId, assignment, { models = [], stageId = nu
     ...(stageId ? { stage_id: stageId } : {}),
     ...(worktreeId ? { worktree_id: worktreeId } : {}),
     ...(base ? { base_branch: base } : {}),
-    ...modelParams(models, assignment.model, assignment.effort, assignment.provider),
+    ...agentChoiceParams(normalizeModelCatalog(catalog), assignment),
   };
 }
 

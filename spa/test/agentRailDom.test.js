@@ -293,6 +293,17 @@ describe("the bubble strip", () => {
     expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
   });
 
+  // A browser-local preference naming the carrier no surface offers any more.
+  // It is a record, and the offer is where it clamps — so the `+` creates the
+  // agent every other surface would have created, not the one nobody can pick.
+  it("clamps a stored preference for the other claude carrier before creating", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "claude", model: "", effort: "" }));
+    await mount();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
+  });
+
   it("publishes which agent is open, so the surfaces beside it ask about the same one", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
     const selection = createAgentSelection();
@@ -1059,16 +1070,15 @@ describe("the chat tab of a branch with no agent", () => {
     await flush();
   };
 
-  it("offers the three harnesses, with the account's default already chosen", async () => {
+  // Two agents, never three. Whether Claude Code opens as the TUI is the
+  // account's question, answered once in Settings — putting it in front of
+  // every human creating an agent is what this view stopped doing.
+  it("offers the two agents, with the account's default already chosen", async () => {
     payload = agentless();
     await mount();
 
-    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "claude", "codex"]);
-    expect(cards().map((entry) => entry.textContent.trim())).toEqual([
-      "Claude Code",
-      "Claude Code TUI",
-      "Codex",
-    ]);
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);
+    expect(cards().map((entry) => entry.textContent.trim())).toEqual(["Claude Code", "Codex"]);
     expect(chosenCard().dataset.provider).toBe("claude_adk");
     // No conversation to show: there is no agent whose conversation it would be.
     expect(railHost().querySelector(".thread-items")).toBe(null);
@@ -1136,6 +1146,43 @@ describe("the chat tab of a branch with no agent", () => {
     expect(callsTo("agent.add")[0].params).toEqual({
       entity_id: "run-3", provider: "claude_adk", model: "claude-opus-5",
     });
+  });
+
+  // The account decides which carrier "Claude Code" means, and the card is
+  // where that answer lands: one name, whichever carrier is behind it.
+  it("gives the Claude Code card the carrier the account chose", async () => {
+    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    payload = agentless();
+    await mount();
+
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude", "codex"]);
+    expect(cards().map((entry) => entry.textContent.trim())).toEqual(["Claude Code", "Codex"]);
+    expect(chosenCard().dataset.provider).toBe("claude");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude" });
+  });
+
+  // A choice held from before the account moved its default. The offer is where
+  // a stale token clamps, so the view highlights the card it is showing —
+  // never nothing at all.
+  it("clamps a choice made under the other claude carrier onto the card on offer", async () => {
+    App.modelCatalog = { ...CATALOG, default_provider: "claude" };
+    payload = agentless();
+    await mount();
+    card("claude").click();
+    await flush();
+
+    rail.dispose();
+    App.modelCatalog = CATALOG;
+    await mount();
+
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);
+    expect(cards().filter((entry) => entry.classList.contains("chosen"))).toHaveLength(1);
+    expect(chosenCard().dataset.provider).toBe("claude_adk");
+
+    await send("start here");
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
   });
 
   it("leaves the cards alone on a tick that says the same thing", async () => {

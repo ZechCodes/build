@@ -14,6 +14,7 @@ import { openAddDevice } from "../sheets/addDevice.js";
 import { disablePush, enablePush, pushState } from "../push.js";
 import { bindThemeControl, loadThemePreference, themeControlHtml } from "../core/theme.js";
 import { loadAgentDefaults, saveAgentDefaults, reconcileAgentDefaults } from "../core/agentDefaults.js";
+import { chosenProviderId } from "../core/agentChoice.js";
 import { defaultHarnessPanelHtml, mountDefaultHarness } from "../core/defaultHarness.js";
 import { loadModelCatalog } from "../app.js";
 import {
@@ -23,7 +24,7 @@ import {
   modelInCatalog,
   modelOptionsHtml,
   providerOptionsHtml,
-  startableCatalogProviders,
+  creatableCatalog,
 } from "../core/modelPicker.js";
 
 export async function renderSettings() {
@@ -135,12 +136,13 @@ export async function renderSettings() {
     let current = loadAgentDefaults();
     const note = $("#defsaved");
 
-    // The harnesses an agent can be created on, out of the catalog the bridge
-    // serves — which also lists harnesses no picker offers.
-    const offered = { ...catalog, providers: startableCatalogProviders(catalog.providers) };
+    // These defaults are spent creating agents, so they offer what every create
+    // surface offers: the two agents, never the carrier behind Claude Code —
+    // that question belongs to the Default agent panel below.
+    const offered = creatableCatalog(catalog);
 
     const paint = () => {
-      providerSelect.innerHTML = providerOptionsHtml(offered.providers, current.provider || offered.default_provider);
+      providerSelect.innerHTML = providerOptionsHtml(offered.providers, chosenProviderId(offered, current));
       const providerCatalog = catalogForProvider(offered, providerSelect.value);
       $("#defmodel").innerHTML = modelOptionsHtml(providerCatalog.models, modelInCatalog(providerCatalog.models, current.model));
       const supported = effortSupported(providerCatalog.models, $("#defmodel").value);

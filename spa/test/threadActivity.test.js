@@ -24,7 +24,10 @@ const activity = () =>
   });
 
 describe("activity in the timeline", () => {
-  it("renders the five kinds folded, and says which is which", () => {
+  // A row is its content. The kind is not spent on the line — the icon carries
+  // it, and carries it as an `aria-label` so a reader who cannot see the icon
+  // still hears which kind the row is.
+  it("renders the five kinds folded, and says which is which on the icon alone", () => {
     document.body.innerHTML = activity();
 
     const folds = [...document.querySelectorAll(".thread-activity")];
@@ -32,20 +35,29 @@ describe("activity in the timeline", () => {
     expect(folds.every((fold) => fold.tagName === "DETAILS")).toBe(true);
     // Folded: not one of them is open on arrival.
     expect(folds.every((fold) => fold.open)).toBe(false);
-    expect(folds.map((fold) => fold.querySelector(".thread-activity-what").textContent)).toEqual([
+    expect(document.querySelectorAll(".thread-activity-what")).toHaveLength(0);
+    expect(folds.map((fold) => fold.querySelector(".thread-event-icon").getAttribute("aria-label"))).toEqual([
       "Agent thought",
       "Agent called a tool",
       "Tool answered",
       "Agent narrated",
       "Background task",
     ]);
+    // The line itself is the content, in full — no label eating the front of it.
+    expect(folds.map((fold) => fold.querySelector(".thread-activity-preview").textContent)).toEqual([
+      "The parser is re-entrant, so the lock has to move.",
+      "Read bridge/src/app.rs",
+      "17 matches",
+      "Running the suite once more.",
+      "started — run the full suite",
+    ]);
   });
 
   // Work the agent left running behind its own turn. It is the same quiet row
-  // as the other four — the label is the whole difference — and it names the
-  // task rather than the harness, because a background task is not the agent
-  // speaking and the provider's name in front of it would say nothing.
-  it("folds a background task shut under its own label, and shows what the task is", () => {
+  // as the other four, and it shows the task rather than the harness: a
+  // background task is not the agent speaking, and the provider's name in front
+  // of it would say nothing.
+  it("folds a background task shut, and gives the line to what the task is", () => {
     document.body.innerHTML = threadHtml({
       items: [{ type: "event", data: { event: "task_update", summary: "finished — run the full suite\n\n412 passed" } }],
       sessions: [{ provider: "claude_adk" }],
@@ -54,9 +66,24 @@ describe("activity in the timeline", () => {
     const fold = document.querySelector(".thread-activity");
     expect(fold.tagName).toBe("DETAILS");
     expect(fold.open).toBe(false);
-    expect(fold.querySelector(".thread-activity-what").textContent).toBe("Background task");
+    expect(fold.querySelector(".thread-activity-what")).toBe(null);
+    expect(fold.querySelector(".thread-event-icon").getAttribute("aria-label")).toBe("Background task");
+    // Minted before the daemon led with the description, and rendered as it was
+    // minted: a persisted summary is a record, not a template.
     expect(fold.querySelector(".thread-activity-preview").textContent).toBe("finished — run the full suite");
     expect(fold.querySelector(".thread-event-detail").textContent).toContain("412 passed");
+  });
+
+  // The summary is a record minted by the daemon, and the client renders it as
+  // it was minted. A row written before the daemon knew how to summarise a call
+  // reads exactly as it was stored — no display-time prettifying, which would
+  // be a second half-copy of the mint that has to agree with it forever.
+  it("renders a row minted by an older daemon verbatim", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "tool_use", summary: 'Tool {"a":1}' } }],
+    });
+
+    expect(document.querySelector(".thread-activity-preview").textContent).toBe('Tool {"a":1}');
   });
 
   // The fold's head is what a reader scans past. A stack of rows all saying
@@ -84,21 +111,26 @@ describe("activity in the timeline", () => {
 
   // Nothing to open is not a fold. An activity event with neither a summary nor
   // links would otherwise offer a disclosure triangle onto an empty box.
-  it("does not offer a fold with nothing behind it", () => {
+  //
+  // It is also the one row with no content of its own, so the kind is what it
+  // shows: a blank line is worse than the label.
+  it("does not offer a fold with nothing behind it, and shows the kind in place of the line", () => {
     document.body.innerHTML = threadHtml({ items: [{ type: "event", data: { event: "reasoning" } }] });
 
     const row = document.querySelector(".thread-activity");
     expect(row.tagName).toBe("DIV");
-    expect(row.textContent).toContain("Agent thought");
+    expect(row.querySelector(".thread-activity-preview").textContent).toBe("Agent thought");
   });
 
   it("names the harness the way every other event does", () => {
     document.body.innerHTML = threadHtml({
-      items: [{ type: "event", data: { event: "reasoning", summary: "Checking the lock order." } }],
+      items: [{ type: "event", data: { event: "reasoning" } }],
       sessions: [{ provider: "claude_adk" }],
     });
 
-    expect(document.querySelector(".thread-activity-what").textContent).toBe("Claude Code thought");
+    const row = document.querySelector(".thread-activity");
+    expect(row.querySelector(".thread-activity-preview").textContent).toBe("Claude Code thought");
+    expect(row.querySelector(".thread-event-icon").getAttribute("aria-label")).toBe("Claude Code thought");
   });
 
   // Everything else on the thread is untouched. The four kinds are the only
@@ -201,16 +233,37 @@ describe("a tool call's own row", () => {
   });
 
   // Stored rows must render forever, and the orphan fallback still mints them:
-  // a `tool_result` row is its own row, with no mark and its own label.
+  // a `tool_result` row is its own row, with no mark and its own kind.
   it("leaves a standalone tool_result row exactly as it was", () => {
     document.body.innerHTML = threadHtml({
       items: [{ type: "event", data: { event: "tool_result", summary: "17 matches" } }],
     });
 
     const fold = document.querySelector(".thread-activity");
-    expect(fold.querySelector(".thread-activity-what").textContent).toBe("Tool answered");
+    expect(fold.querySelector(".thread-event-icon").getAttribute("aria-label")).toBe("Tool answered");
     expect(fold.querySelector(".thread-activity-preview").textContent).toBe("17 matches");
     expect(fold.querySelector(".thread-activity-outcome")).toBe(null);
+  });
+
+  // How a call ended is a fact about what the call did, so it sits with the
+  // content — and the timestamp goes back to being the line's quiet right edge,
+  // on the row and on the run's line alike.
+  it("puts the mark on the line after the content, and the time last", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "tool_use", summary: "Bash cargo test", outcome: "ok", created_at: "2026-08-23T12:00:00Z" } }],
+    });
+
+    const order = (head) => [...head.children].map((node) => node.className || node.tagName.toLowerCase());
+    const rowHead = document.querySelector(".thread-activity .thread-activity-head");
+    const runHead = document.querySelector(".thread-activity-group-head");
+    for (const head of [rowHead, runHead]) {
+      const classes = order(head);
+      expect(classes.filter((name) => name.includes("outcome"))).toHaveLength(1);
+      expect(classes.findIndex((name) => name.includes("outcome")))
+        .toBeGreaterThan(classes.findIndex((name) => name.includes("preview")));
+      expect(classes.findIndex((name) => name === "time"))
+        .toBeGreaterThan(classes.findIndex((name) => name.includes("outcome")));
+    }
   });
 });
 
@@ -412,7 +465,7 @@ describe("opening a run", () => {
     const list = group.querySelector(".thread-activity-group-list");
     const rows = [...list.querySelectorAll(".thread-activity")];
     expect(rows).toHaveLength(5);
-    expect(rows.map((row) => row.querySelector(".thread-activity-what").textContent)).toEqual([
+    expect(rows.map((row) => row.querySelector(".thread-event-icon").getAttribute("aria-label"))).toEqual([
       "Agent thought",
       "Agent called a tool",
       "Tool answered",

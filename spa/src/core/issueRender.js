@@ -23,7 +23,8 @@ import {
   WORKTREE_TARGETS,
   AGENT_TARGETS,
 } from "./issueModel.js";
-import { catalogForProvider, effortOptionsHtml, modelOptionsHtml, providerOptionsHtml, normalizeModelCatalog } from "./modelPicker.js";
+import { catalogForProvider, creatableCatalog, effortOptionsHtml, modelOptionsHtml, providerOptionsHtml, normalizeModelCatalog } from "./modelPicker.js";
+import { chosenProviderId } from "./agentChoice.js";
 
 /** The honest empty-state copy for a doc pane whose canonical contents are gone
  *  (a migrated issue predating canonical storage, its worktree pruned). */
@@ -94,8 +95,10 @@ export function assignmentHtml({ assignment, open = false, worktrees = [] }) {
  *  base to choose. The existing-agent option is offered and disabled: it is not
  *  a gap but a rule, and the copy below the fields says which. */
 export function assignmentPanelHtml({ assignment, catalog = {}, worktrees = [] }) {
-  const full = normalizeModelCatalog(catalog);
-  const provider = assignment.provider || full.default_provider || "claude";
+  // A dispatch creates an agent, so it offers what a create surface offers: the
+  // two agents, with the account's answer to the carrier question folded in.
+  const full = creatableCatalog(normalizeModelCatalog(catalog));
+  const provider = chosenProviderId(full, assignment);
   const forProvider = catalogForProvider(full, provider);
   const options = (targets, selected) =>
     targets

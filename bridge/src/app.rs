@@ -34863,31 +34863,37 @@ mod tests {
         }
     }
 
-    /// Every activity event on a conversation, as (kind, summary).
-    fn activity_of(
-        thread: &crate::thread::Thread,
-    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+    /// Every row a reporting session minted on a conversation, in order.
+    fn activity_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
         thread
             .items
             .iter()
             .filter_map(|item| match item {
                 crate::thread::ThreadItem::Event(event)
-                    if event.event.class() == crate::thread::EventClass::Status =>
+                    if event.event.class() == crate::thread::EventClass::Status
+                        && matches!(
+                            event.event,
+                            crate::thread::ThreadEventKind::Reasoning
+                                | crate::thread::ThreadEventKind::ToolUse
+                                | crate::thread::ThreadEventKind::ToolResult
+                                | crate::thread::ThreadEventKind::Narration
+                                | crate::thread::ThreadEventKind::TaskUpdate
+                        ) =>
                 {
-                    Some((event.event, event.summary.clone().unwrap_or_default()))
+                    Some(event.clone())
                 }
                 _ => None,
             })
-            .filter(|(kind, _)| {
-                matches!(
-                    kind,
-                    crate::thread::ThreadEventKind::Reasoning
-                        | crate::thread::ThreadEventKind::ToolUse
-                        | crate::thread::ThreadEventKind::ToolResult
-                        | crate::thread::ThreadEventKind::Narration
-                        | crate::thread::ThreadEventKind::TaskUpdate
-                )
-            })
+            .collect()
+    }
+
+    /// The same rows as (kind, summary).
+    fn activity_of(
+        thread: &crate::thread::Thread,
+    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+        activity_rows(thread)
+            .into_iter()
+            .map(|event| (event.event, event.summary.unwrap_or_default()))
             .collect()
     }
 
@@ -35387,6 +35393,176 @@ mod tests {
         );
     }
 
+    /// A subagent's own work reaches the conversation folded under the row of
+    /// the call that spawned it, and stays folded there after that call is
+    /// answered.
+    ///
+    /// Replayed from `subagent.jsonl`, so the shape is the recorded one: the
+    /// Agent call on line 9 mints the row; its own answer lands on line 12,
+    /// BEFORE the subagent has said anything; and the subagent's reasoning
+    /// (17, 27), its Read call (24), that call's answer (26) and its final
+    /// answer (28) all arrive after. A pairing that forgot on the answer would
+    /// have nothing left to fold them under.
+    #[tokio::test]
+    async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-folded",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-folded");
+        let key = derived_agent_key(&root, "run-folded");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-folded", &agent_id),
+        );
+        let state = app.shared();
+
+        let reported =
+            crate::harness::adk::rows_minted_by(crate::harness::stream_fixtures::SUBAGENT_FIXTURE);
+        let (activity, subscribed) = broadcast::channel(reported.len());
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        for report in reported {
+            activity.send(report).expect("the pump is listening");
+        }
+
+        let folded = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-folded"].agents));
+            let folded: Vec<crate::thread::ThreadEvent> = rows
+                .iter()
+                .filter(|row| row.parent_sequence.is_some())
+                .cloned()
+                .collect();
+            (folded.len() == 4).then_some(folded)
+        })
+        .await
+        .expect("the subagent's four rows reach the conversation");
+
+        let spawning = {
+            let s = state.lock().unwrap();
+            let thread = primary_thread(&s.runs["run-folded"].agents);
+            tool_call_rows(thread)
+                .into_iter()
+                .find(|row| {
+                    row.summary
+                        .as_deref()
+                        .unwrap_or_default()
+                        .starts_with("Agent")
+                })
+                .expect("the Agent call minted a row")
+        };
+        assert_eq!(
+            folded
+                .iter()
+                .map(|row| (row.event, row.parent_sequence))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    Some(spawning.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    Some(spawning.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    Some(spawning.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    Some(spawning.sequence)
+                ),
+            ],
+            "every row the subagent minted names the call that spawned it"
+        );
+        assert_eq!(
+            folded[1].outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "and the subagent's own call is answered on its own folded row"
+        );
+        assert_eq!(
+            spawning.outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "the Agent call was answered on line 12: {spawning:?}"
+        );
+
+        drop(activity);
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the stream closing ends the session");
+        let s = state.lock().unwrap();
+        let after_close = tool_call_rows(primary_thread(&s.runs["run-folded"].agents))
+            .into_iter()
+            .find(|row| row.sequence == spawning.sequence)
+            .expect("the Agent call's row is still there");
+        assert_eq!(
+            after_close.outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "a call answered while the session ran is not re-resolved when it ends: {after_close:?}"
+        );
+        assert!(
+            s.tabs[&key].call_sequences.is_empty(),
+            "and the session's pairing dies with it"
+        );
+    }
+
+    /// A report naming a call this session minted no row for — Build's own MCP
+    /// calls, which are silent by construction, and a call lost to broadcast
+    /// lag — lands as a row of its own rather than being dropped.
+    #[tokio::test]
+    async fn a_report_naming_a_call_with_no_row_lands_flat() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(
+            &mut app,
+            &repo,
+            dir.path(),
+            "run-orphan",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-orphan");
+        let key = derived_agent_key(&root, "run-orphan");
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, "run-orphan", &agent_id),
+        );
+        let state = app.shared();
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        activity
+            .send(crate::harness::ActivityReport {
+                activity: crate::harness::AgentActivity::Reasoning {
+                    summary: "counting the characters".into(),
+                },
+                parent_call_id: Some("toolu_done".into()),
+            })
+            .expect("the pump is listening");
+
+        let rows = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-orphan"].agents));
+            (!rows.is_empty()).then_some(rows)
+        })
+        .await
+        .expect("the row is minted rather than dropped");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].summary.as_deref(), Some("counting the characters"));
+        assert_eq!(
+            rows[0].parent_sequence, None,
+            "a call with no row of its own can never be a parent: {:?}",
+            rows[0]
+        );
+    }
+
     /// The death rites close what the turn boundary never saw. A session that
     /// dies over an open call leaves a row claiming to run, and no later event
     /// would ever contradict it — so the pump closes it, and closes it BEFORE
@@ -35468,6 +35644,10 @@ mod tests {
         assert!(
             closed.updated_sequence < ended,
             "the calls close before the session does: {closed:?} then {ended}"
+        );
+        assert!(
+            s.tabs[&key].call_sequences.is_empty(),
+            "and the pairing is cleared beside the tab going not live"
         );
     }
 

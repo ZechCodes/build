@@ -366,6 +366,36 @@ fn spawn_shell_tail_poller(
     })
 }
 
+/// Every report one recorded stream mints, in the order the reader minted them.
+///
+/// The fixtures are the one account of what a real session says, so the
+/// app-layer pump replays its reports through this rather than through a
+/// hand-written imitation of them.
+#[cfg(test)]
+pub(crate) fn rows_minted_by(file_name: &str) -> Vec<ActivityReport> {
+    let (sender, mut heard) = broadcast::channel(1024);
+    let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
+    let mut reader = reader_reporting_into(Arc::clone(&activity));
+    for line in crate::harness::stream_fixtures::fixture_lines(file_name) {
+        reader.read_line(&line);
+    }
+    activity.lock().unwrap().take();
+    let mut rows = Vec::new();
+    while let Ok(reported) = heard.try_recv() {
+        rows.push(reported);
+    }
+    rows
+}
+
+#[cfg(test)]
+fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
+    ProtocolReader::new(
+        Arc::new(Mutex::new(ProtocolState::new())),
+        activity,
+        SurfaceRevision::default(),
+    )
+}
+
 /// A live headless session: a child with piped stdio, one reader per stream, and
 /// everything the protocol has said so far.
 pub struct AdkSession {
@@ -1715,21 +1745,6 @@ mod tests {
         }
     }
 
-    fn rows_minted_by(file_name: &str) -> Vec<ActivityReport> {
-        let (sender, mut heard) = broadcast::channel(1024);
-        let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
-        let mut reader = reader_reporting_into(Arc::clone(&activity));
-        for line in fixture_lines(file_name) {
-            reader.read_line(&line);
-        }
-        activity.lock().unwrap().take();
-        let mut rows = Vec::new();
-        while let Ok(reported) = heard.try_recv() {
-            rows.push(reported);
-        }
-        rows
-    }
-
     fn kinds_of(rows: &[ActivityReport]) -> Vec<&'static str> {
         rows.iter().map(row_kind).collect()
     }
@@ -1814,14 +1829,6 @@ mod tests {
                 "4".to_string(),
             ]
         );
-    }
-
-    fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
-        ProtocolReader::new(
-            Arc::new(Mutex::new(ProtocolState::new())),
-            activity,
-            SurfaceRevision::default(),
-        )
     }
 
     fn reader_over_a_silent_session() -> ProtocolReader {

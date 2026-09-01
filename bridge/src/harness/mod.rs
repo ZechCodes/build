@@ -34,7 +34,7 @@ pub(crate) mod codex;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]
-mod stream_fixtures;
+pub(crate) mod stream_fixtures;
 pub mod surfaces;
 
 pub use session::{

@@ -5,6 +5,7 @@
 
 import { App } from "../app.js";
 import { watchChanges } from "./changeEvents.js";
+import { readCached } from "./localCache.js";
 
 const subscribers = new Set();
 let watcher = null;
@@ -63,8 +64,21 @@ const onVisibilityChange = () => {
   if (!document.hidden) tick();
 };
 
+/** The last snapshot the syncer persisted, painted while the bridge is still
+ *  being asked. Marked `cached: true` so the sync layer does not treat its own
+ *  echo as news; a live answer that gets there first wins outright. */
+async function seedFromCache() {
+  const deviceId = (App.session && App.session.deviceId) || App.selectedDeviceId;
+  if (!deviceId) return;
+  const record = await readCached({ deviceId, entityId: "", kind: "feed" });
+  if (!record || last) return;
+  last = { ...record.value, cached: true };
+  subscribers.forEach((fn) => fn(last));
+}
+
 export function startFeed(intervalMs = 2000) {
   stopFeed();
+  seedFromCache();
   tick();
   // The feed is the board, so `board.changed` is its event and this interval is
   // the safety poll behind it. It owns its own visible-again catch-up above —

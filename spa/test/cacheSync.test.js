@@ -187,3 +187,13 @@ describe("one syncer per browser", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("the boot echo", () => {
+  it("ignores the snapshot the cache itself painted", async () => {
+    sync.startCacheSync();
+    feedSubscriber({ ...snapshot([branchItem()]), cached: true });
+    await flush();
+    expect(App.call).not.toHaveBeenCalled();
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "", kind: "feed" })).toBeUndefined();
+  });
+});

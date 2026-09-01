@@ -64,7 +64,8 @@ async function refreshEntity(entityId) {
 
 async function onSnapshot(snapshot) {
   const deviceId = deviceIdNow();
-  if (!deviceId || !holdingLock) return;
+  // The feed's boot paint is this cache talking; only live answers are news.
+  if (!deviceId || !holdingLock || snapshot.cached) return;
   await writeCached({ deviceId, entityId: "", kind: "feed" }, snapshot);
 
   const active = new Set(cacheableEntityIds({ items: snapshot.items }));

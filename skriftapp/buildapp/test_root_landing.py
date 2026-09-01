@@ -260,6 +260,8 @@ AGENTS_LABEL_MOBILE_RULE = ".agents-label{grid-column:1/-1;padding-bottom:0}"
 AGENTS_GRID_INTERMEDIATE_RULE = (
     ".agents-grid{grid-template-columns:auto repeat(4,minmax(0,1fr))}"
 )
+HERO_FONT_SIZE_DESKTOP_TOKEN = "--font-size-hero:76px"
+HERO_FONT_SIZE_INTERMEDIATE_TOKEN = "--font-size-hero:clamp(44px,6vw,76px)"
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
 AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
 
@@ -347,6 +349,7 @@ WAITLIST_WRAPPER_RULE = (
     "max-width:var(--waitlist-max-width);width:fit-content}"
 )
 WAITLIST_WRAPPER_MOBILE_RULE = ".waitlist{margin-inline:0;width:auto}"
+WAITLIST_SUBMITTED_RULE = ".waitlist:has(.waitlist-form[hidden]){max-width:none}"
 WAITLIST_INSTANCE_COUNT = 2
 
 NAV_ELEMENT_PATTERN = r"<nav\b.*?</nav>"
@@ -746,6 +749,17 @@ def test_agents_strip_label_column_shrinks_between_the_breakpoints():
     css = _landing_text(STYLESHEET_NAME)
     assert AGENTS_GRID_INTERMEDIATE_RULE in css
     assert AGENTS_GRID_INTERMEDIATE_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_hero_title_is_pixel_exact_on_desktop_and_scales_only_between_the_breakpoints():
+    css = _landing_text(STYLESHEET_NAME)
+    assert HERO_FONT_SIZE_DESKTOP_TOKEN in _rules_outside_media_blocks(css)
+    assert HERO_FONT_SIZE_INTERMEDIATE_TOKEN in css
+    assert HERO_FONT_SIZE_INTERMEDIATE_TOKEN not in _rules_outside_media_blocks(css)
+
+
+def test_waitlist_success_line_is_not_capped_at_the_form_width():
+    assert WAITLIST_SUBMITTED_RULE in _landing_text(STYLESHEET_NAME)
 
 
 def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():

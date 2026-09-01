@@ -36,6 +36,7 @@ import {
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
+import { createSingleFlight } from "./splitButton.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
 
@@ -48,7 +49,10 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-const busy = new Set(); // row keys with a mutation in flight
+// A reroute at a time: the router's answer decides whether the row leaves at
+// all, so nothing is painted for it and a second press would only race the
+// first over one capture.
+const rerouteFlight = createSingleFlight();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
 
@@ -333,8 +337,7 @@ function branchFieldValue(control) {
 /** With a destination this routes by hand; with none it re-fires the router,
  *  which is what the retry on a failed route is. */
 async function rerouteCapture(captureId, destination) {
-  if (busy.has(captureId)) return;
-  busy.add(captureId);
+  if (!rerouteFlight.begin()) return;
   captureErrors.delete(captureId);
   try {
     const rerouted = await App.call("capture.reroute", rerouteParams(captureId, destination));
@@ -346,7 +349,7 @@ async function rerouteCapture(captureId, destination) {
   } catch (error) {
     captureErrors.set(captureId, messageOf(error));
   } finally {
-    busy.delete(captureId);
+    rerouteFlight.end();
     draw();
   }
 }
@@ -368,19 +371,20 @@ function openEntry(entry) {
 }
 
 async function toggleMute(entry) {
-  if (!entry || busy.has(entry.key)) return;
-  busy.add(entry.key);
+  if (!entry || isPending(INBOX_SCOPE, entry.key)) return;
+  const muted = !entry.muted;
   openMenuKey = null;
   errors.delete(entry.key);
-  try {
-    await App.call("entity.mute", { entity_id: entry.entityId, muted: !entry.muted });
-    await refreshFeed();
-  } catch (error) {
-    errors.set(entry.key, messageOf(error));
-  } finally {
-    busy.delete(entry.key);
-    draw();
-  }
+  await runOptimistic({
+    scope: INBOX_SCOPE,
+    records: [patchRecord(entry.key, { muted })],
+    call: async () => {
+      await App.call("entity.mute", { entity_id: entry.entityId, muted });
+      await refreshFeed();
+    },
+    failureSummary: `Couldn't mute ${entry.branch || "this item"}`,
+    onRevert: (error) => showRowError(entry.key, error),
+  });
 }
 
 /** Clear the row off the inbox until something new needs the user. Nothing is

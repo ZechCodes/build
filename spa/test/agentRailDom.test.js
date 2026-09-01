@@ -499,7 +499,7 @@ describe("the painter behind a bubble", () => {
 });
 
 describe("taking an agent back off the branch", () => {
-  const twoAgents = () => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  const twoAgents = (over = {}) => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })], ...over });
   const removeButton = () => panel().querySelector(".rail-remove");
   const confirmModal = () => document.getElementById("confirm-scrim");
 
@@ -508,6 +508,24 @@ describe("taking an agent back off the branch", () => {
     await mount();
     bubbles()[1].click();
     await flush();
+  };
+
+  const holdRemove = () => {
+    const answering = App.call;
+    let refuse = null;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.remove") return new Promise((_, reject) => { refuse = reject; });
+      return answering(method, params);
+    });
+    return { refuse: (error) => refuse(error) };
+  };
+  const railBodyNow = () => railHost().querySelector("#rail-body");
+  const confirmEveryModal = () => {
+    document.querySelectorAll(".modal-scrim").forEach((scrim) => {
+      const ok = scrim.querySelector("[data-confirm-ok]");
+      if (ok) ok.click();
+    });
   };
 
   it("offers removal on every agent, the first and the only one included", async () => {
@@ -610,6 +628,97 @@ describe("taking an agent back off the branch", () => {
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+  });
+
+  it("takes the agent off the moment the answer is yes, before the daemon replies", async () => {
+    payload = twoAgents({
+      run: {
+        run_id: "run-3",
+        thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
+      },
+    });
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
+    holdRemove();
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("drops to the ghost when the agent it took off was the only one, before the daemon replies", async () => {
+    await mount();
+    holdRemove();
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(payload.agents.map((each) => each.id)).toEqual(["ag-1"]);
+    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect the agent when a read lands mid-flight still listing it", async () => {
+    await openSecondAgent();
+    holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    const readsBefore = callsTo("branch.get").length;
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(callsTo("branch.get").length).toBeGreaterThan(readsBefore);
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("puts the agent and its conversation back when the daemon refuses, and says so once", async () => {
+    await openSecondAgent();
+    const held = holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+
+    held.refuse(new Error("agent is mid-spawn"));
+    await flush();
+
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(removeButton()).toBeTruthy();
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "agent is mid-spawn");
+  });
+
+  it("refuses a second removal of the same agent while the first is in flight", async () => {
+    await openSecondAgent();
+    holdRemove();
+
+    removeButton().click();
+    removeButton().click();
+    await flush();
+    confirmEveryModal();
+    await flush();
+
+    expect(callsTo("agent.remove")).toHaveLength(1);
   });
 });
 

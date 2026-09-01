@@ -40,10 +40,13 @@ import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agent
 import { confirmAction } from "./confirm.js";
 import {
   insertRecord,
+  isPending,
   isProvisionalKey,
   projectOptimistic,
+  projectPending,
   provisionalKey,
   reconcileOptimistic,
+  removeRecord,
   runOptimistic,
   subscribeOptimistic,
 } from "./optimistic.js";
@@ -1215,18 +1218,23 @@ export function mountAgentRail(host, context) {
     const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
     if (!(await confirmAction(removeAgentConfirm(agent)))) return;
-    try {
-      await App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id });
-    } catch (error) {
-      notifyError("Could not remove the agent", error.message);
-      return;
-    }
-    // Let the choice go rather than naming the agent that just stopped
-    // existing: the next read opens the rail on whichever agent is left, and
-    // tells the surfaces beside it the same.
-    chooseAgent(null);
+    if (isPending(pendingAgentsScope(), agent.id)) return;
+    const records = [removeRecord(agent.id)];
+    const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
+    chooseAgent(selectAgentId(remaining, null));
     resetThreadCache();
     threadAgentId = null;
+    await runOptimistic({
+      scope: pendingAgentsScope(),
+      records,
+      call: () => App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
+      failureSummary: "Could not remove the agent",
+      onRevert: () => {
+        chooseAgent(agent.id);
+        resetThreadCache();
+        threadAgentId = null;
+      },
+    });
     await refreshFeed();
     await refresh();
   };

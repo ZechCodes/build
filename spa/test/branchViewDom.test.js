@@ -59,6 +59,23 @@ afterEach(() => {
 });
 
 describe("the branch surface", () => {
+  // The reviewer's complaint: switching branches showed a bare loading frame
+  // for the length of a round trip. The feed row stands the surface up first.
+  it("stands the surface up from the feed row before the first read answers", async () => {
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    App.call = vi.fn(async (method) => {
+      if (method === "board.list") return { items: [finishableRow({ run_id: "run-1" })] };
+      if (method === "project.list") return { projects: [] };
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+    await refreshFeed();
+    renderBranch(); // never resolves here — the first read is still in flight
+    await flush();
+    expect(document.querySelector("#tabbody .gitpane")).toBeTruthy();
+    stopFeed();
+  });
+
   it("polls the row once mounted", async () => {
     App.call = vi.fn(async () => row);
     await renderBranch();

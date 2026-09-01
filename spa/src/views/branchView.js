@@ -39,7 +39,7 @@ import { entityIdOf } from "../core/entityId.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
 import { notifyError } from "../core/notify.js";
-import { refreshFeed } from "../core/taskFeed.js";
+import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
 import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../core/branchFinish.js";
 import "../styles/shell.css";
@@ -337,8 +337,11 @@ export async function renderBranch() {
       return;
     }
     if (disposed) return;
+    const runAppeared = Boolean(payload.run) !== Boolean(row && row.run);
     row = payload;
-    if (force) mountedKey = null;
+    // A remount when the run's knowledge appears (the feed-seeded row carries
+    // ids but not the run body), so the commit box gets its agent options.
+    if (force || runAppeared) mountedKey = null;
     mountBody();
     paintFinish();
   };
@@ -358,6 +361,26 @@ export async function renderBranch() {
     rail.dispose();
     consolePanel.dispose();
   };
+  // The feed already carries this branch's row — ids, scope, agents — and the
+  // cached snapshot replays synchronously at subscribe. Standing the tabs and
+  // panes up from it means switching branches shows the full surface (which
+  // then fills from its own caches) instead of a bare loading frame for the
+  // length of a round trip; the first live read reconciles.
+  if (!row) {
+    let seeded = null;
+    const unsubscribe = subscribeFeed((feed) => {
+      seeded =
+        (feed.items || []).find(
+          (item) => item.kind === "branch" && item.project_id === projectId && item.branch === branch,
+        ) || null;
+    });
+    unsubscribe();
+    if (seeded) {
+      row = seeded;
+      mountBody();
+      paintFinish();
+    }
+  }
   await refresh();
   // The first read can outlive the view: a navigation mid-flight has already
   // torn this view down (render() ran viewDispose), and the poll slot belongs

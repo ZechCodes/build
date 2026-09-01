@@ -1163,6 +1163,22 @@ export function mountAgentRail(host, context) {
   // ---- lifecycle ------------------------------------------------------------
 
   paint();
+  // The feed already names this work item — agents included — and the cached
+  // snapshot replays synchronously at subscribe. Standing the strip and panel
+  // up from it means a branch switch shows the conversation surface, with the
+  // seeded history, before the first live read answers; the read reconciles.
+  // Chat rendering last, after a full round trip, was the reviewer's headline
+  // complaint — this is what removes the round trip from the first paint.
+  const feedSeedEntity = feedRow ? railEntity(feedRow, context.kind) : null;
+  if (feedSeedEntity && feedSeedEntity.agents.length && !entity.agents.length) {
+    entity = feedSeedEntity;
+    // The same selection the live path makes, so the seed and the read agree
+    // on whose conversation the panel is showing. Only a row that names its
+    // agents seeds: an agentless row has no selection to make, and making one
+    // anyway would wipe the remembered choice the live read is about to honor.
+    chooseAgent(selectAgentId(entity.agents, selectedId));
+    paint();
+  }
   refresh();
   // The harnesses and their models, fetched once per session (app.js caches it).
   // The new-agent view leads with the account's default, which is this answer's

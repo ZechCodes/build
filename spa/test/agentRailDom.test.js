@@ -1899,3 +1899,106 @@ describe("creating an agent, before the daemon has answered for it", () => {
     expect(posts.every((call) => call.params.agent_id === "ag-2")).toBe(true);
   });
 });
+
+describe("sending to an agent that is already there", () => {
+  const composer = () => railHost().querySelector("#railinput");
+  const timeline = () => railHost().querySelector(".thread-items");
+  const copiesOf = (body) => (timeline() ? timeline().textContent.split(body).length - 1 : 0);
+
+  const holdThreadPost = () => {
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      await held;
+      return { posted_sequence: 7 };
+    });
+    return release;
+  };
+
+  const refuseThreadPost = (message) => {
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      throw new Error(message);
+    });
+  };
+
+  const press = async (body) => {
+    composer().value = body;
+    railHost().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("shows the message and clears the box before thread.post answers", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const release = holdThreadPost();
+
+    await press("look at the login flow");
+
+    expect(timeline().textContent).toContain("look at the login flow");
+    expect(composer().value).toBe("");
+    expect(railHost().querySelector("#railsend").disabled).toBe(false);
+    expect(callsTo("thread.post")).toHaveLength(1);
+
+    release();
+    await flush();
+  });
+
+  it("keeps the sent message standing through a read that does not carry it yet", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const release = holdThreadPost();
+    await press("look at the login flow");
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+
+    release();
+    await flush();
+  });
+
+  it("rekeys the sent message onto the sequence thread.post names, without a second copy", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    await press("look at the login flow");
+    expect(copiesOf("look at the login flow")).toBe(1);
+
+    payload = branchRow({
+      agents: [agent({ state: "live" })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          items: [{ type: "message", data: { sequence: 7, role: "user", body: "look at the login flow" } }],
+          sessions: [],
+        },
+      },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+  });
+
+  it("puts the words back in the box and says why when thread.post is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    refuseThreadPost("the conversation is gone");
+
+    await press("look at the login flow");
+
+    expect(copiesOf("look at the login flow")).toBe(0);
+    expect(composer().value).toBe("look at the login flow");
+    expect(document.activeElement).toBe(composer());
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
+  });
+});

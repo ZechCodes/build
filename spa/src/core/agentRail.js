@@ -1008,6 +1008,27 @@ export function mountAgentRail(host, context) {
     adoptPanelBody();
   };
 
+  const provisionalMessageEntry = (messageKey, message) => ({
+    type: "message",
+    data: {
+      role: "user",
+      sequence: messageKey,
+      body: message.body || "",
+      attachments: message.attachments || [],
+      created_at: new Date().toISOString(),
+    },
+  });
+
+  /** Name the message the daemon just appended by the sequence it gave it, so
+   *  the read that carries it retires the record instead of painting it twice.
+   *  A daemon too old to name one drops the record: the refresh behind it is
+   *  what puts the message on the timeline. */
+  const rekeyPostedMessage = (handle, messageKey, provisional, posted) => {
+    const sequence = (posted && posted.posted_sequence) ?? null;
+    if (sequence === null) handle.drop(messageKey);
+    else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
+  };
+
   const createAgentWithMessage = async (message) => {
     const provisionalAgentId = provisionalKey("agent");
     const provisionalMessageKey = provisionalKey("message");
@@ -1026,16 +1047,7 @@ export function mountAgentRail(host, context) {
       working: false,
       has_terminal: false,
     };
-    const provisionalMessage = {
-      type: "message",
-      data: {
-        role: "user",
-        sequence: provisionalMessageKey,
-        body: message.body || "",
-        attachments: message.attachments || [],
-        created_at: new Date().toISOString(),
-      },
-    };
+    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, message);
     writeDraft({ body: "", attachments: [] });
     addingAgent = false;
     chooseAgent(provisionalAgentId);
@@ -1060,14 +1072,7 @@ export function mountAgentRail(host, context) {
         ...message,
         ...MUTATION_THREAD_PAGE,
       });
-      const postedSequence = (posted && posted.posted_sequence) ?? null;
-      if (postedSequence === null) handle.drop(provisionalMessageKey);
-      else {
-        handle.rekey(provisionalMessageKey, String(postedSequence), {
-          ...provisionalMessage,
-          data: { ...provisionalMessage.data, sequence: postedSequence },
-        });
-      }
+      rekeyPostedMessage(handle, provisionalMessageKey, provisionalMessage, posted);
       await App.call("agent.start", { id: entityId, ...addressed });
     };
 
@@ -1100,27 +1105,49 @@ export function mountAgentRail(host, context) {
   };
 
   const deliverMessage = async (message) => {
-    const entityId = await ensureEntity();
-    const agent = agentInFocus();
-    await App.call("thread.post", {
-      entity_id: entityId,
-      ...(agent ? { agent_id: agent.id } : {}),
-      ...message,
-      ...MUTATION_THREAD_PAGE,
-    });
-    if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
-      const started = await App.call("agent.start", {
-        id: entityId,
+    const messageKey = provisionalKey("message");
+    const provisionalMessage = provisionalMessageEntry(messageKey, message);
+    const addressedAgentId = selectedId;
+
+    const call = async (handle) => {
+      const entityId = await ensureEntity();
+      const agent = agentInFocus();
+      const posted = await App.call("thread.post", {
+        entity_id: entityId,
         ...(agent ? { agent_id: agent.id } : {}),
+        ...message,
+        ...MUTATION_THREAD_PAGE,
       });
-      if (started && started.agent_id) {
-        chooseAgent(started.agent_id);
-        resetThreadCache();
-        threadAgentId = selectedId;
+      rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+      if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
+        const started = await App.call("agent.start", {
+          id: entityId,
+          ...(agent ? { agent_id: agent.id } : {}),
+        });
+        if (started && started.agent_id) {
+          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(started.agent_id));
+          chooseAgent(started.agent_id);
+          resetThreadCache();
+          threadAgentId = selectedId;
+        }
       }
-    }
-    await refreshFeed();
-    await refresh();
+    };
+
+    runOptimistic({
+      scope: pendingThreadScope(addressedAgentId),
+      records: [insertRecord(messageKey, provisionalMessage)],
+      call,
+      failureSummary: "Message failed",
+      onRevert: () => {
+        writeDraft({ body: message.body || "", attachments: message.attachments || [] });
+        repaintComposerFromDraft();
+      },
+    }).then(async () => {
+      await refreshFeed();
+      await refresh();
+    });
+    writeDraft({ body: "", attachments: [] });
+    paintChat();
   };
 
   const post = async (message) => {

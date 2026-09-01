@@ -1379,3 +1379,47 @@ describe("the conversation's local cache", () => {
     expect(record.value.deliveredSequence).toBe(2);
   });
 });
+
+describe("revisiting a conversation", () => {
+  const feedItems = [{ kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3" }];
+  const historyThread = () => ({
+    items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
+    has_more: false,
+    thread_total: 1,
+    thread_last_sequence: 1,
+    sessions: [],
+  });
+
+  // The deployed bug: the rail remembers which agent was open across remounts,
+  // but the cache's owner marker started blank — so the first threadFor of a
+  // revisit wiped the window the seed had just opened, after its delta cursor
+  // was already sent. The empty delta painted "No conversation yet" until the
+  // 60s safety poll.
+  it("paints the saved history at once, and an empty delta does not blank it", async () => {
+    feedSnapshot = { items: feedItems, projects: [] };
+    payload = branchRow({ run: { run_id: "run-3", thread: historyThread() } });
+    await mount();
+    await flush(); // the first visit auto-selects ag-1 and persists its window
+    rail.dispose();
+    rail = null;
+
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") {
+        // The revisit's delta cursor: nothing new since the saved window.
+        if (params.thread_after_sequence != null)
+          return branchRow({ run: { run_id: "run-3", thread: { items: [], thread_total: 1, thread_last_sequence: 1, sessions: [] } } });
+        return branchRow({ run: { run_id: "run-3", thread: historyThread() } });
+      }
+      return {};
+    });
+    await mount();
+    await flush();
+    const delta = callsTo("branch.get").find((call) => call.params.thread_after_sequence != null);
+    expect(delta).toBeTruthy();
+    const body = railHost().querySelector("#rail-body");
+    expect(body.textContent).toContain("the history");
+    expect(body.textContent).not.toContain("No conversation yet");
+  });
+});

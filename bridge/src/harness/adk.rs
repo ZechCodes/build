@@ -27,12 +27,14 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
 
 use crate::harness::claude::ClaudeHarness;
+use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
@@ -326,6 +328,44 @@ const SURFACE_TASK_SUBTYPES: [&str; 4] = [
 /// closed would leave a dead agent's tab reading as live.
 type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<AgentActivity>>>>;
 
+const SHELL_TAIL_INTERVAL: Duration = Duration::from_secs(1);
+
+fn running_shell_outputs(state: &Mutex<ProtocolState>) -> Vec<(String, PathBuf)> {
+    state.lock().unwrap().surfaces.running_shell_outputs()
+}
+
+fn spawn_shell_tail_poller(
+    state: Arc<Mutex<ProtocolState>>,
+    activity: ActivitySlot,
+    revision: SurfaceRevision,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(SHELL_TAIL_INTERVAL);
+        if activity.lock().unwrap().is_none() {
+            return;
+        }
+        let running = running_shell_outputs(&state);
+        if running.is_empty() {
+            return;
+        }
+        for (shell_id, output_path) in running {
+            match ShellTail::read(&output_path) {
+                Ok(tailed) => {
+                    let moved = state
+                        .lock()
+                        .unwrap()
+                        .surfaces
+                        .read_shell_tail(&shell_id, tailed);
+                    if moved {
+                        revision.bump();
+                    }
+                }
+                Err(why) => eprintln!("shell tail {shell_id}: {why}"),
+            }
+        }
+    })
+}
+
 /// A live headless session: a child with piped stdio, one reader per stream, and
 /// everything the protocol has said so far.
 pub struct AdkSession {
@@ -382,12 +422,8 @@ impl AdkSession {
         let revision = SurfaceRevision::default();
 
         if let Some(stdout) = child.stdout.take() {
-            let mut reader = ProtocolReader {
-                state: Arc::clone(&state),
-                activity: Arc::clone(&activity),
-                calls: HashMap::new(),
-                revision: revision.clone(),
-            };
+            let mut reader =
+                ProtocolReader::new(Arc::clone(&state), Arc::clone(&activity), revision.clone());
             let slot = Arc::clone(&activity);
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
@@ -697,9 +733,24 @@ struct ProtocolReader {
     activity: ActivitySlot,
     calls: HashMap<String, RecordedCall>,
     revision: SurfaceRevision,
+    shell_poller: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl ProtocolReader {
+    fn new(
+        state: Arc<Mutex<ProtocolState>>,
+        activity: ActivitySlot,
+        revision: SurfaceRevision,
+    ) -> ProtocolReader {
+        ProtocolReader {
+            state,
+            activity,
+            calls: HashMap::new(),
+            revision,
+            shell_poller: Arc::new(Mutex::new(None)),
+        }
+    }
+
     fn read_line(&mut self, line: &str) {
         self.state.lock().unwrap().last_line = Instant::now();
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -744,13 +795,38 @@ impl ProtocolReader {
             .unwrap()
             .surfaces
             .read_task_event(subtype, event);
-        self.bump_revision_when(moved);
+        self.note_surfaces_moved_by_a_shell_capable_read(moved);
     }
 
     fn bump_revision_when(&self, moved: bool) {
         if moved {
             self.revision.bump();
         }
+    }
+
+    fn note_surfaces_moved_by_a_shell_capable_read(&self, moved: bool) {
+        self.bump_revision_when(moved);
+        if moved {
+            self.ensure_shell_tail_poller();
+        }
+    }
+
+    fn ensure_shell_tail_poller(&self) {
+        if running_shell_outputs(&self.state).is_empty() {
+            return;
+        }
+        let mut poller = self.shell_poller.lock().unwrap();
+        if poller
+            .as_ref()
+            .is_some_and(|tailing| !tailing.is_finished())
+        {
+            return;
+        }
+        *poller = Some(spawn_shell_tail_poller(
+            Arc::clone(&self.state),
+            Arc::clone(&self.activity),
+            self.revision.clone(),
+        ));
     }
 
     /// `init` is when the child can take a turn, and it carries the session id a
@@ -1054,7 +1130,7 @@ impl ProtocolReader {
                     .unwrap()
                     .surfaces
                     .read_tool_answer(&tool, &call_id, event);
-                self.bump_revision_when(moved);
+                self.note_surfaces_moved_by_a_shell_capable_read(moved);
             }
             None => {}
         }
@@ -1592,8 +1668,12 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+    use crate::harness::shell_tail::SHELL_TAIL_LINES;
     use crate::harness::stream_fixtures::{
-        fixture_lines, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
+        fixture_line, fixture_lines, hundred_numbered_lines, shell_output_file_holding,
+        SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_ID,
+        SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE, SHELL_STARTED_LINE, SHELL_TASK_ID,
+        SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
     };
     use crate::harness::surfaces::SurfaceWorkflow;
 
@@ -1702,32 +1782,48 @@ mod tests {
     }
 
     fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
-        ProtocolReader {
-            state: Arc::new(Mutex::new(ProtocolState::new())),
+        ProtocolReader::new(
+            Arc::new(Mutex::new(ProtocolState::new())),
             activity,
-            calls: HashMap::new(),
-            revision: SurfaceRevision::default(),
-        }
+            SurfaceRevision::default(),
+        )
     }
 
     fn reader_over_a_silent_session() -> ProtocolReader {
         reader_reporting_into(Arc::new(Mutex::new(None)))
     }
 
+    fn reader_with_a_live_activity_slot() -> ProtocolReader {
+        let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
+        reader_reporting_into(Arc::new(Mutex::new(Some(sender))))
+    }
+
+    fn read_lines_into(reader: &mut ProtocolReader, lines: &[String]) {
+        for line in lines {
+            reader.read_line(line);
+        }
+    }
+
+    fn fixture_lines_numbered(file_name: &str, line_numbers: &[usize]) -> Vec<String> {
+        let lines = fixture_lines(file_name);
+        line_numbers
+            .iter()
+            .map(|line_number| lines[line_number - 1].clone())
+            .collect()
+    }
+
     fn reader_over_every_line_of(file_name: &str) -> ProtocolReader {
         let mut reader = reader_over_a_silent_session();
-        for line in fixture_lines(file_name) {
-            reader.read_line(&line);
-        }
+        read_lines_into(&mut reader, &fixture_lines(file_name));
         reader
     }
 
     fn reader_over_the_workflow_lines(line_numbers: &[usize]) -> ProtocolReader {
-        let lines = fixture_lines(WORKFLOW_FIXTURE);
         let mut reader = reader_over_a_silent_session();
-        for line_number in line_numbers {
-            reader.read_line(&lines[line_number - 1]);
-        }
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(WORKFLOW_FIXTURE, line_numbers),
+        );
         reader
     }
 
@@ -1922,6 +2018,273 @@ mod tests {
 
         assert_eq!(after_one_pass, 0, "every call in the fixture was answered");
         assert_eq!(reader.calls.len(), after_one_pass);
+    }
+
+    fn a_background_shell_line_set(
+        task_id: &str,
+        call_id: &str,
+        output_path: &Path,
+    ) -> Vec<String> {
+        let mut call = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_CALL_LINE);
+        call["message"]["content"][0]["id"] = json!(call_id);
+        let mut started = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
+        started["task_id"] = json!(task_id);
+        started["tool_use_id"] = json!(call_id);
+        let mut answer = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE);
+        answer["message"]["content"][0]["tool_use_id"] = json!(call_id);
+        answer["message"]["content"][0]["content"] = json!(format!(
+            "Command running in background with ID: {task_id}. Output is being written to: {}. You will be notified when it completes.",
+            output_path.display()
+        ));
+        answer["tool_use_result"]["backgroundTaskId"] = json!(task_id);
+        [call, started, answer]
+            .iter()
+            .map(Value::to_string)
+            .collect()
+    }
+
+    fn reader_tailing(task_id: &str, output_path: &Path) -> ProtocolReader {
+        let mut reader = reader_with_a_live_activity_slot();
+        read_lines_into(
+            &mut reader,
+            &a_background_shell_line_set(task_id, SHELL_LAUNCH_CALL_ID, output_path),
+        );
+        reader
+    }
+
+    fn polling_thread_of(reader: &ProtocolReader) -> std::thread::ThreadId {
+        reader
+            .shell_poller
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("a shell tail poller is running")
+            .thread()
+            .id()
+    }
+
+    fn no_poller_is_running(reader: &ProtocolReader) -> bool {
+        reader.shell_poller.lock().unwrap().is_none()
+    }
+
+    fn the_poller_has_finished(reader: &ProtocolReader) -> bool {
+        reader
+            .shell_poller
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|polling| polling.is_finished())
+    }
+
+    fn still_running_shells(reader: &ProtocolReader) -> Vec<(String, PathBuf)> {
+        reader
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .running_shell_outputs()
+    }
+
+    fn tail_of_the_shell(reader: &ProtocolReader, shell_id: &str) -> Vec<String> {
+        surfaces_of(reader)
+            .into_iter()
+            .flat_map(|surfaces| surfaces.shells)
+            .find(|shell| shell.id == shell_id)
+            .map(|shell| shell.tail)
+            .unwrap_or_default()
+    }
+
+    fn within(limit: Duration, ready: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if ready() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ready()
+    }
+
+    #[test]
+    fn a_started_shell_that_has_named_no_output_file_starts_no_poller() {
+        let mut reader = reader_with_a_live_activity_slot();
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_STARTED_LINE]),
+        );
+
+        assert!(
+            still_running_shells(&reader).is_empty(),
+            "the start alone names no file to tail"
+        );
+        assert!(no_poller_is_running(&reader));
+    }
+
+    #[test]
+    fn the_answer_naming_the_output_file_starts_exactly_one_poller() {
+        let mut reader = reader_with_a_live_activity_slot();
+        let launched = fixture_lines_numbered(
+            SHELL_AND_CHECKLIST_FIXTURE,
+            &[
+                SHELL_LAUNCH_CALL_LINE,
+                SHELL_STARTED_LINE,
+                SHELL_LAUNCH_ANSWER_LINE,
+            ],
+        );
+
+        read_lines_into(&mut reader, &launched);
+        let started = polling_thread_of(&reader);
+
+        read_lines_into(&mut reader, &launched);
+        reader.ensure_shell_tail_poller();
+
+        assert_eq!(
+            polling_thread_of(&reader),
+            started,
+            "a running poller is never joined by a second"
+        );
+    }
+
+    #[test]
+    fn a_growing_output_file_reaches_the_snapshot_and_moves_the_revision() {
+        let (_directory, output_path) = shell_output_file_holding("");
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        let before_it_grew = revision_counter_of(&reader);
+
+        std::fs::write(&output_path, hundred_numbered_lines()).expect("the output file grows");
+
+        assert!(
+            within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, SHELL_TASK_ID).len() == SHELL_TAIL_LINES
+            }),
+            "the tail never reached the file: {:?}",
+            tail_of_the_shell(&reader, SHELL_TASK_ID)
+        );
+        let tailed = tail_of_the_shell(&reader, SHELL_TASK_ID);
+        assert_eq!(tailed.first().map(String::as_str), Some("line 81"));
+        assert_eq!(tailed.last().map(String::as_str), Some("line 100"));
+        assert!(
+            revision_counter_of(&reader) > before_it_grew,
+            "the poller said the snapshot moved"
+        );
+    }
+
+    #[test]
+    fn a_tail_that_has_not_changed_moves_the_revision_not_at_all() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        assert!(within(Duration::from_secs(3), || {
+            !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
+        }));
+        let once_the_tail_landed = revision_counter_of(&reader);
+        std::thread::sleep(Duration::from_millis(2_500));
+
+        assert_eq!(
+            revision_counter_of(&reader),
+            once_the_tail_landed,
+            "a file that did not change is not movement"
+        );
+    }
+
+    #[test]
+    fn the_notification_that_closes_the_shell_ends_the_poller() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let mut reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        assert!(!the_poller_has_finished(&reader));
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+
+        assert!(
+            within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            "the poller outlived the last running shell"
+        );
+    }
+
+    #[test]
+    fn a_poller_whose_session_ended_returns_though_the_shell_still_runs() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        reader.activity.lock().unwrap().take();
+
+        assert!(
+            within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            "the poller outlived the stdout reader that started it"
+        );
+        assert!(
+            !still_running_shells(&reader).is_empty(),
+            "the ledger still holds the running shell the poller walked away from"
+        );
+    }
+
+    #[test]
+    fn a_deleted_output_file_is_skipped_and_the_next_read_replaces_the_tail() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        assert!(within(Duration::from_secs(3), || {
+            !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
+        }));
+        let last_tail_before_the_delete = tail_of_the_shell(&reader, SHELL_TASK_ID);
+
+        std::fs::remove_file(&output_path).expect("the output file is removed");
+        std::thread::sleep(Duration::from_millis(2_200));
+
+        assert!(
+            !the_poller_has_finished(&reader),
+            "a file that went missing is not the end of the session"
+        );
+        assert_eq!(
+            tail_of_the_shell(&reader, SHELL_TASK_ID),
+            last_tail_before_the_delete,
+            "the last tail stands until a read succeeds"
+        );
+
+        std::fs::write(&output_path, "back again\n").expect("the output file returns");
+
+        assert!(
+            within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, SHELL_TASK_ID) == vec!["back again".to_string()]
+            }),
+            "the next successful read replaces the tail"
+        );
+    }
+
+    #[test]
+    fn a_second_shell_started_after_the_poller_left_starts_a_fresh_one() {
+        let (_first_directory, first_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let mut reader = reader_tailing(SHELL_TASK_ID, &first_path);
+        let the_poller_that_left = polling_thread_of(&reader);
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+        assert!(within(Duration::from_secs(2), || the_poller_has_finished(
+            &reader
+        )));
+
+        let (_second_directory, second_path) = shell_output_file_holding("second shell\n");
+        read_lines_into(
+            &mut reader,
+            &a_background_shell_line_set(
+                "s2ndshell",
+                "toolu_second_background_shell",
+                &second_path,
+            ),
+        );
+
+        assert_ne!(polling_thread_of(&reader), the_poller_that_left);
+        assert!(!the_poller_has_finished(&reader));
+        assert!(
+            within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, "s2ndshell") == vec!["second shell".to_string()]
+            }),
+            "the fresh poller tails the shell that started it"
+        );
     }
 
     fn open(spec: &HarnessSpec) -> AdkSession {

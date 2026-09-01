@@ -1,6 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+use tempfile::TempDir;
 
 pub(crate) const WORKFLOW_FIXTURE: &str = "workflow.jsonl";
 pub(crate) const SUBAGENT_FIXTURE: &str = "subagent.jsonl";
@@ -39,4 +40,26 @@ pub(crate) fn fixture_line(file_name: &str, line_number: usize) -> Value {
         .get(line_number - 1)
         .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"))
         .clone()
+}
+
+pub(crate) const SHELL_TASK_ID: &str = "bn93ge6bt";
+pub(crate) const SHELL_LAUNCH_CALL_ID: &str = "toolu_018xEixjjwkZczgWKGqQPat6";
+pub(crate) const SHELL_LAUNCH_CALL_LINE: usize = 40;
+pub(crate) const SHELL_STARTED_LINE: usize = 42;
+pub(crate) const SHELL_LAUNCH_ANSWER_LINE: usize = 43;
+pub(crate) const SHELL_UPDATED_LINE: usize = 83;
+pub(crate) const SHELL_NOTIFICATION_LINE: usize = 84;
+pub(crate) const SHELL_OUTPUT_PATH: &str = "/private/tmp/claude-501/-private-tmp-claude-501--Users-zech--superconductor-worktrees-Build-sc-trapped-dewar-4eba-61c19380-be59-489a-9244-b8f732217cc1-scratchpad-probe/fb1738ea-687c-4b18-b494-944dc64dda8c/tasks/bn93ge6bt.output";
+
+pub(crate) fn shell_output_file_holding(text: &str) -> (TempDir, PathBuf) {
+    let directory = tempfile::tempdir().expect("a temp directory");
+    let path = directory.path().join("shell.output");
+    std::fs::write(&path, text).expect("the output file writes");
+    (directory, path)
+}
+
+pub(crate) fn hundred_numbered_lines() -> String {
+    (1..=100)
+        .map(|number| format!("line {number}\n"))
+        .collect::<String>()
 }

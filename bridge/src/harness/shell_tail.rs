@@ -93,23 +93,11 @@ fn exit_code_marked_by(line: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn file_holding(text: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-        let directory = tempfile::tempdir().expect("a temp directory");
-        let path = directory.path().join("shell.output");
-        std::fs::write(&path, text).expect("the output file writes");
-        (directory, path)
-    }
-
-    fn hundred_numbered_lines() -> String {
-        (1..=100)
-            .map(|number| format!("line {number}\n"))
-            .collect::<String>()
-    }
+    use crate::harness::stream_fixtures::{hundred_numbered_lines, shell_output_file_holding};
 
     #[test]
     fn a_long_file_comes_back_as_its_last_twenty_lines_in_file_order() {
-        let (_directory, path) = file_holding(&hundred_numbered_lines());
+        let (_directory, path) = shell_output_file_holding(&hundred_numbered_lines());
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -129,7 +117,7 @@ mod tests {
     fn a_file_far_past_one_seek_chunk_comes_back_as_its_last_twenty_lines_in_file_order() {
         let written = lines_far_wider_than_one_seek_chunk();
         assert!(written.len() as u64 > SEEK_BACK_CHUNK_BYTES * 4);
-        let (_directory, path) = file_holding(&written);
+        let (_directory, path) = shell_output_file_holding(&written);
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -143,7 +131,7 @@ mod tests {
 
     #[test]
     fn a_chunk_boundary_landing_on_a_line_start_loses_no_line() {
-        let (_directory, path) = file_holding(&"abcdefg\n".repeat(2048));
+        let (_directory, path) = shell_output_file_holding(&"abcdefg\n".repeat(2048));
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -157,7 +145,7 @@ mod tests {
 
     #[test]
     fn the_marker_ending_a_file_far_past_one_seek_chunk_is_the_exit_code() {
-        let (_directory, path) = file_holding(&format!(
+        let (_directory, path) = shell_output_file_holding(&format!(
             "{}[exited with code 7]\n",
             lines_far_wider_than_one_seek_chunk()
         ));
@@ -174,7 +162,7 @@ mod tests {
 
     #[test]
     fn a_file_shorter_than_the_cap_comes_back_whole() {
-        let (_directory, path) = file_holding("tick 1\ntick 2\ntick 3\n");
+        let (_directory, path) = shell_output_file_holding("tick 1\ntick 2\ntick 3\n");
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -183,7 +171,7 @@ mod tests {
 
     #[test]
     fn an_empty_file_reads_as_no_lines_and_no_exit_code() {
-        let (_directory, path) = file_holding("");
+        let (_directory, path) = shell_output_file_holding("");
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -192,7 +180,8 @@ mod tests {
 
     #[test]
     fn the_marker_at_the_end_is_the_exit_code() {
-        let (_directory, path) = file_holding("tick 5\nfinished\n\n[exited with code 3]\n");
+        let (_directory, path) =
+            shell_output_file_holding("tick 5\nfinished\n\n[exited with code 3]\n");
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -205,7 +194,7 @@ mod tests {
 
     #[test]
     fn a_file_that_is_still_ticking_reports_no_exit_code() {
-        let (_directory, path) = file_holding("tick 4\ntick 5\n");
+        let (_directory, path) = shell_output_file_holding("tick 4\ntick 5\n");
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -214,7 +203,8 @@ mod tests {
 
     #[test]
     fn a_marker_that_is_not_the_last_line_is_not_this_shells_exit() {
-        let (_directory, path) = file_holding("[exited with code 3]\ntick 6\ntick 7\n");
+        let (_directory, path) =
+            shell_output_file_holding("[exited with code 3]\ntick 6\ntick 7\n");
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -224,7 +214,7 @@ mod tests {
     #[test]
     fn one_line_longer_than_the_whole_byte_cap_still_comes_back() {
         let unbroken = "x".repeat(MOST_BYTES_READ_WHILE_SEEKING_BACK * 2);
-        let (_directory, path) = file_holding(&unbroken);
+        let (_directory, path) = shell_output_file_holding(&unbroken);
 
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
@@ -233,7 +223,7 @@ mod tests {
 
     #[test]
     fn a_line_far_past_the_per_line_cap_comes_back_clipped() {
-        let (_directory, path) = file_holding(&format!(
+        let (_directory, path) = shell_output_file_holding(&format!(
             "tick 1\n{}\n",
             "y".repeat(MOST_CHARS_IN_A_TAIL_LINE * 4)
         ));
@@ -248,7 +238,7 @@ mod tests {
 
     #[test]
     fn a_marker_on_a_line_far_past_the_per_line_cap_is_still_the_exit_code() {
-        let (_directory, path) = file_holding(&format!(
+        let (_directory, path) = shell_output_file_holding(&format!(
             "{}[exited with code 4]\n",
             "z".repeat(MOST_CHARS_IN_A_TAIL_LINE * 2)
         ));

@@ -88,7 +88,7 @@ async function main() {
   // Standard flow: author a plan → comment/revise its stage docs → approve →
   // create a run (materializes the plan, auto-runs stage 1 to the gate) →
   // walk the per-stage gate → diff → merge.
-  const plan = await call("issue.create", { goal: "Add a greeting banner" });
+  const plan = await call("issue.create", { goal: "Add a greeting banner", provider: "claude" });
   check("issue.create reaches plan_review", plan.state === "plan_review", `state=${plan.state}`);
 
   const board = await call("issue.stages", { issue_id: plan.issue_id });
@@ -188,7 +188,7 @@ async function main() {
 
   // Implement All: approve every stage and let the Issue scheduler run the
   // ordered sequence to review without any run-scoped browser RPC.
-  const runAllPlan = await call("issue.create", { goal: "Run-all banner polish" });
+  const runAllPlan = await call("issue.create", { goal: "Run-all banner polish", provider: "claude" });
   await call("issue.approve", { issue_id: runAllPlan.issue_id });
   const runAllBoard = await call("issue.stages", { issue_id: runAllPlan.issue_id });
   for (const s of runAllBoard.stages) {
@@ -247,13 +247,13 @@ async function main() {
 
   // Parallel Issues remain independent. `b` is left at the stage gate — its
   // implementation worktree and stage-plan docs feed the fs/agent checks below.
-  const aPlan = await call("issue.create", { goal: "Parallel plan A" });
+  const aPlan = await call("issue.create", { goal: "Parallel plan A", provider: "claude" });
   await call("issue.approve", { issue_id: aPlan.issue_id });
   const aStages = await call("issue.stages", { issue_id: aPlan.issue_id });
   await call("issue.stage_approve", { issue_id: aPlan.issue_id, stage_id: aStages.stages[0].id });
   const aIssue = await call("issue.implement_stage", { issue_id: aPlan.issue_id, stage_id: aStages.stages[0].id });
   const a = aIssue.current_implementation;
-  const bPlan = await call("issue.create", { goal: "Parallel plan B" });
+  const bPlan = await call("issue.create", { goal: "Parallel plan B", provider: "claude" });
   await call("issue.approve", { issue_id: bPlan.issue_id });
   const bBoard = await call("issue.stages", { issue_id: bPlan.issue_id });
   await call("issue.stage_approve", { issue_id: bPlan.issue_id, stage_id: bBoard.stages[0].id });

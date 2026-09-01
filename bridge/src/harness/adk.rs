@@ -1532,7 +1532,9 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
-    use crate::harness::stream_fixtures::{fixture_lines, SHELL_AND_CHECKLIST_FIXTURE};
+    use crate::harness::stream_fixtures::{
+        fixture_lines, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
+    };
 
     #[test]
     fn only_the_three_bad_endings_count_as_a_failure() {
@@ -1544,6 +1546,102 @@ mod tests {
             assert!(!task_status_failed(ended), "{ended}");
             assert!(task_status_is_terminal(ended), "{ended}");
         }
+    }
+
+    fn row_kind(reported: &AgentActivity) -> &'static str {
+        match reported {
+            AgentActivity::Reasoning { .. } => "reasoning",
+            AgentActivity::ToolUse { .. } => "tool_use",
+            AgentActivity::ToolResult { .. } => "tool_result",
+            AgentActivity::Narration { .. } => "narration",
+            AgentActivity::TaskUpdate { .. } => "task_update",
+        }
+    }
+
+    fn rows_minted_by(file_name: &str) -> Vec<AgentActivity> {
+        let (sender, mut heard) = broadcast::channel(1024);
+        let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
+        let mut reader = ProtocolReader {
+            state: Arc::new(Mutex::new(ProtocolState::new())),
+            activity: Arc::clone(&activity),
+            calls: HashMap::new(),
+        };
+        for line in fixture_lines(file_name) {
+            reader.read_line(&line);
+        }
+        activity.lock().unwrap().take();
+        let mut rows = Vec::new();
+        while let Ok(reported) = heard.try_recv() {
+            rows.push(reported);
+        }
+        rows
+    }
+
+    fn kinds_of(rows: &[AgentActivity]) -> Vec<&'static str> {
+        rows.iter().map(row_kind).collect()
+    }
+
+    fn task_rows_of(rows: &[AgentActivity]) -> Vec<String> {
+        rows.iter()
+            .filter(|reported| row_kind(reported) == "task_update")
+            .map(|reported| reported.summary().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_workflow_fixture_mints_the_rows_it_always_minted() {
+        let rows = rows_minted_by(WORKFLOW_FIXTURE);
+
+        assert_eq!(
+            kinds_of(&rows),
+            vec![
+                "reasoning",
+                "tool_use",
+                "task_update",
+                "tool_result",
+                "reasoning",
+                "narration",
+                "task_update",
+                "task_update",
+                "reasoning",
+                "narration",
+            ]
+        );
+        assert_eq!(task_rows_of(&rows), vec![
+                "Count README.md lines and characters, then summarize — started".to_string(),
+                "Count README.md lines and characters, then summarize — finished".to_string(),
+                "Dynamic workflow \"Count README.md lines and characters, then summarize\" completed"
+                    .to_string(),
+            ]);
+    }
+
+    #[test]
+    fn the_subagent_fixture_mints_the_rows_it_always_minted() {
+        let rows = rows_minted_by(SUBAGENT_FIXTURE);
+
+        assert_eq!(
+            kinds_of(&rows),
+            vec![
+                "reasoning",
+                "tool_use",
+                "task_update",
+                "tool_result",
+                "reasoning",
+                "narration",
+                "task_update",
+                "task_update",
+                "reasoning",
+                "narration",
+            ]
+        );
+        assert_eq!(
+            task_rows_of(&rows),
+            vec![
+                "Read README.md and report character count — started".to_string(),
+                "Read README.md and report character count — finished".to_string(),
+                "4".to_string(),
+            ]
+        );
     }
 
     fn reader_over_a_silent_session() -> ProtocolReader {

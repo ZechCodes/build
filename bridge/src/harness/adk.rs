@@ -795,7 +795,7 @@ impl ProtocolReader {
             .unwrap()
             .surfaces
             .read_task_event(subtype, event);
-        self.note_surfaces_moved_and_tail_running_shells(moved);
+        self.note_surfaces_moved(moved);
     }
 
     fn bump_revision_when(&self, moved: bool) {
@@ -804,9 +804,9 @@ impl ProtocolReader {
         }
     }
 
-    fn note_surfaces_moved_and_tail_running_shells(&self, moved: bool) {
+    fn note_surfaces_moved(&self, moved: bool) {
+        self.bump_revision_when(moved);
         if moved {
-            self.revision.bump();
             self.ensure_shell_tail_poller();
         }
     }
@@ -1130,7 +1130,7 @@ impl ProtocolReader {
                     .unwrap()
                     .surfaces
                     .read_tool_answer(&tool, &call_id, event);
-                self.note_surfaces_moved_and_tail_running_shells(moved);
+                self.note_surfaces_moved(moved);
             }
             None => {}
         }
@@ -2043,9 +2043,6 @@ mod tests {
             .collect()
     }
 
-    /// A reader whose activity slot is emptied when the test ends, which is the
-    /// signal the poller waits on: without it the thread outlives the test and
-    /// keeps reading a temporary directory that has already been removed.
     struct ReaderEndingItsSessionWhenDropped {
         reader: ProtocolReader,
     }
@@ -2069,7 +2066,9 @@ mod tests {
             self.reader.activity.lock().unwrap().take();
             let polling = self.reader.shell_poller.lock().unwrap().take();
             if let Some(polling) = polling {
-                polling.join().expect("the shell tail poller ends cleanly");
+                polling.join().expect(
+                    "the shell tail poller ends cleanly before the temporary directory it reads is removed",
+                );
             }
         }
     }
@@ -2116,7 +2115,7 @@ mod tests {
             .unwrap_or_default()
     }
 
-    fn within(limit: Duration, ready: impl Fn() -> bool) -> bool {
+    fn becomes_true_within(limit: Duration, ready: impl Fn() -> bool) -> bool {
         let deadline = Instant::now() + limit;
         while Instant::now() < deadline {
             if ready() {
@@ -2179,7 +2178,7 @@ mod tests {
         std::fs::write(&output_path, hundred_numbered_lines()).expect("the output file grows");
 
         assert!(
-            within(Duration::from_secs(3), || {
+            becomes_true_within(Duration::from_secs(3), || {
                 tail_of_the_shell(&reader, SHELL_TASK_ID).len() == SHELL_TAIL_LINES
             }),
             "the tail never reached the file: {:?}",
@@ -2199,7 +2198,7 @@ mod tests {
         let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
         let reader = reader_tailing(SHELL_TASK_ID, &output_path);
 
-        assert!(within(Duration::from_secs(3), || {
+        assert!(becomes_true_within(Duration::from_secs(3), || {
             !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
         }));
         let once_the_tail_landed = revision_counter_of(&reader);
@@ -2224,7 +2223,7 @@ mod tests {
         );
 
         assert!(
-            within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            becomes_true_within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
             "the poller outlived the last running shell"
         );
     }
@@ -2237,7 +2236,7 @@ mod tests {
         reader.activity.lock().unwrap().take();
 
         assert!(
-            within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            becomes_true_within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
             "the poller outlived the stdout reader that started it"
         );
         assert!(
@@ -2250,7 +2249,7 @@ mod tests {
     fn a_deleted_output_file_is_skipped_and_the_next_read_replaces_the_tail() {
         let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
         let reader = reader_tailing(SHELL_TASK_ID, &output_path);
-        assert!(within(Duration::from_secs(3), || {
+        assert!(becomes_true_within(Duration::from_secs(3), || {
             !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
         }));
         let last_tail_before_the_delete = tail_of_the_shell(&reader, SHELL_TASK_ID);
@@ -2271,7 +2270,7 @@ mod tests {
         std::fs::write(&output_path, "back again\n").expect("the output file returns");
 
         assert!(
-            within(Duration::from_secs(3), || {
+            becomes_true_within(Duration::from_secs(3), || {
                 tail_of_the_shell(&reader, SHELL_TASK_ID) == vec!["back again".to_string()]
             }),
             "the next successful read replaces the tail"
@@ -2288,9 +2287,9 @@ mod tests {
             &mut reader,
             &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
         );
-        assert!(within(Duration::from_secs(2), || the_poller_has_finished(
-            &reader
-        )));
+        assert!(becomes_true_within(Duration::from_secs(2), || {
+            the_poller_has_finished(&reader)
+        }));
 
         read_lines_into(
             &mut reader,
@@ -2304,7 +2303,7 @@ mod tests {
         assert_ne!(polling_thread_of(&reader), the_poller_that_left);
         assert!(!the_poller_has_finished(&reader));
         assert!(
-            within(Duration::from_secs(3), || {
+            becomes_true_within(Duration::from_secs(3), || {
                 tail_of_the_shell(&reader, "s2ndshell") == vec!["second shell".to_string()]
             }),
             "the fresh poller tails the shell that started it"
@@ -2321,12 +2320,8 @@ mod tests {
     /// instead. Statuses here are protocol-driven, so the wait is for a line to
     /// arrive rather than for a clock to run out.
     fn wait_for_status(session: &AdkSession, want: AgentStatus) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if session.status() == want {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        if becomes_true_within(Duration::from_secs(5), || session.status() == want) {
+            return;
         }
         panic!(
             "the session never reported {want:?} — it is {:?}",
@@ -3412,10 +3407,7 @@ mod tests {
         session.send_turn(&Turn::new("try it")).unwrap();
         wait_for_status(&session, AgentStatus::Waiting);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.epitaph().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        becomes_true_within(Duration::from_secs(5), || session.epitaph().is_some());
         assert_eq!(
             session.epitaph().as_deref(),
             Some("the tool call was refused")

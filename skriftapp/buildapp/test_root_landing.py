@@ -17,6 +17,7 @@ from litestar.response import Response
 from buildapp.root_controller import LANDING_DIR, RootController
 
 STYLESHEET_NAME = "landing.css"
+ENTRY_MODULE_NAME = "main.js"
 FONT_NAME = "fonts/JetBrainsMono-latin.woff2"
 BRAND_MARK_NAME = "brand-mark.svg"
 SCREENSHOT_NAMES = (
@@ -54,6 +55,12 @@ FONT_FACE_DECLARATION = (
     'src:url("/landing/fonts/JetBrainsMono-latin.woff2") format("woff2");'
     "font-weight:400 800;font-style:normal;font-display:swap}"
 )
+
+ENTRY_SCRIPT_MARKUP = '<script type="module" src="/landing/main.js"></script>'
+SCRIPT_ELEMENT_PATTERN = r"<script\b([^>]*)>(.*?)</script>"
+MODULE_IMPORT_PATTERN = r'from\s+"\./([^"]+)"'
+DOCUMENT_GLOBAL = "document"
+MODULE_SUFFIX = "*.js"
 
 SAME_ORIGIN_URL_PREFIX = '"/landing/'
 STYLESHEET_URL_PATTERN = r"url\(([^)]*)\)"
@@ -446,8 +453,9 @@ def test_colour_and_gradient_literals_live_only_in_the_token_blocks():
 
 def test_page_has_no_inline_script_or_style_blocks():
     html = _landing_html()
-    assert "<script" not in html
     assert "<style" not in html
+    for _, script_body in re.findall(SCRIPT_ELEMENT_PATTERN, html, re.S):
+        assert script_body.strip() == ""
 
 
 def test_page_preloads_the_font_and_links_the_stylesheet():
@@ -599,3 +607,43 @@ def test_deploy_smoke_check_targets_shipped_landing_assets():
     for asset_path in smoke_checked_assets:
         assert (LANDING_DIR / asset_path).is_file()
     assert SMOKE_CHECK_PAGE_PHRASE in _landing_html()
+
+
+def test_landing_asset_serves_entry_module_with_media_type():
+    response = RootController.landing_asset.fn(None, asset_path=ENTRY_MODULE_NAME)
+    assert isinstance(response, Response)
+    assert response.media_type == "text/javascript"
+    assert (LANDING_DIR / ENTRY_MODULE_NAME).is_file()
+
+
+def test_page_loads_the_entry_module_as_a_same_origin_es_module():
+    html = _landing_html()
+    scripts = re.findall(SCRIPT_ELEMENT_PATTERN, html, re.S)
+    assert len(scripts) == 1
+    assert html.count("<script") == 1
+    attributes, script_body = scripts[0]
+    assert 'type="module"' in attributes
+    assert f'src="/landing/{ENTRY_MODULE_NAME}"' in attributes
+    assert script_body == ""
+    assert ENTRY_SCRIPT_MARKUP in html
+
+
+def test_no_module_other_than_the_entry_references_the_document():
+    modules = list(LANDING_DIR.rglob(MODULE_SUFFIX))
+    assert modules
+    for module_path in modules:
+        if module_path.name == ENTRY_MODULE_NAME:
+            continue
+        assert DOCUMENT_GLOBAL not in module_path.read_text()
+
+
+def test_every_landing_module_is_referenced_from_the_entry_graph():
+    modules = list(LANDING_DIR.rglob(MODULE_SUFFIX))
+    assert modules
+    imported_names = {
+        imported
+        for module_path in modules
+        for imported in re.findall(MODULE_IMPORT_PATTERN, module_path.read_text())
+    }
+    for module_path in modules:
+        assert module_path.name == ENTRY_MODULE_NAME or module_path.name in imported_names

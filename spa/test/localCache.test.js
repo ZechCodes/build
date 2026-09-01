@@ -68,12 +68,36 @@ describe("eviction", () => {
 });
 
 describe("a browser without IndexedDB", () => {
-  it("stays silent: reads answer undefined, writes and evictions do not throw", async () => {
+  it("stays silent: unknown reads answer undefined, writes and evictions do not throw", async () => {
     vi.resetModules();
     delete globalThis.indexedDB;
     const bare = await import("../src/core/localCache.js");
     await expect(bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, {})).resolves.toBeUndefined();
-    expect(await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).toBeUndefined();
+    // The session-hot mirror still serves this session's own write; only what
+    // was never written answers undefined.
+    expect(await bare.readCached({ deviceId: "d", entityId: "never", kind: "status" })).toBeUndefined();
     await expect(bare.evictEntity("d", "e")).resolves.toBeUndefined();
+  });
+});
+
+describe("the session-hot mirror", () => {
+  it("keeps the session's own writes readable even without IndexedDB", async () => {
+    vi.resetModules();
+    delete globalThis.indexedDB;
+    const bare = await import("../src/core/localCache.js");
+    await bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, { head: "hot" });
+    expect((await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).value.head).toBe("hot");
+  });
+
+  it("lets eviction and wipe clear the mirror too", async () => {
+    vi.resetModules();
+    delete globalThis.indexedDB;
+    const bare = await import("../src/core/localCache.js");
+    await bare.writeCached({ deviceId: "d", entityId: "e", kind: "status" }, {});
+    await bare.evictEntity("d", "e");
+    expect(await bare.readCached({ deviceId: "d", entityId: "e", kind: "status" })).toBeUndefined();
+    await bare.writeCached({ deviceId: "d", entityId: "e2", kind: "status" }, {});
+    await bare.wipeCache();
+    expect(await bare.readCached({ deviceId: "d", entityId: "e2", kind: "status" })).toBeUndefined();
   });
 });

@@ -93,24 +93,45 @@ const recordKey = ({ deviceId, entityId, kind, sub = "" }) =>
 
 const prefixRange = (prefix) => IDBKeyRange.bound(prefix, `${prefix}￿`, false, true);
 
+/** The session-hot layer: every record read or written this session, in
+ *  memory. A disk read is one or more frames late — visible as a flicker on
+ *  every within-session revisit — while a mirror hit resolves in a microtask,
+ *  before the frame renders. The disk stays the durable copy; the mirror never
+ *  outlives the tab and never holds what eviction has removed. */
+const hot = new Map();
+
+const clearHotPrefix = (prefix) => {
+  for (const key of hot.keys()) if (key.startsWith(prefix)) hot.delete(key);
+};
+
 /** Read one record: `{ at, value }`, or undefined when it was never written,
- *  the cache is unavailable, or anything went wrong. */
+ *  the cache is unavailable, or anything went wrong. Same-session records
+ *  answer from memory without waiting on the store. */
 export function readCached(address) {
-  return inStore("readonly", (store) => store.get(recordKey(address)));
+  const key = recordKey(address);
+  if (hot.has(key)) return Promise.resolve(hot.get(key));
+  return inStore("readonly", (store) => store.get(key)).then((record) => {
+    if (record !== undefined) hot.set(key, record);
+    return record;
+  });
 }
 
 /** Write one record, stamped with when. Resolves to undefined always. */
 export function writeCached(address, value) {
+  const record = { at: Date.now(), value };
+  hot.set(recordKey(address), record);
   return inStore("readwrite", (store) => {
-    store.put({ at: Date.now(), value }, recordKey(address));
+    store.put(record, recordKey(address));
     return null;
   });
 }
 
 /** Drop every record one entity holds on one device — a single range delete,
- *  which is why the entity sits second in the key. */
+ *  which is why the entity sits second in the key. The mirror lets go first,
+ *  so an evicted entity cannot answer from memory. */
 export function evictEntity(deviceId, entityId) {
   const prefix = `${encodeURIComponent(deviceId)}|${encodeURIComponent(entityId)}|`;
+  clearHotPrefix(prefix);
   return inStore("readwrite", (store) => {
     store.delete(prefixRange(prefix));
     return null;
@@ -138,8 +159,10 @@ export async function cachedSubKeys(deviceId, entityId, kind) {
   return keys.map((key) => decodeURIComponent(String(key).slice(prefix.length)));
 }
 
-/** Drop the whole database. For sign-out, and for a format change. */
+/** Drop the whole database, mirror included. For sign-out, and for a format
+ *  change. */
 export function wipeCache() {
+  hot.clear();
   return inStore("readwrite", (store) => {
     store.clear();
     return null;

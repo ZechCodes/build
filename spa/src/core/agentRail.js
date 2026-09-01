@@ -318,15 +318,26 @@ export function mountAgentRail(host, context) {
 
   /** Seed the empty cache from the saved window, once per conversation key.
    *  After a seed the next detail read is a forward delta rather than a first
-   *  page — the history is already local. A live window refuses the seed. */
+   *  page — the history is already local. A live window refuses the seed.
+   *
+   *  A successful seed claims the cache for the agent it was read for
+   *  (threadAgentId): the rail remembers which bubble was open across
+   *  remounts, so without the claim the first threadFor of a revisit reads
+   *  "different agent" and wipes the window this seed just opened — after its
+   *  delta cursor was already sent, which is a conversation that paints empty
+   *  until the safety poll. And it paints: the reader is owed the history in
+   *  hand, not a loading frame until the wire answers. */
   const trySeedThread = async () => {
     const address = threadCacheAddress();
     if (!address || threadSeedTried) return;
     threadSeedTried = true;
+    const seededFor = selectedId;
     const record = await readCached(address);
-    if (disposed || !record) return;
+    if (disposed || !record || seededFor !== selectedId) return;
     if (threadCache.seedWindow(record.value)) {
       lastPersistedSequence = record.value.deliveredSequence || 0;
+      threadAgentId = seededFor;
+      paintChat();
     }
   };
 
@@ -346,7 +357,14 @@ export function mountAgentRail(host, context) {
     threadCache.reset();
     threadSeedTried = false;
     lastPersistedSequence = 0;
+    absorbedThreadPayload = null;
   };
+  // The one payload already folded through the cache. A repaint hands the same
+  // payload back, and absorbing it twice is not idempotent for the one shape
+  // that matters: an uncursored (full) answer REPLACES the window, so a seed
+  // that landed between two paints of the same stale payload would be thrown
+  // away — which is a conversation blanking under its reader.
+  let absorbedThreadPayload = null;
   // Which agent the payload in hand was READ FOR. Not the same question as
   // threadAgentId: that one is about the cache, this one is about the answer the
   // cache would be filled from. Between opening another agent's bubble and its
@@ -691,10 +709,23 @@ export function mountAgentRail(host, context) {
     // The payload in hand belongs to the agent it was read for. Just after a
     // switch that is the agent just left, and absorbing it would refill the
     // cache the switch cleared with the wrong conversation — which is exactly
-    // what made switching look like it did nothing. Nothing until the read for
-    // THIS agent lands; pressBubble asks for it immediately.
-    if (threadOwner !== selectedId) return null;
+    // what made switching look like it did nothing. Until the read for THIS
+    // agent lands (pressBubble asks for it immediately), the seeded window —
+    // history the cache holds for this very agent — is what paints: a reader
+    // in an active branch is never shown an empty frame the disk can fill.
+    if (threadOwner !== selectedId) {
+      const saved = threadCache.exportWindow();
+      return saved ? { items: saved.items } : null;
+    }
     if (!entity.thread) return null;
+    // A payload folds through the cache once; a repaint of the same payload
+    // renders the window the cache holds (what absorb would answer anyway).
+    // Only a delta that never seated a window re-renders itself as it came.
+    if (entity.thread === absorbedThreadPayload) {
+      const held = threadCache.exportWindow();
+      return held ? { ...entity.thread, items: held.items } : { ...entity.thread };
+    }
+    absorbedThreadPayload = entity.thread;
     const thread = threadCache.absorb(entity.thread);
     persistThreadWindow();
     return thread;

@@ -173,6 +173,7 @@ DESIGN_TOKENS = (
     "--letter-spacing-note",
     "--line-height-note",
     "--font-size-cta-note",
+    "--line-height-cta-note",
     "--letter-spacing-cta-note",
     "--font-size-success",
     "--letter-spacing-success",
@@ -187,9 +188,10 @@ DESIGN_TOKENS = (
 
 DOT_FIELD_MARKUP = '<div class="dot-field"><canvas data-dot-field></canvas></div>'
 HERO_EYEBROW_MARKUP = (
-    '<p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES<br>GOING OUT WEEKLY</p>'
+    '<p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES <br>GOING OUT WEEKLY</p>'
 )
 HERO_EYEBROW_BREAK_HIDDEN_RULE = ".hero-eyebrow br{display:none}"
+HERO_EYEBROW_SPACED_BREAK = "INVITES <br>GOING"
 HERO_EYEBROW_BREAK_SHOWN_RULE = ".hero-eyebrow br{display:inline}"
 HERO_TITLE_MARKUP = (
     '<h1 class="hero-title">Ship more.<br>'
@@ -214,6 +216,10 @@ SCREENSHOT_MARKUP = (
 )
 
 AGENTS_LABEL_MARKUP = '<p class="eyebrow agents-label">RUNS YOUR AGENTS</p>'
+AGENTS_LABEL_RULE = (
+    ".agents-label{display:flex;align-items:center;color:var(--color-text-muted);"
+    "padding:var(--agent-cell-padding)}"
+)
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
 AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
 
@@ -282,6 +288,17 @@ WAITLIST_SUCCESS_MARKUP = (
     '<p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — '
     "<span data-waitlist-email></span></p>"
 )
+WAITLIST_WRAPPER_RULE = (
+    ".waitlist{margin:var(--space-form-top) auto 0;max-width:520px;width:fit-content}"
+)
+WAITLIST_WRAPPER_MOBILE_RULE = ".waitlist{margin-inline:0;max-width:none;width:auto}"
+CTA_NOTE_RULE = (
+    ".cta-note{color:var(--color-text-secondary);"
+    "font:400 var(--font-size-cta-note)/var(--line-height-cta-note) var(--font-mono);"
+    "margin-top:var(--space-cta-note-top);letter-spacing:var(--letter-spacing-cta-note)}"
+)
+CTA_NOTE_DESKTOP_LINE_HEIGHT = "--line-height-cta-note:normal"
+CTA_NOTE_MOBILE_LINE_HEIGHT = "--line-height-cta-note:1.7"
 WAITLIST_COMPONENT_PATTERN = r'<div class="waitlist" data-waitlist>.*?</div>'
 WAITLIST_INSTANCE_COUNT = 2
 
@@ -647,3 +664,27 @@ def test_every_landing_module_is_referenced_from_the_entry_graph():
     }
     for module_path in modules:
         assert module_path.name == ENTRY_MODULE_NAME or module_path.name in imported_names
+
+
+def test_hero_eyebrow_reads_as_one_line_when_the_break_is_hidden():
+    assert HERO_EYEBROW_SPACED_BREAK in _landing_html()
+
+
+def test_agents_label_shares_the_agent_cell_padding():
+    css = _landing_text(STYLESHEET_NAME)
+    assert AGENTS_LABEL_RULE in _rules_outside_media_blocks(css)
+
+
+def test_waitlist_shrinks_to_its_content_and_fills_the_column_on_mobile():
+    css = _landing_text(STYLESHEET_NAME)
+    assert WAITLIST_WRAPPER_RULE in _rules_outside_media_blocks(css)
+    assert WAITLIST_WRAPPER_MOBILE_RULE in css
+    assert WAITLIST_WRAPPER_MOBILE_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_cta_note_carries_its_own_line_height_at_both_breakpoints():
+    css = _landing_text(STYLESHEET_NAME)
+    assert CTA_NOTE_RULE in _rules_outside_media_blocks(css)
+    assert CTA_NOTE_DESKTOP_LINE_HEIGHT in _rules_outside_media_blocks(css)
+    assert CTA_NOTE_MOBILE_LINE_HEIGHT in css
+    assert CTA_NOTE_MOBILE_LINE_HEIGHT not in _rules_outside_media_blocks(css)

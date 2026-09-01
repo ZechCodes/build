@@ -278,6 +278,30 @@ describe("the inbox rail", () => {
     expect(rowFor("run-1")).toBeTruthy();
   });
 
+  it("takes the row off the list before branch.finish answers, and leaves its neighbours alone", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.finish") return new Promise(() => {});
+      return { ok: true };
+    });
+    const neighbour = rowFor("iss-1");
+    rowFor("run-1").querySelector("[data-done]").click();
+    await answerConfirm(true);
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBe(neighbour);
+  });
+
+  it("keeps the row off the list when a feed tick lands while Done is in flight", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.finish") return new Promise(() => {});
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-done]").click();
+    await answerConfirm(true);
+    feed([branchRow(), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBeTruthy();
+  });
+
   it("restores the row and says why when Done fails", async () => {
     App.call = vi.fn(async (method) => {
       if (method === "branch.finish") throw new Error("worktree is dirty");
@@ -290,6 +314,10 @@ describe("the inbox rail", () => {
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("worktree is dirty");
+    const notices = [...document.querySelectorAll("#notices .notice.error")];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toContain("Couldn't finish build/login");
+    expect(notices[0].textContent).toContain("worktree is dirty");
   });
 
   it("archives an issue through the plan verb, warning when nothing ever implemented it", async () => {
@@ -389,6 +417,20 @@ describe("the inbox rail", () => {
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("the relay is offline");
+  });
+
+  it("lets a cleared row come back when something new needs the user", async () => {
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+    expect(rowFor("run-1")).toBeNull();
+
+    feed([branchRow({ dismissed: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+
+    feed([branchRow({ dismissed: false, unread: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeTruthy();
   });
 
   // Gone until it speaks again: the row comes back by itself the moment the

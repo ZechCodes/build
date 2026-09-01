@@ -23,6 +23,16 @@ import {
   recentToggleHtml,
 } from "./inbox.js";
 import { patchList } from "./patchList.js";
+import { BRANCH_DONE_OPTION, branchFinishParams } from "./branchFinish.js";
+import {
+  isPending,
+  patchRecord,
+  projectOptimistic,
+  reconcileOptimistic,
+  removeRecord,
+  runOptimistic,
+  subscribeOptimistic,
+} from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
@@ -38,11 +48,6 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-// Row keys a verb from this client just took off the list — Done, or a clear
-// the daemon has not confirmed yet. The feed's own truth takes over as soon as
-// it arrives. Keys, not entity ids: every row has a key, and the rows no
-// entity stands behind (the primary checkout) can be cleared like any other.
-const locallyHidden = new Set();
 const busy = new Set(); // row keys with a mutation in flight
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
@@ -99,15 +104,18 @@ function drawFromFeed() {
 /** The one name a row has, which is what the reconciler matches rows by. */
 const keyOf = (entry) => entry.key;
 
+const INBOX_SCOPE = "inbox";
+
+// The captures this client is holding or watching stand beside the daemon's
+// own rows; the daemon's copy wins wherever both name the same capture.
+const mergedItems = () => mergeCaptureRows(items, pendingCaptureRows());
+
 function draw() {
   const list = $("#inbox-list");
   if (!list) return;
-  // The captures this client is holding or watching stand beside the daemon's
-  // own rows; the daemon's copy wins wherever both name the same capture.
   const partition = inboxEntries({
-    items: mergeCaptureRows(items, pendingCaptureRows()),
+    items: projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf }),
     nowMs: Date.now(),
-    hiddenKeys: locallyHidden,
   });
   // Every row on screen, Recent included: what the route stands on and what a
   // click resolves to do not care which section a row sits in.
@@ -386,72 +394,63 @@ async function toggleMute(entry) {
  *  The row leaves on the tap and comes back if the daemon refuses. */
 async function dismissEntry(entry) {
   const params = entry && dismissParamsOf(entry);
-  if (!params || busy.has(entry.key)) return;
-  busy.add(entry.key);
+  if (!params || isPending(INBOX_SCOPE, entry.key)) return;
   openMenuKey = null;
-  locallyHidden.add(entry.key);
   errors.delete(entry.key);
-  draw();
-  try {
-    // Clearing an unread row IS reading it: the daemon's rule keeps an unread
-    // row visible (unread beats dismissed), so the tap reads it through first
-    // — otherwise the row would bounce back on the next poll and Clear would
-    // look broken on exactly the rows people most want to clear.
-    if (entry.state === "unread" && entry.entityId) {
-      await App.call("entity.seen", { entity_id: entry.entityId });
-    }
-    await App.call("entity.dismiss", params);
-    await refreshFeed();
-  } catch (error) {
-    locallyHidden.delete(entry.key);
-    errors.set(entry.key, messageOf(error));
-  } finally {
-    busy.delete(entry.key);
-    draw();
-  }
+  await runOptimistic({
+    scope: INBOX_SCOPE,
+    records: [patchRecord(entry.key, { dismissed: true })],
+    call: async () => {
+      // Clearing an unread row IS reading it: the daemon's rule keeps an unread
+      // row visible (unread beats dismissed), so the tap reads it through first
+      // — otherwise the row would bounce back on the next poll and Clear would
+      // look broken on exactly the rows people most want to clear.
+      if (entry.state === "unread" && entry.entityId) {
+        await App.call("entity.seen", { entity_id: entry.entityId });
+      }
+      await App.call("entity.dismiss", params);
+      await refreshFeed();
+    },
+    failureSummary: `Couldn't clear ${entry.branch || "this item"}`,
+    onRevert: (error) => showRowError(entry.key, error),
+  });
 }
 
-/** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
- *  its records go, which is what Done on a branch means. On an issue it
- *  archives. Neither is refused for the state of the work — what the
- *  destruction costs came down with the row and was confirmed through. */
-function finishCall(entry) {
-  if (entry.kind === "issue") return App.call("plan.archive", { plan_id: entry.issueId });
-  return App.call("branch.finish", { project_id: entry.projectId, branch: entry.branch, action: "delete" });
-}
-
-async function finishEntry(entry) {
-  if (!entry || busy.has(entry.key)) return;
-  const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(entry);
-  if (!(await confirmAction(confirmation))) return;
-  busy.add(entry.key);
-  // Confirmation is the decisive moment: the row goes now, and the git work
-  // (and the feed catching up) carries on behind it.
-  locallyHidden.add(entry.key);
-  errors.delete(entry.key);
-  draw();
-  try {
-    await finish(entry);
-  } catch (error) {
-    restore(entry, messageOf(error));
-  } finally {
-    busy.delete(entry.key);
-  }
-}
-
-async function finish(entry) {
-  await finishCall(entry);
-  // Done ends the work, and an ending is an attention event. The user did this
-  // here, so this entry is already read. The issue an unmerged branch leaves
-  // behind is NOT: it comes back to the inbox asking for somebody, and the
-  // event naming the branch it lost is the whole point of it coming back.
-  await noteSelfAction(entry.entityId);
+/** The whole of Done, wherever it is pressed. On a branch it DELETES: the
+ *  branch, its checkout and its records go, which is what Done on a branch
+ *  means. On an issue it archives. Neither is refused for the state of the work
+ *  — what the destruction costs came down with the row and was confirmed
+ *  through.
+ *
+ *  Done ends the work, and an ending is an attention event. The user did this
+ *  here, so this entry is already read. The issue an unmerged branch leaves
+ *  behind is NOT: it comes back to the inbox asking for somebody, and the event
+ *  naming the branch it lost is the whole point of it coming back. */
+export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
+  if (target.kind === "issue") await App.call("plan.archive", { plan_id: target.issueId });
+  else await App.call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
+  await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
   await refreshFeed();
 }
 
-function restore(entry, message) {
-  locallyHidden.delete(entry.key);
-  errors.set(entry.key, message);
+async function finishEntry(entry) {
+  if (!entry || isPending(INBOX_SCOPE, entry.key)) return;
+  const confirmation = entry.kind === "issue" ? issueDoneConfirm(entry) : branchDoneConfirm(entry);
+  if (!(await confirmAction(confirmation))) return;
+  errors.delete(entry.key);
+  // Confirmation is the decisive moment: the row goes now, and the git work
+  // (and the feed catching up) carries on behind it.
+  await runOptimistic({
+    scope: INBOX_SCOPE,
+    records: [removeRecord(entry.key)],
+    call: () => finishWorkItem(entry),
+    failureSummary: `Couldn't finish ${entry.branch || "this item"}`,
+    onRevert: (error) => showRowError(entry.key, error),
+  });
+}
+
+function showRowError(key, error) {
+  errors.set(key, messageOf(error));
   draw();
 }
 
@@ -465,20 +464,13 @@ export function mountInboxList() {
   }
   mounted = true;
   subscribePendingCaptures(drawFromFeed);
+  subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {
     items = feed.items || [];
     projects = feed.projects || [];
-    // A stale poll while git cleanup runs keeps a row this client removed
-    // hidden. The daemon has caught up once the row is gone from the feed (Done)
-    // or the feed itself calls it cleared (dismiss) — and from then on the
-    // feed's `dismissed` alone decides, so a new event can revive the row.
-    const live = new Map();
-    for (const row of items) live.set(entryKeyOf(row), row);
-    for (const key of locallyHidden) {
-      const row = live.get(key);
-      if (!row || row.dismissed) locallyHidden.delete(key);
-    }
+    const live = new Set(items.map(entryKeyOf));
     for (const key of errors.keys()) if (!live.has(key)) errors.delete(key);
+    reconcileOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
     drawFromFeed();
   });
 }

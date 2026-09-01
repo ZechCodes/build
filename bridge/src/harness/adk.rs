@@ -30,9 +30,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::harness::claude::ClaudeHarness;
+use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
     SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
@@ -249,6 +250,7 @@ struct ProtocolState {
     /// a human in the order they are minted, and a hash order would shuffle two
     /// tasks ending together from run to run.
     tasks: BTreeMap<String, String>,
+    surfaces: SurfaceLedger,
 }
 
 impl ProtocolState {
@@ -263,6 +265,7 @@ impl ProtocolState {
             reported_error: None,
             last_stderr_line: None,
             tasks: BTreeMap::new(),
+            surfaces: SurfaceLedger::default(),
         }
     }
 
@@ -304,12 +307,16 @@ impl ProtocolState {
 /// stays as silent as the call was.
 #[derive(Debug, PartialEq, Eq)]
 enum RecordedCall {
-    Minted {
-        #[allow(dead_code)]
-        tool: String,
-    },
+    Minted { tool: String },
     BuildsOwn,
 }
+
+const SURFACE_TASK_SUBTYPES: [&str; 4] = [
+    "task_started",
+    "task_progress",
+    "task_updated",
+    "task_notification",
+];
 
 /// The broadcast side of the activity stream, dropped when the child's stdout
 /// ends so every subscriber observes the close.
@@ -328,6 +335,7 @@ pub struct AdkSession {
     stdin: Mutex<Option<ChildStdin>>,
     state: Arc<Mutex<ProtocolState>>,
     activity: ActivitySlot,
+    revision: SurfaceRevision,
     /// The child's exit code, cached the first time it is observed: the status
     /// can be collected exactly once, and the crash message is written from it
     /// long after.
@@ -371,12 +379,14 @@ impl AdkSession {
         let state = Arc::new(Mutex::new(ProtocolState::new()));
         let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
+        let revision = SurfaceRevision::default();
 
         if let Some(stdout) = child.stdout.take() {
             let mut reader = ProtocolReader {
                 state: Arc::clone(&state),
                 activity: Arc::clone(&activity),
                 calls: HashMap::new(),
+                revision: revision.clone(),
             };
             let slot = Arc::clone(&activity);
             std::thread::spawn(move || {
@@ -416,6 +426,7 @@ impl AdkSession {
                 stdin: Mutex::new(stdin),
                 state,
                 activity,
+                revision,
                 exit_code: Mutex::new(None),
             },
             subscribed,
@@ -571,6 +582,14 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().session_id.clone()
     }
 
+    fn surfaces(&self) -> Option<AgentSurfaces> {
+        self.state.lock().unwrap().surfaces.snapshot()
+    }
+
+    fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.revision.subscribe())
+    }
+
     /// Reported, never guessed — the difference this carrier exists for. A model
     /// that reasons for forty minutes without emitting a token is `Working` the
     /// whole time, because the turn it was given has not been answered.
@@ -677,6 +696,7 @@ struct ProtocolReader {
     state: Arc<Mutex<ProtocolState>>,
     activity: ActivitySlot,
     calls: HashMap<String, RecordedCall>,
+    revision: SurfaceRevision,
 }
 
 impl ProtocolReader {
@@ -701,13 +721,35 @@ impl ProtocolReader {
     /// The lifecycle line, and the background-task lines that ride the same
     /// subtype. Anything else on `system` is not this session's business.
     fn read_system(&mut self, event: &Value) {
-        match event["subtype"].as_str() {
-            Some("init") => self.read_init(event),
-            Some("background_tasks_changed") => self.read_task_roster(event),
-            Some("task_started") => self.read_task_started(event),
-            Some("task_updated") => self.read_task_updated(event),
-            Some("task_notification") => self.read_task_notification(event),
+        let Some(subtype) = event["subtype"].as_str() else {
+            return;
+        };
+        match subtype {
+            "init" => self.read_init(event),
+            "background_tasks_changed" => self.read_task_roster(event),
+            "task_started" => self.read_task_started(event),
+            "task_updated" => self.read_task_updated(event),
+            "task_notification" => self.read_task_notification(event),
             _ => {}
+        }
+        if SURFACE_TASK_SUBTYPES.contains(&subtype) {
+            self.read_surface_task_event(subtype, event);
+        }
+    }
+
+    fn read_surface_task_event(&mut self, subtype: &str, event: &Value) {
+        let moved = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .read_task_event(subtype, event);
+        self.bump_revision_when(moved);
+    }
+
+    fn bump_revision_when(&self, moved: bool) {
+        if moved {
+            self.revision.bump();
         }
     }
 
@@ -962,7 +1004,7 @@ impl ProtocolReader {
                     }
                 }
                 (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block),
-                (Voice::User, Some("tool_result")) => self.read_tool_result(block),
+                (Voice::User, Some("tool_result")) => self.read_tool_result(event, block),
                 _ => {}
             }
         }
@@ -976,6 +1018,13 @@ impl ProtocolReader {
             return;
         }
         let summary = tool_call_summary(&tool, &block["input"]);
+        let moved = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .read_tool_call(&tool, block);
+        self.bump_revision_when(moved);
         self.calls
             .insert(call_id.clone(), RecordedCall::Minted { tool });
         self.emit(AgentActivity::ToolUse { call_id, summary });
@@ -988,15 +1037,26 @@ impl ProtocolReader {
     /// The answer travels alone, without the tool's name in front of it: the row
     /// it lands on is the call, which said what tool this was when it was
     /// minted.
-    fn read_tool_result(&mut self, block: &Value) {
+    fn read_tool_result(&mut self, event: &Value, block: &Value) {
         let call_id = block["tool_use_id"]
             .as_str()
             .unwrap_or_default()
             .to_string();
         // Taken, not read: a call is answered once, and a session that runs for
         // hours must not accumulate one entry per tool call it ever made.
-        if self.calls.remove(&call_id) == Some(RecordedCall::BuildsOwn) {
-            return;
+        let answered = self.calls.remove(&call_id);
+        match answered {
+            Some(RecordedCall::BuildsOwn) => return,
+            Some(RecordedCall::Minted { tool }) => {
+                let moved = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .surfaces
+                    .read_tool_answer(&tool, &call_id, event);
+                self.bump_revision_when(moved);
+            }
+            None => {}
         }
         let outcome = match block["is_error"].as_bool().unwrap_or(false) {
             true => ToolOutcome::Error,
@@ -1535,6 +1595,7 @@ mod tests {
     use crate::harness::stream_fixtures::{
         fixture_lines, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
     };
+    use crate::harness::surfaces::SurfaceWorkflow;
 
     #[test]
     fn only_the_three_bad_endings_count_as_a_failure() {
@@ -1561,11 +1622,7 @@ mod tests {
     fn rows_minted_by(file_name: &str) -> Vec<AgentActivity> {
         let (sender, mut heard) = broadcast::channel(1024);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
-        let mut reader = ProtocolReader {
-            state: Arc::new(Mutex::new(ProtocolState::new())),
-            activity: Arc::clone(&activity),
-            calls: HashMap::new(),
-        };
+        let mut reader = reader_reporting_into(Arc::clone(&activity));
         for line in fixture_lines(file_name) {
             reader.read_line(&line);
         }
@@ -1644,12 +1701,160 @@ mod tests {
         );
     }
 
-    fn reader_over_a_silent_session() -> ProtocolReader {
+    fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
         ProtocolReader {
             state: Arc::new(Mutex::new(ProtocolState::new())),
-            activity: Arc::new(Mutex::new(None)),
+            activity,
             calls: HashMap::new(),
+            revision: SurfaceRevision::default(),
         }
+    }
+
+    fn reader_over_a_silent_session() -> ProtocolReader {
+        reader_reporting_into(Arc::new(Mutex::new(None)))
+    }
+
+    fn reader_over_every_line_of(file_name: &str) -> ProtocolReader {
+        let mut reader = reader_over_a_silent_session();
+        for line in fixture_lines(file_name) {
+            reader.read_line(&line);
+        }
+        reader
+    }
+
+    fn reader_over_the_workflow_lines(line_numbers: &[usize]) -> ProtocolReader {
+        let lines = fixture_lines(WORKFLOW_FIXTURE);
+        let mut reader = reader_over_a_silent_session();
+        for line_number in line_numbers {
+            reader.read_line(&lines[line_number - 1]);
+        }
+        reader
+    }
+
+    fn surfaces_of(reader: &ProtocolReader) -> Option<AgentSurfaces> {
+        reader.state.lock().unwrap().surfaces.snapshot()
+    }
+
+    fn revision_counter_of(reader: &ProtocolReader) -> u64 {
+        *reader.revision.subscribe().borrow()
+    }
+
+    fn agent_states_of(workflow: &SurfaceWorkflow) -> Vec<Option<&str>> {
+        workflow
+            .phases
+            .iter()
+            .flat_map(|phase| phase.agents.iter())
+            .map(|agent| agent.state.as_deref())
+            .collect()
+    }
+
+    #[test]
+    fn the_workflow_fixture_leaves_one_finished_workflow_of_two_phases_and_three_agents() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(WORKFLOW_FIXTURE))
+            .expect("the workflow fixture leaves the session a snapshot");
+
+        assert_eq!(surfaces.workflows.len(), 1, "{surfaces:?}");
+        let workflow = &surfaces.workflows[0];
+        assert_eq!(workflow.state.as_deref(), Some("done"));
+        assert_eq!(
+            workflow
+                .phases
+                .iter()
+                .map(|phase| phase.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Read", "Summarize"]
+        );
+        assert_eq!(agent_states_of(workflow), vec![Some("done"); 3]);
+    }
+
+    #[test]
+    fn the_subagent_fixture_leaves_one_finished_subagent_carrying_its_answer() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(SUBAGENT_FIXTURE))
+            .expect("the subagent fixture leaves the session a snapshot");
+
+        assert_eq!(surfaces.subagents.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.subagents[0].state.as_deref(), Some("done"));
+        assert_eq!(surfaces.subagents[0].result.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn the_shell_and_checklist_fixture_leaves_three_finished_items_and_one_finished_shell() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(SHELL_AND_CHECKLIST_FIXTURE))
+            .expect("the shell and checklist fixture leaves the session a snapshot");
+
+        assert_eq!(
+            surfaces
+                .checklist
+                .iter()
+                .map(|item| item.state.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("completed"); 3],
+            "{surfaces:?}"
+        );
+        assert_eq!(surfaces.shells.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.shells[0].state.as_deref(), Some("done"));
+        assert_eq!(surfaces.shells[0].exit_code, Some(0));
+    }
+
+    #[test]
+    fn a_session_that_read_only_the_workflow_fixture_writes_the_workflows_key_alone() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(WORKFLOW_FIXTURE))
+            .expect("the workflow fixture leaves the session a snapshot");
+
+        let written = surfaces.wire_value(&|_| None);
+        let named: Vec<&str> = written
+            .as_object()
+            .expect("a snapshot writes an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(named, vec!["workflows"], "{written}");
+    }
+
+    #[test]
+    fn a_session_that_read_no_task_line_at_all_offers_no_surfaces() {
+        let mut reader = reader_over_a_silent_session();
+        for line in fixture_lines(WORKFLOW_FIXTURE) {
+            let event: Value = serde_json::from_str(&line).expect("the fixture is protocol");
+            let announces = event["type"] == "system" && event["subtype"] == "init";
+            if announces || event["type"] == "assistant" {
+                reader.read_line(&line);
+            }
+        }
+
+        assert!(surfaces_of(&reader).is_none());
+        assert_eq!(revision_counter_of(&reader), 0);
+    }
+
+    #[test]
+    fn the_counter_moves_once_per_line_that_moved_the_snapshot() {
+        let whole_workflow = revision_counter_of(&reader_over_every_line_of(WORKFLOW_FIXTURE));
+        let the_start_alone = revision_counter_of(&reader_over_the_workflow_lines(&[37]));
+
+        assert_eq!(the_start_alone, 1);
+        assert!(
+            whole_workflow > the_start_alone,
+            "the whole workflow moved the snapshot more than its first line:              {whole_workflow} against {the_start_alone}"
+        );
+        assert_eq!(
+            revision_counter_of(&reader_over_the_workflow_lines(&[46])),
+            0,
+            "a usage tick carrying no progress array moves nothing"
+        );
+    }
+
+    #[test]
+    fn the_task_roster_stays_the_one_authority_for_whether_the_agent_is_working() {
+        let reader = reader_over_every_line_of(WORKFLOW_FIXTURE);
+        let state = reader.state.lock().unwrap();
+
+        assert!(state.tasks.is_empty(), "{:?}", state.tasks);
+        assert_eq!(state.live_status(), AgentStatus::Waiting);
+        assert!(
+            state.surfaces.snapshot().is_some(),
+            "a finished workflow is still on the snapshot the rail paints"
+        );
     }
 
     #[test]
@@ -1718,6 +1923,44 @@ mod tests {
             "the session never reported {want:?} — it is {:?}",
             session.status()
         );
+    }
+
+    #[test]
+    fn a_live_session_answers_with_the_snapshot_its_reader_built() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_NOTIFICATION,
+            RESULT,
+        ]));
+        let mut moved = session
+            .surfaces_changed()
+            .expect("a session that reports its work watches its snapshot");
+        session.send_turn(&Turn::new("run the job")).unwrap();
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        let surfaces = session.surfaces().expect("the session read one shell");
+
+        assert_eq!(surfaces.shells.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.shells[0].state.as_deref(), Some("done"));
+        assert!(
+            *moved.borrow_and_update() > 0,
+            "the reader said the snapshot moved"
+        );
+        session.end();
+    }
+
+    #[test]
+    fn a_live_session_that_read_no_task_line_answers_with_no_surfaces() {
+        let session = open(&stream_json_harness(&[THINKING, NARRATION, RESULT]));
+        session.send_turn(&Turn::new("say something")).unwrap();
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        assert!(session.surfaces().is_none());
+        assert!(
+            session.surfaces_changed().is_some(),
+            "the channel is offered even before anything moves"
+        );
+        session.end();
     }
 
     async fn next_activity(rx: &mut broadcast::Receiver<AgentActivity>) -> AgentActivity {

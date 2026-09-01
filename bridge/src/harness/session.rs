@@ -16,7 +16,9 @@
 use std::time::Duration;
 
 use portable_pty::PtySize;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
+
+use crate::harness::surfaces::AgentSurfaces;
 
 /// Things that can go wrong starting or driving a harness session.
 #[derive(Debug, thiserror::Error)]
@@ -157,6 +159,14 @@ pub trait AgentSession: Send + Sync {
     /// Every subscriber sees each event from the moment it subscribes and
     /// observes `Closed` once the session's stream ends.
     fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+        None
+    }
+
+    fn surfaces(&self) -> Option<AgentSurfaces> {
+        None
+    }
+
+    fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
         None
     }
 
@@ -386,6 +396,13 @@ mod tests {
         let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
         assert!(session.terminal().is_none());
         assert!(session.activity().is_none());
+    }
+
+    #[test]
+    fn a_session_that_says_nothing_about_surfaces_has_none() {
+        let session: Box<dyn AgentSession> = Box::new(ProtocolSession);
+        assert!(session.surfaces().is_none());
+        assert!(session.surfaces_changed().is_none());
     }
 
     /// Stopping a turn defaults to "no", and the refusal says where the thing

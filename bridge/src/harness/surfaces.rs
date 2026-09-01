@@ -233,16 +233,17 @@ impl SurfaceLedger {
 
     fn apply_subagent(&mut self, subtype: &str, task_id: &str, event: &Value) -> bool {
         match subtype {
-            "task_started" => {
-                let started = started_subagent(task_id, event);
-                match self.subagent_named(task_id) {
-                    Some(held) => replace_when_changed(held, started),
-                    None => {
-                        self.subagents.push(started);
-                        true
-                    }
+            "task_started" => match self.subagent_named(task_id) {
+                Some(held) => {
+                    let restarted = started_subagent(held, task_id, event);
+                    replace_when_changed(held, restarted)
                 }
-            }
+                None => {
+                    let started = started_subagent(&SurfaceAgent::default(), task_id, event);
+                    self.subagents.push(started);
+                    true
+                }
+            },
             "task_progress" => match self.subagent_named(task_id) {
                 Some(held) => {
                     let progressed = progressed_subagent(held, event);
@@ -290,14 +291,13 @@ impl SurfaceLedger {
     }
 }
 
-fn started_subagent(task_id: &str, event: &Value) -> SurfaceAgent {
+fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> SurfaceAgent {
     SurfaceAgent {
         id: task_id.to_string(),
         label: read_text(event, "description").unwrap_or_default(),
         state: Some("running".to_string()),
-        started_at: event["start_time"].as_u64(),
         spawning_call_id: read_text(event, "tool_use_id"),
-        ..SurfaceAgent::default()
+        ..held.clone()
     }
 }
 
@@ -307,7 +307,8 @@ fn progressed_subagent(held: &SurfaceAgent, event: &Value) -> SurfaceAgent {
         last_tool: read_text(event, "last_tool_name")
             .map(|name| SurfaceTool {
                 name,
-                summary: read_text(event, "description"),
+                summary: read_text(event, "description")
+                    .map(|step| one_line(&step, TOOL_SUMMARY_LIMIT)),
             })
             .or_else(|| held.last_tool.clone()),
         tokens: usage["total_tokens"].as_u64().or(held.tokens),
@@ -919,6 +920,47 @@ mod ledger_tests {
         );
         assert_eq!(subagent.state.as_deref(), Some("running"));
         assert_eq!(subagent.spawning_call_id.as_deref(), Some(SPAWNING_CALL_ID));
+        assert_eq!(subagent.started_at, None);
+    }
+
+    #[test]
+    fn a_repeated_started_line_keeps_what_the_subagent_has_accumulated() {
+        let mut ledger = ledger_through_the_started_subagent();
+        feed_subagent_line(&mut ledger, 25);
+        let progressed = the_only_subagent(&ledger);
+
+        assert!(!feed_subagent_line(&mut ledger, 11));
+
+        let restarted = the_only_subagent(&ledger);
+        assert_eq!(restarted.last_tool, progressed.last_tool);
+        assert_eq!(restarted.tokens, progressed.tokens);
+        assert_eq!(restarted.tool_calls, progressed.tool_calls);
+        assert_eq!(restarted.duration_ms, progressed.duration_ms);
+        assert_eq!(
+            restarted.spawning_call_id.as_deref(),
+            Some(SPAWNING_CALL_ID)
+        );
+    }
+
+    #[test]
+    fn a_progress_step_reaches_the_snapshot_as_one_bounded_line() {
+        let mut ledger = ledger_through_the_started_subagent();
+        let mut sprawling = fixture_line("subagent.jsonl", 25);
+        sprawling["description"] = json!(format!("first line\nsecond line\n{}", "x".repeat(400)));
+
+        assert!(feed(&mut ledger, &sprawling));
+
+        let summary = the_only_subagent(&ledger)
+            .last_tool
+            .expect("a progressed subagent names its tool")
+            .summary
+            .expect("the tool carries the current step");
+        assert!(!summary.contains('\n'), "{summary}");
+        assert_eq!(summary.chars().count(), 241, "{summary}");
+        assert!(
+            summary.starts_with("first line second line xxx"),
+            "{summary}"
+        );
     }
 
     #[test]

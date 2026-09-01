@@ -104,7 +104,7 @@ function drawFromFeed() {
 /** The one name a row has, which is what the reconciler matches rows by. */
 const keyOf = (entry) => entry.key;
 
-const INBOX_SCOPE = "inbox";
+export const INBOX_SCOPE = "inbox";
 
 // The captures this client is holding or watching stand beside the daemon's
 // own rows; the daemon's copy wins wherever both name the same capture.
@@ -416,19 +416,17 @@ async function dismissEntry(entry) {
   });
 }
 
-/** The whole of Done, wherever it is pressed. On a branch it DELETES: the
- *  branch, its checkout and its records go, which is what Done on a branch
- *  means. On an issue it archives. Neither is refused for the state of the work
- *  — what the destruction costs came down with the row and was confirmed
- *  through.
- *
- *  Done ends the work, and an ending is an attention event. The user did this
- *  here, so this entry is already read. The issue an unmerged branch leaves
- *  behind is NOT: it comes back to the inbox asking for somebody, and the event
- *  naming the branch it lost is the whole point of it coming back. */
+/** The RPC behind Done. On a branch it DELETES: the branch, its checkout and
+ *  its records go, which is what Done on a branch means. On an issue it
+ *  archives. Neither is refused for the state of the work — what the
+ *  destruction costs came down with the row and was confirmed through. */
 export async function finishWorkItem(target, optionId = BRANCH_DONE_OPTION) {
   if (target.kind === "issue") await App.call("plan.archive", { plan_id: target.issueId });
   else await App.call("branch.finish", branchFinishParams(optionId, { projectId: target.projectId, branch: target.branch }));
+  // Done ends the work, and an ending is an attention event. The user did this
+  // here, so this entry is already read. The issue an unmerged branch leaves
+  // behind is NOT: it comes back to the inbox asking for somebody, and the
+  // event naming the branch it lost is the whole point of it coming back.
   await noteSelfAction(target.entityId, target.issueEnded ? target.issueId : null);
   await refreshFeed();
 }

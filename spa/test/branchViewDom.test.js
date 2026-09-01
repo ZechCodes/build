@@ -292,17 +292,73 @@ describe("closing the branch out", () => {
     });
   });
 
-  it("reports a failed close-out as a notice and restores the button", async () => {
-    await mountWith(finishableRow(), {
+  it("leaves for the inbox the moment Done is confirmed", async () => {
+    await mountWith(finishableRow({ run_id: "run-1" }), { "branch.finish": () => new Promise(() => {}) });
+    doneButton().click();
+    await answerConfirm(true);
+    expect(App.route.name).toBe("inbox");
+    expect(location.hash).toContain("inbox");
+    expect(finishCalls()[0][1]).toEqual({ project_id: "p1", branch: "build/login", action: "delete" });
+  });
+
+  it("keeps the branch's row off the inbox mounted after it", async () => {
+    const boardRow = {
+      ...finishableRow({ run_id: "run-1" }),
+      unread: false,
+      unread_count: 0,
+      muted: false,
+      dismissed: false,
+    };
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get") return boardRow;
+      if (method === "board.list") return { items: [boardRow] };
+      if (method === "project.list") return { projects: [{ id: "p1", name: "relaydb" }] };
+      if (method === "branch.finish") return new Promise(() => {});
+      return {};
+    });
+    await renderBranch();
+    await flush();
+    doneButton().click();
+    await answerConfirm(true);
+
+    const { refreshFeed, stopFeed } = await import("../src/core/taskFeed.js");
+    await refreshFeed();
+    const { mountInboxList } = await import("../src/core/inboxView.js");
+    mountInboxList();
+    expect(document.querySelector('#inbox-list .inbox-entry[data-key="run-1"]')).toBeNull();
+    stopFeed();
+  });
+
+  it("reads the branch it deleted only after the deletion answers", async () => {
+    let deleted;
+    await mountWith(finishableRow({ run_id: "run-1", issue_id: "iss-9" }), {
+      "branch.finish": () =>
+        new Promise((resolve) => {
+          deleted = resolve;
+        }),
+    });
+    const seenCalls = () => App.call.mock.calls.filter(([method]) => method === "entity.seen");
+    doneButton().click();
+    await answerConfirm(true);
+    expect(seenCalls()).toHaveLength(0);
+
+    deleted({ branch: "build/login" });
+    await flush();
+    expect(seenCalls().map(([, params]) => params.entity_id)).toEqual(["run-1"]);
+  });
+
+  it("reports a failed close-out as a notice, and does not come back to the branch", async () => {
+    await mountWith(finishableRow({ run_id: "run-1" }), {
       "branch.finish": () => {
         throw new Error("worktree.finish cleanup requires no uncommitted changes");
       },
     });
     doneButton().click();
     await answerConfirm(true);
-    const notice = document.querySelector("#notices .notice.error");
-    expect(notice).toBeTruthy();
-    expect(notice.textContent).toContain("build/login");
-    expect(doneButton().disabled).toBe(false);
+    const notices = [...document.querySelectorAll("#notices .notice.error")];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toContain("build/login");
+    expect(notices[0].textContent).toContain("worktree.finish cleanup requires no uncommitted changes");
+    expect(App.route.name).toBe("inbox");
   });
 });

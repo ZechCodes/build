@@ -295,23 +295,56 @@ describe("the bubble strip", () => {
     expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["agent"]);
   });
 
-  it("gives a branch another agent on the account's harness, and opens it", async () => {
+  // The reviewer's screenshot: pressing + created an agent silently on the
+  // stored default and landed in its empty chat — no harness selector. The +
+  // opens the chooser now, seeded with the stored preference; the send is
+  // what creates, exactly as on a branch with no agents at all.
+  it("opens the harness chooser instead of creating an agent outright", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
+    expect(callsTo("agent.add")).toEqual([]);
+    const chooser = railHost().querySelector(".rail-newagent");
+    expect(chooser).toBeTruthy();
+    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex");
+    expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
+  });
+
+  it("creates on the first message, with the chosen harness, and opens the new chat", async () => {
+    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
+    await mount();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    railHost().querySelector("#railinput").value = "start here";
+    railHost().querySelector("#railsend").click();
+    await flush();
     expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
+    expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
+    expect(railHost().querySelector(".rail-newagent")).toBeNull();
   });
 
   // A browser-local preference naming the carrier no surface offers any more.
-  // It is a record, and the offer is where it clamps — so the `+` creates the
-  // agent every other surface would have created, not the one nobody can pick.
-  it("clamps a stored preference for the other claude carrier before creating", async () => {
+  // It is a record, and the offer is where it clamps — the chooser highlights
+  // the agent every other surface would have created, not one nobody can pick.
+  it("clamps a stored preference for the other claude carrier in the chooser", async () => {
     localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "claude", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "claude_adk" });
+    expect(railHost().querySelector(".rail-newagent .chooser-card.chosen").dataset.provider).toBe("claude_adk");
+  });
+
+  it("backs out of the chooser onto whichever bubble is pressed", async () => {
+    await mount();
+    railHost().querySelector('[data-bubble="add"]').click();
+    await flush();
+    expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
+    bubbles()[0].click();
+    await flush();
+    expect(railHost().querySelector(".rail-newagent")).toBeNull();
+    expect(callsTo("agent.add")).toEqual([]);
   });
 
   it("publishes which agent is open, so the surfaces beside it ask about the same one", async () => {

@@ -302,6 +302,10 @@ export function mountAgentRail(host, context) {
   let disposed = false;
   let tui = null; // the mounted PTY pane, in TUI mode
   let threadCache = createThreadCache();
+  // Choosing the next agent's harness, with the chooser in the panel. Entered
+  // by the strip's `+`, left by the send that creates the agent or by opening
+  // any existing bubble.
+  let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
   let threadSeedTried = false; // one cache seed per conversation key
@@ -622,9 +626,9 @@ export function mountAgentRail(host, context) {
   const paintPanel = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
-    const agent = agentOf(selectedId);
+    const agent = agentInFocus();
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
-    const removable = canRemoveAgent({ agents: entity.agents, agentId: selectedId, kind: entity.kind });
+    const removable = canRemoveAgent({ agents: entity.agents, agentId: addingAgent ? null : selectedId, kind: entity.kind });
     const hasTerminal = agentHasTerminal(agent);
     // Which face this agent can actually wear. `mode` is remembered per work
     // item, so opening a terminal-less agent's bubble — or one whose digest
@@ -638,7 +642,7 @@ export function mountAgentRail(host, context) {
     const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
-    const wantedBody = `${shownMode}:${selectedId || "ghost"}`;
+    const wantedBody = `${shownMode}:${addingAgent ? "new" : selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
@@ -792,7 +796,7 @@ export function mountAgentRail(host, context) {
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
-    if (!entity.agents.length) {
+    if (!entity.agents.length || addingAgent) {
       paintNewAgent(body);
       syncComposer();
       return;
@@ -818,7 +822,7 @@ export function mountAgentRail(host, context) {
   };
 
   const composerPlaceholder = () =>
-    entity.agents.length ? "Send a message to this agent…" : "Send a message to start an agent here…";
+    entity.agents.length && !addingAgent ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
@@ -844,8 +848,12 @@ export function mountAgentRail(host, context) {
   /// take the draft and the focus with it, mid-sentence. (The placeholder
   /// cannot move under a poll: it says whether there is an agent to talk to,
   /// and gaining one rebuilds the panel around a conversation.)
+  /** The agent the panel is about — none while the chooser is up, whatever
+   *  bubble is technically still selected behind it. */
+  const agentInFocus = () => (addingAgent ? null : agentOf(selectedId));
+
   const syncComposer = () => {
-    if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentOf(selectedId)));
+    if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
     if (!composerModelMenu) return;
     const choice = composerChoice();
     composerModelMenu.set(catalog, choice.provider, choice);
@@ -855,7 +863,7 @@ export function mountAgentRail(host, context) {
    *  its harness names the catalog — or, before there is an agent, what the
    *  first send will create one with. */
   const composerChoice = () => {
-    const agent = agentOf(selectedId);
+    const agent = agentInFocus();
     if (!agent) return newAgentChoice();
     return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
   };
@@ -867,7 +875,7 @@ export function mountAgentRail(host, context) {
    *  makes the menu safe to press mid-turn. With none there is nothing on the
    *  bridge to write to yet, so it waits for the send that creates one. */
   const chooseModel = async (next) => {
-    if (!agentOf(selectedId)) {
+    if (!agentInFocus()) {
       writeNewAgentChoice(next);
       return;
     }
@@ -961,8 +969,8 @@ export function mountAgentRail(host, context) {
    *  dispatches its own planning agent on its first message, so it needs
    *  none of this. */
   const agentForMessage = async (entityId) => {
-    const open = agentOf(selectedId);
-    if (open || entity.kind !== "branch" || entity.agents.length) return open;
+    const open = agentInFocus();
+    if (open || entity.kind !== "branch" || (entity.agents.length && !addingAgent)) return open;
     return addAgent({ entity_id: entityId, ...newAgentParams() });
   };
 
@@ -1024,7 +1032,7 @@ export function mountAgentRail(host, context) {
       pressAddBubble();
       return;
     }
-    if (type === "agent" && agentId && agentId !== selectedId) {
+    if (type === "agent" && agentId && (agentId !== selectedId || addingAgent)) {
       openAgent(agentId);
       paint();
       // …and ask for this agent's conversation NOW. Waiting for the watcher is
@@ -1043,6 +1051,7 @@ export function mountAgentRail(host, context) {
 
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
+    addingAgent = false; // opening a real conversation ends the chooser
     chooseAgent(agentId);
     resetThreadCache();
     threadAgentId = agentId;
@@ -1067,20 +1076,27 @@ export function mountAgentRail(host, context) {
    *  The preference is a record and the offer is where it clamps: a browser
    *  that stored the carrier no surface offers any more creates the agent every
    *  other surface would have created. */
-  const pressAddBubble = async () => {
+  const pressAddBubble = () => {
     if (!entity.entityId) return;
-    const defaults = loadAgentDefaults();
-    const params = { entity_id: entity.entityId };
-    for (const field of ["provider", "model", "effort"]) {
-      if (defaults[field]) params[field] = defaults[field];
+    addingAgent = !addingAgent;
+    if (addingAgent) {
+      // The browser's stored harness preference seeds the chooser's highlight,
+      // clamped to the offer — the record the silent + used to spend outright.
+      // The human now sees the choice before anything is created; the send is
+      // what creates, exactly as it does on a branch with no agents at all.
+      if (!newAgentChoices.has(key)) {
+        const defaults = loadAgentDefaults();
+        writeNewAgentChoice({
+          provider: chosenProviderId(creatable(), defaults),
+          model: defaults.model || "",
+          effort: defaults.effort || "",
+        });
+      }
+      expanded = true;
+      writeExpanded(true);
+      disposeTui();
     }
-    if (params.provider) params.provider = chosenProviderId(creatable(), defaults);
-    try {
-      await addAgent(params);
-      await refresh();
-    } catch (error) {
-      notifyError("Could not add an agent", error.message);
-    }
+    paint();
   };
 
   /**

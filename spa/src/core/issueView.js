@@ -55,6 +55,10 @@ import { MUTATION_THREAD_PAGE, SMALLEST_THREAD_PAGE } from "./thread.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { watchChanges } from "./changeEvents.js";
+import { refreshFeed } from "./taskFeed.js";
+import { entryKeyOf } from "./inbox.js";
+import { INBOX_SCOPE } from "./inboxView.js";
+import { removeRecord, runOptimistic } from "./optimistic.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -427,9 +431,21 @@ export function mountIssueView(
   const wireRemoval = (listHost) => {
     bindAction(listHost.querySelector("#issuedelete"), "deleting…", async () => {
       if (!(await confirmAction(deletePlanConfirm()))) throw new Error("cancelled");
-      await guarded(() => callRpc("issue.delete", { issue_id: issueId }));
+      // Confirmation is the decisive moment: the surface goes, and its inbox
+      // row goes with it. A refusal brings the row back on the inbox — where
+      // the person now is — rather than throwing them back onto a page whose
+      // Delete they already pressed.
       gone = true;
       onGone();
+      await runOptimistic({
+        scope: INBOX_SCOPE,
+        records: [removeRecord(entryKeyOf({ kind: "issue", issue_id: issueId, project_id: currentProjectId() }))],
+        call: async () => {
+          await callRpc("issue.delete", { issue_id: issueId });
+          await refreshFeed();
+        },
+        failureSummary: "Could not delete this issue",
+      });
     });
   };
 

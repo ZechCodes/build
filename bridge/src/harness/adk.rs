@@ -795,7 +795,7 @@ impl ProtocolReader {
             .unwrap()
             .surfaces
             .read_task_event(subtype, event);
-        self.note_surfaces_moved_by_a_shell_capable_read(moved);
+        self.note_surfaces_moved_and_tail_running_shells(moved);
     }
 
     fn bump_revision_when(&self, moved: bool) {
@@ -804,9 +804,9 @@ impl ProtocolReader {
         }
     }
 
-    fn note_surfaces_moved_by_a_shell_capable_read(&self, moved: bool) {
-        self.bump_revision_when(moved);
+    fn note_surfaces_moved_and_tail_running_shells(&self, moved: bool) {
         if moved {
+            self.revision.bump();
             self.ensure_shell_tail_poller();
         }
     }
@@ -1130,7 +1130,7 @@ impl ProtocolReader {
                     .unwrap()
                     .surfaces
                     .read_tool_answer(&tool, &call_id, event);
-                self.note_surfaces_moved_by_a_shell_capable_read(moved);
+                self.note_surfaces_moved_and_tail_running_shells(moved);
             }
             None => {}
         }
@@ -2043,13 +2043,44 @@ mod tests {
             .collect()
     }
 
-    fn reader_tailing(task_id: &str, output_path: &Path) -> ProtocolReader {
+    /// A reader whose activity slot is emptied when the test ends, which is the
+    /// signal the poller waits on: without it the thread outlives the test and
+    /// keeps reading a temporary directory that has already been removed.
+    struct ReaderEndingItsSessionWhenDropped {
+        reader: ProtocolReader,
+    }
+
+    impl std::ops::Deref for ReaderEndingItsSessionWhenDropped {
+        type Target = ProtocolReader;
+
+        fn deref(&self) -> &ProtocolReader {
+            &self.reader
+        }
+    }
+
+    impl std::ops::DerefMut for ReaderEndingItsSessionWhenDropped {
+        fn deref_mut(&mut self) -> &mut ProtocolReader {
+            &mut self.reader
+        }
+    }
+
+    impl Drop for ReaderEndingItsSessionWhenDropped {
+        fn drop(&mut self) {
+            self.reader.activity.lock().unwrap().take();
+            let polling = self.reader.shell_poller.lock().unwrap().take();
+            if let Some(polling) = polling {
+                polling.join().expect("the shell tail poller ends cleanly");
+            }
+        }
+    }
+
+    fn reader_tailing(task_id: &str, output_path: &Path) -> ReaderEndingItsSessionWhenDropped {
         let mut reader = reader_with_a_live_activity_slot();
         read_lines_into(
             &mut reader,
             &a_background_shell_line_set(task_id, SHELL_LAUNCH_CALL_ID, output_path),
         );
-        reader
+        ReaderEndingItsSessionWhenDropped { reader }
     }
 
     fn polling_thread_of(reader: &ProtocolReader) -> std::thread::ThreadId {
@@ -2074,15 +2105,6 @@ mod tests {
             .unwrap()
             .as_ref()
             .is_some_and(|polling| polling.is_finished())
-    }
-
-    fn still_running_shells(reader: &ProtocolReader) -> Vec<(String, PathBuf)> {
-        reader
-            .state
-            .lock()
-            .unwrap()
-            .surfaces
-            .running_shell_outputs()
     }
 
     fn tail_of_the_shell(reader: &ProtocolReader, shell_id: &str) -> Vec<String> {
@@ -2115,7 +2137,7 @@ mod tests {
         );
 
         assert!(
-            still_running_shells(&reader).is_empty(),
+            running_shell_outputs(&reader.state).is_empty(),
             "the start alone names no file to tail"
         );
         assert!(no_poller_is_running(&reader));
@@ -2123,7 +2145,9 @@ mod tests {
 
     #[test]
     fn the_answer_naming_the_output_file_starts_exactly_one_poller() {
-        let mut reader = reader_with_a_live_activity_slot();
+        let mut reader = ReaderEndingItsSessionWhenDropped {
+            reader: reader_with_a_live_activity_slot(),
+        };
         let launched = fixture_lines_numbered(
             SHELL_AND_CHECKLIST_FIXTURE,
             &[
@@ -2217,7 +2241,7 @@ mod tests {
             "the poller outlived the stdout reader that started it"
         );
         assert!(
-            !still_running_shells(&reader).is_empty(),
+            !running_shell_outputs(&reader.state).is_empty(),
             "the ledger still holds the running shell the poller walked away from"
         );
     }
@@ -2257,6 +2281,7 @@ mod tests {
     #[test]
     fn a_second_shell_started_after_the_poller_left_starts_a_fresh_one() {
         let (_first_directory, first_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let (_second_directory, second_path) = shell_output_file_holding("second shell\n");
         let mut reader = reader_tailing(SHELL_TASK_ID, &first_path);
         let the_poller_that_left = polling_thread_of(&reader);
         read_lines_into(
@@ -2267,7 +2292,6 @@ mod tests {
             &reader
         )));
 
-        let (_second_directory, second_path) = shell_output_file_holding("second shell\n");
         read_lines_into(
             &mut reader,
             &a_background_shell_line_set(

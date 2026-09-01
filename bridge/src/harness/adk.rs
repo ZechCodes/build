@@ -1226,12 +1226,12 @@ pub(crate) mod fake {
     /// harness below replays exactly what claude would say. Single quotes are
     /// forbidden inside them: the fake is a `sh -c` script that quotes each
     /// line, and a stray quote would rewrite the protocol rather than fail.
-    pub(crate) const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5","capabilities":["msg_lifecycle_v1","interrupt_receipt_v1","interrupt_cancel_queued_v1"]}"#;
+    pub(crate) const INIT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5-1","capabilities":["msg_lifecycle_v1","interrupt_receipt_v1","interrupt_cancel_queued_v1"]}"#;
     /// The same child on a CLI built before the interrupt landed: it announces
     /// itself and names no capabilities at all. What a refusal is tested
     /// against, and the reason the question is asked of the child rather than
     /// of a version number.
-    pub(crate) const INIT_WITHOUT_INTERRUPT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5","capabilities":["msg_lifecycle_v1"]}"#;
+    pub(crate) const INIT_WITHOUT_INTERRUPT: &str = r#"{"type":"system","subtype":"init","session_id":"sess-adk","model":"claude-fable-5-1","capabilities":["msg_lifecycle_v1"]}"#;
     pub(crate) const THINKING: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"the index is unused"}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_USE: &str = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"bridge/src/app.rs"}}]},"parent_tool_use_id":null}"#;
     pub(crate) const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"fn main() {}"}]},"parent_tool_use_id":null}"#;
@@ -1580,7 +1580,7 @@ mod tests {
     fn the_headless_spec_runs_claude_over_stream_json_on_both_ends() {
         let choice = ModelChoice {
             provider: AgentProvider::ClaudeAdk,
-            model: Some("claude-fable-5".to_string()),
+            model: Some("claude-fable-5-1".to_string()),
             effort: Some("high".to_string()),
         };
         let spec = AdkHarness.spec(&choice, &spawn_options(), &context());
@@ -1592,7 +1592,7 @@ mod tests {
             "the protocol argv, whole and in order: {args}"
         );
         assert!(
-            args.contains("--model claude-fable-5 --effort high"),
+            args.contains("--model claude-fable-5-1 --effort high"),
             "a model selection reaches the same flags claude has always taken: {args}"
         );
         assert!(args.contains("--dangerously-skip-permissions"), "{args}");

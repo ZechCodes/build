@@ -376,6 +376,43 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fable_5_1_is_in_both_claude_carriers_catalogs_with_effort() {
+        for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
+            let catalog = provider_catalogs()
+                .into_iter()
+                .find(|catalog| catalog.id == carrier)
+                .expect("every provider has a catalog");
+            let fable = catalog
+                .models
+                .iter()
+                .find(|model| model.id == "claude-fable-5-1")
+                .unwrap_or_else(|| panic!("{carrier:?} does not offer Claude Fable 5.1"));
+            assert_eq!(fable.label, "Claude Fable 5.1");
+            assert!(fable.supports_effort);
+            assert_eq!(fable.efforts, catalog.efforts);
+            assert_eq!(catalog.models[0].id, "claude-fable-5-1");
+        }
+        for catalog in provider_catalogs() {
+            assert!(
+                !catalog
+                    .models
+                    .iter()
+                    .any(|model| model.id == "claude-fable-5"),
+                "{:?} still offers the retired Claude Fable 5",
+                catalog.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_persisted_choice_of_the_retired_fable_5_still_validates() {
+        assert!(choice(Some("claude-fable-5"), Some("max"))
+            .validate()
+            .is_ok());
+        assert!(choice(Some("claude-fable-5"), None).validate().is_ok());
+    }
+
     /// The compat alias round trips both ways for the two carriers it can
     /// name, and answers the old default for everything else.
     #[test]

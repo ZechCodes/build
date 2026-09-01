@@ -41,8 +41,8 @@ impl Harness for ClaudeHarness {
     fn models(&self) -> Vec<ModelOption> {
         vec![
             ModelOption {
-                id: "claude-fable-5",
-                label: "Claude Fable 5",
+                id: "claude-fable-5-1",
+                label: "Claude Fable 5.1",
                 supports_effort: true,
                 efforts: &EFFORT_LEVELS,
             },

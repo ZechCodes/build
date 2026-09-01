@@ -88,6 +88,14 @@ export function adoptCaptureRecord(capture) {
   announce();
 }
 
+/** Let go of a capture this client is holding, for a capture that no longer
+ *  exists: a cancelled record is never answered for again, so a held row would
+ *  otherwise sit on the inbox until its own two minutes ran out. */
+export function forgetCaptureRecord(captureId) {
+  if (!tracked.delete(captureId)) return;
+  announce();
+}
+
 /** Repaint when the held captures change. Returns unsubscribe. */
 export function subscribePendingCaptures(listener) {
   listeners.add(listener);

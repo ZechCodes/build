@@ -1019,10 +1019,6 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  /** Name the message the daemon just appended by the sequence it gave it, so
-   *  the read that carries it retires the record instead of painting it twice.
-   *  A daemon too old to name one drops the record: the refresh behind it is
-   *  what puts the message on the timeline. */
   const rekeyPostedMessage = (handle, messageKey, provisional, posted) => {
     const sequence = (posted && posted.posted_sequence) ?? null;
     if (sequence === null) handle.drop(messageKey);

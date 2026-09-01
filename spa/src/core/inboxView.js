@@ -49,9 +49,6 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 // Whether Recent is open, once the user has said. Null means nobody has, and
 // the partition decides for itself (it opens when the list above it is thin).
 let recentOpen = null;
-// A reroute at a time: the router's answer decides whether the row leaves at
-// all, so nothing is painted for it and a second press would only race the
-// first over one capture.
 const rerouteFlight = createSingleFlight();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing

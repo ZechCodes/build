@@ -431,10 +431,6 @@ export function mountIssueView(
   const wireRemoval = (listHost) => {
     bindAction(listHost.querySelector("#issuedelete"), "deleting…", async () => {
       if (!(await confirmAction(deletePlanConfirm()))) throw new Error("cancelled");
-      // Confirmation is the decisive moment: the surface goes, and its inbox
-      // row goes with it. A refusal brings the row back on the inbox — where
-      // the person now is — rather than throwing them back onto a page whose
-      // Delete they already pressed.
       gone = true;
       onGone();
       await runOptimistic({

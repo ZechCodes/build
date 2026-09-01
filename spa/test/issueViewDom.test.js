@@ -126,7 +126,6 @@ describe("docAnnotatable", () => {
   });
 });
 
-/** Answer the confirmation modal a destructive verb opens. */
 async function answerConfirm(ok) {
   await flush();
   const scrim = document.getElementById("confirm-scrim");

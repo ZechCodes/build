@@ -273,9 +273,6 @@ export function mountCaptureDecision(host, captureId) {
   async function cancel() {
     if (busy || disposed) return;
     if (!(await confirmAction(captureCancelConfirm(model())))) return;
-    // Confirmation is the decisive moment: the row goes off the inbox and the
-    // page goes with it, and the destruction carries on behind them. A refusal
-    // brings the row back where the person now is, which is the inbox.
     go({ name: "inbox" });
     await runOptimistic({
       scope: INBOX_SCOPE,

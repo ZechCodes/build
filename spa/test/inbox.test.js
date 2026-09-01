@@ -17,6 +17,7 @@ import {
   issueDoneConfirm,
   recentIsOpen,
   recentToggleHtml,
+  cacheableEntityIds,
   unreadReasonText,
 } from "../src/core/inbox.js";
 
@@ -846,5 +847,37 @@ describe("the project on every row", () => {
     expect(line.indexOf('inbox-tag')).toBeGreaterThan(-1);
     expect(line.indexOf('inbox-tag')).toBeLessThan(line.indexOf('stitle'));
     expect(html).toContain("relaydb");
+  });
+});
+
+// ---- what the cache keeps warm -------------------------------------------------
+// The local cache follows the inbox's own partition: what is listed is active,
+// and going Recent, being cleared, or finishing all mean immediate eviction.
+describe("cacheableEntityIds", () => {
+  it("names every listed entity and drops what is quiet, cleared, or finished", () => {
+    const items = [
+      branch(),
+      branch({ branch: "b2", run_id: "run-2", worktree_id: "wt-2", anchor: ago(40), last_activity: ago(30) }),
+      branch({ branch: "b3", run_id: "run-3", worktree_id: "wt-3", dismissed: true }),
+      branch({ branch: "b4", run_id: "run-4", worktree_id: "wt-4", state: "merged" }),
+      issue(),
+    ];
+    expect(cacheableEntityIds({ items, nowMs: NOW }).sort()).toEqual(["iss-1", "run-1"]);
+  });
+
+  it("keeps the issue an active branch is implementing, though it is not listed", () => {
+    const items = [issue({ implementation_active: true })];
+    expect(inboxEntries({ items, nowMs: NOW }).entries).toEqual([]);
+    expect(cacheableEntityIds({ items, nowMs: NOW })).toEqual(["iss-1"]);
+  });
+
+  it("does not keep a finished or cleared issue even while marked implementing", () => {
+    expect(cacheableEntityIds({ items: [issue({ implementation_active: true, state: "archived" })], nowMs: NOW })).toEqual([]);
+    expect(cacheableEntityIds({ items: [issue({ implementation_active: true, dismissed: true })], nowMs: NOW })).toEqual([]);
+  });
+
+  it("names no entity for rows that hold none", () => {
+    const items = [branch({ branch: "main", run_id: null, worktree_id: null, primary: true })];
+    expect(cacheableEntityIds({ items, nowMs: NOW })).toEqual([]);
   });
 });

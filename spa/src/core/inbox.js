@@ -326,6 +326,27 @@ export function inboxEntries({ items = [], nowMs = Date.now(), hiddenKeys = new 
   return { entries, recent, autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW };
 }
 
+/** The entities whose local caches stay warm: the inbox's own partition is the
+ *  rule. Every listed entry's entity is active; going Recent, being cleared,
+ *  and finishing all mean the row stops being named here, and the cache evicts
+ *  what this stops naming. One addition: the issue an active branch is
+ *  implementing is not listed — the branch carries the row — but its surfaces
+ *  are one click away, so its cache stays warm with the branch's. */
+export function cacheableEntityIds({ items = [], nowMs = Date.now() } = {}) {
+  const ids = new Set(
+    inboxEntries({ items, nowMs })
+      .entries.map((entry) => entry.entityId)
+      .filter(Boolean),
+  );
+  for (const item of items) {
+    if (item.kind !== "issue" || !item.implementation_active) continue;
+    if (item.dismissed || FINISHED_STATES.has(item.state)) continue;
+    const id = entityIdOf(item);
+    if (id) ids.add(id);
+  }
+  return [...ids];
+}
+
 /** The entry the current route is standing on, so the list can mark it. Takes
  *  every row on screen — Recent included, since an open one is on screen. */
 export function activeEntryKey(route, entries) {

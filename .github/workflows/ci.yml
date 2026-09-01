@@ -335,7 +335,7 @@ jobs:
           verify() {
             curl -sf -o /dev/null https://getbuild.ing/healthz &&
             curl -sf https://getbuild.ing/ | grep -q "agentic coding IDE" &&
-            curl -sf -o /dev/null https://getbuild.ing/landing/landing.js
+            curl -sf -o /dev/null https://getbuild.ing/landing/landing.css
           }
           for i in $(seq 1 12); do verify && exit 0; sleep 5; done
           verify

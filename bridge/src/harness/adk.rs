@@ -231,6 +231,7 @@ struct ProtocolState {
     last_line: Instant,
     /// The id the child gave this conversation, for `--resume`.
     session_id: Option<String>,
+    model: Option<String>,
     /// What the child announced it can do, verbatim from its `init` line.
     capabilities: Vec<String>,
     /// The interrupt Build is waiting on, if any. At most one: asking twice to
@@ -258,6 +259,7 @@ impl ProtocolState {
             turn_open: false,
             last_line: Instant::now(),
             session_id: None,
+            model: None,
             capabilities: Vec::new(),
             pending_interrupt: None,
             reported_error: None,
@@ -568,6 +570,10 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().session_id.clone()
     }
 
+    fn active_model(&self) -> Option<String> {
+        self.state.lock().unwrap().model.clone()
+    }
+
     /// Reported, never guessed — the difference this carrier exists for. A model
     /// that reasons for forty minutes without emitting a token is `Working` the
     /// whole time, because the turn it was given has not been answered.
@@ -715,6 +721,9 @@ impl ProtocolReader {
         state.announced = true;
         if let Some(id) = event["session_id"].as_str() {
             state.session_id = Some(id.to_string());
+        }
+        if let Some(model) = event["model"].as_str() {
+            state.model = Some(model.to_string());
         }
         if let Some(announced) = event["capabilities"].as_array() {
             state.capabilities = announced
@@ -1762,6 +1771,23 @@ mod tests {
             session.session_id().as_deref(),
             Some("sess-adk"),
             "the id a resume is passed comes from the init line"
+        );
+        session.end();
+    }
+
+    #[test]
+    fn the_init_line_names_the_model_the_session_is_running() {
+        let session = open(&stream_json_harness(&[RESULT]));
+        assert_eq!(
+            session.active_model(),
+            None,
+            "a child that has said nothing is running nothing Build knows of"
+        );
+        wait_for_status(&session, AgentStatus::Waiting);
+        assert_eq!(
+            session.active_model().as_deref(),
+            Some("claude-fable-5-1"),
+            "the model the button names comes from the init line"
         );
         session.end();
     }

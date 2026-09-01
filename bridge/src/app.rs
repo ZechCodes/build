@@ -3227,6 +3227,23 @@ impl AppState {
         });
     }
 
+    fn recorded_active_model(&self, owner: &str, agent_id: &str) -> Option<String> {
+        self.entity_agents(owner)
+            .ok()?
+            .by_id(agent_id)?
+            .active_model
+            .clone()
+    }
+
+    fn record_agent_active_model(&mut self, owner: &str, agent_id: &str, running: Option<String>) {
+        if self.recorded_active_model(owner, agent_id) == running {
+            return;
+        }
+        self.edit_agent_record("record_agent_active_model", owner, agent_id, |agent| {
+            agent.active_model = running;
+        });
+    }
+
     /// Post one thing the agent reported doing into the conversation it speaks
     /// in.
     ///
@@ -3856,12 +3873,14 @@ impl AppState {
             active.model_choice = choice;
             let persisted = self.persist_plan_record(entity_id, &active);
             self.plans.insert(entity_id.to_string(), active);
+            self.note_entity_changed(entity_id);
             return persisted;
         }
         let mut active = self.take_run(entity_id)?;
         active.model_choice = choice;
         let persisted = self.persist_run_record(entity_id, &active);
         self.runs.insert(entity_id.to_string(), active);
+        self.note_entity_changed(entity_id);
         persisted
     }
 
@@ -8357,12 +8376,19 @@ impl AppState {
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
         let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
         let live = tab.is_some_and(|tab| tab.session_is_live());
+        let next_start = self
+            .entity_agents(entity_id)
+            .ok()
+            .zip(self.entity_model_choice(entity_id).ok())
+            .map(|(roster, entity_choice)| roster.turn_choice(&agent.id, &entity_choice))
+            .unwrap_or_else(|| agent.choice.clone());
         json!({
             "id": agent.id,
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
-            "model": agent.choice.model,
-            "effort": agent.choice.effort,
+            "model": next_start.model,
+            "effort": next_start.effort,
+            "active_model": agent.active_model.clone().unwrap_or_default(),
             "state": if live {
                 crate::agent::AgentLifecycle::Live.as_str()
             } else {
@@ -18024,8 +18050,13 @@ fn ensure_agent_tab(
                     Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
                 }
             }
+            let running = tab
+                .session
+                .active_model()
+                .or_else(|| model_choice.model.clone());
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
+            s.record_agent_active_model(owner, agent_id, running);
         }
         spawn_tab_pumps(state, key, rx);
         return Ok((wire_id, Spawned::Fresh));
@@ -18294,7 +18325,7 @@ fn spawn_tab_pump(
                                 // would throw a good name away at every
                                 // restart. A name that no longer resolves is
                                 // caught at the reservation instead.
-                                note_named_conversation(&mut s, &key, &owner, &agent_id);
+                                note_session_self_report(&mut s, &key, &owner, &agent_id);
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -18368,7 +18399,7 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    note_named_conversation(&mut s, &key, &owner, &agent_id);
+                    note_session_self_report(&mut s, &key, &owner, &agent_id);
                     record_activity(&mut s, &owner, &agent_id, &activity, &mut open_calls);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -18384,7 +18415,7 @@ fn spawn_activity_pump(
                         tab.live = false;
                     }
                     match named_conversation(&s, &key) {
-                        Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
+                        Some(_) => note_session_self_report(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -18446,6 +18477,22 @@ fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agen
     state.record_agent_resume_id(owner, agent_id, Some(named));
 }
 
+fn announced_model(state: &AppState, key: &TabKey) -> Option<String> {
+    state.tabs.get(key)?.session.active_model()
+}
+
+fn note_announced_model(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(running) = announced_model(state, key) else {
+        return;
+    };
+    state.record_agent_active_model(owner, agent_id, Some(running));
+}
+
+fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    note_named_conversation(state, key, owner, agent_id);
+    note_announced_model(state, key, owner, agent_id);
+}
+
 /// The terminal carrier's capture point: ask every live agent session for the
 /// name its conversation has, and write down each answer that moved.
 ///
@@ -18469,6 +18516,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
         agent_id: String,
         session: Arc<dyn AgentSession>,
         recorded: Option<String>,
+        recorded_model: Option<String>,
     }
 
     let live: Vec<LiveAgent> = {
@@ -18485,6 +18533,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
                     agent_id: agent_id.clone(),
                     session: Arc::clone(&tab.session),
                     recorded: s.recorded_resume_id(owner, agent_id),
+                    recorded_model: s.recorded_active_model(owner, agent_id),
                 }),
                 TabRole::Shell => None,
             })
@@ -18493,12 +18542,11 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     let moved: Vec<(TabKey, String, String)> = live
         .into_iter()
         .filter_map(|agent| {
-            let named = agent.session.session_id()?;
-            (agent.recorded.as_deref() != Some(named.as_str())).then_some((
-                agent.key,
-                agent.owner,
-                agent.agent_id,
-            ))
+            let named = agent.session.session_id();
+            let running = agent.session.active_model();
+            let name_moved = named.is_some() && agent.recorded != named;
+            let model_moved = running.is_some() && agent.recorded_model != running;
+            (name_moved || model_moved).then_some((agent.key, agent.owner, agent.agent_id))
         })
         .collect();
     if moved.is_empty() {
@@ -18506,7 +18554,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     }
     let mut s = state.lock().unwrap();
     for (key, owner, agent_id) in moved {
-        note_named_conversation(&mut s, &key, &owner, &agent_id);
+        note_session_self_report(&mut s, &key, &owner, &agent_id);
     }
 }
 
@@ -34647,6 +34695,7 @@ mod tests {
         status: AgentStatus,
         quiet: Duration,
         log: SessionLog,
+        active_model: Option<String>,
     }
 
     impl DictatedSession {
@@ -34656,6 +34705,7 @@ mod tests {
                 status,
                 quiet: Duration::ZERO,
                 log: SessionLog::default(),
+                active_model: None,
             }
         }
 
@@ -34671,6 +34721,11 @@ mod tests {
             self.log = log.clone();
             self
         }
+
+        fn announcing_model(mut self, model: &str) -> DictatedSession {
+            self.active_model = Some(model.to_string());
+            self
+        }
     }
 
     impl AgentSession for DictatedSession {
@@ -34683,6 +34738,9 @@ mod tests {
         }
         fn quiet_for(&self) -> Duration {
             self.quiet
+        }
+        fn active_model(&self) -> Option<String> {
+            self.active_model.clone()
         }
         fn exited_within(&self, _timeout: Duration) -> bool {
             matches!(self.status, AgentStatus::Ended { .. })
@@ -36519,6 +36577,155 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_spawn_writes_down_the_model_it_spent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-spent");
+        insert_run_without_agent(
+            &state,
+            &repo,
+            dir.path().join("other"),
+            "run-harness-default",
+        );
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| warm_tui_spec(),
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-spent", "model": "claude-opus-5" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-spent", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state.lock().unwrap().agent_digests("run-spent")[0]["active_model"],
+            "claude-opus-5",
+            "a carrier that announces nothing still says what Build handed it"
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-harness-default", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state.lock().unwrap().agent_digests("run-harness-default")[0]["active_model"],
+            "",
+            "a spawn left at the harness default knows nothing rather than lying"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_sweep_tick_writes_down_the_model_a_session_announced() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let agent_id = crate::agent::derived_agent_id("run-announced");
+        {
+            let mut s = state.lock().unwrap();
+            let root = insert_run(
+                &mut s,
+                &repo,
+                dir.path(),
+                "run-announced",
+                RunState::Building,
+            );
+            insert_dictated_agent_tab(
+                &mut s,
+                &root,
+                "run-announced",
+                DictatedSession::reporting(AgentStatus::Waiting)
+                    .announcing_model("claude-fable-5-1"),
+            );
+        }
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_active_model("run-announced", &agent_id)
+                .as_deref(),
+            Some("claude-fable-5-1"),
+            "one tick puts the model the child announced on the agent's record"
+        );
+
+        state.lock().unwrap().changes().flush();
+        capture_conversation_names(&state);
+        assert!(
+            !state.lock().unwrap().changes().has_pending(),
+            "a tick with nothing moved writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_keeps_the_model_it_last_ran() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-outlives");
+        let agent_id = crate::agent::derived_agent_id("run-outlives");
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-outlives",
+            HarnessSpec::new("sh").arg("-c").arg("exit 0"),
+        );
+        {
+            let mut s = state.lock().unwrap();
+            s.resume_id_probe = Arc::new(|_, _, _| true);
+            let run = s.runs.get_mut("run-outlives").expect("the run");
+            run.model_choice.model = Some("claude-opus-5".to_string());
+            let agent = run.agents.resolve_mut(None).expect("its agent");
+            agent.resume_session_id = Some("sess-gone".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-outlives", "body": "carry on" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = derived_agent_key(&root, "run-outlives");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the child leaves on its own");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-outlives", &agent_id)
+                .is_none()
+                .then_some(())
+        })
+        .await
+        .expect("a session that announced nothing sends the next spawn back to the probe");
+
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_active_model("run-outlives", &agent_id)
+                .as_deref(),
+            Some("claude-opus-5"),
+            "what an agent last ran on outlives the session that ran it"
+        );
+    }
+
     /// The close arm RECORDS; it never clears.
     ///
     /// The headless pump clears on a session that ended having announced
@@ -37044,6 +37251,108 @@ mod tests {
             "a session that reports it is over is not live"
         );
         assert_ne!(state.agent_digests("run-liveness")[0]["state"], "live");
+    }
+
+    #[test]
+    fn an_agents_digest_carries_the_model_it_is_actually_running() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-active-model",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-active-model");
+
+        assert_eq!(
+            state.agent_digests("run-active-model")[0]["active_model"],
+            "",
+            "an agent that has never run is running nothing Build knows of"
+        );
+
+        state.record_agent_active_model(
+            "run-active-model",
+            &agent_id,
+            Some("claude-fable-5-1".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-active-model")[0]["active_model"],
+            "claude-fable-5-1"
+        );
+
+        state.record_agent_active_model(
+            "run-active-model",
+            &agent_id,
+            Some("claude-opus-5".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-active-model")[0]["active_model"],
+            "claude-opus-5",
+            "the newer announcement wins"
+        );
+    }
+
+    #[test]
+    fn the_digest_reports_the_model_the_next_start_will_spend() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-choose",
+            RunState::Building,
+        );
+        let provider_before = state.agent_digests("run-choose")[0]["provider"].clone();
+
+        state
+            .set_entity_model_choice(
+                "run-choose",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: Some("high".to_string()),
+                },
+            )
+            .expect("the choice persists");
+
+        let digest = state.agent_digests("run-choose")[0].clone();
+        assert_eq!(digest["model"], "claude-opus-5");
+        assert_eq!(digest["effort"], "high");
+        assert_eq!(digest["provider"], provider_before);
+    }
+
+    #[test]
+    fn choosing_a_model_stales_the_entity_for_every_browser() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-stale-choice",
+            RunState::Building,
+        );
+        state.changes().flush();
+        assert!(!state.changes().has_pending());
+
+        state
+            .set_entity_model_choice(
+                "run-stale-choice",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: None,
+                },
+            )
+            .expect("the choice persists");
+
+        assert!(
+            state.changes().has_pending(),
+            "another browser repaints instead of waiting for its own poll"
+        );
     }
 
     /// The idle sweep's two clocks come off the session: the exit it explains a

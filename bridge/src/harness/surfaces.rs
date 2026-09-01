@@ -83,8 +83,6 @@ pub struct SurfaceShell {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tail: Vec<String>,
-    #[serde(skip)]
-    pub output_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -134,8 +132,11 @@ pub struct SurfaceLedger {
     subagents: Vec<SurfaceAgent>,
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
+    shell_outputs: HashMap<String, PathBuf>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
+
+const SHELL_RUNNING: &str = "running";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingChecklistCreate {
@@ -172,6 +173,18 @@ impl SurfaceLedger {
 
     pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, whole_event: &Value) -> bool {
         self.apply_checklist_answer(tool, call_id, whole_event)
+    }
+
+    pub fn running_shell_outputs(&self) -> Vec<(String, PathBuf)> {
+        self.shells
+            .iter()
+            .filter(|shell| shell.state.as_deref() == Some(SHELL_RUNNING))
+            .filter_map(|shell| {
+                self.shell_outputs
+                    .get(&shell.id)
+                    .map(|output_path| (shell.id.clone(), output_path.clone()))
+            })
+            .collect()
     }
 
     pub fn close_pending_creates(&mut self) {
@@ -446,14 +459,18 @@ fn bounded_text(source: &Value, field: &str) -> Option<String> {
     read_text(source, field).map(|written| one_line(&written, TOOL_SUMMARY_LIMIT))
 }
 
+fn is_progress_entry(entry: &Value, entry_type: &str) -> bool {
+    entry["type"].as_str() == Some(entry_type)
+}
+
 fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
     let mut phases: Vec<(u64, SurfacePhase)> = entries
         .iter()
+        .filter(|entry| is_progress_entry(entry, "workflow_phase"))
         .enumerate()
-        .filter(|(_, entry)| entry["type"] == json!("workflow_phase"))
-        .map(|(position, entry)| {
+        .map(|(phase_ordinal, entry)| {
             (
-                entry["index"].as_u64().unwrap_or(position as u64),
+                entry["index"].as_u64().unwrap_or(phase_ordinal as u64),
                 SurfacePhase {
                     title: read_text(entry, "title").unwrap_or_default(),
                     agents: Vec::new(),
@@ -465,7 +482,7 @@ fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
     for (position, entry) in entries
         .iter()
         .enumerate()
-        .filter(|(_, entry)| entry["type"] == json!("workflow_agent"))
+        .filter(|(_, entry)| is_progress_entry(entry, "workflow_agent"))
     {
         let phase_index = entry["phaseIndex"].as_u64();
         let phase_title = read_text(entry, "phaseTitle");
@@ -557,6 +574,10 @@ fn wire_agent_state(token: &str, has_started_at: bool) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::harness::stream_fixtures::{
+        fixture_events, fixture_line, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE,
+        WORKFLOW_FIXTURE,
+    };
 
     fn line_counter_from_the_workflow_fixture() -> SurfaceAgent {
         SurfaceAgent {
@@ -594,10 +615,9 @@ mod tests {
         SurfaceShell {
             id: "bash-1".to_string(),
             description: Some("run the suite".to_string()),
-            state: Some("running".to_string()),
+            state: Some(SHELL_RUNNING.to_string()),
             exit_code: None,
             tail: vec!["test one ... ok".to_string()],
-            output_path: Some(PathBuf::from("/private/tmp/shell-out.log")),
         }
     }
 
@@ -679,8 +699,46 @@ mod tests {
         let written = surfaces.wire_value(&no_call_sequence).to_string();
 
         assert!(!written.contains("spawning_call_id"), "{written}");
-        assert!(!written.contains("output_path"), "{written}");
+    }
+
+    #[test]
+    fn a_running_shells_output_path_is_the_ledgers_alone_and_never_the_snapshots() {
+        let mut ledger = SurfaceLedger::default();
+        let shell = one_shell();
+        let output_path = PathBuf::from("/private/tmp/shell-out.log");
+        ledger
+            .shell_outputs
+            .insert(shell.id.clone(), output_path.clone());
+        ledger.shells.push(shell.clone());
+
+        assert_eq!(
+            ledger.running_shell_outputs(),
+            vec![(shell.id.clone(), output_path)]
+        );
+
+        let written = ledger
+            .snapshot()
+            .expect("the ledger holds a snapshot")
+            .wire_value(&no_call_sequence)
+            .to_string();
+        assert!(!written.contains("shell_outputs"), "{written}");
         assert!(!written.contains("shell-out.log"), "{written}");
+    }
+
+    #[test]
+    fn a_shell_that_is_no_longer_running_is_no_longer_tailed() {
+        let mut ledger = SurfaceLedger::default();
+        let shell = one_shell();
+        ledger.shell_outputs.insert(
+            shell.id.clone(),
+            PathBuf::from("/private/tmp/shell-out.log"),
+        );
+        ledger.shells.push(SurfaceShell {
+            state: Some("done".to_string()),
+            ..shell
+        });
+
+        assert!(ledger.running_shell_outputs().is_empty());
     }
 
     #[test]
@@ -706,29 +764,8 @@ mod tests {
         assert_eq!(wire_agent_state("thinking", true), None);
         assert_eq!(wire_agent_state("thinking", false), None);
     }
-}
-
-#[cfg(test)]
-mod ledger_tests {
-    use super::*;
-    use crate::harness::stream_fixtures::{
-        fixture_line, fixture_text, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
-    };
 
     const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
-
-    fn fixture_events(file_name: &str) -> Vec<Value> {
-        fixture_text(file_name)
-            .lines()
-            .enumerate()
-            .map(|(position, line)| {
-                serde_json::from_str::<Value>(line).unwrap_or_else(|why| {
-                    panic!("{file_name}:{} is one JSON event: {why}", position + 1)
-                })
-            })
-            .filter(|event| event["subtype"].is_string())
-            .collect()
-    }
 
     fn feed(ledger: &mut SurfaceLedger, event: &Value) -> bool {
         let subtype = event["subtype"]
@@ -748,10 +785,6 @@ mod ledger_tests {
             .expect("the ledger holds a snapshot")
             .wire_value(&no_call_sequence)
             .to_string()
-    }
-
-    fn no_call_sequence(_spawning_call_id: &str) -> Option<u64> {
-        None
     }
 
     fn the_only_workflow(ledger: &SurfaceLedger) -> SurfaceWorkflow {
@@ -939,6 +972,35 @@ mod ledger_tests {
         let workflow = the_only_workflow(&ledger);
         assert_eq!(phase_holding(&workflow, "verifier"), "Verify");
         assert_eq!(agent_named(&workflow, "verifier").id, "w81x1fmx5:9");
+    }
+
+    #[test]
+    fn a_phase_carrying_no_index_is_numbered_by_its_place_among_the_phases() {
+        let mut ledger = ledger_through_the_final_progress_array();
+        let mut phases_without_indexes = fixture_line(WORKFLOW_FIXTURE, 63);
+        phases_without_indexes["workflow_progress"] = json!([
+            {
+                "type": "workflow_agent",
+                "index": 4,
+                "label": "verifier",
+                "phaseIndex": 0,
+                "state": "start",
+                "queuedAt": 1_788_290_178_060u64,
+            },
+            { "type": "workflow_phase", "title": "Read" },
+            { "type": "workflow_phase", "title": "Summarize" },
+        ]);
+
+        assert!(feed(&mut ledger, &phases_without_indexes));
+
+        let workflow = the_only_workflow(&ledger);
+        let titles: Vec<&str> = workflow
+            .phases
+            .iter()
+            .map(|phase| phase.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Read", "Summarize"], "{workflow:?}");
+        assert_eq!(phase_holding(&workflow, "verifier"), "Read");
     }
 
     #[test]
@@ -1200,8 +1262,11 @@ mod ledger_tests {
     #[test]
     fn the_subagent_fixture_leaves_every_other_kind_empty() {
         let mut ledger = SurfaceLedger::default();
-        for event in fixture_events(SUBAGENT_FIXTURE) {
-            feed(&mut ledger, &event);
+        for event in fixture_events(SUBAGENT_FIXTURE)
+            .iter()
+            .filter(|event| event["subtype"].is_string())
+        {
+            feed(&mut ledger, event);
         }
 
         let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");

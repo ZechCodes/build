@@ -21,11 +21,22 @@ pub(crate) fn fixture_lines(file_name: &str) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn fixture_events(file_name: &str) -> Vec<Value> {
+    fixture_text(file_name)
+        .lines()
+        .enumerate()
+        .map(|(position, line)| {
+            serde_json::from_str(line).unwrap_or_else(|why| {
+                panic!("{file_name}:{} is one JSON event: {why}", position + 1)
+            })
+        })
+        .collect()
+}
+
 pub(crate) fn fixture_line(file_name: &str, line_number: usize) -> Value {
-    let lines = fixture_lines(file_name);
-    let line = lines
+    let events = fixture_events(file_name);
+    events
         .get(line_number - 1)
-        .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"));
-    serde_json::from_str(line)
-        .unwrap_or_else(|why| panic!("{file_name}:{line_number} is one JSON event: {why}"))
+        .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"))
+        .clone()
 }

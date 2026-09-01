@@ -153,8 +153,8 @@ and this document is wrong — except for the one deviation named under
   row (rows are the reader's business, snapshots are this one's); never parses
   a field as required — every field on this wire is optional and pinned to a
   fixture.
-- **The two state tables, so four parsers do not each own a copy** Private
-  functions in `surfaces.rs`, used by all four parsers and by nothing else:
+- **The three state tables, so four parsers do not each own a copy** Private
+  functions in `surfaces.rs`, used by the parsers and by nothing else:
   - `wire_task_state(status: &str) -> Option<&'static str>` — for the
     `task_updated` / `task_notification` vocabulary (`completed`, `failed`,
     `killed`, `timed_out`, …). Terminal-and-failed → `"failed"`, terminal →
@@ -165,6 +165,13 @@ and this document is wrong — except for the one deviation named under
     `start` / `progress` → `"running"` when the entry carries `startedAt`,
     `"queued"` when it carries only `queuedAt`; `done` → `"done"`; an
     unrecognised token → `None`, and the `state` field is omitted entirely.
+  - `wire_checklist_state(token: &str) -> Option<&'static str>` — for the
+    `TaskUpdate` / `TodoWrite` vocabulary, which the wire carries verbatim:
+    `pending`, `in_progress`, `completed` and `blocked` each map to themselves,
+    and anything else → `None`, which means LEAVE THE CURRENT STATE ALONE. Used
+    by `apply_checklist_call` and `apply_checklist_answer` and by nothing else,
+    because a checklist item's vocabulary is neither a task status nor a
+    workflow-agent token.
 - **Where the terminal/failed vocabulary itself lives** `task_status_is_terminal`
   (`bridge/src/harness/adk.rs:1146`) becomes `pub(crate)` and gains one sibling
   beside it, `pub(crate) fn task_status_failed(status: &str) -> bool`, holding
@@ -689,9 +696,9 @@ beside, and match the export `mountAgentSurfaces`.
    the value over; `surfaces.rs` matches on `task_type`. Neither does the
    other's match. `shell_tail.rs` reads files and parses no protocol at all.
    The harness-token vocabulary (`task_status_is_terminal` /
-   `task_status_failed`) lives once, in `adk.rs`, and `surfaces.rs`'s two
-   tables (`wire_task_state`, `wire_agent_state`) are the only mapping from it
-   to a wire token.
+   `task_status_failed`) lives once, in `adk.rs`, and `surfaces.rs`'s three
+   tables (`wire_task_state`, `wire_agent_state`, `wire_checklist_state`) are
+   the only mapping from a harness token to a wire token.
 3. **Signal versus content.** The watch channel says *moved*; the digest
    carries *what*. Nothing about a surface rides an `entity.changed` push. Only
    `SurfaceLedger` decides *moved*, and both the stdout reader and the tail
@@ -728,7 +735,7 @@ beside, and match the export `mountAgentSurfaces`.
 | the `agent` entry shape | `SurfaceAgent` (bridge), `agentRows` (spa) | workflows, subagents |
 | one agent row's markup | `agentRowHtml` | workflow viewer, subagent viewer |
 | a harness token → terminal / failed | `task_status_is_terminal` + `task_status_failed` (`adk.rs`, `pub(crate)`) | `ended_summary`, `wire_task_state` |
-| a harness token → a wire state | `wire_task_state` / `wire_agent_state` (`surfaces.rs`) | all four kind parsers |
+| a harness token → a wire state | `wire_task_state` / `wire_agent_state` / `wire_checklist_state` (`surfaces.rs`) | all four kind parsers |
 | a state token → a mark name | `surfaceStateMark` (spa), tool-outcome map (`thread.js`) | all four kinds, tool-call rows |
 | a mark name → a glyph | `outcomeMarkHtml` | both vocabulary maps |
 | pill counts and the live dot | `surfacePills` | all four kinds |

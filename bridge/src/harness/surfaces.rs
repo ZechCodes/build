@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -127,7 +128,193 @@ impl AgentSurfaces {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub struct SurfaceLedger {
+    workflows: Vec<SurfaceWorkflow>,
+    subagents: Vec<SurfaceAgent>,
+    shells: Vec<SurfaceShell>,
+    checklist: Vec<SurfaceChecklistItem>,
+    #[allow(dead_code)]
+    pending_checklist_creates: HashMap<String, (String, String)>,
+}
+
+impl SurfaceLedger {
+    pub fn read_task_event(&mut self, subtype: &str, event: &Value) -> bool {
+        let task_id = match event["task_id"].as_str() {
+            Some(named) => named.to_string(),
+            None => return false,
+        };
+        match subtype {
+            "task_started" => match event["task_type"].as_str() {
+                Some("local_workflow") => self.apply_workflow(subtype, &task_id, event),
+                _ => false,
+            },
+            "task_progress" | "task_updated" | "task_notification" => {
+                match self.holds_workflow(&task_id) {
+                    true => self.apply_workflow(subtype, &task_id, event),
+                    false => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    pub fn snapshot(&self) -> Option<AgentSurfaces> {
+        let held = AgentSurfaces {
+            workflows: self.workflows.clone(),
+            subagents: self.subagents.clone(),
+            shells: self.shells.clone(),
+            checklist: self.checklist.clone(),
+        };
+        match held.is_empty() {
+            true => None,
+            false => Some(held),
+        }
+    }
+
+    fn holds_workflow(&self, task_id: &str) -> bool {
+        self.workflows.iter().any(|held| held.id == task_id)
+    }
+
+    fn apply_workflow(&mut self, subtype: &str, task_id: &str, event: &Value) -> bool {
+        match subtype {
+            "task_started" => {
+                let started = SurfaceWorkflow {
+                    id: task_id.to_string(),
+                    name: read_text(event, "workflow_name").unwrap_or_default(),
+                    description: read_text(event, "description"),
+                    state: Some("running".to_string()),
+                    phases: Vec::new(),
+                };
+                match self.workflow_named(task_id) {
+                    Some(held) => replace_when_changed(held, started),
+                    None => {
+                        self.workflows.push(started);
+                        true
+                    }
+                }
+            }
+            "task_progress" => {
+                let reported = match event["workflow_progress"].as_array() {
+                    Some(entries) => read_workflow_phases(task_id, entries),
+                    None => return false,
+                };
+                match self.workflow_named(task_id) {
+                    Some(held) => replace_when_changed(&mut held.phases, reported),
+                    None => false,
+                }
+            }
+            "task_updated" => self.close_workflow(task_id, event["patch"]["status"].as_str()),
+            "task_notification" => self.close_workflow(task_id, event["status"].as_str()),
+            _ => false,
+        }
+    }
+
+    fn close_workflow(&mut self, task_id: &str, status: Option<&str>) -> bool {
+        let closed = match status.and_then(wire_task_state) {
+            Some(state) => Some(state.to_string()),
+            None => return false,
+        };
+        match self.workflow_named(task_id) {
+            Some(held) => replace_when_changed(&mut held.state, closed),
+            None => false,
+        }
+    }
+
+    fn workflow_named(&mut self, task_id: &str) -> Option<&mut SurfaceWorkflow> {
+        self.workflows.iter_mut().find(|held| held.id == task_id)
+    }
+}
+
+fn replace_when_changed<T: PartialEq>(held: &mut T, reported: T) -> bool {
+    match *held == reported {
+        true => false,
+        false => {
+            *held = reported;
+            true
+        }
+    }
+}
+
+fn read_text(source: &Value, field: &str) -> Option<String> {
+    source[field].as_str().map(str::to_string)
+}
+
+fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
+    let mut phases: Vec<(u64, SurfacePhase)> = entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["type"] == json!("workflow_phase"))
+        .map(|(position, entry)| {
+            (
+                entry["index"].as_u64().unwrap_or(position as u64),
+                SurfacePhase {
+                    title: read_text(entry, "title").unwrap_or_default(),
+                    agents: Vec::new(),
+                },
+            )
+        })
+        .collect();
+
+    for (position, entry) in entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry["type"] == json!("workflow_agent"))
+    {
+        let phase_index = entry["phaseIndex"].as_u64();
+        let phase_title = read_text(entry, "phaseTitle");
+        let landing = phase_index
+            .and_then(|wanted| phases.iter().position(|(index, _)| *index == wanted))
+            .or_else(|| {
+                phase_title
+                    .as_ref()
+                    .and_then(|wanted| phases.iter().position(|(_, phase)| &phase.title == wanted))
+            })
+            .unwrap_or_else(|| {
+                phases.push((
+                    phase_index.unwrap_or_default(),
+                    SurfacePhase {
+                        title: phase_title.unwrap_or_default(),
+                        agents: Vec::new(),
+                    },
+                ));
+                phases.len() - 1
+            });
+        phases[landing]
+            .1
+            .agents
+            .push(read_workflow_agent(task_id, position as u64, entry));
+    }
+
+    phases.into_iter().map(|(_, phase)| phase).collect()
+}
+
+fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAgent {
+    let index = entry["index"].as_u64().unwrap_or(position);
+    let started_at = entry["startedAt"].as_u64();
+    SurfaceAgent {
+        id: read_text(entry, "agentId").unwrap_or_else(|| format!("{task_id}:{index}")),
+        label: read_text(entry, "label").unwrap_or_default(),
+        model: read_text(entry, "model"),
+        state: entry["state"]
+            .as_str()
+            .and_then(|token| wire_agent_state(token, started_at.is_some()))
+            .map(str::to_string),
+        started_at,
+        duration_ms: entry["durationMs"].as_u64(),
+        tokens: entry["tokens"].as_u64(),
+        tool_calls: entry["toolCalls"].as_u64(),
+        last_tool: read_text(entry, "lastToolName").map(|name| SurfaceTool {
+            name,
+            summary: read_text(entry, "lastToolSummary"),
+        }),
+        result: read_text(entry, "resultPreview"),
+        error: read_text(entry, "error"),
+        attempt: entry["attempt"].as_u64().map(|attempt| attempt as u32),
+        spawning_call_id: None,
+    }
+}
+
 fn wire_task_state(status: &str) -> Option<&'static str> {
     match task_status_failed(status) {
         true => Some("failed"),
@@ -138,7 +325,6 @@ fn wire_task_state(status: &str) -> Option<&'static str> {
     }
 }
 
-#[allow(dead_code)]
 fn wire_agent_state(token: &str, has_started_at: bool) -> Option<&'static str> {
     match token {
         "start" | "progress" => match has_started_at {
@@ -301,5 +487,303 @@ mod tests {
         assert_eq!(wire_agent_state("done", true), Some("done"));
         assert_eq!(wire_agent_state("thinking", true), None);
         assert_eq!(wire_agent_state("thinking", false), None);
+    }
+}
+
+#[cfg(test)]
+mod ledger_tests {
+    use super::*;
+
+    const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
+
+    fn fixture_line(file_name: &str, line_number: usize) -> Value {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-stream")
+            .join(file_name);
+        let captured = std::fs::read_to_string(&path)
+            .unwrap_or_else(|why| panic!("the {file_name} fixture reads: {why}"));
+        let line = captured
+            .lines()
+            .nth(line_number - 1)
+            .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"));
+        serde_json::from_str(line)
+            .unwrap_or_else(|why| panic!("{file_name}:{line_number} is one JSON event: {why}"))
+    }
+
+    fn feed(ledger: &mut SurfaceLedger, event: &Value) -> bool {
+        let subtype = event["subtype"]
+            .as_str()
+            .expect("every fixture system line names a subtype")
+            .to_string();
+        ledger.read_task_event(&subtype, event)
+    }
+
+    fn feed_workflow_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
+        feed(ledger, &fixture_line("workflow.jsonl", line_number))
+    }
+
+    fn written(ledger: &SurfaceLedger) -> String {
+        ledger
+            .snapshot()
+            .expect("the ledger holds a snapshot")
+            .wire_value(&no_call_sequence)
+            .to_string()
+    }
+
+    fn no_call_sequence(_spawning_call_id: &str) -> Option<u64> {
+        None
+    }
+
+    fn the_only_workflow(ledger: &SurfaceLedger) -> SurfaceWorkflow {
+        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
+        assert_eq!(snapshot.workflows.len(), 1, "{snapshot:?}");
+        snapshot.workflows[0].clone()
+    }
+
+    fn agent_named(workflow: &SurfaceWorkflow, label: &str) -> SurfaceAgent {
+        workflow
+            .phases
+            .iter()
+            .flat_map(|phase| phase.agents.iter())
+            .find(|agent| agent.label == label)
+            .unwrap_or_else(|| panic!("a {label} agent is in {workflow:?}"))
+            .clone()
+    }
+
+    fn phase_holding(workflow: &SurfaceWorkflow, label: &str) -> String {
+        workflow
+            .phases
+            .iter()
+            .find(|phase| phase.agents.iter().any(|agent| agent.label == label))
+            .unwrap_or_else(|| panic!("a phase holds {label} in {workflow:?}"))
+            .title
+            .clone()
+    }
+
+    fn ledger_through_the_final_progress_array() -> SurfaceLedger {
+        let mut ledger = SurfaceLedger::default();
+        for line_number in [37, 40, 46, 63] {
+            feed_workflow_line(&mut ledger, line_number);
+        }
+        ledger
+    }
+
+    #[test]
+    fn a_ledger_that_has_read_nothing_holds_no_snapshot() {
+        assert!(SurfaceLedger::default().snapshot().is_none());
+    }
+
+    #[test]
+    fn a_started_local_workflow_opens_a_running_workflow() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(feed_workflow_line(&mut ledger, 37));
+
+        let workflow = the_only_workflow(&ledger);
+        assert_eq!(workflow.id, WORKFLOW_TASK_ID);
+        assert_eq!(workflow.name, "readme-analysis");
+        assert_eq!(
+            workflow.description.as_deref(),
+            Some("Count README.md lines and characters, then summarize")
+        );
+        assert_eq!(workflow.state.as_deref(), Some("running"));
+        assert!(workflow.phases.is_empty(), "{workflow:?}");
+    }
+
+    #[test]
+    fn a_started_workflow_never_holds_the_script_it_was_handed() {
+        let mut ledger = SurfaceLedger::default();
+        feed_workflow_line(&mut ledger, 37);
+
+        assert!(
+            !written(&ledger).contains("export const meta"),
+            "the workflow script must not reach the snapshot: {}",
+            written(&ledger)
+        );
+    }
+
+    #[test]
+    fn the_first_progress_array_names_both_phases_and_a_queued_agent() {
+        let mut ledger = SurfaceLedger::default();
+        feed_workflow_line(&mut ledger, 37);
+
+        assert!(feed_workflow_line(&mut ledger, 40));
+
+        let workflow = the_only_workflow(&ledger);
+        let titles: Vec<&str> = workflow
+            .phases
+            .iter()
+            .map(|phase| phase.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["Read", "Summarize"]);
+
+        let line_counter = agent_named(&workflow, "line-counter");
+        assert_eq!(line_counter.id, "acdd7854c4bce379a");
+        assert_eq!(line_counter.state.as_deref(), Some("running"));
+        assert_eq!(phase_holding(&workflow, "line-counter"), "Read");
+
+        let char_counter = agent_named(&workflow, "char-counter");
+        assert_eq!(char_counter.id, "w81x1fmx5:2");
+        assert_eq!(char_counter.state.as_deref(), Some("queued"));
+        assert_eq!(phase_holding(&workflow, "char-counter"), "Read");
+    }
+
+    #[test]
+    fn a_usage_tick_carrying_no_progress_array_moves_nothing() {
+        let mut ledger = SurfaceLedger::default();
+        feed_workflow_line(&mut ledger, 37);
+        feed_workflow_line(&mut ledger, 40);
+        let before = written(&ledger);
+
+        assert!(!feed_workflow_line(&mut ledger, 46));
+
+        assert_eq!(written(&ledger), before);
+    }
+
+    #[test]
+    fn the_final_progress_array_takes_the_real_id_and_the_agent_totals() {
+        let ledger = ledger_through_the_final_progress_array();
+
+        let workflow = the_only_workflow(&ledger);
+        assert_eq!(
+            agent_named(&workflow, "char-counter").id,
+            "a1a79b6791abd41ee"
+        );
+        for label in ["line-counter", "char-counter", "summarizer"] {
+            assert_eq!(
+                agent_named(&workflow, label).state.as_deref(),
+                Some("done"),
+                "{label} reads done"
+            );
+        }
+        assert_eq!(phase_holding(&workflow, "summarizer"), "Summarize");
+
+        let line_counter = agent_named(&workflow, "line-counter");
+        assert_eq!(line_counter.tokens, Some(11_409));
+        assert_eq!(line_counter.tool_calls, Some(1));
+        assert_eq!(line_counter.duration_ms, Some(4_732));
+        assert_eq!(line_counter.result.as_deref(), Some("2"));
+        assert_eq!(
+            line_counter.last_tool,
+            Some(SurfaceTool {
+                name: "Read".to_string(),
+                summary: Some(
+                    "/private/tmp/claude-501/-Users-zech--superconductor-worktre…".to_string()
+                ),
+            })
+        );
+    }
+
+    #[test]
+    fn a_progress_array_replaces_the_phases_rather_than_merging_into_them() {
+        let mut ledger = ledger_through_the_final_progress_array();
+        let mut without_the_char_counter = fixture_line("workflow.jsonl", 63);
+        let kept: Vec<Value> = without_the_char_counter["workflow_progress"]
+            .as_array()
+            .expect("the final progress line carries an array")
+            .iter()
+            .filter(|entry| entry["label"] != json!("char-counter"))
+            .cloned()
+            .collect();
+        without_the_char_counter["workflow_progress"] = json!(kept);
+
+        assert!(feed(&mut ledger, &without_the_char_counter));
+
+        let workflow = the_only_workflow(&ledger);
+        assert!(
+            !written(&ledger).contains("char-counter"),
+            "a dropped agent leaves the snapshot: {workflow:?}"
+        );
+        assert_eq!(
+            agent_named(&workflow, "line-counter").id,
+            "acdd7854c4bce379a"
+        );
+    }
+
+    #[test]
+    fn an_agent_whose_phase_is_in_no_phase_entry_still_reaches_a_phase() {
+        let mut ledger = ledger_through_the_final_progress_array();
+        let mut naming_an_unlisted_phase = fixture_line("workflow.jsonl", 63);
+        naming_an_unlisted_phase["workflow_progress"] = json!([{
+            "type": "workflow_agent",
+            "index": 9,
+            "label": "verifier",
+            "phaseIndex": 7,
+            "phaseTitle": "Verify",
+            "state": "start",
+            "queuedAt": 1_788_290_178_060u64,
+        }]);
+
+        assert!(feed(&mut ledger, &naming_an_unlisted_phase));
+
+        let workflow = the_only_workflow(&ledger);
+        assert_eq!(phase_holding(&workflow, "verifier"), "Verify");
+        assert_eq!(agent_named(&workflow, "verifier").id, "w81x1fmx5:9");
+    }
+
+    #[test]
+    fn the_closing_lines_finish_the_workflow_and_an_unclaimed_status_changes_nothing() {
+        let mut ledger = ledger_through_the_final_progress_array();
+
+        assert!(feed_workflow_line(&mut ledger, 65));
+        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+
+        assert!(!feed_workflow_line(&mut ledger, 66));
+        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+
+        assert!(!feed(
+            &mut ledger,
+            &json!({
+                "subtype": "task_notification",
+                "task_id": WORKFLOW_TASK_ID,
+                "status": "running",
+            })
+        ));
+        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+
+        assert!(feed(
+            &mut ledger,
+            &json!({
+                "subtype": "task_notification",
+                "task_id": WORKFLOW_TASK_ID,
+                "status": "failed",
+            })
+        ));
+        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("failed"));
+    }
+
+    #[test]
+    fn a_progress_line_for_a_workflow_that_never_started_is_ignored() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed_workflow_line(&mut ledger, 40));
+        assert!(ledger.snapshot().is_none());
+
+        feed_workflow_line(&mut ledger, 37);
+        let before = written(&ledger);
+        let mut for_another_task = fixture_line("workflow.jsonl", 63);
+        for_another_task["task_id"] = json!("some-other-task");
+
+        assert!(!feed(&mut ledger, &for_another_task));
+        assert_eq!(written(&ledger), before);
+    }
+
+    #[test]
+    fn a_started_subagent_is_no_business_of_the_workflow_parser() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed(&mut ledger, &fixture_line("subagent.jsonl", 11)));
+        assert!(ledger.snapshot().is_none());
+    }
+
+    #[test]
+    fn a_started_background_shell_is_no_business_of_the_workflow_parser() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed(
+            &mut ledger,
+            &fixture_line("shell-and-checklist.jsonl", 42)
+        ));
+        assert!(ledger.snapshot().is_none());
     }
 }

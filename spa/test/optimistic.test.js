@@ -91,6 +91,15 @@ describe("the records and the projection", () => {
     expect(retirePending(unsettled, [agent("b", { working: true }), agent("c")], { keyOf, nowMs })).toEqual(unsettled);
   });
 
+  it("retires a settled patch once its key has left the snapshot", () => {
+    const nowMs = 1000;
+    const patch = settled(patchRecord("b", { working: true }), nowMs);
+    expect(retirePending([patch], [agent("a")], { keyOf, nowMs })).toEqual([]);
+    expect(retirePending([patchRecord("b", { working: true })], [agent("a")], { keyOf, nowMs })).toEqual([
+      patchRecord("b", { working: true }),
+    ]);
+  });
+
   it("lets a settled record go once the grace runs out", () => {
     const insert = settled(insertRecord("c", agent("c")), 1000);
     const held = { keyOf, nowMs: 1000 + PENDING_GRACE_MS };

@@ -39,7 +39,7 @@ export function retirePending(records, entries, { keyOf, nowMs }) {
     if (record.kind === "remove") return held.has(record.key);
     if (record.kind === "insert") return !held.has(record.key);
     const entry = held.get(record.key);
-    return !entry || !entryCarriesFields(entry, record.fields);
+    return Boolean(entry) && !entryCarriesFields(entry, record.fields);
   });
 }
 

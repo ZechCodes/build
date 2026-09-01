@@ -1390,6 +1390,24 @@ describe("revisiting a conversation", () => {
     sessions: [],
   });
 
+  it("stands the strip and the saved conversation up before the first read answers", async () => {
+    await writeCached(
+      { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+      { items: historyThread().items, olderItemsRemain: false, deliveredSequence: 1, knownTotalItems: 1 },
+    );
+    feedSnapshot = { items: [{ ...feedItems[0], agents: [agent()] }], projects: [] };
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+    await mount();
+    await flush();
+    expect(bubbles().length).toBeGreaterThan(0);
+    expect(railHost().querySelector("#rail-body").textContent).toContain("the history");
+  });
+
   // The deployed bug: the rail remembers which agent was open across remounts,
   // but the cache's owner marker started blank — so the first threadFor of a
   // revisit wiped the window the seed had just opened, after its delta cursor

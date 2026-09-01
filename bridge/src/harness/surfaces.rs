@@ -137,8 +137,6 @@ pub struct SurfaceLedger {
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
-/// What a `TaskCreate` call said before its answer named the task, held only
-/// until that answer arrives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingChecklistCreate {
     subject: String,
@@ -168,17 +166,16 @@ impl SurfaceLedger {
         }
     }
 
-    /// One tool call, routed by the tool it named. The block is the `tool_use`
-    /// content block, which is where a call's id and its input live.
-    pub fn read_tool_call(&mut self, name: &str, block: &Value) -> bool {
-        self.apply_checklist_call(name, block)
+    pub fn read_tool_call(&mut self, name: &str, tool_use_block: &Value) -> bool {
+        self.apply_checklist_call(name, tool_use_block)
     }
 
-    /// One call's answer, routed by the tool its call named. The event is the
-    /// WHOLE message, because `tool_use_result` sits beside the content rather
-    /// than inside the `tool_result` block.
-    pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, event: &Value) -> bool {
-        self.apply_checklist_answer(tool, call_id, event)
+    pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, whole_event: &Value) -> bool {
+        self.apply_checklist_answer(tool, call_id, whole_event)
+    }
+
+    pub fn close_pending_creates(&mut self) {
+        self.pending_checklist_creates.clear();
     }
 
     pub fn snapshot(&self) -> Option<AgentSurfaces> {
@@ -275,7 +272,7 @@ impl SurfaceLedger {
             "task_notification" => self.close_subagent(
                 task_id,
                 event["status"].as_str(),
-                read_text(event, "summary"),
+                bounded_text(event, "summary"),
             ),
             _ => false,
         }
@@ -295,9 +292,7 @@ impl SurfaceLedger {
             Some(held) => {
                 let closed = SurfaceAgent {
                     state: Some(claimed.to_string()),
-                    result: summary
-                        .map(|reported| one_line(&reported, TOOL_SUMMARY_LIMIT))
-                        .or_else(|| held.result.clone()),
+                    result: summary.or_else(|| held.result.clone()),
                     ..held.clone()
                 };
                 replace_when_changed(held, closed)
@@ -310,9 +305,6 @@ impl SurfaceLedger {
         self.subagents.iter_mut().find(|held| held.id == task_id)
     }
 
-    /// A `TaskCreate` call describes an item the harness has not numbered yet,
-    /// so it is held rather than appended; a `TodoWrite` call carries the whole
-    /// list and replaces it.
     fn apply_checklist_call(&mut self, tool: &str, block: &Value) -> bool {
         match tool {
             "TaskCreate" => {
@@ -340,16 +332,15 @@ impl SurfaceLedger {
 
     fn apply_checklist_answer(&mut self, tool: &str, call_id: &str, event: &Value) -> bool {
         match tool {
-            "TaskCreate" => self.append_created_item(call_id, &event["tool_use_result"]["task"]),
-            "TaskUpdate" => self.restate_item(&event["tool_use_result"]),
+            "TaskCreate" => {
+                self.drain_pending_create_and_append(call_id, &event["tool_use_result"]["task"])
+            }
+            "TaskUpdate" => self.apply_status_change(&event["tool_use_result"]),
             _ => false,
         }
     }
 
-    /// The answer is what numbers the item, and the call it answers is what
-    /// described it — so the pending entry is drained here whether or not the
-    /// harness named a task.
-    fn append_created_item(&mut self, call_id: &str, task: &Value) -> bool {
+    fn drain_pending_create_and_append(&mut self, call_id: &str, task: &Value) -> bool {
         let described = self.pending_checklist_creates.remove(call_id);
         let id = match task["id"].as_str() {
             Some(named) => named.to_string(),
@@ -372,7 +363,7 @@ impl SurfaceLedger {
         }
     }
 
-    fn restate_item(&mut self, answered: &Value) -> bool {
+    fn apply_status_change(&mut self, answered: &Value) -> bool {
         let restated = match answered["statusChange"]["to"]
             .as_str()
             .and_then(wire_checklist_state)
@@ -427,8 +418,7 @@ fn progressed_subagent(held: &SurfaceAgent, event: &Value) -> SurfaceAgent {
         last_tool: read_text(event, "last_tool_name")
             .map(|name| SurfaceTool {
                 name,
-                summary: read_text(event, "description")
-                    .map(|step| one_line(&step, TOOL_SUMMARY_LIMIT)),
+                summary: bounded_text(event, "description"),
             })
             .or_else(|| held.last_tool.clone()),
         tokens: usage["total_tokens"].as_u64().or(held.tokens),
@@ -452,8 +442,6 @@ fn read_text(source: &Value, field: &str) -> Option<String> {
     source[field].as_str().map(str::to_string)
 }
 
-/// Agent-authored text reaches the snapshot as one line of bounded length, the
-/// way every other summary on it does.
 fn bounded_text(source: &Value, field: &str) -> Option<String> {
     read_text(source, field).map(|written| one_line(&written, TOOL_SUMMARY_LIMIT))
 }
@@ -543,11 +531,8 @@ fn wire_task_state(status: &str) -> Option<&'static str> {
     }
 }
 
-/// What an item the harness has just numbered is, before it says otherwise.
 const CHECKLIST_PENDING: &str = "pending";
 
-/// The checklist vocabulary, taken verbatim when the harness claims one of it
-/// and refused otherwise, which leaves the item's state where it was.
 fn wire_checklist_state(token: &str) -> Option<&'static str> {
     match token {
         CHECKLIST_PENDING => Some(CHECKLIST_PENDING),
@@ -726,26 +711,11 @@ mod tests {
 #[cfg(test)]
 mod ledger_tests {
     use super::*;
+    use crate::harness::stream_fixtures::{
+        fixture_line, fixture_text, SHELL_AND_CHECKLIST_FIXTURE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
+    };
 
     const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
-
-    fn fixture_text(file_name: &str) -> String {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-stream")
-            .join(file_name);
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|why| panic!("the {file_name} fixture reads: {why}"))
-    }
-
-    fn fixture_line(file_name: &str, line_number: usize) -> Value {
-        let captured = fixture_text(file_name);
-        let line = captured
-            .lines()
-            .nth(line_number - 1)
-            .unwrap_or_else(|| panic!("{file_name} has a line {line_number}"));
-        serde_json::from_str(line)
-            .unwrap_or_else(|why| panic!("{file_name}:{line_number} is one JSON event: {why}"))
-    }
 
     fn fixture_events(file_name: &str) -> Vec<Value> {
         fixture_text(file_name)
@@ -769,7 +739,7 @@ mod ledger_tests {
     }
 
     fn feed_workflow_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
-        feed(ledger, &fixture_line("workflow.jsonl", line_number))
+        feed(ledger, &fixture_line(WORKFLOW_FIXTURE, line_number))
     }
 
     fn written(ledger: &SurfaceLedger) -> String {
@@ -927,7 +897,7 @@ mod ledger_tests {
     #[test]
     fn a_progress_array_replaces_the_phases_rather_than_merging_into_them() {
         let mut ledger = ledger_through_the_final_progress_array();
-        let mut without_the_char_counter = fixture_line("workflow.jsonl", 63);
+        let mut without_the_char_counter = fixture_line(WORKFLOW_FIXTURE, 63);
         let kept: Vec<Value> = without_the_char_counter["workflow_progress"]
             .as_array()
             .expect("the final progress line carries an array")
@@ -953,7 +923,7 @@ mod ledger_tests {
     #[test]
     fn an_agent_whose_phase_is_in_no_phase_entry_still_reaches_a_phase() {
         let mut ledger = ledger_through_the_final_progress_array();
-        let mut naming_an_unlisted_phase = fixture_line("workflow.jsonl", 63);
+        let mut naming_an_unlisted_phase = fixture_line(WORKFLOW_FIXTURE, 63);
         naming_an_unlisted_phase["workflow_progress"] = json!([{
             "type": "workflow_agent",
             "index": 9,
@@ -1011,7 +981,7 @@ mod ledger_tests {
 
         feed_workflow_line(&mut ledger, 37);
         let before = written(&ledger);
-        let mut for_another_task = fixture_line("workflow.jsonl", 63);
+        let mut for_another_task = fixture_line(WORKFLOW_FIXTURE, 63);
         for_another_task["task_id"] = json!("some-other-task");
 
         assert!(!feed(&mut ledger, &for_another_task));
@@ -1022,7 +992,7 @@ mod ledger_tests {
     fn a_started_subagent_is_no_business_of_the_workflow_parser() {
         let mut ledger = SurfaceLedger::default();
 
-        feed(&mut ledger, &fixture_line("subagent.jsonl", 11));
+        feed(&mut ledger, &fixture_line(SUBAGENT_FIXTURE, 11));
 
         let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
         assert!(snapshot.workflows.is_empty(), "{snapshot:?}");
@@ -1032,7 +1002,7 @@ mod ledger_tests {
     const SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
 
     fn feed_subagent_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
-        feed(ledger, &fixture_line("subagent.jsonl", line_number))
+        feed(ledger, &fixture_line(SUBAGENT_FIXTURE, line_number))
     }
 
     fn the_only_subagent(ledger: &SurfaceLedger) -> SurfaceAgent {
@@ -1086,7 +1056,7 @@ mod ledger_tests {
     #[test]
     fn a_progress_step_reaches_the_snapshot_as_one_bounded_line() {
         let mut ledger = ledger_through_the_started_subagent();
-        let mut sprawling = fixture_line("subagent.jsonl", 25);
+        let mut sprawling = fixture_line(SUBAGENT_FIXTURE, 25);
         sprawling["description"] = json!(format!("first line\nsecond line\n{}", "x".repeat(400)));
 
         assert!(feed(&mut ledger, &sprawling));
@@ -1230,7 +1200,7 @@ mod ledger_tests {
     #[test]
     fn the_subagent_fixture_leaves_every_other_kind_empty() {
         let mut ledger = SurfaceLedger::default();
-        for event in fixture_events("subagent.jsonl") {
+        for event in fixture_events(SUBAGENT_FIXTURE) {
             feed(&mut ledger, &event);
         }
 
@@ -1253,21 +1223,24 @@ mod ledger_tests {
     fn a_started_background_shell_is_no_business_of_the_workflow_parser() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed(&mut ledger, &fixture_line(CHECKLIST_FIXTURE, 42)));
+        assert!(!feed(
+            &mut ledger,
+            &fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 42)
+        ));
         assert!(ledger.snapshot().is_none());
     }
 
-    const CHECKLIST_FIXTURE: &str = "shell-and-checklist.jsonl";
+    const FIRST_CREATE_CALL_ID: &str = "toolu_01V6RPmcsmyRyEVKSdcpKTMJ";
     const FIRST_UPDATE_CALL_ID: &str = "toolu_01UExMFQFbhqwFX9Qz4M3L1q";
 
     fn tool_call_block(call_line: usize) -> Value {
-        fixture_line(CHECKLIST_FIXTURE, call_line)["message"]["content"][0].clone()
+        fixture_line(SHELL_AND_CHECKLIST_FIXTURE, call_line)["message"]["content"][0].clone()
     }
 
     fn tool_named_by(call_line: usize) -> String {
         tool_call_block(call_line)["name"]
             .as_str()
-            .unwrap_or_else(|| panic!("{CHECKLIST_FIXTURE}:{call_line} names a tool"))
+            .unwrap_or_else(|| panic!("{SHELL_AND_CHECKLIST_FIXTURE}:{call_line} names a tool"))
             .to_string()
     }
 
@@ -1275,20 +1248,20 @@ mod ledger_tests {
         ledger.read_tool_call(&tool_named_by(call_line), &tool_call_block(call_line))
     }
 
-    /// A fixture answer sits on the line after the call it replies to, and the
-    /// tool it is routed by is the one that call named.
-    fn feed_tool_answer(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
+    fn feed_tool_answer_from_the_next_line(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
         let call_id = tool_call_block(call_line)["id"]
             .as_str()
-            .unwrap_or_else(|| panic!("{CHECKLIST_FIXTURE}:{call_line} carries a call id"))
+            .unwrap_or_else(|| {
+                panic!("{SHELL_AND_CHECKLIST_FIXTURE}:{call_line} carries a call id")
+            })
             .to_string();
-        let answer = fixture_line(CHECKLIST_FIXTURE, call_line + 1);
+        let answer = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, call_line + 1);
         ledger.read_tool_answer(&tool_named_by(call_line), &call_id, &answer)
     }
 
     fn feed_tool_pair(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
         feed_tool_call(ledger, call_line);
-        feed_tool_answer(ledger, call_line)
+        feed_tool_answer_from_the_next_line(ledger, call_line)
     }
 
     fn ledger_through_the_three_creates() -> SurfaceLedger {
@@ -1306,7 +1279,7 @@ mod ledger_tests {
             .checklist
     }
 
-    fn checklist_item_named(ledger: &SurfaceLedger, id: &str) -> SurfaceChecklistItem {
+    fn the_checklist_item(ledger: &SurfaceLedger, id: &str) -> SurfaceChecklistItem {
         the_checklist(ledger)
             .into_iter()
             .find(|item| item.id == id)
@@ -1347,7 +1320,7 @@ mod ledger_tests {
         let mut ledger = SurfaceLedger::default();
         feed_tool_call(&mut ledger, 27);
 
-        assert!(feed_tool_answer(&mut ledger, 27));
+        assert!(feed_tool_answer_from_the_next_line(&mut ledger, 27));
 
         assert_eq!(
             the_checklist(&ledger),
@@ -1361,6 +1334,64 @@ mod ledger_tests {
             }]
         );
         assert!(ledger.pending_checklist_creates.is_empty());
+    }
+
+    #[test]
+    fn a_task_create_answer_naming_no_task_id_drains_the_pending_entry_and_mints_nothing() {
+        let mut ledger = SurfaceLedger::default();
+        feed_tool_call(&mut ledger, 27);
+        let mut nameless = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 28);
+        nameless["tool_use_result"]["task"]
+            .as_object_mut()
+            .expect("the answer carries a task object")
+            .remove("id");
+
+        assert!(!ledger.read_tool_answer("TaskCreate", FIRST_CREATE_CALL_ID, &nameless));
+
+        assert!(ledger.snapshot().is_none());
+        assert!(
+            ledger.pending_checklist_creates.is_empty(),
+            "a malformed answer leaves no pending entry behind"
+        );
+    }
+
+    #[test]
+    fn a_task_create_call_carrying_no_call_id_is_not_held() {
+        let mut ledger = SurfaceLedger::default();
+        let mut anonymous = tool_call_block(27);
+        anonymous
+            .as_object_mut()
+            .expect("the call is one block")
+            .remove("id");
+
+        assert!(!ledger.read_tool_call("TaskCreate", &anonymous));
+
+        assert!(ledger.pending_checklist_creates.is_empty());
+    }
+
+    #[test]
+    fn a_todo_write_call_carrying_no_list_leaves_the_checklist_alone() {
+        let mut ledger = ledger_through_the_three_creates();
+        let before = written(&ledger);
+
+        assert!(!ledger.read_tool_call(
+            "TodoWrite",
+            &json!({ "type": "tool_use", "id": "toolu_01TodoWriteEmpty", "name": "TodoWrite", "input": {} })
+        ));
+
+        assert_eq!(written(&ledger), before);
+    }
+
+    #[test]
+    fn a_turn_that_ended_between_a_create_and_its_answer_holds_nothing_pending() {
+        let mut ledger = SurfaceLedger::default();
+        feed_tool_call(&mut ledger, 27);
+        assert_eq!(ledger.pending_checklist_creates.len(), 1);
+
+        ledger.close_pending_creates();
+
+        assert!(ledger.pending_checklist_creates.is_empty());
+        assert!(ledger.snapshot().is_none());
     }
 
     #[test]
@@ -1387,11 +1418,11 @@ mod ledger_tests {
 
         assert!(feed_tool_pair(&mut ledger, 52));
         assert_eq!(
-            checklist_item_named(&ledger, "1").state.as_deref(),
+            the_checklist_item(&ledger, "1").state.as_deref(),
             Some("completed")
         );
         assert_eq!(
-            checklist_item_named(&ledger, "2").state.as_deref(),
+            the_checklist_item(&ledger, "2").state.as_deref(),
             Some("pending")
         );
 
@@ -1400,7 +1431,7 @@ mod ledger_tests {
 
         for id in ["1", "2", "3"] {
             assert_eq!(
-                checklist_item_named(&ledger, id).state.as_deref(),
+                the_checklist_item(&ledger, id).state.as_deref(),
                 Some("completed"),
                 "item {id} reads completed"
             );
@@ -1419,13 +1450,13 @@ mod ledger_tests {
     #[test]
     fn a_status_token_the_checklist_does_not_know_leaves_the_item_alone() {
         let mut ledger = ledger_through_the_three_creates();
-        let mut unclaimed = fixture_line(CHECKLIST_FIXTURE, 53);
+        let mut unclaimed = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 53);
         unclaimed["tool_use_result"]["statusChange"]["to"] = json!("banana");
 
         assert!(!ledger.read_tool_answer("TaskUpdate", FIRST_UPDATE_CALL_ID, &unclaimed));
 
         assert_eq!(
-            checklist_item_named(&ledger, "1").state.as_deref(),
+            the_checklist_item(&ledger, "1").state.as_deref(),
             Some("pending")
         );
     }
@@ -1438,7 +1469,7 @@ mod ledger_tests {
         for call_line in [17, 92] {
             assert!(!feed_tool_call(&mut ledger, call_line), "line {call_line}");
             assert!(
-                !feed_tool_answer(&mut ledger, call_line),
+                !feed_tool_answer_from_the_next_line(&mut ledger, call_line),
                 "line {}",
                 call_line + 1
             );

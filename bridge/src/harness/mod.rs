@@ -32,6 +32,8 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
+#[cfg(test)]
+mod stream_fixtures;
 pub mod surfaces;
 
 pub use session::{

@@ -304,8 +304,6 @@ impl ProtocolState {
 /// stays as silent as the call was.
 #[derive(Debug, PartialEq, Eq)]
 enum RecordedCall {
-    /// The tool the call named, so its answer can be routed by tool rather than
-    /// by a second call-id map kept somewhere else.
     Minted {
         #[allow(dead_code)]
         tool: String,
@@ -1534,6 +1532,7 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+    use crate::harness::stream_fixtures::{fixture_lines, SHELL_AND_CHECKLIST_FIXTURE};
 
     #[test]
     fn only_the_three_bad_endings_count_as_a_failure() {
@@ -1555,21 +1554,9 @@ mod tests {
         }
     }
 
-    fn checklist_fixture_lines() -> Vec<String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude-stream/shell-and-checklist.jsonl");
-        std::fs::read_to_string(&path)
-            .unwrap_or_else(|why| panic!("the shell-and-checklist fixture reads: {why}"))
-            .lines()
-            .map(str::to_string)
-            .collect()
-    }
-
-    /// The call record carries the tool's name, so an answer — which names only
-    /// the call it replies to — can be routed by tool without a second map.
     #[test]
     fn a_minted_call_records_the_tool_its_answer_will_be_routed_by() {
-        let lines = checklist_fixture_lines();
+        let lines = fixture_lines(SHELL_AND_CHECKLIST_FIXTURE);
         let mut reader = reader_over_a_silent_session();
 
         reader.read_line(&lines[26]);
@@ -1582,12 +1569,23 @@ mod tests {
         );
     }
 
-    /// The map is a pairing held only until the answer arrives: a session that
-    /// runs for hours must not accumulate one entry per call it ever made.
     #[test]
-    fn a_replayed_stream_never_grows_the_call_map() {
-        let lines = checklist_fixture_lines();
+    fn an_answered_call_is_taken_from_the_map_not_read() {
+        let lines = fixture_lines(SHELL_AND_CHECKLIST_FIXTURE);
         let mut reader = reader_over_a_silent_session();
+
+        reader.read_line(&lines[26]);
+        assert_eq!(
+            reader.calls.len(),
+            1,
+            "the call is held until its answer arrives"
+        );
+        reader.read_line(&lines[27]);
+        assert!(
+            reader.calls.is_empty(),
+            "the answer takes the entry it paired, mid-turn: {:?}",
+            reader.calls
+        );
 
         for line in &lines {
             reader.read_line(line);

@@ -5,6 +5,7 @@
 // the one place the wire is read, so it is the one place the key is bridged.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 
 let App;
 let subscribeFeed, refreshFeed, startFeed, stopFeed;
@@ -12,6 +13,8 @@ let armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS;
 
 beforeEach(async () => {
   vi.resetModules();
+  globalThis.indexedDB = new IDBFactory();
+  globalThis.IDBKeyRange = IDBKeyRange;
   ({ App } = await import("../src/app.js"));
   ({ subscribeFeed, refreshFeed, startFeed, stopFeed } = await import("../src/core/taskFeed.js"));
   ({ armChangeEvents, dispatchChangeEvent, resetChangeEvents, SAFETY_POLL_MS } = await import(
@@ -108,5 +111,55 @@ describe("the feed against a bridge that does not", () => {
     dispatchChangeEvent({ type: "board.changed" });
     await settle();
     expect(reads()).toBe(1);
+  });
+});
+
+// ---- the cached boot paint -----------------------------------------------------
+// The last snapshot the syncer persisted paints the inbox before the bridge
+// answers. It is marked `cached: true` so the sync layer does not treat its own
+// echo as news, and a live answer always wins the race.
+describe("the feed's cached boot paint", () => {
+  it("delivers the cached snapshot while the bridge is still being asked", async () => {
+    App.selectedDeviceId = "dev-1";
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      { items: [{ kind: "branch", branch: "build/x" }], plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] },
+    );
+    App.call = vi.fn(() => new Promise(() => {})); // the bridge never answers
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cached).toBe(true);
+    expect(seen[0].items).toHaveLength(1);
+  });
+
+  it("never paints the cache over a live answer", async () => {
+    App.selectedDeviceId = "dev-1";
+    const { writeCached } = await import("../src/core/localCache.js");
+    await writeCached(
+      { deviceId: "dev-1", entityId: "", kind: "feed" },
+      { items: [{ kind: "branch", branch: "stale" }], plans: [], runs: [], externalWorktrees: [], projects: [], primaryChanges: [] },
+    );
+    App.call = vi.fn(async (method) => (method === "project.list" ? { projects: [] } : { items: [] }));
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    expect(seen.some((snapshot) => snapshot.cached)).toBe(false);
+    expect(seen[seen.length - 1].items).toEqual([]);
+  });
+
+  it("paints nothing from the cache when no device was ever chosen", async () => {
+    App.selectedDeviceId = null;
+    App.session = null;
+    App.call = vi.fn(() => new Promise(() => {}));
+    const seen = [];
+    subscribeFeed((snapshot) => seen.push(snapshot));
+    startFeed();
+    for (let i = 0; i < 15; i++) await settle();
+    expect(seen).toHaveLength(0);
   });
 });

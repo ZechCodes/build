@@ -42,6 +42,9 @@ import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
 import { notifyError } from "./notify.js";
+import { cacheDeviceId } from "./cacheScope.js";
+import { entityIdOf } from "./entityId.js";
+import { readCached, writeCached } from "./localCache.js";
 import { refreshFeed, subscribeFeed } from "./taskFeed.js";
 import { toolbarIdentity } from "./toolbarModel.js";
 import { esc } from "./text.js";
@@ -301,6 +304,49 @@ export function mountAgentRail(host, context) {
   let threadCache = createThreadCache();
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
+  let threadSeedTried = false; // one cache seed per conversation key
+  let lastPersistedSequence = 0; // the window already on disk, to skip idle rewrites
+
+  /** The local cache's address for the open conversation, or null while the
+   *  entity is not yet known (no feed row) or no session device is live. */
+  const threadCacheAddress = () => {
+    const deviceId = cacheDeviceId();
+    const entityId = context.kind === "issue" ? context.issueId : feedRow ? entityIdOf(feedRow) : null;
+    if (!deviceId || !entityId) return null;
+    return { deviceId, entityId, kind: "thread", sub: selectedId || "" };
+  };
+
+  /** Seed the empty cache from the saved window, once per conversation key.
+   *  After a seed the next detail read is a forward delta rather than a first
+   *  page — the history is already local. A live window refuses the seed. */
+  const trySeedThread = async () => {
+    const address = threadCacheAddress();
+    if (!address || threadSeedTried) return;
+    threadSeedTried = true;
+    const record = await readCached(address);
+    if (disposed || !record) return;
+    if (threadCache.seedWindow(record.value)) {
+      lastPersistedSequence = record.value.deliveredSequence || 0;
+    }
+  };
+
+  /** Persist the window when it has moved. Fire-and-forget, sequence-guarded:
+   *  a repaint that absorbed nothing new writes nothing. */
+  const persistThreadWindow = () => {
+    const address = threadCacheAddress();
+    const window = threadCache.exportWindow();
+    if (!address || !window || window.deliveredSequence === lastPersistedSequence) return;
+    lastPersistedSequence = window.deliveredSequence;
+    writeCached(address, window);
+  };
+
+  /** Drop the conversation cache — and with it, the seed's one-shot flag, so
+   *  the next conversation key seeds from its own saved window. */
+  const resetThreadCache = () => {
+    threadCache.reset();
+    threadSeedTried = false;
+    lastPersistedSequence = 0;
+  };
   // Which agent the payload in hand was READ FOR. Not the same question as
   // threadAgentId: that one is about the cache, this one is about the answer the
   // cache would be filled from. Between opening another agent's bubble and its
@@ -419,6 +465,9 @@ export function mountAgentRail(host, context) {
   /// surface before the rail asked for; the param is here so the panel follows
   /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
+    // The saved window first, so a revisit's first read is a forward delta
+    // with the history already local. One try per conversation key.
+    await trySeedThread();
     const scope = { ...threadCache.cursorParam(), ...(selectedId ? { agent_id: selectedId } : {}) };
     if (context.kind === "issue") {
       return App.call("issue.get", { issue_id: context.issueId, ...scope });
@@ -439,7 +488,7 @@ export function mountAgentRail(host, context) {
       // rail would ask the same refused question forever.
       if (asked && /agent_id/.test((error && error.message) || "")) {
         chooseAgent(null);
-        threadCache.reset();
+        resetThreadCache();
         threadAgentId = null;
       }
       // Anything else — a branch that stopped resolving (finished, renamed) —
@@ -635,8 +684,9 @@ export function mountAgentRail(host, context) {
   const threadFor = () => {
     // The cache holds one conversation; switching bubbles switches which.
     if (threadAgentId !== selectedId) {
-      threadCache.reset();
+      resetThreadCache();
       threadAgentId = selectedId;
+      trySeedThread(); // fire and forget; the refresh under way folds onto it
     }
     // The payload in hand belongs to the agent it was read for. Just after a
     // switch that is the agent just left, and absorbing it would refill the
@@ -644,7 +694,10 @@ export function mountAgentRail(host, context) {
     // what made switching look like it did nothing. Nothing until the read for
     // THIS agent lands; pressBubble asks for it immediately.
     if (threadOwner !== selectedId) return null;
-    return entity.thread ? threadCache.absorb(entity.thread) : null;
+    if (!entity.thread) return null;
+    const thread = threadCache.absorb(entity.thread);
+    persistThreadWindow();
+    return thread;
   };
 
   /// Ask for the conversation above the window the reader is standing at the
@@ -909,7 +962,7 @@ export function mountAgentRail(host, context) {
         });
         if (started && started.agent_id) {
           chooseAgent(started.agent_id);
-          threadCache.reset();
+          resetThreadCache();
           threadAgentId = selectedId;
         }
       }
@@ -960,7 +1013,7 @@ export function mountAgentRail(host, context) {
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
     chooseAgent(agentId);
-    threadCache.reset();
+    resetThreadCache();
     threadAgentId = agentId;
     expanded = true;
     writeExpanded(true);
@@ -1024,7 +1077,7 @@ export function mountAgentRail(host, context) {
     // existing: the next read opens the rail on whichever agent is left, and
     // tells the surfaces beside it the same.
     chooseAgent(null);
-    threadCache.reset();
+    resetThreadCache();
     threadAgentId = null;
     await refreshFeed();
     await refresh();

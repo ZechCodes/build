@@ -26,6 +26,10 @@ import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects }
 import { esc } from "./text.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
+import { cacheDeviceId } from "./cacheScope.js";
+import { entityIdOf } from "./entityId.js";
+import { readCached, writeCached } from "./localCache.js";
+import { subscribeFeed } from "./taskFeed.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
@@ -51,6 +55,10 @@ export function terminalTabsController(scope) {
   };
   return {
     ids: () => terms.map((t) => t.term_id),
+    /** Stand the list up from the saved tab ids — the cached first paint. */
+    seed(termIds) {
+      terms = termIds.map((term_id) => ({ term_id }));
+    },
     /** The tab descriptors for the console head: ordinal-labeled, all closable. */
     tabs: () => terms.map((t) => ({ id: t.term_id, label: labelOf(t.term_id) })),
     label: labelOf,
@@ -183,13 +191,80 @@ export function mountConsole(host, context) {
     return consoleScope(context, row);
   };
 
+  /** The feed's row for this branch, read off the shared snapshot without
+   *  subscribing — the replay-to-late-subscribers path, used synchronously. */
+  const feedRowNow = () => {
+    let row = null;
+    const unsubscribe = subscribeFeed((feed) => {
+      row =
+        (feed.items || []).find(
+          (item) => item.kind === "branch" && item.project_id === context.projectId && item.branch === context.branch,
+        ) || null;
+    });
+    unsubscribe();
+    return row;
+  };
+
+  /** The local cache's address for this checkout's tab list, or null while the
+   *  entity is unknown. Cached tabs paint the head without a round trip. */
+  const tabsCacheAddress = () => {
+    const deviceId = cacheDeviceId();
+    const entityId = context.kind === "issue" ? context.issueId : entityIdOf(feedRowNow());
+    return deviceId && entityId ? { deviceId, entityId, kind: "tabs" } : null;
+  };
+
+  const pickSelected = () => {
+    const ids = terms.ids();
+    selected = (wantedHere && ids.includes(wantedHere) ? wantedHere : null) || (ids.includes(selected) ? selected : ids[0]) || null;
+  };
+
+  /** The live list, folded over whatever the cache painted: the scope is
+   *  re-resolved (an adoption may have moved it), the tabs are re-listed, and
+   *  the answer is written through for the next visit. */
+  const reconcileTerminals = async (address) => {
+    const liveScope = await resolveScope();
+    if (disposed || !liveScope) return;
+    const live = terminalTabsController(liveScope);
+    try {
+      await live.load();
+    } catch {
+      // Out of reach: the cached tabs stand, and the machine coming back
+      // reconciles them then.
+      if (!disposed) retryWhenReconnected(() => reconcileTerminals(address));
+      return;
+    }
+    if (disposed) return;
+    scope = liveScope;
+    terms = live;
+    pickSelected();
+    remember();
+    paint();
+    writeCached(address, { scope, termIds: terms.ids() });
+  };
+
   /// List the checkout's terminals, once, the first time the console opens.
   /// Nothing is ever created here: opening the console must not spawn a shell
   /// on the user's machine, least of all on a size the last visit remembered.
+  ///
+  /// The saved tab list paints the head first, without a round trip; the live
+  /// list reconciles it the moment it lands.
   const ensureTerminals = async () => {
     if (terms || loading) return;
     loading = true;
     paint();
+    const address = tabsCacheAddress();
+    const saved = address ? await readCached(address) : undefined;
+    if (disposed || terms) return;
+    if (saved && saved.value && saved.value.scope && Array.isArray(saved.value.termIds)) {
+      scope = saved.value.scope;
+      terms = terminalTabsController(scope);
+      terms.seed(saved.value.termIds);
+      loading = false;
+      pickSelected();
+      paint();
+      reconcileTerminals(address);
+      return;
+    }
     scope = await resolveScope();
     if (disposed) return;
     if (!scope) {
@@ -215,15 +290,21 @@ export function mountConsole(host, context) {
     loading = false;
     unreachable = false;
     if (disposed) return;
-    const ids = terms.ids();
-    selected = (wantedHere && ids.includes(wantedHere) ? wantedHere : null) || (ids.includes(selected) ? selected : ids[0]) || null;
+    pickSelected();
     remember();
     paint();
+    if (address) writeCached(address, { scope, termIds: terms.ids() });
   };
 
   const remember = () => {
     if (selected) chosenTerminal.set(key, selected);
     else chosenTerminal.delete(key);
+  };
+
+  /** Keep the saved tab list telling the truth after a create or a close. */
+  const persistTabs = () => {
+    const address = tabsCacheAddress();
+    if (address && scope && terms) writeCached(address, { scope, termIds: terms.ids() });
   };
 
   const newTerminal = async () => {
@@ -235,6 +316,7 @@ export function mountConsole(host, context) {
       failInBody(`cannot open a terminal: ${(error && error.message) || "error"}`);
       return;
     }
+    persistTabs();
     paint();
   };
 
@@ -252,6 +334,7 @@ export function mountConsole(host, context) {
    *  back to whatever is left. */
   const afterTerminalGone = (termId) => {
     if (terms) terms.drop(termId);
+    persistTabs();
     if (selected === termId) {
       selected = (terms && terms.ids()[0]) || null;
       remember();

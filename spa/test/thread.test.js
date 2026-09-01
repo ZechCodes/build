@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -1144,5 +1144,61 @@ describe("sending a message that carries files", () => {
     expect(sent).toEqual([]);
     expect(host.querySelector("#ti").value).toBe("see this");
     expect(host.querySelectorAll(".composer-chip")).toHaveLength(1);
+  });
+});
+
+// ---- the persisted window ------------------------------------------------------
+// The local cache keeps a conversation's window across sessions: an empty
+// cache seeds from what was saved, the next detail read is a forward delta
+// rather than a first page, and the standing soundness checks self-heal
+// anything the time away made stale.
+describe("the persisted window", () => {
+  const item = (sequence) => ({ id: `m-${sequence}`, data: { sequence } });
+
+  it("exports what it holds and seeds an empty cache back to it", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1), item(2)], has_more: true, thread_total: 5, thread_last_sequence: 2 });
+    const saved = cache.exportWindow();
+    expect(saved.items).toHaveLength(2);
+    const revived = createThreadCache();
+    expect(revived.seedWindow(saved)).toBe(true);
+    expect(revived.cursorParam()).toEqual({ thread_after_sequence: 2 });
+    expect(revived.hasOlderItems()).toBe(true);
+  });
+
+  it("folds a live delta into the seeded window", () => {
+    const cache = createThreadCache();
+    cache.absorb({ items: [item(1), item(2)], has_more: false, thread_total: 2, thread_last_sequence: 2 });
+    const revived = createThreadCache();
+    revived.seedWindow(cache.exportWindow());
+    const folded = revived.absorb({ items: [item(3)], thread_total: 3 });
+    expect(folded.items.map((held) => held.data.sequence)).toEqual([1, 2, 3]);
+  });
+
+  it("exports nothing while no window is open, and refuses a seed over one", () => {
+    const cache = createThreadCache();
+    expect(cache.exportWindow()).toBeNull();
+    cache.absorb({ items: [item(1)], has_more: false, thread_total: 1, thread_last_sequence: 1 });
+    expect(cache.seedWindow({ items: [item(9)], deliveredSequence: 9 })).toBe(false);
+    expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });
+  });
+
+  it("refuses an empty or malformed seed", () => {
+    const cache = createThreadCache();
+    expect(cache.seedWindow(null)).toBe(false);
+    expect(cache.seedWindow({ items: [] })).toBe(false);
+    expect(cache.cursorParam()).toEqual({ thread_limit: FIRST_PAGE_ITEMS });
+  });
+
+  it("shapes a bare thread payload as a saved window", () => {
+    const shaped = windowFromThreadPayload({ items: [item(4), item(5)], has_more: true, thread_total: 9 });
+    expect(shaped).toEqual({
+      items: [item(4), item(5)],
+      olderItemsRemain: true,
+      deliveredSequence: 5,
+      knownTotalItems: 9,
+    });
+    expect(windowFromThreadPayload({ items: [] })).toBeNull();
+    expect(windowFromThreadPayload(null)).toBeNull();
   });
 });

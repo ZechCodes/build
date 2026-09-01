@@ -24,6 +24,7 @@ import {
 import { retargetTerminals } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
+import { setCacheDevice } from "./core/cacheScope.js";
 import { offlineBannerText } from "./core/text.js";
 
 /// Connection status has no chip of its own any more — the status line under the
@@ -67,6 +68,8 @@ export function greetLiveBridge() {
 export function adoptSession(session) {
   App.session = session;
   App.call = session.call;
+  // Whose cache the surfaces read and write through from here on.
+  setCacheDevice(session.deviceId);
   paintDevicePicker();
   // Every live session starts here — the gate's first one, a reconnect, a
   // device switch — so this is where captures taken with no device to send them

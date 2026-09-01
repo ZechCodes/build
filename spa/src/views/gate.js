@@ -12,6 +12,7 @@ import { refreshDevices, paintDevicePicker } from "../devices.js";
 import { lookupDevice, approveDevice } from "../api.js";
 import { openAddDevice } from "../sheets/addDevice.js";
 import { startFeed, stopFeed } from "../core/taskFeed.js";
+import { startCacheSync } from "../core/cacheSync.js";
 import { initInboxRail } from "../core/inboxShell.js";
 import { initToolbar } from "../core/toolbar.js";
 
@@ -50,6 +51,7 @@ async function enterApp() {
   // does not leaves every interval exactly where it has always been.
   greetLiveBridge();
   startFeed();
+  startCacheSync();
   initInboxRail();
   initToolbar();
   render(); // the hash route survives the gate, so deep links land where they point

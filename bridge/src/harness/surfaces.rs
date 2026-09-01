@@ -134,8 +134,15 @@ pub struct SurfaceLedger {
     subagents: Vec<SurfaceAgent>,
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
-    #[allow(dead_code)]
-    pending_checklist_creates: HashMap<String, (String, String)>,
+    pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
+}
+
+/// What a `TaskCreate` call said before its answer named the task, held only
+/// until that answer arrives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingChecklistCreate {
+    subject: String,
+    description: Option<String>,
 }
 
 impl SurfaceLedger {
@@ -159,6 +166,19 @@ impl SurfaceLedger {
             }
             _ => false,
         }
+    }
+
+    /// One tool call, routed by the tool it named. The block is the `tool_use`
+    /// content block, which is where a call's id and its input live.
+    pub fn read_tool_call(&mut self, name: &str, block: &Value) -> bool {
+        self.apply_checklist_call(name, block)
+    }
+
+    /// One call's answer, routed by the tool its call named. The event is the
+    /// WHOLE message, because `tool_use_result` sits beside the content rather
+    /// than inside the `tool_result` block.
+    pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, event: &Value) -> bool {
+        self.apply_checklist_answer(tool, call_id, event)
     }
 
     pub fn snapshot(&self) -> Option<AgentSurfaces> {
@@ -289,6 +309,106 @@ impl SurfaceLedger {
     fn subagent_named(&mut self, task_id: &str) -> Option<&mut SurfaceAgent> {
         self.subagents.iter_mut().find(|held| held.id == task_id)
     }
+
+    /// A `TaskCreate` call describes an item the harness has not numbered yet,
+    /// so it is held rather than appended; a `TodoWrite` call carries the whole
+    /// list and replaces it.
+    fn apply_checklist_call(&mut self, tool: &str, block: &Value) -> bool {
+        match tool {
+            "TaskCreate" => {
+                let call_id = match block["id"].as_str() {
+                    Some(named) => named.to_string(),
+                    None => return false,
+                };
+                let input = &block["input"];
+                self.pending_checklist_creates.insert(
+                    call_id,
+                    PendingChecklistCreate {
+                        subject: bounded_text(input, "subject").unwrap_or_default(),
+                        description: bounded_text(input, "description"),
+                    },
+                );
+                false
+            }
+            "TodoWrite" => match block["input"]["todos"].as_array() {
+                Some(todos) => replace_when_changed(&mut self.checklist, read_todo_list(todos)),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn apply_checklist_answer(&mut self, tool: &str, call_id: &str, event: &Value) -> bool {
+        match tool {
+            "TaskCreate" => self.append_created_item(call_id, &event["tool_use_result"]["task"]),
+            "TaskUpdate" => self.restate_item(&event["tool_use_result"]),
+            _ => false,
+        }
+    }
+
+    /// The answer is what numbers the item, and the call it answers is what
+    /// described it — so the pending entry is drained here whether or not the
+    /// harness named a task.
+    fn append_created_item(&mut self, call_id: &str, task: &Value) -> bool {
+        let described = self.pending_checklist_creates.remove(call_id);
+        let id = match task["id"].as_str() {
+            Some(named) => named.to_string(),
+            None => return false,
+        };
+        let created = SurfaceChecklistItem {
+            id,
+            subject: bounded_text(task, "subject")
+                .or_else(|| described.as_ref().map(|pending| pending.subject.clone()))
+                .unwrap_or_default(),
+            description: described.and_then(|pending| pending.description),
+            state: Some(CHECKLIST_PENDING.to_string()),
+        };
+        match self.checklist_item_named(&created.id) {
+            Some(held) => replace_when_changed(held, created),
+            None => {
+                self.checklist.push(created);
+                true
+            }
+        }
+    }
+
+    fn restate_item(&mut self, answered: &Value) -> bool {
+        let restated = match answered["statusChange"]["to"]
+            .as_str()
+            .and_then(wire_checklist_state)
+        {
+            Some(claimed) => Some(claimed.to_string()),
+            None => return false,
+        };
+        let task_id = match answered["taskId"].as_str() {
+            Some(named) => named.to_string(),
+            None => return false,
+        };
+        match self.checklist_item_named(&task_id) {
+            Some(held) => replace_when_changed(&mut held.state, restated),
+            None => false,
+        }
+    }
+
+    fn checklist_item_named(&mut self, id: &str) -> Option<&mut SurfaceChecklistItem> {
+        self.checklist.iter_mut().find(|held| held.id == id)
+    }
+}
+
+fn read_todo_list(todos: &[Value]) -> Vec<SurfaceChecklistItem> {
+    todos
+        .iter()
+        .enumerate()
+        .map(|(position, todo)| SurfaceChecklistItem {
+            id: format!("todo:{position}"),
+            subject: bounded_text(todo, "content").unwrap_or_default(),
+            description: None,
+            state: todo["status"]
+                .as_str()
+                .and_then(wire_checklist_state)
+                .map(str::to_string),
+        })
+        .collect()
 }
 
 fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> SurfaceAgent {
@@ -330,6 +450,12 @@ fn replace_when_changed<T: PartialEq>(held: &mut T, reported: T) -> bool {
 
 fn read_text(source: &Value, field: &str) -> Option<String> {
     source[field].as_str().map(str::to_string)
+}
+
+/// Agent-authored text reaches the snapshot as one line of bounded length, the
+/// way every other summary on it does.
+fn bounded_text(source: &Value, field: &str) -> Option<String> {
+    read_text(source, field).map(|written| one_line(&written, TOOL_SUMMARY_LIMIT))
 }
 
 fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
@@ -414,6 +540,21 @@ fn wire_task_state(status: &str) -> Option<&'static str> {
             true => Some("done"),
             false => None,
         },
+    }
+}
+
+/// What an item the harness has just numbered is, before it says otherwise.
+const CHECKLIST_PENDING: &str = "pending";
+
+/// The checklist vocabulary, taken verbatim when the harness claims one of it
+/// and refused otherwise, which leaves the item's state where it was.
+fn wire_checklist_state(token: &str) -> Option<&'static str> {
+    match token {
+        CHECKLIST_PENDING => Some(CHECKLIST_PENDING),
+        "in_progress" => Some("in_progress"),
+        "completed" => Some("completed"),
+        "blocked" => Some("blocked"),
+        _ => None,
     }
 }
 
@@ -1112,10 +1253,241 @@ mod ledger_tests {
     fn a_started_background_shell_is_no_business_of_the_workflow_parser() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed(
-            &mut ledger,
-            &fixture_line("shell-and-checklist.jsonl", 42)
-        ));
+        assert!(!feed(&mut ledger, &fixture_line(CHECKLIST_FIXTURE, 42)));
         assert!(ledger.snapshot().is_none());
+    }
+
+    const CHECKLIST_FIXTURE: &str = "shell-and-checklist.jsonl";
+    const FIRST_UPDATE_CALL_ID: &str = "toolu_01UExMFQFbhqwFX9Qz4M3L1q";
+
+    fn tool_call_block(call_line: usize) -> Value {
+        fixture_line(CHECKLIST_FIXTURE, call_line)["message"]["content"][0].clone()
+    }
+
+    fn tool_named_by(call_line: usize) -> String {
+        tool_call_block(call_line)["name"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{CHECKLIST_FIXTURE}:{call_line} names a tool"))
+            .to_string()
+    }
+
+    fn feed_tool_call(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
+        ledger.read_tool_call(&tool_named_by(call_line), &tool_call_block(call_line))
+    }
+
+    /// A fixture answer sits on the line after the call it replies to, and the
+    /// tool it is routed by is the one that call named.
+    fn feed_tool_answer(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
+        let call_id = tool_call_block(call_line)["id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{CHECKLIST_FIXTURE}:{call_line} carries a call id"))
+            .to_string();
+        let answer = fixture_line(CHECKLIST_FIXTURE, call_line + 1);
+        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, &answer)
+    }
+
+    fn feed_tool_pair(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
+        feed_tool_call(ledger, call_line);
+        feed_tool_answer(ledger, call_line)
+    }
+
+    fn ledger_through_the_three_creates() -> SurfaceLedger {
+        let mut ledger = SurfaceLedger::default();
+        for call_line in [27, 29, 31] {
+            feed_tool_pair(&mut ledger, call_line);
+        }
+        ledger
+    }
+
+    fn the_checklist(ledger: &SurfaceLedger) -> Vec<SurfaceChecklistItem> {
+        ledger
+            .snapshot()
+            .expect("the ledger holds a snapshot")
+            .checklist
+    }
+
+    fn checklist_item_named(ledger: &SurfaceLedger, id: &str) -> SurfaceChecklistItem {
+        the_checklist(ledger)
+            .into_iter()
+            .find(|item| item.id == id)
+            .unwrap_or_else(|| panic!("the checklist holds {id}: {:?}", the_checklist(ledger)))
+    }
+
+    fn todo_write_block(todos: &[(&str, &str)]) -> Value {
+        let listed: Vec<Value> = todos
+            .iter()
+            .map(|(content, status)| {
+                json!({
+                    "content": content,
+                    "status": status,
+                    "activeForm": format!("{content}ing"),
+                })
+            })
+            .collect();
+        json!({
+            "type": "tool_use",
+            "id": "toolu_01TodoWriteSynthetic",
+            "name": "TodoWrite",
+            "input": { "todos": listed },
+        })
+    }
+
+    #[test]
+    fn a_task_create_call_with_no_answer_is_not_yet_a_checklist_item() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed_tool_call(&mut ledger, 27));
+
+        assert!(ledger.snapshot().is_none());
+        assert_eq!(ledger.pending_checklist_creates.len(), 1);
+    }
+
+    #[test]
+    fn a_task_create_answer_appends_the_item_its_call_described() {
+        let mut ledger = SurfaceLedger::default();
+        feed_tool_call(&mut ledger, 27);
+
+        assert!(feed_tool_answer(&mut ledger, 27));
+
+        assert_eq!(
+            the_checklist(&ledger),
+            vec![SurfaceChecklistItem {
+                id: "1".to_string(),
+                subject: "Start the background job".to_string(),
+                description: Some(
+                    "Launch the background bash script with run_in_background: true".to_string()
+                ),
+                state: Some("pending".to_string()),
+            }]
+        );
+        assert!(ledger.pending_checklist_creates.is_empty());
+    }
+
+    #[test]
+    fn the_three_creates_read_in_the_order_they_were_made() {
+        let ledger = ledger_through_the_three_creates();
+
+        let listed: Vec<(String, String)> = the_checklist(&ledger)
+            .into_iter()
+            .map(|item| (item.id, item.subject))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("1".to_string(), "Start the background job".to_string()),
+                ("2".to_string(), "Wait for it".to_string()),
+                ("3".to_string(), "Report".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn each_task_update_answer_completes_the_item_it_names() {
+        let mut ledger = ledger_through_the_three_creates();
+
+        assert!(feed_tool_pair(&mut ledger, 52));
+        assert_eq!(
+            checklist_item_named(&ledger, "1").state.as_deref(),
+            Some("completed")
+        );
+        assert_eq!(
+            checklist_item_named(&ledger, "2").state.as_deref(),
+            Some("pending")
+        );
+
+        assert!(feed_tool_pair(&mut ledger, 94));
+        assert!(feed_tool_pair(&mut ledger, 96));
+
+        for id in ["1", "2", "3"] {
+            assert_eq!(
+                checklist_item_named(&ledger, id).state.as_deref(),
+                Some("completed"),
+                "item {id} reads completed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_task_update_naming_a_task_that_was_never_created_mints_nothing() {
+        let mut ledger = SurfaceLedger::default();
+
+        assert!(!feed_tool_pair(&mut ledger, 52));
+
+        assert!(ledger.snapshot().is_none());
+    }
+
+    #[test]
+    fn a_status_token_the_checklist_does_not_know_leaves_the_item_alone() {
+        let mut ledger = ledger_through_the_three_creates();
+        let mut unclaimed = fixture_line(CHECKLIST_FIXTURE, 53);
+        unclaimed["tool_use_result"]["statusChange"]["to"] = json!("banana");
+
+        assert!(!ledger.read_tool_answer("TaskUpdate", FIRST_UPDATE_CALL_ID, &unclaimed));
+
+        assert_eq!(
+            checklist_item_named(&ledger, "1").state.as_deref(),
+            Some("pending")
+        );
+    }
+
+    #[test]
+    fn a_tool_the_checklist_never_heard_of_moves_nothing() {
+        let mut ledger = ledger_through_the_three_creates();
+        let before = written(&ledger);
+
+        for call_line in [17, 92] {
+            assert!(!feed_tool_call(&mut ledger, call_line), "line {call_line}");
+            assert!(
+                !feed_tool_answer(&mut ledger, call_line),
+                "line {}",
+                call_line + 1
+            );
+        }
+
+        assert_eq!(written(&ledger), before);
+    }
+
+    #[test]
+    fn a_todo_write_call_replaces_the_whole_checklist() {
+        let mut ledger = ledger_through_the_three_creates();
+
+        assert!(ledger.read_tool_call(
+            "TodoWrite",
+            &todo_write_block(&[
+                ("Read the file", "completed"),
+                ("Write the test", "in_progress"),
+                ("Run the suite", "pending"),
+            ])
+        ));
+
+        let listed: Vec<(String, Option<String>)> = the_checklist(&ledger)
+            .into_iter()
+            .map(|item| (item.subject, item.state))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("Read the file".to_string(), Some("completed".to_string())),
+                (
+                    "Write the test".to_string(),
+                    Some("in_progress".to_string())
+                ),
+                ("Run the suite".to_string(), Some("pending".to_string())),
+            ]
+        );
+        assert!(
+            !written(&ledger).contains("Start the background job"),
+            "a wholesale replace drops what the creates minted: {}",
+            written(&ledger)
+        );
+
+        assert!(ledger.read_tool_call("TodoWrite", &todo_write_block(&[("Ship it", "pending")])));
+
+        assert_eq!(the_checklist(&ledger).len(), 1);
+        assert!(
+            !written(&ledger).contains("Read the file"),
+            "a later list drops what an earlier one carried: {}",
+            written(&ledger)
+        );
     }
 }

@@ -1845,6 +1845,28 @@ mod tests {
     }
 
     #[test]
+    fn a_reader_nobody_is_watching_reads_the_stream_to_its_end() {
+        let mut reader = reader_over_a_silent_session();
+        drop(reader.revision.subscribe());
+
+        for line in fixture_lines(WORKFLOW_FIXTURE) {
+            reader.read_line(&line);
+        }
+
+        assert!(
+            revision_counter_of(&reader) > 0,
+            "a bump with nobody watching is not an error"
+        );
+        assert_eq!(
+            surfaces_of(&reader)
+                .expect("the whole stream was read")
+                .workflows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn the_task_roster_stays_the_one_authority_for_whether_the_agent_is_working() {
         let reader = reader_over_every_line_of(WORKFLOW_FIXTURE);
         let state = reader.state.lock().unwrap();

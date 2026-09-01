@@ -32,6 +32,7 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
+pub mod shell_tail;
 #[cfg(test)]
 mod stream_fixtures;
 pub mod surfaces;

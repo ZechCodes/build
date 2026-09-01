@@ -157,6 +157,8 @@ export const MUTATION_THREAD_PAGE = Object.freeze({ thread_limit: FIRST_PAGE_ITE
 // thread these surfaces do read (the diff revision a comment anchors to).
 export const SMALLEST_THREAD_PAGE = Object.freeze({ thread_limit: 1 });
 
+export const threadItemKey = (item) => String(item?.data?.sequence ?? "");
+
 export function createThreadCache() {
   let accumulatedItems = [];
   // Whether the daemon said there is conversation above the window. Only a

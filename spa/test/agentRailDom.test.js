@@ -80,6 +80,7 @@ const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
@@ -150,6 +151,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetAgentRailMemory();
+  resetOptimistic();
   setCacheDevice("dev-1");
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -170,6 +172,7 @@ beforeEach(async () => {
     if (method === "run.adopt") return { run_id: "run-9" };
     if (method === "agent.start") return { agent_id: "ag-new", term_id: "agent:ag-new" };
     if (method === "agent.add") return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
+    if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
 });
@@ -247,16 +250,18 @@ describe("the bubble strip", () => {
     expect(bubbles()[0].classList.contains("working")).toBe(false);
   });
 
-  it("rebuilds the strip when the agents themselves change", async () => {
+  it("keeps each bubble's element when another agent joins the strip", async () => {
     await mount();
     const before = bubbles()[0];
+    const painter = livePainters()[0];
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
 
     vi.advanceTimersByTime(1600);
     await flush();
 
     expect(bubbles()).toHaveLength(3);
-    expect(bubbles()[0]).not.toBe(before);
+    expect(bubbles()[0]).toBe(before);
+    expect(painter.destroyed).toBe(false);
   });
 
   it("wears a painted pattern instead of a number", async () => {
@@ -1513,5 +1518,177 @@ describe("revisiting a conversation", () => {
     const body = railHost().querySelector("#rail-body");
     expect(body.textContent).toContain("the history");
     expect(body.textContent).not.toContain("No conversation yet");
+  });
+});
+
+describe("creating an agent, before the daemon has answered for it", () => {
+  const agentless = () => branchRow({ agents: [] });
+  const composer = () => railHost().querySelector("#railinput");
+  const timeline = () => railHost().querySelector(".thread-items");
+
+  const holdAgentAdd = () => {
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.add") return answer(method, params);
+      calls.push({ method, params });
+      await held;
+      return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
+    });
+    return release;
+  };
+
+  const refuseCall = (refused, message) => {
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== refused) return answer(method, params);
+      calls.push({ method, params });
+      throw new Error(message);
+    });
+  };
+
+  const press = async (body) => {
+    composer().value = body;
+    railHost().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("paints a pending agent the daemon has not answered for yet", async () => {
+    payload = agentless();
+    await mount();
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = runOptimistic({
+      scope: "agents:branch:p1:build/login",
+      records: [insertRecord("ag-7", agent({ id: "ag-7", ordinal: 1 }))],
+      call: () => held,
+      failureSummary: "Could not start the agent",
+    });
+    await flush();
+
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
+
+    vi.advanceTimersByTime(3200);
+    await flush();
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
+
+    release();
+    await running;
+  });
+
+  it("paints the agent, its conversation and a cleared box in the same tick as the press", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
+    expect(bubbles()[0].classList.contains("active")).toBe(true);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(timeline().textContent).toContain("start here");
+    expect(composer().value).toBe("");
+    expect(callsTo("agent.add")).toHaveLength(1);
+    expect(callsTo("thread.post")).toEqual([]);
+
+    release();
+    await flush();
+  });
+
+  it("renames the bubble to the agent the daemon made, without rebuilding anything", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const painter = livePainters().at(-1);
+    const body = railHost().querySelector("#rail-body");
+    const input = composer();
+    input.focus();
+
+    release();
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(bubble.dataset.agent).toBe("ag-2");
+    expect(painter.destroyed).toBe(false);
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(composer()).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-2", body: "start here",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-2" });
+  });
+
+  it("leaves the optimistic agent standing when a read lands mid-flight", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const reads = callsTo("branch.get").length;
+
+    vi.advanceTimersByTime(3200);
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(bubbles()).toHaveLength(2);
+    expect(callsTo("branch.get").length).toBeGreaterThan(reads);
+    expect(callsTo("branch.get").every((call) => call.params.agent_id === undefined)).toBe(true);
+
+    release();
+    await flush();
+  });
+
+  it("puts the message back in the box when the agent could not be created", async () => {
+    payload = agentless();
+    await mount();
+    refuseCall("agent.add", "no room");
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]);
+    expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
+    expect(composer().value).toBe("start here");
+    expect(document.activeElement).toBe(composer());
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room");
+  });
+
+  it("keeps the agent when only the message was refused", async () => {
+    payload = agentless();
+    await mount();
+    refuseCall("thread.post", "no conversation");
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+    expect(timeline().textContent).not.toContain("start here");
+    expect(composer().value).toBe("start here");
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no conversation");
+  });
+
+  it("posts a message typed before the agent existed to the agent that now does", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    await press("and this too");
+
+    release();
+    await flush();
+    await flush();
+
+    const posts = callsTo("thread.post");
+    expect(posts.map((call) => call.params.body)).toEqual(["start here", "and this too"]);
+    expect(posts.every((call) => call.params.agent_id === "ag-2")).toBe(true);
   });
 });

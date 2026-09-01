@@ -11174,6 +11174,7 @@ impl AppState {
             .get("interrupt")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let posted_sequence;
         if let Some(active) = self.plans.get(&entity_id) {
             if active.plan.state.is_terminal() {
                 return Err(format!(
@@ -11226,7 +11227,7 @@ impl AppState {
                         })
                     });
             let mut active = self.take_plan(&entity_id)?;
-            append_reviewer_messages(
+            posted_sequence = append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
@@ -11296,7 +11297,7 @@ impl AppState {
                 let run_persisted = self.finish_run_mutation(run_id, run);
                 run_persisted?;
             }
-            return Ok(view);
+            return Ok(with_posted_sequence(view, posted_sequence));
         }
         if let Some(active) = self.runs.get(&entity_id) {
             if active.run.state.is_terminal() {
@@ -11347,7 +11348,7 @@ impl AppState {
                 .filter(|_| addresses_primary_agent)
             {
                 let mut issue = self.take_plan(&issue_id)?;
-                append_reviewer_messages(
+                posted_sequence = append_reviewer_messages(
                     issue.agents.sole_thread_mut(),
                     messages,
                     attachments,
@@ -11371,13 +11372,16 @@ impl AppState {
                     let (view, run_persisted) =
                         self.answer_run_mutation(entity_id, active, thread_detail(params));
                     run_persisted?;
-                    return Ok(view);
+                    return Ok(with_posted_sequence(view, posted_sequence));
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(&entity_id, active, thread_detail(params)));
+                return Ok(with_posted_sequence(
+                    self.run_view(&entity_id, active, thread_detail(params)),
+                    posted_sequence,
+                ));
             }
             let mut active = self.take_run(&entity_id)?;
-            append_reviewer_messages(
+            posted_sequence = append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
@@ -11401,7 +11405,7 @@ impl AppState {
             let (view, persisted) =
                 self.answer_run_mutation(entity_id, active, thread_detail(params));
             persisted?;
-            return Ok(view);
+            return Ok(with_posted_sequence(view, posted_sequence));
         }
         Err("unknown conversation owner".to_string())
     }
@@ -16810,20 +16814,24 @@ fn append_reviewer_messages(
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
     attachments: Vec<crate::thread::MessageAttachment>,
     choice: Option<&crate::thread::OptionChoice>,
-) {
+) -> Option<u64> {
     if let Some(choice) = choice {
         if thread.post_option_reply(choice, &now_rfc3339()).is_ok() {
-            return;
+            return last_appended_sequence(thread);
         }
     }
-    append_user_thread_messages_with_attachments(thread, messages, attachments);
+    append_user_thread_messages_with_attachments(thread, messages, attachments)
 }
 
 fn append_user_thread_messages(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
-) {
-    append_user_thread_messages_with_attachments(thread, messages, Vec::new());
+) -> Option<u64> {
+    append_user_thread_messages_with_attachments(thread, messages, Vec::new())
+}
+
+fn last_appended_sequence(thread: &crate::thread::Thread) -> Option<u64> {
+    thread.items.last().map(crate::thread::ThreadItem::sequence)
 }
 
 /// Append reviewer messages, hanging any attachments off the last of them.
@@ -16835,7 +16843,7 @@ fn append_user_thread_messages_with_attachments(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
     attachments: Vec<crate::thread::MessageAttachment>,
-) {
+) -> Option<u64> {
     let now = now_rfc3339();
     let last = messages.len().saturating_sub(1);
     for (index, (body, anchor)) in messages.into_iter().enumerate() {
@@ -16845,6 +16853,15 @@ fn append_user_thread_messages_with_attachments(
             thread.post_user(body, anchor, &now);
         }
     }
+    last_appended_sequence(thread)
+}
+
+fn with_posted_sequence(view: Value, sequence: Option<u64>) -> Value {
+    let mut view = view;
+    if let (Some(map), Some(sequence)) = (view.as_object_mut(), sequence) {
+        map.insert("posted_sequence".to_string(), json!(sequence));
+    }
+    view
 }
 
 fn append_plan_stage_announcements(
@@ -28301,6 +28318,60 @@ mod tests {
             "one more word"
         );
         assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
+    }
+
+    #[test]
+    fn thread_post_names_the_sequence_it_appended() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-post-named", 3);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-named", "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let appended = items.last().unwrap();
+        assert_eq!(appended["data"]["body"], "one more word");
+        assert_eq!(
+            posted["result"]["posted_sequence"], appended["data"]["sequence"],
+            "{posted:?}"
+        );
+
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-named", "body": "and another" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert!(
+            again["result"]["posted_sequence"].as_u64().unwrap()
+                > posted["result"]["posted_sequence"].as_u64().unwrap(),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn posting_to_an_implementation_names_the_sequence_in_its_issues_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_issue_id, run_id) = planned_run_in_review(&mut state, "name the routed post");
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let appended = items
+            .iter()
+            .rev()
+            .find(|item| item["data"]["body"] == "one more word")
+            .unwrap();
+        assert_eq!(
+            posted["result"]["posted_sequence"], appended["data"]["sequence"],
+            "{posted:?}"
+        );
     }
 
     /// And the same silence rule as the reads: a client that named no page is

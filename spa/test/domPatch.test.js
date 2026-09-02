@@ -69,20 +69,27 @@ describe("patching a live tree to say what a rendered one says", () => {
   });
 
   it("leaves the text the reader chose to see in full expanded", () => {
-    const live = tree(`<span class="clip" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
-    patchElement(live, tree(`<span class="clip">a longer line</span>`));
+    const live = tree(`<span class="surface-clip" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
+    patchElement(live, tree(`<span class="surface-clip">a longer line</span>`));
     expect(live.querySelector("span").hasAttribute(EXPANDED_ATTRIBUTE)).toBe(true);
     expect(live.querySelector("span").textContent).toBe("a longer line");
   });
 
   it("keeps the aria on expanded text saying what the reader made it, and hands it back on the way in", () => {
-    const expanded = tree(`<span role="button" aria-expanded="true" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
-    patchElement(expanded, tree(`<span role="button" aria-expanded="false">a long line</span>`));
+    const expanded = tree(`<span class="surface-clip" role="button" aria-expanded="true" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
+    patchElement(expanded, tree(`<span class="surface-clip" role="button" aria-expanded="false">a long line</span>`));
     expect(expanded.querySelector("span").getAttribute("aria-expanded")).toBe("true");
 
-    const clipped = tree(`<span role="button" aria-expanded="true">a long line</span>`);
-    patchElement(clipped, tree(`<span role="button" aria-expanded="false">a long line</span>`));
+    const clipped = tree(`<span class="surface-clip" role="button" aria-expanded="true">a long line</span>`);
+    patchElement(clipped, tree(`<span class="surface-clip" role="button" aria-expanded="false">a long line</span>`));
     expect(clipped.querySelector("span").getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("leaves an expansion mark stranded on anything but a clip to the render", () => {
+    const live = tree(`<div class="file" ${EXPANDED_ATTRIBUTE} aria-expanded="true">a file</div>`);
+    patchElement(live, tree(`<div class="file collapsed">a file</div>`));
+    expect(live.querySelector("div").hasAttribute(EXPANDED_ATTRIBUTE)).toBe(false);
+    expect(live.querySelector("div").hasAttribute("aria-expanded")).toBe(false);
   });
 
   it("leaves the children of a list another painter keys alone", () => {

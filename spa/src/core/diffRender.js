@@ -142,24 +142,20 @@ function foldClassOf(file, { folds, viewed }) {
 }
 
 /** One file of a changeset: its header, its rows, and the fold the reader left
- *  it in. `data-key` names the element and the state entry alike; while the
- *  file is open it also carries `data-expanded`, which is what the patch in
- *  core/domPatch.js reads to leave an expansion alone. */
+ *  it in. `data-key` names the element and the state entry alike. */
 export function diffFileHtml(file, options = {}) {
   const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false, sectionClass = "" } = options;
   const lang = langForPath(file.path);
   const key = fileKey(file);
   const isViewed = viewed ? viewed.has(file.path) : false;
-  const foldClass = foldClassOf(file, options);
-  const classes = ["file", foldClass, sectionClass].filter(Boolean).join(" ");
-  const openMark = foldClass === "" ? " data-expanded" : "";
+  const classes = ["file", foldClassOf(file, options), sectionClass].filter(Boolean).join(" ");
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
   const viewedToggle = withViewedToggle
     ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(key)}"${isViewed ? " checked" : ""}/> Viewed</label>`
     : "";
   return `
-      <div class="${classes}" data-key="${esc(key)}"${openMark}><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+      <div class="${classes}" data-key="${esc(key)}"><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
         <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file, fileMenu)}</div>
         <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
           maskDotenv: isDotenvPath(file.path),

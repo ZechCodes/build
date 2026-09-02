@@ -280,12 +280,12 @@ describe("folds the reader owns", () => {
     expect(diffFilesHtml(files)).toContain('class="file capped" data-key="EDIT:a.js"');
   });
 
-  it("expands the file whose key the reader opened, and marks it for the patch guard", () => {
+  it("expands the file whose key the reader opened, and says so in its class alone", () => {
     const folds = createFileFolds();
     folds.openBody(keyA);
     const html = diffFilesHtml(files, { folds });
     expect(html).toContain('class="file" data-key="EDIT:a.js"');
-    expect(html).toContain("data-expanded");
+    expect(html).not.toContain("data-expanded");
     expect(html).toContain('class="file capped" data-key="EDIT:b.js"');
   });
 

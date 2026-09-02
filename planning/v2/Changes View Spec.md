@@ -38,9 +38,11 @@ things break:
   (`gitPane.js` and `changesReview.js`). `diffFilesHtml` takes it beside
   `viewed`; the fold class is a function of state. The fold handlers mutate
   the set, not the class list.
-- Each `.file` also carries `data-expanded` while expanded, so the patch
-  guard in `domPatch.js` protects an expansion made between a press and the
-  next state-driven paint.
+- The fold class is the whole of what a `.file` says about its fold. No mark
+  on the page carries an expansion: a press moves the state and repaints from
+  it, so there is no window for the page to be ahead of the state, and
+  `domPatch.js`'s expansion guard stays scoped to the clipped lines whose
+  expansion no render describes.
 
 ### B. Keyed stack and scroll anchoring
 

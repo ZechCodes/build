@@ -87,13 +87,23 @@ describe("the Changes pane's folds", () => {
     const { container, pane } = await mount(served);
     await click(fileOf(container, "src/a.js").querySelector("td.code"));
     expect(fileOf(container, "src/a.js").classList.contains("capped")).toBe(false);
-    expect(fileOf(container, "src/a.js").hasAttribute("data-expanded")).toBe(true);
 
     served.status = status({ patch: patchFor("src/a.js", "the agent moved on"), head: "e".repeat(40) });
     await vi.advanceTimersByTimeAsync(2000);
     await settle();
     expect(container.textContent).toContain("the agent moved on");
     expect(fileOf(container, "src/a.js").classList.contains("capped")).toBe(false);
+    pane.dispose();
+  });
+
+  it("leaves no mark saying a file is open on one the reader shut", async () => {
+    const { container, pane } = await mount({ status: status() });
+    const file = () => fileOf(container, "src/a.js");
+    await click(file().querySelector("td.code"));
+    expect(file().classList.contains("capped")).toBe(false);
+    await click(file().querySelector(".fpath"));
+    expect(file().classList.contains("collapsed")).toBe(true);
+    expect(file().hasAttribute("data-expanded")).toBe(false);
     pane.dispose();
   });
 

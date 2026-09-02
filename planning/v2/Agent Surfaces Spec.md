@@ -142,12 +142,6 @@ fixtures.
   `tool_use_result {taskId, statusChange: {from, to}}`.
 - Older sessions may use `TodoWrite {todos: [{content, status, activeForm}]}`,
   which carries the whole list; treat it as a wholesale replace.
-- **Recorded gap.** No captured run in `bridge/tests/fixtures/claude-stream/`
-  carries a `TodoWrite` call, so the wholesale-replace path is pinned against a
-  hand-written call block rather than a fixture. Its field names
-  (`todos[].content`, `todos[].status`) are unverified against a real stream.
-  Capture one and drive the replace test from it when a session using
-  `TodoWrite` can be recorded.
 
 ## Bridge
 

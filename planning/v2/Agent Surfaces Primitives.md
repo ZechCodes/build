@@ -773,7 +773,8 @@ beside, and match the export `mountAgentSurfaces`.
 
 ## Where this deviates from the spec
 
-One deviation, reported to the spec's owner rather than taken silently:
+Reported to the spec's owner rather than taken silently, and never written into
+the spec file:
 
 - **`agent.id` cannot be required.** The spec's shared `agent` entry marks `id`
   required. A queued workflow agent has no `agentId` in the stream
@@ -783,6 +784,13 @@ One deviation, reported to the spec's owner rather than taken silently:
   its real id once, when the agent starts. Nothing else in the system invents
   an id. If the spec would rather the wire carried an explicit
   `id_is_provisional`, that is the spec's call to make.
+- **`TodoWrite` has no captured fixture.** The spec's checklist section names
+  `TodoWrite {todos: [{content, status, activeForm}]}` as the wholesale-replace
+  path. No captured run in `bridge/tests/fixtures/claude-stream/` carries a
+  `TodoWrite` call, so `a_todo_write_call_replaces_the_whole_checklist` is
+  pinned against a hand-written call block and the field names
+  (`todos[].content`, `todos[].status`) are unverified against a real stream.
+  Capture a session that uses `TodoWrite` and drive the replace test off it.
 
 ## Risks this shape is deliberately taking
 

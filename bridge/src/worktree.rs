@@ -1661,6 +1661,220 @@ mod tests {
         );
         assert_eq!(derive_adoption_goal("", ""), "Adopted worktree");
     }
+
+    /// The scan is the union of every backend's, minus the project's own
+    /// checkout and the paths the caller has already bound, and each entry says
+    /// how it is isolated.
+    #[test]
+    fn discover_lists_every_checkout_but_the_project_and_the_excluded() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let listed = dir.path().join("wt-listed");
+        let bound = dir.path().join("wt-bound");
+        git_in(
+            &repo,
+            &["worktree", "add", listed.to_str().unwrap(), "-b", "listed"],
+        );
+        git_in(
+            &repo,
+            &["worktree", "add", bound.to_str().unwrap(), "-b", "bound"],
+        );
+        let mut excluded = HashSet::new();
+        excluded.insert(std::fs::canonicalize(&bound).unwrap());
+
+        let found = mgr.discover("main", &excluded).unwrap();
+
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].name, "wt-listed");
+        assert_eq!(found[0].branch.as_deref(), Some("listed"));
+        assert_eq!(found[0].isolation, Isolation::Worktree);
+        assert_eq!(
+            found,
+            discover_external_worktrees(&repo, "main", &excluded).unwrap(),
+            "the free seam is the manager"
+        );
+    }
+
+    /// A checkout describes itself, branch and all — and a directory that is no
+    /// Build checkout is described by nobody.
+    #[test]
+    fn a_detached_checkout_is_described_without_a_branch() {
+        let (dir, repo) = init_repo();
+        let detached = dir.path().join("wt-detached");
+        git_in(
+            &repo,
+            &["worktree", "add", "--detach", detached.to_str().unwrap()],
+        );
+
+        let described = describe_checkout(&detached, "main", unix_now())
+            .expect("a linked worktree describes itself");
+
+        assert_eq!(described.branch, None);
+        assert_eq!(described.name, "wt-detached");
+        assert_eq!(described.isolation, Isolation::Worktree);
+        assert!(
+            describe_checkout(&repo, "main", unix_now()).is_none(),
+            "the project's own checkout is nobody's isolated copy"
+        );
+    }
+
+    /// Removal's goal is absence: a checkout already gone still takes git's
+    /// record of it with it, and a kept branch is left whole.
+    #[test]
+    fn removing_a_checkout_that_is_already_gone_still_clears_its_record() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("vanished", "main", Isolation::Worktree).unwrap();
+        std::fs::remove_dir_all(&wt.path).unwrap();
+
+        mgr.remove(&wt, /* keep_branch */ true).unwrap();
+
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            !r.worktrees().unwrap().iter().any(|n| n == Some("vanished")),
+            "the record went with the directory"
+        );
+        assert!(
+            r.find_branch(&wt.recorded_branch, git2::BranchType::Local)
+                .is_ok(),
+            "the kept branch is untouched"
+        );
+    }
+
+    /// A checkout is known by its directory, so renaming one leaves git's
+    /// registry naming something that is not there: removal takes the directory
+    /// it was pointed at, and the sweep clears what the rename stranded.
+    #[test]
+    fn a_checkout_renamed_after_registration_is_removed_by_its_directory() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("was-here", "main", Isolation::Worktree).unwrap();
+        let renamed = dir.path().join("worktrees").join("now-here");
+        std::fs::rename(&wt.path, &renamed).unwrap();
+
+        mgr.remove_checkout(&renamed, "now-here").unwrap();
+
+        assert!(!renamed.exists(), "the directory it was pointed at is gone");
+        let stale = git2::Repository::open(&repo).unwrap();
+        assert!(
+            stale
+                .worktrees()
+                .unwrap()
+                .iter()
+                .any(|n| n == Some("was-here")),
+            "the rename stranded the record"
+        );
+
+        mgr.prune();
+
+        let swept = git2::Repository::open(&repo).unwrap();
+        assert!(
+            !swept
+                .worktrees()
+                .unwrap()
+                .iter()
+                .any(|n| n == Some("was-here")),
+            "the sweep clears it"
+        );
+    }
+
+    /// The merge runs through the project's own checkout, which must be on the
+    /// base branch — merging into whatever is at HEAD would land the work
+    /// somewhere nobody asked for.
+    #[test]
+    fn merge_into_base_refuses_a_primary_checkout_on_another_branch() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr
+            .create("mergeable", "main", Isolation::Worktree)
+            .unwrap();
+        commit_file(&wt.path, "landed");
+        git_in(&repo, &["checkout", "-b", "elsewhere"]);
+
+        let refused = mgr
+            .merge_into_base(&wt.path, &wt.recorded_branch, "main")
+            .unwrap_err()
+            .to_string();
+
+        assert!(refused.contains("not the base branch"), "{refused}");
+        git_in(&repo, &["checkout", "main"]);
+        mgr.merge_into_base(&wt.path, &wt.recorded_branch, "main")
+            .unwrap();
+        assert!(
+            repo.join("landed.txt").exists(),
+            "the work is on the base branch"
+        );
+    }
+
+    /// Deleting a branch by an expected head is how a teardown promises it took
+    /// only what it read; a branch that moved since keeps its work.
+    #[test]
+    fn a_branch_is_deleted_only_while_it_still_points_where_it_was_read() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("ref-ops", "main", Isolation::Worktree).unwrap();
+        commit_file(&wt.path, "moved-on");
+        let branch_tip = tip_of(&repo, &format!("refs/heads/{}", wt.recorded_branch));
+        let base_tip = tip_of(&repo, "refs/heads/main");
+        mgr.remove_checkout(&wt.path, &wt.name).unwrap();
+
+        assert!(mgr.branch_exists(&wt.recorded_branch).unwrap());
+        assert!(!mgr.branch_exists("build/never-cut").unwrap());
+
+        assert!(
+            mgr.delete_branch_at(&wt.recorded_branch, &base_tip)
+                .is_err(),
+            "a branch that is not where it was read keeps its work"
+        );
+        assert!(mgr.branch_exists(&wt.recorded_branch).unwrap());
+
+        mgr.delete_branch_at(&wt.recorded_branch, &branch_tip)
+            .unwrap();
+        assert!(!mgr.branch_exists(&wt.recorded_branch).unwrap());
+
+        mgr.restore_branch(&wt.recorded_branch, &branch_tip)
+            .unwrap();
+        assert_eq!(
+            tip_of(&repo, &format!("refs/heads/{}", wt.recorded_branch)),
+            branch_tip,
+            "the undo puts it back exactly where it was"
+        );
+    }
+
+    /// The sha a ref points at, as git spells it.
+    fn tip_of(repo: &Path, reference: &str) -> String {
+        git2::Repository::open(repo)
+            .unwrap()
+            .find_reference(reference)
+            .unwrap()
+            .target()
+            .unwrap()
+            .to_string()
+    }
+
+    /// Until the clone backend exists there is one isolation, and asking for
+    /// the other is refused with the same sentence a control would show.
+    #[test]
+    fn a_clone_is_refused_with_the_reason_the_controls_show() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+
+        let reason = mgr
+            .availability()
+            .cow
+            .expect_err("no clone backend in this build");
+        assert_eq!(
+            mgr.availability().lock_reason(Isolation::Cow),
+            Some(reason.as_str())
+        );
+        assert_eq!(mgr.availability().lock_reason(Isolation::Worktree), None);
+
+        let refused = mgr
+            .create("cloned", "main", Isolation::Cow)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains(&reason), "{refused}");
+    }
 }
 
 #[cfg(test)]

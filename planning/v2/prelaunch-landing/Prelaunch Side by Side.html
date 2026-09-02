@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="design_doc_mode" content="canvas">
+<title>Prelaunch — desktop + mobile</title>
+<style>html,body{margin:0;background:#0b0e0c;font-family:'JetBrains Mono',ui-monospace,monospace}.frame{position:absolute}.label{position:absolute;color:#7dffc0;font-size:12px;letter-spacing:.1em;text-transform:uppercase}iframe{border:0;width:100%;height:100%;display:block;background:#030604}a{color:#00ff88}a:hover{color:#7dffc0}</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script type="text/babel" src="browser-window.jsx"></script>
+<script type="text/babel" src="ios-frame.jsx"></script>
+</head>
+<body>
+<div class="label" style="left:80px;top:40px">Desktop — 1440</div>
+<div class="frame" id="desktop" style="left:80px;top:72px" data-screen-label="Desktop"></div>
+<div class="label" style="left:1600px;top:40px">Mobile — iPhone</div>
+<div class="frame" id="mobile" style="left:1600px;top:72px" data-screen-label="Mobile"></div>
+<script type="text/babel">
+ReactDOM.createRoot(document.getElementById('desktop')).render(
+  <ChromeWindow width={1440} height={900} url="getbuild.ing">
+    <iframe src="Prelaunch Landing.html" title="Build prelaunch, desktop"></iframe>
+  </ChromeWindow>
+);
+ReactDOM.createRoot(document.getElementById('mobile')).render(
+  <IOSDevice dark>
+    <div style={{boxSizing:'border-box',height:'100%',paddingTop:54,paddingBottom:24,background:'#030604'}}>
+      <iframe src="Prelaunch Landing Mobile.html" title="Build prelaunch, mobile"></iframe>
+    </div>
+  </IOSDevice>
+);
+</script>
+</body>
+</html>

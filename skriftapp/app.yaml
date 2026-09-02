@@ -7,12 +7,18 @@
 #   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
 #   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
 #   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
+#   SMTP_USERNAME        — FastMail login address
+#   SMTP_PASSWORD        — FastMail app password (not the account password)
+#   SMTP_FROM_ADDRESS    — an address or alias on that account, e.g. Build <hello@getbuild.ing>
+#   WAITLIST_NOTIFY_ADDRESS — read from the environment by the app (not interpolated here);
+#                          empty disables the owner notification on a new signup
 controllers:
   - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
+  - buildapp.waitlist_controller:WaitlistController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:
@@ -29,6 +35,27 @@ auth:
       label: Passkey
 rate_limit:
   enabled: true
+  rules:
+    - name: waitlist_join
+      match:
+        path: /api/waitlist
+        method: POST
+      key: ip
+      limits:
+        - limit: 3
+          per: minute
+        - limit: 100
+          per: day
+email:
+  backend: skrift.lib.email_backends:SMTPEmailBackend
+  from_address: $SMTP_FROM_ADDRESS
+  reply_to: $SMTP_FROM_ADDRESS
+  public_base_url: https://getbuild.ing
+  smtp_host: smtp.fastmail.com
+  smtp_port: 587
+  smtp_starttls: true
+  smtp_username: $SMTP_USERNAME
+  smtp_password: $SMTP_PASSWORD
 # The relay must present X-Internal-Secret on /internal/* — no localhost fallback.
 internal_api:
   allow_localhost: false

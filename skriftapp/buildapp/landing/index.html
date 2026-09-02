@@ -1,491 +1,73 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Build — the agentic coding IDE</title>
-<meta name="description" content="Build surfaces the work that needs you — plans, reviews, blockers — and leaves the rest to your agents. Issue tracking, version control, review, and dynamic workflows for Claude Code, Codex, Pi, and OpenCode.">
-<style>
-  :root {
-    --bg: #030907;
-    --bg-raise: #06120c;
-    --line: #0e2418;
-    --neon: #00ff9c;
-    --neon-dim: #00c878;
-    --neon-faint: rgba(0, 255, 156, 0.08);
-    --amber: #ffc857;
-    --red: #ff6b6b;
-    --text: #d9ffe9;
-    --text-dim: #7fa892;
-    --text-faint: #4a6b59;
-    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-    --sans: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    line-height: 1.6;
-    overflow-x: hidden;
-  }
-  ::selection { background: var(--neon); color: #032215; }
-
-  /* ── animated 3D dot-grid backdrop ─────────────────────────────── */
-  #grid {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-  .content { position: relative; z-index: 1; }
-
-  .shell { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
-
-  /* ── nav ───────────────────────────────────────────────────────── */
-  nav {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 22px 0;
-  }
-  .wordmark {
-    font-family: var(--mono);
-    font-size: 20px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--text);
-    text-decoration: none;
-  }
-  .wordmark .tick { color: var(--neon); }
-  .btn {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-    padding: 10px 22px;
-    border-radius: 6px;
-    border: 1px solid var(--neon-dim);
-    color: var(--neon);
-    background: transparent;
-    transition: background 0.15s, box-shadow 0.15s, color 0.15s;
-  }
-  .btn:hover { background: var(--neon-faint); box-shadow: 0 0 24px rgba(0, 255, 156, 0.25); }
-  .btn-solid {
-    background: var(--neon);
-    color: #032215;
-    border-color: var(--neon);
-    box-shadow: 0 0 32px rgba(0, 255, 156, 0.35);
-  }
-  .btn-solid:hover { background: #38ffb4; color: #032215; box-shadow: 0 0 48px rgba(0, 255, 156, 0.5); }
-  .btn-lg { font-size: 16px; padding: 14px 32px; }
-
-  /* ── hero ──────────────────────────────────────────────────────── */
-  .hero { text-align: center; padding: 72px 0 40px; }
-  .hero-tag {
-    display: inline-block;
-    font-family: var(--mono);
-    font-size: 12.5px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--neon);
-    border: 1px solid var(--line);
-    background: rgba(3, 15, 9, 0.7);
-    border-radius: 999px;
-    padding: 6px 16px;
-    margin-bottom: 28px;
-  }
-  h1 {
-    font-size: clamp(38px, 6vw, 68px);
-    line-height: 1.08;
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    margin: 0 auto 20px;
-    max-width: 17ch;
-  }
-  h1 .glow {
-    color: var(--neon);
-    text-shadow: 0 0 24px rgba(0, 255, 156, 0.45), 0 0 80px rgba(0, 255, 156, 0.2);
-  }
-  .hero p {
-    font-size: clamp(16px, 2vw, 19px);
-    color: var(--text-dim);
-    max-width: 60ch;
-    margin: 0 auto 36px;
-  }
-  .hero p strong { color: var(--text); font-weight: 600; }
-
-  /* ── IDE screenshot frame ──────────────────────────────────────── */
-  .ide-wrap { padding: 40px 0 30px; perspective: 1400px; }
-  .ide {
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: #040c08;
-    box-shadow:
-      0 0 0 1px rgba(0, 255, 156, 0.06),
-      0 0 60px rgba(0, 255, 156, 0.12),
-      0 40px 120px rgba(0, 0, 0, 0.8);
-    overflow: hidden;
-    font-family: var(--mono);
-    font-size: 12.5px;
-    text-align: left;
-    transform: rotateX(4deg);
-    transform-origin: 50% 0;
-  }
-  .ide-titlebar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    background: #061009;
-    border-bottom: 1px solid var(--line);
-  }
-  .dot { width: 11px; height: 11px; border-radius: 50%; background: #1c3a2a; }
-  .ide-title { margin-left: 10px; color: var(--text-faint); font-size: 12px; }
-  .ide-title b { color: var(--text-dim); font-weight: 600; }
-
-  .ide-body { display: grid; grid-template-columns: 250px 1fr; min-height: 460px; }
-
-  /* sidebar: the inbox */
-  .ide-side { border-right: 1px solid var(--line); background: #050e09; padding: 12px 0; }
-  .side-label {
-    font-size: 10.5px;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    padding: 6px 16px;
-  }
-  .task { display: flex; gap: 10px; align-items: flex-start; padding: 9px 16px; }
-  .task.active { background: var(--neon-faint); border-left: 2px solid var(--neon); padding-left: 14px; }
-  .task .st { flex: 0 0 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
-  .st-you { background: var(--neon); box-shadow: 0 0 8px var(--neon); }
-  .st-run { background: #14532d; border: 1px solid var(--neon-dim); animation: pulse 2s infinite; }
-  .st-blk { background: var(--amber); box-shadow: 0 0 8px rgba(255, 200, 87, 0.5); }
-  @keyframes pulse { 50% { opacity: 0.35; } }
-  .task .t-name { color: var(--text); line-height: 1.35; }
-  .task .t-sub { color: var(--text-faint); font-size: 11px; }
-  .task.dim .t-name { color: var(--text-dim); }
-
-  /* main pane */
-  .ide-main { display: flex; flex-direction: column; min-width: 0; }
-  .ide-tabs { display: flex; border-bottom: 1px solid var(--line); background: #050e09; }
-  .ide-tab { padding: 9px 18px; color: var(--text-faint); border-right: 1px solid var(--line); }
-  .ide-tab.on { color: var(--neon); background: #040c08; box-shadow: inset 0 -2px 0 var(--neon); }
-  .review-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 12px 18px;
-    border-bottom: 1px solid var(--line);
-    flex-wrap: wrap;
-  }
-  .review-head .plan { color: var(--text-dim); font-size: 12px; }
-  .review-head .plan b { color: var(--text); }
-  .review-actions { display: flex; gap: 8px; }
-  .chip {
-    font-size: 11.5px;
-    padding: 5px 14px;
-    border-radius: 5px;
-    border: 1px solid var(--line);
-    color: var(--text-dim);
-  }
-  .chip.approve { border-color: var(--neon-dim); color: var(--neon); background: var(--neon-faint); }
-
-  .diff { padding: 10px 0; overflow: hidden; flex: 1; }
-  .diff-file { color: var(--text-dim); padding: 4px 18px 8px; font-size: 12px; }
-  .dl { display: flex; white-space: pre; line-height: 1.75; }
-  .dl .ln { flex: 0 0 44px; text-align: right; padding-right: 14px; color: #29452f; user-select: none; }
-  .dl .code { padding-right: 18px; color: var(--text-dim); }
-  .dl.add { background: rgba(0, 255, 156, 0.07); }
-  .dl.add .code { color: #a9ffd8; }
-  .dl.add .code::before { content: "+ "; color: var(--neon); }
-  .dl.del { background: rgba(255, 107, 107, 0.07); }
-  .dl.del .code { color: #e8a1a1; text-decoration: line-through; text-decoration-color: rgba(255, 107, 107, 0.4); }
-  .dl.del .code::before { content: "- "; color: var(--red); }
-  .dl.ctx .code::before { content: "  "; }
-  .kw { color: var(--neon-dim); }
-  .fn { color: #7ee8ff; }
-  .str { color: var(--amber); }
-
-  /* terminal basement */
-  .ide-term { border-top: 1px solid var(--line); background: #02070472; padding: 10px 18px 12px; font-size: 12px; }
-  .term-label { color: var(--text-faint); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 6px; }
-  .term-line { color: var(--text-dim); line-height: 1.7; white-space: pre-wrap; }
-  .term-line .ok { color: var(--neon); }
-  .term-line .p { color: var(--neon-dim); }
-  .caret {
-    display: inline-block;
-    width: 8px;
-    height: 14px;
-    background: var(--neon);
-    vertical-align: text-bottom;
-    animation: blink 1.1s steps(1) infinite;
-  }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  /* ── sections ──────────────────────────────────────────────────── */
-  section { padding: 84px 0; }
-  .sec-head { text-align: center; margin-bottom: 48px; }
-  .sec-head h2 { font-size: clamp(26px, 4vw, 38px); font-weight: 750; letter-spacing: -0.01em; }
-  .sec-head p { color: var(--text-dim); max-width: 56ch; margin: 12px auto 0; }
-
-  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
-  .card {
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    background: rgba(4, 12, 8, 0.85);
-    padding: 26px 24px;
-    transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
-  }
-  .card:hover {
-    border-color: var(--neon-dim);
-    box-shadow: 0 0 32px rgba(0, 255, 156, 0.12);
-    transform: translateY(-2px);
-  }
-  .card .glyph {
-    font-family: var(--mono);
-    font-size: 15px;
-    color: var(--neon);
-    display: inline-block;
-    border: 1px solid var(--line);
-    border-radius: 7px;
-    padding: 8px 11px;
-    margin-bottom: 16px;
-    background: var(--neon-faint);
-  }
-  .card h3 { font-size: 17px; margin-bottom: 8px; font-weight: 650; }
-  .card p { color: var(--text-dim); font-size: 14.5px; }
-
-  /* agents row */
-  .agents { display: flex; flex-wrap: wrap; justify-content: center; gap: 14px; }
-  .agent {
-    font-family: var(--mono);
-    font-size: 15px;
-    color: var(--text);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: rgba(4, 12, 8, 0.85);
-    padding: 14px 26px;
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .agent:hover { border-color: var(--neon-dim); box-shadow: 0 0 24px rgba(0, 255, 156, 0.15); }
-  .agent .cursor-dot { color: var(--neon); margin-right: 10px; }
-
-  /* how it works */
-  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 16px; counter-reset: step; }
-  .step { border-left: 1px solid var(--line); padding: 4px 0 4px 22px; position: relative; }
-  .step::before {
-    counter-increment: step;
-    content: "0" counter(step);
-    font-family: var(--mono);
-    color: var(--neon);
-    font-size: 13px;
-    display: block;
-    margin-bottom: 10px;
-    text-shadow: 0 0 12px rgba(0, 255, 156, 0.5);
-  }
-  .step h3 { font-size: 16px; margin-bottom: 6px; font-weight: 650; }
-  .step p { color: var(--text-dim); font-size: 14px; }
-
-  /* closing CTA */
-  .cta-final { text-align: center; padding: 96px 0 110px; }
-  .cta-final h2 { font-size: clamp(28px, 4.5vw, 44px); font-weight: 780; margin-bottom: 14px; letter-spacing: -0.015em; }
-  .cta-final p { color: var(--text-dim); margin-bottom: 34px; }
-
-  footer {
-    border-top: 1px solid var(--line);
-    padding: 28px 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    flex-wrap: wrap;
-    color: var(--text-faint);
-    font-size: 13px;
-    font-family: var(--mono);
-  }
-
-  @media (max-width: 760px) {
-    .ide-body { grid-template-columns: 1fr; }
-    .ide-side { display: none; }
-    .ide { transform: none; }
-    .dl .ln { flex-basis: 30px; padding-right: 8px; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .st-run, .caret { animation: none; }
-    html { scroll-behavior: auto; }
-  }
-</style>
-</head>
-<body>
-<canvas id="grid" aria-hidden="true"></canvas>
-
-<div class="content">
-  <div class="shell">
-    <nav>
-      <a class="wordmark" href="/">build<span class="tick">_</span></a>
-      <a class="btn" href="/app/">Open Build</a>
-    </nav>
-
-    <header class="hero">
-      <span class="hero-tag">The agentic coding IDE</span>
-      <h1>Your agents do the work.<br><span class="glow">You make the calls.</span></h1>
-      <p>Build runs your coding agents and surfaces only what needs your judgment — <strong>plans to approve, diffs to review, blockers to clear</strong>. Everything else keeps moving without you.</p>
-      <a class="btn btn-solid btn-lg" href="/app/">Start building</a>
-    </header>
-
-    <div class="ide-wrap">
-      <div class="ide" role="img" aria-label="Screenshot of the Build IDE: a task inbox, a diff under review with approve and request-changes actions, and an agent terminal.">
-        <div class="ide-titlebar">
-          <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-          <span class="ide-title"><b>build</b> — payments · retry-webhooks</span>
-        </div>
-        <div class="ide-body">
-          <aside class="ide-side">
-            <div class="side-label">Needs you</div>
-            <div class="task active">
-              <span class="st st-you"></span>
-              <div><div class="t-name">Review: retry-webhooks</div><div class="t-sub">plan approved · diff ready</div></div>
-            </div>
-            <div class="task">
-              <span class="st st-blk"></span>
-              <div><div class="t-name">Blocked: flaky CI env</div><div class="t-sub">agent needs a decision</div></div>
-            </div>
-            <div class="side-label" style="margin-top:14px">Agents working</div>
-            <div class="task dim">
-              <span class="st st-run"></span>
-              <div><div class="t-name">migrate-billing-tables</div><div class="t-sub">claude code · 12m</div></div>
-            </div>
-            <div class="task dim">
-              <span class="st st-run"></span>
-              <div><div class="t-name">fix-flaky-auth-test</div><div class="t-sub">codex · 4m</div></div>
-            </div>
-            <div class="task dim">
-              <span class="st st-run"></span>
-              <div><div class="t-name">bump-deps-weekly</div><div class="t-sub">opencode · 1m</div></div>
-            </div>
-          </aside>
-          <div class="ide-main">
-            <div class="ide-tabs">
-              <span class="ide-tab">Plan</span>
-              <span class="ide-tab on">Changes</span>
-              <span class="ide-tab">Agent</span>
-              <span class="ide-tab">Terminal</span>
-            </div>
-            <div class="review-head">
-              <span class="plan"><b>3 commits</b> on retry-webhooks · plan step 2 of 3 — deliver with backoff</span>
-              <span class="review-actions">
-                <span class="chip approve">Approve</span>
-                <span class="chip">Request changes</span>
-              </span>
-            </div>
-            <div class="diff">
-              <div class="diff-file">payments/webhooks.py</div>
-              <div class="dl ctx"><span class="ln">41</span><span class="code"><span class="kw">class</span> <span class="fn">WebhookDelivery</span>:</span></div>
-              <div class="dl del"><span class="ln">42</span><span class="code"><span class="kw">def</span> <span class="fn">deliver</span>(self, event):</span></div>
-              <div class="dl del"><span class="ln">43</span><span class="code">    self.transport.post(event.url, event.payload)</span></div>
-              <div class="dl add"><span class="ln">42</span><span class="code"><span class="kw">def</span> <span class="fn">deliver</span>(self, event, attempt=<span class="str">0</span>):</span></div>
-              <div class="dl add"><span class="ln">43</span><span class="code">    <span class="kw">try</span>:</span></div>
-              <div class="dl add"><span class="ln">44</span><span class="code">        self.transport.post(event.url, event.payload)</span></div>
-              <div class="dl add"><span class="ln">45</span><span class="code">    <span class="kw">except</span> <span class="fn">TransportError</span>:</span></div>
-              <div class="dl add"><span class="ln">46</span><span class="code">        self.retries.schedule(event, attempt + <span class="str">1</span>)</span></div>
-              <div class="dl ctx"><span class="ln">47</span><span class="code"></span></div>
-            </div>
-            <div class="ide-term">
-              <div class="term-label">Agent · claude code</div>
-              <div class="term-line"><span class="ok">✓</span> 14 tests passed · lint clean</div>
-              <div class="term-line"><span class="p">›</span> Step 2 ready for review. Starting step 3: dead-letter queue. <span class="caret"></span></div>
-            </div>
-          </div>
-        </div>
-      </div>
+<nav class="site-nav" data-nav>
+  <div class="content-container nav-bar">
+    <a class="brand" href="/app/"><img class="brand-mark" src="/landing/brand-mark.svg" alt="">build_</a>
+    <ul class="nav-links" id="nav-links" data-nav-menu>
+      <li><a href="#features">[features]</a></li>
+      <li><a href="#agents">[agents]</a></li>
+      <li><a href="#">[docs]</a></li>
+    </ul>
+    <div class="nav-actions">
+      <a class="button-primary button-primary--nav" href="#waitlist">REQUEST ACCESS</a>
+      <button class="nav-menu-toggle" type="button" data-nav-toggle aria-expanded="false" aria-controls="nav-links" aria-label="Menu"><span class="nav-menu-toggle-bar"></span><span class="nav-menu-toggle-bar"></span><span class="nav-menu-toggle-bar"></span></button>
     </div>
-
-    <section id="features">
-      <div class="sec-head">
-        <h2>One surface for the whole loop</h2>
-        <p>Not a chat window bolted onto an editor. Build is the place where agent work becomes shippable work.</p>
-      </div>
-      <div class="features">
-        <div class="card">
-          <span class="glyph">◱</span>
-          <h3>Issue tracking</h3>
-          <p>Tasks are the unit of work, not channels. File an issue, hand it to an agent, and it shows up in your inbox only when it needs you.</p>
-        </div>
-        <div class="card">
-          <span class="glyph">⎇</span>
-          <h3>Version control</h3>
-          <p>Git-native from the ground up. Every task gets its own worktree and branch — agents commit as they go, and nothing touches main without you.</p>
-        </div>
-        <div class="card">
-          <span class="glyph">⌕</span>
-          <h3>Review</h3>
-          <p>Plan and diff, side by side. See what the agent intended, what it actually changed, and approve or push back in one place.</p>
-        </div>
-        <div class="card">
-          <span class="glyph">∞</span>
-          <h3>Dynamic workflows</h3>
-          <p>RLM-driven orchestration: fan work out across agents, verify adversarially, and loop until it's done — not until a script says stop.</p>
-        </div>
-      </div>
-    </section>
-
-    <section id="agents-sec">
-      <div class="sec-head">
-        <h2>Bring your own agents</h2>
-        <p>Build runs full terminal sessions — real PTYs, no SDK lock-in. If it runs in a terminal, it runs in Build.</p>
-      </div>
-      <div class="agents">
-        <span class="agent"><span class="cursor-dot">●</span>Claude Code</span>
-        <span class="agent"><span class="cursor-dot">●</span>Codex</span>
-        <span class="agent"><span class="cursor-dot">●</span>Pi</span>
-        <span class="agent"><span class="cursor-dot">●</span>OpenCode</span>
-      </div>
-    </section>
-
-    <section id="how">
-      <div class="sec-head">
-        <h2>Enforcement by observation</h2>
-        <p>Build doesn't sandbox your agents into uselessness. It makes everything they do legible — and keeps you at the trigger.</p>
-      </div>
-      <div class="steps">
-        <div class="step">
-          <h3>File the task</h3>
-          <p>Describe the work once. Build spins up a worktree and puts an agent on it.</p>
-        </div>
-        <div class="step">
-          <h3>Agents run</h3>
-          <p>Plans, commits, and test runs stream in the background. The terminal is always one keystroke away.</p>
-        </div>
-        <div class="step">
-          <h3>You review</h3>
-          <p>Your inbox holds only the decisions: plans to approve, diffs to review, blockers to clear.</p>
-        </div>
-        <div class="step">
-          <h3>Ship it</h3>
-          <p>Approve and merge. The worktree cleans itself up. Next task's already running.</p>
-        </div>
-      </div>
-    </section>
-
-    <section class="cta-final">
-      <h2>Stop babysitting terminals.</h2>
-      <p>Your agents are ready to work. Give them somewhere to report.</p>
-      <a class="btn btn-solid btn-lg" href="/app/">Open Build</a>
-    </section>
-
-    <footer>
-      <span>build<span style="color:var(--neon)">_</span> — the agentic coding IDE</span>
-      <span>© 2026 8ly · end-to-end encrypted</span>
-    </footer>
   </div>
-</div>
-
-<script src="/landing/landing.js" defer></script>
-</body>
-</html>
+</nav>
+<section class="hero viewport-section rule-bottom" data-hero>
+  <div class="dot-field"><canvas data-dot-field></canvas></div>
+  <div class="content-container hero-content">
+    <p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES <br>GOING OUT WEEKLY</p>
+    <h1 class="section-title section-title--hero">Ship more.<br><span class="title-accent title-accent--glow">Babysit less.</span></h1>
+    <p class="lead">Build is the agentic coding IDE for teams. It surfaces the work that needs you — reviews, decisions, direction — and dispatches everything else to your agents. Not public yet.</p>
+{{waitlist}}
+    <p class="note">One email to confirm, one when your invite is ready. Nothing else.</p>
+  </div>
+</section>
+<section class="screenshot-section"><div class="content-container"><div class="screenshot-frame">
+  <img src="/landing/assets/build-ide-screenshot-1240.png" srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, /landing/assets/build-ide-screenshot-1860.png 1860w" sizes="(max-width: 640px) 100vw, (max-width: 1280px) calc(100vw - 80px), 1160px" width="1860" height="1629" loading="lazy" decoding="async" alt="The Build IDE — commit history, diff review, and a live agent conversation">
+</div></div></section>
+<section class="rule-top rule-bottom" id="agents"><div class="content-container agents-grid">
+  <p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>
+  <div class="agent-cell">Claude Code<span class="agent-support">supported</span></div>
+  <div class="agent-cell">Codex<span class="agent-support">supported</span></div>
+  <div class="agent-cell">Pi<span class="agent-support">supported</span></div>
+  <div class="agent-cell">OpenCode<span class="agent-support">supported</span></div>
+</div></section>
+<section class="features-section rule-bottom" id="features"><div class="content-container features-body">
+  <div class="section-header">
+    <h2 class="section-title">Everything agents need.<br>Nothing <span class="title-accent">you don't.</span></h2>
+    <span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>
+  </div>
+  <div class="feature-cards" data-feature-rail>
+    <article class="feature-card" data-feature-card>
+      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">ISSUES</span></div>
+      <h3 class="card-title">An inbox, not a backlog</h3>
+      <p class="card-body">Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.</p>
+    </article>
+    <article class="feature-card" data-feature-card>
+      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">VERSION CONTROL</span></div>
+      <h3 class="card-title">Worktrees that manage themselves</h3>
+      <p class="card-body">Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.</p>
+    </article>
+    <article class="feature-card feature-card--span-2" data-feature-card>
+      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">REVIEW</span></div>
+      <h3 class="card-title">Diff-first review</h3>
+      <p class="card-body">Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.</p>
+    </article>
+    <article class="feature-card feature-card--span-4" data-feature-card>
+      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">WORKFLOWS · RLM</span></div>
+      <h3 class="card-title">Workflows that reshape around the work</h3>
+      <p class="card-body">The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.</p>
+    </article>
+    <article class="feature-card feature-card--span-6" data-feature-card>
+      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">AGENTS</span></div>
+      <h3 class="card-title">Any agent, side by side</h3>
+      <p class="card-body">Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, one shared history, one place to look.</p>
+    </article>
+  </div>
+  <div class="rail-dashes"><i class="rail-dash is-active" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i></div>
+</div></section>
+<section class="cta-section viewport-section" id="waitlist"><div class="content-container">
+    <h2 class="section-title section-title--cta">Get in <span class="title-accent title-accent--glow">early.</span></h2>
+    <p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
+{{waitlist}}
+</div></section>

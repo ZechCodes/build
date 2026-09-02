@@ -88,8 +88,8 @@ and this document is wrong — except for the one deviation named under
   - `read_task_event(subtype, &Value) -> bool`
   - `read_tool_call(name, &Value) -> bool`
   - `read_tool_answer(tool, call_id, &Value) -> bool` — the tool name comes
-    from `RecordedCall::Minted { tool }` and the `&Value` is the WHOLE event,
-    because `tool_use_result` (`TaskCreate`'s `{task:{id,subject}}`, Bash's
+    from `RecordedCall::Minted { tool, .. }` and the `&Value` is the WHOLE
+    event, because `tool_use_result` (`TaskCreate`'s `{task:{id,subject}}`, Bash's
     `backgroundTaskId` and its output path) sits at the event level, not in the
     content block `ProtocolReader::read_tool_result` unwraps
     (`bridge/tests/fixtures/claude-stream/shell-and-checklist.jsonl:28`).
@@ -263,21 +263,31 @@ and this document is wrong — except for the one deviation named under
   `can_interrupt`); never sends content on the watch channel — the signal is
   content-free and the reader asks for the snapshot.
 
-### `RecordedCall::Minted { tool }`
+### `RecordedCall::Minted { tool, parent_call_id }`
 
 - **Layer** bridge
 - **File** `bridge/src/harness/adk.rs`
 - **Responsibility** Carry the tool's name on the call record
   `ProtocolReader.calls` already keeps, so an answer can be routed by tool
-  without a second call-id map anywhere.
+  without a second call-id map anywhere, plus the call that spawned the agent
+  that made it. The parent id is what tells the session's own calls from a
+  spawned agent's, which is what decides both whether the surfaces ledger is
+  fed and whether the turn boundary may close the call.
 - **Reuses** the map itself (`bridge/src/harness/adk.rs:676`), inserted at
   `read_tool_call` and taken at `read_tool_result` exactly as today —
   `BuildsOwn` is unchanged and still returns early.
-- **Never** becomes a second pairing record; never survives the answer (the
-  entry is taken, not read, which is what keeps a long session's map bounded).
+- **Never** becomes a second pairing record; the session's own entry never
+  survives its answer (it is taken, not read, which is what keeps a long
+  session's map bounded), while a spawned agent's entry deliberately outlives
+  the turn boundary, because that agent runs across the session's turns and its
+  answer is still coming.
 - **Consequence** `read_tool_result` calls
   `ledger.read_tool_answer(&tool, &call_id, &event)` with the whole event, and
   the ledger no longer needs to guess a `TaskCreate` answer from a Bash answer.
+  Only a call with `parent_call_id: None` feeds the ledger: a spawned agent's
+  tools are not the session's surfaces. `read_task_event` is deliberately NOT
+  gated the same way, because no captured fixture carries a `system` line with
+  `parent_tool_use_id`.
 
 ### `ActivityReport`
 

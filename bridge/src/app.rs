@@ -35445,7 +35445,7 @@ mod tests {
         .await
         .expect("the subagent's four rows reach the conversation");
 
-        let spawning = {
+        let spawning_call_row = {
             let s = state.lock().unwrap();
             let thread = primary_thread(&s.runs["run-folded"].agents);
             tool_call_rows(thread)
@@ -35466,19 +35466,19 @@ mod tests {
             vec![
                 (
                     crate::thread::ThreadEventKind::Reasoning,
-                    Some(spawning.sequence)
+                    Some(spawning_call_row.sequence)
                 ),
                 (
                     crate::thread::ThreadEventKind::ToolUse,
-                    Some(spawning.sequence)
+                    Some(spawning_call_row.sequence)
                 ),
                 (
                     crate::thread::ThreadEventKind::Reasoning,
-                    Some(spawning.sequence)
+                    Some(spawning_call_row.sequence)
                 ),
                 (
                     crate::thread::ThreadEventKind::Narration,
-                    Some(spawning.sequence)
+                    Some(spawning_call_row.sequence)
                 ),
             ],
             "every row the subagent minted names the call that spawned it"
@@ -35489,9 +35489,9 @@ mod tests {
             "and the subagent's own call is answered on its own folded row"
         );
         assert_eq!(
-            spawning.outcome,
+            spawning_call_row.outcome,
             Some(crate::thread::ToolCallOutcome::Ok),
-            "the Agent call was answered on line 12: {spawning:?}"
+            "the Agent call was answered on line 12: {spawning_call_row:?}"
         );
 
         drop(activity);
@@ -35503,7 +35503,7 @@ mod tests {
         let s = state.lock().unwrap();
         let after_close = tool_call_rows(primary_thread(&s.runs["run-folded"].agents))
             .into_iter()
-            .find(|row| row.sequence == spawning.sequence)
+            .find(|row| row.sequence == spawning_call_row.sequence)
             .expect("the Agent call's row is still there");
         assert_eq!(
             after_close.outcome,

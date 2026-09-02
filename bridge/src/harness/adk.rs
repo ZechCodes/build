@@ -388,12 +388,12 @@ pub(crate) fn reports_minted_by(file_name: &str) -> Vec<ActivityReport> {
         reader.read_line(&line);
     }
     activity.lock().unwrap().take();
-    drained(&mut heard)
+    reports_already_sent(&mut heard)
 }
 
 /// Everything a subscriber has been sent and not yet read, in order.
 #[cfg(test)]
-fn drained(heard: &mut broadcast::Receiver<ActivityReport>) -> Vec<ActivityReport> {
+fn reports_already_sent(heard: &mut broadcast::Receiver<ActivityReport>) -> Vec<ActivityReport> {
     let mut reported = Vec::new();
     while let Ok(one) = heard.try_recv() {
         reported.push(one);
@@ -1034,9 +1034,12 @@ impl ProtocolReader {
     /// work, not the agent speaking.
     fn mint_task_updates(&self, summaries: Vec<String>) {
         for summary in summaries {
-            self.report_own_work(AgentActivity::TaskUpdate {
-                summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-            });
+            self.report(
+                AgentActivity::TaskUpdate {
+                    summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
+                },
+                None,
+            );
         }
     }
 
@@ -1215,8 +1218,7 @@ impl ProtocolReader {
     /// A call whose answer never came must not go on claiming to run, so the
     /// boundary that ended it says so: one `Unanswered` completion per call
     /// still in the map, and Build's own calls dropped in the silence their
-    /// answers always kept. Draining here is also what leaves the next turn
-    /// reading against an empty map.
+    /// answers always kept.
     ///
     /// A call an agent this session spawned made is not this turn's to close:
     /// that agent runs across the session's turn boundaries, so its record is
@@ -1233,33 +1235,29 @@ impl ProtocolReader {
                     still_open_under_a_spawned_agent.insert(call_id, recorded);
                 }
                 RecordedCall::Minted { .. } => {
-                    self.report_own_work(AgentActivity::ToolResult {
-                        call_id,
-                        outcome: ToolOutcome::Unanswered,
-                        summary: String::new(),
-                    });
+                    self.report(
+                        AgentActivity::ToolResult {
+                            call_id,
+                            outcome: ToolOutcome::Unanswered,
+                            summary: String::new(),
+                        },
+                        None,
+                    );
                 }
             }
         }
         self.calls = still_open_under_a_spawned_agent;
     }
 
-    /// Hand one event to whoever is listening. A send with no subscriber, or a
-    /// backlog nobody drained, is not the child's problem: the protocol is read
-    /// at the speed the child speaks it either way.
-    fn report_own_work(&self, activity: AgentActivity) {
-        self.report(activity, None);
-    }
-
-    /// The same, for work an agent this session spawned reported: the call that
-    /// spawned it rides beside the activity, so the row lands folded under it.
+    /// Hand one event to whoever is listening, naming the call that spawned the
+    /// agent reporting it so the row lands folded under that call — `None` for
+    /// the session's own work. A send with no subscriber, or a backlog nobody
+    /// read, is not the child's problem: the protocol is read at the speed the
+    /// child speaks it either way.
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
-        let reported = match parent_call_id {
-            Some(spawning_call) => ActivityReport {
-                activity,
-                parent_call_id: Some(spawning_call.to_string()),
-            },
-            None => ActivityReport::own_work(activity),
+        let reported = ActivityReport {
+            activity,
+            parent_call_id: parent_call_id.map(str::to_string),
         };
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
             let _ = sender.send(reported);
@@ -1920,7 +1918,7 @@ mod tests {
             surfaces_of(&reader)
         );
         assert_eq!(
-            kinds_and_parents_of(&drained(&mut heard)),
+            kinds_and_parents_of(&reports_already_sent(&mut heard)),
             vec![("tool_use", Some(SPAWNED_AGENT_CALL))],
             "and the row still folds under the call that spawned the agent"
         );
@@ -1937,7 +1935,7 @@ mod tests {
         reader.read_line(&json!({ "type": "result", "subtype": "success" }).to_string());
 
         assert_eq!(
-            kinds_and_parents_of(&drained(&mut heard)),
+            kinds_and_parents_of(&reports_already_sent(&mut heard)),
             vec![("tool_use", Some(SPAWNED_AGENT_CALL))],
             "the session's turn ending answers none of the spawned agent's calls"
         );

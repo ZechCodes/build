@@ -818,33 +818,11 @@ mod tests {
 
     use super::*;
     use crate::harness::stream_fixtures::{
-        fixture_events, fixture_line, SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE,
-        SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE, SHELL_OUTPUT_PATH, SHELL_STARTED_LINE,
-        SHELL_TASK_ID, SHELL_UPDATED_LINE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
+        fixture_events, fixture_line, line_counter_from_the_workflow_fixture,
+        SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE,
+        SHELL_NOTIFICATION_LINE, SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID,
+        SHELL_UPDATED_LINE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
     };
-
-    fn line_counter_from_the_workflow_fixture() -> SurfaceAgent {
-        SurfaceAgent {
-            id: "acdd7854c4bce379a".to_string(),
-            label: "line-counter".to_string(),
-            model: Some("claude-haiku-4-5-20251001".to_string()),
-            state: Some("done".to_string()),
-            started_at: Some(1_788_290_134_700),
-            duration_ms: Some(4_732),
-            tokens: Some(11_409),
-            tool_calls: Some(1),
-            last_tool: Some(SurfaceTool {
-                name: "Read".to_string(),
-                summary: Some(
-                    "/private/tmp/claude-501/-Users-zech--superconductor-worktre…".to_string(),
-                ),
-            }),
-            result: Some("2".to_string()),
-            error: None,
-            attempt: Some(1),
-            spawning_call_id: Some("toolu_01TPFUY53rBEJPmkKu7rJPWV".to_string()),
-        }
-    }
 
     fn one_checklist_item() -> SurfaceChecklistItem {
         SurfaceChecklistItem {
@@ -906,7 +884,7 @@ mod tests {
             ..AgentSurfaces::default()
         };
         let answers_forty_one = |spawning_call_id: &str| {
-            assert_eq!(spawning_call_id, "toolu_01TPFUY53rBEJPmkKu7rJPWV");
+            assert_eq!(spawning_call_id, WORKFLOW_SPAWNING_CALL_ID);
             Some(41)
         };
 

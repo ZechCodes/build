@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use tempfile::TempDir;
 
+use super::surfaces::{AgentSurfaces, SurfaceAgent, SurfacePhase, SurfaceTool, SurfaceWorkflow};
+
 pub(crate) const WORKFLOW_FIXTURE: &str = "workflow.jsonl";
 pub(crate) const SUBAGENT_FIXTURE: &str = "subagent.jsonl";
 pub(crate) const SHELL_AND_CHECKLIST_FIXTURE: &str = "shell-and-checklist.jsonl";
@@ -62,4 +64,107 @@ pub(crate) fn hundred_numbered_lines() -> String {
     (1..=100)
         .map(|number| format!("line {number}\n"))
         .collect::<String>()
+}
+
+pub(crate) const WORKFLOW_SPAWNING_CALL_ID: &str = "toolu_01TPFUY53rBEJPmkKu7rJPWV";
+pub(crate) const SUBAGENT_SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
+
+const WORKFLOW_LAST_TOOL_SUMMARY: &str =
+    "/private/tmp/claude-501/-Users-zech--superconductor-worktre…";
+
+/// The snapshot a reader holds after `workflow.jsonl` line 63 — three done
+/// agents in two phases — plus the subagent `subagent.jsonl` lines 11 and 31
+/// open and close. Transcribed once, here, because two hand-written copies of
+/// one fixture drift apart.
+pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
+    AgentSurfaces {
+        workflows: vec![SurfaceWorkflow {
+            id: "w81x1fmx5".to_string(),
+            name: "readme-analysis".to_string(),
+            description: Some("Count README.md lines and characters, then summarize".to_string()),
+            state: Some("running".to_string()),
+            phases: vec![
+                SurfacePhase {
+                    title: "Read".to_string(),
+                    agents: vec![
+                        recorded_workflow_agent(
+                            "acdd7854c4bce379a",
+                            "line-counter",
+                            1_788_290_134_700,
+                            4_732,
+                            11_409,
+                            "2",
+                        ),
+                        recorded_workflow_agent(
+                            "a1a79b6791abd41ee",
+                            "char-counter",
+                            1_788_290_134_700,
+                            34_926,
+                            11_324,
+                            "4",
+                        ),
+                    ],
+                },
+                SurfacePhase {
+                    title: "Summarize".to_string(),
+                    agents: vec![recorded_workflow_agent(
+                        "abecba7acf45aac98",
+                        "summarizer",
+                        1_788_290_170_370,
+                        7_689,
+                        11_381,
+                        "The README.md file contains only \"hi\" — there are no statistics to summarize.",
+                    )],
+                },
+            ],
+        }],
+        subagents: vec![SurfaceAgent {
+            id: "aba8d0dbf79bd05f1".to_string(),
+            label: "Read README.md and report character count".to_string(),
+            state: Some("done".to_string()),
+            duration_ms: Some(20_285),
+            tokens: Some(14_357),
+            tool_calls: Some(1),
+            result: Some("4".to_string()),
+            spawning_call_id: Some(SUBAGENT_SPAWNING_CALL_ID.to_string()),
+            ..SurfaceAgent::default()
+        }],
+        ..AgentSurfaces::default()
+    }
+}
+
+pub(crate) fn line_counter_from_the_workflow_fixture() -> SurfaceAgent {
+    let recorded = recorded_workflow_surfaces();
+    let line_counter = recorded.workflows[0].phases[0].agents[0].clone();
+    SurfaceAgent {
+        spawning_call_id: Some(WORKFLOW_SPAWNING_CALL_ID.to_string()),
+        ..line_counter
+    }
+}
+
+fn recorded_workflow_agent(
+    id: &str,
+    label: &str,
+    started_at: u64,
+    duration_ms: u64,
+    tokens: u64,
+    result: &str,
+) -> SurfaceAgent {
+    SurfaceAgent {
+        id: id.to_string(),
+        label: label.to_string(),
+        model: Some("claude-haiku-4-5-20251001".to_string()),
+        state: Some("done".to_string()),
+        started_at: Some(started_at),
+        duration_ms: Some(duration_ms),
+        tokens: Some(tokens),
+        tool_calls: Some(1),
+        last_tool: Some(SurfaceTool {
+            name: "Read".to_string(),
+            summary: Some(WORKFLOW_LAST_TOOL_SUMMARY.to_string()),
+        }),
+        result: Some(result.to_string()),
+        attempt: Some(1),
+        ..SurfaceAgent::default()
+    }
 }

@@ -2892,8 +2892,27 @@ impl AppState {
     /// core, throttle a notify, put the plan back in the map, and prompt
     /// terminal closure + pump start.
     fn finish_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
-        self.stamp_plan_mutation(&plan_id, &active);
-        self.settle_plan_mutation(plan_id, active)
+        let now = now_rfc3339();
+        self.entity_created_at
+            .entry(plan_id.clone())
+            .or_insert_with(|| now.clone());
+        self.entity_updated_at.insert(plan_id.clone(), now.clone());
+        self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
+        let persisted = self.persist_plan_record(&plan_id, &active);
+        let news = self.conversation_news(active.agents.sole_thread());
+        let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
+        self.push_attention_notify(&plan_id, news, state_kind);
+        self.plans.insert(plan_id.clone(), active);
+        // After the insert: the attention file is pruned to what exists when it
+        // is written, and an anchor stamped while the record was checked out
+        // would be dropped on the way to disk.
+        self.seed_anchor(&plan_id);
+        self.reap_orphaned_terminals();
+        // Every plan mutation ends here — an RPC's, an agent's `done`, a
+        // delivery failure — so this is the one place that has to tell the
+        // browsers, whatever started it.
+        self.note_entity_changed(&plan_id);
+        persisted
     }
 
     /// The same tail for a mutation whose answer IS the plan, with
@@ -2912,89 +2931,25 @@ impl AppState {
         active: ActivePlan,
         thread_detail: ThreadDetail,
     ) -> (Value, Result<(), String>) {
-        self.stamp_plan_mutation(&plan_id, &active);
-        let settled = self.settle_plan_mutation(plan_id.clone(), active);
-        let active = self.plans.get(&plan_id).expect("the settle put it back");
+        let settled = self.finish_plan_mutation(plan_id.clone(), active);
+        let active = self.plans.get(&plan_id).expect("the finish put it back");
         (
             self.plan_view(&plan_id, active, thread_detail, DigestScope::Detail),
             settled,
         )
     }
 
-    /// First half of the tail: the stamps the response view must already see.
-    /// Split from the second so `answer_plan_mutation` can take its view
-    /// between them — where the view has always been taken.
-    fn stamp_plan_mutation(&mut self, plan_id: &str, active: &ActivePlan) {
-        let now = now_rfc3339();
-        self.entity_created_at
-            .entry(plan_id.to_string())
-            .or_insert_with(|| now.clone());
-        self.entity_updated_at
-            .insert(plan_id.to_string(), now.clone());
-        self.stamp_state_change(plan_id, plan_state_str(&active.plan.state), now);
-    }
-
-    /// Second half: persist, notify, put the record back, and tell the
-    /// browsers.
-    fn settle_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
-        let persisted = self.persist_plan_record(&plan_id, &active);
-        let news = self.conversation_news(active.agents.sole_thread());
-        let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
-        self.push_attention_notify(&plan_id, news, state_kind);
-        self.plans.insert(plan_id.clone(), active);
-        // After the insert: the attention file is pruned to what exists when it
-        // is written, and an anchor stamped while the record was checked out
-        // would be dropped on the way to disk.
-        self.seed_anchor(&plan_id);
-        self.reap_orphaned_terminals();
-        // Every plan mutation ends here — an RPC's, an agent's `done`, a
-        // delivery failure — so this is the one place that has to tell the
-        // browsers, whatever started it.
-        self.note_entity_changed(&plan_id);
-        persisted
-    }
-
     /// The run-half twin of
     /// [`finish_plan_mutation`](Self::finish_plan_mutation).
     fn finish_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
-        self.stamp_run_mutation(&run_id, &active);
-        self.settle_run_mutation(run_id, active)
-    }
-
-    /// The run-half twin of
-    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
-    fn answer_run_mutation(
-        &mut self,
-        run_id: String,
-        active: ActiveRun,
-        thread_detail: ThreadDetail,
-    ) -> (Value, Result<(), String>) {
-        self.stamp_run_mutation(&run_id, &active);
-        let settled = self.settle_run_mutation(run_id.clone(), active);
-        let active = self.runs.get(&run_id).expect("the settle put it back");
-        (
-            self.run_view(&run_id, active, thread_detail, DigestScope::Detail),
-            settled,
-        )
-    }
-
-    /// The run-half twin of
-    /// [`stamp_plan_mutation`](Self::stamp_plan_mutation).
-    fn stamp_run_mutation(&mut self, run_id: &str, active: &ActiveRun) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(run_id.to_string())
+            .entry(run_id.clone())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at
-            .insert(run_id.to_string(), now.clone());
-        self.stamp_state_change(run_id, run_state_str(&active.run.state), now);
+        self.entity_updated_at.insert(run_id.clone(), now.clone());
+        self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
-        self.invalidate_run_stat(run_id);
-    }
-
-    /// The run-half twin of
-    /// [`settle_plan_mutation`](Self::settle_plan_mutation).
-    fn settle_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
+        self.invalidate_run_stat(&run_id);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self
             .conversation_thread_for_run(&active)
@@ -3009,6 +2964,22 @@ impl AppState {
         self.reap_orphaned_terminals();
         self.note_entity_changed(&run_id);
         persisted
+    }
+
+    /// The run-half twin of
+    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
+    fn answer_run_mutation(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+        thread_detail: ThreadDetail,
+    ) -> (Value, Result<(), String>) {
+        let settled = self.finish_run_mutation(run_id.clone(), active);
+        let active = self.runs.get(&run_id).expect("the finish put it back");
+        (
+            self.run_view(&run_id, active, thread_detail, DigestScope::Detail),
+            settled,
+        )
     }
 
     /// A cold delivery started a new harness for `turn.owner`: open the
@@ -8420,7 +8391,7 @@ impl AppState {
             "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
             "created_at": agent.created_at,
         });
-        if let Some(surfaces) = surfaces_digest(scope, tab) {
+        if let Some(surfaces) = digest_surfaces(tab, scope) {
             digest["surfaces"] = surfaces;
         }
         digest
@@ -18629,7 +18600,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     }
 }
 
-fn surfaces_digest(scope: DigestScope, tab: Option<&Tab>) -> Option<Value> {
+fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
     let tab = match scope {
         DigestScope::List => return None,
         DigestScope::Detail => tab?,
@@ -18866,9 +18837,8 @@ mod tests {
     use std::process::Command;
 
     use crate::harness::claude;
-    use crate::harness::surfaces::{
-        AgentSurfaces, SurfaceAgent, SurfacePhase, SurfaceRevision, SurfaceTool, SurfaceWorkflow,
-    };
+    use crate::harness::stream_fixtures::{recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID};
+    use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
 
@@ -34805,7 +34775,7 @@ mod tests {
         quiet: Duration,
         log: SessionLog,
         surfaces: Option<AgentSurfaces>,
-        revision: Option<SurfaceRevision>,
+        watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
     }
 
     impl DictatedSession {
@@ -34816,7 +34786,7 @@ mod tests {
                 quiet: Duration::ZERO,
                 log: SessionLog::default(),
                 surfaces: None,
-                revision: None,
+                watched_surface_revision: None,
             }
         }
 
@@ -34825,8 +34795,17 @@ mod tests {
             self
         }
 
-        fn moving_surfaces_on(mut self, revision: SurfaceRevision) -> DictatedSession {
-            self.revision = Some(revision);
+        fn moving_surfaces_on(self, revision: SurfaceRevision) -> DictatedSession {
+            self.watching_surfaces_through(revision.subscribe())
+        }
+
+        /// A session watching a channel whose sender the caller keeps, so a
+        /// test can close it out from under the pump.
+        fn watching_surfaces_through(
+            mut self,
+            watched: tokio::sync::watch::Receiver<u64>,
+        ) -> DictatedSession {
+            self.watched_surface_revision = Some(watched);
             self
         }
 
@@ -34868,7 +34847,7 @@ mod tests {
             self.surfaces.clone()
         }
         fn surfaces_changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-            self.revision.as_ref().map(SurfaceRevision::subscribe)
+            self.watched_surface_revision.clone()
         }
     }
 
@@ -35713,94 +35692,6 @@ mod tests {
         );
     }
 
-    const RECORDED_SPAWNING_CALL: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
-
-    fn recorded_surfaces() -> AgentSurfaces {
-        AgentSurfaces {
-            workflows: vec![SurfaceWorkflow {
-                id: "w81x1fmx5".to_string(),
-                name: "readme-analysis".to_string(),
-                description: Some(
-                    "Count README.md lines and characters, then summarize".to_string(),
-                ),
-                state: Some("running".to_string()),
-                phases: vec![
-                    SurfacePhase {
-                        title: "Read".to_string(),
-                        agents: vec![
-                            recorded_workflow_agent(
-                                "acdd7854c4bce379a",
-                                "line-counter",
-                                1788290134700,
-                                4732,
-                                11409,
-                                "2",
-                            ),
-                            recorded_workflow_agent(
-                                "a1a79b6791abd41ee",
-                                "char-counter",
-                                1788290134700,
-                                34926,
-                                11324,
-                                "4",
-                            ),
-                        ],
-                    },
-                    SurfacePhase {
-                        title: "Summarize".to_string(),
-                        agents: vec![recorded_workflow_agent(
-                            "abecba7acf45aac98",
-                            "summarizer",
-                            1788290170370,
-                            7689,
-                            11381,
-                            "The README.md file contains only \"hi\" — there are no statistics to summarize.",
-                        )],
-                    },
-                ],
-            }],
-            subagents: vec![SurfaceAgent {
-                id: "aba8d0dbf79bd05f1".to_string(),
-                label: "Read README.md and report character count".to_string(),
-                state: Some("done".to_string()),
-                duration_ms: Some(20285),
-                tokens: Some(14357),
-                tool_calls: Some(1),
-                result: Some("4".to_string()),
-                spawning_call_id: Some(RECORDED_SPAWNING_CALL.to_string()),
-                ..SurfaceAgent::default()
-            }],
-            ..AgentSurfaces::default()
-        }
-    }
-
-    fn recorded_workflow_agent(
-        id: &str,
-        label: &str,
-        started_at: u64,
-        duration_ms: u64,
-        tokens: u64,
-        result: &str,
-    ) -> SurfaceAgent {
-        SurfaceAgent {
-            id: id.to_string(),
-            label: label.to_string(),
-            model: Some("claude-haiku-4-5-20251001".to_string()),
-            state: Some("done".to_string()),
-            started_at: Some(started_at),
-            duration_ms: Some(duration_ms),
-            tokens: Some(tokens),
-            tool_calls: Some(1),
-            last_tool: Some(SurfaceTool {
-                name: "Read".to_string(),
-                summary: None,
-            }),
-            result: Some(result.to_string()),
-            attempt: Some(1),
-            ..SurfaceAgent::default()
-        }
-    }
-
     fn a_branch_whose_agent_runs(
         branch: &str,
         session: DictatedSession,
@@ -35849,7 +35740,8 @@ mod tests {
     fn branch_get_carries_the_open_agents_surfaces() {
         let (dir, mut state, run_id) = a_branch_whose_agent_runs(
             "feature-surfaced",
-            DictatedSession::reporting(AgentStatus::Working).showing_surfaces(recorded_surfaces()),
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
         );
         let agent_id = primary_agent_id(&state, &run_id);
         let project_id = state.projects[0].id.clone();
@@ -35874,6 +35766,25 @@ mod tests {
             row["agents"][0]["surfaces"]["subagents"][0]["id"], "aba8d0dbf79bd05f1",
             "the rail reads a branch's agents off the row: {row:?}"
         );
+
+        let repo_path = state.projects[0].repo_path.clone();
+        add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
+        state
+            .external_worktrees(&project_id, true)
+            .expect("the new checkout is discoverable");
+
+        let bare = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-bare" }),
+        ));
+        assert_eq!(bare["ok"], true, "{bare:?}");
+        let bare = &bare["result"];
+        assert!(bare["run"].is_null(), "{bare:?}");
+        assert_eq!(
+            bare["agents"],
+            json!([]),
+            "a bare checkout has no run view to take agents from, so the rail still reads the candidate row's own array: {bare:?}"
+        );
         drop(dir);
     }
 
@@ -35881,7 +35792,8 @@ mod tests {
     fn no_list_shaped_answer_carries_surfaces() {
         let (dir, mut state, run_id) = a_branch_whose_agent_runs(
             "feature-listed",
-            DictatedSession::reporting(AgentStatus::Working).showing_surfaces(recorded_surfaces()),
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
         );
         let issue_id = plan_id_of(&state.handle(req(
             "plan.create",
@@ -35901,7 +35813,8 @@ mod tests {
             &issue_root,
             &issue_id,
             &issue_agent,
-            DictatedSession::reporting(AgentStatus::Working).showing_surfaces(recorded_surfaces()),
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
         );
         state
             .plans
@@ -35944,7 +35857,8 @@ mod tests {
     fn thread_post_answers_with_the_surfaces_the_rail_repaints_from() {
         let (dir, mut state, run_id) = a_branch_whose_agent_runs(
             "feature-posted",
-            DictatedSession::reporting(AgentStatus::Working).showing_surfaces(recorded_surfaces()),
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
         );
 
         let posted = state.handle(req(
@@ -35989,14 +35903,15 @@ mod tests {
     async fn a_subagents_call_sequence_names_the_row_of_the_call_that_spawned_it() {
         let (_dir, state, key) = a_run_with_a_dictated_tab(
             "run-spawning",
-            DictatedSession::reporting(AgentStatus::Working).showing_surfaces(recorded_surfaces()),
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
         );
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
         activity
             .send(crate::harness::ActivityReport::own_work(
                 crate::harness::AgentActivity::ToolUse {
-                    call_id: RECORDED_SPAWNING_CALL.to_string(),
+                    call_id: SUBAGENT_SPAWNING_CALL_ID.to_string(),
                     summary: "Agent Read README.md and report character count".to_string(),
                 },
             ))
@@ -36022,7 +35937,7 @@ mod tests {
         activity
             .send(crate::harness::ActivityReport::own_work(
                 crate::harness::AgentActivity::ToolResult {
-                    call_id: RECORDED_SPAWNING_CALL.to_string(),
+                    call_id: SUBAGENT_SPAWNING_CALL_ID.to_string(),
                     outcome: crate::harness::ToolOutcome::Ok,
                     summary: "4".to_string(),
                 },
@@ -36155,6 +36070,43 @@ mod tests {
         })
         .await
         .expect("and the task is gone rather than parked on a channel nobody will close");
+    }
+
+    #[tokio::test]
+    async fn a_revision_channel_that_closes_leaves_the_pump_reading_activity() {
+        let (revision_sender, watched) = tokio::sync::watch::channel(0u64);
+        let (_dir, state, key) = a_run_with_a_dictated_tab(
+            "run-unwatchable",
+            DictatedSession::reporting(AgentStatus::Working).watching_surfaces_through(watched),
+        );
+        let before_pump = Arc::strong_count(&state);
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+
+        drop(revision_sender);
+        activity
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::Narration {
+                    summary: "still reading".to_string(),
+                },
+            ))
+            .expect("the pump is listening");
+
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-unwatchable"].agents));
+            (!rows.is_empty()).then_some(())
+        })
+        .await
+        .expect(
+            "a revision channel nobody can watch drops to activity-only, it does not end the pump",
+        );
+        assert_eq!(
+            Arc::strong_count(&state),
+            before_pump + 1,
+            "and the pump is still holding the state it reads into"
+        );
+        drop(activity);
     }
 
     #[tokio::test]

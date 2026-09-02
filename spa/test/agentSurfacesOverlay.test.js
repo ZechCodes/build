@@ -2,6 +2,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { surfacesSnapshot } from "./surfacesFixture.js";
+import { motionBeat } from "./motionRecorder.js";
 import { resolve } from "node:path";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -181,7 +182,7 @@ describe("panelHeadHtml's surface menu", () => {
 });
 
 describe("openSurfaceOverlay", () => {
-  it("mounts the kind's viewer in a modal and keeps it current", () => {
+  it("mounts the kind's viewer in a modal and keeps it current", async () => {
     const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onSendMessage: async () => {}, onOpenThreadItem: () => {} });
     held.set(surfaces());
 
@@ -193,7 +194,7 @@ describe("openSurfaceOverlay", () => {
     held.set(grown);
     expect(overlayRows()).toHaveLength(2);
 
-    held.close();
+    await held.close();
     expect(overlay()).toBe(null);
   });
 
@@ -209,7 +210,7 @@ describe("openSurfaceOverlay", () => {
     held.close();
   });
 
-  it("tells its caller once when Escape takes it away", () => {
+  it("tells its caller once when Escape takes it away", async () => {
     const onClose = vi.fn();
     const held = openSurfaceOverlay(WORKFLOW_ENTRY_KIND, {
       onSendMessage: async () => {},
@@ -219,10 +220,11 @@ describe("openSurfaceOverlay", () => {
     held.set(surfaces());
 
     pressEscape();
+    await motionBeat();
 
     expect(overlay()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);
-    held.close();
+    await held.close();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

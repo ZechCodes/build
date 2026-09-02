@@ -50,7 +50,7 @@ section[id]{scroll-margin-top:var(--nav-height)}
 .waitlist-success{font-weight:500;font-size:var(--font-size-success);line-height:var(--line-height-success);letter-spacing:var(--letter-spacing-success);color:var(--color-accent)}
 .waitlist-confirmation{color:var(--color-text-secondary)}
 .unsubscribe-panel{padding-block:var(--cta-padding-block)}
-.unsubscribe-panel .brand{justify-content:center}
+.unsubscribe-panel .brand{justify-content:center;margin-bottom:var(--space-eyebrow-bottom)}
 .unsubscribe-action{margin-top:var(--space-form-top)}
 .unsubscribe-address{text-transform:none;overflow-wrap:anywhere}
 

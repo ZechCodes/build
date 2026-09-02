@@ -383,7 +383,7 @@ WAITLIST_INSTANCE_COUNT = 2
 WAITLIST_PLACEHOLDER = slot_placeholder(WAITLIST_SLOT_NAME)
 UNSUBSCRIBE_PANEL_RULES = (
     ".unsubscribe-panel{padding-block:var(--cta-padding-block)}",
-    ".unsubscribe-panel .brand{justify-content:center}",
+    ".unsubscribe-panel .brand{justify-content:center;margin-bottom:var(--space-eyebrow-bottom)}",
     ".unsubscribe-action{margin-top:var(--space-form-top)}",
 )
 UNSUBSCRIBE_ADDRESS_RULE = (
@@ -694,7 +694,7 @@ def test_the_sending_state_styles_the_disabled_button_from_the_opacity_token():
     )
 
 
-def test_the_unsubscribe_panel_centres_the_wordmark_with_the_rest_of_the_page():
+def test_the_unsubscribe_panel_centres_the_wordmark_and_spaces_it_off_the_heading():
     css = _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
     for panel_rule in UNSUBSCRIBE_PANEL_RULES:
         assert panel_rule in css

@@ -15,8 +15,9 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheableEntityIds } from "./inbox.js";
 import { entityIdOf } from "./entityId.js";
 import { railEntity } from "./agentRailModel.js";
-import { FIRST_PAGE_ITEMS, windowFromThreadPayload } from "./thread.js";
+import { FIRST_PAGE_ITEMS, THREAD_RECORD_KIND, windowFromThreadPayload } from "./thread.js";
 import { cachedEntityIds, cachedSubKeys, evictEntity, writeCached } from "./localCache.js";
+import { surfacesCacheAddress, surfacesRecord } from "./surfacesCache.js";
 
 const SYNC_LOCK = "build.cacheSync";
 
@@ -50,7 +51,7 @@ function gitScopeOf(row) {
 async function writeSurfaces(deviceId, entityId, agents) {
   for (const agent of agents) {
     if (!agent.id || !agent.surfaces) continue;
-    await writeCached({ deviceId, entityId, kind: "surfaces", sub: agent.id }, { surfaces: agent.surfaces, savedAt: Date.now() });
+    await writeCached(surfacesCacheAddress({ deviceId, entityId, agentId: agent.id }), surfacesRecord(agent.surfaces));
   }
 }
 
@@ -60,7 +61,7 @@ async function writeSurfaces(deviceId, entityId, agents) {
 async function refreshThreads(deviceId, entityId, row) {
   const isIssue = row.kind === "issue";
   const detailParams = isIssue ? { issue_id: entityId } : { project_id: row.project_id, branch: row.branch };
-  for (const agentSub of await cachedSubKeys(deviceId, entityId, "thread")) {
+  for (const agentSub of await cachedSubKeys(deviceId, entityId, THREAD_RECORD_KIND)) {
     try {
       const payload = await App.call(isIssue ? "issue.get" : "branch.get", {
         ...detailParams,
@@ -69,7 +70,7 @@ async function refreshThreads(deviceId, entityId, row) {
       });
       const detail = railEntity(payload, isIssue ? "issue" : "branch");
       const shaped = windowFromThreadPayload(detail.thread);
-      if (shaped) await writeCached({ deviceId, entityId, kind: "thread", sub: agentSub }, shaped);
+      if (shaped) await writeCached({ deviceId, entityId, kind: THREAD_RECORD_KIND, sub: agentSub }, shaped);
       await writeSurfaces(deviceId, entityId, detail.agents);
     } catch {
       /* transient, or the agent left — the next event tries again */

@@ -85,6 +85,7 @@ const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agent
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
+const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfacesCache.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
@@ -1949,8 +1950,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     shells: descriptions.map((description, index) => ({ id: `sh-${index}`, description, state: "running", tail: [] })),
   });
   const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
-  const surfacesAddress = (sub) => ({ deviceId: "dev-1", entityId: "run-3", kind: "surfaces", sub });
-  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), { surfaces, savedAt: 1 });
+  const surfacesAddress = (sub) => surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: sub });
+  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces));
   const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
   const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
   const pillKinds = () =>

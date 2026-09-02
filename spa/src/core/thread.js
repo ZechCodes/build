@@ -85,6 +85,10 @@ function timeHtml(createdAt) {
 // answer a client written before paging could reconcile.
 export const FIRST_PAGE_ITEMS = 60;
 
+// The local cache's kind for a saved conversation window, named where the
+// window helpers are so no reader or writer spells it.
+export const THREAD_RECORD_KIND = "thread";
+
 // What a MUTATION asks its answer to carry. Every mutation RPC answers with
 // the whole entity, conversation included, and no caller here reads that
 // answer — the refresh that follows is what paints. The page is asked for

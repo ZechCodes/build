@@ -253,12 +253,16 @@ export async function renderBranch() {
   };
   setToolbarVerb(paintFinish);
 
-  /** The way out of a diff: the file itself, in the Files tab, at the line the
-   *  diff was about. The hash names the tab; the place inside it rides the
-   *  one-shot the next render reads. */
-  const openInFilesTab = ({ path, line }) => {
-    App.openFileOnMount = { path, line };
-    go({ name: "branch", projectId, branch, tab: "files" });
+  /** Where a surface of this view can send the reader, made once and handed to
+   *  whatever mounts under it. Today that is the way out of a diff: the file
+   *  itself, in the Files tab, at the line the diff was about — the hash names
+   *  the tab, and the place inside it rides the one-shot the next render
+   *  reads. */
+  const navigate = {
+    openFile: ({ path, line }) => {
+      App.openFileOnMount = { path, line };
+      go({ name: "branch", projectId, branch, tab: "files" });
+    },
   };
 
   /** The plug for the Changes rail's aggregate entry, made once per backing.
@@ -273,7 +277,7 @@ export async function renderBranch() {
         reviewPlug = createTaskReview({
           taskId: scope.run_id,
           callRpc,
-          openFile: openInFilesTab,
+          navigate,
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
           agentSelection,
@@ -285,7 +289,7 @@ export async function renderBranch() {
           projectId: scope.project_id,
           worktreeId: scope.worktree_id,
           callRpc,
-          openFile: openInFilesTab,
+          navigate,
           adopting: adopterFor(scope),
           isOffline: () => App.offline,
           // Adoption keeps the URL — the same branch now stands on a run, so
@@ -323,7 +327,7 @@ export async function renderBranch() {
       return;
     }
     if (tab === "files") {
-      pane = renderFilesTab(host, { scope, callRpc, initialPath: openFileOnMount });
+      pane = renderFilesTab(host, { scope, callRpc, openAt: openFileOnMount });
       openFileOnMount = null;
       ensureTabsPainted();
       return;
@@ -334,7 +338,7 @@ export async function renderBranch() {
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
       agentSelection,
-      openFile: openInFilesTab,
+      navigate,
       // Review prioritization: the run's freshest triage pass orders whichever
       // changeset is open, and the reviewer's trust dial is remembered for the
       // project they are reading.

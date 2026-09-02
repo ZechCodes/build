@@ -63,7 +63,7 @@ describe("the control in a file's head", () => {
     const pane = mountGitPane(container, {
       scope: { run_id: "run-1" },
       callRpc,
-      openFile: (where) => opened.push(where),
+      navigate: { openFile: (where) => opened.push(where) },
     });
     await settle();
     const file = container.querySelector('.file[data-key$=":src/a.js"]');
@@ -96,7 +96,7 @@ describe("the control in a file's head", () => {
     document.body.appendChild(host);
     const plug = createReviewPlug({
       fetchDiff: async () => ({ patch: patchFor("src/a.js", "first") }),
-      openFile: (where) => opened.push(where),
+      navigate: { openFile: (where) => opened.push(where) },
     });
     plug.mount(host);
     await vi.advanceTimersByTimeAsync(0);
@@ -111,7 +111,7 @@ describe("the control in a file's head", () => {
 describe("the Files view, opened at a line", () => {
   const source = ["one", "two", "three", "four"].join("\n");
 
-  const mountFiles = (initialPath) => {
+  const mountFiles = (openAt) => {
     const scrolled = [];
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
@@ -121,7 +121,7 @@ describe("the Files view, opened at a line", () => {
     document.body.appendChild(host);
     const files = renderFilesTab(host, {
       scope: { run_id: "run-1" },
-      initialPath,
+      openAt,
       callRpc: async (method) => {
         if (method === "fs.tree") return { path: "src", entries: [{ kind: "file", name: "a.js", size: 20 }] };
         return {
@@ -161,6 +161,61 @@ describe("the Files view, opened at a line", () => {
 
   it("opens a file named with no line without scrolling anywhere", async () => {
     const { host, files, scrolled, restore } = mountFiles({ path: "src/a.js" });
+    await vi.waitFor(() => expect(host.querySelector(".fsrc")).toBeTruthy());
+    expect(scrolled).toEqual([]);
+    files.dispose();
+    restore();
+  });
+});
+
+describe("the line a jump asked for", () => {
+  const mountTwoFiles = (openAt) => {
+    const scrolled = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (options) {
+      scrolled.push({ line: this.dataset.newLine, options });
+    };
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const files = renderFilesTab(host, {
+      scope: { run_id: "run-1" },
+      openAt,
+      callRpc: async (method, params) => {
+        if (method === "fs.tree")
+          return {
+            path: "src",
+            entries: [
+              { kind: "file", name: "shot.png", size: 20 },
+              { kind: "file", name: "b.js", size: 20 },
+            ],
+          };
+        if (params.path === "src/shot.png")
+          return { path: params.path, size: 20, truncated: false, mime: "image/png", content_b64: btoa("x") };
+        return {
+          path: params.path,
+          size: 20,
+          truncated: false,
+          mime: "text/plain",
+          content_b64: btoa(["one", "two", "three", "four"].join("\n")),
+        };
+      },
+    });
+    return {
+      host,
+      files,
+      scrolled,
+      restore: () => {
+        Element.prototype.scrollIntoView = original;
+      },
+    };
+  };
+
+  it("does not land on the next file the reader opens when its own had no lines to land on", async () => {
+    const { host, files, scrolled, restore } = mountTwoFiles({ path: "src/shot.png", line: 3 });
+    await vi.waitFor(() => expect(host.querySelector(".fimg")).toBeTruthy());
+    expect(scrolled).toEqual([]);
+
+    host.querySelectorAll(".ffile")[1].dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
     await vi.waitFor(() => expect(host.querySelector(".fsrc")).toBeTruthy());
     expect(scrolled).toEqual([]);
     files.dispose();

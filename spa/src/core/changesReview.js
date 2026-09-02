@@ -85,11 +85,12 @@ export function createReviewPlug({
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
-  // Where the reader goes when they leave the diff for the file itself:
-  // `openFile({ path, line })`, the mounting surface's own navigation. A plug
-  // mounted without one offers no such control.
-  openFile = null,
+  // Where a surface of the mounting view can send the reader:
+  // `navigate.openFile({ path, line })`, the view's own routing. A plug mounted
+  // without it offers no such control.
+  navigate = null,
 }) {
+  const openFile = (navigate && navigate.openFile) || null;
   let host = null;
   let watcher = null;
   let diffKey = null;

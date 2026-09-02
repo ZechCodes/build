@@ -84,7 +84,7 @@ export function createTaskReview({
   isOffline,
   agentSelection = createAgentSelection(),
   onMerged,
-  openFile = null,
+  navigate = null,
 }) {
   // ONE single-flight latch for the git split button, owned by the plug — not
   // by each repaint. Without a shared latch, mid-merge the poll would replace
@@ -96,7 +96,7 @@ export function createTaskReview({
 
   const plug = createReviewPlug({
     isOffline,
-    openFile,
+    navigate,
     // The diff is this run's, so the run's own change events are what stale it.
     entity: taskId,
     fetchDiff: async () => {

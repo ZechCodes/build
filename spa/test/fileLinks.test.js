@@ -20,7 +20,7 @@ describe("conversation file-link navigation", () => {
     });
     const body = document.createElement("div");
 
-    renderFilesTab(body, { scope: { run_id: "run-1" }, callRpc, initialPath: { path: "src/parser.js" } });
+    renderFilesTab(body, { scope: { run_id: "run-1" }, callRpc, openAt: { path: "src/parser.js" } });
     await vi.waitFor(() => expect(body.querySelector(".fppath")?.textContent).toBe("src/parser.js"));
 
     expect(calls[0]).toEqual({ method: "fs.tree", params: { run_id: "run-1", path: "src" } });

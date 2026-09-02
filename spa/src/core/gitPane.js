@@ -380,12 +380,13 @@ export function mountGitPane(
     // standalone Files/Changes hosts), the daemon answers with the entity's
     // first agent, which is what this surface always meant.
     agentSelection = createAgentSelection(),
-    // Where the reader goes when they leave the diff for the file itself:
-    // `openFile({ path, line })`, the mounting view's own navigation. A pane
-    // mounted without one offers no such control.
-    openFile = null,
+    // Where a surface of the mounting view can send the reader:
+    // `navigate.openFile({ path, line })`, the view's own routing. A pane
+    // mounted without it offers no such control.
+    navigate = null,
   } = {},
 ) {
+  const openFile = (navigate && navigate.openFile) || null;
   let disposed = false;
   let renderedKey = null; // gitPollKey of the last painted payloads
   let lastStatus = null;

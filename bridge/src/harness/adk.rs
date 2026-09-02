@@ -1161,18 +1161,19 @@ impl ProtocolReader {
         // Taken, not read: a call is answered once, and a session that runs for
         // hours must not accumulate one entry per tool call it ever made.
         let answered = self.calls.remove(&call_id);
+        let answered_text = tool_result_text(block);
         match answered {
             Some(RecordedCall::BuildsOwn) => return,
             Some(RecordedCall::Minted {
                 tool,
                 parent_call_id: None,
             }) => {
-                let moved = self
-                    .state
-                    .lock()
-                    .unwrap()
-                    .surfaces
-                    .read_tool_answer(&tool, &call_id, event);
+                let moved = self.state.lock().unwrap().surfaces.read_tool_answer(
+                    &tool,
+                    &call_id,
+                    event,
+                    &answered_text,
+                );
                 self.note_surfaces_moved(moved);
             }
             Some(RecordedCall::Minted { .. }) | None => {}
@@ -1185,7 +1186,7 @@ impl ProtocolReader {
             AgentActivity::ToolResult {
                 call_id,
                 outcome,
-                summary: one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT),
+                summary: one_line(&answered_text, TOOL_SUMMARY_LIMIT),
             },
             parent_call_id,
         );

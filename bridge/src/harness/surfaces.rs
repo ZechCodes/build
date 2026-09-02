@@ -6,9 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::watch;
 
-use super::adk::{
-    one_line, task_status_failed, task_status_is_terminal, tool_result_text, TOOL_SUMMARY_LIMIT,
-};
+use super::adk::{one_line, task_status_failed, task_status_is_terminal, TOOL_SUMMARY_LIMIT};
 use super::shell_tail::{exit_code_stated_in, ShellTail};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -231,9 +229,15 @@ impl SurfaceLedger {
         self.apply_checklist_call(name, tool_use_block)
     }
 
-    pub fn read_tool_answer(&mut self, tool: &str, call_id: &str, whole_event: &Value) -> bool {
+    pub fn read_tool_answer(
+        &mut self,
+        tool: &str,
+        call_id: &str,
+        whole_event: &Value,
+        answered_text: &str,
+    ) -> bool {
         match tool {
-            "Bash" => self.apply_shell_launch(call_id, whole_event),
+            "Bash" => self.apply_shell_launch(whole_event, answered_text),
             _ => self.apply_checklist_answer(tool, call_id, whole_event),
         }
     }
@@ -374,12 +378,12 @@ impl SurfaceLedger {
         }
     }
 
-    fn apply_shell_launch(&mut self, call_id: &str, event: &Value) -> bool {
+    fn apply_shell_launch(&mut self, event: &Value, answered_text: &str) -> bool {
         let shell_id = match event["tool_use_result"]["backgroundTaskId"].as_str() {
             Some(named) => named.to_string(),
             None => return false,
         };
-        let output_path = match output_path_named_in(&answered_text(event, call_id)) {
+        let output_path = match output_path_named_in(answered_text) {
             Some(named) => named,
             None => return false,
         };
@@ -540,18 +544,6 @@ fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> 
         }),
         _ => Some(ShellReport::StatusChanged { state }),
     }
-}
-
-fn answered_text(event: &Value, call_id: &str) -> String {
-    event["message"]["content"]
-        .as_array()
-        .and_then(|blocks| {
-            blocks
-                .iter()
-                .find(|block| block["tool_use_id"].as_str() == Some(call_id))
-        })
-        .map(tool_result_text)
-        .unwrap_or_default()
 }
 
 fn output_path_named_in(answered: &str) -> Option<PathBuf> {
@@ -819,6 +811,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::harness::adk::tool_result_text;
     use crate::harness::stream_fixtures::{
         fixture_events, fixture_line, recorded_workflow_surfaces,
         the_line_counter_carrying_a_spawning_call_id, SHELL_AND_CHECKLIST_FIXTURE,
@@ -1854,7 +1847,8 @@ mod tests {
                 panic!("{SHELL_AND_CHECKLIST_FIXTURE}:{call_line} carries a call id")
             })
             .to_string();
-        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, answer)
+        let answered_text = tool_result_text(&answer["message"]["content"][0]);
+        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, answer, &answered_text)
     }
 
     fn feed_tool_answer_from_the_next_line(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
@@ -1949,7 +1943,7 @@ mod tests {
             .expect("the answer carries a task object")
             .remove("id");
 
-        assert!(!ledger.read_tool_answer("TaskCreate", FIRST_CREATE_CALL_ID, &nameless));
+        assert!(!ledger.read_tool_answer("TaskCreate", FIRST_CREATE_CALL_ID, &nameless, ""));
 
         assert!(ledger.snapshot().is_none());
         assert!(
@@ -2056,7 +2050,7 @@ mod tests {
         let mut unclaimed = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 53);
         unclaimed["tool_use_result"]["statusChange"]["to"] = json!("banana");
 
-        assert!(!ledger.read_tool_answer("TaskUpdate", FIRST_UPDATE_CALL_ID, &unclaimed));
+        assert!(!ledger.read_tool_answer("TaskUpdate", FIRST_UPDATE_CALL_ID, &unclaimed, ""));
 
         assert_eq!(
             the_checklist_item(&ledger, "1").state.as_deref(),

@@ -53,9 +53,6 @@ function noteHtml(description, subject) {
   return `<span class="surface-row-note">${esc(description)}</span>`;
 }
 
-/** The span a running row's clock is ticked into, empty until the mount that
- *  owns the tick writes the first reading. A row that is not running, or one
- *  whose entry never said when it started, has no clock and no span. */
 function rowClockHtml(row) {
   if (!Number.isFinite(row.runningSince)) return "";
   return `<span class="${ROW_CLOCK_CLASS}" data-running-since="${esc(row.runningSince)}"></span>`;

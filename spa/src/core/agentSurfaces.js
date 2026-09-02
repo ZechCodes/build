@@ -100,9 +100,6 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
   let selectedPhaseIndex = 0;
   let ticker = null;
 
-  /// The one tick every row clock in this viewer runs on. It writes text into
-  /// the span the row already carries, the way the status row writes its own
-  /// clock, so a second passing never rebuilds a row or shuts a fold.
   const paintRowClocks = () => {
     const nowMs = Date.now();
     const spans = [...host.querySelectorAll(ROW_CLOCK_SELECTOR)].filter(

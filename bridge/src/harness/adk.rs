@@ -1335,8 +1335,6 @@ fn tool_call_meat(tool: &str, input: &Value) -> String {
 
 /// What a tool answered. The protocol allows both shapes — a plain string, or
 /// the content blocks a richer tool returns — so both are read.
-/// The reader's own clock, for the one fact a stream line can leave unstamped:
-/// when a background shell was launched.
 fn unix_millis_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

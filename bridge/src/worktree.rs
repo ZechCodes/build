@@ -9,19 +9,12 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::isolation::{Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend};
+
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
 
-/// Things that can go wrong managing a worktree.
-#[derive(Debug, thiserror::Error)]
-pub enum WorktreeError {
-    #[error("git error: {0}")]
-    Git(#[from] git2::Error),
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("git command failed: {0}")]
-    Command(String),
-}
+pub use crate::isolation::WorktreeError;
 
 /// A task's worktree: where it lives, which branch it's on, and what it was cut
 /// from.
@@ -124,10 +117,18 @@ pub struct NamedBranchCheckout {
     pub branch_was_cut: bool,
 }
 
-/// Owns worktree creation and teardown for a single project repository.
+/// The one seam the orchestrator and the app talk to about materializing,
+/// verifying, removing or enumerating a checkout of a single project.
+///
+/// It owns everything both isolations share — cutting and deleting branches,
+/// choosing a unique name and directory, the checks a restore makes whatever
+/// made the checkout, publish-before-read ordering — and routes the rest to a
+/// backend. Creation takes the isolation the caller resolved; everything else
+/// asks the checkout on disk what it is.
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
+    worktree: WorktreeBackend,
 }
 
 impl WorktreeManager {
@@ -138,20 +139,28 @@ impl WorktreeManager {
         WorktreeManager {
             repo_path: repo_path.into(),
             worktrees_root: worktrees_root.into(),
+            worktree: WorktreeBackend,
         }
     }
 
-    /// Create `<prefix>/<slug>` from `base_branch` and add a worktree for it. The
-    /// name is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching the same
-    /// goal — or leftover branches/worktrees from prior tasks — never collides.
-    pub fn create(&self, slug: &str, base_branch: &str) -> Result<Worktree, WorktreeError> {
+    /// Create `<prefix>/<slug>` from `base_branch` and materialize a checkout of
+    /// it. The name is made unique (`<slug>`, `<slug>-2`, …) so re-dispatching
+    /// the same goal — or leftover branches/checkouts from prior tasks — never
+    /// collides.
+    pub fn create(
+        &self,
+        slug: &str,
+        base_branch: &str,
+        isolation: Isolation,
+    ) -> Result<Worktree, WorktreeError> {
+        let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
         std::fs::create_dir_all(&self.worktrees_root)?;
 
         let mut name = slug.to_string();
         let mut n = 2;
-        while self.name_taken(&repo, &name) {
+        while self.name_taken(&repo, &name)? {
             name = format!("{slug}-{n}");
             n += 1;
         }
@@ -160,12 +169,7 @@ impl WorktreeManager {
         // Cut the task branch from the tip of the base branch.
         repo.branch(&branch, &base_commit, false)?;
         let path = self.worktrees_root.join(&name);
-
-        // Point the worktree at the branch we just created.
-        let branch_ref = repo.find_reference(&format!("refs/heads/{branch}"))?;
-        let mut opts = git2::WorktreeAddOptions::new();
-        opts.reference(Some(&branch_ref));
-        repo.worktree(&name, &path, Some(&opts))?;
+        backend.materialize(&self.repo_path, &branch, &path)?;
 
         Ok(Worktree {
             name,
@@ -175,7 +179,8 @@ impl WorktreeManager {
         })
     }
 
-    /// Add a worktree for the branch `branch`, spelled exactly as it was given.
+    /// Materialize a checkout of the branch `branch`, spelled exactly as it was
+    /// given.
     ///
     /// The counterpart to [`create`](Self::create): that one is handed a slug
     /// and owns the namespace, this one is handed the whole name and owns
@@ -189,19 +194,21 @@ impl WorktreeManager {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         if !is_usable_branch_name(branch) {
             return Err(WorktreeError::Command(format!(
                 "{branch:?} is not a branch name"
             )));
         }
+        let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
         std::fs::create_dir_all(&self.worktrees_root)?;
 
         let stem = self.directory_name_for(branch);
         let mut name = stem.clone();
         let mut n = 2;
-        while repo.find_worktree(&name).is_ok() || self.worktrees_root.join(&name).exists() {
+        while self.record_held(&name)? || self.worktrees_root.join(&name).exists() {
             name = format!("{stem}-{n}");
             n += 1;
         }
@@ -212,11 +219,8 @@ impl WorktreeManager {
             let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
             repo.branch(branch, &base_commit, false)?;
         }
-        let reference = repo.find_reference(&branch_ref)?;
         let path = self.worktrees_root.join(&name);
-        let mut opts = git2::WorktreeAddOptions::new();
-        opts.reference(Some(&reference));
-        repo.worktree(&name, &path, Some(&opts))?;
+        backend.materialize(&self.repo_path, branch, &path)?;
 
         Ok(NamedBranchCheckout {
             worktree: Worktree {
@@ -228,6 +232,280 @@ impl WorktreeManager {
             branch_was_cut,
         })
     }
+
+    /// Recreate a Build-owned checkout at its original path and branch. The
+    /// local branch is authoritative when present; otherwise fetch exactly the
+    /// same branch from its configured remote into a validated local ref. No
+    /// fallback to the moving base is allowed because that would silently
+    /// discard lineage.
+    ///
+    /// The recorded branch says what to restore; `isolation` says what to
+    /// restore it as. A checkout that vanished carries no isolation to
+    /// remember, so the caller's resolved setting is the only honest answer.
+    pub fn restore(
+        &self,
+        worktree: &Worktree,
+        isolation: Isolation,
+    ) -> Result<Worktree, WorktreeError> {
+        let expected_path = self.worktrees_root.join(&worktree.name);
+        if worktree.path != expected_path
+            || worktree.name.is_empty()
+            || worktree.name.contains(['/', '\\'])
+        {
+            return Err(WorktreeError::Command(
+                "refusing to restore a worktree outside its managed root".to_string(),
+            ));
+        }
+        if worktree.path.exists() {
+            return self.verify_existing_checkout(worktree, &expected_path);
+        }
+        let local_ref = format!("refs/heads/{}", worktree.recorded_branch);
+        if !git2::Reference::is_valid_name(&local_ref) {
+            return Err(WorktreeError::Command(format!(
+                "invalid persisted branch: {:?}",
+                worktree.recorded_branch
+            )));
+        }
+        let backend = self.backend(isolation)?;
+        // The checkout is gone, so whatever record still names it is stale.
+        self.prune();
+        let repo = git2::Repository::open(&self.repo_path)?;
+        if repo.find_reference(&local_ref).is_err() {
+            let refspec = format!("+{local_ref}:{local_ref}");
+            let remote = configured_remote_for_branch(&repo, &worktree.recorded_branch)
+                .unwrap_or_else(|| "origin".to_string());
+            let output = bounded_git_fetch(&self.repo_path, &remote, &refspec)?;
+            if !output.status.success() {
+                return Err(WorktreeError::Command(format!(
+                    "branch {:?} was not found locally or on configured remote: {}",
+                    worktree.recorded_branch,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+        }
+        std::fs::create_dir_all(&self.worktrees_root)?;
+        backend.materialize(&self.repo_path, &worktree.recorded_branch, &worktree.path)?;
+        self.verify_existing_checkout(worktree, &expected_path)
+    }
+
+    /// Remove the checkout's working directory and every backend's record of
+    /// it. When `keep_branch` is false the task branch is deleted too.
+    pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError> {
+        // A kept branch must survive the removal, so whatever the checkout
+        // holds reaches the project repo first; a publish that fails fails the
+        // removal, because an abandon must not lose the work.
+        if keep_branch && worktree.path.exists() {
+            self.publish(&worktree.path, &worktree.recorded_branch)?;
+        }
+        self.remove_checkout(&worktree.path, &worktree.name)?;
+        if !keep_branch {
+            self.delete_branch(&worktree.recorded_branch)?;
+        }
+        Ok(())
+    }
+
+    /// Ask every backend to be rid of the checkout at `path`. Removal's goal is
+    /// ABSENCE, and absence is success for every backend, so a checkout that is
+    /// already gone and one that is still there take the same path — and a
+    /// record left behind by an outside cleanup is cleared either way.
+    pub fn remove_checkout(&self, path: &Path, name: &str) -> Result<(), WorktreeError> {
+        for backend in self.backends() {
+            backend.remove(&self.repo_path, path, name)?;
+        }
+        Ok(())
+    }
+
+    /// Make the checkout's tip of `branch` the project repo's — the step every
+    /// read of a run branch in the project repo comes after.
+    pub fn publish(&self, path: &Path, branch: &str) -> Result<(), WorktreeError> {
+        self.backend_of(path)?
+            .publish(&self.repo_path, path, branch)
+    }
+
+    /// Make the project's tip of `base_branch` the checkout's, so a diff or an
+    /// ahead/behind count against the base means the same thing in both
+    /// isolations.
+    pub fn sync_base(&self, path: &Path, base_branch: &str) -> Result<(), WorktreeError> {
+        self.backend_of(path)?
+            .sync_base(&self.repo_path, path, base_branch)
+    }
+
+    /// Merge `branch` into `base_branch` through the project's own checkout.
+    /// That checkout is the user's live one, so first verify it actually has the
+    /// base branch checked out — merging into whatever happens to be at HEAD
+    /// would land the work on the wrong branch (and a later push of the base
+    /// branch would silently publish nothing).
+    pub fn merge_into_base(
+        &self,
+        path: &Path,
+        branch: &str,
+        base_branch: &str,
+    ) -> Result<(), WorktreeError> {
+        self.publish(path, branch)?;
+        let head = run_git(&self.repo_path, &["symbolic-ref", "--short", "HEAD"])?
+            .trim()
+            .to_string();
+        if head != base_branch {
+            return Err(WorktreeError::Command(format!(
+                "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
+                 check out {base_branch:?} (or commit/stash your work) and approve again"
+            )));
+        }
+        // `--` stops option parsing so an option-shaped branch name can never be
+        // read by git as a flag (defense in depth alongside the adopt-time guard).
+        if let Err(merge_error) = run_git(&self.repo_path, &["merge", "--no-edit", "--", branch]) {
+            // A conflict leaves the primary checkout wedged mid-merge; abort it so
+            // the checkout returns to a clean base and later merges aren't poisoned.
+            // Best-effort — the merge failure is the error we surface either way.
+            if let Err(abort_error) = run_git(&self.repo_path, &["merge", "--abort"]) {
+                eprintln!(
+                    "merge_into_base {branch}: merge failed and abort also failed: {abort_error}"
+                );
+            }
+            return Err(merge_error);
+        }
+        Ok(())
+    }
+
+    /// Every checkout of this project that is neither the project's own nor in
+    /// `excluded` (the canonical paths of Build-bound checkouts, which must
+    /// never surface as adoptable), with a review summary each. Read-only apart
+    /// from the base sync each checkout needs before its counts mean anything.
+    /// A checkout whose summary cannot be computed is skipped — one broken
+    /// stray must not fail the scan.
+    pub fn discover(
+        &self,
+        base_branch: &str,
+        excluded: &HashSet<PathBuf>,
+    ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
+        let primary = std::fs::canonicalize(&self.repo_path)?;
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for backend in self.backends() {
+            for path in backend.discover(&self.repo_path, &self.worktrees_root)? {
+                if path != primary && !excluded.contains(&path) && !paths.contains(&path) {
+                    paths.push(path);
+                }
+            }
+        }
+        let now = unix_now();
+        let mut found: Vec<ExternalWorktree> = Vec::new();
+        for path in paths {
+            if let Err(error) = self.sync_base(&path, base_branch) {
+                eprintln!("discover: base sync failed for {}: {error}", path.display());
+            }
+            if let Some(summary) = describe_checkout(&path, base_branch, now) {
+                found.push(summary);
+            }
+        }
+        found.sort_by(|a, b| {
+            a.head_age_seconds
+                .cmp(&b.head_age_seconds)
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        Ok(found)
+    }
+
+    /// The project's own checkout described in the shape adoption takes for any
+    /// other, so one adoption path serves both. It is nobody's isolated copy —
+    /// it is the repository — so it carries the default isolation.
+    pub fn describe_primary(&self, base_branch: &str) -> Result<ExternalWorktree, WorktreeError> {
+        let primary = std::fs::canonicalize(&self.repo_path)?;
+        let isolation = Isolation::of(&primary).unwrap_or_default();
+        summarize_checkout(&primary, isolation, base_branch, unix_now()).ok_or_else(|| {
+            WorktreeError::Command(format!(
+                "the primary checkout at {} cannot be described — a bare or detached repository \
+                 has no branch to adopt",
+                primary.display()
+            ))
+        })
+    }
+
+    /// Clear every backend's records of checkouts that no longer exist. The one
+    /// place a backend's failure becomes a log line instead of an answer:
+    /// nothing a caller asked for depends on the sweep having run.
+    pub fn prune(&self) {
+        for backend in self.backends() {
+            if let Err(error) = backend.prune(&self.repo_path) {
+                eprintln!("prune {}: {error}", self.repo_path.display());
+            }
+        }
+    }
+
+    /// Whether the project repo has a local branch of this name.
+    pub fn branch_exists(&self, branch: &str) -> Result<bool, WorktreeError> {
+        let repo = git2::Repository::open(&self.repo_path)?;
+        let found = repo.find_branch(branch, git2::BranchType::Local);
+        match found {
+            Ok(_) => Ok(true),
+            Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Delete `branch` only while it still points at `expected_head` — a branch
+    /// that moved since it was read carries work the caller never saw.
+    pub fn delete_branch_at(&self, branch: &str, expected_head: &str) -> Result<(), WorktreeError> {
+        run_git(
+            &self.repo_path,
+            &[
+                "update-ref",
+                "-d",
+                &format!("refs/heads/{branch}"),
+                expected_head,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    /// Put `branch` back at `sha` — the undo for a deletion whose teardown then
+    /// failed.
+    pub fn restore_branch(&self, branch: &str, sha: &str) -> Result<(), WorktreeError> {
+        run_git(
+            &self.repo_path,
+            &["update-ref", &format!("refs/heads/{branch}"), sha],
+        )
+        .map(|_| ())
+    }
+
+    /// Which isolations this project can be checked out with on this volume.
+    pub fn availability(&self) -> IsolationAvailability {
+        IsolationAvailability::of(&self.repo_path, &self.worktrees_root)
+    }
+
+    // --- keyed dispatch ------------------------------------------------------
+
+    /// Every backend this build has, in the order the walks below visit them.
+    fn backends(&self) -> Vec<&dyn IsolationBackend> {
+        vec![&self.worktree]
+    }
+
+    /// The backend that makes `isolation`, or why this volume cannot.
+    fn backend(&self, isolation: Isolation) -> Result<&dyn IsolationBackend, WorktreeError> {
+        self.backends()
+            .into_iter()
+            .find(|backend| backend.kind() == isolation)
+            .ok_or_else(|| {
+                WorktreeError::Command(
+                    self.availability()
+                        .lock_reason(isolation)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            format!("no {} backend in this build", isolation.wire())
+                        }),
+                )
+            })
+    }
+
+    /// The backend that owns the checkout at `path`, which the checkout itself
+    /// decides. A path that is no Build checkout names its own cause: no git
+    /// command ran, so a git failure would be the wrong story.
+    fn backend_of(&self, path: &Path) -> Result<&dyn IsolationBackend, WorktreeError> {
+        let isolation = Isolation::of(path)
+            .ok_or_else(|| WorktreeError::NotABuildCheckout(path.to_path_buf()))?;
+        self.backend(isolation)
+    }
+
+    // --- internals -----------------------------------------------------------
 
     /// The directory a named branch lands in: its segments joined by hyphens,
     /// minus Build's own namespace, which every directory here is already
@@ -241,13 +519,26 @@ impl WorktreeManager {
         segments.join("-")
     }
 
-    /// Whether a candidate name is already in use as a branch, a registered
-    /// worktree, or an on-disk directory.
-    fn name_taken(&self, repo: &git2::Repository, name: &str) -> bool {
-        repo.find_branch(&self.branch_name(name), git2::BranchType::Local)
+    /// Whether a candidate name is already in use as a branch, a checkout some
+    /// backend has a record of, or an on-disk directory. Isolation-blind by
+    /// design: two checkouts never share a name whatever made them.
+    fn name_taken(&self, repo: &git2::Repository, name: &str) -> Result<bool, WorktreeError> {
+        Ok(repo
+            .find_branch(&self.branch_name(name), git2::BranchType::Local)
             .is_ok()
-            || repo.find_worktree(name).is_ok()
-            || self.worktrees_root.join(name).exists()
+            || self.record_held(name)?
+            || self.worktrees_root.join(name).exists())
+    }
+
+    /// Whether any backend holds a record of a checkout called `name`. A name
+    /// carries no isolation, so this is one walk and every caller asks it here.
+    fn record_held(&self, name: &str) -> Result<bool, WorktreeError> {
+        for backend in self.backends() {
+            if backend.holds_record(&self.repo_path, name)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Build the branch name for a slug in Build's namespace.
@@ -255,60 +546,22 @@ impl WorktreeManager {
         format!("{BRANCH_PREFIX}/{slug}")
     }
 
-    /// Recreate a Build-owned checkout at its original path and branch. The
-    /// local branch is authoritative when present; otherwise fetch exactly the
-    /// same branch from its configured remote into a validated local ref. No
-    /// fallback to the moving base is allowed because that would silently
-    /// discard lineage.
-    pub fn restore(&self, worktree: &Worktree) -> Result<Worktree, WorktreeError> {
-        let expected_path = self.worktrees_root.join(&worktree.name);
-        if worktree.path != expected_path
-            || worktree.name.is_empty()
-            || worktree.name.contains(['/', '\\'])
-        {
-            return Err(WorktreeError::Command(
-                "refusing to restore a worktree outside its managed root".to_string(),
-            ));
-        }
-        if worktree.path.exists() {
-            return self.verify_existing_worktree(worktree, &expected_path);
-        }
-        let local_ref = format!("refs/heads/{}", worktree.recorded_branch);
-        let remote_ref = format!("refs/heads/{}", worktree.recorded_branch);
-        if !git2::Reference::is_valid_name(&local_ref) {
-            return Err(WorktreeError::Command(format!(
-                "invalid persisted branch: {:?}",
-                worktree.recorded_branch
-            )));
-        }
+    /// Drop `branch` from the project repo. Only deletable once nothing has it
+    /// checked out; already gone is done.
+    fn delete_branch(&self, branch: &str) -> Result<(), WorktreeError> {
         let repo = git2::Repository::open(&self.repo_path)?;
-        if let Ok(stale) = repo.find_worktree(&worktree.name) {
-            let mut prune = git2::WorktreePruneOptions::new();
-            prune.valid(true).working_tree(true);
-            stale.prune(Some(&mut prune))?;
+        let found = repo.find_branch(branch, git2::BranchType::Local);
+        match found {
+            Ok(mut branch) => branch.delete()?,
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        if repo.find_reference(&local_ref).is_err() {
-            let refspec = format!("+{remote_ref}:{local_ref}");
-            let remote = configured_remote_for_branch(&repo, &worktree.recorded_branch)
-                .unwrap_or_else(|| "origin".to_string());
-            let output = bounded_git_fetch(&self.repo_path, &remote, &refspec)?;
-            if !output.status.success() {
-                return Err(WorktreeError::Command(format!(
-                    "branch {:?} was not found locally or on configured remote: {}",
-                    worktree.recorded_branch,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )));
-            }
-        }
-        std::fs::create_dir_all(&self.worktrees_root)?;
-        let branch_ref = repo.find_reference(&local_ref)?;
-        let mut opts = git2::WorktreeAddOptions::new();
-        opts.reference(Some(&branch_ref));
-        repo.worktree(&worktree.name, &worktree.path, Some(&opts))?;
-        self.verify_existing_worktree(worktree, &expected_path)
+        Ok(())
     }
 
-    fn verify_existing_worktree(
+    /// The checks a restore makes on a checkout that is still there: the ones
+    /// only its own backend can make, then the ones every isolation shares.
+    fn verify_existing_checkout(
         &self,
         worktree: &Worktree,
         expected_path: &Path,
@@ -320,26 +573,11 @@ impl WorktreeManager {
                 "refusing to trust a worktree outside its canonical managed path".to_string(),
             ));
         }
-        let primary = git2::Repository::open(&self.repo_path)?;
-        let registered = primary.find_worktree(&worktree.name).map_err(|_| {
-            WorktreeError::Command(format!(
-                "existing path is not the registered worktree {:?}",
-                worktree.name
-            ))
-        })?;
-        if std::fs::canonicalize(registered.path())? != actual {
-            return Err(WorktreeError::Command(
-                "registered worktree path does not match the persisted path".to_string(),
-            ));
-        }
+        self.backend_of(&actual)?
+            .verify(&self.repo_path, &actual, &worktree.recorded_branch)?;
+        self.publish(&actual, &worktree.recorded_branch)?;
+
         let checkout = git2::Repository::open(&actual)?;
-        if std::fs::canonicalize(checkout.commondir())?
-            != std::fs::canonicalize(primary.commondir())?
-        {
-            return Err(WorktreeError::Command(
-                "existing path belongs to a different git common directory".to_string(),
-            ));
-        }
         let head = checkout.head()?;
         if !head.is_branch() || head.shorthand() != Some(worktree.recorded_branch.as_str()) {
             return Err(WorktreeError::Command(format!(
@@ -350,6 +588,7 @@ impl WorktreeManager {
         let head_oid = head.target().ok_or_else(|| {
             WorktreeError::Command("worktree HEAD has no direct commit".to_string())
         })?;
+        let primary = git2::Repository::open(&self.repo_path)?;
         let branch_oid = primary
             .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
             .target()
@@ -371,43 +610,37 @@ impl WorktreeManager {
         })?;
         Ok(worktree.clone())
     }
+}
 
-    /// Remove the worktree's working directory and prune git's record of it. When
-    /// `keep_branch` is false the task branch is deleted too.
-    pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError> {
-        let repo = git2::Repository::open(&self.repo_path)?;
+/// Seconds since the epoch, the clock every checkout summary is aged against.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or(0)
+}
 
-        // Removal's goal is ABSENCE, so every step treats "already gone" as
-        // done: a worktree cleaned up outside Build (`git worktree remove` by
-        // hand, a reaped directory) must not block the verb that only wanted
-        // it gone. Anything still present that fails to go stays an error —
-        // a teardown failure is an error, not a shrug.
-        if worktree.path.exists() {
-            std::fs::remove_dir_all(&worktree.path)?;
-        }
-        // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
-        // via a baffling "could not find '.git/shallow' to stat" — and either
-        // spelling means the same thing: nothing left to prune.
-        match repo.find_worktree(&worktree.name) {
-            Ok(gwt) => {
-                let mut prune = git2::WorktreePruneOptions::new();
-                prune.valid(true).working_tree(true);
-                gwt.prune(Some(&mut prune))?;
-            }
-            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-
-        // The branch is only deletable once it is no longer checked out.
-        if !keep_branch {
-            match repo.find_branch(&worktree.recorded_branch, git2::BranchType::Local) {
-                Ok(mut branch) => branch.delete()?,
-                Err(error) if error.code() == git2::ErrorCode::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(())
+/// One git command in `dir`, its output or why it failed.
+fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()?;
+    if !out.status.success() {
+        // git splits its story across streams (a conflicting merge reports
+        // "CONFLICT …" on stdout); surface both so the user sees why.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect();
+        return Err(WorktreeError::Command(format!(
+            "git {args:?}: {}",
+            detail.join("\n")
+        )));
     }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 pub(crate) fn configured_remote_for_branch(
@@ -489,11 +722,14 @@ pub struct ExternalWorktree {
     /// Stable id: "wt-" + the first 12 hex chars of sha256 over the canonical
     /// absolute path (UTF-8 bytes of `path.display().to_string()`).
     pub id: String,
-    /// Git's internal worktree name (`repo.find_worktree(name)` works) — kept so
-    /// adoption can build a `Worktree` that `WorktreeManager::remove` understands.
+    /// The checkout's directory name, whatever made it — the name every
+    /// backend calls it by, so adoption can build a `Worktree` that
+    /// `WorktreeManager::remove` understands.
     pub name: String,
     /// Canonical absolute path of the working directory.
     pub path: PathBuf,
+    /// How this checkout is isolated from the project, read from the checkout.
+    pub isolation: Isolation,
     /// Checked-out branch, or None for a detached HEAD (browsable, not adoptable).
     pub branch: Option<String>,
     pub head_sha: String,
@@ -591,194 +827,78 @@ fn strip_trailing_digit_run(segment: &str) -> String {
     chars[..end].iter().collect()
 }
 
-/// Enumerate every git worktree of `repo_path` that is neither the primary
-/// checkout nor in `excluded_paths` (canonical paths of Build-bound worktrees —
-/// runs, which must never surface as adoptable),
-/// with a review summary per worktree. Read-only. A worktree whose summary
-/// cannot be computed (corrupt checkout, no merge base with the base branch)
-/// is skipped with an eprintln! — one broken stray must not fail the scan.
+/// Enumerate every checkout of `repo_path` that is neither the project's own
+/// nor in `excluded_paths`, with a review summary each. A seam kept in this
+/// shape until the app holds a [`WorktreeManager`] of its own.
 pub fn discover_external_worktrees(
     repo_path: &Path,
     base_branch: &str,
     excluded_paths: &HashSet<PathBuf>,
 ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
-    let primary_canonical = std::fs::canonicalize(repo_path)?;
-    let target = ScanTarget::External {
-        primary: &primary_canonical,
-        excluded: excluded_paths,
-    };
-    let mut found = describe_checkouts(repo_path, base_branch, &target)?;
-    found.sort_by(|a, b| {
-        a.head_age_seconds
-            .cmp(&b.head_age_seconds)
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    Ok(found)
+    WorktreeManager::new(repo_path, repo_path).discover(base_branch, excluded_paths)
 }
 
 /// The primary checkout described in the shape adoption takes for an external
-/// worktree, so one adoption path serves both. Read-only.
+/// worktree. The same seam, kept in the same shape.
 pub fn describe_primary_checkout(
     repo_path: &Path,
     base_branch: &str,
 ) -> Result<ExternalWorktree, WorktreeError> {
-    let primary_canonical = std::fs::canonicalize(repo_path)?;
-    let target = ScanTarget::Primary {
-        primary: &primary_canonical,
-    };
-    describe_checkouts(repo_path, base_branch, &target)?
-        .pop()
-        .ok_or_else(|| {
-            WorktreeError::Command(format!(
-                "the primary checkout at {} cannot be described — a bare or detached repository \
-                 has no branch to adopt",
-                primary_canonical.display()
-            ))
-        })
+    WorktreeManager::new(repo_path, repo_path).describe_primary(base_branch)
 }
 
-/// Which of the repository's checkouts a scan describes. The membership test
-/// runs BEFORE any summary is computed: a summary costs several git
-/// invocations per checkout and the external scan runs on a poll.
-enum ScanTarget<'a> {
-    External {
-        primary: &'a Path,
-        excluded: &'a HashSet<PathBuf>,
-    },
-    Primary {
-        primary: &'a Path,
-    },
+/// Summarize the Build checkout at `path` from the checkout alone, so a clone
+/// and a linked worktree are described by one function. `None` when the path is
+/// no Build checkout — described by nobody rather than described as something
+/// it is not — or when the summary cannot be computed.
+pub fn describe_checkout(path: &Path, base_branch: &str, now: i64) -> Option<ExternalWorktree> {
+    summarize_checkout(path, Isolation::of(path)?, base_branch, now)
 }
 
-impl ScanTarget<'_> {
-    fn admits(&self, canonical_path: &Path) -> bool {
-        match self {
-            ScanTarget::External { primary, excluded } => {
-                canonical_path != *primary && !excluded.contains(canonical_path)
-            }
-            ScanTarget::Primary { primary } => canonical_path == *primary,
-        }
-    }
-
-    fn is_primary(&self, canonical_path: &Path) -> bool {
-        matches!(self, ScanTarget::Primary { primary } if canonical_path == *primary)
-    }
-}
-
-/// `git worktree list --porcelain`, parsed into the summaries `target` admits.
-fn describe_checkouts(
-    repo_path: &Path,
-    base_branch: &str,
-    target: &ScanTarget<'_>,
-) -> Result<Vec<ExternalWorktree>, WorktreeError> {
-    let output = std::process::Command::new("git")
-        .args(["worktree", "list", "--porcelain"])
-        .current_dir(repo_path)
-        .output()?;
-    if !output.status.success() {
-        return Err(WorktreeError::Command(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let repo = git2::Repository::open(repo_path)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-
-    Ok(stdout
-        .split("\n\n")
-        .filter_map(|block| parse_worktree_block(block, &repo, target, base_branch, now))
-        .collect())
-}
-
-/// Parse one `git worktree list --porcelain` block into an [`ExternalWorktree`],
-/// or `None` if it should be skipped (bare/prunable, outside `target`, gone from
-/// disk, or a summary that could not be computed — each case logs its own
-/// `eprintln!` except the deliberately silent structural skips).
-fn parse_worktree_block(
-    block: &str,
-    repo: &git2::Repository,
-    target: &ScanTarget<'_>,
+/// The summary itself, for a checkout whose isolation the caller already knows.
+/// Every fact comes from the checkout: its own repository answers for HEAD, its
+/// working tree for what is dirty, and its refs for how far the branch has
+/// travelled. A checkout that cannot answer is skipped with an `eprintln!` —
+/// one broken stray must not fail a scan.
+fn summarize_checkout(
+    path: &Path,
+    isolation: Isolation,
     base_branch: &str,
     now: i64,
 ) -> Option<ExternalWorktree> {
-    let block = block.trim();
-    if block.is_empty() {
-        return None;
-    }
-
-    let mut path = None;
-    let mut head_sha = None;
-    let mut branch = None;
-    let mut detached = false;
-    let mut bare = false;
-    let mut prunable = false;
-    for line in block.lines() {
-        if let Some(rest) = line.strip_prefix("worktree ") {
-            path = Some(PathBuf::from(rest));
-        } else if let Some(rest) = line.strip_prefix("HEAD ") {
-            head_sha = Some(rest.to_string());
-        } else if let Some(rest) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(rest.to_string());
-        } else if line == "detached" {
-            detached = true;
-        } else if line == "bare" {
-            bare = true;
-        } else if line.starts_with("prunable") {
-            prunable = true;
-        }
-    }
-    if bare || prunable {
-        return None;
-    }
-    let path = path?;
-    if !path.exists() {
-        return None;
-    }
-    let canonical_path = std::fs::canonicalize(&path).ok()?;
-    if !target.admits(&canonical_path) {
-        return None;
-    }
-    let head_sha = head_sha?;
-    if !detached && branch.is_none() {
-        // Malformed block: neither a branch nor an explicit detached marker.
-        return None;
-    }
-
-    // Git names only LINKED worktrees, so the primary checkout has none. A
-    // name exists to make `WorktreeManager::remove` work, and the primary is
-    // never removed (it is the repository), so its directory stands in.
-    let name = if target.is_primary(&canonical_path) {
-        canonical_path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "primary".to_string())
-    } else {
-        resolve_worktree_name(repo, &canonical_path).or_else(|| {
-            eprintln!(
-                "discover_external_worktrees: no git worktree name for {}",
-                canonical_path.display()
-            );
-            None
-        })?
-    };
-
-    let head_oid = git2::Oid::from_str(&head_sha)
+    let canonical = std::fs::canonicalize(path).ok()?;
+    let name = canonical
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())?;
+    let repo = git2::Repository::open(&canonical)
         .inspect_err(|e| {
             eprintln!(
-                "discover_external_worktrees: bad HEAD sha for {}: {e}",
-                canonical_path.display()
+                "describe_checkout: cannot open {}: {e}",
+                canonical.display()
             );
         })
         .ok()?;
+    let head = repo
+        .head()
+        .inspect_err(|e| {
+            eprintln!(
+                "describe_checkout: no HEAD for {}: {e}",
+                canonical.display()
+            );
+        })
+        .ok()?;
+    let branch = head
+        .is_branch()
+        .then(|| head.shorthand().map(str::to_string))
+        .flatten();
+    let head_oid = head.target()?;
+    let head_sha = head_oid.to_string();
     let commit = repo
         .find_commit(head_oid)
         .inspect_err(|e| {
             eprintln!(
-                "discover_external_worktrees: no commit {head_sha} for {}: {e}",
-                canonical_path.display()
+                "describe_checkout: no commit {head_sha} for {}: {e}",
+                canonical.display()
             );
         })
         .ok()?;
@@ -786,42 +906,43 @@ fn parse_worktree_block(
     let head_age_seconds = (now - commit.time().seconds()).max(0) as u64;
     let head_committed_at = rfc3339_from_unix(commit.time().seconds());
 
-    let dirty_files = worktree_status_line_count(&canonical_path)
+    let dirty_files = worktree_status_line_count(&canonical)
         .inspect_err(|e| {
             eprintln!(
-                "discover_external_worktrees: status failed for {}: {e}",
-                canonical_path.display()
+                "describe_checkout: status failed for {}: {e}",
+                canonical.display()
             );
         })
         .ok()?;
 
     // Counts only — the board never shows this tree's patch, so never render one.
-    let diffstat = crate::diff::stat_against_merge_base(&canonical_path, base_branch)
+    let diffstat = crate::diff::stat_against_merge_base(&canonical, base_branch)
         .inspect_err(|e| {
             eprintln!(
-                "discover_external_worktrees: diff failed for {}: {e}",
-                canonical_path.display()
+                "describe_checkout: diff failed for {}: {e}",
+                canonical.display()
             );
         })
         .ok()?;
 
     // What is sitting in this tree unsaved — the +/− the rail shows. Distinct
     // from the diffstat above, which is everything the branch carries.
-    let uncommitted = crate::diff::stat_uncommitted(&canonical_path)
+    let uncommitted = crate::diff::stat_uncommitted(&canonical)
         .inspect_err(|e| {
             eprintln!(
-                "discover_external_worktrees: uncommitted diff failed for {}: {e}",
-                canonical_path.display()
+                "describe_checkout: uncommitted diff failed for {}: {e}",
+                canonical.display()
             );
         })
         .ok()?;
 
-    let comparison = branch_comparison(repo, &commit, branch.as_deref(), base_branch);
+    let comparison = branch_comparison(&repo, &commit, branch.as_deref(), base_branch);
 
     Some(ExternalWorktree {
-        id: external_worktree_id(&canonical_path),
+        id: external_worktree_id(&canonical),
         name,
-        path: canonical_path,
+        path: canonical,
+        isolation,
         branch,
         head_sha,
         head_subject,
@@ -894,21 +1015,6 @@ fn upstream_of(repo: &git2::Repository, branch: &str) -> Option<(String, git2::O
     let name = upstream.name().ok().flatten()?.to_string();
     let oid = upstream.get().target()?;
     Some((name, oid))
-}
-
-/// Match a canonicalized worktree path against git's own worktree registry to
-/// recover the name `WorktreeManager` and `repo.find_worktree` expect.
-fn resolve_worktree_name(repo: &git2::Repository, canonical_path: &Path) -> Option<String> {
-    let names = repo.worktrees().ok()?;
-    for name in names.iter().flatten() {
-        let Ok(candidate) = repo.find_worktree(name) else {
-            continue;
-        };
-        if std::fs::canonicalize(candidate.path()).ok().as_deref() == Some(canonical_path) {
-            return Some(name.to_string());
-        }
-    }
-    None
 }
 
 /// Count of non-empty `git status --porcelain` lines in `worktree_path`.
@@ -1000,7 +1106,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
 
-        let prefixed = mgr.create_on_branch("build/csv-export", "main").unwrap();
+        let prefixed = mgr
+            .create_on_branch("build/csv-export", "main", Isolation::Worktree)
+            .unwrap();
         assert_eq!(prefixed.worktree.recorded_branch, "build/csv-export");
         assert_eq!(prefixed.worktree.name, "csv-export");
         assert!(prefixed.branch_was_cut, "nothing was on that name before");
@@ -1008,13 +1116,17 @@ mod tests {
 
         // A name with no namespace stays with no namespace: nothing is added to
         // what the caller asked for.
-        let plain = mgr.create_on_branch("hotfix", "main").unwrap();
+        let plain = mgr
+            .create_on_branch("hotfix", "main", Isolation::Worktree)
+            .unwrap();
         assert_eq!(plain.worktree.recorded_branch, "hotfix");
         assert_eq!(plain.worktree.name, "hotfix");
 
         // A namespace that is not this manager's is kept whole in the directory
         // name, so two branches never share one directory.
-        let foreign = mgr.create_on_branch("feature/csv-export", "main").unwrap();
+        let foreign = mgr
+            .create_on_branch("feature/csv-export", "main", Isolation::Worktree)
+            .unwrap();
         assert_eq!(foreign.worktree.recorded_branch, "feature/csv-export");
         assert_eq!(foreign.worktree.name, "feature-csv-export");
 
@@ -1038,7 +1150,7 @@ mod tests {
         r.branch("build/started-by-hand", &head, false).unwrap();
 
         let added = mgr
-            .create_on_branch("build/started-by-hand", "main")
+            .create_on_branch("build/started-by-hand", "main", Isolation::Worktree)
             .unwrap();
 
         assert_eq!(added.worktree.recorded_branch, "build/started-by-hand");
@@ -1063,7 +1175,7 @@ mod tests {
     fn create_on_branch_refuses_a_name_that_is_not_a_branch_name() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let refused = mgr.create_on_branch("add a csv export", "main");
+        let refused = mgr.create_on_branch("add a csv export", "main", Isolation::Worktree);
         assert!(refused.is_err(), "{refused:?}");
     }
 
@@ -1085,7 +1197,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
 
-        let wt = mgr.create("fix-typo", "main").unwrap();
+        let wt = mgr.create("fix-typo", "main", Isolation::Worktree).unwrap();
 
         assert_eq!(wt.recorded_branch, "build/fix-typo");
         assert_eq!(wt.base_branch, "main");
@@ -1105,8 +1217,8 @@ mod tests {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
 
-        let a = mgr.create("task-a", "main").unwrap();
-        let b = mgr.create("task-b", "main").unwrap();
+        let a = mgr.create("task-a", "main", Isolation::Worktree).unwrap();
+        let b = mgr.create("task-b", "main", Isolation::Worktree).unwrap();
 
         assert_ne!(a.path, b.path);
         assert!(a.path.join("README.md").exists());
@@ -1121,9 +1233,9 @@ mod tests {
     fn create_disambiguates_on_collision() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let a = mgr.create("dup", "main").unwrap();
-        let b = mgr.create("dup", "main").unwrap();
-        let c = mgr.create("dup", "main").unwrap();
+        let a = mgr.create("dup", "main", Isolation::Worktree).unwrap();
+        let b = mgr.create("dup", "main", Isolation::Worktree).unwrap();
+        let c = mgr.create("dup", "main", Isolation::Worktree).unwrap();
         assert_eq!(a.name, "dup");
         assert_eq!(b.name, "dup-2");
         assert_eq!(c.name, "dup-3");
@@ -1135,7 +1247,7 @@ mod tests {
     fn abandon_removes_worktree_keeps_branch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("keep-me", "main").unwrap();
+        let wt = mgr.create("keep-me", "main", Isolation::Worktree).unwrap();
 
         mgr.remove(&wt, /* keep_branch */ true).unwrap();
 
@@ -1153,7 +1265,9 @@ mod tests {
     fn restore_recreates_the_original_worktree_from_its_local_branch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("recover-local", "main").unwrap();
+        let wt = mgr
+            .create("recover-local", "main", Isolation::Worktree)
+            .unwrap();
         std::fs::write(wt.path.join("stage.txt"), "kept\n").unwrap();
         git_in(&wt.path, &["add", "stage.txt"]);
         git_in(&wt.path, &["commit", "-m", "stage"]);
@@ -1165,7 +1279,7 @@ mod tests {
             .unwrap();
         mgr.remove(&wt, true).unwrap();
 
-        let restored = mgr.restore(&wt).unwrap();
+        let restored = mgr.restore(&wt, Isolation::Worktree).unwrap();
         assert_eq!(restored, wt);
         assert_eq!(
             std::fs::read_to_string(wt.path.join("stage.txt")).unwrap(),
@@ -1182,6 +1296,8 @@ mod tests {
         );
     }
 
+    /// A directory sitting where a checkout belongs, which is no checkout at
+    /// all, is refused for what it is — nothing ran git to say otherwise.
     #[test]
     fn restore_rejects_an_existing_unregistered_directory() {
         let (dir, repo) = init_repo();
@@ -1196,8 +1312,11 @@ mod tests {
             base_branch: "main".into(),
         };
 
-        let error = mgr.restore(&forged).unwrap_err().to_string();
-        assert!(error.contains("registered worktree"), "{error}");
+        let error = mgr
+            .restore(&forged, Isolation::Worktree)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not a Build checkout"), "{error}");
     }
 
     #[test]
@@ -1218,7 +1337,9 @@ mod tests {
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("recover-remote", "main").unwrap();
+        let wt = mgr
+            .create("recover-remote", "main", Isolation::Worktree)
+            .unwrap();
         std::fs::write(wt.path.join("remote-stage.txt"), "remote\n").unwrap();
         git_in(&wt.path, &["add", "remote-stage.txt"]);
         git_in(&wt.path, &["commit", "-m", "remote stage"]);
@@ -1234,7 +1355,7 @@ mod tests {
             ],
         );
 
-        mgr.restore(&wt).unwrap();
+        mgr.restore(&wt, Isolation::Worktree).unwrap();
         assert_eq!(
             std::fs::read_to_string(wt.path.join("remote-stage.txt")).unwrap(),
             "remote\n"
@@ -1245,7 +1366,7 @@ mod tests {
     fn remove_without_keep_deletes_branch() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
-        let wt = mgr.create("drop-me", "main").unwrap();
+        let wt = mgr.create("drop-me", "main", Isolation::Worktree).unwrap();
 
         mgr.remove(&wt, /* keep_branch */ false).unwrap();
 
@@ -1572,7 +1693,9 @@ mod vanished_worktree_removal {
         // Removal's goal is absence; finding absence is success.
         let (dir, repo) = tests::init_repo();
         let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
-        let wt = manager.create("gone-slug", "main").unwrap();
+        let wt = manager
+            .create("gone-slug", "main", Isolation::Worktree)
+            .unwrap();
         fully_vanished(&repo, &wt);
 
         manager.remove(&wt, false).expect("absence is the goal");
@@ -1584,7 +1707,9 @@ mod vanished_worktree_removal {
         // branch must still be deleted, not skipped along with the rest.
         let (dir, repo) = tests::init_repo();
         let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
-        let wt = manager.create("half-gone", "main").unwrap();
+        let wt = manager
+            .create("half-gone", "main", Isolation::Worktree)
+            .unwrap();
         std::fs::remove_dir_all(&wt.path).unwrap();
         let out = std::process::Command::new("git")
             .args(["worktree", "prune"])

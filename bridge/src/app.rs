@@ -29,6 +29,7 @@ use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     TerminalView, Turn,
 };
+use crate::isolation::Isolation;
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -2532,7 +2533,7 @@ impl AppState {
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
                     self.orch_for(project_id)?
-                        .restore_run_worktree(&active.worktree)
+                        .restore_run_worktree(&active.worktree, Isolation::Worktree)
                         .map_err(err)
                 });
             match restored {
@@ -5115,7 +5116,7 @@ impl AppState {
             let project_id = self.project_of(run_id)?;
             let worktree = self
                 .orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, Isolation::Worktree)
                 .map_err(err)?;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
@@ -6948,6 +6949,7 @@ impl AppState {
                     "project_id": project_id,
                     "project": project_name,
                     "path": w.path.display().to_string(),
+                    "isolation": w.isolation.wire(),
                     "branch": w.branch,
                     "head_sha": w.head_sha,
                     "head_subject": w.head_subject,
@@ -7531,7 +7533,7 @@ impl AppState {
         let base = self.base_for(&project_id)?;
         let worktree = self
             .orch_for(&project_id)?
-            .create_bare_worktree(&slug, &base)
+            .create_bare_worktree(&slug, &base, Isolation::Worktree)
             .map_err(err)?;
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
@@ -10041,7 +10043,7 @@ impl AppState {
             )
         } else {
             self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, Isolation::Worktree)
                 .map_err(err)
         };
         match restored {
@@ -10806,6 +10808,7 @@ impl AppState {
                     },
                     &base,
                     model_choice,
+                    Isolation::Worktree,
                     store,
                 )
                 .map_err(err)?;
@@ -13683,7 +13686,7 @@ impl AppState {
         let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
             Some(name) => self
                 .orch_for(project_id)?
-                .create_worktree_on_named_branch(name, &base)
+                .create_worktree_on_named_branch(name, &base, Isolation::Worktree)
                 .map_err(err)?,
             None => {
                 let name = branch.unwrap_or(instruction);
@@ -13695,7 +13698,11 @@ impl AppState {
                 crate::worktree::NamedBranchCheckout {
                     worktree: self
                         .orch_for(project_id)?
-                        .create_bare_worktree(&crate::worktree::slugify(name), &base)
+                        .create_bare_worktree(
+                            &crate::worktree::slugify(name),
+                            &base,
+                            Isolation::Worktree,
+                        )
                         .map_err(err)?,
                     branch_was_cut: true,
                 }
@@ -30181,6 +30188,7 @@ mod tests {
                 },
                 "main",
                 Default::default(),
+                Isolation::Worktree,
                 &store,
             )
             .unwrap();
@@ -32044,6 +32052,7 @@ mod tests {
                 },
                 "main",
                 Default::default(),
+                Isolation::Worktree,
                 &store,
             )
             .unwrap();
@@ -32103,6 +32112,7 @@ mod tests {
                 },
                 "main",
                 Default::default(),
+                Isolation::Worktree,
                 &store,
             )
             .unwrap();

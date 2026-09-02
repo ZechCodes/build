@@ -44,6 +44,7 @@ use portable_pty::PtySize;
 use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
 use crate::harness::HarnessError;
+use crate::isolation::Isolation;
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
 use crate::models::{AgentProvider, ModelChoice};
 use crate::plan::{
@@ -105,7 +106,10 @@ pub enum OrchestratorError {
 /// so the RPC message carries the contract's `merge_failed:` prefix.
 fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
     match error {
-        OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
+        OrchestratorError::Git(reason)
+        | OrchestratorError::Worktree(WorktreeError::Command(reason)) => {
+            OrchestratorError::MergeFailed(reason)
+        }
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
@@ -835,6 +839,12 @@ impl Orchestrator {
 
     /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize
     /// it to their own viewport; this is what it paints into until one does.
+    /// The one seam every checkout operation goes through, for callers that
+    /// hold the orchestrator rather than the manager.
+    pub fn worktrees(&self) -> &WorktreeManager {
+        &self.worktrees
+    }
+
     pub fn pty_size(&self) -> PtySize {
         self.pty_size
     }
@@ -1411,8 +1421,9 @@ impl Orchestrator {
         &self,
         slug: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.create(slug, base_branch)?)
+        Ok(self.worktrees.create(slug, base_branch, isolation)?)
     }
 
     /// The same bare checkout, on a branch the caller named in full. Used when
@@ -1424,8 +1435,11 @@ impl Orchestrator {
         &self,
         branch: &str,
         base_branch: &str,
+        isolation: Isolation,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create_on_branch(branch, base_branch)?)
+        Ok(self
+            .worktrees
+            .create_on_branch(branch, base_branch, isolation)?)
     }
 
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
@@ -1452,6 +1466,7 @@ impl Orchestrator {
         source: RunSource<'_>,
         base_branch: &str,
         model_choice: ModelChoice,
+        isolation: Isolation,
         store: &Store,
     ) -> Result<(ActiveRun, AgentTurn), OrchestratorError> {
         let RunSource {
@@ -1462,7 +1477,7 @@ impl Orchestrator {
         let goal = plan_link.plan.goal.clone();
 
         let slug = slugify(&goal);
-        let worktree = self.worktrees.create(&slug, base_branch)?;
+        let worktree = self.worktrees.create(&slug, base_branch, isolation)?;
         self.scaffold_build_dir(&worktree, &id.0)?;
         let base_sha =
             match self.materialize_and_commit_plan_docs(plan_link, &worktree, &goal, store) {
@@ -2473,8 +2488,13 @@ impl Orchestrator {
         run_transition(&active.run.state, RunEvent::ApproveMerge)?;
         self.commit_all(&active.worktree.path, &active.run.goal)
             .map_err(as_merge_failure)?;
-        self.merge_into_base(&active.worktree.branch(), &active.worktree.base_branch)
-            .map_err(as_merge_failure)?;
+        self.worktrees
+            .merge_into_base(
+                &active.worktree.path,
+                &active.worktree.branch(),
+                &active.worktree.base_branch,
+            )
+            .map_err(|error| as_merge_failure(error.into()))?;
         active.run.apply(RunEvent::ApproveMerge)?;
         active.last_error = None;
         Ok(())
@@ -2652,8 +2672,12 @@ impl Orchestrator {
 
     /// Recreate a missing native implementation checkout from its exact
     /// persisted branch, using the verified local ref first and origin second.
-    pub fn restore_run_worktree(&self, worktree: &Worktree) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.restore(worktree)?)
+    pub fn restore_run_worktree(
+        &self,
+        worktree: &Worktree,
+        isolation: Isolation,
+    ) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.restore(worktree, isolation)?)
     }
 
     /// Best-effort teardown of a leftover worktree + branch for a task being
@@ -2919,38 +2943,6 @@ impl Orchestrator {
         let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
         if !staged.trim().is_empty() {
             self.git(worktree_path, &["commit", "-m", message])?;
-        }
-        Ok(())
-    }
-
-    /// Merge the task branch into `base_branch` via the primary checkout. The
-    /// primary repo is the user's live checkout, so first verify it actually has
-    /// the base branch checked out — merging into whatever happens to be at HEAD
-    /// would land the task on the wrong branch (and a later push of the base
-    /// branch would silently publish nothing).
-    fn merge_into_base(&self, branch: &str, base_branch: &str) -> Result<(), OrchestratorError> {
-        let head = self
-            .git(&self.repo_path, &["symbolic-ref", "--short", "HEAD"])?
-            .trim()
-            .to_string();
-        if head != base_branch {
-            return Err(OrchestratorError::Git(format!(
-                "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
-                 check out {base_branch:?} (or commit/stash your work) and approve again"
-            )));
-        }
-        // `--` stops option parsing so an option-shaped branch name can never be
-        // read by git as a flag (defense in depth alongside the adopt-time guard).
-        if let Err(merge_error) = self.git(&self.repo_path, &["merge", "--no-edit", "--", branch]) {
-            // A conflict leaves the primary checkout wedged mid-merge; abort it so
-            // the checkout returns to a clean base and later merges aren't poisoned.
-            // Best-effort — the merge failure is the error we surface either way.
-            if let Err(abort_error) = self.git(&self.repo_path, &["merge", "--abort"]) {
-                eprintln!(
-                    "merge_into_base {branch}: merge failed and abort also failed: {abort_error}"
-                );
-            }
-            return Err(merge_error);
         }
         Ok(())
     }
@@ -3360,6 +3352,7 @@ mod tests {
             },
             "main",
             Default::default(),
+            Isolation::Worktree,
             store,
         )
         .unwrap()
@@ -3819,6 +3812,7 @@ mod tests {
             },
             "main",
             Default::default(),
+            Isolation::Worktree,
             &store,
         ) else {
             panic!("stage 0 must be approved before its build session spawns");
@@ -4400,6 +4394,7 @@ mod tests {
             },
             "main",
             Default::default(),
+            Isolation::Worktree,
             &store,
         ) {
             Ok(_) => panic!("a second concurrent run of the same plan must be rejected"),
@@ -4423,6 +4418,7 @@ mod tests {
             },
             "main",
             Default::default(),
+            Isolation::Worktree,
             &store,
         ) {
             Ok(_) => panic!("only an approved plan can be implemented"),

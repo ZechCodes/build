@@ -65,10 +65,13 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn remove(&self, project: &Path, path: &Path, name: &str) -> Result<(), WorktreeError> {
+        // The project repo is opened before the directory goes: a teardown that
+        // cannot reach the registry would leave a record naming a directory it
+        // can no longer prune, so it refuses while there is still nothing lost.
+        let repo = git2::Repository::open(project)?;
         if path.exists() {
             std::fs::remove_dir_all(path)?;
         }
-        let repo = git2::Repository::open(project)?;
         // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
         // via a baffling "could not find '.git/shallow' to stat" — and either
         // spelling means the same thing: nothing left to prune.

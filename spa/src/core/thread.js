@@ -822,19 +822,28 @@ function toolOutcomeHtml(outcome) {
 /// IS its content — the same line the collapsed run shows, through the same
 /// `activityMeat` — with the kind on the icon for a reader who cannot see it,
 /// and the mark riding the content it is a fact about.
-function activityHtml(event, meta, agentLabel) {
+function activityHtml(event, meta, agentLabel, foldedChildrenHtml = "") {
   const summary = String(event.summary || "").trim();
+  const sequence = sequenceAttribute(event);
   const head = `<span class="thread-event-icon" role="img" aria-label="${esc(eventLabel(meta, agentLabel))}">${esc(meta.icon)}</span>
     <span class="thread-activity-preview">${esc(activityMeat(event, meta, agentLabel))}</span>
     ${toolOutcomeHtml(event.outcome)}
     ${timeHtml(event.created_at)}`;
   // renderMarkdown escapes all input before adding its fixed safe tag set.
-  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
-  if (!body) return `<div class="thread-event thread-activity">${head}</div>`;
-  return `<details class="thread-event thread-activity">
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
+  if (!body) return `<div class="thread-event thread-activity"${sequence}>${head}</div>`;
+  return `<details class="thread-event thread-activity"${sequence}>
     <summary class="thread-activity-head">${head}</summary>
     ${body}
   </details>`;
+}
+
+/// What names a row to `revealThreadSequence`, and what a child's
+/// `parent_sequence` points at. Only an activity row carries it: those are the
+/// rows a tool call mints, and a tool call is the only thing anything folds
+/// under.
+function sequenceAttribute(event) {
+  return Number.isFinite(event.sequence) ? ` data-sequence="${esc(event.sequence)}"` : "";
 }
 
 /// The activity meta for an event kind, or nothing for a kind that is not
@@ -914,9 +923,9 @@ function foldActivityRuns(entries) {
   return rows;
 }
 
-function eventHtml(event, agentLabel = "Agent") {
+function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
-  if (meta.activity) return activityHtml(event, meta, agentLabel);
+  if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
   const label = eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
@@ -925,6 +934,68 @@ function eventHtml(event, agentLabel = "Agent") {
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
   </div>`;
+}
+
+/// One row a spawned agent minted, drawn inside the row that spawned it.
+function foldedChildHtml(item, agentLabel) {
+  if (item.type === "message") return messageHtml(item.data || {}, agentLabel);
+  return eventHtml(item.data || {}, agentLabel);
+}
+
+/// Which rows belong inside another row, and what to draw in the fold of the
+/// row they belong to.
+///
+/// A subagent's rows carry the sequence of the tool call that spawned them, and
+/// that call already has a row here: the child belongs inside it rather than
+/// beside it, so the run above it counts what the reader can actually see.
+///
+/// A child folds only under a parent the window actually holds. A page fetched
+/// from the middle of a long conversation can carry a child whose spawning call
+/// is still above it, and that row stands on its own until the page above it
+/// arrives. Only an activity row can host a fold — it is the only row with a
+/// body to put anything in — so a child naming any other row stands on its own
+/// too.
+function threadFolding(items, agentLabel) {
+  const hostSequences = new Set(
+    items
+      .filter((item) => item.type !== "message" && activityMetaOf(item.data || {}))
+      .map((item) => (item.data || {}).sequence)
+      .filter((sequence) => Number.isFinite(sequence)),
+  );
+  const childrenByParent = new Map();
+  const foldedItems = new Set();
+  for (const item of items) {
+    const parent = (item.data || {}).parent_sequence;
+    if (!Number.isFinite(parent) || !hostSequences.has(parent)) continue;
+    foldedItems.add(item);
+    childrenByParent.set(parent, [...(childrenByParent.get(parent) || []), item]);
+  }
+  const foldedChildrenHtmlOf = (sequence) => {
+    const children = childrenByParent.get(sequence);
+    if (!children) return "";
+    return `<div class="thread-activity-children">${children
+      .map((child) => foldedChildHtml(child, agentLabel))
+      .join("")}</div>`;
+  };
+  return { foldedItems, foldedChildrenHtmlOf };
+}
+
+/// Scroll `scroller` to the row carrying `sequence` and open every fold over
+/// it, so a press on a subagent lands the reader on the call that spawned it
+/// with the call's own body already open.
+///
+/// Answers whether there was such a row: a sequence naming a call above the
+/// window the reader holds is nothing this can reach, and saying so is what
+/// lets the caller leave the reader where they are.
+export function revealThreadSequence(scroller, sequence) {
+  if (!scroller) return false;
+  const row = scroller.querySelector(`[data-sequence="${esc(sequence)}"]`);
+  if (!row) return false;
+  for (let node = row; node && node !== scroller; node = node.parentElement) {
+    if (node.tagName === "DETAILS") node.open = true;
+  }
+  if (row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  return true;
 }
 
 /// The timeline: what was said, and what happened.
@@ -940,15 +1011,17 @@ function eventHtml(event, agentLabel = "Agent") {
 /// many items and one row, and the count on the conversation's title counts
 /// what was said and done rather than how it fell into runs.
 function timelineHtml(items, agentLabel, threadId) {
+  const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
+  const topLevelItems = items.filter((item) => !foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
-  const lastSpoken = items.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
-  const entries = items.flatMap((item, index) => {
+  const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  const entries = topLevelItems.flatMap((item, index) => {
     if (item.type !== "message") {
       const event = item.data || {};
       const meta = activityMetaOf(event);
-      const html = eventHtml(event, agentLabel);
+      const html = eventHtml(event, agentLabel, foldedChildrenHtmlOf(event.sequence));
       if (!meta) return [{ html }];
       return [{
         html,

@@ -205,6 +205,27 @@ describe("a split menu's motion", () => {
     expect(menu.style.bottom).toBe("");
   });
 
+  it("keeps the placement a lifted menu is wearing when it opens again mid-shrink", async () => {
+    const { container, caret, menu } = mountMenuInside(scrollingHost());
+    container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
+    Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
+    caret.click();
+    await settleMotion(started);
+
+    const addListener = vi.spyOn(document, "addEventListener");
+
+    caret.click();
+    await motionBeat();
+    caret.click();
+    await settleMotion(started);
+
+    expect(menu.hidden).toBe(false);
+    expect(menu.style.position).toBe("fixed");
+    expect(menu.style.bottom).toBe("306px");
+    expect(addListener.mock.calls.filter(([type]) => type === "scroll")).toHaveLength(0);
+    addListener.mockRestore();
+  });
+
   it("opens again on a caret press that lands while it is shutting", async () => {
     const { caret, menu } = mountMenuInside(plainHost());
     caret.click();

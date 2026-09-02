@@ -169,14 +169,14 @@ export function mountSplitMenu(container, { onChoose }) {
     if (!menu) return Promise.resolve();
     menuIsOpen = false;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
-    const clearLiftedPlacement = settleLiftedMenu;
-    settleLiftedMenu = null;
     // A lifted menu that lost its fixed placement mid-shrink would jump back
     // into the scroller it was lifted out of, so the placement stands until the
-    // shrinking is over — unless the menu opened again while it shrank, and the
-    // placement standing is the new one.
+    // shrinking is over — and goes on standing if the menu opened again while
+    // it shrank, because it is the placement that menu is still wearing.
     return hide(menu, MENU_MOVE).then(() => {
-      if (clearLiftedPlacement && !menuIsOpen) clearLiftedPlacement();
+      if (menuIsOpen || !settleLiftedMenu) return;
+      settleLiftedMenu();
+      settleLiftedMenu = null;
     });
   };
   const openMenu = () => {

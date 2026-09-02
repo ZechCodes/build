@@ -34,7 +34,7 @@ FONT_NAME = "fonts/JetBrainsMono-latin.woff2"
 BRAND_MARK_NAME = "brand-mark.svg"
 SCREENSHOT_NAMES = (
     "assets/build-ide-screenshot-1240.png",
-    "assets/build-ide-screenshot-1860.png",
+    "assets/build-ide-screenshot-1744.png",
     "assets/build-ide-screenshot-mobile-640.png",
     "assets/build-ide-screenshot-mobile-921.png",
 )
@@ -109,7 +109,7 @@ DESIGN_TOKENS = (
     "--color-accent-hover",
     "--color-background",
     "--color-screenshot-frame",
-    "--mask-screenshot-fade",
+    "--fade-screenshot",
     "--color-on-accent",
     "--color-alert",
     "--color-text-primary",
@@ -152,9 +152,11 @@ DESIGN_TOKENS = (
     "--letter-spacing-brand",
     "--dotfield-gap",
     "--hero-padding-block-start",
-    "--hero-padding-block-end",
     "--space-screenshot-top",
+    "--space-screenshot-left",
     "--screenshot-crop-aspect",
+    "--screenshot-side-height",
+    "--hero-side-copy-width",
     "--features-padding-block",
     "--cta-padding-block",
     "--footer-padding",
@@ -246,8 +248,29 @@ DOT_FIELD_MARKUP = '<div class="dot-field"><canvas data-dot-field></canvas></div
 HERO_EYEBROW_MARKUP = '<p class="eyebrow hero-eyebrow">PRIVATE BETA</p>'
 HERO_SECTION_OPENER = '<section class="hero rule-bottom" data-hero>'
 HERO_RULE = (
-    ".hero{position:relative;overflow:hidden;text-align:center;"
-    "padding-block:var(--hero-padding-block-start) var(--hero-padding-block-end)}"
+    ".hero{position:relative;overflow:hidden;display:flex;flex-direction:column;"
+    "text-align:center;padding-top:var(--hero-padding-block-start)}"
+)
+HERO_VIEWPORT_LOCK_RULE = ".hero{min-height:var(--viewport-height)}"
+HERO_STAGE_RULE = (
+    ".hero-stage{flex:1;display:flex;flex-direction:column;align-items:center}"
+)
+HERO_COPY_CENTERED_RULE = ".hero-content{margin-block:auto}"
+HERO_LAYERS_RULE = ".hero-stage,.agents-rail{position:relative;z-index:1}"
+AGENTS_RAIL_MARKUP = '<section class="agents-rail rule-top" id="agents">'
+AGENTS_RAIL_RULE = ".agents-rail{background:var(--color-background)}"
+SCREENSHOT_FADE_RULE = (
+    '.screenshot-frame::after{content:"";position:absolute;inset:0;'
+    "background:var(--fade-screenshot);pointer-events:none}"
+)
+HERO_SIDE_MEDIA_PRELUDE = "@media (min-width:1024px) and (max-height:1199px){"
+HERO_SIDE_RULES = (
+    ".hero-stage{flex-direction:row;align-items:flex-end;text-align:left}",
+    ".hero-content{flex:0 0 var(--hero-side-copy-width)}",
+    ".hero-content .lead,.hero-content .waitlist{margin-inline:0}",
+    ".hero-screenshot{flex:none;align-self:flex-end;margin-top:0;margin-left:var(--space-screenshot-left)}",
+    ".screenshot-frame{aspect-ratio:auto;height:var(--screenshot-side-height)}",
+    ".screenshot-frame img{width:auto;height:100%}",
 )
 HERO_TITLE_MARKUP = (
     '<h1 class="section-title section-title--hero">Ship more.<br>'
@@ -271,24 +294,22 @@ SCREENSHOT_MARKUP = (
     'sizes="100vw" width="921" height="1880">\n'
     '    <img src="/landing/assets/build-ide-screenshot-1240.png" '
     'srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, '
-    '/landing/assets/build-ide-screenshot-1860.png 1860w" '
+    '/landing/assets/build-ide-screenshot-1744.png 1744w" '
     'sizes="(max-width: 1280px) calc(100vw - 80px), 1160px" '
-    'width="1860" height="1081" decoding="async" '
+    'width="1744" height="965" decoding="async" '
     'alt="The Build IDE — commit history, diff review, and a live agent conversation">\n'
     "  </picture>"
 )
-HERO_SCREENSHOT_OPENER = '<div class="content-container hero-screenshot">'
-HERO_LAYERS_RULE = ".hero-content,.hero-screenshot{position:relative;z-index:1}"
-HERO_SCREENSHOT_RULE = ".hero-screenshot{margin-top:var(--space-screenshot-top)}"
-HERO_SCREENSHOT_MOBILE_RULE = ".hero-screenshot{--content-padding-inline:0}"
+HERO_SCREENSHOT_OPENER = '<div class="hero-screenshot">'
+HERO_SCREENSHOT_RULE = ".hero-screenshot{align-self:stretch;margin-top:var(--space-screenshot-top)}"
+HERO_SCREENSHOT_MOBILE_RULE = ".hero-screenshot{margin-inline:calc(var(--content-padding-inline) * -1)}"
 SCREENSHOT_FRAME_RULE = (
     ".screenshot-frame{position:relative;background:var(--color-screenshot-frame);"
-    "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden;"
-    "mask-image:var(--mask-screenshot-fade)}"
+    "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden}"
 )
 SCREENSHOT_GAP_DESKTOP_TOKEN = "--space-screenshot-top:64px"
 SCREENSHOT_GAP_MOBILE_TOKEN = "--space-screenshot-top:28px"
-SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:2000 / 900"
+SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:1744 / 800"
 SCREENSHOT_CROP_MOBILE_TOKEN = "--screenshot-crop-aspect:921 / 900"
 
 AGENTS_LABEL_MARKUP = (
@@ -635,9 +656,29 @@ def test_hero_copy_is_verbatim():
     assert HERO_NOTE_MARKUP in html
 
 
-def test_hero_top_aligns_its_copy_instead_of_filling_the_viewport():
+def test_hero_is_a_column_that_only_locks_to_the_viewport_on_desktop():
     assert HERO_SECTION_OPENER in _landing_html()
-    assert HERO_RULE in _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+    css = _landing_text(STYLESHEET_NAME)
+    for rule in (HERO_RULE, HERO_STAGE_RULE, HERO_COPY_CENTERED_RULE, HERO_LAYERS_RULE):
+        assert rule in _rules_outside_media_blocks(css)
+    assert HERO_VIEWPORT_LOCK_RULE in css
+    assert HERO_VIEWPORT_LOCK_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_agents_rail_pins_to_the_bottom_of_the_hero_over_a_solid_background():
+    html = _landing_html()
+    hero_end = html.index("</section>\n<section", html.index(AGENTS_RAIL_MARKUP))
+    assert html.index(HERO_SCREENSHOT_OPENER) < html.index(AGENTS_RAIL_MARKUP) < hero_end
+    assert AGENTS_RAIL_RULE in _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+
+
+def test_short_desktop_viewports_put_the_copy_beside_the_screenshot():
+    css = _landing_text(STYLESHEET_NAME)
+    side_block = css[css.index(HERO_SIDE_MEDIA_PRELUDE):]
+    side_block = side_block[: side_block.index("\n}")]
+    for rule in HERO_SIDE_RULES:
+        assert rule in side_block
+        assert rule not in _rules_outside_media_blocks(css)
 
 
 def test_hero_hosts_the_dot_field_canvas():
@@ -653,7 +694,7 @@ def test_screenshot_closes_the_hero_below_the_copy_and_fades_out_at_the_bottom()
     hero_end = html.index("</section>", html.index(HERO_SECTION_OPENER))
     assert html.index(HERO_NOTE_MARKUP) < html.index(HERO_SCREENSHOT_OPENER) < hero_end
     css = _landing_text(STYLESHEET_NAME)
-    for rule in (HERO_LAYERS_RULE, HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE):
+    for rule in (HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE, SCREENSHOT_FADE_RULE):
         assert rule in _rules_outside_media_blocks(css)
     assert HERO_SCREENSHOT_MOBILE_RULE in css
     assert HERO_SCREENSHOT_MOBILE_RULE not in _rules_outside_media_blocks(css)

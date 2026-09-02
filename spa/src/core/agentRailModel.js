@@ -17,6 +17,8 @@
 import { entityIdOf } from "./entityId.js";
 import { unreadReasonText } from "./inbox.js";
 import { providerLabel } from "./modelPicker.js";
+import { humanAge } from "./text.js";
+import { STATUS_LINE_EVENTS, startupEventTitle } from "./thread.js";
 
 // One naming table for the whole client (core/modelPicker.js): the new-agent
 // cards, the Account select and the rail's bubbles all say the same word for
@@ -226,14 +228,41 @@ export function workingClock(seconds) {
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
+/** The session's start, as the status line borrows it from the conversation:
+ *  the newest item's title and the stamp it happened at, or null the moment
+ *  anything newer is on the record. A session that has started and not yet
+ *  spoken is the whole of what this line has to say, and the timeline no
+ *  longer says it (core/thread.js's `STATUS_LINE_EVENTS`). */
+export function startupStatusLine(conversationItems = []) {
+  const newest = conversationItems[conversationItems.length - 1];
+  const event = (newest && newest.data) || {};
+  if (!newest || newest.type === "message" || !STATUS_LINE_EVENTS.has(event.event)) return null;
+  const at = Date.parse(event.created_at || "");
+  return { title: startupEventTitle(event), at: Number.isFinite(at) ? at : null };
+}
+
+/** The startup line as one phrase: what started, and how long ago. An event
+ *  that arrived without a stamp is named without an age rather than given a
+ *  made-up one. */
+function startupText(startup, nowMs) {
+  if (!startup) return "";
+  if (startup.at === null) return startup.title;
+  return `${startup.title} · ${humanAge((nowMs - startup.at) / 1000)}`;
+}
+
 /** The pinned line above the composer: whether the work item has a turn in
- *  flight right now (and for how long), how far it stands from upstream, and
- *  its diffstat — each "" when the row does not know it, so a work item with
- *  nothing to report pins nothing at all. */
-export function railWorkStatus(row, nowMs = Date.now()) {
+ *  flight right now (and for how long) — or, before the first tick of one, the
+ *  session that started and has not spoken yet — how far it stands from
+ *  upstream, and its diffstat. Each "" when the row does not know it, so a work
+ *  item with nothing to report pins nothing at all.
+ *
+ *  Working and starting share one slot and are never both filled: the clock is
+ *  the newer fact, and it replaces the line that was waiting for it. */
+export function railWorkStatus(row, nowMs = Date.now(), conversationItems = []) {
   const working = workingSeconds(row && row.working_time, nowMs);
   return {
     working: working === null ? "" : workingClock(working),
+    starting: working === null ? startupText(startupStatusLine(conversationItems), nowMs) : "",
     sync: aheadBehindText(row && row.stat),
     stat: statText(row && row.stat),
   };

@@ -221,12 +221,19 @@ export function syncStripPainters(bubbles, painted, faces) {
 /** Pure: the line pinned above the composer — a pulsing dot and how long the
  *  work item's turn has been running while one is in flight, how far it
  *  stands from upstream, and its diffstat. "" when the status has nothing to
- *  report, which the caller reads as "pin nothing." */
+ *  report, which the caller reads as "pin nothing."
+ *
+ *  Before the first tick of a turn the same slot carries the session that
+ *  started, under the quiet dot the inbox gives a row nobody is waiting on:
+ *  nothing is running yet, so nothing pulses. */
 export function railStatusHtml(status) {
-  if (!status.working && !status.sync && !status.stat) return "";
+  if (!status.working && !status.starting && !status.sync && !status.stat) return "";
+  const startingDot = status.starting
+    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-working">${esc(status.starting)}</span>`
+    : "";
   const working = status.working
     ? `<span class="sdot sdot-working"></span><span class="rail-status-working">Working ${esc(status.working)}</span>`
-    : "";
+    : startingDot;
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
   // The git facts ride one group anchored to the row's end, so the ticking
@@ -460,10 +467,19 @@ export function mountAgentRail(host, context) {
       ? { name: "issue", projectId: context.projectId, id: context.issueId }
       : { name: "branch", projectId: context.projectId, branch: context.branch };
 
+  /// The conversation as it stands loaded, for the status line to read the
+  /// session's start off. The cache is the one that holds it, and reading it
+  /// here folds nothing in: a poll's payload reaches the window through
+  /// `threadWindow`, and this only looks at what that left.
+  const loadedConversationItems = () => {
+    const window = threadCache.exportWindow();
+    return (window && window.items) || [];
+  };
+
   const paintRailStatus = () => {
     const slot = host.querySelector("#rail-status");
     if (!slot) return;
-    const html = railStatusHtml(railWorkStatus(feedRow, Date.now()));
+    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems()));
     slot.innerHTML = html;
     slot.hidden = !html;
   };

@@ -14,6 +14,7 @@ import {
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startupStatusLine,
   statText,
   workingClock,
   workingSeconds,
@@ -273,9 +274,51 @@ describe("the pinned status line above the composer", () => {
 
   it("reads all three off the row, each blank when the row does not know it", () => {
     const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
-    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", sync: "↑2", stat: "+42 −7" });
-    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", sync: "", stat: "" });
-    expect(railWorkStatus(null, NOW)).toEqual({ working: "", sync: "", stat: "" });
+    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", starting: "", sync: "↑2", stat: "+42 −7" });
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
+    expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
+  });
+});
+
+describe("the startup line the status slot borrows from the conversation", () => {
+  const startup = (event, secondsAgo) => ({ type: "event", data: { event, created_at: ago(secondsAgo) } });
+
+  it("reads the newest item when that item is a startup event", () => {
+    expect(startupStatusLine([startup("run_started", 120)])).toEqual({ title: "Run started", at: NOW - 120000 });
+    expect(startupStatusLine([startup("run_started", 900), startup("session_started", 120)]))
+      .toEqual({ title: "Agent session started", at: NOW - 120000 });
+  });
+
+  it("is nothing once anything newer is on the record", () => {
+    expect(startupStatusLine([])).toBeNull();
+    expect(startupStatusLine([startup("session_started", 120), { type: "message", data: { role: "agent", body: "on it" } }])).toBeNull();
+    expect(startupStatusLine([startup("session_started", 120), startup("reasoning", 60)])).toBeNull();
+    expect(startupStatusLine([{ type: "event", data: { event: "done" } }])).toBeNull();
+  });
+
+  it("carries no stamp for an event that arrived without one", () => {
+    expect(startupStatusLine([{ type: "event", data: { event: "run_started" } }])).toEqual({ title: "Run started", at: null });
+  });
+
+  it("stands in the working slot with its age, and only while nothing is working", () => {
+    const items = [startup("session_started", 120)];
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW, items)).toEqual({
+      working: "",
+      starting: "Agent session started · 2m ago",
+      sync: "",
+      stat: "",
+    });
+    expect(railWorkStatus({ working_time: { since: ago(5), seconds: 5 } }, NOW, items)).toEqual({
+      working: "5s",
+      starting: "",
+      sync: "",
+      stat: "",
+    });
+  });
+
+  it("says the title alone when the event carried no stamp", () => {
+    const items = [{ type: "event", data: { event: "run_started" } }];
+    expect(railWorkStatus(null, NOW, items).starting).toBe("Run started");
   });
 });
 

@@ -79,7 +79,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
-const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { mountAgentRail, railStatusHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -1229,6 +1229,46 @@ describe("the pinned status line above the composer", () => {
     expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
     expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
     expect(git.previousElementSibling.className).toBe("rail-status-working");
+  });
+
+  it("shows the startup event in the working slot while no turn is in flight", async () => {
+    payload = branchRow({
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [{ type: "event", data: { event: "run_started", created_at: new Date(Date.now() - 120000).toISOString(), sequence: 1 } }],
+        },
+      },
+    });
+    await mount();
+    expect(railStatus().hidden).toBe(false);
+    expect(railStatus().textContent).toContain("Run started · 2m ago");
+    expect(railStatus().querySelector(".sdot-working")).toBeNull();
+    expect(railStatus().querySelector(".sdot-inactive")).toBeTruthy();
+
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
+      }],
+      projects: [],
+    });
+    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).not.toContain("Run started");
+    expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
+  });
+
+  it("renders the startup line in the working slot, never beside a working clock", () => {
+    const starting = railStatusHtml({ working: "", starting: "Run started · 2m ago", sync: "", stat: "" });
+    expect(starting).toContain("sdot-inactive");
+    expect(starting).toContain("Run started · 2m ago");
+    expect(starting).not.toContain("sdot-working");
+
+    const working = railStatusHtml({ working: "5s", starting: "Run started · 2m ago", sync: "", stat: "" });
+    expect(working).toContain("Working 5s");
+    expect(working).not.toContain("Run started");
+    expect(railStatusHtml({ working: "", starting: "", sync: "", stat: "" })).toBe("");
   });
 
   it("ticks the elapsed time between feed reads", async () => {

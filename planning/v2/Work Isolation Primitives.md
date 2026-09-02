@@ -1,7 +1,7 @@
 # Work Isolation — Primitives
 
-Companion to the binding `planning/v2/Work Isolation Spec.md`; where the two disagree the spec wins, and every
-disagreement is listed under Deviations. **The rule:** two ways to materialize a checkout, one caller — everyone keeps
+Companion to the binding `planning/v2/Work Isolation Spec.md`, which absorbed every decision made here; where the two
+disagree the spec wins. **The rule:** two ways to materialize a checkout, one caller — everyone keeps
 talking to `WorktreeManager`, the variation lives behind `IsolationBackend`, and the only places naming a variant are
 the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
 
@@ -21,18 +21,18 @@ the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
   answering `Result<_, WorktreeError>`. Each is whole — no caller sequences two for one outcome, `materialize` leaves
   nothing behind on failure — and none knows of runs, plans, threads, settings or naming. Branch cutting and deletion
   are absent by design: project-repo work, identical for both, so the façade owns them.
-- **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive (Deviations). Stale-record
+- **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive. Stale-record
   cleanup is a per-isolation variation — a linked worktree leaves a record in `.git/worktrees`, a clone leaves none — so
   it takes the shape of `publish`/`sync_base`: real work in `WorktreeBackend`, `Ok(())` in `CowBackend`, failure
   reported like its seven siblings. §3's "best effort" is the façade's policy; no backend logs or swallows.
-- *Decision (spec silent):* `WorktreeError` moves here — the trait's signatures are its most public use — and
+- `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and
   `worktree.rs` re-exports it, so `orchestrator.rs`'s import is untouched and `isolation/` imports nothing from the
   façade. It gains `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`.
 
 ## `run_git_with_deadline` — `bridge/src/git_process.rs`
 `fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`: one git child, no terminal prompt
 (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=Never`), pipes drained, killed at a 30s deadline as `ErrorKind::TimedOut`.
-§4.7's "same timeout helper as `bounded_git_fetch`" is the deadline and the child handling, not one argv (Deviations).
+`bounded_git_fetch` and the clone backend's two fetches run through it (§2).
 
 ## The two backends
 **`WorktreeBackend`** (`bridge/src/isolation/worktree.rs`). Stage 1, moved code. Owns every `git worktree` invocation
@@ -62,7 +62,7 @@ backends. `create*`/`restore` take the resolved `Isolation`; everything else rea
 and uniqueness (`name_taken` unchanged, isolation-blind), branch cutting and deletion, the common `restore` checks,
 publish-before-read ordering, the union `discover`, `availability()` from `IsolationAvailability::of`, and
 `merge_into_base`, which absorbs `Orchestrator::merge_into_base` and `app::merge_external_branch`. No setting or record
-is read here. *Decisions (spec silent):* `backend(Isolation)` and `backend_of(&Path)` are the entire dispatch surface —
+is read here. `backend(Isolation)` and `backend_of(&Path)` are the entire dispatch surface —
 nowhere else is there a `match Isolation` or a concrete backend field reached for. `pub fn prune(&self)` (§3) has no
 path to key on, so it asks every backend, `Isolation::ALL`, and is the one place that turns a backend's `Err` into a log
 line and carries on, which is why it alone returns nothing. `backend_of` on a path whose `Isolation::of` is `None` is
@@ -70,12 +70,12 @@ line and carries on, which is why it alone returns nothing. `backend_of` on a pa
 the wrong cause.
 
 ## `AppState::resolved_isolation` — `bridge/src/app.rs`
-`fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` is
+`fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` (§5.2) is
 `project.isolation.unwrap_or(self.isolation)`, and `(Worktree, Some(reason))` when that is `Cow` and the probe answers
 `Err`. One function decides the downgrade and hands back the sentence announcing it, so the probe runs once per create
 and a creation site makes one call. It is one of the two permitted decision sites outside the module; the other is the
 setter refusal, shared by `settings.set` and `project.set_isolation` through one private `accept_isolation` holding the
-wire-word parse and the refusal (*spec silent*). `settings.get` owns the one availability sentence about the registry
+wire-word parse and the refusal (§5.2). `settings.get` owns the one availability sentence about the registry
 rather than a volume: with no project registered it answers
 `IsolationAvailability { cow: Err("no project registered yet") }`, beside the registry it just read (§5.4). The
 orchestrator holds no isolation state: creation entry points take the isolation as an argument, and the reason, when
@@ -84,7 +84,7 @@ present, joins the events a create already writes.
 ## `spa/src/core/isolation.js`
 Mirrors `core/defaultHarness.js`: `ISOLATIONS` (the client's only naming table for the two words), `isolationOf`,
 `isolationLockReason`, `isolationOptionsHtml`, `isolationPanelHtml`, `mountIsolation`, plus `ACCOUNT_ISOLATION` and
-`projectIsolationTarget` (Deviations). Pure except `mountIsolation`, which owns the one save/refuse/repaint cycle —
+`projectIsolationTarget` (§7). Pure except `mountIsolation`, which owns the one save/refuse/repaint cycle —
 save, then repaint from the payload the bridge answered with, so a locked `cow` shows the bridge's refusal and the
 control lands on what the bridge holds. It is written once because `mountIsolation(host, {callRpc, target, settings})`
 takes an isolation target — an RPC name and its fixed params — and calls
@@ -99,21 +99,3 @@ Neither view learns a variant name, a label, an RPC shape or a locked look.
 Dependencies run one way: `app`/`orchestrator` → `worktree.rs` (façade) → `isolation/` → `git_process.rs` → nothing.
 `cow` tests need a cloning filesystem, so a helper in `cow.rs`'s tests returns the reason and skips aloud, the probe
 test asserts that negative, and `git_process.rs` is tested on a git that never returns.
-
-## Deviations
-- **§2's trait lists seven primitives; this doc's has eight.** `prune` joins it, on §2's own instruction that a needed
-  eighth means the trait is short one; §3's `WorktreeManager::prune` keeps its signature, now a pass-through to every
-  backend and the only place that logs and continues.
-- **§5.2 pins `resolved_isolation(&self, project_id) -> Isolation`; this doc returns `(Isolation, Option<String>)`.**
-  The downgrade and the sentence explaining it are one fact; a second function answering "was it downgraded?" decides
-  the rule twice (`.build/plan/04-isolation-settings.md:44` agrees).
-- **§5.4's `project.list` row carries `isolation`, `isolation_effective`, `isolation_available`; this doc adds
-  `isolation_default`.** §7's inherit label names the account default, which no other field answers once an override is
-  set. `project_json` already reads `AppState.isolation` for `isolation_effective`, so this emits a fact it holds
-  instead of making the sheet fetch settings.
-- **§7 pins `mountIsolation(host, {callRpc})` and a closed export list; this doc adds `target` and `settings` to the
-  call and exports `ACCOUNT_ISOLATION` and `projectIsolationTarget`.** Without a target the save/refuse/repaint cycle is
-  written once per view; with one it is written once.
-- `.build/plan/03-cow-backend.md:22` reuses `bounded_git_fetch` itself for the cow fetches; §4.7 pins a different argv
-  and borrows only its timeout, so the spec wins — `run_git_with_deadline` is the shared primitive.
-- §1.3's derived `Serialize` cannot emit §5.4's wire shape; the hand-written impl replaces it.

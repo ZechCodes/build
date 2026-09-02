@@ -45,7 +45,13 @@ export function isolationLockReason(available)             // available?.cow ===
 export function isolationOptionsHtml(selected, available, { inheritLabel } = {})
   // <option>s; "cow" gets `disabled` when locked; inheritLabel adds a leading "" option "Account default (<label of selected default>)"
 export function isolationPanelHtml()                       // the Settings panel, select disabled "loading…"
-export async function mountIsolation(host, { callRpc })    // paint from settings.get, save via settings.set {isolation}, repaint from the answer
+export const ACCOUNT_ISOLATION                             // { rpc: "settings.set", params: {}, inheritLabel: null }
+export function projectIsolationTarget(project)            // { rpc: "project.set_isolation", params: { project_id }, inheritLabel: "Account default (<label of project.isolation_default>)" }
+export async function mountIsolation(host, { callRpc, target, settings })
+  // one save/refuse/repaint cycle for both views: paints from `settings` ({isolation, isolation_available} for the
+  // account, the project.list row for a project), saves with callRpc(target.rpc, {...target.params, isolation}) where
+  // isolation is the wire word or null for inherit, repaints from the bridge's answer, shows a refusal and repaints
+  // from the current state on failure
 ```
 
 Escape every string that came from the bridge (`esc` from `core/text.js`) — the
@@ -59,19 +65,18 @@ line: "Locked to git worktrees on this device: <reason>."
 ### 2. Settings page
 
 Insert `${isolationPanelHtml()}` directly after `${defaultHarnessPanelHtml()}` and
-call `await mountIsolation($("#root"), { callRpc: (m, p) => App.call(m, p) })`
-right after `mountDefaultHarness`.
+call `await mountIsolation($("#root"), { callRpc, target: ACCOUNT_ISOLATION,
+settings: await callRpc("settings.get") })` right after `mountDefaultHarness`.
 
 ### 3. Project settings sheet
 
 Between the base-branch field and the origin remote, a field **Work isolation**
-with a `<select id="psisolation">` built by
-`isolationOptionsHtml(project.isolation || "", project.isolation_available,
-{ inheritLabel: <label of project.isolation_effective when inheriting> })`. Saving
-on `change`: `callRpc("project.set_isolation", { project_id, isolation: value || null })`,
-then repaint the sheet from the returned row; a refusal shows in `#pserr` and the
-select repaints from `project.list`. The lock reason renders under the select as a
-`.dim` line when locked. The Save remote button keeps its own job.
+mounted by `mountIsolation(sheet, { callRpc, target: projectIsolationTarget(project),
+settings: project })`: the select carries the inherit option first, saves on change
+through the target, repaints from the returned row, and shows a refusal in the
+panel's own error line. The lock reason renders under the select when locked. The
+sheet writes no RPC name, label or variant word of its own. The Save remote button
+keeps its own job.
 
 ### 4. Projects list rows (Settings page)
 
@@ -85,13 +90,16 @@ Append the effective isolation label after the base branch in each `.projrow`
 - `isolationLockReason` for `{cow: true}`, `{cow: false, reason: "r"}`, `{cow: false}`, `undefined`.
 - `isolationOptionsHtml` marks the selected option, disables `cow` when locked,
   and leads with the inherit option when asked; a reason containing `<` is escaped.
-- `mountIsolation` with a fake `callRpc` (like `defaultHarness.test.js`): paints
-  from `settings.get`; on change calls `settings.set` with `{isolation}` and
-  repaints from the answer; on refusal shows the message and repaints from
-  `settings.get`; when locked the select still allows choosing `worktree`.
+- `mountIsolation` with a fake `callRpc` (like `defaultHarness.test.js`) and
+  `ACCOUNT_ISOLATION`: paints from the given settings; on change calls
+  `settings.set` with `{isolation}` and repaints from the answer; on refusal shows
+  the message and repaints from `settings.get`; when locked the select still
+  allows choosing `worktree`. With `projectIsolationTarget(row)`: the inherit
+  option is first and labelled from `isolation_default`, choosing it sends
+  `isolation: null`, choosing `cow` sends `"cow"` with the row's `project_id`.
 
 `spa/test/projectSettings.test.js` (extend): the sheet renders the select with the
-inherit label built from `isolation_effective`; changing it calls
+inherit label built from `isolation_default`; changing it calls
 `project.set_isolation` with `null` for the inherit option and `"cow"` otherwise;
 a locked project renders the disabled option and the reason line.
 

@@ -111,14 +111,16 @@ pub struct IsolationAvailability {
 }
 ```
 
-Wire shape (§5.4): `{"cow": true, "reason": null}` or `{"cow": false, "reason": "…"}`.
+Wire shape (§5.4): `{"cow": true, "reason": null}` or `{"cow": false, "reason": "…"}`,
+produced by a hand-written `Serialize` (a derive cannot emit that shape). One
+constructor, `IsolationAvailability::of(project, worktrees_root)`, wraps the probe.
 
 ---
 
 ## 2. The backend trait (`bridge/src/isolation/mod.rs`)
 
-Everything a backend does is one of these seven primitives. If an implementation
-needs an eighth, the primitive is missing here, not in the caller.
+Everything a backend does is one of these eight primitives. If an implementation
+needs a ninth, the primitive is missing here, not in the caller.
 
 ```rust
 pub trait IsolationBackend: Send + Sync {
@@ -153,8 +155,17 @@ pub trait IsolationBackend: Send + Sync {
     /// Canonical paths of every checkout of `project` this backend can find
     /// under `worktrees_root` or in git's records, the primary excluded.
     fn discover(&self, project: &Path, worktrees_root: &Path) -> Result<Vec<PathBuf>, WorktreeError>;
+
+    /// Clear this backend's stale records of checkouts that no longer exist
+    /// (`git worktree prune` for linked worktrees; nothing for clones).
+    fn prune(&self, project: &Path) -> Result<(), WorktreeError>;
 }
 ```
+
+`WorktreeError` moves into `bridge/src/isolation/mod.rs` (the trait is its most
+public use) and `worktree.rs` re-exports it. It gains
+`NotABuildCheckout(PathBuf)` ("not a Build checkout: {0}") for a path whose
+`Isolation::of` is `None`.
 
 Branch **cutting** and **deletion** are not primitives: they are operations on the
 project repo and identical for both backends. They live on `WorktreeManager` (§3).
@@ -166,9 +177,17 @@ bridge/src/isolation/mod.rs        Isolation, IsolationAvailability, IsolationBa
 bridge/src/isolation/worktree.rs   WorktreeBackend  (stage 1: moved from worktree.rs)
 bridge/src/isolation/cow.rs        CowBackend       (stage 3)
 bridge/src/isolation/probe.rs      cow_availability (stage 3)
+bridge/src/git_process.rs          run_git_with_deadline (stage 3)
 bridge/src/worktree.rs             Worktree, slugify, branch helpers, ExternalWorktree,
                                    describe_checkout, WorktreeManager (the façade)
 ```
+
+`bridge/src/git_process.rs` holds one function,
+`run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`:
+one git child with terminal prompts disabled (`GIT_TERMINAL_PROMPT=0`,
+`GCM_INTERACTIVE=Never`), pipes drained, killed at a 30 s deadline as
+`ErrorKind::TimedOut`. `bounded_git_fetch` and the clone backend's fetches both run
+through it.
 
 ---
 
@@ -204,7 +223,7 @@ impl WorktreeManager {
         -> Result<(), WorktreeError>;                       // publish, then merge in the project
     pub fn discover(&self, base_branch: &str, excluded: &HashSet<PathBuf>)
         -> Result<Vec<ExternalWorktree>, WorktreeError>;    // union of both backends
-    pub fn prune(&self);                                    // best-effort stale-record cleanup
+    pub fn prune(&self);                                    // asks every backend; the one place that logs and continues
 
     // ---- project-repo ref operations (backend-agnostic) ---------------------
     pub fn branch_exists(&self, branch: &str) -> Result<bool, WorktreeError>;
@@ -234,8 +253,10 @@ Rules:
   checkout is gone, `remove_checkout` still asks **every** backend to clear its
   record (a stale `git worktree` entry, nothing for a clone).
 - `discover` runs both backends' `discover`, drops the primary and `excluded`,
-  calls `sync_base` on each `Cow` path (best effort, logged), then
-  `describe_checkout` (§4.1) on each. Sort as today.
+  calls `sync_base` on each path (best effort, logged; a no-op for worktrees),
+  then `describe_checkout` (§4.1) on each. Sort as today.
+- `prune` calls every backend's `prune` and is the only place a backend's `Err`
+  becomes a log line instead of a return. Backends never log or swallow.
 - `merge_into_base` absorbs `Orchestrator::merge_into_base` and
   `app::merge_external_branch`, which are deleted.
 
@@ -273,6 +294,7 @@ discovers it). `external_worktrees_json` emits it as `"isolation"`.
 | `sync_base` | `Ok(())` |
 | `remove` | today's `remove`: `remove_dir_all` if present, then prune git's record, NotFound is success |
 | `discover` | `git worktree list --porcelain` paths, primary excluded |
+| `prune` | `git worktree prune` |
 
 ### 4.3 Probe: `cow_availability` (stage 3, `bridge/src/isolation/probe.rs`)
 
@@ -323,20 +345,23 @@ clone already carries it.
 
 ### 4.6 The marker: `.git/build-isolation`
 
-Two lines: `cow\n<canonical project path>\n`. Written by `materialize`, read by
-`Isolation::of` (existence only) and `discover` (path line == canonical project
-path, compared as strings after canonicalizing the project). Never used to build
-a path to operate on.
+Two lines: `cow\n<canonical project path>\n`. The marker is one fact with one
+owner in `isolation/mod.rs`: `COW_MARKER` (the file name), `write_cow_marker(checkout,
+project)` and `cow_marker_names(checkout, project) -> bool`. `materialize` calls
+the writer; `Isolation::of` tests existence; `verify` and `discover` ask
+`cow_marker_names`. Nothing else spells the name or the format, and the marker is
+never used to build a path to operate on.
 
 ### 4.7 `CowBackend` other primitives
 
 | primitive | body |
 |---|---|
 | `verify` | `.git` is a directory; marker present and its project line == canonical `project`; `git symbolic-ref --short HEAD` == `branch` |
-| `publish` | in the project: `git fetch --no-tags --quiet -- <path> +refs/heads/<branch>:refs/heads/<branch>`. git refuses when `<branch>` is the project's checked-out branch; that refusal is the error. Bounded by the same timeout helper as `bounded_git_fetch`. |
+| `publish` | in the project: `git fetch --no-tags --quiet -- <path> +refs/heads/<branch>:refs/heads/<branch>`, run through `run_git_with_deadline`. git refuses when `<branch>` is the project's checked-out branch; that refusal is the error. |
 | `sync_base` | in the clone: `git fetch --no-tags --quiet -- <project> +refs/heads/<base>:refs/heads/<base>`; same refusal if the clone has the base checked out |
 | `remove` | `remove_dir_all(path)` if present; nothing else to clear |
 | `discover` | `read_dir(worktrees_root)`: every directory whose `Isolation::of` is `Cow` and whose marker names this project, canonicalized |
+| `prune` | `Ok(())` |
 
 ---
 
@@ -359,11 +384,14 @@ value logs and is treated as absent, like `default_harness` does.
 
 - `AppState.isolation: Isolation` (account default).
 - `Project.isolation: Option<Isolation>` (override).
-- `AppState::resolved_isolation(&self, project_id) -> Isolation`:
-  `project.isolation.unwrap_or(self.isolation)`, then `Worktree` if that is `Cow`
-  and `orch.worktrees().availability().cow` is `Err`. This is one of the two
-  permitted `match`/`if` sites on `Isolation` outside the module (the other is
-  the setter's refusal).
+- `AppState::resolved_isolation(&self, project_id) -> (Isolation, Option<String>)`:
+  `project.isolation.unwrap_or(self.isolation)`, downgraded to `Worktree` with
+  the probe's reason when that is `Cow` and `orch.worktrees().availability().cow`
+  is `Err`. The downgrade and the sentence announcing it are one answer. This is
+  one of the two permitted decision sites on `Isolation` outside the module; the
+  other is the setter refusal, shared by `settings.set` and `project.set_isolation`
+  through one private `accept_isolation` holding the wire-word parse and the
+  refusal.
 
 ### 5.3 Creation sites
 
@@ -386,6 +414,8 @@ existing kind, or the run's `last_error`-free summary line) reading
   Field-wise like every other settings field; unknown value → the same shape of
   refusal `default_harness` uses.
 - `project.list` rows add `"isolation": "worktree"|"cow"|null` (own override),
+  `"isolation_default": "worktree"|"cow"` (the account setting the override
+  replaces; the project sheet's inherit label is built from it),
   `"isolation_effective": "worktree"|"cow"`, `"isolation_available": {...}`
   (this project's probe).
 - New `project.set_isolation {"project_id", "isolation": "worktree"|"cow"|null}` →
@@ -410,11 +440,18 @@ one machine and one worktrees root; a mixed-volume setup surfaces per project in
 
 ## 7. SPA (stage 5)
 
-- `spa/src/core/isolation.js` (pure, mirrors `core/defaultHarness.js`):
-  `ISOLATIONS` naming table (`worktree` → "Git worktree", `cow` → "Copy-on-write
-  clone"), `isolationOf(settings)`, `isolationLockReason(available)`,
-  `isolationOptionsHtml(selected, available, {inheritLabel})`,
-  `isolationPanelHtml()`, `mountIsolation(host, {callRpc})`.
+- `spa/src/core/isolation.js` (pure except the mount, mirrors
+  `core/defaultHarness.js`): `ISOLATIONS` naming table (`worktree` → "Git
+  worktree", `cow` → "Copy-on-write clone"), `isolationOf(settings)`,
+  `isolationLockReason(available)`, `isolationOptionsHtml(selected, available,
+  {inheritLabel})`, `isolationPanelHtml()`, and one
+  `mountIsolation(host, {callRpc, target, settings})` that owns the
+  save/refuse/repaint cycle for both views. A target is an RPC name plus fixed
+  params: `ACCOUNT_ISOLATION` (`settings.set`, no inherit option) for the
+  settings page, and `projectIsolationTarget(project)` (`project.set_isolation`
+  keyed on the row's `project_id`, inherit label built from the row's
+  `isolation_default`) for the project sheet. Neither view learns a variant
+  name, a label, an RPC shape or a locked look.
 - Settings page (`spa/src/views/settings.js`): a **Work isolation** panel directly
   under **Default agent**. A select with the two options; when `cow` is
   unavailable the option is disabled and the panel's hint line shows the reason and

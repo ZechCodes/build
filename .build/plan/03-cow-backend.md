@@ -19,9 +19,12 @@ passes `Isolation::Worktree` — so the product is unchanged after this stage.
   `libc::FICLONE` is an `ioctl` on a destination fd with the source fd as the
   argument; it works per regular file on btrfs/XFS and fails with `EOPNOTSUPP` /
   `EXDEV` elsewhere. `std::os::unix::fs::MetadataExt::dev()` gives the volume id.
-- The bounded local-fetch helper is `bounded_git_fetch` in `worktree.rs` (takes a
-  remote name today; add a sibling that takes a path-as-remote and the same
-  timeout, or generalize the parameter — keep one helper).
+- The bounded fetch helper is `bounded_git_fetch` in `worktree.rs`. Spec §2's
+  module layout adds `bridge/src/git_process.rs` with
+  `run_git_with_deadline(dir, args) -> io::Result<Output>` (prompts disabled, pipes
+  drained, 30 s deadline as `ErrorKind::TimedOut`); build it first, test it on a
+  git that never returns, and route `bounded_git_fetch` and the clone backend's
+  two fetches through it.
 - The test machine for this repo is macOS/APFS; CI is Linux ext4. Both must be
   green.
 - Repo rules: TDD, `cargo clippy --all-targets -- -D warnings`, `cargo fmt`,
@@ -46,10 +49,10 @@ platform clone call it needs in `cow.rs` (§4.4) and call it; do not duplicate.
   - `materialize`: the six steps of §4.5. Steps 3–5 run git in the clone with the
     same `Command` idiom the rest of the module uses (`--` before names). Failure
     after the clone removes the directory.
-  - `verify`, `publish`, `sync_base`, `remove`, `discover` per the §4.7 table.
-  - The marker file: `COW_MARKER` from `mod.rs`, contents `cow\n<canonical
-    project>\n`. `discover` compares the second line to the canonical project
-    path as a string; it never opens the path in the marker.
+  - `verify`, `publish`, `sync_base`, `remove`, `discover`, `prune` per the §4.7
+    table.
+  - The marker: `write_cow_marker` and `cow_marker_names` from `mod.rs`; this file
+    never spells the name or the format, and never opens the path in the marker.
 
 ### 3. Façade wiring (`worktree.rs`)
 

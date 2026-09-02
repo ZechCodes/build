@@ -58,13 +58,17 @@ worktree) and `eprintln!` the same line.
 
 - `settings.get`: add `"isolation"` and `"isolation_available"` (first registered
   project's `availability()`; none → `{"cow": false, "reason": "no project registered yet"}`).
-- `settings.set`: accept `"isolation"`; parse with `Isolation::from_wire`, refuse
-  unknown with the `default_harness` refusal shape; refuse `"cow"` when the
-  account-level availability is `Err` with
-  `"copy-on-write isolation is unavailable: <reason>; locked to worktrees"`. Keep
-  the "nothing to set" refusal accurate (add the field to its condition).
+- `settings.set`: accept `"isolation"` through one private `accept_isolation`
+  (wire-word parse, unknown refused in the `default_harness` refusal shape,
+  `"cow"` refused when the given availability is `Err` with
+  `"copy-on-write isolation is unavailable: <reason>; locked to worktrees"`) that
+  `project.set_isolation` shares. Keep the "nothing to set" refusal accurate (add
+  the field to its condition). With no project registered, `settings.get` answers
+  `isolation_available` as `{"cow": false, "reason": "no project registered yet"}`;
+  that sentence lives in `app.rs`, not in the probe.
 - `project.list` rows: `"isolation"` (own, `null` when inheriting),
-  `"isolation_effective"`, `"isolation_available"` (this project's probe).
+  `"isolation_default"` (the account setting), `"isolation_effective"`,
+  `"isolation_available"` (this project's probe).
 - `"project.set_isolation"` → `project_set_isolation(params)`: `project_id`
   required; `isolation` is `"worktree"`, `"cow"` or `null`; `cow` refused when this
   project's probe is `Err` with the same sentence; persist; return the row.
@@ -95,8 +99,8 @@ settings tests (≈19145–19450) do.
   reload from the config file, both survive; an unknown persisted value loads as
   the default and logs.
 - `project.set_isolation` with `null` clears the override; `project.list` shows
-  `isolation`, `isolation_effective` and `isolation_available` correctly for
-  inherit / override / locked.
+  `isolation`, `isolation_default`, `isolation_effective` and
+  `isolation_available` correctly for inherit / override / locked.
 - Resolver: account `cow` + project `worktree` → `Worktree`; account `worktree` +
   project `cow` → `Cow`; `cow` chosen but probe fails → `Worktree` with a reason.
 - Fallback event: create a bare worktree with `cow` chosen and the probe failing;

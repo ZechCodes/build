@@ -41,13 +41,16 @@ today.
 ### 1. `bridge/src/isolation/mod.rs`
 
 Exactly §1.1, §1.2, §1.3 and §2 of the spec: `Isolation` (with `wire`,
-`from_wire`, `ALL`, `of`), `IsolationAvailability`, and the `IsolationBackend`
-trait with its seven primitives. Register the module in `lib.rs`.
+`from_wire`, `ALL`, `of`), `IsolationAvailability` (constructor `of`, hand-written
+`Serialize`; this stage its `cow` is always `Err("copy-on-write isolation is not
+available in this build")`), the `IsolationBackend` trait with its eight
+primitives, and `WorktreeError` moved here from `worktree.rs` (re-exported there)
+with the new `NotABuildCheckout(PathBuf)` variant. Register the module in `lib.rs`.
 
 `Isolation::of` is two `stat`s: `.git` file → `Worktree`; `.git` directory holding
-`build-isolation` → `Cow`; else `None`. Export `pub const COW_MARKER: &str =
-"build-isolation"` here (the clone backend writes it in stage 3; `of` only tests
-existence).
+the marker → `Cow`; else `None`. The marker's owner lives here now (spec §4.6):
+`COW_MARKER`, `write_cow_marker(checkout, project)`, `cow_marker_names(checkout,
+project)`; the clone backend calls them in stage 3, `of` only tests existence.
 
 ### 2. `bridge/src/isolation/worktree.rs` — `WorktreeBackend`
 
@@ -66,6 +69,8 @@ Move, do not rewrite. Map today's code onto the primitives per spec §4.2:
 - `discover(project, _root)`: `git worktree list --porcelain` → canonical paths,
   primary excluded, bare/prunable skipped. This is the path-only half of
   `describe_checkouts`.
+- `prune(project)`: `git worktree prune`, returning its failure like every other
+  primitive; the façade decides to log.
 
 ### 3. `bridge/src/worktree.rs` — the façade
 
@@ -76,7 +81,9 @@ spec **for one backend**: a private `fn backend(&self, isolation: Isolation) ->
 `Cow`, an `Err(WorktreeError::Command("copy-on-write isolation is not available
 in this build"))` from every entry point (stage 3 replaces that arm). A private
 `fn backend_of(&self, path) -> Result<&dyn IsolationBackend, WorktreeError>` wraps
-`Isolation::of`; a path that is `None` errors with the path in the message.
+`Isolation::of`; a path that is `None` is `WorktreeError::NotABuildCheckout(path)`.
+These two selectors are the entire dispatch surface: no other `match` on
+`Isolation` and no direct reach for a backend field anywhere in the façade.
 
 Public surface after this stage (signatures are binding):
 
@@ -116,8 +123,9 @@ Rules from spec §3 that must hold now:
   `describe_checkout` on each, then today's sort. `discover_external_worktrees`
   and `describe_primary_checkout` become thin wrappers over the manager (keep
   their signatures this stage so `app.rs` does not change; stage 2 retires them).
-- `prune` is `git worktree prune` best effort via the worktree backend (moves from
-  `app.rs` in stage 2; define it now).
+- `prune` asks every backend (`Isolation::ALL`) and is the one place that turns a
+  backend's `Err` into a log line and continues (moves from `app.rs` in stage 2;
+  define it now).
 - `branch_exists`/`delete_branch_at`/`restore_branch` are the project-repo ref
   operations (stage 2 moves `app.rs`'s `local_branch_exists`,
   `delete_local_branch_for_finish`, `restore_finish_branch_after_removal_failure`

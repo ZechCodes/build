@@ -1,4 +1,6 @@
-use build_bridge::thread::{ArtifactKind, MessageAnchor, Thread, ThreadItem};
+use build_bridge::thread::{
+    ArtifactKind, MessageAnchor, Thread, ThreadEventDraft, ThreadEventKind, ThreadItem,
+};
 
 #[test]
 fn unread_messages_are_scoped_seen_and_not_returned_twice() {
@@ -84,4 +86,43 @@ fn session_lineage_and_completion_report_survive_json_round_trip() {
         Some(parent.as_str())
     );
     assert_eq!(restored.agent.id, "agent:run-9");
+}
+
+#[test]
+fn a_drafted_event_carries_its_parent_sequence_and_an_unparented_one_carries_no_key() {
+    let mut thread = Thread::new("run-11");
+    let spawning_call = thread.push_event(
+        ThreadEventKind::ToolUse,
+        Some("Agent read the README".into()),
+        None,
+        None,
+        "2026-09-01T10:00:00Z",
+    );
+    let folded = thread.push_drafted_event(
+        ThreadEventDraft {
+            event: ThreadEventKind::Reasoning,
+            summary: Some("counting the characters".into()),
+            session_id: None,
+            revision_id: None,
+            links: Vec::new(),
+            parent_sequence: Some(spawning_call),
+        },
+        "2026-09-01T10:00:01Z",
+    );
+
+    let wire = thread.wire_value();
+    let items = wire["items"].as_array().unwrap();
+    let spawning = items
+        .iter()
+        .find(|item| item["data"]["sequence"] == spawning_call)
+        .unwrap();
+    let child = items
+        .iter()
+        .find(|item| item["data"]["sequence"] == folded)
+        .unwrap();
+    assert_eq!(child["data"]["parent_sequence"], spawning_call);
+    assert!(
+        spawning["data"].get("parent_sequence").is_none(),
+        "a row with no parent carries no key at all: {spawning}"
+    );
 }

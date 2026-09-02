@@ -498,6 +498,55 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-status-git { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .rail-status-sync, .rail-status-stat { color:var(--dim); }
 
+.rail-surfaces { display:flex; flex-direction:column; }
+.rail-surfaces-viewer:not(:empty) { max-height:34vh; overflow-y:auto; margin-bottom:6px;
+  border:1px solid var(--line); border-radius:8px; background:var(--panel2); }
+.rail-surfaces-pills:not(:empty) { padding-bottom:6px; }
+.surface-pills { display:flex; flex-wrap:wrap; gap:6px; }
+.surface-pill, .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
+  padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
+  color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
+.surface-pill:hover, .surface-workflow-choice:hover { color:var(--ink2); }
+.surface-pill[aria-pressed="true"], .surface-workflow-choice[aria-pressed="true"] {
+  border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
+.surface-pill-count { min-width:15px; padding:0 4px; border-radius:8px; background:var(--panel);
+  font-size:10px; font-weight:650; text-align:center; }
+
+.surface-viewer { display:flex; flex-direction:column; padding:6px; gap:2px; font-size:11.5px; }
+.surface-row { display:flex; flex-direction:column; gap:2px; padding:4px 6px; border-radius:6px; }
+.surface-row:hover { background:var(--line2); }
+.surface-row-head { display:flex; align-items:baseline; gap:6px; min-width:0; }
+.surface-row-label { flex:1 1 auto; min-width:0; overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; color:var(--ink2); }
+.surface-row-model, .surface-row-note, .surface-row-tool, .surface-row-stat { color:var(--dim);
+  font-size:10.5px; }
+.surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
+.surface-row-tool, .surface-row-result { overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; color:var(--dim); }
+.surface-row-error { color:var(--red); }
+.surface-row .splitbtn { flex:none; }
+.surface-agent[data-call-sequence] { cursor:pointer; }
+.surface-shell-tail-head { cursor:pointer; color:var(--dim); font-size:10.5px; list-style:none; }
+.surface-shell-tail-head::-webkit-details-marker { display:none; }
+.surface-shell-tail-body { max-height:140px; overflow:auto; margin:2px 0 0;
+  padding:6px; border-radius:6px; background:var(--code-bg); color:var(--ink2);
+  font-family:var(--mono); font-size:10.5px; }
+
+.surface-workflows:not(:empty) { display:flex; flex-wrap:wrap; gap:4px; padding:0 6px 4px; }
+.surface-workflow-choice { align-items:baseline; max-width:100%; }
+.surface-workflow-head { display:flex; align-items:baseline; gap:6px; padding:0 6px 4px; }
+.surface-workflow-body { display:flex; gap:8px; min-width:0; }
+.surface-phases { display:flex; flex-direction:column; gap:2px; flex:0 0 38%; min-width:0; }
+.surface-phase { display:flex; align-items:baseline; gap:6px; padding:4px 6px; border:0;
+  border-radius:6px; background:none; color:var(--dim); font:inherit; font-size:11.5px;
+  text-align:left; cursor:pointer; }
+.surface-phase:hover { background:var(--line2); }
+.surface-phase[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent); }
+.surface-phase-title { flex:1 1 auto; min-width:0; overflow:hidden; white-space:nowrap;
+  text-overflow:ellipsis; }
+.surface-phase-count { flex:none; font-size:10.5px; }
+.surface-phase-agents { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:2px; }
+
 @media (max-width: 760px) {
   /* A phone has no room for two columns, so the panel is laid over the work
      rather than beside it; the strip stays where it is.
@@ -506,6 +555,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      which project and branch this agent is working in is the one thing a phone
      cannot afford to cover. Absolute rather than fixed so the banners above the
      shell push the panel down with the toolbar instead of past it. */
+  .surface-workflow-body { flex-direction:column; }
+  .surface-phases { flex:none; }
   .rail-panel { position:absolute; right:var(--agent-strip);
     top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
     width:min(400px, calc(100vw - 60px)); background:var(--bg);

@@ -1,26 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { loadRailMode, persistRailMode, RAIL_MODE_KEY, RAIL_MODES } from "../src/core/railMode.js";
-
-/** A Web-Storage-shaped object over a plain map, like readState's tests use. */
-const storage = (initial = {}) => {
-  const values = { ...initial };
-  return {
-    values,
-    getItem: (key) => (key in values ? values[key] : null),
-    setItem: (key, value) => {
-      values[key] = String(value);
-    },
-  };
-};
-
-const brokenStorage = {
-  getItem() {
-    throw new Error("storage is disabled");
-  },
-  setItem() {
-    throw new Error("storage is disabled");
-  },
-};
+import { memoryStorage, refusingStorage } from "./memoryStorage.js";
 
 describe("which rail the sidebar remembers", () => {
   it("offers exactly the two modes", () => {
@@ -28,22 +8,22 @@ describe("which rail the sidebar remembers", () => {
   });
 
   it("starts on projects when nothing has been chosen yet", () => {
-    expect(loadRailMode(storage())).toBe("projects");
+    expect(loadRailMode(memoryStorage())).toBe("projects");
   });
 
   it("falls back to projects when the stored value means nothing", () => {
-    expect(loadRailMode(storage({ [RAIL_MODE_KEY]: "everything" }))).toBe("projects");
-    expect(loadRailMode(storage({ [RAIL_MODE_KEY]: "" }))).toBe("projects");
+    expect(loadRailMode(memoryStorage({ [RAIL_MODE_KEY]: "everything" }))).toBe("projects");
+    expect(loadRailMode(memoryStorage({ [RAIL_MODE_KEY]: "" }))).toBe("projects");
   });
 
   // The remembered mode is a convenience, never fatal: a browser with storage
   // switched off still gets a rail.
   it("falls back to projects when the storage refuses to answer", () => {
-    expect(loadRailMode(brokenStorage)).toBe("projects");
+    expect(loadRailMode(refusingStorage())).toBe("projects");
   });
 
   it("remembers the flat rail once you choose it, and lets you go back", () => {
-    const store = storage();
+    const store = memoryStorage();
     persistRailMode("all", store);
     expect(loadRailMode(store)).toBe("all");
     persistRailMode("projects", store);
@@ -51,12 +31,12 @@ describe("which rail the sidebar remembers", () => {
   });
 
   it("refuses to remember a mode it does not have", () => {
-    const store = storage();
+    const store = memoryStorage();
     persistRailMode("everything", store);
     expect(loadRailMode(store)).toBe("projects");
   });
 
   it("does not throw when the storage refuses to be written", () => {
-    expect(() => persistRailMode("all", brokenStorage)).not.toThrow();
+    expect(() => persistRailMode("all", refusingStorage())).not.toThrow();
   });
 });

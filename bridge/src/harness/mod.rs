@@ -32,10 +32,14 @@ pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
 mod session;
+pub mod shell_tail;
+#[cfg(test)]
+pub(crate) mod stream_fixtures;
+pub mod surfaces;
 
 pub use session::{
-    AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput, TerminalView,
-    ToolOutcome, Turn,
+    ActivityReport, AgentActivity, AgentSession, AgentStatus, HarnessError, SessionOutput,
+    TerminalView, ToolOutcome, Turn,
 };
 
 /// How long a real harness TUI must stop painting before its input is live.

@@ -385,7 +385,9 @@ UNSUBSCRIBE_PANEL_RULES = (
     ".unsubscribe-panel{padding-block:var(--cta-padding-block)}",
     ".unsubscribe-panel .brand{justify-content:center}",
     ".unsubscribe-action{margin-top:var(--space-form-top)}",
-    ".unsubscribe-address{text-transform:none}",
+)
+UNSUBSCRIBE_ADDRESS_RULE = (
+    ".unsubscribe-address{text-transform:none;overflow-wrap:anywhere}"
 )
 
 NAV_ELEMENT_PATTERN = r"<nav\b.*?</nav>"
@@ -696,6 +698,12 @@ def test_the_unsubscribe_panel_centres_the_wordmark_with_the_rest_of_the_page():
     css = _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
     for panel_rule in UNSUBSCRIBE_PANEL_RULES:
         assert panel_rule in css
+
+
+def test_a_long_address_wraps_instead_of_overflowing_the_confirm_heading():
+    assert UNSUBSCRIBE_ADDRESS_RULE in _rules_outside_media_blocks(
+        _landing_text(STYLESHEET_NAME)
+    )
 
 
 def test_the_waitlist_component_is_written_once_and_rendered_at_both_placeholders():

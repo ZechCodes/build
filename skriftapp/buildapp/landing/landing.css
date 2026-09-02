@@ -52,7 +52,7 @@ section[id]{scroll-margin-top:var(--nav-height)}
 .unsubscribe-panel{padding-block:var(--cta-padding-block)}
 .unsubscribe-panel .brand{justify-content:center}
 .unsubscribe-action{margin-top:var(--space-form-top)}
-.unsubscribe-address{text-transform:none}
+.unsubscribe-address{text-transform:none;overflow-wrap:anywhere}
 
 .feature-cards{display:grid;grid-template-columns:repeat(6,1fr);gap:var(--bento-gap)}
 .feature-card{grid-column:span 3;background:var(--surface-card);border:var(--hairline);padding:var(--card-padding);transition:border-color var(--duration-card-hover),background var(--duration-card-hover)}

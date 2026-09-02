@@ -39,13 +39,28 @@ Cluster context: `do-nyc1-production-hosting`.
 ## 1. Bootstrap secrets (idempotent, never regenerates existing ones)
 
 ```bash
+export SMTP_USERNAME='...' SMTP_PASSWORD='...' \
+       SMTP_FROM_ADDRESS='Build <hello@getbuild.ing>' \
+       WAITLIST_NOTIFY_ADDRESS='...'
 deploy/k8s/bootstrap-secrets.sh do-nyc1-production-hosting
 ```
 
 Creates in namespace `8ly`: `build-postgres` (POSTGRES_PASSWORD), `build-app`
-(SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL), `build-relay`
-(RELAY_INTERNAL_SECRET, same value as INTERNAL_API_SECRET). Nothing is ever
-committed to git.
+(SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, the VAPID web-push keys, and the
+four outbound-email keys), `build-relay` (RELAY_INTERNAL_SECRET, same value as
+INTERNAL_API_SECRET). Nothing is ever committed to git.
+
+The four email values are credentials the script cannot invent, so it reads them
+from the environment and aborts if any is unset. `SMTP_USERNAME`,
+`SMTP_PASSWORD` and `SMTP_FROM_ADDRESS` are required `secretKeyRef`s on the
+Deployment: run this step **before** the first deploy that carries the waitlist
+email code, or the pod fails with `CreateContainerConfigError` and, under the
+`Recreate` strategy, the site goes down with it. Verify with:
+
+```bash
+kubectl --context do-nyc1-production-hosting -n 8ly get secret build-app \
+  -o go-template='{{range $key, $unused := .data}}{{$key}} {{end}}'
+```
 
 ## 2. Apply the stack
 

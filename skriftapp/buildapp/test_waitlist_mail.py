@@ -1,18 +1,23 @@
-"""Tests pinning the waitlist email context and the two message builders: verbatim copy,
-the List-Unsubscribe headers each message carries, and the base URL / notify address the
-context resolves from settings and the process environment."""
+"""Tests pinning the waitlist email context, the two message builders and the background
+send: verbatim copy, the List-Unsubscribe headers each message carries, the base URL /
+notify address the context resolves, which messages a signup produces, and the fail-soft
+delivery that logs a failed send instead of raising out of the background task."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
+from litestar.background_tasks import BackgroundTask
 
 from buildapp.email_message import (
     LIST_UNSUBSCRIBE_HEADER,
     LIST_UNSUBSCRIBE_POST_HEADER,
     ONE_CLICK_HEADER_VALUE,
 )
+from buildapp.email_test_support import FailingEmailBackend, RecordingEmailBackend
 from buildapp.waitlist_mail import (
     CONFIRMATION_HEADING,
     CONFIRMATION_PARAGRAPHS,
@@ -20,15 +25,34 @@ from buildapp.waitlist_mail import (
     NOTIFY_ADDRESS_ENV,
     OWNER_HEADING,
     OWNER_SUBJECT_PREFIX,
+    WaitlistEmailContext,
     build_confirmation_email,
     build_owner_notification_email,
+    build_signup_emails,
+    deliver_waitlist_emails,
     resolve_public_base_url,
     resolve_waitlist_email_context,
+    waitlist_signup_email_task,
 )
+from buildapp.waitlist_unsubscribe_token import read_unsubscribe_token
 
 SIGNER = "signer@example.com"
 OWNER = "hi@zech.sh"
 UNSUBSCRIBE_URL = "https://getbuild.ing/waitlist/unsubscribe/token-value"
+PUBLIC_BASE_URL = "https://getbuild.ing"
+SECRET_KEY = "the-signing-key"
+
+
+def _context(*, notify_address: str = "") -> WaitlistEmailContext:
+    return WaitlistEmailContext(
+        public_base_url=PUBLIC_BASE_URL,
+        secret_key=SECRET_KEY,
+        notify_address=notify_address,
+    )
+
+
+def _unsubscribe_url_of(message) -> str:
+    return message.headers[LIST_UNSUBSCRIBE_HEADER].strip("<>")
 
 
 def _settings(*, public_base_url: str, redirect_base_url: str, secret_key: str = "secret"):
@@ -156,3 +180,74 @@ def test_resolve_context_carries_the_secret_key():
         {},
     )
     assert context.secret_key == "the-signing-key"
+
+
+# ----- the messages one signup produces ---------------------------------------
+
+
+def test_build_signup_emails_returns_only_the_confirmation_without_a_notify_address():
+    messages = build_signup_emails(signup_email=SIGNER, context=_context())
+    assert len(messages) == 1
+    assert messages[0].to == SIGNER
+    assert messages[0].subject == CONFIRMATION_SUBJECT
+
+
+def test_build_signup_emails_adds_the_owner_notification_when_set():
+    messages = build_signup_emails(
+        signup_email=SIGNER, context=_context(notify_address=OWNER)
+    )
+    assert [message.to for message in messages] == [SIGNER, OWNER]
+    assert messages[1].subject == f"{OWNER_SUBJECT_PREFIX}{SIGNER}"
+
+
+def test_both_signup_messages_share_one_unsubscribe_url_that_reads_back_to_the_signup_address():
+    messages = build_signup_emails(
+        signup_email=SIGNER, context=_context(notify_address=OWNER)
+    )
+    shared_url = _unsubscribe_url_of(messages[0])
+    assert _unsubscribe_url_of(messages[1]) == shared_url
+    assert shared_url.startswith(f"{PUBLIC_BASE_URL}/waitlist/unsubscribe/")
+    token = shared_url.rsplit("/", 1)[-1]
+    assert read_unsubscribe_token(token, SECRET_KEY) == SIGNER
+
+
+# ----- delivery ---------------------------------------------------------------
+
+
+def test_deliver_sends_every_message_through_the_backend():
+    email_backend = RecordingEmailBackend()
+    messages = build_signup_emails(
+        signup_email=SIGNER, context=_context(notify_address=OWNER)
+    )
+    asyncio.run(deliver_waitlist_emails(email_backend, messages))
+    assert [sent.to for sent in email_backend.sent] == [SIGNER, OWNER]
+    assert email_backend.sent[0].subject == CONFIRMATION_SUBJECT
+    assert email_backend.sent[1].headers[LIST_UNSUBSCRIBE_HEADER] == (
+        f"<{_unsubscribe_url_of(messages[1])}>"
+    )
+
+
+def test_deliver_swallows_a_failed_send_logs_it_and_continues(caplog):
+    messages = build_signup_emails(
+        signup_email=SIGNER, context=_context(notify_address=OWNER)
+    )
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(deliver_waitlist_emails(FailingEmailBackend(), messages))
+    failures = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(failures) == len(messages)
+    logged = [record.getMessage() for record in failures]
+    for recipient in (SIGNER, OWNER):
+        assert sum(recipient in text for text in logged) == 1
+
+
+def test_signup_email_task_is_a_background_task_that_delivers_when_awaited():
+    email_backend = RecordingEmailBackend()
+    task = waitlist_signup_email_task(
+        email_backend=email_backend,
+        signup_email=SIGNER,
+        context=_context(notify_address=OWNER),
+    )
+    assert isinstance(task, BackgroundTask)
+    assert email_backend.sent == []
+    asyncio.run(task())
+    assert [sent.to for sent in email_backend.sent] == [SIGNER, OWNER]

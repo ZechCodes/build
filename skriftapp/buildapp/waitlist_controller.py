@@ -13,6 +13,7 @@ from litestar.di import Provide
 from litestar.exceptions import ClientException, SerializationException
 from litestar.response import Response
 from skrift.config import get_settings
+from skrift.lib.email_backends import EmailBackend
 from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,11 @@ from buildapp.unsubscribe_pages import (
     render_removed_page,
 )
 from buildapp.waitlist_email import normalize_waitlist_email
-from buildapp.waitlist_mail import WaitlistEmailContext, resolve_waitlist_email_context
+from buildapp.waitlist_mail import (
+    WaitlistEmailContext,
+    resolve_waitlist_email_context,
+    waitlist_signup_email_task,
+)
 from buildapp.waitlist_unsubscribe_token import (
     UNSUBSCRIBE_PATH_PREFIX,
     read_unsubscribe_token,
@@ -40,16 +45,27 @@ def provide_waitlist_email_context() -> WaitlistEmailContext:
     return resolve_waitlist_email_context(get_settings(), os.environ)
 
 
+def provide_email_backend(request: Request) -> EmailBackend:
+    return request.app.state.email_backend
+
+
 class WaitlistController(Controller):
     path = ""
     dependencies = {
         "waitlist_email_context": Provide(
             provide_waitlist_email_context, sync_to_thread=False
-        )
+        ),
+        "email_backend": Provide(provide_email_backend, sync_to_thread=False),
     }
 
     @post("/api/waitlist", status_code=200)
-    async def join(self, request: Request, db_session: AsyncSession) -> Response:
+    async def join(
+        self,
+        request: Request,
+        db_session: AsyncSession,
+        waitlist_email_context: WaitlistEmailContext,
+        email_backend: EmailBackend,
+    ) -> Response:
         try:
             parsed_body = await request.json()
         except SerializationException as malformed:
@@ -68,7 +84,15 @@ class WaitlistController(Controller):
             await db_session.commit()
         except IntegrityError:
             await db_session.rollback()
-        return Response({"ok": True})
+            return Response({"ok": True})
+        return Response(
+            {"ok": True},
+            background=waitlist_signup_email_task(
+                email_backend=email_backend,
+                signup_email=email,
+                context=waitlist_email_context,
+            ),
+        )
 
     @get(UNSUBSCRIBE_ROUTE_PATH)
     async def unsubscribe_confirm(

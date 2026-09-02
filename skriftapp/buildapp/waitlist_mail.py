@@ -1,15 +1,24 @@
 """The waitlist's outbound mail: the context a send needs (public base URL, signing key,
-owner notify address) and the two messages a new signup produces — a confirmation to the
-signer and a one-line notification to the maintainer."""
+owner notify address), the two messages a new signup produces — a confirmation to the
+signer and a one-line notification to the maintainer — and the background task that
+delivers them after the response has gone out. Delivery is deliberately fail-soft: the
+visitor already holds a 200 and the row is committed, so a failed send is logged and the
+remaining messages still go."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from litestar.background_tasks import BackgroundTask
 from skrift.config import Settings
+from skrift.lib.email_backends import EmailBackend
 
-from buildapp.email_message import OutboundEmail, compose_email
+from buildapp.email_message import OutboundEmail, compose_email, send_email_message
+from buildapp.waitlist_unsubscribe_token import mint_unsubscribe_token, unsubscribe_url
+
+logger = logging.getLogger(__name__)
 
 NOTIFY_ADDRESS_ENV = "WAITLIST_NOTIFY_ADDRESS"
 
@@ -73,4 +82,39 @@ def build_owner_notification_email(
         paragraphs=(OWNER_PARAGRAPH_TEMPLATE.format(signup_email=signup_email),),
         unsubscribe_url=unsubscribe_url,
         one_click=False,
+    )
+
+
+def build_signup_emails(
+    *, signup_email: str, context: WaitlistEmailContext
+) -> tuple[OutboundEmail, ...]:
+    token = mint_unsubscribe_token(signup_email, context.secret_key)
+    url = unsubscribe_url(context.public_base_url, token)
+    messages = (build_confirmation_email(to=signup_email, unsubscribe_url=url),)
+    if not context.notify_address:
+        return messages
+    return messages + (
+        build_owner_notification_email(
+            to=context.notify_address, signup_email=signup_email, unsubscribe_url=url
+        ),
+    )
+
+
+async def deliver_waitlist_emails(
+    email_backend: EmailBackend, messages: tuple[OutboundEmail, ...]
+) -> None:
+    for message in messages:
+        try:
+            await send_email_message(email_backend, message)
+        except Exception:
+            logger.exception("waitlist email delivery failed for %s", message.to)
+
+
+def waitlist_signup_email_task(
+    *, email_backend: EmailBackend, signup_email: str, context: WaitlistEmailContext
+) -> BackgroundTask:
+    return BackgroundTask(
+        deliver_waitlist_emails,
+        email_backend,
+        build_signup_emails(signup_email=signup_email, context=context),
     )

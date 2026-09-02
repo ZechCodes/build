@@ -2,7 +2,10 @@
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { installWaitlist } from "../../skriftapp/buildapp/landing/waitlist-form.js";
+import {
+  SENDING_LABEL,
+  installWaitlist,
+} from "../../skriftapp/buildapp/landing/waitlist-form.js";
 
 const WAITLIST_MARKUP = readFileSync(
   resolve("../skriftapp/buildapp/landing/waitlist.html"),
@@ -17,7 +20,9 @@ let input;
 let submitButton;
 let errorElement;
 let successElement;
+let confirmationElement;
 let emailSlot;
+let idleLabel;
 
 function mountWaitlist(submitWaitlistEmail) {
   document.body.innerHTML = WAITLIST_MARKUP;
@@ -27,7 +32,9 @@ function mountWaitlist(submitWaitlistEmail) {
   submitButton = form.querySelector(".button-primary--form");
   errorElement = wrapperElement.querySelector(".waitlist-error");
   successElement = wrapperElement.querySelector(".waitlist-success");
+  confirmationElement = wrapperElement.querySelector(".waitlist-confirmation");
   emailSlot = wrapperElement.querySelector("[data-waitlist-email]");
+  idleLabel = submitButton.textContent;
   installWaitlist({ wrapperElement, submitWaitlistEmail });
 }
 
@@ -104,5 +111,58 @@ describe("waitlist behaviour", () => {
     await new Promise((settle) => setTimeout(settle, 0));
     expect(submitButton.disabled).toBe(false);
     expect(successElement.hidden).toBe(false);
+  });
+
+  it("the input is disabled and the button reads SENDING… while the request is in flight", async () => {
+    let acceptRequest;
+    const submitWaitlistEmail = vi.fn(
+      () =>
+        new Promise((settle) => {
+          acceptRequest = () => settle(true);
+        }),
+    );
+    mountWaitlist(submitWaitlistEmail);
+    input.value = VALID_EMAIL;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await new Promise((settle) => setTimeout(settle, 0));
+    expect(input.disabled).toBe(true);
+    expect(submitButton.disabled).toBe(true);
+    expect(submitButton.textContent).toBe(SENDING_LABEL);
+    acceptRequest();
+    await new Promise((settle) => setTimeout(settle, 0));
+    expect(input.disabled).toBe(false);
+  });
+
+  it("an accepted submission restores the button label and shows the confirmation note beside the success line", async () => {
+    const submitWaitlistEmail = vi.fn(async () => true);
+    mountWaitlist(submitWaitlistEmail);
+    input.value = VALID_EMAIL;
+    await submitForm();
+    expect(submitButton.textContent).toBe(idleLabel);
+    expect(successElement.hidden).toBe(false);
+    expect(confirmationElement.hidden).toBe(false);
+  });
+
+  it("a rejected submission restores the label, re-enables the input and button, and keeps the confirmation note hidden", async () => {
+    const submitWaitlistEmail = vi.fn(async () => false);
+    mountWaitlist(submitWaitlistEmail);
+    input.value = VALID_EMAIL;
+    await submitForm();
+    expect(submitButton.textContent).toBe(idleLabel);
+    expect(input.disabled).toBe(false);
+    expect(submitButton.disabled).toBe(false);
+    expect(confirmationElement.hidden).toBe(true);
+  });
+
+  it("a thrown request restores the label and re-enables the input", async () => {
+    const submitWaitlistEmail = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    mountWaitlist(submitWaitlistEmail);
+    input.value = VALID_EMAIL;
+    await submitForm();
+    expect(submitButton.textContent).toBe(idleLabel);
+    expect(input.disabled).toBe(false);
+    expect(errorElement.hidden).toBe(false);
   });
 });

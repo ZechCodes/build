@@ -235,6 +235,7 @@ DESIGN_TOKENS = (
     "--letter-spacing-agent-support",
     "--font-size-footer",
     "--letter-spacing-footer",
+    "--opacity-disabled",
 )
 
 
@@ -254,7 +255,8 @@ HERO_LEAD_MARKUP = (
     "to your agents. Not public yet.</p>"
 )
 HERO_NOTE_MARKUP = (
-    '<p class="note">One email when your invite is ready. Nothing else.</p>'
+    '<p class="note">One email to confirm, one when your invite is ready. '
+    "Nothing else.</p>"
 )
 
 SCREENSHOT_MARKUP = (
@@ -359,6 +361,17 @@ WAITLIST_ERROR_MARKUP = (
 WAITLIST_SUCCESS_MARKUP = (
     '<p class="waitlist-success" role="status" hidden>✓ YOU’RE ON THE LIST — '
     "<span data-waitlist-email></span></p>"
+)
+WAITLIST_CONFIRMATION_MARKUP = (
+    '<p class="note waitlist-confirmation" role="status" hidden>'
+    "A confirmation is on its way. Every email has a one-click unsubscribe.</p>"
+)
+DISABLED_BUTTON_RULE = (
+    ".button-primary:disabled{cursor:default;box-shadow:none;"
+    "opacity:var(--opacity-disabled)}"
+)
+WAITLIST_CONFIRMATION_RULE = (
+    ".waitlist-confirmation{color:var(--color-text-secondary)}"
 )
 WAITLIST_WRAPPER_RULE = (
     ".waitlist{margin:var(--space-form-top) auto 0;"
@@ -655,6 +668,18 @@ def test_waitlist_error_and_success_copy_are_verbatim_and_hidden():
     html = _landing_html()
     assert html.count(WAITLIST_ERROR_MARKUP) == WAITLIST_INSTANCE_COUNT
     assert html.count(WAITLIST_SUCCESS_MARKUP) == WAITLIST_INSTANCE_COUNT
+
+
+def test_waitlist_confirmation_note_is_verbatim_and_hidden_beside_the_success_line():
+    html = _landing_html()
+    assert html.count(WAITLIST_CONFIRMATION_MARKUP) == WAITLIST_INSTANCE_COUNT
+    assert html.index(WAITLIST_SUCCESS_MARKUP) < html.index(WAITLIST_CONFIRMATION_MARKUP)
+
+
+def test_the_sending_state_styles_the_disabled_button_from_the_opacity_token():
+    css = _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+    assert DISABLED_BUTTON_RULE in css
+    assert WAITLIST_CONFIRMATION_RULE in css
 
 
 def test_the_waitlist_component_is_written_once_and_rendered_at_both_placeholders():

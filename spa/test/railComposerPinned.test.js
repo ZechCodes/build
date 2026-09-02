@@ -57,6 +57,7 @@ const flush = async () => {
 };
 
 const panel = () => document.getElementById("rail-panel");
+const tuiToggle = () => panel().querySelector(".rail-tui");
 const scroller = () => document.getElementById("rail-body");
 const composerRow = () => document.getElementById("rail-composer");
 
@@ -147,12 +148,12 @@ describe("the conversation panel's column", () => {
 
   it("gives the PTY the whole panel: no composer beside the agent's screen", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(composerRow()).toBe(null);
     expect(scroller().classList.contains("rail-body-tui")).toBe(true);
 
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
     expect(composerRow()).toBeTruthy();
     expect(scroller().contains(composerRow())).toBe(false);
@@ -163,9 +164,9 @@ describe("the conversation panel's column", () => {
     document.getElementById("railinput").value = "unsent words";
     document.getElementById("railinput").dispatchEvent(new Event("input", { bubbles: true }));
 
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
 
     expect(document.getElementById("railinput").value).toBe("unsent words");

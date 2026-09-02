@@ -242,28 +242,29 @@ export function railStatusHtml(status) {
   return working + git;
 }
 
-/** Pure: the panel's header — who you are talking to, the controls that go with
- *  it (which face of the agent you are looking at, and the way out), and, on an
- *  agent that can be taken back off, the `−` that mirrors the strip's `+`.
+/** Pure: the panel's header — who you are talking to, the way down to the
+ *  agent's screen and back, and, on an agent that can be taken back off, the
+ *  `−` that mirrors the strip's `+`.
  *
- *  `hasTerminal` false drops the TUI button rather than dimming it: an agent
- *  that reports its own work has no basement, so there is nothing behind that
- *  control to offer. The switch is then one button, which still says which face
- *  you are on. */
+ *  The conversation is where the panel lives and the screen is the one place it
+ *  can go, so the pair of chips is a single pressed-state button: pressed means
+ *  the PTY is showing. `hasTerminal` false drops it rather than dimming it — an
+ *  agent that reports its own work has no basement to offer. */
 export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
         aria-label="${esc(removeTitle)}">−</button>`
     : "";
+  const showingTui = mode === "tui";
+  const tuiTitle = showingTui ? "Back to the conversation" : "Show the terminal";
   const tui = hasTerminal
-    ? `<button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>`
+    ? `<button type="button" class="rail-mode rail-tui${showingTui ? " on" : ""}"
+        aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`
     : "";
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
-    <div class="rail-modes" role="group" aria-label="Conversation or terminal">
-      <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
-      ${tui}</div>
+    ${tui}
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
@@ -693,17 +694,17 @@ export function mountAgentRail(host, context) {
   };
 
   const wireHead = (panel) => {
-    panel.querySelectorAll("[data-mode]").forEach((control) => {
-      control.onclick = () => {
-        // The terminal is asked for through a button the head only draws for an
-        // agent that has one, so a press cannot name a face this agent cannot
-        // wear — paintPanel decides that, and this only records the choice.
-        if (mode === control.dataset.mode) return;
-        mode = control.dataset.mode;
+    const tuiToggle = panel.querySelector(".rail-tui");
+    if (tuiToggle) {
+      // The head only draws this button for an agent that has a terminal, so a
+      // press cannot ask for a face this agent cannot wear — paintPanel decides
+      // that, and this only records the choice.
+      tuiToggle.onclick = () => {
+        mode = mode === "tui" ? "chat" : "tui";
         panelModes.set(key, mode);
         paintPanel();
       };
-    });
+    }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent();
     const collapse = panel.querySelector(".rail-collapse");

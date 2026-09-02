@@ -133,6 +133,7 @@ const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
+const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 
@@ -772,16 +773,58 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
-  it("carries the agent, both faces of it, and a box to write in", async () => {
+  it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+    const modes = [...panel().querySelectorAll(".rail-mode")];
+    expect(modes).toHaveLength(1);
+    expect(modes[0].textContent).toBe("TUI");
+    expect(modes[0].getAttribute("aria-pressed")).toBe("false");
+    expect(modes[0].classList.contains("on")).toBe(false);
+    expect(modes[0].title).toBe("Show the terminal");
     expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
+  // The conversation is where the panel lives; the screen is the one place it
+  // can go. A chip saying "you are here" is a control that does nothing.
+  it("offers no Chat chip and no mode group anywhere in the rail", async () => {
+    await mount();
+    expect(railHost().querySelector('[data-mode="chat"]')).toBe(null);
+    expect(railHost().querySelector(".rail-modes")).toBe(null);
+  });
+
+  it("drops to the screen and comes back on the same button", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBe(null);
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(tuiToggle().classList.contains("on")).toBe(true);
+    expect(tuiToggle().title).toBe("Back to the conversation");
+
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("false");
+    expect(tuiToggle().classList.contains("on")).toBe(false);
+  });
+
+  // The face is remembered per work item, so coming back to the branch comes
+  // back to the screen the reader left open on it.
+  it("reopens on the screen when the rail is mounted again on the same branch", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    rail.dispose();
+
+    await mount();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(panel().querySelector("#railinput")).toBe(null);
   });
 
   it("swaps the same panel onto the agent's screen, addressed by that agent", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalled();
     expect(mountAgentTab.mock.calls[0][1]).toEqual({ id: "run-3", agent_id: "ag-1" });
@@ -793,7 +836,7 @@ describe("the conversation panel", () => {
   it("resumes the agent the pane belongs to, on the harness it already has", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
 
     await mountAgentTab.mock.calls[0][2].onStart();
@@ -804,7 +847,7 @@ describe("the conversation panel", () => {
   it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
@@ -817,7 +860,7 @@ describe("the conversation panel", () => {
 
     mountAgentTab.mock.calls[0][2].onStart();
     await flush();
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
     panel().querySelector("#railinput").value = "carry on";
     panel().querySelector("#railsend").click();
@@ -830,7 +873,7 @@ describe("the conversation panel", () => {
   it("puts the agent back where it was and says why when the start is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
@@ -844,7 +887,7 @@ describe("the conversation panel", () => {
     await expect(mountAgentTab.mock.calls[0][2].onStart()).rejects.toThrow("no session could be spawned");
     expect(notifyError).not.toHaveBeenCalled();
 
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
     panel().querySelector("#railinput").value = "try again";
     panel().querySelector("#railsend").click();
@@ -860,7 +903,7 @@ describe("the conversation panel", () => {
   it("offers the terminal only to an agent whose session has one", async () => {
     payload = branchRow({ agents: [agent({ has_terminal: false })] });
     await mount();
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
   });
 
@@ -869,7 +912,7 @@ describe("the conversation panel", () => {
   it("keeps the terminal for a digest that never mentions one", async () => {
     await mount();
     expect(agent().has_terminal).toBe(undefined);
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(1);
   });
 
   // The face the panel wears is remembered per work item, so opening a
@@ -878,7 +921,7 @@ describe("the conversation panel", () => {
   it("puts the panel back on the conversation when a terminal-less agent is opened", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, has_terminal: false })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
 
@@ -886,7 +929,7 @@ describe("the conversation panel", () => {
     await flush();
 
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
 
@@ -894,7 +937,7 @@ describe("the conversation panel", () => {
     // still where it was left.
     bubbles()[0].click();
     await flush();
-    expect(panel().querySelector('[data-mode="tui"]')).toBeTruthy();
+    expect(tuiToggle()).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(2);
   });
 
@@ -903,7 +946,7 @@ describe("the conversation panel", () => {
   // has to go with it.
   it("takes the terminal away from a panel standing on one when the agent loses it", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(panel().querySelector("#railinput")).toBe(null);
 
@@ -911,13 +954,13 @@ describe("the conversation panel", () => {
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(panel().querySelector('[data-mode="tui"]')).toBe(null);
+    expect(panel().querySelector(".rail-tui")).toBe(null);
     expect(panel().querySelector("#railinput")).toBeTruthy();
   });
 
   it("leaves a live screen alone while the rail keeps polling", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
     const before = panel();

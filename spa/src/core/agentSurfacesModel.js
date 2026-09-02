@@ -9,7 +9,7 @@ const KIND_LABELS = {
   checklist: "Checklist",
 };
 
-const AGENT_ENTRY_KIND = "subagents";
+export const AGENT_ENTRY_KIND = "subagents";
 
 const RUNNING_MARK = "running";
 const DONE_MARK = "ok";
@@ -174,7 +174,7 @@ export function workflowPhases(workflow, selectedIndex) {
 
 const ROW_SUBJECTS = {
   workflows: (entry) => entry.name || entry.description || entry.id || "",
-  subagents: (entry) => entry.label || entry.id || "",
+  [AGENT_ENTRY_KIND]: (entry) => entry.label || entry.id || "",
   shells: (entry) => entry.description || entry.id || "",
   checklist: (entry) => entry.subject || entry.description || entry.id || "",
 };
@@ -194,18 +194,18 @@ const ROW_ACTIONS = {
       message: `What is the workflow "${subject}" working on right now?`,
     },
   ],
-  subagents: (subject) => [
+  [AGENT_ENTRY_KIND]: (subject) => [
     {
-      id: "stop-subagent",
+      id: "stop-agent",
       label: "Ask to stop",
-      description: "Ask the agent to stop this subagent",
-      message: `Please stop the subagent "${subject}".`,
+      description: "Ask the agent to stop this one",
+      message: `Please stop the agent "${subject}".`,
     },
     {
-      id: "explain-subagent",
+      id: "explain-agent",
       label: "Ask what it is doing",
-      description: "Ask the agent what this subagent is working on",
-      message: `What is the subagent "${subject}" working on right now?`,
+      description: "Ask what this agent is working on",
+      message: `What is the agent "${subject}" working on right now?`,
     },
   ],
   shells: (subject) => [

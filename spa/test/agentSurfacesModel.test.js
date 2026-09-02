@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import {
+  AGENT_ENTRY_KIND,
   agentRows,
   openSurfaceKind,
   readOpenSurface,
@@ -289,6 +290,21 @@ describe("rowActions", () => {
       expect(action.message.length).toBeGreaterThan(0);
     }
     expect(actions[0].message).toContain("Review");
+  });
+
+  it("names the agent kind once, so the row renderer and the state marks pick the same one", () => {
+    expect(AGENT_ENTRY_KIND).toBe("subagents");
+    const agents = [{ id: "a1", label: "Reader", state: "running" }];
+    expect(surfaceRows(AGENT_ENTRY_KIND, { [AGENT_ENTRY_KIND]: agents })).toEqual(agentRows(agents));
+    expect(agentRows(agents)[0].stateMark).toEqual(surfaceStateMark(AGENT_ENTRY_KIND, "running"));
+    expect(rowActions(AGENT_ENTRY_KIND, agents[0]).length).toBeGreaterThan(0);
+  });
+
+  it("calls an agent row an agent, since one renderer serves the workflow and subagent viewers", () => {
+    for (const action of rowActions(AGENT_ENTRY_KIND, { id: "a1", label: "Reader" })) {
+      expect(`${action.id} ${action.label} ${action.description} ${action.message}`).not.toContain("subagent");
+      expect(`${action.description} ${action.message}`).toContain("agent");
+    }
   });
 
   it("offers an action for every kind, naming what the row is", () => {

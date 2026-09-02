@@ -1,7 +1,7 @@
 import { esc } from "./text.js";
 import { menuButtonMarkup } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
-import { rowActions } from "./agentSurfacesModel.js";
+import { AGENT_ENTRY_KIND, rowActions } from "./agentSurfacesModel.js";
 
 const ACTION_MENU_LABEL = "Ask";
 const ACTION_MENU_TITLE = "Ask the agent about this";
@@ -46,7 +46,7 @@ export function agentRowHtml(row) {
       ${stateMarkHtml(row.stateMark)}
       <span class="surface-row-label">${esc(row.label)}</span>
       ${row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : ""}
-      ${actionMenuHtml("subagents", row)}
+      ${actionMenuHtml(AGENT_ENTRY_KIND, row)}
     </div>
     ${row.lastTool ? `<div class="surface-row-tool">${esc(row.lastTool)}</div>` : ""}
     ${agentStatsHtml(row)}
@@ -70,7 +70,7 @@ export function surfacePillsHtml(pills, openKind) {
     .join("")}</div>`;
 }
 
-function phaseHtml(phase) {
+export function workflowPhaseHtml(phase) {
   return `<button type="button" class="surface-phase" data-phase-index="${esc(phase.index)}"
     aria-pressed="${phase.selected}">
     <span class="surface-phase-title">${esc(phase.title)}</span>
@@ -87,7 +87,7 @@ export function workflowViewerHtml(workflow, phases, agents) {
       ${actionMenuHtml("workflows", workflow)}
     </div>
     <div class="surface-workflow-body">
-      <div class="surface-phases">${phases.map(phaseHtml).join("")}</div>
+      <div class="surface-phases">${phases.map(workflowPhaseHtml).join("")}</div>
       <div class="surface-phase-agents">${agents.map(agentRowHtml).join("")}</div>
     </div>
   </div>`;
@@ -105,7 +105,7 @@ function shellTailHtml(tail) {
   </details>`;
 }
 
-function shellRowHtml(row) {
+export function shellRowHtml(row) {
   return `<div class="surface-row surface-shell">
     <div class="surface-row-head">
       ${stateMarkHtml(row.stateMark)}
@@ -121,7 +121,7 @@ export function shellViewerHtml(rows) {
   return `<div class="surface-viewer surface-shells">${rows.map(shellRowHtml).join("")}</div>`;
 }
 
-function checklistItemHtml(row) {
+export function checklistItemHtml(row) {
   return `<div class="surface-row surface-checklist-item">
     <div class="surface-row-head">
       ${stateMarkHtml(row.stateMark)}

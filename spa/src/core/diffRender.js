@@ -147,12 +147,12 @@ function foldClassOf(file, { folds, viewed }) {
  *  file is open it also carries `data-expanded`, which is what the patch in
  *  core/domPatch.js reads to leave an expansion alone. */
 export function diffFileHtml(file, options = {}) {
-  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false } = options;
+  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false, sectionClass = "" } = options;
   const lang = langForPath(file.path);
   const key = fileKey(file);
   const isViewed = viewed ? viewed.has(file.path) : false;
   const foldClass = foldClassOf(file, options);
-  const classes = ["file", foldClass].filter(Boolean).join(" ");
+  const classes = ["file", foldClass, sectionClass].filter(Boolean).join(" ");
   const openMark = foldClass === "" ? " data-expanded" : "";
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
@@ -288,18 +288,25 @@ function triageBarHtml(plan, { dial, offerDial }) {
   return `<div class="triagebar">${claim}${dialButton}</div>`;
 }
 
-/** One collapsed group: its name, the one line that says why its hunks are not
- *  worth the reviewer's attention, and its counts. The diffs inside are ALWAYS
- *  rendered — collapsed, never dropped — so a group is one click from being
- *  read and nothing is missing from the page a reviewer searches. */
-function triageGroupHtml(section, { expanded, fileOptions }) {
+/** A group's one line: its name, why its hunks are not worth the reviewer's
+ *  attention, and its counts. It is the control that opens and shuts the
+ *  group, so it says which state it is in. */
+function triageGroupHeadHtml(section, expanded) {
   const counts = `${section.fileCount} file${section.fileCount === 1 ? "" : "s"} · ${section.hunkCount} hunk${
     section.hunkCount === 1 ? "" : "s"
   }`;
-  return `<div class="tgroup${expanded ? " open" : ""}" data-group="${esc(section.name)}">
-    <button class="tgrouphead" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
-      section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
-    }</button>
+  return `<button class="tgrouphead${expanded ? " open" : ""}" aria-expanded="${expanded}" data-group="${esc(section.name)}">${expanded ? "▾" : "▸"} <span class="tgname">${esc(section.name)}</span> <span class="tgcount">${counts}</span>${
+    section.rationale ? `<span class="tgrationale">${esc(section.rationale)}</span>` : ""
+  }</button>`;
+}
+
+/** A shut group, whole: its head and the diffs under it. The diffs are ALWAYS
+ *  rendered — collapsed, never dropped — so a group is one click from being
+ *  read and nothing is missing from the page a reviewer searches. Shut, the
+ *  group is one block the reader cannot be inside, so it is one entry; opened,
+ *  it comes apart into its head and its files (see sectionEntries). */
+function triageGroupHtml(section, fileOptions) {
+  return `<div class="tgroup" data-group="${esc(section.name)}">${triageGroupHeadHtml(section, false)}
     <div class="tgfiles">${diffFilesHtml(section.files, fileOptions)}</div></div>`;
 }
 
@@ -327,20 +334,32 @@ function reviewStackEntries(files, review, options) {
     ];
   const plan = planChangesetTriage({ files, patch, triage });
   const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
-  const sections = plan.sections.map((section) => {
-    if (section.kind === "group")
-      return {
-        key: `group:${section.name}`,
-        html: triageGroupHtml(section, {
-          expanded: Boolean(expandedGroups && expandedGroups.has(section.name)),
-          fileOptions,
-        }),
-      };
-    const head = section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
-    return {
-      key: `section:${section.kind}`,
-      html: `<div class="tsection t${section.kind}">${head}${diffFilesHtml(section.files, fileOptions)}</div>`,
-    };
-  });
-  return [{ key: "triagebar", html: bar }, ...sections];
+  const opened = (name) => Boolean(expandedGroups && expandedGroups.has(name));
+  return [
+    { key: "triagebar", html: bar },
+    ...plan.sections.flatMap((section) => sectionEntries(section, { opened, fileEntries, fileOptions })),
+  ];
+}
+
+/** One section of an ordered plan, as the entries a repaint can move: its head,
+ *  where it has one, and then a keyed entry per file, wearing the section it
+ *  belongs to. A shut group is the one block that stays whole — nothing inside
+ *  it can be read, so nothing inside it can be held. */
+function sectionEntries(section, { opened, fileEntries, fileOptions }) {
+  if (section.kind === "group" && !opened(section.name))
+    return [{ key: `group:${section.name}`, html: triageGroupHtml(section, fileOptions) }];
+  const sectionClass = section.kind === "group" ? "tgrouped" : `t${section.kind}`;
+  const files = fileEntries(section.files, { ...fileOptions, sectionClass });
+  const head = sectionHeadHtml(section);
+  if (!head) return files;
+  const key = section.kind === "group" ? `grouphead:${section.name}` : `sectionhead:${section.kind}`;
+  return [{ key, html: head }, ...files];
+}
+
+/** What a section says above its files, or nothing where the order speaks for
+ *  itself: an open group keeps the line that shuts it again, and the criticals
+ *  say why they are first. */
+function sectionHeadHtml(section) {
+  if (section.kind === "group") return triageGroupHeadHtml(section, true);
+  return section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
 }

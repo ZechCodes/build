@@ -1,7 +1,14 @@
 import { esc } from "./text.js";
 import { menuButtonMarkup } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
-import { AGENT_ENTRY_KIND, rowActions } from "./agentSurfacesModel.js";
+import {
+  AGENT_ENTRY_KIND,
+  CHECKLIST_ENTRY_KIND,
+  SHELL_ENTRY_KIND,
+  WORKFLOW_ENTRY_KIND,
+  rowActions,
+  rowSubject,
+} from "./agentSurfacesModel.js";
 
 const ACTION_MENU_LABEL = "Ask";
 const ACTION_MENU_TITLE = "Ask the agent about this";
@@ -18,6 +25,23 @@ function actionMenuHtml(kind, row) {
 
 function statHtml(text) {
   return `<span class="surface-row-stat">${esc(text)}</span>`;
+}
+
+function noteHtml(description, subject) {
+  if (!description || description === subject) return "";
+  return `<span class="surface-row-note">${esc(description)}</span>`;
+}
+
+function surfaceRowHtml(rowClass, kind, row, { attributes = "", trailing = "", body = "" } = {}) {
+  return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}"${attributes}>
+    <div class="surface-row-head">
+      ${stateMarkHtml(row.stateMark)}
+      <span class="surface-row-label">${esc(rowSubject(kind, row))}</span>
+      ${trailing}
+      ${actionMenuHtml(kind, row)}
+    </div>
+    ${body}
+  </div>`;
 }
 
 function agentStatsHtml(row) {
@@ -41,17 +65,13 @@ function callSequenceAttribute(row) {
 }
 
 export function agentRowHtml(row) {
-  return `<div class="surface-row surface-agent"${callSequenceAttribute(row)}>
-    <div class="surface-row-head">
-      ${stateMarkHtml(row.stateMark)}
-      <span class="surface-row-label">${esc(row.label)}</span>
-      ${row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : ""}
-      ${actionMenuHtml(AGENT_ENTRY_KIND, row)}
-    </div>
-    ${row.lastTool ? `<div class="surface-row-tool">${esc(row.lastTool)}</div>` : ""}
+  return surfaceRowHtml("surface-agent", AGENT_ENTRY_KIND, row, {
+    attributes: callSequenceAttribute(row),
+    trailing: row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : "",
+    body: `${row.lastTool ? `<div class="surface-row-tool">${esc(row.lastTool)}</div>` : ""}
     ${agentStatsHtml(row)}
-    ${agentOutcomeHtml(row)}
-  </div>`;
+    ${agentOutcomeHtml(row)}`,
+  });
 }
 
 function pillHtml(pill, openKind) {
@@ -71,7 +91,7 @@ export function surfacePillsHtml(pills, openKind) {
 }
 
 export function workflowPhaseHtml(phase) {
-  return `<button type="button" class="surface-phase" data-phase-index="${esc(phase.index)}"
+  return `<button type="button" class="surface-phase" data-key="${esc(phase.key)}" data-phase-index="${esc(phase.index)}"
     aria-pressed="${phase.selected}">
     <span class="surface-phase-title">${esc(phase.title)}</span>
     <span class="surface-phase-count">${esc(phase.done)}/${esc(phase.total)}</span>
@@ -79,12 +99,13 @@ export function workflowPhaseHtml(phase) {
 }
 
 export function workflowViewerHtml(workflow, phases, agents) {
+  const subject = rowSubject(WORKFLOW_ENTRY_KIND, workflow);
   return `<div class="surface-viewer surface-workflow">
     <div class="surface-workflow-head">
       ${stateMarkHtml(workflow.stateMark)}
-      <span class="surface-row-label">${esc(workflow.name)}</span>
-      ${workflow.description ? `<span class="surface-row-note">${esc(workflow.description)}</span>` : ""}
-      ${actionMenuHtml("workflows", workflow)}
+      <span class="surface-row-label">${esc(subject)}</span>
+      ${noteHtml(workflow.description, subject)}
+      ${actionMenuHtml(WORKFLOW_ENTRY_KIND, workflow)}
     </div>
     <div class="surface-workflow-body">
       <div class="surface-phases">${phases.map(workflowPhaseHtml).join("")}</div>
@@ -106,15 +127,10 @@ function shellTailHtml(tail) {
 }
 
 export function shellRowHtml(row) {
-  return `<div class="surface-row surface-shell">
-    <div class="surface-row-head">
-      ${stateMarkHtml(row.stateMark)}
-      <span class="surface-row-label">${esc(row.description)}</span>
-      ${Number.isFinite(row.exitCode) ? statHtml(`exit ${row.exitCode}`) : ""}
-      ${actionMenuHtml("shells", row)}
-    </div>
-    ${shellTailHtml(row.tail)}
-  </div>`;
+  return surfaceRowHtml("surface-shell", SHELL_ENTRY_KIND, row, {
+    trailing: Number.isFinite(row.exitCode) ? statHtml(`exit ${row.exitCode}`) : "",
+    body: shellTailHtml(row.tail),
+  });
 }
 
 export function shellViewerHtml(rows) {
@@ -122,14 +138,9 @@ export function shellViewerHtml(rows) {
 }
 
 export function checklistItemHtml(row) {
-  return `<div class="surface-row surface-checklist-item">
-    <div class="surface-row-head">
-      ${stateMarkHtml(row.stateMark)}
-      <span class="surface-row-label">${esc(row.subject)}</span>
-      ${actionMenuHtml("checklist", row)}
-    </div>
-    ${row.description ? `<div class="surface-row-note">${esc(row.description)}</div>` : ""}
-  </div>`;
+  return surfaceRowHtml("surface-checklist-item", CHECKLIST_ENTRY_KIND, row, {
+    body: noteHtml(row.description, rowSubject(CHECKLIST_ENTRY_KIND, row)),
+  });
 }
 
 export function checklistViewerHtml(rows) {

@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { coreSourceOf } from "./coreSource.js";
 import {
   agentRowHtml,
   checklistItemHtml,
@@ -15,12 +14,19 @@ import {
 } from "../src/core/agentSurfacesRender.js";
 import {
   AGENT_ENTRY_KIND,
+  CHECKLIST_ENTRY_KIND,
+  SHELL_ENTRY_KIND,
+  SURFACE_KINDS,
+  WORKFLOW_ENTRY_KIND,
   agentRows,
   rowActions,
+  rowSubject,
   surfacePills,
   surfaceRows,
+  surfaceStateMark,
   workflowPhases,
 } from "../src/core/agentSurfacesModel.js";
+import { patchList } from "../src/core/patchList.js";
 
 const HOSTILE_MARKUP = "</div><img onerror=x>";
 
@@ -28,6 +34,11 @@ const parseHtml = (html) => {
   const holder = globalThis.document.createElement("div");
   holder.innerHTML = html;
   return holder;
+};
+
+const expectEscaped = (html) => {
+  expect(html).not.toContain("<img");
+  expect(html).toContain("&lt;/div&gt;");
 };
 
 const readerEntry = {
@@ -47,7 +58,7 @@ const freshWorkflow = {
   description: "Read the branch and report",
   state: "running",
   phases: [
-    { title: "Read", agents: [{ label: "Reader", state: "start", model: "haiku" }, { label: "Counter", state: "start", model: "haiku" }] },
+    { title: "Read", agents: [{ label: "Reader", state: "queued", model: "haiku" }, { label: "Counter", state: "queued", model: "haiku" }] },
     { title: "Write", agents: [] },
   ],
 };
@@ -126,8 +137,7 @@ describe("agentRowHtml", () => {
         },
       ])[0],
     );
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
@@ -162,6 +172,35 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
       expect(parseHtml(empty).children.length).toBe(1);
       expect(parseHtml(empty).querySelector(".surface-viewer")).toBeTruthy();
     }
+  });
+
+  it("paints the name the row's action menu speaks, for a row carrying only an id", () => {
+    const namelessRows = [
+      [AGENT_ENTRY_KIND, agentRowHtml, surfaceRows(AGENT_ENTRY_KIND, { subagents: [{ id: "a1", state: "running" }] })[0]],
+      [SHELL_ENTRY_KIND, shellRowHtml, surfaceRows(SHELL_ENTRY_KIND, { shells: [{ id: "s1", state: "running" }] })[0]],
+      [
+        CHECKLIST_ENTRY_KIND,
+        checklistItemHtml,
+        surfaceRows(CHECKLIST_ENTRY_KIND, { checklist: [{ id: "t1", state: "pending" }] })[0],
+      ],
+    ];
+    for (const [kind, renderRow, row] of namelessRows) {
+      const painted = parseHtml(renderRow(row)).querySelector(".surface-row-label").textContent;
+      expect(painted).toBe(rowSubject(kind, row));
+      expect(painted.length).toBeGreaterThan(0);
+      expect(rowActions(kind, row)[0].message).toContain(painted);
+    }
+  });
+
+  it("stamps each row with the key it arrived under, so a later keyed paint keeps it", () => {
+    const rows = surfaceRows(SHELL_ENTRY_KIND, {
+      shells: [{ id: "s1", description: "npm test", state: "running" }, { id: "s2", description: "cargo test", state: "done" }],
+    });
+    const viewer = parseHtml(shellViewerHtml(rows)).querySelector(".surface-viewer");
+    expect([...viewer.children].map((child) => child.dataset.key)).toEqual(rows.map((row) => row.key));
+    const painted = [...viewer.children];
+    patchList(viewer, rows, { keyOf: (row) => row.key, render: shellRowHtml });
+    expect([...viewer.children]).toEqual(painted);
   });
 });
 
@@ -210,8 +249,7 @@ describe("surfacePillsHtml", () => {
 
   it("escapes a pill label", () => {
     const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1, live: false }], null);
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
@@ -221,11 +259,17 @@ describe("workflowViewerHtml", () => {
     return workflowViewerHtml(workflowRow(workflow), phases, agents);
   };
 
-  it("paints both of the id-less queued agents a fresh workflow carries", () => {
+  it("paints both of the id-less queued agents a fresh workflow carries, each marked queued", () => {
     const painted = parseHtml(view(freshWorkflow, 0));
-    expect(painted.querySelectorAll(".surface-agent").length).toBe(2);
+    const agentRowElements = [...painted.querySelectorAll(".surface-agent")];
+    expect(agentRowElements.length).toBe(2);
     expect(painted.textContent).toContain("Reader");
     expect(painted.textContent).toContain("Counter");
+    const queuedMark = surfaceStateMark(AGENT_ENTRY_KIND, "queued");
+    expect(agentRowElements.map((row) => row.querySelector("[data-outcome]").dataset.outcome)).toEqual([
+      queuedMark.mark,
+      queuedMark.mark,
+    ]);
   });
 
   it("lists the phases with their done counts and presses the selected one", () => {
@@ -261,8 +305,7 @@ describe("workflowViewerHtml", () => {
   it("escapes the workflow's own name and its agents' labels", () => {
     const poisoned = { id: "w1", name: HOSTILE_MARKUP, state: "running", phases: [{ title: HOSTILE_MARKUP, agents: [{ label: HOSTILE_MARKUP }] }] };
     const html = view(poisoned, 0);
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
@@ -277,8 +320,7 @@ describe("subagentViewerHtml", () => {
 
   it("escapes a subagent label", () => {
     const html = subagentViewerHtml(surfaceRows("subagents", { subagents: [{ id: "a1", label: HOSTILE_MARKUP }] }));
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
@@ -318,8 +360,7 @@ describe("shellViewerHtml", () => {
 
   it("escapes a shell description", () => {
     const html = shellViewerHtml(rows([{ id: "s1", description: HOSTILE_MARKUP, state: "running" }]));
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
@@ -355,16 +396,23 @@ describe("checklistViewerHtml", () => {
 
   it("escapes an item's subject", () => {
     const html = checklistViewerHtml(rows([{ id: "t1", subject: HOSTILE_MARKUP, state: "pending" }]));
-    expect(html).not.toContain("<img");
-    expect(html).toContain("&lt;/div&gt;");
+    expectEscaped(html);
   });
 });
 
 describe("the renderer is pure markup", () => {
   it("queries no page, wires no handler and calls no bridge", () => {
-    const source = readFileSync(resolve("src/core/agentSurfacesRender.js"), "utf8");
+    const source = coreSourceOf("agentSurfacesRender.js");
     for (const forbidden of ["document", "window", "App", "localStorage"]) {
       expect(source).not.toContain(forbidden);
+    }
+  });
+
+  it("names no surface kind of its own, taking all four from the model", () => {
+    const source = coreSourceOf("agentSurfacesRender.js");
+    for (const kind of SURFACE_KINDS) expect(source).not.toContain(`"${kind}"`);
+    for (const constantName of ["WORKFLOW_ENTRY_KIND", "AGENT_ENTRY_KIND", "SHELL_ENTRY_KIND", "CHECKLIST_ENTRY_KIND"]) {
+      expect(source).toContain(constantName);
     }
   });
 });

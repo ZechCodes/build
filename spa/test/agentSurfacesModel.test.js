@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_ENTRY_KIND,
   agentRows,
@@ -361,7 +361,7 @@ describe("the remembered open pill", () => {
 
 describe("the model is pure", () => {
   it("touches no DOM, no bridge and no storage of its own", () => {
-    const source = readFileSync(new URL("../src/core/agentSurfacesModel.js", import.meta.url), "utf8");
+    const source = coreSourceOf("agentSurfacesModel.js");
     expect(source).not.toContain("document");
     expect(source).not.toContain("App.call");
     expect(source).not.toContain("fetch(");

@@ -1,15 +1,23 @@
 import { workingClock } from "./agentRailModel.js";
 
-export const SURFACE_KINDS = ["workflows", "subagents", "shells", "checklist"];
+export const WORKFLOW_ENTRY_KIND = "workflows";
+export const AGENT_ENTRY_KIND = "subagents";
+export const SHELL_ENTRY_KIND = "shells";
+export const CHECKLIST_ENTRY_KIND = "checklist";
+
+export const SURFACE_KINDS = [
+  WORKFLOW_ENTRY_KIND,
+  AGENT_ENTRY_KIND,
+  SHELL_ENTRY_KIND,
+  CHECKLIST_ENTRY_KIND,
+];
 
 const KIND_LABELS = {
-  workflows: "Workflows",
-  subagents: "Subagents",
-  shells: "Shells",
-  checklist: "Checklist",
+  [WORKFLOW_ENTRY_KIND]: "Workflows",
+  [AGENT_ENTRY_KIND]: "Subagents",
+  [SHELL_ENTRY_KIND]: "Shells",
+  [CHECKLIST_ENTRY_KIND]: "Checklist",
 };
-
-export const AGENT_ENTRY_KIND = "subagents";
 
 const RUNNING_MARK = "running";
 const DONE_MARK = "ok";
@@ -26,10 +34,10 @@ const AGENT_STATE_MARKS = {
 };
 
 const STATE_MARKS_BY_KIND = {
-  workflows: RUN_STATE_MARKS,
+  [WORKFLOW_ENTRY_KIND]: RUN_STATE_MARKS,
   [AGENT_ENTRY_KIND]: AGENT_STATE_MARKS,
-  shells: RUN_STATE_MARKS,
-  checklist: {
+  [SHELL_ENTRY_KIND]: RUN_STATE_MARKS,
+  [CHECKLIST_ENTRY_KIND]: {
     pending: { mark: "pending", label: "Pending" },
     in_progress: { mark: RUNNING_MARK, label: "In progress" },
     completed: { mark: DONE_MARK, label: "Completed" },
@@ -124,28 +132,28 @@ export function agentRows(agents) {
 }
 
 const ROW_NORMALISERS = {
-  workflows: (entry) => ({
+  [WORKFLOW_ENTRY_KIND]: (entry) => ({
     id: entry.id || null,
     name: entry.name || "",
     description: entry.description || "",
     state: entry.state || "",
-    stateMark: surfaceStateMark("workflows", entry.state),
+    stateMark: surfaceStateMark(WORKFLOW_ENTRY_KIND, entry.state),
     phaseCount: phasesOf(entry).length,
   }),
-  shells: (entry) => ({
+  [SHELL_ENTRY_KIND]: (entry) => ({
     id: entry.id || null,
     description: entry.description || "",
     state: entry.state || "",
-    stateMark: surfaceStateMark("shells", entry.state),
+    stateMark: surfaceStateMark(SHELL_ENTRY_KIND, entry.state),
     exitCode: Number.isFinite(entry.exit_code) ? entry.exit_code : null,
     tail: Array.isArray(entry.tail) ? entry.tail : [],
   }),
-  checklist: (entry) => ({
+  [CHECKLIST_ENTRY_KIND]: (entry) => ({
     id: entry.id || null,
     subject: entry.subject || "",
     description: entry.description || "",
     state: entry.state || "",
-    stateMark: surfaceStateMark("checklist", entry.state),
+    stateMark: surfaceStateMark(CHECKLIST_ENTRY_KIND, entry.state),
   }),
 };
 
@@ -173,14 +181,20 @@ export function workflowPhases(workflow, selectedIndex) {
 }
 
 const ROW_SUBJECTS = {
-  workflows: (entry) => entry.name || entry.description || entry.id || "",
+  [WORKFLOW_ENTRY_KIND]: (entry) => entry.name || entry.description || entry.id || "",
   [AGENT_ENTRY_KIND]: (entry) => entry.label || entry.id || "",
-  shells: (entry) => entry.description || entry.id || "",
-  checklist: (entry) => entry.subject || entry.description || entry.id || "",
+  [SHELL_ENTRY_KIND]: (entry) => entry.description || entry.id || "",
+  [CHECKLIST_ENTRY_KIND]: (entry) => entry.subject || entry.description || entry.id || "",
 };
 
+export function rowSubject(kind, entry) {
+  const subjectOf = ROW_SUBJECTS[kind];
+  if (!subjectOf || !entry) return "";
+  return subjectOf(entry);
+}
+
 const ROW_ACTIONS = {
-  workflows: (subject) => [
+  [WORKFLOW_ENTRY_KIND]: (subject) => [
     {
       id: "stop-workflow",
       label: "Ask to stop",
@@ -208,7 +222,7 @@ const ROW_ACTIONS = {
       message: `What is the agent "${subject}" working on right now?`,
     },
   ],
-  shells: (subject) => [
+  [SHELL_ENTRY_KIND]: (subject) => [
     {
       id: "stop-shell",
       label: "Ask to stop",
@@ -222,7 +236,7 @@ const ROW_ACTIONS = {
       message: `What has the background command "${subject}" printed so far?`,
     },
   ],
-  checklist: (subject) => [
+  [CHECKLIST_ENTRY_KIND]: (subject) => [
     {
       id: "start-item",
       label: "Ask to work on it",
@@ -241,7 +255,7 @@ const ROW_ACTIONS = {
 export function rowActions(kind, entry) {
   const actionsOf = ROW_ACTIONS[kind];
   if (!actionsOf || !entry) return [];
-  return actionsOf(ROW_SUBJECTS[kind](entry));
+  return actionsOf(rowSubject(kind, entry));
 }
 
 export function readOpenSurface(key, storage = globalThis.localStorage) {

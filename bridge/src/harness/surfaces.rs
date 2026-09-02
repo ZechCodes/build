@@ -161,8 +161,10 @@ pub struct SurfaceLedger {
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
-const SHELL_RUNNING: &str = "running";
-const SHELL_DONE: &str = "done";
+const RUNNING: &str = "running";
+const DONE: &str = "done";
+const FAILED: &str = "failed";
+const QUEUED: &str = "queued";
 const OUTPUT_PATH_PREAMBLE: &str = "Output is being written to: ";
 const EXIT_CODE_PREAMBLE: &str = "exit code ";
 
@@ -239,7 +241,7 @@ impl SurfaceLedger {
     pub fn running_shell_outputs(&self) -> Vec<(String, PathBuf)> {
         self.shells
             .iter()
-            .filter(|shell| shell.state.as_deref() == Some(SHELL_RUNNING))
+            .filter(|shell| shell.state.as_deref() == Some(RUNNING))
             .filter_map(|shell| {
                 self.shell_outputs
                     .get(&shell.id)
@@ -281,7 +283,7 @@ impl SurfaceLedger {
                     id: task_id.to_string(),
                     name: read_text(event, "workflow_name").unwrap_or_default(),
                     description: read_text(event, "description"),
-                    state: Some("running".to_string()),
+                    state: Some(RUNNING.to_string()),
                     phases: Vec::new(),
                 };
                 match self.workflow_named(task_id) {
@@ -372,10 +374,17 @@ impl SurfaceLedger {
         };
         match self.subagent_named(task_id) {
             Some(held) => {
-                let closed = SurfaceAgent {
-                    state: Some(claimed.to_string()),
-                    result: summary.or_else(|| held.result.clone()),
-                    ..held.clone()
+                let closed = match claimed {
+                    FAILED => SurfaceAgent {
+                        state: Some(claimed.to_string()),
+                        error: summary.or_else(|| held.error.clone()),
+                        ..held.clone()
+                    },
+                    _ => SurfaceAgent {
+                        state: Some(claimed.to_string()),
+                        result: summary.or_else(|| held.result.clone()),
+                        ..held.clone()
+                    },
                 };
                 replace_when_changed(held, closed)
             }
@@ -413,7 +422,7 @@ impl SurfaceLedger {
                 let started = SurfaceShell {
                     id: shell_id.to_string(),
                     description,
-                    state: Some(SHELL_RUNNING.to_string()),
+                    state: Some(RUNNING.to_string()),
                     exit_code: None,
                     tail: Vec::new(),
                 };
@@ -463,7 +472,7 @@ impl SurfaceLedger {
                             tail: tail.lines,
                             exit_code: marked.or(held.exit_code),
                             state: match marked {
-                                Some(_) => Some(SHELL_DONE.to_string()),
+                                Some(_) => Some(DONE.to_string()),
                                 None => held.state.clone(),
                             },
                             ..held.clone()
@@ -626,7 +635,7 @@ fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> Surfac
     SurfaceAgent {
         id: task_id.to_string(),
         label: read_text(event, "description").unwrap_or_default(),
-        state: Some("running".to_string()),
+        state: Some(RUNNING.to_string()),
         spawning_call_id: read_text(event, "tool_use_id"),
         ..held.clone()
     }
@@ -747,9 +756,9 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
 
 fn wire_task_state(status: &str) -> Option<&'static str> {
     match task_status_failed(status) {
-        true => Some("failed"),
+        true => Some(FAILED),
         false => match task_status_is_terminal(status) {
-            true => Some("done"),
+            true => Some(DONE),
             false => None,
         },
     }
@@ -770,10 +779,10 @@ fn wire_checklist_state(token: &str) -> Option<&'static str> {
 fn wire_agent_state(token: &str, has_started_at: bool) -> Option<&'static str> {
     match token {
         "start" | "progress" => match has_started_at {
-            true => Some("running"),
-            false => Some("queued"),
+            true => Some(RUNNING),
+            false => Some(QUEUED),
         },
-        "done" => Some("done"),
+        DONE => Some(DONE),
         _ => None,
     }
 }
@@ -856,7 +865,7 @@ mod tests {
         SurfaceShell {
             id: "bash-1".to_string(),
             description: Some("run the suite".to_string()),
-            state: Some(SHELL_RUNNING.to_string()),
+            state: Some(RUNNING.to_string()),
             exit_code: None,
             tail: vec!["test one ... ok".to_string()],
         }
@@ -1439,6 +1448,7 @@ mod tests {
         let closed = the_only_subagent(&ledger);
         assert_eq!(closed.state.as_deref(), Some("done"));
         assert_eq!(closed.result.as_deref(), Some("4"));
+        assert_eq!(closed.error, None);
     }
 
     #[test]
@@ -1475,7 +1485,8 @@ mod tests {
         ));
         let unclaimed = the_only_subagent(&ledger);
         assert_eq!(unclaimed.state.as_deref(), Some("failed"));
-        assert_eq!(unclaimed.result.as_deref(), Some("the reader gave up"));
+        assert_eq!(unclaimed.error.as_deref(), Some("the reader gave up"));
+        assert_eq!(unclaimed.result, None);
     }
 
     #[test]
@@ -1567,7 +1578,7 @@ mod tests {
             SurfaceShell {
                 id: SHELL_TASK_ID.to_string(),
                 description: Some("Background job with ticks and finished message".to_string()),
-                state: Some(SHELL_RUNNING.to_string()),
+                state: Some(RUNNING.to_string()),
                 exit_code: None,
                 tail: Vec::new(),
             }

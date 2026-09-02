@@ -36,11 +36,23 @@
 //   where it is. Headers, empty states and footers are the caller's, and belong
 //   either ahead of the entries or outside the container: new entries are
 //   appended at the end of a container that holds no entries yet.
+// - `onEnter(element)` runs for an entry that was not in the container before,
+//   once it is standing in its finished place, and `onExit(element)` runs for
+//   one that has left. An exit that gives back a promise keeps the element in
+//   the container until that promise resolves — which is what lets it animate
+//   out — and while it is leaving it keeps its key and is marked
+//   `data-exiting`, so it is no longer an entry but is still findable. An exit
+//   that gives back nothing takes the element out at once. Both hooks are
+//   optional, and a list painted without them behaves exactly as it always
+//   has.
 
 import { patchElement } from "./domPatch.js";
 
 const KEY = "data-key";
+const EXITING = "data-exiting";
 const ELEMENT_NODE = 1;
+
+let exitsStarted = 0;
 
 /** The one element the render described, ready to be patched in or inserted. */
 function elementFrom(rendered, page) {
@@ -108,18 +120,59 @@ function alreadyInOrder(positions) {
   return staying;
 }
 
+/// Let a departed entry leave in its own time, and take it out of the
+/// container once it has.
+///
+/// The token is how a finished exit knows whether it is still the exit the
+/// element is running: an entry that left, came back and left again has two of
+/// them, and only the one the element is wearing may remove it. Clearing the
+/// mark is therefore also how a returning entry abandons its exit.
+function startExit(container, element, onExit) {
+  const leaving = onExit(element);
+  if (!leaving || typeof leaving.then !== "function") {
+    container.removeChild(element);
+    return;
+  }
+  exitsStarted += 1;
+  const token = String(exitsStarted);
+  element.setAttribute(EXITING, token);
+  const takeOut = () => {
+    if (element.getAttribute(EXITING) !== token) return;
+    element.removeAttribute(EXITING);
+    if (element.parentNode === container) container.removeChild(element);
+  };
+  leaving.then(takeOut, (error) => {
+    takeOut();
+    throw error;
+  });
+}
+
 /// The keyed children `container` gets to keep, in the order they sit in.
 ///
-/// Everything else keyed goes: the entries that left, and any second element
-/// claiming a key already spoken for — a ghost the paint would otherwise never
-/// be able to reach again, since a key only ever finds the first of them.
-function keptEntries(container, wanted) {
+/// Everything else keyed goes: the entries that left — through `onExit` where
+/// the caller gave one, which may hold the element in the document a while
+/// longer — and any second element claiming a key already spoken for, a ghost
+/// the paint would otherwise never be able to reach again, since a key only
+/// ever finds the first of them.
+///
+/// An element already on its way out is nobody's entry: it is passed over,
+/// keeping its place, unless its key is wanted again, in which case the exit is
+/// abandoned and the element is an entry once more.
+function keptEntries(container, wanted, onExit) {
   const live = new Map();
   for (const child of [...container.children]) {
     const key = child.getAttribute(KEY);
     if (key === null) continue;
-    if (!wanted.has(key) || live.has(key)) {
+    const leaving = child.hasAttribute(EXITING);
+    if (leaving && !wanted.has(key)) continue;
+    if (leaving) child.removeAttribute(EXITING);
+    if (live.has(key)) {
       container.removeChild(child);
+      continue;
+    }
+    if (!wanted.has(key)) {
+      if (onExit) startExit(container, child, onExit);
+      else container.removeChild(child);
       continue;
     }
     live.set(key, child);
@@ -164,10 +217,10 @@ export function rekeyEntry(container, fromKey, toKey) {
 /// Returns the entry elements, in order. See the contract at the top of this
 /// module: identical entries come out of a paint untouched, kept entries keep
 /// their element, and `wire` runs only for the ones that had to be made.
-export function patchList(container, entries, { keyOf, render, wire }) {
+export function patchList(container, entries, { keyOf, render, wire, onEnter, onExit }) {
   const page = container.ownerDocument;
   const keys = keysWanted(entries, keyOf);
-  const live = keptEntries(container, new Set(keys));
+  const live = keptEntries(container, new Set(keys), onExit);
 
   const positions = new Map([...live.keys()].map((key, index) => [key, index]));
   const staying = alreadyInOrder(keys.map((key) => (positions.has(key) ? positions.get(key) : -1)));
@@ -194,13 +247,17 @@ export function patchList(container, entries, { keyOf, render, wire }) {
     // the element is made, and wired, for the first time.
     if (standing) container.removeChild(standing);
     container.insertBefore(next, anchor);
-    made.unshift({ element: next, entry });
+    made.unshift({ element: next, entry, arrived: !standing });
     anchor = next;
     painted[index] = next;
   }
 
   // Once, in list order, with the list already saying what it will say — so a
-  // handler can measure the row it is on or scroll it into view.
-  if (wire) for (const { element, entry } of made) wire(element, entry);
+  // handler can measure the row it is on or scroll it into view. An entry
+  // remade because its tag changed is not an arrival: its key was already here.
+  for (const { element, entry, arrived } of made) {
+    if (wire) wire(element, entry);
+    if (arrived && onEnter) onEnter(element);
+  }
   return painted;
 }

@@ -250,7 +250,7 @@ export function railStatusHtml(status) {
 }
 
 function surfaceMenuHtml(options) {
-  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
+  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
 }
 
 function surfaceMenuRegionHtml(options) {
@@ -1034,6 +1034,7 @@ export function mountAgentRail(host, context) {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
       ...surfaceViewerCallbacks(),
+      host: host.querySelector("#rail-panel"),
       onClose: () => {
         surfaceOverlay = null;
       },

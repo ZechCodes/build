@@ -235,6 +235,13 @@ describe("the conversation header's menu", () => {
     expect(menuItem(SHELL_ENTRY_KIND).textContent).toContain("1 running");
   });
 
+  it("is one plain icon button carrying the three dots alone", async () => {
+    await mount();
+    expect(menuCaret().classList.contains("iconbtn")).toBe(true);
+    expect(menuCaret().textContent.trim()).toBe("⋯");
+    expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
+  });
+
   it("is absent while the agent has no surfaces at all", async () => {
     payload = branchRow({ surfaces: null });
     await mount();
@@ -285,6 +292,15 @@ describe("the surface a menu option opens", () => {
     menuCaret().click();
     menuItem(SHELL_ENTRY_KIND).click();
   };
+
+  it("lays over the chat panel alone, not the whole page", async () => {
+    await openShells();
+    const scrim = panel().querySelector(".modal-scrim");
+    expect(scrim).not.toBe(null);
+    expect(scrim.classList.contains("modal-scrim-local")).toBe(true);
+    expect(scrim.querySelector(".modal-surface")).toBe(overlay());
+    expect(document.body.querySelector(":scope > .modal-scrim")).toBe(null);
+  });
 
   it("shows the kind's rows over the panel", async () => {
     await openShells();

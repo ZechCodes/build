@@ -247,10 +247,11 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 }
 
-export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null }) {
+export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
+    host,
     onClose: () => {
       viewer.dispose();
       if (onClose) onClose();

@@ -2,12 +2,12 @@ export function modalDialogHtml(innerHtml, { className = "" } = {}) {
   return `<div class="modal${className ? ` ${className}` : ""}" role="dialog" aria-modal="true">${innerHtml}</div>`;
 }
 
-export function openModal({ dialogHtml, scrimId = "", onClose = null }) {
+export function openModal({ dialogHtml, scrimId = "", onClose = null, host = document.body }) {
   const scrim = document.createElement("div");
-  scrim.className = "modal-scrim";
+  scrim.className = host === document.body ? "modal-scrim" : "modal-scrim modal-scrim-local";
   if (scrimId) scrim.id = scrimId;
   scrim.innerHTML = dialogHtml;
-  document.body.appendChild(scrim);
+  host.appendChild(scrim);
 
   let closed = false;
   const close = () => {

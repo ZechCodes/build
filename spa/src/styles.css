@@ -585,6 +585,7 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
 .splitbtn .caret { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid var(--line); padding:8px 9px; }
 .splitbtn .btn.primary.caret { border-left-color:color-mix(in srgb, var(--accent-ink) 30%, transparent); }
 .splitbtn .btn.mini.caret { padding:4px 8px; }
+.splitbtn-icon .iconbtn.caret { border:0; border-radius:6px; }
 /* The tab row's `+` menu (terminal / claude / codex). Positioned in JS from the
    `+`'s box and mounted on <body>: the tab row scrolls horizontally, so a child
    popup would be clipped by its own container. Item styling matches .splitmenu. */
@@ -978,6 +979,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 /* Modal confirmation (core/confirm.js) — decisive/destructive verbs list the
    exact steps that will run, then ask Confirm/Cancel. */
 .modal-scrim { position:fixed; inset:0; background:var(--scrim); z-index:150; display:flex; align-items:center; justify-content:center; padding:16px; }
+.modal-scrim.modal-scrim-local { position:absolute; z-index:40; padding:12px; }
+.modal-scrim-local .modal-surface { max-height:100%; max-width:100%; }
 .modal { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 20px; max-width:440px; width:100%; }
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }

@@ -28,6 +28,22 @@ describe("openModal", () => {
     expect(body.textContent).toContain("the words");
   });
 
+  it("stands on the body with no host named, and inside the host when one is", () => {
+    openModal({ dialogHtml: DIALOG });
+    const onBody = document.querySelector(".modal-scrim");
+    expect(onBody.parentElement).toBe(document.body);
+    expect(onBody.classList.contains("modal-scrim-local")).toBe(false);
+    onBody.remove();
+
+    const host = document.createElement("section");
+    document.body.appendChild(host);
+    const { body } = openModal({ dialogHtml: DIALOG, host });
+    const local = host.querySelector(".modal-scrim");
+    expect(local).not.toBe(null);
+    expect(local.classList.contains("modal-scrim-local")).toBe(true);
+    expect(body).toBe(local.querySelector(".modal"));
+  });
+
   it("takes the scrim id its caller asks for, and none when it does not", () => {
     const named = openModal({ dialogHtml: DIALOG, scrimId: "surface-scrim" });
     expect(document.getElementById("surface-scrim")).not.toBe(null);

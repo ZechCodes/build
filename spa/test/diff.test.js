@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseDiff } from "../src/core/diff.js";
+import { createFileFolds, fileKey, parseDiff } from "../src/core/diff.js";
 
 const SAMPLE_PATCH = `diff --git a/greeting.py b/greeting.py
 new file mode 100644
@@ -60,5 +60,54 @@ describe("parseDiff", () => {
 
   it("ignores content before the first diff header", () => {
     expect(parseDiff("stray line\n+not a real add\n")).toEqual([]);
+  });
+});
+
+// ---- file identity + the reader's folds --------------------------------------
+
+describe("fileKey", () => {
+  it("names a file by its path and its status", () => {
+    const [added, edited, deleted] = parseDiff(SAMPLE_PATCH);
+    expect(fileKey(added)).toContain("greeting.py");
+    expect(fileKey(edited)).toContain("app.py");
+    expect(fileKey(added)).not.toBe(fileKey(edited));
+  });
+
+  it("keeps a rename's delete and add apart", () => {
+    const gone = { path: "moved.py", status: "DEL" };
+    const arrived = { path: "moved.py", status: "ADD" };
+    expect(fileKey(gone)).not.toBe(fileKey(arrived));
+  });
+});
+
+describe("createFileFolds", () => {
+  it("starts with every file capped — neither opened nor shut", () => {
+    const folds = createFileFolds();
+    expect(folds.expanded.size).toBe(0);
+    expect(folds.collapsed.size).toBe(0);
+  });
+
+  it("opens a file the reader pressed the body of", () => {
+    const folds = createFileFolds();
+    folds.open("EDIT:a.js");
+    expect(folds.expanded.has("EDIT:a.js")).toBe(true);
+    expect(folds.collapsed.has("EDIT:a.js")).toBe(false);
+  });
+
+  it("shuts an open file on the head press, and opens a shut one", () => {
+    const folds = createFileFolds();
+    folds.open("EDIT:a.js");
+    folds.pressedHead("EDIT:a.js");
+    expect(folds.collapsed.has("EDIT:a.js")).toBe(true);
+    expect(folds.expanded.has("EDIT:a.js")).toBe(false);
+    folds.pressedHead("EDIT:a.js");
+    expect(folds.expanded.has("EDIT:a.js")).toBe(true);
+    expect(folds.collapsed.has("EDIT:a.js")).toBe(false);
+  });
+
+  it("shuts a capped file on the head press", () => {
+    const folds = createFileFolds();
+    folds.pressedHead("EDIT:a.js");
+    expect(folds.collapsed.has("EDIT:a.js")).toBe(true);
   });
 });

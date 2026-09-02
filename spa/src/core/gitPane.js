@@ -33,7 +33,7 @@ import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
-import { parseDiff } from "./diff.js";
+import { createFileFolds, parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
@@ -420,6 +420,11 @@ export function mountGitPane(
   // nothing about a commit's), and whether they have dialled the ordering off
   // for this project.
   const expandedGroups = new Map(); // changeset key → the group names opened in it
+  // The folds of every changeset the reader has touched: which files they
+  // opened and which they shut, keyed the same way, so a repaint under a
+  // working agent — and a trip to another changeset and back — finds each file
+  // as it was left.
+  const fileFolds = new Map(); // changeset key → core/diff.js createFileFolds
   const triageProject = projectId || (scope && scope.project_id) || null;
   let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
@@ -503,6 +508,13 @@ export function mountGitPane(
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus, review });
 
+  /** The open changeset's folds, made the first time the reader touches it. */
+  const foldsHere = () => {
+    const key = String(selected);
+    if (!fileFolds.has(key)) fileFolds.set(key, createFileFolds());
+    return fileFolds.get(key);
+  };
+
   // Disagreeing with the pass. Only a run has a pass to disagree with (and a
   // run_id to name in the RPC), so a bare worktree or the primary checkout
   // mounts none and its stack draws no offers.
@@ -569,9 +581,12 @@ export function mountGitPane(
   const renderChangeset = (detailHost) => {
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
+    const folds = foldsHere();
     const stackFor = (files, patch) => ({
       commentable,
       noiseExpanded: noiseExpanded.has(String(selected)),
+      expanded: folds.expanded,
+      collapsed: folds.collapsed,
       changedSince: changedSinceChangeset(reviewStamps, selected, files),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
@@ -1126,21 +1141,13 @@ export function mountGitPane(
     // review plug owns the detail pane it owns its comments too — this layer
     // must not also claim them, or one tap would write two comments.
     if (!reviewMounted && commentLayer && commentLayer.handleClick(event)) return;
-    // Diff folding, shared by every detail (uncommitted, commit, review plug):
-    // the filename bar toggles a full collapse; a click on a capped body
-    // expands it. Controls in the bar (⋯, ✎) keep their jobs.
-    const fhead = target.closest(".fhead");
-    if (fhead && !target.closest("button, input, label")) {
-      const file = fhead.closest(".file");
-      if (file) {
-        file.classList.toggle("collapsed");
-        file.classList.remove("capped");
-        return;
-      }
-    }
-    const cappedFile = target.closest(".file.capped");
-    if (cappedFile) {
-      cappedFile.classList.remove("capped");
+    // Diff folding for the changesets this pane draws: the filename bar shuts
+    // the file (and shows a shut one again), a press on a capped body opens
+    // it. Controls in the bar (⋯, ✎) keep their jobs. The fold is state, so
+    // the press moves the file's key and the changeset repaints from it —
+    // which is why the review plug, whose stack it does not own, does its own.
+    if (!reviewMounted && foldPressed(target)) {
+      render();
       return;
     }
     // Any other click disarms a stale confirm before doing its own job.
@@ -1149,6 +1156,22 @@ export function mountGitPane(
       showMore();
       return;
     }
+  };
+
+  /** Answer a press on a file's fold affordance by moving its key in the open
+   *  changeset's folds. Returns whether the press was one — the caller
+   *  repaints, since nothing else drives what a file is wearing. */
+  const foldPressed = (target) => {
+    const fhead = target.closest(".fhead");
+    const file = target.closest(".file[data-key]");
+    if (!file) return false;
+    if (fhead && !target.closest("button, input, label")) {
+      foldsHere().pressedHead(file.dataset.key);
+      return true;
+    }
+    if (!file.classList.contains("capped")) return false;
+    foldsHere().open(file.dataset.key);
+    return true;
   };
 
   /** A permanent scope rejection replaces the pane body (there is nothing to

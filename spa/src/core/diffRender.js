@@ -6,6 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
+import { fileKey } from "./diff.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
@@ -100,10 +101,11 @@ function overrideButtonHtml(mark) {
  *  table sits inside a .dscroll box so the code scrolls horizontally while the
  *  .fhead header stays fixed.
  *
- *  Folding contract (wired by the mounting view): every file starts `capped`
- *  (max-height + fade); a click on the capped body expands it, a click on the
- *  .fhead toggles `collapsed` (header only). `commentable` adds the
- *  whole-file comment control to the header.
+ *  Folding contract: every file starts `capped` (max-height + fade); the
+ *  mounting view's handler answers a press on the capped body by opening the
+ *  file and a press on the .fhead by shutting it, both by moving its key in
+ *  the sets below. `commentable` adds the whole-file comment control to the
+ *  header.
  *
  *  Re-review options (all opt-in; omitting them keeps the output byte-identical
  *  so the poll-repaint freeze contract holds): `changedSince` is a Set of paths
@@ -112,43 +114,55 @@ function overrideButtonHtml(mark) {
  *  files render `collapsed` instead of `capped` — collapsed wins); and
  *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header.
  *
+ *  Folds are the reader's, and they arrive as state: `expanded` and
+ *  `collapsed` are sets of file keys (core/diff.js fileKey) the reader opened
+ *  and shut, and `viewed` shuts a file besides ticking its box. Nothing here
+ *  reads a class list back — the render is a function of those sets.
+ *
  *  `fileMenu` puts the file's own destructive verbs behind a ⋯ in the header —
  *  where per-file discard lives now that the stage checkboxes are gone (commit
  *  is commit-all). It is `{ openPath, pendingConfirm }`: only the named file's
  *  menu is open, and a matching `discard:<path>` confirm renders armed, so the
  *  existing two-click confirm idiom is what fires it. */
-export function diffFilesHtml(
-  files,
-  {
-    commentable = false,
-    changedSince = null,
-    viewed = null,
-    withViewedToggle = false,
-    fileMenu = null,
-    overridable = false,
-  } = {},
-) {
+export function diffFilesHtml(files, options = {}) {
+  return files.map((file) => diffFileHtml(file, options)).join("");
+}
+
+/** The fold one file wears, from the reader's state alone: what they shut (or
+ *  ticked off as read) is collapsed, what they opened is whole, and everything
+ *  else is the capped peek a file starts at. */
+function foldClassOf(file, { expanded, collapsed, viewed }) {
+  const key = fileKey(file);
+  if ((collapsed && collapsed.has(key)) || (viewed && viewed.has(file.path))) return "collapsed";
+  return expanded && expanded.has(key) ? "" : "capped";
+}
+
+/** One file of a changeset: its header, its rows, and the fold the reader left
+ *  it in. `data-key` names the element and the state entry alike; while the
+ *  file is open it also carries `data-expanded`, which is what the patch in
+ *  core/domPatch.js reads to leave an expansion alone. */
+export function diffFileHtml(file, options = {}) {
+  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false } = options;
+  const lang = langForPath(file.path);
+  const key = fileKey(file);
+  const isViewed = viewed ? viewed.has(file.path) : false;
+  const foldClass = foldClassOf(file, options);
+  const classes = ["file", foldClass].filter(Boolean).join(" ");
+  const openMark = foldClass === "" ? " data-expanded" : "";
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
-  return files
-    .map((f) => {
-      const lang = langForPath(f.path);
-      const isViewed = viewed ? viewed.has(f.path) : false;
-      const foldClass = isViewed ? "collapsed" : "capped";
-      const changedChip = changedSince && changedSince.has(f.path) ? `<span class="fchanged">changed since your review</span>` : "";
-      const viewedToggle = withViewedToggle
-        ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(f.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
-        : "";
-      return `
-      <div class="file ${foldClass}" data-file="${esc(f.path)}"><div class="fhead"><span class="fpath">${esc(f.path)}</span><span class="fb ${f.status}">${f.status}</span>
-        <span class="pm"><span class="a">+${f.add}</span> <span class="d">−${f.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(f.path, fileMenu)}</div>
-        <div class="dscroll"><table>${diffRowsHtml(f.rows, lang, {
-          maskDotenv: isDotenvPath(f.path),
-          hunkMarks: f.triageHunks || null,
+  const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
+  const viewedToggle = withViewedToggle
+    ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(file.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
+    : "";
+  return `
+      <div class="${classes}" data-file="${esc(file.path)}" data-key="${esc(key)}"${openMark}><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(file.path, fileMenu)}</div>
+        <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
+          maskDotenv: isDotenvPath(file.path),
+          hunkMarks: file.triageHunks || null,
           overridable,
         })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
-    })
-    .join("");
 }
 
 /** The file header's ⋯ and, when this file's menu is the open one, its verbs.

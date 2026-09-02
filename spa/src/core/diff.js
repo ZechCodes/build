@@ -33,6 +33,44 @@ export function parseDiff(patch) {
   return files;
 }
 
+// ---- file identity ---------------------------------------------------------
+
+/** The name one file of a patch answers to: its path, plus its status, so a
+ *  rename's delete and its add are two files rather than one name claimed
+ *  twice. It names both the element (`data-key`) and the reader's state for
+ *  it, which is what lets a repaint find the file it is holding. */
+export function fileKey(file) {
+  return `${file.status}:${file.path}`;
+}
+
+/** The folds of one changeset, as the reader left them.
+ *
+ *  Three states, two sets: a file the reader opened is in `expanded`, one they
+ *  shut is in `collapsed`, and one they have not touched is in neither — the
+ *  capped peek every file starts at. The render reads the sets; nothing reads
+ *  the class list back. */
+export function createFileFolds() {
+  const expanded = new Set();
+  const collapsed = new Set();
+  const open = (key) => {
+    expanded.add(key);
+    collapsed.delete(key);
+  };
+  const shut = (key) => {
+    collapsed.add(key);
+    expanded.delete(key);
+  };
+  return {
+    expanded,
+    collapsed,
+    open,
+    shut,
+    /** The file's header is one control: it shuts what is showing and shows
+     *  what is shut. */
+    pressedHead: (key) => (collapsed.has(key) ? open(key) : shut(key)),
+  };
+}
+
 // ---- hunk identity ---------------------------------------------------------
 //
 // A port of `patch_hunks` in bridge/src/diff.rs. The bridge assigns the ids a

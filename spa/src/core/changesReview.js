@@ -18,7 +18,7 @@ import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
-import { parseDiff } from "./diff.js";
+import { createFileFolds, parseDiff } from "./diff.js";
 import { diffStackHtml } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
@@ -100,6 +100,10 @@ export function createReviewPlug({
   let triageProject = null;
   let trustDial = false;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
+  // Which files the reviewer opened and which they shut. State, not a class
+  // list: the stack is drawn from it, so a poll that moves the diff leaves
+  // every fold where the reviewer put it.
+  const folds = createFileFolds();
   // Disagreeing with the pass: applied to the stack on the tap, sent after, and
   // held here only until the pass comes back carrying it.
   const overrides = submitOverride
@@ -169,6 +173,8 @@ export function createReviewPlug({
           commentable: editable,
           changedSince: changed,
           viewed: viewedFiles,
+          expanded: folds.expanded,
+          collapsed: folds.collapsed,
           withViewedToggle: editable,
           noiseExpanded,
           review:
@@ -196,8 +202,9 @@ export function createReviewPlug({
     wire();
   }
 
-  /** The filter and the per-file Viewed box. The filter repaints; Viewed folds
-   *  the file in place with NO repaint, so the choice survives the poll. */
+  /** The filter and the per-file Viewed box. Both are the reviewer's state and
+   *  both repaint from it — the choice survives the poll because the stack is
+   *  drawn from what they chose, not from what a press left in the DOM. */
   function wire() {
     host.onchange = (event) => {
       const target = event.target;
@@ -210,21 +217,13 @@ export function createReviewPlug({
       }
       if (!target.classList.contains("fviewed-box")) return;
       const path = target.dataset.file;
-      const fileElement = target.closest(".file");
-      if (target.checked) {
-        viewedFiles.add(path);
-        if (fileElement) {
-          fileElement.classList.add("collapsed");
-          fileElement.classList.remove("capped");
-        }
-        return;
-      }
-      viewedFiles.delete(path);
-      if (fileElement) fileElement.classList.remove("collapsed");
+      if (target.checked) viewedFiles.add(path);
+      else viewedFiles.delete(path);
+      render();
     };
-    // Folding belongs to the Changes pane around this plug; what is this plug's
-    // own is revealing a masked secret, opening the noise group, and the
-    // comment affordances (✎, a line tap, the tray's remove control).
+    // What this plug answers for: revealing a masked secret, the noise group,
+    // the triage overlay's controls, the comment affordances (✎, a line tap,
+    // the tray's remove control), and the folds of the stack it draws.
     host.onclick = (event) => {
       if (toggleSecretSpoiler(event.target)) return;
       if (event.target.closest(".noisehead")) {
@@ -252,8 +251,27 @@ export function createReviewPlug({
         render();
         return;
       }
-      if (trayMounted && commentLayer) commentLayer.handleClick(event);
+      if (trayMounted && commentLayer && commentLayer.handleClick(event)) return;
+      // Folding, which this plug owns because it owns this stack: a press on
+      // the filename bar shuts the file, a press on a capped body opens it,
+      // and the repaint that follows draws both from the sets.
+      if (foldPressed(event.target)) render();
     };
+  }
+
+  /** Move the pressed file's key in the folds. Returns whether the press was a
+   *  fold at all — the caller repaints, since nothing else says what a file is
+   *  wearing. */
+  function foldPressed(target) {
+    const file = target.closest(".file[data-key]");
+    if (!file) return false;
+    if (target.closest(".fhead") && !target.closest("button, input, label")) {
+      folds.pressedHead(file.dataset.key);
+      return true;
+    }
+    if (!file.classList.contains("capped")) return false;
+    folds.open(file.dataset.key);
+    return true;
   }
 
   // The local cache's slot for this surface's aggregate diff, keyed by the

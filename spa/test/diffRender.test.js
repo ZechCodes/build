@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { diffFilesHtml, diffRowsHtml, diffStackHtml } from "../src/core/diffRender.js";
+import { fileKey } from "../src/core/diff.js";
 
 const files = [
   {
@@ -255,5 +256,43 @@ describe("diffStackHtml — collapse, never hide", () => {
 
   it("says so when there is nothing at all", () => {
     expect(diffStackHtml([])).toContain("No file changes");
+  });
+});
+
+// The fold a file wears is a function of the reader's state, not of the class
+// list a press left behind: `expanded` and `collapsed` are sets of file keys,
+// and `viewed` still shuts a file the reader ticked off.
+describe("folds the reader owns", () => {
+  const files = [
+    { path: "a.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] },
+    { path: "b.js", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "y" }] },
+  ];
+  const keyA = fileKey(files[0]);
+
+  it("names every file with its key, beside the path the comments anchor to", () => {
+    const html = diffFilesHtml(files);
+    expect(html).toContain(`data-file="a.js" data-key="${keyA}"`);
+  });
+
+  it("caps a file the reader has not opened", () => {
+    expect(diffFilesHtml(files)).toContain('class="file capped" data-file="a.js"');
+  });
+
+  it("expands the file whose key the reader opened, and marks it for the patch guard", () => {
+    const html = diffFilesHtml(files, { expanded: new Set([keyA]) });
+    expect(html).toContain('class="file" data-file="a.js"');
+    expect(html).toContain("data-expanded");
+    expect(html).toContain('class="file capped" data-file="b.js"');
+  });
+
+  it("collapses the file the reader shut", () => {
+    const html = diffFilesHtml(files, { collapsed: new Set([keyA]) });
+    expect(html).toContain('class="file collapsed" data-file="a.js"');
+  });
+
+  it("keeps a viewed file collapsed even once it has been opened", () => {
+    const html = diffFilesHtml(files, { viewed: new Set(["a.js"]), expanded: new Set([keyA]) });
+    expect(html).toContain('class="file collapsed" data-file="a.js"');
+    expect(html).not.toContain("data-expanded");
   });
 });

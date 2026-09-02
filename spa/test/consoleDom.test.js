@@ -34,6 +34,9 @@ vi.mock("../src/terminal/pane.js", () => ({
   },
 }));
 
+const notifyError = vi.fn();
+vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
+
 const { App } = await import("../src/app.js");
 const { mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
 const { markConsoleTerminal, takeConsoleTerminal } = await import("../src/core/consoleModel.js");
@@ -76,6 +79,7 @@ beforeEach(() => {
   manager.closeTerminal.mockReset().mockResolvedValue(undefined);
   manager.attachTerminal.mockReset().mockResolvedValue({ snapshot: "", cursor: 0 });
   manager.detach.mockReset();
+  notifyError.mockClear();
   App.call = vi.fn(async (method, params) => {
     calls.push({ method, params });
     if (method === "branch.get") return branchRow;
@@ -303,13 +307,47 @@ describe("a console with no terminals", () => {
     expect(region().querySelector(".console-body").textContent).toBe("");
   });
 
-  it("opens on the terminal that could not be created, to say why", async () => {
+  it("says why a terminal could not be opened, and opens no empty panel for it", async () => {
     manager.createTerminal.mockRejectedValue(new Error("no such directory"));
     await mount();
     region().querySelector(".console-new").click();
     await flush();
+    expect(notifyError).toHaveBeenCalledWith("Could not open a terminal", "no such directory");
+    expect(size()).toBe("collapsed");
+  });
+
+  it("stays shut while it is still listing a checkout it remembers as open", async () => {
+    localStorage.setItem("build.console.size.branch:p1:build/login", "half");
+    let listed = null;
+    manager.listTerminals.mockReturnValue(new Promise((resolve) => {
+      listed = () => resolve([{ term_id: "term-1" }]);
+    }));
+    panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "build/login" });
+    await flush();
+
+    expect(size()).toBe("collapsed");
+    expect(region().querySelector(".console-body").textContent).toBe("");
+
+    listed();
+    await flush();
     expect(size()).toBe("half");
-    expect(region().textContent).toContain("no such directory");
+  });
+
+  it("reopens at the size it was left at, not at half, once it has been shut", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+    await mount();
+    await open();
+    region().querySelector(".console-grow").click();
+    await flush();
+    expect(size()).toBe("full");
+
+    await open();
+    expect(size()).toBe("collapsed");
+    panel.dispose();
+
+    await mount();
+    await open();
+    expect(size()).toBe("full");
   });
 });
 

@@ -10,9 +10,11 @@ import {
   consoleTakesKey,
   grownConsoleSize,
   markConsoleTerminal,
+  readConsoleReopenSize,
   readConsoleSize,
   takeConsoleTerminal,
   toggledConsoleSize,
+  writeConsoleReopenSize,
   writeConsoleSize,
 } from "../src/core/consoleModel.js";
 import { memoryStorage, refusingStorage } from "./memoryStorage.js";
@@ -48,6 +50,28 @@ describe("the three sizes", () => {
     expect(grownConsoleSize("collapsed")).toBe("full");
     expect(grownConsoleSize("half")).toBe("full");
     expect(grownConsoleSize("full")).toBe("half");
+  });
+});
+
+describe("the size a console reopens at", () => {
+  const KEY = "branch:p1:build/login";
+
+  it("remembers the open size it was last drawn at, and never that it was shut", () => {
+    const storage = memoryStorage();
+    writeConsoleReopenSize(KEY, "full", storage);
+    expect(readConsoleReopenSize(KEY, storage)).toBe("full");
+
+    writeConsoleReopenSize(KEY, "collapsed", storage);
+
+    expect(readConsoleReopenSize(KEY, storage)).toBe("full");
+  });
+
+  it("opens at half where nothing was remembered, or nonsense was", () => {
+    const storage = memoryStorage();
+    expect(readConsoleReopenSize(KEY, storage)).toBe("half");
+    storage.setItem("build.console.reopen." + KEY, "sideways");
+    expect(readConsoleReopenSize(KEY, storage)).toBe("half");
+    expect(readConsoleReopenSize(KEY, refusingStorage())).toBe("half");
   });
 });
 

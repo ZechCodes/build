@@ -12,6 +12,10 @@
 export const CONSOLE_SIZES = ["collapsed", "half", "full"];
 
 const SIZE_KEY_PREFIX = "build.console.size.";
+const REOPEN_KEY_PREFIX = "build.console.reopen.";
+
+/** The size a console with no memory of an open one opens at. */
+export const DEFAULT_OPEN_SIZE = "half";
 
 /** A stored or passed-in size, or the shut bar — which is what an unreadable
  *  memory and a first visit both mean. */
@@ -43,14 +47,29 @@ export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
   }
 }
 
-/** The label, and the backtick: shut it, or put it back at the size it was last
- *  open at. A full overlay shuts — the way out of covering the work is to stop
- *  covering it — and a shut console is no size to reopen at, so a memory of one
- *  reads as half. */
-export function toggledConsoleSize(size, openSize = "half") {
-  if (consoleSize(size) !== "collapsed") return "collapsed";
-  const opened = consoleSize(openSize);
-  return opened === "collapsed" ? "half" : opened;
+const openSizeOf = (value) => (consoleSize(value) === "collapsed" ? DEFAULT_OPEN_SIZE : consoleSize(value));
+
+export function toggledConsoleSize(size, openSize = DEFAULT_OPEN_SIZE) {
+  return consoleSize(size) === "collapsed" ? openSizeOf(openSize) : "collapsed";
+}
+
+/** The size this device last had that work item's console OPEN at. Shut is not
+ *  one, so shutting the panel never costs the size it was left at. */
+export function readConsoleReopenSize(key, storage = globalThis.localStorage) {
+  try {
+    return openSizeOf(storage.getItem(REOPEN_KEY_PREFIX + key));
+  } catch {
+    return DEFAULT_OPEN_SIZE;
+  }
+}
+
+export function writeConsoleReopenSize(key, size, storage = globalThis.localStorage) {
+  if (consoleSize(size) === "collapsed") return;
+  try {
+    storage.setItem(REOPEN_KEY_PREFIX + key, consoleSize(size));
+  } catch {
+    /* private mode: the choice lasts the mount */
+  }
 }
 
 /** The grow control: bigger, until there is no bigger, and then back. */

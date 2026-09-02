@@ -11,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { MOTION_DURATION_MS } from "../src/core/motion.js";
-import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
+import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
 const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
@@ -37,7 +37,8 @@ vi.mock("../src/terminal/pane.js", () => ({
 }));
 
 const { App } = await import("../src/app.js");
-const { consoleHeadHtml, mountConsole, resetConsoleMemory } = await import("../src/core/console.js");
+const { consoleGrowHtml, consoleHeadHtml, consoleNewTerminalHtml, consoleTabHtml, mountConsole, resetConsoleMemory } =
+  await import("../src/core/console.js");
 
 const flush = async () => {
   for (let i = 0; i < 6; i++) await new Promise((done) => setTimeout(done, 0));
@@ -91,41 +92,60 @@ afterEach(async () => {
 
 describe("the head's markup", () => {
   it("makes the label itself the way in, with no caret beside it", () => {
-    const shut = consoleHeadHtml({ size: "collapsed" });
+    const shut = consoleHeadHtml("collapsed");
     expect(shut).toContain('id="console-toggle"');
     expect(shut).toContain('aria-expanded="false"');
     expect(shut).toContain("Console");
     expect(shut).not.toContain("console-caret");
     expect(shut).not.toContain("▼");
     expect(shut).not.toContain("▲");
-    expect(consoleHeadHtml({ size: "half" })).toContain('aria-expanded="true"');
+    expect(consoleHeadHtml("half")).toContain('aria-expanded="true"');
   });
 
-  it("hangs the + at the end of the tab strip", () => {
-    const head = parse(
-      consoleHeadHtml({
-        size: "half",
-        tabs: [
-          { id: "term-1", label: "Terminal 1" },
-          { id: "term-2", label: "Terminal 2" },
-        ],
-        selected: "term-2",
-      }),
-    );
-    const cells = [...head.querySelectorAll(".console-tabs > *")];
-    expect(cells.map((cell) => cell.className)).toEqual([
+  it("is an empty strip and an empty set of controls for the mount to paint into", () => {
+    const head = parse(consoleHeadHtml("half"));
+    expect(head.querySelector(".console-tabs").children).toHaveLength(0);
+    expect(head.querySelector(".console-controls").children).toHaveLength(0);
+  });
+
+  it("names a terminal by its ordinal, marks the one that is open, and offers to close it", () => {
+    const tab = parse(consoleTabHtml({ id: "term-2", label: "Terminal 2" }, "term-2")).firstElementChild;
+    expect(tab.className).toBe("console-tab active");
+    expect(tab.querySelector(".console-tab-name").textContent).toBe("Terminal 2");
+    expect(tab.querySelector(".console-tab-name").dataset.term).toBe("term-2");
+    expect(tab.querySelector("[data-close]").dataset.close).toBe("term-2");
+    expect(parse(consoleTabHtml({ id: "term-1", label: "Terminal 1" }, "term-2")).firstElementChild.className).toBe(
       "console-tab",
+    );
+  });
+
+  it("says which way the grow control would take the panel", () => {
+    expect(consoleGrowHtml("half")).toContain("Over the whole view");
+    expect(consoleGrowHtml("full")).toContain("Half the view");
+    expect(parse(consoleNewTerminalHtml()).firstElementChild.className).toBe("iconbtn console-new");
+  });
+});
+
+describe("the head the mount paints", () => {
+  it("hangs the + at the end of the tab strip, and the grow control on the far right", async () => {
+    await openConsole(["term-1", "term-2"]);
+    const cells = [...strip().children];
+    expect(cells.map((cell) => cell.className)).toEqual([
       "console-tab active",
+      "console-tab",
       "iconbtn console-new",
     ]);
-    expect(head.querySelector(".console-controls .console-grow")).toBeTruthy();
-    expect(head.querySelector(".console-controls .console-new")).toBeNull();
+    expect(region().querySelector(".console-controls .console-grow")).toBeTruthy();
+    expect(region().querySelector(".console-controls .console-new")).toBeNull();
   });
 
-  it("offers no + where there is no checkout to open a shell in", () => {
-    const head = parse(consoleHeadHtml({ size: "half", tabs: [], selected: null, scoped: false }));
-    expect(head.querySelector(".console-tabs")).toBeTruthy();
-    expect(head.querySelector(".console-new")).toBeNull();
+  it("offers no + where there is no checkout to open a shell in", async () => {
+    App.call = vi.fn(async () => ({ project_id: "p1", branch: "loose", run_id: null, worktree_id: null, primary: false }));
+    panel = mountConsole(region(), { kind: "branch", projectId: "p1", branch: "loose" });
+    await flush();
+    await settleMotion();
+    expect(strip()).toBeTruthy();
+    expect(region().querySelector(".console-new")).toBeNull();
   });
 });
 
@@ -211,6 +231,31 @@ describe("the strip as a keyed list", () => {
     });
     region().querySelector(".console-new").click();
     await flush();
+    await settleMotion();
     expect(scrolled).toBe(640);
+  });
+});
+
+describe("the panel under the head", () => {
+  const body = () => region().querySelector(".console-body");
+
+  it("grows the body open and shrinks it shut, letting the screen go only once it has", async () => {
+    await openConsole(["term-1"]);
+    expect(body().hidden).toBe(false);
+    expect(body().querySelector(".console-pane")).toBeTruthy();
+
+    started.length = 0;
+    region().querySelector(".console-bar").click();
+    await flush();
+    await motionBeat();
+
+    const shrinking = started.find((run) => run.element === body());
+    expect(shrinking.keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+    expect(body().querySelector(".console-pane")).toBeTruthy();
+
+    await settleMotion();
+    expect(body().hidden).toBe(true);
+    expect(body().innerHTML).toBe("");
+    expect(manager.detach).toHaveBeenCalledWith("term-1");
   });
 });

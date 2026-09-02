@@ -627,7 +627,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:12px; color:var(--dim);
   background:none; border:none; text-align:left; cursor:pointer; }
 .console-bar:hover { color:var(--ink2); }
-#console-region[data-size="collapsed"] .console-body { display:none; }
 
 /* One tab per terminal: an ordinal and the way to close it, in the same
    vocabulary the retired tab rows used (.tx is the shared closer).

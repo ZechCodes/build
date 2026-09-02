@@ -1,7 +1,7 @@
 import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { mountSplitMenu } from "./splitButton.js";
+import { SPLIT_BUTTON_SELECTOR, mountSplitMenu } from "./splitButton.js";
 import { notifyError } from "./notify.js";
 import { openModal } from "./modal.js";
 import {
@@ -47,8 +47,6 @@ import {
 
 const VIEWER_ABOVE_PILLS_HTML = `<div class="rail-surfaces-viewer" data-surface-viewer></div>
   <div class="rail-surfaces-pills" data-surface-pills></div>`;
-
-const MENU_SELECTOR = ".splitbtn";
 
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
@@ -161,7 +159,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 
   const wireMenusThePaintLeftBare = () => {
-    for (const menuElement of host.querySelectorAll(MENU_SELECTOR)) {
+    for (const menuElement of host.querySelectorAll(SPLIT_BUTTON_SELECTOR)) {
       if (menuClosersByElement.has(menuElement)) continue;
       const chooseAction = actionChooserFor(menuElement);
       if (!chooseAction) continue;
@@ -219,7 +217,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 
   const onViewerPress = (event) => {
-    if (event.target.closest(MENU_SELECTOR)) return;
+    if (event.target.closest(SPLIT_BUTTON_SELECTOR)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
       selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);

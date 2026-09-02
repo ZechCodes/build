@@ -89,6 +89,55 @@ const overlayRows = () => [...document.querySelectorAll(".modal-surface .surface
 const pressEscape = () =>
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
+const watchDocumentListeners = (watchedType) => {
+  let live = 0;
+  const add = document.addEventListener.bind(document);
+  const remove = document.removeEventListener.bind(document);
+  document.addEventListener = (type, ...rest) => {
+    if (type === watchedType) live += 1;
+    return add(type, ...rest);
+  };
+  document.removeEventListener = (type, ...rest) => {
+    if (type === watchedType) live -= 1;
+    return remove(type, ...rest);
+  };
+  return {
+    count: () => live,
+    stop: () => {
+      delete document.addEventListener;
+      delete document.removeEventListener;
+    },
+  };
+};
+
+const watchArmedTimeouts = () => {
+  const armed = new Set();
+  const arm = globalThis.setTimeout;
+  const clear = globalThis.clearTimeout;
+  globalThis.setTimeout = (run, delayMs, ...rest) => {
+    const id = arm(run, delayMs, ...rest);
+    if (delayMs > 0) armed.add(id);
+    return id;
+  };
+  globalThis.clearTimeout = (id) => {
+    armed.delete(id);
+    return clear(id);
+  };
+  return {
+    count: () => armed.size,
+    stop: () => {
+      globalThis.setTimeout = arm;
+      globalThis.clearTimeout = clear;
+    },
+  };
+};
+
+const finishedShells = () => {
+  const row = branchRow();
+  row.agents[0].surfaces.shells = [{ id: "sh1", description: "cargo test", state: "done", exit_code: 0, tail: [] }];
+  return row;
+};
+
 const mount = async () => {
   rail = mountAgentRail(document.getElementById("agent-rail"), {
     kind: "branch",
@@ -306,6 +355,56 @@ describe("the surface a menu option opens", () => {
     await flush();
 
     expect(overlay()).toBe(null);
+  });
+});
+
+describe("what the ⋯ leaves on the document", () => {
+  it("takes its outside-press watch with it when the rail is disposed", async () => {
+    await mount();
+    const watching = watchDocumentListeners("pointerdown");
+    menuCaret().click();
+    expect(watching.count()).toBe(1);
+
+    rail.dispose();
+    rail = null;
+
+    expect(watching.count()).toBe(0);
+    watching.stop();
+  });
+
+  it("takes it with it when a read changes what the menu offers", async () => {
+    await mount();
+    const watching = watchDocumentListeners("pointerdown");
+    menuCaret().click();
+
+    const gained = branchRow();
+    gained.agents[0].surfaces.checklist = [{ id: "c1", subject: "Land the fold", state: "in_progress" }];
+    await poll(gained);
+
+    expect(watching.count()).toBe(0);
+    watching.stop();
+  });
+});
+
+describe("collapsing the panel a surface stands over", () => {
+  it("takes the overlay and the pills' grace timer down with the panel", async () => {
+    await mount();
+    menuCaret().click();
+    menuItem(SHELL_ENTRY_KIND).click();
+    expect(overlay()).not.toBe(null);
+
+    const timers = watchArmedTimeouts();
+    await poll(finishedShells());
+    expect(timers.count()).toBe(1);
+
+    panel().querySelector(".rail-collapse").click();
+    await flush();
+
+    expect(document.getElementById("rail-panel")).toBe(null);
+    expect(overlay()).toBe(null);
+    expect(document.querySelector(".modal-scrim")).toBe(null);
+    expect(timers.count()).toBe(0);
+    timers.stop();
   });
 });
 

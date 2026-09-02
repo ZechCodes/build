@@ -78,9 +78,7 @@ import {
 } from "./thread.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
 import { surfaceMenuOptions } from "./agentSurfacesModel.js";
-import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
-import { el } from "../dom.js";
-import { patchElement } from "./domPatch.js";
+import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
 
@@ -255,13 +253,12 @@ export function railStatusHtml(status) {
   return lead + git;
 }
 
-/** Pure: the ⋯ that lists the surfaces this agent has something in, in the
- *  region the head keeps for it. The region is always written and the button
- *  only when there is something to open, so a poll that gains or loses a kind
- *  patches one span rather than rewriting the header a press is landing on. */
 function surfaceMenuHtml(options) {
-  const menu = options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
-  return `<span class="${SURFACE_MENU_CLASS}">${menu}</span>`;
+  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
+}
+
+function surfaceMenuRegionHtml(options) {
+  return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
 /** Pure: the panel's header — who you are talking to, the way down to the
@@ -287,7 +284,7 @@ export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
     ${tui}
-    ${surfaceMenuHtml(surfaceOptions)}
+    ${surfaceMenuRegionHtml(surfaceOptions)}
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
@@ -412,7 +409,7 @@ export function mountAgentRail(host, context) {
   let composerModelMenu = null;
   let surfacesBlock = null;
   let surfaceOverlay = null; // the surface a menu option opened, over the panel
-  let paintedSurfaceMenu = ""; // what the head's ⋯ last offered
+  let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
 
 
   const agentIdOf = (agent) => agent.id;
@@ -647,6 +644,8 @@ export function mountAgentRail(host, context) {
       host.insertBefore(panel, strip);
     } else if (!expanded && panel) {
       disposeTui();
+      disposeSurfaces();
+      closeSurfaceMenu?.();
       panel.remove();
     }
     if (expanded) paintPanel();
@@ -689,6 +688,7 @@ export function mountAgentRail(host, context) {
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();
+      closeSurfaceMenu?.();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat" ? composerRowHtml() : ""}`;
@@ -710,6 +710,7 @@ export function mountAgentRail(host, context) {
       // after the fact), or the last agent beside this one went away. Nothing
       // else in the head can move on a poll, and rewriting it every tick would
       // eat a press that landed mid-repaint.
+      closeSurfaceMenu?.();
       panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
         removable,
         hasTerminal,
@@ -727,7 +728,6 @@ export function mountAgentRail(host, context) {
   };
 
   const wireHead = (panel) => {
-    wireSurfaceMenu(panel);
     const tuiToggle = panel.querySelector(".rail-tui");
     if (tuiToggle) {
       // The head only draws this button for an agent that has a terminal, so a
@@ -1046,29 +1046,18 @@ export function mountAgentRail(host, context) {
     surfacesBlock.set(surfacesInFocus());
   };
 
-  /** The head's ⋯, rewritten only when what it offers changed. A read that
-   *  moved a count no reader can see must not shut the menu they just opened,
-   *  and patching rather than replacing keeps the open one open. */
   const paintSurfaceMenu = (panel) => {
     const region = panel.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
-    const html = surfaceMenuHtml(surfaceMenuOptionsInFocus());
-    if (html === paintedSurfaceMenu) return;
-    patchElement(region, el(html));
-    wireSurfaceMenu(panel, html);
-  };
-
-  const wireSurfaceMenu = (panel, html = surfaceMenuHtml(surfaceMenuOptionsInFocus())) => {
-    paintedSurfaceMenu = html;
-    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
-    if (!region || !region.querySelector(".caret")) return;
-    mountSplitMenu(region, { onChoose: openSurface });
+    closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
+      onChoose: openSurfaceOverlayForKind,
+    });
   };
 
   /** One surface, read as a modal over the panel. It is fed every snapshot the
    *  rail reads while it is up, and taken down when the reader dismisses it or
    *  the panel under it changes agents. */
-  const openSurface = (kind) => {
+  const openSurfaceOverlayForKind = (kind) => {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
       ...surfaceViewerHandlers(),
@@ -1537,6 +1526,7 @@ export function mountAgentRail(host, context) {
       unsubscribeFeed();
       disposeTui();
       disposeSurfaces();
+      closeSurfaceMenu?.();
       releaseFaces();
       host.innerHTML = "";
     },

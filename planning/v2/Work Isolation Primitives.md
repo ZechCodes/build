@@ -17,14 +17,20 @@ the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
   control shows. One constructor, `of(project, worktrees_root)`, wrapping `cow_availability` — a checkout and a volume
   are the only facts this module owns. Its hand-written `impl Serialize` emits §5.4's
   `{"cow": bool, "reason": string|null}`.
-- **`IsolationBackend`**: `kind`, `materialize`, `verify`, `publish`, `sync_base`, `remove`, `discover`, `prune`, each
-  answering `Result<_, WorktreeError>`. Each is whole — no caller sequences two for one outcome, `materialize` leaves
-  nothing behind on failure — and none knows of runs, plans, threads, settings or naming. Branch cutting and deletion
-  are absent by design: project-repo work, identical for both, so the façade owns them.
+- **`IsolationBackend`**: `kind`, `materialize`, `verify`, `publish`, `sync_base`, `remove`, `discover`, `prune`,
+  `holds_record`, each answering `Result<_, WorktreeError>`. Each is whole — no caller sequences two for one outcome,
+  `materialize` leaves nothing behind on failure — and none knows of runs, plans, threads, settings or naming. Branch
+  cutting and deletion are absent by design: project-repo work, identical for both, so the façade owns them.
 - **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive. Stale-record
   cleanup is a per-isolation variation — a linked worktree leaves a record in `.git/worktrees`, a clone leaves none — so
   it takes the shape of `publish`/`sync_base`: real work in `WorktreeBackend`, `Ok(())` in `CowBackend`, failure
   reported like its seven siblings. §3's "best effort" is the façade's policy; no backend logs or swallows.
+- **`holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>`** is the ninth primitive: `prune`'s
+  question asked of one name — does this backend hold a record of a checkout called `name`? `WorktreeBackend` answers
+  `repo.find_worktree(name).is_ok()`, `CowBackend` answers `false`, because a clone's only trace is its directory and
+  the façade already tests that. It exists so the façade can keep uniqueness without querying git's linked-worktree
+  registry itself: that query is one backend's record store, a clone has no counterpart, and without a primitive the
+  variation would sit outside the trait and `find_worktree` would survive in `worktree.rs`.
 - `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and
   `worktree.rs` re-exports it, so `orchestrator.rs`'s import is untouched and `isolation/` imports nothing from the
   façade. It gains `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`.
@@ -36,7 +42,8 @@ the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
 
 ## The two backends
 **`WorktreeBackend`** (`bridge/src/isolation/worktree.rs`). Stage 1, moved code. Owns every `git worktree` invocation
-and every `find_worktree` in the tree, `git worktree prune` included (§8.2) as its `prune`. `publish`/`sync_base` are
+and every `find_worktree` in the tree, `git worktree prune` included (§8.2) as its `prune` and the registry lookup the
+façade used to make as its `holds_record`. `publish`/`sync_base` are
 `Ok(())` — the project repo already holds the refs. Those no-ops, and `CowBackend`'s `Ok(())` `prune` (no record to go
 stale), make both isolations one call site.
 
@@ -55,19 +62,29 @@ volume, so that sentence is `app.rs`'s.
 ## `bridge/src/worktree.rs` — the façade
 **`describe_checkout(project_repo, path, base_branch, now)`** summarizes a checkout **from the checkout alone**, so a
 clone and a linked worktree are one function; `parse_worktree_block` shrinks to a path-only porcelain parser feeding the
-worktree backend's `discover`. `ExternalWorktree` gains `pub isolation: Isolation` from `Isolation::of(path)`, defaulted
-to `Worktree`; `external_worktrees_json` emits it as `"isolation"` (§4.1).
+worktree backend's `discover`. What makes "alone" true is that `ExternalWorktree.name` is the checkout's directory
+basename in both isolations: `resolve_worktree_name`'s registry walk (worktree.rs:901) is deleted, so no per-isolation
+name resolution is left unnamed in the façade. Build's own checkouts always had the two equal (`worktrees_root/<name>`
+is the path `restore` insists on) and `git worktree add <dir>` names a hand-made one after its directory; where they
+part — a linked worktree whose directory was renamed after registration — `remove` finds no record, which it already
+treats as success, and the rename made that record stale, so `prune` clears it. That is the one behavior change stage 1
+carries, named in spec §0.6 and §4.1. `ExternalWorktree` gains `pub isolation: Isolation` from `Isolation::of(path)`,
+defaulted to `Worktree`; `external_worktrees_json` emits it as `"isolation"` (§4.1).
 **`WorktreeManager`** is the one seam, same name and callers as today, holding `repo_path`, `worktrees_root` and both
 backends. `create*`/`restore` take the resolved `Isolation`; everything else reads `Isolation::of(path)`. It owns naming
-and uniqueness (`name_taken` unchanged, isolation-blind), branch cutting and deletion, the common `restore` checks,
-publish-before-read ordering, the union `discover`, `availability()` from `IsolationAvailability::of`, and
-`merge_into_base`, which absorbs `Orchestrator::merge_into_base` and `app::merge_external_branch`. No setting or record
-is read here. `backend(Isolation)` and `backend_of(&Path)` are the entire dispatch surface —
-nowhere else is there a `match Isolation` or a concrete backend field reached for. `pub fn prune(&self)` (§3) has no
-path to key on, so it asks every backend, `Isolation::ALL`, and is the one place that turns a backend's `Err` into a log
-line and carries on, which is why it alone returns nothing. `backend_of` on a path whose `Isolation::of` is `None` is
-`WorktreeError::NotABuildCheckout(path)`: no git command ran, so the variant rendering "git command failed" would name
-the wrong cause.
+and uniqueness — `name_taken` keeps its answer and its isolation-blindness but not its body: its `find_worktree` line
+(worktree.rs:249) and the same query in `create_on_branch`'s collision loop (worktree.rs:204) become `holds_record` over
+`Isolation::ALL`, and that fallible query makes `name_taken` return `Result<bool, WorktreeError>`. It owns branch
+cutting and deletion, the common `restore` checks, publish-before-read ordering, the union `discover`, `availability()`
+from `IsolationAvailability::of`, and `merge_into_base`, which absorbs `Orchestrator::merge_into_base` and
+`app::merge_external_branch`. No setting or record is read here. `backend(Isolation)` and `backend_of(&Path)` are the
+entire dispatch surface — nowhere else is there a `match Isolation` or a concrete backend field reached for.
+`pub fn prune(&self)` (§3) has no path to key on, so it asks every backend, `Isolation::ALL`, and is the one place that
+turns a backend's `Err` into a log line and carries on, which is why it alone returns nothing; the record clearing
+`restore` does before recreating a vanished checkout (worktree.rs:285) is that `prune`, and a record whose directory
+still stands is not stale, so `materialize`'s own error is then the honest answer. `backend_of` on a path whose
+`Isolation::of` is `None` is `WorktreeError::NotABuildCheckout(path)`: no git command ran, so the variant rendering
+"git command failed" would name the wrong cause.
 
 ## `AppState::resolved_isolation` — `bridge/src/app.rs`
 `fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` (§5.2) is

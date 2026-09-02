@@ -50,8 +50,10 @@ type, setting, wire field, control label.
    worktrees folder, a volume swap) a create falls back to a linked worktree and
    says so on the thread (§5.3). It never fails the dispatch.
 6. **Zero behavior change until stage 4.** Stages 1 and 2 are refactors verified
-   by the existing test suite; stage 3 adds the clone backend behind a probe with
-   no way to select it; stage 4 adds the setting; stage 5 the controls.
+   by the existing test suite, with the single exception named in §4.1 (a
+   checkout's `name` becomes its directory basename); stage 3 adds the clone
+   backend behind a probe with no way to select it; stage 4 adds the setting;
+   stage 5 the controls.
 7. **Absence is done.** Removal of a checkout that is already gone succeeds, for
    both backends, exactly as `WorktreeManager::remove` does today.
 8. **Security.** Clients never send paths. The marker file's contents are compared,
@@ -119,8 +121,8 @@ constructor, `IsolationAvailability::of(project, worktrees_root)`, wraps the pro
 
 ## 2. The backend trait (`bridge/src/isolation/mod.rs`)
 
-Everything a backend does is one of these eight primitives. If an implementation
-needs a ninth, the primitive is missing here, not in the caller.
+Everything a backend does is one of these nine primitives. If an implementation
+needs a tenth, the primitive is missing here, not in the caller.
 
 ```rust
 pub trait IsolationBackend: Send + Sync {
@@ -149,7 +151,7 @@ pub trait IsolationBackend: Send + Sync {
     fn sync_base(&self, project: &Path, path: &Path, base_branch: &str) -> Result<(), WorktreeError>;
 
     /// Delete the checkout at `path` and this backend's own record of it
-    /// (`name` is git's worktree name, the directory name). Absence is success.
+    /// (`name` is the checkout's directory name, §4.1). Absence is success.
     fn remove(&self, project: &Path, path: &Path, name: &str) -> Result<(), WorktreeError>;
 
     /// Canonical paths of every checkout of `project` this backend can find
@@ -159,6 +161,12 @@ pub trait IsolationBackend: Send + Sync {
     /// Clear this backend's stale records of checkouts that no longer exist
     /// (`git worktree prune` for linked worktrees; nothing for clones).
     fn prune(&self, project: &Path) -> Result<(), WorktreeError>;
+
+    /// Whether this backend holds a record of a checkout called `name`
+    /// (git's linked-worktree registry; a clone has no record, so `false`).
+    /// The façade's uniqueness check (§3) asks this instead of querying git's
+    /// registry itself, which would leave that variation outside the trait.
+    fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>;
 }
 ```
 
@@ -238,15 +246,19 @@ impl WorktreeManager {
 Rules:
 
 - `create*`/`restore` cut or find the branch in the project repo, choose the
-  directory `worktrees_root/<name>` (uniqueness = branch taken **or** git worktree
-  registered **or** directory exists, regardless of isolation, exactly as
-  `name_taken` does today), then call `backend(isolation).materialize`.
+  directory `worktrees_root/<name>` (uniqueness = branch taken **or** some backend
+  `holds_record` under the name **or** directory exists, regardless of isolation —
+  the answer `name_taken` gives today, asked of every backend instead of git's
+  registry directly, which makes it `Result<bool, WorktreeError>`), then call
+  `backend(isolation).materialize`.
 - `restore` of a checkout that still exists calls `backend(Isolation::of(path)).verify`,
   then `publish`, then the common checks that stay in the façade: HEAD is on the
   recorded branch, HEAD equals the project's branch tip, merge-base with the base
   branch exists. The recorded branch is the truth for what to restore; the
   **isolation to recreate with is the caller's resolved setting**, never a memory
-  of what the vanished checkout was.
+  of what the vanished checkout was. A vanished checkout's stale record is cleared
+  by `prune` before `materialize`; a record whose directory still stands is not
+  stale, and `materialize`'s own error is then the answer.
 - `remove` = `publish` when the checkout exists and `keep_branch` (a publish
   failure fails the removal: an abandon must not lose the branch), then
   `remove_checkout`, then `delete_branch_at` when `!keep_branch`. When the
@@ -284,6 +296,16 @@ worktree are described by one function. `ExternalWorktree` gains
 `None` — a foreign standalone repo never reaches here because no backend
 discovers it). `external_worktrees_json` emits it as `"isolation"`.
 
+`ExternalWorktree.name` is the checkout's **directory basename**, in both
+isolations, and `resolve_worktree_name`'s walk of git's registry is deleted — the
+last per-isolation name resolution in the façade. For every checkout Build makes
+the two are the same string (`worktrees_root/<name>` is the path `restore`
+insists on), and `git worktree add <dir>` names a hand-made one after its
+directory. The one case they part — a linked worktree whose directory was renamed
+after it was registered — is the exception to §0.6: `remove` finds no record under
+the basename, which it already treats as success, and the rename left that record
+stale, so `prune` clears it.
+
 ### 4.2 `WorktreeBackend` (stage 1, moved code, no behavior change)
 
 | primitive | body |
@@ -295,6 +317,7 @@ discovers it). `external_worktrees_json` emits it as `"isolation"`.
 | `remove` | today's `remove`: `remove_dir_all` if present, then prune git's record, NotFound is success |
 | `discover` | `git worktree list --porcelain` paths, primary excluded |
 | `prune` | `git worktree prune` |
+| `holds_record` | `repo.find_worktree(name).is_ok()` |
 
 ### 4.3 Probe: `cow_availability` (stage 3, `bridge/src/isolation/probe.rs`)
 
@@ -362,6 +385,7 @@ never used to build a path to operate on.
 | `remove` | `remove_dir_all(path)` if present; nothing else to clear |
 | `discover` | `read_dir(worktrees_root)`: every directory whose `Isolation::of` is `Cow` and whose marker names this project, canonicalized |
 | `prune` | `Ok(())` |
+| `holds_record` | `Ok(false)` — a clone's only trace is its directory, which the façade already tests |
 
 ---
 

@@ -53,16 +53,14 @@ export function isConfirmOpen() {
  *  destructive verbs); Enter confirms only when focus is on the ok button. */
 export function confirmAction(opts) {
   return new Promise((resolve) => {
-    // The modal's own ways out — Escape, the scrim — are a cancel, so the
-    // answer starts at false and only a press on Confirm moves it.
-    let answer = false;
+    let confirmed = false;
     const { body, close } = openModal({
       dialogHtml: confirmModalHtml(opts),
       scrimId: CONFIRM_SCRIM_ID,
-      onClose: () => resolve(answer),
+      onClose: () => resolve(confirmed),
     });
-    const settle = (confirmed) => {
-      answer = confirmed;
+    const settle = (answer) => {
+      confirmed = answer;
       close();
     };
     body.querySelector("[data-confirm-ok]").onclick = () => settle(true);

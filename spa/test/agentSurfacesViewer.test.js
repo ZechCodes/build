@@ -1,8 +1,4 @@
 // @vitest-environment jsdom
-// The viewer on its own, away from the pills: one kind, painted into whatever
-// host it is given, kept alive by `set`, and torn down clean. The pill row
-// mounts one of these; so does the conversation header's overlay.
-
 import { describe, expect, it, vi } from "vitest";
 import { mountSurfaceViewer } from "../src/core/agentSurfaces.js";
 import {

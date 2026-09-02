@@ -1184,7 +1184,7 @@ describe("the persisted window", () => {
   it("exports what it holds and seeds an empty cache back to it", () => {
     const cache = createThreadCache();
     cache.absorb({ items: [item(1), item(2)], has_more: true, thread_total: 5, thread_last_sequence: 2 });
-    const saved = cache.exportWindow();
+    const saved = cache.readWindow();
     expect(saved.items).toHaveLength(2);
     const revived = createThreadCache();
     expect(revived.seedWindow(saved)).toBe(true);
@@ -1196,14 +1196,14 @@ describe("the persisted window", () => {
     const cache = createThreadCache();
     cache.absorb({ items: [item(1), item(2)], has_more: false, thread_total: 2, thread_last_sequence: 2 });
     const revived = createThreadCache();
-    revived.seedWindow(cache.exportWindow());
+    revived.seedWindow(cache.readWindow());
     const folded = revived.absorb({ items: [item(3)], thread_total: 3 });
     expect(folded.items.map((held) => held.data.sequence)).toEqual([1, 2, 3]);
   });
 
   it("exports nothing while no window is open, and refuses a seed over one", () => {
     const cache = createThreadCache();
-    expect(cache.exportWindow()).toBeNull();
+    expect(cache.readWindow()).toBeNull();
     cache.absorb({ items: [item(1)], has_more: false, thread_total: 1, thread_last_sequence: 1 });
     expect(cache.seedWindow({ items: [item(9)], deliveredSequence: 9 })).toBe(false);
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });

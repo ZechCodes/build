@@ -785,9 +785,7 @@ describe("the conversation panel", () => {
     expect(panel().querySelector("#railinput")).toBeTruthy();
   });
 
-  // The conversation is where the panel lives; the screen is the one place it
-  // can go. A chip saying "you are here" is a control that does nothing.
-  it("offers no Chat chip and no mode group anywhere in the rail", async () => {
+  it("offers no Chat chip and no mode group: the panel already lives in the conversation", async () => {
     await mount();
     expect(railHost().querySelector('[data-mode="chat"]')).toBe(null);
     expect(railHost().querySelector(".rail-modes")).toBe(null);
@@ -809,9 +807,7 @@ describe("the conversation panel", () => {
     expect(tuiToggle().classList.contains("on")).toBe(false);
   });
 
-  // The face is remembered per work item, so coming back to the branch comes
-  // back to the screen the reader left open on it.
-  it("reopens on the screen when the rail is mounted again on the same branch", async () => {
+  it("remembers the face per work item, reopening on the screen the reader left the branch on", async () => {
     await mount();
     tuiToggle().click();
     await flush();

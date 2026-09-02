@@ -414,7 +414,7 @@ export function createThreadCache() {
     },
     // The window as a value the local cache can hold across sessions, or null
     // while none is open. What seedWindow takes back.
-    exportWindow() {
+    readWindow() {
       if (!accumulatedItems.length) return null;
       return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems };
     },

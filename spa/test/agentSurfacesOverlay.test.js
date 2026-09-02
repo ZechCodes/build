@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-// The conversation menu and what it opens.
-//
-// The header's ⋯ lists the surface kinds the agent actually has something in,
-// and choosing one opens that surface as a modal over the panel: the same
-// viewer the pills open, at whatever height it needs, fed every snapshot the
-// rail reads for as long as it is up.
-
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -340,9 +333,15 @@ describe("the surface a menu option opens", () => {
 
     expect(overlay()).toBe(null);
     expect(document.querySelector(".modal-scrim")).toBe(null);
+  });
 
-    // The viewer went with it: a later read paints no rows anywhere off screen.
+  it("takes its viewer with it, so a later read paints no rows off screen", async () => {
+    await openShells();
+    pressEscape();
+    await flush();
+
     await poll(branchRow());
+
     expect(document.querySelectorAll(".modal-surface")).toHaveLength(0);
   });
 

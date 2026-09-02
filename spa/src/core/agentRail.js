@@ -237,11 +237,7 @@ const startingLine = (status) =>
 /** Pure: the line pinned above the composer — a pulsing dot and how long the
  *  work item's turn has been running while one is in flight, how far it
  *  stands from upstream, and its diffstat. "" when the status has nothing to
- *  report, which the caller reads as "pin nothing."
- *
- *  Before the first tick of a turn the same slot carries the session that
- *  started, under the quiet dot the inbox gives a row nobody is waiting on:
- *  nothing is running yet, so nothing pulses. */
+ *  report, which the caller reads as "pin nothing." */
 export function railStatusHtml(status) {
   if (!status.working && !status.starting && !status.sync && !status.stat) return "";
   const lead = workingLine(status) || startingLine(status);
@@ -261,14 +257,6 @@ function surfaceMenuRegionHtml(options) {
   return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
 }
 
-/** Pure: the panel's header — who you are talking to, the way down to the
- *  agent's screen and back, and, on an agent that can be taken back off, the
- *  `−` that mirrors the strip's `+`.
- *
- *  The conversation is where the panel lives and the screen is the one place it
- *  can go, so the pair of chips is a single pressed-state button: pressed means
- *  the PTY is showing. `hasTerminal` false drops it rather than dimming it — an
- *  agent that reports its own work has no basement to offer. */
 export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
@@ -365,7 +353,7 @@ export function mountAgentRail(host, context) {
    *  a repaint that absorbed nothing new writes nothing. */
   const persistThreadWindow = () => {
     const address = threadCacheAddress();
-    const window = threadCache.exportWindow();
+    const window = threadCache.readWindow();
     if (!address || !window || window.deliveredSequence === lastPersistedSequence) return;
     lastPersistedSequence = window.deliveredSequence;
     writeCached(address, window);
@@ -491,12 +479,8 @@ export function mountAgentRail(host, context) {
       ? { name: "issue", projectId: context.projectId, id: context.issueId }
       : { name: "branch", projectId: context.projectId, branch: context.branch };
 
-  /// The conversation as it stands loaded, for the status line to read the
-  /// session's start off. The cache is the one that holds it, and reading it
-  /// here folds nothing in: a poll's payload reaches the window through
-  /// `threadWindow`, and this only looks at what that left.
   const loadedConversationItems = () => {
-    const window = threadCache.exportWindow();
+    const window = threadCache.readWindow();
     return (window && window.items) || [];
   };
 
@@ -730,9 +714,6 @@ export function mountAgentRail(host, context) {
   const wireHead = (panel) => {
     const tuiToggle = panel.querySelector(".rail-tui");
     if (tuiToggle) {
-      // The head only draws this button for an agent that has a terminal, so a
-      // press cannot ask for a face this agent cannot wear — paintPanel decides
-      // that, and this only records the choice.
       tuiToggle.onclick = () => {
         mode = mode === "tui" ? "chat" : "tui";
         panelModes.set(key, mode);
@@ -769,7 +750,7 @@ export function mountAgentRail(host, context) {
     // history the cache holds for this very agent — is what paints: a reader
     // in an active branch is never shown an empty frame the disk can fill.
     if (threadOwner !== selectedId) {
-      const saved = threadCache.exportWindow();
+      const saved = threadCache.readWindow();
       return saved ? { items: saved.items } : null;
     }
     if (!entity.thread) return null;
@@ -777,7 +758,7 @@ export function mountAgentRail(host, context) {
     // renders the window the cache holds (what absorb would answer anyway).
     // Only a delta that never seated a window re-renders itself as it came.
     if (entity.thread === absorbedThreadPayload) {
-      const held = threadCache.exportWindow();
+      const held = threadCache.readWindow();
       return held ? { ...entity.thread, items: held.items } : { ...entity.thread };
     }
     absorbedThreadPayload = entity.thread;
@@ -1005,10 +986,7 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
-  /** What a surface viewer is given, wherever it is mounted: the rail's one
-   *  send path for a row's action, and the rail's one way back to the thread
-   *  for a spawned call. The pills and the header's overlay share it. */
-  const surfaceViewerHandlers = () => ({
+  const surfaceViewerCallbacks = () => ({
     onSendMessage: (message) => send(message, []),
     onOpenThreadItem: (sequence) => {
       if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
@@ -1019,8 +997,6 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  /** The open agent's surfaces snapshot, or null while there is no agent or the
-   *  carrier reports none. */
   const surfacesInFocus = () => {
     const agent = agentInFocus();
     return (agent && agent.surfaces) || null;
@@ -1031,7 +1007,7 @@ export function mountAgentRail(host, context) {
   const mountSurfaces = (panel) => {
     const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
     if (!region) return;
-    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerHandlers() });
+    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerCallbacks() });
   };
 
   const disposeSurfaces = () => {
@@ -1054,13 +1030,10 @@ export function mountAgentRail(host, context) {
     });
   };
 
-  /** One surface, read as a modal over the panel. It is fed every snapshot the
-   *  rail reads while it is up, and taken down when the reader dismisses it or
-   *  the panel under it changes agents. */
   const openSurfaceOverlayForKind = (kind) => {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
-      ...surfaceViewerHandlers(),
+      ...surfaceViewerCallbacks(),
       onClose: () => {
         surfaceOverlay = null;
       },

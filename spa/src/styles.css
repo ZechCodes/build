@@ -982,9 +982,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }
 .modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
-/* A surface read as a modal (core/agentSurfaces.js openSurfaceOverlay) — the
-   viewer the pills open, without the rail region's height cap: the dialog
-   takes the room it can and the rows scroll inside it. */
 .modal.modal-surface { max-width:640px; max-height:78vh; display:flex; flex-direction:column; padding:14px 16px; }
 .modal-surface h3 { margin:0 0 8px; font-size:15px; }
 .modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }

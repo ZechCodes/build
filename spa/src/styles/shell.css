@@ -441,8 +441,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-mode { flex:none; border:1px solid var(--line); border-radius:6px; background:none;
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
-/* The ⋯ that lists this agent's surfaces. It sits at the top of the panel, so
-   its menu drops rather than rises. */
 .rail-surface-menu { flex:none; display:inline-flex; }
 .rail-surface-menu .caret { border-left:0; border-radius:6px; padding:3px 7px; color:var(--dim); }
 .rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; }

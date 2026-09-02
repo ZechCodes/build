@@ -38,9 +38,13 @@ function mountWaitlist(submitWaitlistEmail) {
   installWaitlist({ wrapperElement, submitWaitlistEmail });
 }
 
+function flushPendingWork() {
+  return new Promise((settle) => setTimeout(settle, 0));
+}
+
 function submitForm() {
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-  return new Promise((settle) => setTimeout(settle, 0));
+  return flushPendingWork();
 }
 
 beforeEach(() => {
@@ -94,7 +98,7 @@ describe("waitlist behaviour", () => {
     expect(submitButton.disabled).toBe(false);
   });
 
-  it("the submit button is disabled while the request is in flight", async () => {
+  it("the input and button are disabled and the button reads SENDING… while the request is in flight", async () => {
     let acceptRequest;
     const submitWaitlistEmail = vi.fn(
       () =>
@@ -104,33 +108,15 @@ describe("waitlist behaviour", () => {
     );
     mountWaitlist(submitWaitlistEmail);
     input.value = VALID_EMAIL;
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await new Promise((settle) => setTimeout(settle, 0));
-    expect(submitButton.disabled).toBe(true);
-    acceptRequest();
-    await new Promise((settle) => setTimeout(settle, 0));
-    expect(submitButton.disabled).toBe(false);
-    expect(successElement.hidden).toBe(false);
-  });
-
-  it("the input is disabled and the button reads SENDING… while the request is in flight", async () => {
-    let acceptRequest;
-    const submitWaitlistEmail = vi.fn(
-      () =>
-        new Promise((settle) => {
-          acceptRequest = () => settle(true);
-        }),
-    );
-    mountWaitlist(submitWaitlistEmail);
-    input.value = VALID_EMAIL;
-    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-    await new Promise((settle) => setTimeout(settle, 0));
+    await submitForm();
     expect(input.disabled).toBe(true);
     expect(submitButton.disabled).toBe(true);
     expect(submitButton.textContent).toBe(SENDING_LABEL);
     acceptRequest();
-    await new Promise((settle) => setTimeout(settle, 0));
+    await flushPendingWork();
     expect(input.disabled).toBe(false);
+    expect(submitButton.disabled).toBe(false);
+    expect(successElement.hidden).toBe(false);
   });
 
   it("an accepted submission restores the button label and shows the confirmation note beside the success line", async () => {

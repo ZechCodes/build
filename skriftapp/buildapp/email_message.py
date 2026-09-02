@@ -1,6 +1,7 @@
 """The outbound message value and the one sender every Build email goes through: compose
 renders both bodies from the shared layout, and send hands exactly those fields to the
-configured Skrift email backend."""
+configured Skrift email backend. A message with no unsubscribe link carries no
+List-Unsubscribe header and no footer."""
 
 from __future__ import annotations
 
@@ -24,7 +25,11 @@ class OutboundEmail:
     headers: dict[str, str]
 
 
-def list_unsubscribe_headers(unsubscribe_url: str, *, one_click: bool) -> dict[str, str]:
+def list_unsubscribe_headers(
+    unsubscribe_url: str | None, *, one_click: bool
+) -> dict[str, str]:
+    if unsubscribe_url is None:
+        return {}
     headers = {LIST_UNSUBSCRIBE_HEADER: f"<{unsubscribe_url}>"}
     if one_click:
         headers[LIST_UNSUBSCRIBE_POST_HEADER] = ONE_CLICK_HEADER_VALUE
@@ -37,7 +42,7 @@ def compose_email(
     subject: str,
     heading: str,
     paragraphs: tuple[str, ...],
-    unsubscribe_url: str,
+    unsubscribe_url: str | None,
     one_click: bool,
 ) -> OutboundEmail:
     return OutboundEmail(

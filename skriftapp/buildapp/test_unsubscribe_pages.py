@@ -1,11 +1,14 @@
 """Tests for the three unsubscribe pages: the confirm page asks before it mutates and
 posts back to the same token path, the removed and invalid pages carry no form at all,
-and every page renders through the landing shell so it looks like the rest of the site."""
+every page renders through the landing shell so it looks like the rest of the site, and
+the panel's markup lives in the landing directory rather than in Python."""
 
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
+from buildapp import unsubscribe_pages
 from buildapp.test_root_landing import (
     FOOTER_ASSURANCE_COPY,
     FOOTER_COPYRIGHT_COPY,
@@ -16,11 +19,12 @@ from buildapp.unsubscribe_pages import (
     CONFIRM_HEADING_TEMPLATE,
     CONFIRM_MESSAGE,
     CONFIRM_TITLE,
+    HOME_LINK_LABEL,
     INVALID_HEADING,
     INVALID_MESSAGE,
     INVALID_TITLE,
     REMOVED_HEADING,
-    REMOVED_MESSAGE,
+    REMOVED_MESSAGE_TEMPLATE,
     REMOVED_TITLE,
     render_confirm_page,
     render_invalid_page,
@@ -32,8 +36,13 @@ SIGNER_ADDRESS = "alice@example.com"
 TOKEN = "a-signed-token"
 FORM_TAG_PATTERN = r"<form([^>]*)>"
 ACTION_PATTERN = r'action="([^"]*)"'
-BUTTON_MARKUP = '<button class="button-primary" type="submit">REMOVE ME</button>'
-HOME_LINK = '<a href="/">home page</a>'
+BUTTON_MARKUP = f'<button class="button-primary" type="submit">{CONFIRM_BUTTON_LABEL}</button>'
+ADDRESS_MARKUP = (
+    f'<span class="title-accent unsubscribe-address">{SIGNER_ADDRESS}</span>'
+)
+HOME_LINK_MARKUP = f'<a href="/">{HOME_LINK_LABEL}</a>'
+MODULE_DOCSTRING_DELIMITER = '"""'
+UNSUBSCRIBE_PAGES_SOURCE_PATH = Path(unsubscribe_pages.__file__)
 MARKUP_INJECTION = "<b>"
 ESCAPED_INJECTION = "&lt;b&gt;"
 
@@ -48,11 +57,8 @@ def _every_page() -> tuple[str, ...]:
 
 def test_confirm_page_names_the_address_in_the_heading():
     html = render_confirm_page(SIGNER_ADDRESS, TOKEN)
-    assert CONFIRM_HEADING_TEMPLATE.format(email=SIGNER_ADDRESS) in html
-    assert (
-        f'<span class="title-accent unsubscribe-address">{SIGNER_ADDRESS}</span>'
-        in html
-    )
+    assert CONFIRM_HEADING_TEMPLATE.format(address=ADDRESS_MARKUP) in html
+    assert ADDRESS_MARKUP in html
 
 
 def test_confirm_page_has_one_post_form_targeting_the_token_path():
@@ -69,6 +75,14 @@ def test_confirm_page_has_one_remove_me_button():
     assert html.count("<button") == 1
     assert BUTTON_MARKUP in html
     assert CONFIRM_BUTTON_LABEL == "REMOVE ME"
+
+
+def test_the_panel_markup_lives_in_the_landing_directory_not_in_python():
+    source_after_the_docstring = UNSUBSCRIBE_PAGES_SOURCE_PATH.read_text().split(
+        MODULE_DOCSTRING_DELIMITER, 2
+    )[2]
+    assert "<" not in source_after_the_docstring
+    assert "class=" not in source_after_the_docstring
 
 
 def test_confirm_page_escapes_markup_in_the_address():
@@ -90,7 +104,7 @@ def test_removed_and_invalid_pages_contain_no_form():
 
 
 def test_removed_page_links_home():
-    assert HOME_LINK in render_removed_page()
+    assert HOME_LINK_MARKUP in render_removed_page()
 
 
 def test_every_page_links_the_landing_stylesheet_and_carries_the_footer():
@@ -108,18 +122,15 @@ def test_every_page_uses_no_absolute_url():
 
 def test_copy_is_verbatim():
     assert CONFIRM_TITLE == "Unsubscribe — Build"
-    assert CONFIRM_HEADING_TEMPLATE == (
-        'Remove <span class="title-accent unsubscribe-address">{email}</span> '
-        "from the list?"
-    )
+    assert CONFIRM_HEADING_TEMPLATE == "Remove {address} from the list?"
     assert CONFIRM_MESSAGE == (
         "You’ll stop getting Build email. You can join again any time."
     )
+    assert HOME_LINK_LABEL == "home page"
     assert REMOVED_TITLE == "Unsubscribed — Build"
     assert REMOVED_HEADING == "You’re off the list."
-    assert REMOVED_MESSAGE == (
-        "Nothing else will arrive. Changed your mind? Join again from the "
-        '<a href="/">home page</a>.'
+    assert REMOVED_MESSAGE_TEMPLATE == (
+        "Nothing else will arrive. Changed your mind? Join again from the {home_link}."
     )
     assert INVALID_TITLE == "Link expired — Build"
     assert INVALID_HEADING == "This link is no longer valid."
@@ -133,7 +144,7 @@ def test_copy_is_verbatim():
     removed_html = render_removed_page()
     assert f"<title>{REMOVED_TITLE}</title>" in removed_html
     assert REMOVED_HEADING in removed_html
-    assert REMOVED_MESSAGE in removed_html
+    assert REMOVED_MESSAGE_TEMPLATE.format(home_link=HOME_LINK_MARKUP) in removed_html
     invalid_html = render_invalid_page()
     assert f"<title>{INVALID_TITLE}</title>" in invalid_html
     assert INVALID_HEADING in invalid_html

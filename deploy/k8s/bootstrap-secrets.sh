@@ -40,6 +40,13 @@ require_env() { [[ -n "${!1:-}" ]] || { echo "bootstrap-secrets: $1 must be set 
 
 b64url() { base64 | tr -d '=\n' | tr '/+' '_-'; }
 
+# Secret values go into `.data` as base64 rather than into `.stringData` raw:
+# base64 is always JSON-safe, so a quote or a backslash in a password or a
+# display-name from address cannot break (or extend) the merge patch.
+b64_value() { printf %s "$1" | base64 | tr -d '\n'; }
+
+smtp_key_missing() { [[ -z "$(kc get secret build-app -o "jsonpath={.data.$1}")" ]]; }
+
 # Generate a VAPID (P-256) keypair into VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY:
 # the raw 32-byte private scalar and the 65-byte uncompressed public point,
 # both unpadded base64url — the formats pywebpush and PushManager.subscribe
@@ -99,16 +106,17 @@ fi
 # --- build-app smtp (add-if-missing) -----------------------------------------
 # The FastMail credentials and the owner notification address the waitlist mail
 # needs. They are never generated — the operator exports them before running.
-if [[ -z "$(kc get secret build-app -o 'jsonpath={.data.SMTP_USERNAME}')" ]]; then
+if smtp_key_missing SMTP_USERNAME || smtp_key_missing SMTP_PASSWORD \
+  || smtp_key_missing SMTP_FROM_ADDRESS || smtp_key_missing WAITLIST_NOTIFY_ADDRESS; then
   require_env SMTP_USERNAME
   require_env SMTP_PASSWORD
   require_env SMTP_FROM_ADDRESS
   require_env WAITLIST_NOTIFY_ADDRESS
-  kc patch secret build-app --type merge -p "{\"stringData\":{
-    \"SMTP_USERNAME\":\"${SMTP_USERNAME}\",
-    \"SMTP_PASSWORD\":\"${SMTP_PASSWORD}\",
-    \"SMTP_FROM_ADDRESS\":\"${SMTP_FROM_ADDRESS}\",
-    \"WAITLIST_NOTIFY_ADDRESS\":\"${WAITLIST_NOTIFY_ADDRESS}\"}}"
+  kc patch secret build-app --type merge -p "{\"data\":{
+    \"SMTP_USERNAME\":\"$(b64_value "$SMTP_USERNAME")\",
+    \"SMTP_PASSWORD\":\"$(b64_value "$SMTP_PASSWORD")\",
+    \"SMTP_FROM_ADDRESS\":\"$(b64_value "$SMTP_FROM_ADDRESS")\",
+    \"WAITLIST_NOTIFY_ADDRESS\":\"$(b64_value "$WAITLIST_NOTIFY_ADDRESS")\"}}"
   echo "secret build-app: SMTP keys added"
 fi
 

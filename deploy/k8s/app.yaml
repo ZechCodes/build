@@ -80,11 +80,14 @@ spec:
                   key: VAPID_SUBJECT
                   optional: true
             # Outbound email (waitlist confirmation + owner notification) over
-            # FastMail SMTP. NOT optional: app.yaml interpolates $SMTP_USERNAME,
-            # $SMTP_PASSWORD and $SMTP_FROM_ADDRESS at config load and the app
-            # refuses to boot when one is unset, so a partially-populated Secret
-            # must fail loudly here instead. bootstrap-secrets.sh adds all four
-            # together from the operator's environment.
+            # FastMail SMTP. The three SMTP keys are NOT optional: app.yaml
+            # interpolates $SMTP_USERNAME, $SMTP_PASSWORD and $SMTP_FROM_ADDRESS
+            # at config load and the app refuses to boot when one is unset, so a
+            # partially-populated Secret must fail loudly here instead. The notify
+            # address is optional — no yaml interpolates it and an absent value
+            # just disables the owner notification, so it must never be able to
+            # take the site down. bootstrap-secrets.sh adds all four together
+            # from the operator's environment.
             - name: SMTP_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -105,6 +108,7 @@ spec:
                 secretKeyRef:
                   name: build-app
                   key: WAITLIST_NOTIFY_ADDRESS
+                  optional: true
           # NOT `/`: that's Skrift's CMS home page, which 404s on a fresh site
           # (post-setup, pre-content) — failing readiness drops every traefik
           # route and liveness crash-loops the pod. /healthz always exists.

@@ -1,9 +1,9 @@
-"""The waitlist's outbound mail: the context a send needs (public base URL, signing key,
-owner notify address), the two messages a new signup produces — a confirmation to the
-signer and a one-line notification to the maintainer — and the background task that
-delivers them after the response has gone out. Delivery is deliberately fail-soft: the
-visitor already holds a 200 and the row is committed, so a failed send is logged and the
-remaining messages still go."""
+"""The waitlist's outbound mail: the context a send needs, the two messages a new signup
+produces — a confirmation to the signer, carrying the only unsubscribe link, and a
+one-line internal notification to the maintainer, carrying none — and the background task
+that delivers them after the response has gone out. Delivery is deliberately fail-soft:
+the visitor already holds a 200 and the row is committed, so a failed send is logged and
+the remaining messages still go."""
 
 from __future__ import annotations
 
@@ -72,15 +72,13 @@ def build_confirmation_email(*, to: str, unsubscribe_url: str) -> OutboundEmail:
     )
 
 
-def build_owner_notification_email(
-    *, to: str, signup_email: str, unsubscribe_url: str
-) -> OutboundEmail:
+def build_owner_notification_email(*, to: str, signup_email: str) -> OutboundEmail:
     return compose_email(
         to=to,
         subject=f"{OWNER_SUBJECT_PREFIX}{signup_email}",
         heading=OWNER_HEADING,
         paragraphs=(OWNER_PARAGRAPH_TEMPLATE.format(signup_email=signup_email),),
-        unsubscribe_url=unsubscribe_url,
+        unsubscribe_url=None,
         one_click=False,
     )
 
@@ -88,14 +86,20 @@ def build_owner_notification_email(
 def build_signup_emails(
     *, signup_email: str, context: WaitlistEmailContext
 ) -> tuple[OutboundEmail, ...]:
-    token = mint_unsubscribe_token(signup_email, context.secret_key)
-    url = unsubscribe_url(context.public_base_url, token)
-    messages = (build_confirmation_email(to=signup_email, unsubscribe_url=url),)
+    signup_unsubscribe_url = unsubscribe_url(
+        context.public_base_url,
+        mint_unsubscribe_token(signup_email, context.secret_key),
+    )
+    messages = (
+        build_confirmation_email(
+            to=signup_email, unsubscribe_url=signup_unsubscribe_url
+        ),
+    )
     if not context.notify_address:
         return messages
     return messages + (
         build_owner_notification_email(
-            to=context.notify_address, signup_email=signup_email, unsubscribe_url=url
+            to=context.notify_address, signup_email=signup_email
         ),
     )
 

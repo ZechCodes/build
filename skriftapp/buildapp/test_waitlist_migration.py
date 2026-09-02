@@ -10,7 +10,7 @@ from unittest.mock import patch
 import sqlalchemy as sa
 
 from buildapp.models import WaitlistSignup
-from buildapp.waitlist_email import MAX_WAITLIST_EMAIL_LENGTH
+from buildapp.waitlist_address import MAX_WAITLIST_ADDRESS_LENGTH
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parent.parent
@@ -75,4 +75,4 @@ def test_model_email_column_is_unique_and_capped_at_the_normalizer_maximum():
     email_column = WaitlistSignup.__table__.columns["email"]
     assert email_column.unique is True
     assert email_column.nullable is False
-    assert email_column.type.length == MAX_WAITLIST_EMAIL_LENGTH
+    assert email_column.type.length == MAX_WAITLIST_ADDRESS_LENGTH

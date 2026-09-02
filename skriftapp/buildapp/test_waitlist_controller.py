@@ -10,30 +10,23 @@ import asyncio
 import pytest
 from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import ClientException, SerializationException
+from litestar.status_codes import HTTP_200_OK
 from sqlalchemy.exc import IntegrityError
 
-from buildapp.email_test_support import FailingEmailBackend, RecordingEmailBackend
-from buildapp.models import WaitlistSignup
-from buildapp.waitlist_controller import WaitlistController
-from buildapp.waitlist_mail import (
-    CONFIRMATION_SUBJECT,
-    OWNER_SUBJECT_PREFIX,
-    WaitlistEmailContext,
+from buildapp.email_test_support import (
+    OWNER_ADDRESS,
+    FailingEmailBackend,
+    RecordingEmailBackend,
+    waitlist_email_context,
 )
+from buildapp.models import WaitlistSignup
+from buildapp.waitlist_controller import JOIN_ROUTE_PATH, WaitlistController
+from buildapp.waitlist_mail import CONFIRMATION_SUBJECT, OWNER_SUBJECT_PREFIX
 
 _DUPLICATE_EMAIL_ERROR = IntegrityError("INSERT", {}, Exception("duplicate"))
 
 NORMALISED_EMAIL = "alice@example.com"
 MIXED_CASE_EMAIL = "  Alice@Example.COM "
-OWNER_ADDRESS = "hi@zech.sh"
-
-
-def _context(notify_address: str = "") -> WaitlistEmailContext:
-    return WaitlistEmailContext(
-        public_base_url="https://getbuild.ing",
-        secret_key="the-signing-key",
-        notify_address=notify_address,
-    )
 
 
 class _StubSession:
@@ -74,7 +67,7 @@ def _join(body, session, *, context=None, email_backend=None):
             None,
             request=_StubRequest(body),
             db_session=session,
-            waitlist_email_context=context or _context(),
+            waitlist_email_context=context or waitlist_email_context(),
             email_backend=email_backend or RecordingEmailBackend(),
         )
     )
@@ -142,7 +135,7 @@ def test_malformed_body_raises_client_exception():
                 None,
                 request=_MalformedRequest(),
                 db_session=_StubSession(),
-                waitlist_email_context=_context(),
+                waitlist_email_context=waitlist_email_context(),
                 email_backend=RecordingEmailBackend(),
             )
         )
@@ -160,12 +153,10 @@ def test_join_route_is_public_and_carries_no_guard():
 
 
 def test_join_route_is_registered_at_api_waitlist():
-    assert set(WaitlistController.join.paths) == {"/api/waitlist"}
+    assert JOIN_ROUTE_PATH == "/api/waitlist"
+    assert set(WaitlistController.join.paths) == {JOIN_ROUTE_PATH}
     assert "POST" in WaitlistController.join.http_methods
-    assert WaitlistController.join.status_code == 200
-
-
-# ----- the confirmation mail --------------------------------------------------
+    assert WaitlistController.join.status_code == HTTP_200_OK
 
 
 def test_new_signup_schedules_the_confirmation():
@@ -184,7 +175,7 @@ def test_new_signup_also_notifies_the_owner_when_configured():
     response = _join(
         {"email": NORMALISED_EMAIL},
         _StubSession(),
-        context=_context(OWNER_ADDRESS),
+        context=waitlist_email_context(notify_address=OWNER_ADDRESS),
         email_backend=email_backend,
     )
     asyncio.run(response.background())
@@ -232,5 +223,5 @@ def test_a_failing_backend_still_leaves_the_response_ok_and_the_row_committed():
     )
     asyncio.run(response.background())
     assert response.content == {"ok": True}
-    assert WaitlistController.join.status_code == 200
+    assert WaitlistController.join.status_code == HTTP_200_OK
     assert session.committed is True

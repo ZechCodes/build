@@ -35,6 +35,17 @@ auth:
       label: Passkey
 rate_limit:
   enabled: true
+  rules:
+    - name: waitlist_join
+      match:
+        path: /api/waitlist
+        method: POST
+      key: ip
+      limits:
+        - limit: 3
+          per: minute
+        - limit: 20
+          per: day
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend
   from_address: $SMTP_FROM_ADDRESS

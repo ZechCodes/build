@@ -14,12 +14,12 @@ import pytest
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
-from buildapp.landing_page import SHELL_NAME
+from buildapp.landing_page import SHELL_NAME, slot_placeholder
 from buildapp.root_controller import (
     LANDING_DIR,
     LANDING_PAGE_NAME,
     WAITLIST_FRAGMENT_NAME,
-    WAITLIST_PLACEHOLDER,
+    WAITLIST_SLOT_NAME,
     RootController,
 )
 from buildapp.unsubscribe_pages import (
@@ -380,6 +380,13 @@ WAITLIST_WRAPPER_RULE = (
 WAITLIST_WRAPPER_MOBILE_RULE = ".waitlist{margin-inline:0;width:auto}"
 WAITLIST_SUBMITTED_RULE = ".waitlist:has(.waitlist-form[hidden]){max-width:none}"
 WAITLIST_INSTANCE_COUNT = 2
+WAITLIST_PLACEHOLDER = slot_placeholder(WAITLIST_SLOT_NAME)
+UNSUBSCRIBE_PANEL_RULES = (
+    ".unsubscribe-panel{padding-block:var(--cta-padding-block)}",
+    ".unsubscribe-panel .brand{justify-content:center}",
+    ".unsubscribe-action{margin-top:var(--space-form-top)}",
+    ".unsubscribe-address{text-transform:none}",
+)
 
 NAV_ELEMENT_PATTERN = r"<nav\b.*?</nav>"
 ANCHOR_HREF_PATTERN = r'href="#([^"]*)"'
@@ -674,12 +681,21 @@ def test_waitlist_confirmation_note_is_verbatim_and_hidden_beside_the_success_li
     html = _landing_html()
     assert html.count(WAITLIST_CONFIRMATION_MARKUP) == WAITLIST_INSTANCE_COUNT
     assert html.index(WAITLIST_SUCCESS_MARKUP) < html.index(WAITLIST_CONFIRMATION_MARKUP)
+    assert WAITLIST_CONFIRMATION_RULE in _rules_outside_media_blocks(
+        _landing_text(STYLESHEET_NAME)
+    )
 
 
 def test_the_sending_state_styles_the_disabled_button_from_the_opacity_token():
+    assert DISABLED_BUTTON_RULE in _rules_outside_media_blocks(
+        _landing_text(STYLESHEET_NAME)
+    )
+
+
+def test_the_unsubscribe_panel_centres_the_wordmark_with_the_rest_of_the_page():
     css = _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
-    assert DISABLED_BUTTON_RULE in css
-    assert WAITLIST_CONFIRMATION_RULE in css
+    for panel_rule in UNSUBSCRIBE_PANEL_RULES:
+        assert panel_rule in css
 
 
 def test_the_waitlist_component_is_written_once_and_rendered_at_both_placeholders():

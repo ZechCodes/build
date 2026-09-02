@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from skrift.auth.tokens import create_signed_token, verify_signed_token
 
-from buildapp.waitlist_email import normalize_waitlist_email
+from buildapp.waitlist_address import normalize_waitlist_address
 
 UNSUBSCRIBE_TOKEN_PURPOSE = "waitlist_unsubscribe"
 UNSUBSCRIBE_TOKEN_TTL_SECONDS = 5 * 365 * 24 * 60 * 60
@@ -33,7 +33,7 @@ def read_unsubscribe_token(token: str, secret_key: str) -> str | None:
     email = payload.get("email")
     if not isinstance(email, str):
         return None
-    return normalize_waitlist_email(email)
+    return normalize_waitlist_address(email)
 
 
 def unsubscribe_path(token: str) -> str:

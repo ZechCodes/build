@@ -1,20 +1,11 @@
-"""Root: the marketing landing page.
-
-GET / serves the static landing page; its CTA links into the SPA at /app/,
-which owns the auth gate. Landing assets live in ``buildapp/landing/`` — not in
-``buildapp/static/``, which the SPA build wipes (emptyOutDir) — and are served
-from /landing/* with the same traversal guard as the SPA assets. The page is
-CSP-clean: no inline script or style, every stylesheet and module a same-origin
-file. The document itself — head, stylesheet link, footer bar — belongs to
-``landing_page.render_shell``, which the unsubscribe pages render through too; this
-module owns only the landing body and its copy. The waitlist block appears twice on the
-page, so it is written once in ``waitlist.html`` and substituted into both placeholders
-when the page is read.
-"""
+"""Root: GET / renders the landing body through the shared page shell, and /landing/*
+serves the landing assets behind a traversal guard. The waitlist block appears twice on
+the page, so it is written once in ``waitlist.html`` and substituted into both slots."""
 
 import asyncio
 
 from litestar import Controller, get
+from litestar.enums import MediaType
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
@@ -28,7 +19,6 @@ from buildapp.landing_page import (
 LANDING_PAGE_NAME = "index.html"
 WAITLIST_FRAGMENT_NAME = "waitlist.html"
 WAITLIST_SLOT_NAME = "waitlist"
-WAITLIST_PLACEHOLDER = f"{{{{{WAITLIST_SLOT_NAME}}}}}"
 LANDING_TITLE = "Build — the agentic coding IDE · early access"
 LANDING_DESCRIPTION = (
     "Build is the agentic coding IDE for teams. It surfaces the work that needs you — "
@@ -65,7 +55,7 @@ class RootController(Controller):
     @get("/")
     async def root(self) -> Response:
         html = await asyncio.to_thread(render_landing_page)
-        return Response(html, media_type="text/html")
+        return Response(html, media_type=MediaType.HTML)
 
     @get("/landing/{asset_path:path}", sync_to_thread=True)
     def landing_asset(self, asset_path: str) -> Response:

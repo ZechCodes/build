@@ -1,17 +1,17 @@
 """The public, unauthenticated waitlist endpoints: joining the list and leaving it again.
-A duplicate email is an idempotent success, so the response never reveals whether an
-address is already on the list. Removal is authorised by the signed token in the
-unsubscribe link and by nothing else — no session, no guard, no CSRF field — because
-anyone holding the token already holds the email it names."""
+Removal is authorised by the signed token in the unsubscribe link and by nothing else."""
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 from litestar import Controller, Request, get, post
 from litestar.di import Provide
+from litestar.enums import MediaType
 from litestar.exceptions import ClientException, SerializationException
 from litestar.response import Response
+from litestar.status_codes import HTTP_200_OK, HTTP_404_NOT_FOUND
 from skrift.config import get_settings
 from skrift.lib.email_backends import EmailBackend
 from sqlalchemy import delete
@@ -25,7 +25,7 @@ from buildapp.unsubscribe_pages import (
     render_invalid_page,
     render_removed_page,
 )
-from buildapp.waitlist_email import normalize_waitlist_email
+from buildapp.waitlist_address import normalize_waitlist_address
 from buildapp.waitlist_mail import (
     WaitlistEmailContext,
     resolve_waitlist_email_context,
@@ -36,9 +36,8 @@ from buildapp.waitlist_unsubscribe_token import (
     read_unsubscribe_token,
 )
 
+JOIN_ROUTE_PATH = "/api/waitlist"
 UNSUBSCRIBE_ROUTE_PATH = f"{UNSUBSCRIBE_PATH_PREFIX}{{unsubscribe_token:str}}"
-HTML_MEDIA_TYPE = "text/html"
-NOT_FOUND_STATUS = 404
 
 
 def provide_waitlist_email_context() -> WaitlistEmailContext:
@@ -47,6 +46,14 @@ def provide_waitlist_email_context() -> WaitlistEmailContext:
 
 def provide_email_backend(request: Request) -> EmailBackend:
     return request.app.state.email_backend
+
+
+async def invalid_token_response() -> Response:
+    return Response(
+        await asyncio.to_thread(render_invalid_page),
+        media_type=MediaType.HTML,
+        status_code=HTTP_404_NOT_FOUND,
+    )
 
 
 class WaitlistController(Controller):
@@ -58,7 +65,7 @@ class WaitlistController(Controller):
         "email_backend": Provide(provide_email_backend, sync_to_thread=False),
     }
 
-    @post("/api/waitlist", status_code=200)
+    @post(JOIN_ROUTE_PATH, status_code=HTTP_200_OK)
     async def join(
         self,
         request: Request,
@@ -73,26 +80,25 @@ class WaitlistController(Controller):
         body = require_json_object(parsed_body)
         email_field = body.get("email")
         email = (
-            normalize_waitlist_email(email_field)
+            normalize_waitlist_address(email_field)
             if isinstance(email_field, str)
             else None
         )
         if email is None:
             raise ClientException("invalid email address")
         db_session.add(WaitlistSignup(email=email))
+        signup_email_task = None
         try:
             await db_session.commit()
         except IntegrityError:
             await db_session.rollback()
-            return Response({"ok": True})
-        return Response(
-            {"ok": True},
-            background=waitlist_signup_email_task(
+        else:
+            signup_email_task = waitlist_signup_email_task(
                 email_backend=email_backend,
                 signup_email=email,
                 context=waitlist_email_context,
-            ),
-        )
+            )
+        return Response({"ok": True}, background=signup_email_task)
 
     @get(UNSUBSCRIBE_ROUTE_PATH)
     async def unsubscribe_confirm(
@@ -102,16 +108,13 @@ class WaitlistController(Controller):
             unsubscribe_token, waitlist_email_context.secret_key
         )
         if email is None:
-            return Response(
-                render_invalid_page(),
-                media_type=HTML_MEDIA_TYPE,
-                status_code=NOT_FOUND_STATUS,
-            )
+            return await invalid_token_response()
         return Response(
-            render_confirm_page(email, unsubscribe_token), media_type=HTML_MEDIA_TYPE
+            await asyncio.to_thread(render_confirm_page, email, unsubscribe_token),
+            media_type=MediaType.HTML,
         )
 
-    @post(UNSUBSCRIBE_ROUTE_PATH, status_code=200)
+    @post(UNSUBSCRIBE_ROUTE_PATH, status_code=HTTP_200_OK)
     async def unsubscribe_remove(
         self,
         unsubscribe_token: str,
@@ -122,13 +125,11 @@ class WaitlistController(Controller):
             unsubscribe_token, waitlist_email_context.secret_key
         )
         if email is None:
-            return Response(
-                render_invalid_page(),
-                media_type=HTML_MEDIA_TYPE,
-                status_code=NOT_FOUND_STATUS,
-            )
+            return await invalid_token_response()
         await db_session.execute(
             delete(WaitlistSignup).where(WaitlistSignup.email == email)
         )
         await db_session.commit()
-        return Response(render_removed_page(), media_type=HTML_MEDIA_TYPE)
+        return Response(
+            await asyncio.to_thread(render_removed_page), media_type=MediaType.HTML
+        )

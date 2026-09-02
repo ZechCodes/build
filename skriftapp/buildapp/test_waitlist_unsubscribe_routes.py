@@ -7,25 +7,18 @@ from __future__ import annotations
 import asyncio
 import inspect
 
-from buildapp.unsubscribe_pages import CONFIRM_MESSAGE, INVALID_HEADING, REMOVED_HEADING
-from buildapp.waitlist_controller import WaitlistController
-from buildapp.waitlist_mail import WaitlistEmailContext
-from buildapp.waitlist_unsubscribe_token import (
-    UNSUBSCRIBE_PATH_PREFIX,
-    mint_unsubscribe_token,
-)
+from litestar.enums import MediaType
+from litestar.status_codes import HTTP_200_OK, HTTP_404_NOT_FOUND
 
-SIGNING_KEY = "waitlist-unsubscribe-route-key"
+from buildapp.email_test_support import SECRET_KEY, waitlist_email_context
+from buildapp.unsubscribe_pages import CONFIRM_MESSAGE, INVALID_HEADING, REMOVED_HEADING
+from buildapp.waitlist_controller import UNSUBSCRIBE_ROUTE_PATH, WaitlistController
+from buildapp.waitlist_unsubscribe_token import mint_unsubscribe_token
+
 SIGNER_ADDRESS = "alice@example.com"
 UNREADABLE_TOKEN = "not.asignedtoken"
-NOT_FOUND = 404
-OK = 200
 
-EMAIL_CONTEXT = WaitlistEmailContext(
-    public_base_url="https://getbuild.ing",
-    secret_key=SIGNING_KEY,
-    notify_address="",
-)
+EMAIL_CONTEXT = waitlist_email_context()
 
 
 class _StubSession:
@@ -42,7 +35,7 @@ class _StubSession:
 
 
 def _valid_token(address: str = SIGNER_ADDRESS) -> str:
-    return mint_unsubscribe_token(address, SIGNING_KEY)
+    return mint_unsubscribe_token(address, SECRET_KEY)
 
 
 def _confirm(token: str):
@@ -70,11 +63,11 @@ def _bound_parameters(statement) -> list:
 
 def test_get_with_valid_token_renders_the_confirm_page_with_200():
     response = _confirm(_valid_token())
-    assert response.media_type == "text/html"
+    assert response.media_type == MediaType.HTML
     assert SIGNER_ADDRESS in response.content
     assert CONFIRM_MESSAGE in response.content
     assert response.status_code is None
-    assert WaitlistController.unsubscribe_confirm.status_code == OK
+    assert WaitlistController.unsubscribe_confirm.status_code == HTTP_200_OK
 
 
 def test_get_never_touches_the_database():
@@ -84,7 +77,7 @@ def test_get_never_touches_the_database():
 
 def test_get_with_bad_token_renders_the_invalid_page_with_404():
     response = _confirm(UNREADABLE_TOKEN)
-    assert response.status_code == NOT_FOUND
+    assert response.status_code == HTTP_404_NOT_FOUND
     assert INVALID_HEADING in response.content
 
 
@@ -101,14 +94,14 @@ def test_post_for_an_address_with_no_row_still_renders_the_removed_page_with_200
     session = _StubSession()
     response = _remove(_valid_token("nobody@example.com"), session)
     assert response.status_code is None
-    assert WaitlistController.unsubscribe_remove.status_code == OK
+    assert WaitlistController.unsubscribe_remove.status_code == HTTP_200_OK
     assert REMOVED_HEADING in response.content
 
 
 def test_post_with_bad_token_renders_the_invalid_page_with_404_and_no_database_call():
     session = _StubSession()
     response = _remove(UNREADABLE_TOKEN, session)
-    assert response.status_code == NOT_FOUND
+    assert response.status_code == HTTP_404_NOT_FOUND
     assert INVALID_HEADING in response.content
     assert session.executed == []
     assert session.committed is False
@@ -121,12 +114,11 @@ def test_post_reads_no_request_body():
 
 
 def test_routes_are_registered_at_the_unsubscribe_path_with_get_and_post():
-    route_path = f"{UNSUBSCRIBE_PATH_PREFIX}{{unsubscribe_token:str}}"
-    assert set(WaitlistController.unsubscribe_confirm.paths) == {route_path}
+    assert set(WaitlistController.unsubscribe_confirm.paths) == {UNSUBSCRIBE_ROUTE_PATH}
     assert "GET" in WaitlistController.unsubscribe_confirm.http_methods
-    assert set(WaitlistController.unsubscribe_remove.paths) == {route_path}
+    assert set(WaitlistController.unsubscribe_remove.paths) == {UNSUBSCRIBE_ROUTE_PATH}
     assert "POST" in WaitlistController.unsubscribe_remove.http_methods
-    assert WaitlistController.unsubscribe_remove.status_code == OK
+    assert WaitlistController.unsubscribe_remove.status_code == HTTP_200_OK
 
 
 def test_routes_carry_no_guard():

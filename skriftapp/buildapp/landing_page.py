@@ -15,10 +15,14 @@ def read_landing_file(name: str) -> str:
     return (LANDING_DIR / name).read_text()
 
 
+def slot_placeholder(slot_name: str) -> str:
+    return f"{{{{{slot_name}}}}}"
+
+
 def fill_slots(template: str, slots: dict[str, str]) -> str:
     filled = template
     for slot_name, value in slots.items():
-        filled = filled.replace(f"{{{{{slot_name}}}}}", value)
+        filled = filled.replace(slot_placeholder(slot_name), value)
     return filled
 
 

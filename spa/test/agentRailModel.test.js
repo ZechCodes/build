@@ -18,6 +18,7 @@ import {
   startupStatusLine,
   statText,
   workingClock,
+  runningClock,
   workingSeconds,
 } from "../src/core/agentRailModel.js";
 
@@ -259,6 +260,16 @@ describe("the pinned status line above the composer", () => {
     expect(workingClock(90000)).toBe("25h 00m");
   });
 
+  it("runs the status clock as M:SS, and as H:MM from ninety minutes on", () => {
+    expect(runningClock(42)).toBe("0:42");
+    expect(runningClock(60)).toBe("1:00");
+    expect(runningClock(750)).toBe("12:30");
+    expect(runningClock(3600)).toBe("60:00");
+    expect(runningClock(5399)).toBe("89:59");
+    expect(runningClock(5400)).toBe("1:30");
+    expect(runningClock(90000)).toBe("25:00");
+  });
+
   it("says the additions and deletions, and nothing when there are none", () => {
     expect(statText({ insertions: 42, deletions: 7 })).toBe("+42 −7");
     expect(statText({ insertions: 0, deletions: 0, files_changed: 0 })).toBe("");
@@ -275,7 +286,7 @@ describe("the pinned status line above the composer", () => {
 
   it("reads all three off the row, each blank when the row does not know it", () => {
     const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
-    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", starting: "", sync: "↑2", stat: "+42 −7" });
+    expect(railWorkStatus(row, NOW)).toEqual({ working: "12:30", starting: "", sync: "↑2", stat: "+42 −7" });
     expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
     expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
   });
@@ -316,7 +327,7 @@ describe("the startup line the status slot borrows from the conversation", () =>
       stat: "",
     });
     expect(railWorkStatus({ working_time: { since: ago(5), seconds: 5 } }, NOW, items)).toEqual({
-      working: "5s",
+      working: "0:05",
       starting: "",
       sync: "",
       stat: "",

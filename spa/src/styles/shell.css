@@ -523,8 +523,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-status-lead { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; }
 .rail-status-lead[hidden] { display:none; }
-.rail-status-text { display:inline-block; min-width:7ch; font-variant-numeric:tabular-nums; }
-.rail-status-working { color:var(--accent); }
+.rail-status-text { display:inline-block; min-width:5ch; font-variant-numeric:tabular-nums; }
+.rail-status-working { color:transparent; background-clip:text; -webkit-background-clip:text;
+  background-image:linear-gradient(100deg, var(--accent) 0 38%, color-mix(in srgb, var(--accent) 45%, white) 50%, var(--accent) 62% 100%);
+  background-size:220% 100%; animation:clock-shimmer 2.6s linear infinite; }
+@keyframes clock-shimmer { from { background-position:120% 0; } to { background-position:-120% 0; } }
+@media (prefers-reduced-motion: reduce) { .rail-status-working { animation:none; background-image:none; color:var(--accent); } }
 .rail-status-starting { color:var(--dim); }
 /* The one word the row gives up when the pills want the room. It collapses
    along its width, so it needs a box of its own to have a width at all. */

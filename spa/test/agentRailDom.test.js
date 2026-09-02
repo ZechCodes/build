@@ -1239,7 +1239,7 @@ describe("the pinned status line above the composer", () => {
     await mount();
     expect(railStatus().hidden).toBe(false);
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
-    expect(railStatusLead().textContent).toBe("Working 12m 30s");
+    expect(railStatusLead().textContent).toBe("Working 12:30");
   });
 
   it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
@@ -1300,7 +1300,7 @@ describe("the pinned status line above the composer", () => {
       }],
       projects: [],
     });
-    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).toContain("Working 0:05");
     expect(railStatus().textContent).not.toContain("Run started");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
   });
@@ -1333,10 +1333,10 @@ describe("the pinned status line above the composer", () => {
       projects: [],
     });
     await mount();
-    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).toContain("Working 0:05");
     vi.advanceTimersByTime(3000);
     await flush();
-    expect(railStatus().textContent).toContain("Working 8s");
+    expect(railStatus().textContent).toContain("Working 0:08");
   });
 });
 
@@ -2307,8 +2307,18 @@ describe("the one status row", () => {
     const clockRule = shellCss.match(/\.rail-status-text \{[^}]*\}/);
     expect(clockRule).not.toBe(null);
     expect(clockRule[0]).toContain("font-variant-numeric:tabular-nums");
-    expect(clockRule[0]).toMatch(/min-width:\d+ch/);
+    expect(clockRule[0]).toContain("min-width:5ch");
     expect(clockRule[0]).toContain("display:inline-block");
+  });
+
+  it("shimmers the running clock, and holds still under reduced motion", () => {
+    expect(shellCss).toMatch(/@keyframes clock-shimmer/);
+    const shimmerRule = shellCss.match(/\n\.rail-status-working \{ color:transparent;[^}]*\}/);
+    expect(shimmerRule[0]).toContain("animation:clock-shimmer");
+    expect(shimmerRule[0]).toContain("background-clip:text");
+    const stillRule = shellCss.match(/@media \(prefers-reduced-motion: reduce\) \{ \.rail-status-working \{[^}]*\}/);
+    expect(stillRule).not.toBe(null);
+    expect(stillRule[0]).toContain("animation:none");
   });
 
   it("reads Working and the clock while no pill is asking for the room", async () => {
@@ -2316,7 +2326,7 @@ describe("the one status row", () => {
     await mount();
     await motionSettled();
 
-    expect(railStatusLead().textContent).toBe("Working 1m 25s");
+    expect(railStatusLead().textContent).toBe("Working 1:25");
     expect(workingWord().hidden).toBe(false);
   });
 
@@ -2327,7 +2337,7 @@ describe("the one status row", () => {
     await motionSettled();
 
     expect(workingWord().hidden).toBe(true);
-    expect(railStatusLead().textContent).toContain("1m 25s");
+    expect(railStatusLead().textContent).toContain("1:25");
 
     payload = branchRow({ agents: [agent({ surfaces: {} })] });
     vi.advanceTimersByTime(2000);

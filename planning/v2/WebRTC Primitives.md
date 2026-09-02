@@ -16,9 +16,10 @@ by name.
 ## Bridge (Rust)
 ### `OutboundEnvelope` and `CarrierHandle` — `bridge/src/carrier.rs` (new, stage 1)
 `OutboundEnvelope` is one encrypted frame bound for one session, before any wire wrapper exists:
-`{ session_id: String, envelope: Envelope }`. It **replaces** `tungstenite::Message` as what every outbound queue
-carries; a carrier reads `session_id` off it and needs nothing else, which is why one DataChannel carries the app
-session and the terminal session at once. `CarrierHandle` is one live wire: a process-unique `CarrierId` plus the
+`{ session_id: String, envelope: Envelope }`. It is what the envelope-only outbound queue carries; the relay writer
+merges that queue with its own control-message channel (`session_accept`, `heartbeat`, `Ping`, the auth reply), so
+no `tungstenite::Message` reaches a `SessionSender`. A carrier reads `session_id` off it and needs nothing else,
+because one wire already carries every client session of the device, as the relay socket does today. `CarrierHandle` is one live wire: a process-unique `CarrierId` plus the
 `UnboundedSender<OutboundEnvelope>` draining to it, built once per relay socket generation and once per DataChannel.
 It **hides** that ids exist from every caller but the registry, and is what makes "which carriers does this session
 ride" answerable — the question the teardown rule asks.
@@ -87,9 +88,11 @@ pub trait SessionPeer: Send + Sync {
 ```
 - **`answer` carries the ICE servers and is the only thing that does.** The first call configures the peer, a later one
   reconfigures it and restarts ICE — how fresh TURN credentials arrive. No second verb, no copy of the list elsewhere.
-- **`signaling` is the caller's own sender, passed on every call, never owned from construction.** It carries the `out`
-  of the carrier the offer arrived on; a peer that captured one at construction would push `rtc.ice` candidates into a
-  dead relay socket generation after the bridge reconnects. The peer keeps only the latest.
+- **`signaling` is the caller's own sender, passed with every offer, never owned from construction.** It carries the
+  `out` of the carrier the offer arrived on; a peer that captured one at construction would push `rtc.ice` candidates
+  into a dead relay socket generation after the bridge reconnects. The peer keeps only the latest. Candidates trickled
+  between a bridge relay reconnect and the next offer still go to the old generation; that is accepted because trickle
+  finishes shortly after `answer` and an ICE restart re-answers with a fresh sender.
 - **Hides** webrtc-rs, DTLS, ICE state, the negotiated channels, chunking, backpressure and the winning candidate-pair
   type; `app.rs` sees three async methods and an SDP string, so stage 2 ships against a recording stub.
 

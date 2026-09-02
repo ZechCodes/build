@@ -538,27 +538,47 @@ beside, and match the export `mountAgentSurfaces`.
   - `openSurfaceKind(surfaces, wanted)` — the pill that is open, clamped to one
     that still exists, `null` for none. The mirror of
     `agentRailModel.js`'s `selectAgentId`.
-  - `agentRows(agents)` — **the one agent normaliser.** The shared `agent` entry
-    list normalised to what one row draws, each row carrying a `key`. It is
-    exported in its own right rather than reachable only through
-    `surfaceRows`, because the workflow viewer's right-hand pane paints agents
-    that arrive nested under a phase and must go through the SAME arm as the
-    subagent list — otherwise two differently-shaped inputs reach
-    `agentRowHtml` and two different rules assign keys.
-  - `surfaceRows(kind, surfaces)` — **the one normaliser, four arms**, keyed by
+  - `agentRows(agents, reading)` — **the one agent normaliser.** The shared
+    `agent` entry list normalised to what one row draws, each row carrying a
+    `key`. It is exported in its own right rather than reachable only through
+    `surfaceRows`, because the workflow viewer paints agents that arrive nested
+    under a phase and must go through the SAME arm as the subagent list —
+    otherwise two differently-shaped inputs reach `agentRowHtml` and two
+    different rules assign keys. `reading` is `{ nowMs, modelLabel }`: what a
+    row needs from outside the wire to be printable. Both are resolved HERE —
+    the row arrives carrying `clock` and the catalog's display name in `model`,
+    so no renderer looks either up and no viewer curries a label through four
+    layers.
+  - `surfaceRows(kind, surfaces, reading)` — **the one normaliser, four arms**, keyed by
     the top-level kind. Every kind's entries come out of here as rows, and
     every row carries a `key`: the entry's `id` when it has one,
     `${kind}-${index}` when it does not. This is where defensive keying lives,
     so no viewer and no renderer ever computes a key and `patchList` never sees
-    a duplicate. The `subagents` arm is `agentRows(surfaces.subagents)` — a
-    delegation, not a second copy.
-  - `workflowPhases(workflow, selectedIndex)` — returns
-    `{ phases, agents }`: the phase list with done counts, and the selected
-    phase's agents ALREADY through `agentRows`. The viewer never sees a raw
+    a duplicate. The `subagents` arm is `agentRows(surfaces.subagents, reading)`
+    — a delegation, not a second copy.
+  - `workflowPhases(surfaces, selectedWorkflowIndex, reading)` — the chosen
+    workflow as a **stack**: one keyed phase per phase, in order, each carrying
+    `title`, `done`, `total`, `state`, `open`, its clock, and its agents
+    ALREADY through `agentRows` in `rows`. The viewer never sees a raw
     `phases[].agents` array, so a phase's agents are keyed by the same rule as
     every other row — including the two id-less queued agents a fresh workflow
     carries (`bridge/tests/fixtures/claude-stream/workflow.jsonl:40`), which
-    would otherwise collide and throw at `spa/src/core/patchList.js:134`.
+    would otherwise collide and throw at `spa/src/core/patchList.js:134`. The
+    phase's `rows` are read ONCE and its done count, its state and its `open`
+    flag are derived from them; nothing walks the raw agents a second time to
+    ask what `rowHasFinished` already answers.
+  - `entryClock(startedAt, durationMs, running, nowMs)` — **the one clock
+    rule**, in the one form (`runningClock`'s `M:SS` / `H:MM`), for every timed
+    thing in every viewer: `{ clock, runningSince }`, ticking from `startedAt`
+    while it runs, frozen at what it took once it does not, empty for a thing
+    that never timed anything. `runningSince` is what the mount's ticker reads
+    off the span; the renderer never chooses between two forms, so a frozen row
+    and a frozen phase read alike. The second argument is a duration, not an
+    end stamp, because the wire's subagent entries carry `duration_ms` with no
+    `started_at` (`bridge/tests/fixtures/agent_surfaces.json`).
+  - `phaseClock(agents, running, nowMs)` — one phase's wall-clock span through
+    `entryClock`: from its earliest agent's `started_at` to the last end. The
+    `running` flag is computed once, in `workflowPhases`, and handed in.
   - `surfaceStateMark(kind, state)` — the state token → `{ mark, label }`
     lookup for every kind (agent, workflow, shell, checklist). One table. No
     kind renderer maps a state itself, and this returns a mark NAME, never a
@@ -593,17 +613,31 @@ beside, and match the export `mountAgentSurfaces`.
 - **Exports**
   - `surfacePillsHtml(pills, openKind)` — the toggle row. Pressed state is
     `aria-pressed` on a button, not a rebuild.
-  - `agentRowHtml(row)` — **the one row renderer for both viewers.** Label,
-    model, state mark, last tool, tokens/calls/duration, result or error, and
-    the action menu. Workflow agents and subagents are one shape (spec:
-    "One shape means one row renderer"), so there is exactly one of these, and
-    it takes only what `agentRows` produced. It emits `data-call-sequence` when
-    the row has one and nothing at all when it does not — which is how the
-    subagent viewer gets a pressable row and the workflow viewer gets
-    byte-identical markup without a second renderer.
-  - `workflowViewerHtml(workflow, phases, agents)` — phases on the left, the
-    selected phase's agents on the right, each agent through `agentRowHtml`.
-    Both arguments come out of `workflowPhases`.
+  - `agentRowHtml(row, { compact })` — **the one row renderer for both
+    viewers.** Label, state mark and clock on the head; the model's display
+    name and what the agent is doing beneath it; tokens and calls on a third
+    line only where there is width for them (`compact` is the rail). Workflow
+    agents and subagents are one shape (spec: "One shape means one row
+    renderer"), so there is exactly one of these, and it takes only what
+    `agentRows` produced — no label lookup, no clock arithmetic. A row that
+    names a spawning call gets ONE small control carrying
+    `data-call-sequence`; the row itself never carries it, so the jump and the
+    press that opens a clipped label out can never take each other's press.
+  - `clippedTextHtml(text, { className, lines, pressable })` — **the one place
+    clipped text is built.** The whole of it rides in `title`, so a hover reads
+    it; a press target says so in `role="button"`, a tab stop and
+    `aria-expanded`, and opens out under the reader's `data-expanded` mark. A
+    clip inside a `summary` or a `button` is `pressable: false`: the press
+    there belongs to the fold or the button that holds it, and the mount's
+    handler matches press targets alone.
+  - `phaseSectionHtml(phase)` — one phase: a `details` the reader owns, its
+    summary saying the title, the done count and the phase clock, over an EMPTY
+    keyed container for its agents. It renders no rows: the nested keyed paint
+    is their only source, so a repaint does not render every row twice and
+    throw one copy away.
+  - `workflowViewerHtml(workflow, choices, phases)` — the choices, the head,
+    then the phase stack, each phase through `phaseSectionHtml`. Every argument
+    comes out of the model.
   - `subagentViewerHtml(rows)` — the same rows through the same `agentRowHtml`;
     the press target is the `data-call-sequence` attribute that renderer
     already emits.
@@ -626,10 +660,14 @@ beside, and match the export `mountAgentSurfaces`.
   `spa/src/core/patchList.js:134` is unreachable by construction;
   `mountSplitMenu` (`core/splitButton.js`) for the row menus; `notifyError`
   (`core/notify.js`) for a refused action.
-- **The workflow viewer is two keyed lists, not one** the phase list and the
-  selected phase's agent list are separate `patchList` containers, both keyed
-  by `row.key`. Nothing paints a phase's agents as part of a phase row, so a
-  phase changing its selection does not rebuild the agent rows under it.
+- **The workflow viewer is one keyed list of `details`, each holding one keyed
+  list of rows.** Both are `patchList` containers keyed by `row.key`. Nothing
+  paints a phase's agents as part of a phase's own markup, so a phase that
+  changes rebuilds no row under it, and a row that changes moves no fold.
+- **Which fold stands open is the reader's, after one opening.** The mount
+  keeps the phase keys it has opened; every paint opens a phase that is running
+  and not yet in that set — so a phase that starts running later opens too —
+  and never opens one twice, so a fold the reader shut stays shut.
 - **Never** polls, calls `App.call` directly, or knows which entity it is on:
   it is handed `onSendMessage(text)` by the rail and posts through the rail's
   one send path (`agentRail.js`'s `post`), so an action is an ordinary message
@@ -652,6 +690,26 @@ beside, and match the export `mountAgentSurfaces`.
   focus survive every surface repaint, exactly as `syncComposer` already
   guarantees for the interrupt shape; never lets the viewer grow unbounded (it
   is height-capped with its own scroll).
+
+### `domPatch.js`
+
+- **Layer** spa
+- **File** `spa/src/core/domPatch.js` (existing)
+- **Responsibility** Two marks on the live page that no render describes, and
+  the rule that the patch leaves what they cover alone.
+- **Exports**
+  - `EXPANDED_ATTRIBUTE` (`data-expanded`) — **what the reader chose to see in
+    full.** `agentSurfacesRender.js` never writes it; `agentSurfaces.js` is the
+    only module in the viewer that sets or clears it, on a press or an Enter /
+    Space, together with the `aria-expanded` that mirrors it. The patch keeps
+    BOTH on an element that carries the mark, so a poll tick cannot tell a
+    screen reader a clip is shut while it stands open.
+  - `KEYED_LIST_ATTRIBUTE` (`data-keyed-list`) — **what another painter keys.**
+    A container wearing it has its attributes patched and its children left
+    alone: they answer to `patchList`, which knows their names, and this patch
+    would read the render's empty container as "they all left". It is what lets
+    `phaseSectionHtml` emit an empty agent list.
+- **Never** learns a surface kind, a row shape or a selector from this feature.
 
 ### `outcomeMark.js`
 
@@ -762,6 +820,10 @@ beside, and match the export `mountAgentSurfaces`.
 | pill counts and the live dot | `surfacePills` | all four kinds |
 | which pill is open, remembered | `openSurfaceKind` + `readOpenSurface` / `writeOpenSurface` | all four kinds |
 | a row's key | `surfaceRows` / `agentRows` | all four viewers' `patchList` paints |
+| a timed thing's clock | `entryClock` (`phaseClock` for a phase's span) | every row and every phase in every viewer |
+| a model id → its display name | `agentRows`'s `reading.modelLabel` | every agent row, both viewers |
+| clipped text and its press target | `clippedTextHtml` | every label, detail and note in every viewer |
+| the reader's expansion mark | `EXPANDED_ATTRIBUTE` (`domPatch.js`), written only by `agentSurfaces.js` | every clip in every viewer |
 | a row's action menu | `rowActions` + `menuButtonMarkup` + `mountSplitMenu` | all four kinds |
 | keyed painting | `patchList` | all four viewers |
 | call id → thread sequence, answered or not | `Tab::call_sequences` | `parent_sequence`, `call_sequence`, the pump's `Closed` arm |

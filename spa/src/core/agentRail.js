@@ -622,20 +622,44 @@ export function mountAgentRail(host, context) {
     return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
   };
 
+  /// The agent we asked about is not on this work item any more — its run was
+  /// replaced, or it was retired. The daemon refuses rather than answering with
+  /// somebody else's conversation, so let the choice go and the next tick
+  /// reopens on whichever agent is here now. Without this the rail would ask
+  /// the same refused question forever.
+  const letGoOfRefusedAgent = (error, asked) => {
+    if (!asked || isProvisionalKey(asked)) return;
+    if (!/agent_id/.test((error && error.message) || "")) return;
+    openConversation(null);
+  };
+
+  /// A branch is read off whichever source knows most about it, and the only
+  /// source that knows about agents is the run behind it. A tick that cannot
+  /// resolve the run answers off the bare checkout instead — no run, no
+  /// conversation, no agents — and the next tick has all three back. Believing
+  /// the first of those closes the conversation that is open: the strip drops
+  /// to a ghost, the head renames itself, and the panel is rebuilt around a
+  /// NEW textarea, which takes the words, the caret and, on a phone, the
+  /// keyboard with them. At a poll every 1.6 seconds that is a message that
+  /// cannot be typed at all.
+  ///
+  /// So an answer that loses the agents has to say it twice. A run that is
+  /// really gone (finished, abandoned) keeps saying it and the rail falls back
+  /// to the ghost as it always did, one tick later; a hiccup says it once and
+  /// is dropped.
+  const answerLostTheAgents = (answered) => {
+    if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
+    agentlessOnce = true;
+    return true;
+  };
+
   const refresh = async () => {
     const asked = selectedId;
     let payload;
     try {
       payload = await detail();
     } catch (error) {
-      // The agent we asked about is not on this work item any more — its run
-      // was replaced, or it was retired. The daemon refuses rather than
-      // answering with somebody else's conversation, so let the choice go and
-      // the next tick reopens on whichever agent is here now. Without this the
-      // rail would ask the same refused question forever.
-      if (asked && !isProvisionalKey(asked) && /agent_id/.test((error && error.message) || "")) {
-        openConversation(null);
-      }
+      letGoOfRefusedAgent(error, asked);
       // Anything else — a branch that stopped resolving (finished, renamed) —
       // leaves the rail as it was rather than blanking the conversation under
       // the reader.
@@ -648,24 +672,7 @@ export function mountAgentRail(host, context) {
     // another's name. Drop it; the next tick asks about the right one.
     if (asked !== selectedId) return;
     const answered = railEntity(payload, context.kind);
-    // A branch is read off whichever source knows most about it, and the only
-    // source that knows about agents is the run behind it. A tick that cannot
-    // resolve the run answers off the bare checkout instead — no run, no
-    // conversation, no agents — and the next tick has all three back. Believing
-    // the first of those closes the conversation that is open: the strip drops
-    // to a ghost, the head renames itself, and the panel is rebuilt around a
-    // NEW textarea, which takes the words, the caret and, on a phone, the
-    // keyboard with them. At a poll every 1.6 seconds that is a message that
-    // cannot be typed at all.
-    //
-    // So an answer that loses the agents has to say it twice. A run that is
-    // really gone (finished, abandoned) keeps saying it and the rail falls back
-    // to the ghost as it always did, one tick later; a hiccup says it once and
-    // is dropped.
-    if (!answered.agents.length && visibleAgents().length && !agentlessOnce) {
-      agentlessOnce = true;
-      return;
-    }
+    if (answerLostTheAgents(answered)) return;
     agentlessOnce = false;
     entity = answered;
     reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });

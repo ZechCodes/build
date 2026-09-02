@@ -3,7 +3,10 @@
 // once inlined in views/task.js. Pure markup + thin wiring; every user-supplied
 // string is escaped.
 
+import { hide, reveal } from "./motion.js";
 import { esc } from "./text.js";
+
+const MENU_MOVE = { axis: "height" };
 
 export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
@@ -98,16 +101,30 @@ function scrollingAncestorOf(element) {
   return null;
 }
 
-function placeMenuFromButtonBox(menu, buttonBox) {
-  const opensAbove = buttonBox.top - MENU_GAP_PX >= menu.offsetHeight;
+function placeMenuFromButtonBox(menu, buttonBox, menuHeight) {
+  const opensAbove = buttonBox.top - MENU_GAP_PX >= menuHeight;
   menu.style.position = "fixed";
   menu.style.right = `${window.innerWidth - buttonBox.right}px`;
   menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
   menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
 }
 
+/** How tall the menu will stand once it is open, asked while it is still shut.
+ *
+ *  Which side of the button the menu opens on is decided before it has grown,
+ *  and a shut menu is not rendered, so it is shown for the length of the
+ *  measurement and put back. Nothing is painted inside one task, so nothing of
+ *  this reaches the screen. */
+function menuHeightWhenShown(menu) {
+  if (!menu.hidden) return menu.offsetHeight;
+  menu.hidden = false;
+  const height = menu.offsetHeight;
+  menu.hidden = true;
+  return height;
+}
+
 function liftMenuOutOfScroll(container, menu, closeMenu) {
-  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect());
+  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect(), menuHeightWhenShown(menu));
   const onViewportMoved = () => closeMenu();
   document.addEventListener("scroll", onViewportMoved, { capture: true });
   window.addEventListener("resize", onViewportMoved);
@@ -124,9 +141,9 @@ function liftMenuOutOfScroll(container, menu, closeMenu) {
 /** Wire the caret and the menu of a split button already in the DOM: the caret
  *  toggles it, a press outside closes it, and choosing an item closes it and
  *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
- *  shut it for its own reasons — a press that starts working, say. A container
- *  holding a lone button (no caret, no menu) wires nothing and the close is a
- *  no-op.
+ *  shut it for its own reasons — a press that starts working, say; it resolves
+ *  once the menu has finished shrinking away. A container holding a lone button
+ *  (no caret, no menu) wires nothing and the close is a no-op.
  *
  *  Split out of `mountSplitButton` because the composer's send is a split
  *  button whose press is NOT a single-flight action with a busy label: it is a
@@ -144,17 +161,28 @@ export function mountSplitMenu(container, { onChoose }) {
   // being reached for) is not outside.
   let stopWatchingOutsidePress = null;
   let settleLiftedMenu = null;
+  // Whether the menu is open is what it is on its way to being, not what it is
+  // this frame: a menu that is still shrinking is shut, and a caret pressed
+  // while it shrinks opens it again rather than closing it twice.
+  let menuIsOpen = false;
   const closeMenu = () => {
-    if (menu) menu.hidden = true;
+    if (!menu) return Promise.resolve();
+    menuIsOpen = false;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
-    if (settleLiftedMenu) {
-      settleLiftedMenu();
-      settleLiftedMenu = null;
-    }
+    const clearLiftedPlacement = settleLiftedMenu;
+    settleLiftedMenu = null;
+    // A lifted menu that lost its fixed placement mid-shrink would jump back
+    // into the scroller it was lifted out of, so the placement stands until the
+    // shrinking is over — unless the menu opened again while it shrank, and the
+    // placement standing is the new one.
+    return hide(menu, MENU_MOVE).then(() => {
+      if (clearLiftedPlacement && !menuIsOpen) clearLiftedPlacement();
+    });
   };
   const openMenu = () => {
-    menu.hidden = false;
-    if (scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
+    menuIsOpen = true;
+    if (!settleLiftedMenu && scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
+    reveal(menu, MENU_MOVE);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
@@ -171,8 +199,8 @@ export function mountSplitMenu(container, { onChoose }) {
     caret.onclick = (event) => {
       event.stopPropagation();
       if (caret.disabled) return;
-      if (menu.hidden) openMenu();
-      else closeMenu();
+      if (menuIsOpen) closeMenu();
+      else openMenu();
     };
     menu.querySelectorAll(".mi").forEach(
       (mi) =>

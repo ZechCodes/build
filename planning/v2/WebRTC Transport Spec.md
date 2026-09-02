@@ -91,7 +91,20 @@ DataChannel close of the session's last carrier) removes the key.
 The relay still has last-writer-wins semantics per device connection. When the bridge's
 relay socket reconnects, sessions minted on the previous socket are still valid on the
 DataChannel. This is the first time a session outlives a relay socket, and the SPA
-policy below depends on it.
+policy below depends on it. Two rules make that hold:
+
+- **A session ends when its last carrier ends, not when the relay says `session_closed`.**
+  `session_closed` from the relay (or a relay socket loss) detaches the relay carrier from
+  the session. If a DataChannel carrier for that session is live, the session and its key
+  stay in the registry. The client `close` frame still ends the session outright.
+- **A relay carrier re-attaches by repeating `session_init` with the existing session id
+  and key.** The browser keeps its session id and session key across relay socket
+  reconnects. When the new socket is authenticated it sends `session_init` for that same
+  session. The bridge treats a `session_init` for a known session whose unwrapped key
+  matches the registered key as a carrier re-attach and answers `session_accept` as usual.
+  A `session_init` for a known session with a different key is an error and the frame is
+  dropped. The relay accepts this because it forgot the session when the old socket
+  closed and the same client is the one re-opening it.
 
 ### Signaling (inside the existing E2EE session, over the relay)
 
@@ -104,8 +117,15 @@ Three RPC methods and one push, all carried as encrypted `payload`:
 | bridge → client | push `{type:"rtc.ice", candidate}` | Trickled bridge candidate. |
 | client → bridge | `rtc.close {}` → `{}` | Tear down the peer connection for this session. |
 
-One `RTCPeerConnection` per E2EE session on both sides. The DTLS fingerprint rides in the
-SDP, which rides in ciphertext, so the sealed session authenticates the DTLS handshake.
+One `RTCPeerConnection` per E2EE session on both sides. **Signaling is pinned to the relay
+carrier.** The `rtc.*` methods and the `rtc.ice` push always travel over the relay
+carrier, never over a DataChannel, so an ICE restart (credential expiry, network change)
+and a fresh `rtc.offer` after a channel loss both work while the DataChannels are down.
+The SPA's carrier switch therefore has one routing rule: `rtc.*` goes to the relay
+carrier, everything else goes to the active carrier. If the relay carrier is detached
+when signaling is needed, signaling waits for the relay re-attach. The DTLS fingerprint
+rides in the SDP, which rides in ciphertext, so the sealed session authenticates the DTLS
+handshake.
 ICE candidates carry IP addresses; they never leave the ciphertext. The relay sees only
 that an `e2ee_envelope` passed.
 
@@ -203,8 +223,10 @@ Policy, in order:
    relay the same way (hello + re-attach). If the relay socket is also gone, the existing
    `resume()` / `_onLost` paths run unchanged.
 6. **Relay loss while the DataChannels are live is not "offline."** The relay reconnects
-   in the background; the user keeps working over the peer path. `App.offline` is true
-   only when no carrier is live.
+   in the background and re-attaches the existing session by repeating `session_init`
+   with the same session id and key (see "Shared session registry"); the user keeps
+   working over the peer path. `App.offline` is true only when no carrier is live. The
+   session id and key are minted once per session, not once per socket.
 
 The liveness ping in `terminal/session.js` and `FRAME_PROOF_OF_LIFE_MS` apply per
 carrier and need no change beyond running against whichever carrier is active.
@@ -246,8 +268,12 @@ before the next starts. TDD throughout.
    `SessionRegistry` owned outside the relay loop. Pure refactor, zero wire change; the
    existing relay integration tests are the gate.
 2. **signaling** — `rtc.offer` / `rtc.ice` / `rtc.close` handlers and the `rtc.ice` push
-   in `app.rs`, with a stub peer that only records what it was given. Tests cover
-   unknown-session, double-offer, and close-before-answer.
+   in `app.rs`, with a stub peer that only records what it was given. This stage also
+   gives the registry its multi-carrier semantics: a session ends with its last carrier,
+   relay `session_closed` only detaches the relay carrier, and `session_init` for a known
+   session re-attaches on a matching key and is dropped on a mismatched one. Tests cover
+   unknown-session, double-offer, close-before-answer, re-attach with matching key,
+   re-attach with mismatched key, and `session_closed` while a second carrier is live.
 3. **ice-servers** — api route, Secret wiring, STUN-only fallback without a key, unit
    tests against a mocked Cloudflare endpoint.
 4. **bridge-peer** — `rtc.rs` on webrtc-rs: peer connection, negotiated channels,

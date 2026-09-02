@@ -1,4 +1,5 @@
 import { esc } from "./text.js";
+import { KEYED_LIST_ATTRIBUTE } from "./domPatch.js";
 import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import {
@@ -9,7 +10,17 @@ import {
 
 const ROW_HEAD_CLASS = "surface-row-head";
 const ROW_CLOCK_CLASS = "surface-row-clock";
+const ROW_LABEL_CLASS = "surface-row-label";
+const ROW_DETAIL_CLASS = "surface-row-detail";
+const ROW_ERROR_CLASS = "surface-row-error";
+const ROW_NOTE_CLASS = "surface-row-note";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
+const PHASE_CLASS = "surface-phase";
+const PHASE_HEAD_CLASS = "surface-phase-head";
+
+const CLIP_CLASS = "surface-clip";
+const CLIP_LINES_ATTRIBUTE = "data-clip-lines";
+const RUNNING_SINCE_ATTRIBUTE = "data-running-since";
 
 const COMPLETED_FOLD_CLASS = "surface-completed";
 const COMPLETED_FOLD_HEAD_CLASS = "surface-completed-head";
@@ -34,11 +45,22 @@ export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
-export const ROW_CLOCK_SELECTOR = `.${ROW_CLOCK_CLASS}`;
+export const CLIP_SELECTOR = `[${CLIP_LINES_ATTRIBUTE}]`;
+export const TICKING_CLOCK_SELECTOR = `[${RUNNING_SINCE_ATTRIBUTE}]`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
 );
+
+/** Text the viewer shows a few lines of. The whole of it rides in the title, so
+ *  a hover reads it, and a press opens it out — which is why every clipped
+ *  thing in every viewer is built here and nowhere else. */
+export function clippedTextHtml(text, { className = "", lines = 1 } = {}) {
+  const classes = className ? `${CLIP_CLASS} ${className}` : CLIP_CLASS;
+  return `<span class="${classes}" ${CLIP_LINES_ATTRIBUTE}="${esc(lines)}" title="${esc(text)}">${esc(text)}</span>`;
+}
+
+const rawModelId = (modelId) => modelId;
 
 function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
@@ -50,18 +72,26 @@ function statHtml(text) {
 
 function noteHtml(description, subject) {
   if (!description || description === subject) return "";
-  return `<span class="surface-row-note">${esc(description)}</span>`;
+  return clippedTextHtml(description, { className: ROW_NOTE_CLASS, lines: 2 });
+}
+
+/// The one clock slot: empty while the ticker owns it, the span it took once it
+/// is over, nothing at all for a row that never timed anything.
+function clockHtml(text, runningSince) {
+  const ticking = Number.isFinite(runningSince) ? ` ${RUNNING_SINCE_ATTRIBUTE}="${esc(runningSince)}"` : "";
+  if (!ticking && !text) return "";
+  return `<span class="${ROW_CLOCK_CLASS}"${ticking}>${esc(text)}</span>`;
 }
 
 function rowClockHtml(row) {
-  if (!Number.isFinite(row.runningSince)) return "";
-  return `<span class="${ROW_CLOCK_CLASS}" data-running-since="${esc(row.runningSince)}"></span>`;
+  const running = Number.isFinite(row.runningSince);
+  return clockHtml(running ? "" : row.duration || "", row.runningSince);
 }
 
-function rowHeadHtml(row, { headClass = ROW_HEAD_CLASS, trailing = "" } = {}) {
-  return `<div class="${headClass}">
+function rowHeadHtml(row, { trailing = "" } = {}) {
+  return `<div class="${ROW_HEAD_CLASS}">
       ${stateMarkHtml(row.stateMark)}
-      <span class="surface-row-label">${esc(row.subject)}</span>
+      ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS })}
       ${trailing}
       ${rowClockHtml(row)}
     </div>`;
@@ -78,29 +108,34 @@ function agentStatsHtml(row) {
   const stats = [
     Number.isFinite(row.tokens) ? `${row.tokens} tokens` : "",
     Number.isFinite(row.toolCalls) ? `${row.toolCalls} calls` : "",
-    row.duration,
   ].filter(Boolean);
   if (!stats.length) return "";
   return `<div class="surface-row-stats">${stats.map(statHtml).join("")}</div>`;
 }
 
-function agentOutcomeHtml(row) {
-  if (row.error) return `<div class="surface-row-error">${esc(row.error)}</div>`;
-  if (row.result) return `<div class="surface-row-result">${esc(row.result)}</div>`;
-  return "";
+/// What the agent is doing, or what came of it: the failure first, then the
+/// result it finished with, then the tool it is on.
+function agentLineHtml(row, modelLabel) {
+  const model = modelLabel(row.model);
+  const detail = row.error || row.result || row.lastTool;
+  if (!model && !detail) return "";
+  const detailClass = row.error ? `${ROW_DETAIL_CLASS} ${ROW_ERROR_CLASS}` : ROW_DETAIL_CLASS;
+  return `<div class="surface-row-line">
+      ${model ? `<span class="surface-row-model">${esc(model)}</span>` : ""}
+      ${detail ? clippedTextHtml(detail, { className: detailClass }) : ""}
+    </div>`;
 }
 
 function callSequenceAttribute(row) {
   return Number.isFinite(row.callSequence) ? ` data-call-sequence="${esc(row.callSequence)}"` : "";
 }
 
-export function agentRowHtml(row) {
+/** One agent, two lines — three where there is width for the counts. */
+export function agentRowHtml(row, { compact = false, modelLabel = rawModelId } = {}) {
   return surfaceRowHtml("surface-agent", row, {
     attributes: callSequenceAttribute(row),
-    trailing: row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : "",
-    body: `${row.lastTool ? `<div class="surface-row-tool">${esc(row.lastTool)}</div>` : ""}
-    ${agentStatsHtml(row)}
-    ${agentOutcomeHtml(row)}`,
+    body: `${agentLineHtml(row, modelLabel)}
+    ${compact ? "" : agentStatsHtml(row)}`,
   });
 }
 
@@ -115,12 +150,20 @@ export function surfacePillHtml(pill, openKind) {
   </button>`;
 }
 
-export function workflowPhaseHtml(phase) {
-  return `<button type="button" class="surface-phase" data-key="${esc(phase.key)}" data-phase-index="${esc(phase.index)}"
-    aria-pressed="${phase.selected}">
-    <span class="surface-phase-title">${esc(phase.title)}</span>
-    <span class="surface-phase-count">${esc(phase.done)}/${esc(phase.total)}</span>
-  </button>`;
+/** One phase of a workflow: a fold the reader owns, over a keyed list of its
+ *  agents. Whether it stands open is never said here — the mount opens the
+ *  running one as it arrives, and the reader has it after that. */
+export function phaseSectionHtml(phase, { compact = false, modelLabel = rawModelId } = {}) {
+  return `<details class="${PHASE_CLASS}" data-key="${esc(phase.key)}" data-state="${esc(phase.state)}">
+    <summary class="${PHASE_HEAD_CLASS}">
+      ${clippedTextHtml(phase.title, { className: "surface-phase-title" })}
+      <span class="surface-phase-count">${esc(phase.done)}/${esc(phase.total)}</span>
+      ${clockHtml(phase.clock, phase.runningSince)}
+    </summary>
+    <div class="${VIEWER_CLASS.workflowAgents}" ${KEYED_LIST_ATTRIBUTE}>${phase.rows
+      .map((row) => agentRowHtml(row, { compact, modelLabel }))
+      .join("")}</div>
+  </details>`;
 }
 
 export function workflowChoiceHtml(choice) {
@@ -132,20 +175,19 @@ export function workflowChoiceHtml(choice) {
 }
 
 export function workflowHeadHtml(workflow) {
-  return rowHeadHtml(workflow, {
-    headClass: WORKFLOW_HEAD_CLASS,
-    trailing: noteHtml(workflow.description, workflow.subject),
-  });
+  return `<div class="${WORKFLOW_HEAD_CLASS}">
+    ${rowHeadHtml(workflow)}
+    ${noteHtml(workflow.description, workflow.subject)}
+  </div>`;
 }
 
-export function workflowViewerHtml(workflow, choices, phases, agents) {
+export function workflowViewerHtml(workflow, choices, phases = [], options = {}) {
   return `<div class="${VIEWER_CLASS.viewer} surface-workflow">
     <div class="${VIEWER_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
-    <div class="surface-workflow-body">
-      <div class="${VIEWER_CLASS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
-      <div class="${VIEWER_CLASS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
-    </div>
+    <div class="${VIEWER_CLASS.workflowPhases}">${phases
+      .map((phase) => phaseSectionHtml(phase, options))
+      .join("")}</div>
   </div>`;
 }
 

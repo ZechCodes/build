@@ -39,7 +39,7 @@ import {
 } from "./agentRailModel.js";
 import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
-import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
+import { NO_AGENT_CHOICE, activeModelLabel, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
 import {
   insertRecord,
@@ -1032,7 +1032,15 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
+  /** What a surface row calls a model: the catalog's own name for it, and the
+   *  raw id while the catalog knows nothing of it. */
+  const surfaceModelLabel = (modelId) => {
+    const agent = agentInFocus();
+    return activeModelLabel(catalog, agent ? agent.provider : "", modelId);
+  };
+
   const surfaceViewerCallbacks = () => ({
+    modelLabel: surfaceModelLabel,
     onOpenThreadItem: (sequence) => {
       if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
       notifyError(

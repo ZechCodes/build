@@ -3,18 +3,20 @@ import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
+  CLIP_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   SURFACE_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
+  clippedTextHtml,
   completedFoldHtml,
   kindViewerHtml,
+  phaseSectionHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
   surfacePillHtml,
   workflowChoiceHtml,
-  workflowPhaseHtml,
   workflowViewerHtml,
 } from "../src/core/agentSurfacesRender.js";
 import {
@@ -33,6 +35,7 @@ import {
   workflowPhases,
 } from "../src/core/agentSurfacesModel.js";
 import { patchList } from "../src/core/patchList.js";
+import { EXPANDED_ATTRIBUTE, KEYED_LIST_ATTRIBUTE } from "../src/core/domPatch.js";
 
 const HOSTILE_MARKUP = "</div><img onerror=x>";
 
@@ -69,7 +72,25 @@ const freshWorkflow = {
   ],
 };
 
+const STARTED_AT = 1788291725678;
+const stagedWorkflow = {
+  id: "w2",
+  name: "Sweep",
+  state: "running",
+  phases: [
+    {
+      title: "Read",
+      agents: [
+        { id: "a1", label: "Reader", state: "done", started_at: STARTED_AT, duration_ms: 20000 },
+        { id: "a2", label: "Skimmer", state: "running", started_at: STARTED_AT + 5000 },
+      ],
+    },
+    { title: "Write", agents: [{ id: "a3", label: "Writer", state: "queued" }] },
+  ],
+};
+
 const oneWorkflow = (workflow) => ({ workflows: [workflow] });
+const phasesOf = (workflow, nowMs = 0) => workflowPhases(oneWorkflow(workflow), 0, nowMs);
 const workflowRow = (workflow) => surfaceRows("workflows", oneWorkflow(workflow))[0];
 const subagentViewerHtml = (rows) =>
   runningAndCompletedViewerHtml(AGENT_ENTRY_KIND, runningAndCompletedRows(rows), agentRowHtml);
@@ -79,24 +100,38 @@ const checklistViewerHtml = (rows) => kindViewerHtml(CHECKLIST_ENTRY_KIND, rows,
 
 describe("agentRowHtml", () => {
   it("is one renderer: a workflow agent and a subagent of the same entry paint the same bytes", () => {
-    const fromWorkflow = workflowPhases(
-      oneWorkflow({ phases: [{ title: "Read", agents: [readerEntry] }] }),
-      0,
-      0,
-    ).agents[0];
+    const fromWorkflow = phasesOf({ phases: [{ title: "Read", agents: [readerEntry] }] })[0].rows[0];
     const fromSubagents = surfaceRows("subagents", { subagents: [readerEntry] })[0];
     expect(agentRowHtml(fromWorkflow)).toBe(agentRowHtml(fromSubagents));
     expect(agentRowHtml(fromWorkflow)).toBe(agentRowHtml(agentRows([readerEntry])[0]));
   });
 
-  it("draws the label, the model, the last tool, the tokens, the calls and the duration", () => {
-    const html = agentRowHtml(agentRows([readerEntry])[0]);
-    expect(html).toContain("Reader");
-    expect(html).toContain("haiku");
-    expect(html).toContain("Read bridge/src/app.rs");
-    expect(html).toContain("1200");
-    expect(html).toContain("4");
-    expect(html).toContain("1m 05s");
+  it("draws a compact row as two lines: the head, then the model and what the agent is doing", () => {
+    const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0], { compact: true })).firstElementChild;
+    expect([...row.children].map((line) => line.className)).toEqual(["surface-row-head", "surface-row-line"]);
+    expect(row.querySelector(".surface-row-label").textContent).toBe("Reader");
+    expect(row.querySelector(".surface-row-model").textContent).toBe("haiku");
+    expect(row.querySelector(".surface-row-detail").textContent).toBe("Read bridge/src/app.rs");
+    expect(row.textContent).not.toContain("tokens");
+    expect(row.textContent).not.toContain("calls");
+  });
+
+  it("gives a row with the width for it a third line of tokens and calls", () => {
+    const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0])).firstElementChild;
+    expect([...row.children].map((line) => line.className)).toEqual([
+      "surface-row-head",
+      "surface-row-line",
+      "surface-row-stats",
+    ]);
+    expect(row.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
+    expect(row.querySelector(".surface-row-stats").textContent).toContain("4 calls");
+  });
+
+  it("reads the model's display name off the label its caller hands it, and the raw id without one", () => {
+    const row = agentRows([readerEntry])[0];
+    const named = parseHtml(agentRowHtml(row, { modelLabel: (id) => `Opus 5 · ${id}` }));
+    expect(named.querySelector(".surface-row-model").textContent).toBe("Opus 5 · haiku");
+    expect(parseHtml(agentRowHtml(row)).querySelector(".surface-row-model").textContent).toBe("haiku");
   });
 
   it("draws the state mark the model named and nothing for a state it does not recognise", () => {
@@ -106,13 +141,14 @@ describe("agentRowHtml", () => {
     expect(unknown.querySelectorAll("[data-outcome]").length).toBe(0);
   });
 
-  it("draws the result of a finished agent and the error of a failed one", () => {
-    expect(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "done", result: "42 files" }])[0])).toContain(
-      "42 files",
+  it("draws the result of a finished agent and the error of a failed one, on the one line", () => {
+    const done = parseHtml(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "done", result: "42 files" }])[0]));
+    expect(done.querySelector(".surface-row-detail").textContent).toBe("42 files");
+    const failed = parseHtml(
+      agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "failed", error: "no such path" }])[0]),
     );
-    expect(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "failed", error: "no such path" }])[0])).toContain(
-      "no such path",
-    );
+    expect(failed.querySelector(".surface-row-detail").textContent).toBe("no such path");
+    expect(failed.querySelector(".surface-row-error")).toBeTruthy();
   });
 
   it("gives a running row a clock span to tick in, and every other row none", () => {
@@ -121,14 +157,16 @@ describe("agentRowHtml", () => {
     expect(clock.dataset.runningSince).toBe("1788291725678");
     expect(clock.textContent).toBe("");
 
-    expect(agentRowHtml(agentRows([readerEntry])[0])).not.toContain("surface-row-clock");
-    const finished = { ...readerEntry, state: "done", started_at: 1788291725678 };
-    expect(agentRowHtml(agentRows([finished])[0])).not.toContain("surface-row-clock");
+    expect(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "queued" }])[0])).not.toContain(
+      "surface-row-clock",
+    );
   });
 
-  it("still reads a finished agent's duration through the stats it always wrote it in", () => {
-    const finished = agentRows([{ ...readerEntry, state: "done" }])[0];
-    expect(parseHtml(agentRowHtml(finished)).querySelector(".surface-row-stats").textContent).toContain("1m 05s");
+  it("hands a finished agent's duration to the same slot the clock ticks in", () => {
+    const finished = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, state: "done" }])[0]));
+    const clock = finished.querySelector(".surface-row-clock");
+    expect(clock.textContent).toBe("1m 05s");
+    expect(clock.hasAttribute("data-running-since")).toBe(false);
   });
 
   it("gives a running shell the same clock span through the same head", () => {
@@ -174,12 +212,12 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
     shells: [{ id: "s1", description: "npm test", state: "running", tail: ["one"] }],
   })[0];
   const checklistRow = surfaceRows("checklist", { checklist: [{ id: "t1", subject: "one", state: "pending" }] })[0];
-  const phaseRow = workflowPhases(oneWorkflow(freshWorkflow), 0, 0).phases[0];
+  const phaseRow = phasesOf(freshWorkflow)[0];
 
   it("gives back exactly one element per row, which is what patchList renders with", () => {
     const markupOfEveryKind = [
       agentRowHtml(agentRows([readerEntry])[0]),
-      workflowPhaseHtml(phaseRow),
+      phaseSectionHtml(phaseRow),
       shellRowHtml(shellRow),
       checklistItemHtml(checklistRow),
     ];
@@ -189,10 +227,10 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
   it("is the one source of each kind's row markup, its viewer being the frame around it", () => {
     expect(shellViewerHtml([shellRow])).toContain(shellRowHtml(shellRow));
     expect(checklistViewerHtml([checklistRow])).toContain(checklistItemHtml(checklistRow));
-    const { phases, agents } = workflowPhases(oneWorkflow(freshWorkflow), 0, 0);
-    const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents);
-    expect(workflowHtml).toContain(workflowPhaseHtml(phases[0]));
-    expect(workflowHtml).toContain(agentRowHtml(agents[0]));
+    const phases = phasesOf(freshWorkflow);
+    const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), [], phases);
+    expect(workflowHtml).toContain(phaseSectionHtml(phases[0]));
+    expect(workflowHtml).toContain(agentRowHtml(phases[0].rows[0]));
   });
 
   it("leaves each viewer a frame the mount can fill when it is handed no rows", () => {
@@ -288,14 +326,12 @@ describe("surfacePillHtml", () => {
   });
 });
 
-describe("workflowViewerHtml", () => {
-  const view = (workflow, selectedPhaseIndex, choices = []) => {
-    const { phases, agents } = workflowPhases(oneWorkflow(workflow), 0, selectedPhaseIndex);
-    return workflowViewerHtml(workflowRow(workflow), choices, phases, agents);
-  };
+describe("the workflow viewer, stacked", () => {
+  const view = (workflow, choices = [], nowMs = 0) =>
+    workflowViewerHtml(workflowRow(workflow), choices, phasesOf(workflow, nowMs));
 
   it("paints both of the id-less queued agents a fresh workflow carries, each marked queued", () => {
-    const painted = parseHtml(view(freshWorkflow, 0));
+    const painted = parseHtml(view(freshWorkflow));
     const agentRowElements = [...painted.querySelectorAll(".surface-agent")];
     expect(agentRowElements.length).toBe(2);
     expect(painted.textContent).toContain("Reader");
@@ -307,40 +343,37 @@ describe("workflowViewerHtml", () => {
     ]);
   });
 
-  it("lists the phases with their done counts and presses the selected one", () => {
-    const workflow = {
-      id: "w1",
-      name: "Review",
-      state: "running",
-      phases: [
-        { title: "Read", agents: [{ id: "a1", label: "Reader", state: "done" }, { id: "a2", label: "Skimmer", state: "running" }] },
-        { title: "Write", agents: [{ id: "a3", label: "Writer", state: "queued" }] },
-      ],
-    };
-    const painted = parseHtml(view(workflow, 1));
-    const phases = [...painted.querySelectorAll(".surface-phase")];
-    expect(phases.map((phase) => phase.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
-    expect(phases[0].textContent).toContain("1/2");
-    expect(painted.querySelectorAll(".surface-agent").length).toBe(1);
-    expect(painted.textContent).toContain("Writer");
+  it("stacks one section per phase, in order, each holding its own agents", () => {
+    const painted = parseHtml(view(stagedWorkflow));
+    const sections = [...painted.querySelectorAll(".surface-phase")];
+    expect(sections.map((section) => section.tagName)).toEqual(["DETAILS", "DETAILS"]);
+    expect(sections.map((section) => section.dataset.key)).toEqual(["phase-0", "phase-1"]);
+    expect(sections.map((section) => section.querySelector(".surface-phase-count").textContent)).toEqual([
+      "1/2",
+      "0/1",
+    ]);
+    expect(sections[1].querySelector(".surface-row-label").textContent).toBe("Writer");
   });
 
   it("draws each agent through the one agent row renderer", () => {
-    const { phases, agents } = workflowPhases(oneWorkflow(freshWorkflow), 0, 0);
-    expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents)).toContain(agentRowHtml(agents[0]));
+    const phases = phasesOf(freshWorkflow);
+    expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases)).toContain(agentRowHtml(phases[0].rows[0]));
   });
 
-  it("names the workflow, marks its state and hangs no menu off its head", () => {
-    const painted = parseHtml(view(freshWorkflow, 0));
-    expect(painted.textContent).toContain("Review");
-    expect(painted.querySelector(".surface-workflow-head [data-outcome]")).toBeTruthy();
-    expect(painted.querySelector(".surface-workflow-head .splitbtn")).toBe(null);
+  it("names the workflow and marks its state on one line, with the description clipped beneath", () => {
+    const head = parseHtml(view(freshWorkflow)).querySelector(".surface-workflow-head");
+    expect(head.querySelector(".surface-row-label").textContent).toBe("Review");
+    expect(head.querySelector("[data-outcome]")).toBeTruthy();
+    expect(head.querySelector(".splitbtn")).toBe(null);
+    const note = head.querySelector(".surface-row-note");
+    expect(note.textContent).toBe("Read the branch and report");
+    expect(note.getAttribute("data-clip-lines")).toBe("2");
   });
 
   it("names each workflow the reader may choose between, pressing the one on show", () => {
     const twoWorkflows = { workflows: [freshWorkflow, { id: "w2", name: "Fixtures", state: "running" }] };
     const choices = workflowChoicesWorthOffering(twoWorkflows, 1);
-    const html = view(freshWorkflow, 0, choices);
+    const html = view(freshWorkflow, choices);
     const buttons = [...parseHtml(html).querySelectorAll(".surface-workflow-choice")];
     expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
     expect(buttons[1].textContent).toContain("Fixtures");
@@ -349,8 +382,80 @@ describe("workflowViewerHtml", () => {
 
   it("escapes the workflow's own name and its agents' labels", () => {
     const poisoned = { id: "w1", name: HOSTILE_MARKUP, state: "running", phases: [{ title: HOSTILE_MARKUP, agents: [{ label: HOSTILE_MARKUP }] }] };
-    const html = view(poisoned, 0, workflowChoicesWorthOffering({ workflows: [poisoned, poisoned] }, 0));
+    const html = view(poisoned, workflowChoicesWorthOffering({ workflows: [poisoned, poisoned] }, 0));
     expectEscaped(html);
+  });
+});
+
+describe("phaseSectionHtml", () => {
+  const runningPhase = (nowMs = STARTED_AT + 65000) => phasesOf(stagedWorkflow, nowMs)[0];
+
+  it("is one keyed details, its summary saying the title, the count and the phase clock", () => {
+    const section = parseHtml(phaseSectionHtml(runningPhase())).firstElementChild;
+    expect(section.tagName).toBe("DETAILS");
+    expect(section.dataset.key).toBe("phase-0");
+    expect(section.dataset.state).toBe("running");
+    const summary = section.querySelector(".surface-phase-head");
+    expect(summary.tagName).toBe("SUMMARY");
+    expect(summary.querySelector(".surface-phase-title").textContent).toBe("Read");
+    expect(summary.querySelector(".surface-phase-count").textContent).toBe("1/2");
+    const clock = summary.querySelector(".surface-row-clock");
+    expect(clock.dataset.runningSince).toBe(String(STARTED_AT));
+    expect(clock.textContent).toBe("1:05");
+  });
+
+  it("says nothing about being open: which fold stands is the reader's and the mount's", () => {
+    expect(parseHtml(phaseSectionHtml(runningPhase())).firstElementChild.hasAttribute("open")).toBe(false);
+  });
+
+  it("holds its agents in a list another painter keys, through the one row renderer", () => {
+    const phase = runningPhase();
+    const list = parseHtml(phaseSectionHtml(phase, { compact: true })).querySelector(".surface-phase-agents");
+    expect(list.hasAttribute(KEYED_LIST_ATTRIBUTE)).toBe(true);
+    expect(list.innerHTML).toBe(parseHtml(phase.rows.map((row) => agentRowHtml(row, { compact: true })).join("")).innerHTML);
+  });
+
+  it("carries no clock at all for a phase nothing has started", () => {
+    const pending = phasesOf(stagedWorkflow)[1];
+    expect(phaseSectionHtml(pending)).not.toContain("surface-row-clock");
+  });
+
+  it("escapes a phase title", () => {
+    expectEscaped(phaseSectionHtml(phasesOf({ phases: [{ title: HOSTILE_MARKUP, agents: [] }] })[0]));
+  });
+});
+
+describe("the text a viewer clips", () => {
+  it("is one span, titled with the whole of it, saying how many lines it shows", () => {
+    const clipped = parseHtml(clippedTextHtml("a long line", { className: "surface-row-note", lines: 2 }));
+    const span = clipped.firstElementChild;
+    expect(span.getAttribute("title")).toBe("a long line");
+    expect(span.getAttribute("data-clip-lines")).toBe("2");
+    expect(span.className).toBe("surface-clip surface-row-note");
+    expect(span.textContent).toBe("a long line");
+    expect(span.matches(CLIP_SELECTOR)).toBe(true);
+  });
+
+  it("shows one line unless it is asked for more, and escapes what it is given", () => {
+    expect(parseHtml(clippedTextHtml("one")).firstElementChild.getAttribute("data-clip-lines")).toBe("1");
+    expectEscaped(clippedTextHtml(HOSTILE_MARKUP));
+  });
+
+  it("is the one place the viewer's clip markup is built", () => {
+    const source = coreSourceOf("agentSurfacesRender.js");
+    expect(source.match(/data-clip-lines/g)).toHaveLength(1);
+    expect(source).not.toContain(EXPANDED_ATTRIBUTE);
+  });
+
+  it("clips every long thing a row can say: its label, its detail and its note", () => {
+    const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0], { compact: true }));
+    for (const selector of [".surface-row-label", ".surface-row-detail"]) {
+      expect(row.querySelector(selector).matches(CLIP_SELECTOR)).toBe(true);
+    }
+    const note = parseHtml(
+      checklistItemHtml(surfaceRows(CHECKLIST_ENTRY_KIND, { checklist: [{ id: "t1", subject: "one", description: "two", state: "pending" }] })[0]),
+    ).querySelector(".surface-row-note");
+    expect(note.matches(CLIP_SELECTOR)).toBe(true);
   });
 });
 
@@ -476,7 +581,7 @@ describe("the wire the bridge actually builds", () => {
     );
     expect(painted.textContent).toContain(`${recorded.subagents[0].tokens} tokens`);
     expect(painted.textContent).toContain(`${recorded.subagents[0].tool_calls} calls`);
-    expect(painted.querySelector(".surface-row-result").textContent).toBe(recorded.subagents[0].result);
+    expect(painted.querySelector(".surface-row-detail").textContent).toBe(recorded.subagents[0].result);
   });
 
   it("paints the recorded shell's exit code and the recorded checklist's notes", () => {
@@ -490,18 +595,18 @@ describe("the wire the bridge actually builds", () => {
   });
 
   it("paints the recorded workflow's head, phases and agents", () => {
-    const { phases, agents } = workflowPhases(recorded, 0, 0);
-    const painted = parseHtml(
-      workflowViewerHtml(surfaceRows(WORKFLOW_ENTRY_KIND, recorded)[0], [], phases, agents),
-    );
+    const phases = workflowPhases(recorded, 0, 0);
+    const painted = parseHtml(workflowViewerHtml(surfaceRows(WORKFLOW_ENTRY_KIND, recorded)[0], [], phases));
     expect(painted.querySelector(".surface-workflow-head").textContent).toContain("readme-analysis");
     expect([...painted.querySelectorAll(".surface-phase-count")].map((count) => count.textContent)).toEqual([
       "2/2",
       "1/1",
     ]);
-    expect([...painted.querySelectorAll(".surface-phase-agents .surface-row-label")].map((label) => label.textContent)).toEqual(
-      ["line-counter", "char-counter"],
-    );
+    expect(
+      [...painted.querySelectorAll(".surface-phase")].map((section) =>
+        [...section.querySelectorAll(".surface-row-label")].map((label) => label.textContent),
+      ),
+    ).toEqual([["line-counter", "char-counter"], ["summarizer"]]);
   });
 });
 

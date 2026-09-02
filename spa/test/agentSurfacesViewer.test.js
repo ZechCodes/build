@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
+import { SPAWNING_CALL_SEQUENCE, WORKFLOW_STARTED_AT, surfacesSnapshot } from "./surfacesFixture.js";
 import { mountSurfaceViewer } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
@@ -16,9 +16,25 @@ const host = () => {
 };
 
 const mount = (kind, options = {}) =>
-  mountSurfaceViewer(host(), kind, { onOpenThreadItem: options.onOpenThreadItem || (() => {}) });
+  mountSurfaceViewer(host(), kind, { onOpenThreadItem: () => {}, ...options });
+
+const phaseSections = () => [...document.querySelectorAll(".surface-phase")];
+const agentLabelsIn = (section) =>
+  [...section.querySelectorAll(".surface-row-label")].map((label) => label.textContent);
 
 const runningRows = () => [...document.querySelectorAll(".surface-running > .surface-row")];
+
+const withModel = (model) =>
+  surfacesSnapshot({
+    workflows: [
+      {
+        id: "wf-1",
+        name: "Review sweep",
+        state: "running",
+        phases: [{ title: "Read", agents: [{ id: "a1", label: "reader", state: "running", model }] }],
+      },
+    ],
+  });
 
 describe("mountSurfaceViewer", () => {
   it("paints the kind it was mounted for, with its rows and no menu on any of them", () => {
@@ -64,16 +80,56 @@ describe("mountSurfaceViewer", () => {
     viewer.dispose();
   });
 
-  it("chooses the phase pressed in a workflow, without leaving the viewer", () => {
+  it("stacks a section per phase, each holding its own agents, the running one open", () => {
     const viewer = mount(WORKFLOW_ENTRY_KIND);
     viewer.set(snapshot());
-    const [, secondPhase] = [...document.querySelectorAll(".surface-phase")];
 
-    secondPhase.click();
-
-    expect(secondPhase.getAttribute("aria-pressed")).toBe("true");
-    expect(document.querySelector(".surface-phase-agents").textContent).toContain("judge");
+    const sections = phaseSections();
+    expect(sections.map((section) => section.tagName)).toEqual(["DETAILS", "DETAILS"]);
+    expect(sections.map((section) => section.open)).toEqual([true, false]);
+    expect(sections.map(agentLabelsIn)).toEqual([["reader"], ["judge"]]);
     viewer.dispose();
+  });
+
+  it("leaves a section the reader toggled where the reader put it, repaint after repaint", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set(snapshot());
+    const [running, pending] = phaseSections();
+    running.open = false;
+    pending.open = true;
+
+    const moved = snapshot();
+    moved.workflows[0].phases[0].agents.push({ id: "a3", label: "second reader", state: "queued" });
+    viewer.set(moved);
+
+    expect(phaseSections()).toEqual([running, pending]);
+    expect(phaseSections().map((section) => section.open)).toEqual([false, true]);
+    viewer.dispose();
+  });
+
+  it("names a model through the label its caller hands it, and by its id without one", () => {
+    const named = mount(WORKFLOW_ENTRY_KIND, { modelLabel: (id) => `Opus 5 · ${id}` });
+    named.set(withModel("claude-opus-5"));
+    expect(document.querySelector(".surface-row-model").textContent).toBe("Opus 5 · claude-opus-5");
+    named.dispose();
+
+    const raw = mount(WORKFLOW_ENTRY_KIND);
+    raw.set(withModel("claude-opus-5"));
+    expect(document.querySelector(".surface-row-model").textContent).toBe("claude-opus-5");
+    raw.dispose();
+  });
+
+  it("leaves the tokens off a compact row and keeps them on one with the width", () => {
+    const counted = { id: "a1", label: "reader", state: "running", model: "haiku", tokens: 1200, tool_calls: 4 };
+    const compact = mount(AGENT_ENTRY_KIND, { compact: true });
+    compact.set(surfacesSnapshot({ subagents: [counted] }));
+    expect(document.querySelector(".surface-running").textContent).not.toContain("tokens");
+    compact.dispose();
+
+    const roomy = mount(AGENT_ENTRY_KIND);
+    roomy.set(surfacesSnapshot({ subagents: [counted] }));
+    expect(document.querySelector(".surface-row-stats").textContent).toContain("1200 tokens");
+    roomy.dispose();
   });
 
   it("opens the thread item a subagent row was spawned by", () => {
@@ -103,6 +159,38 @@ describe("mountSurfaceViewer", () => {
   });
 });
 
+describe("the text a viewer clips", () => {
+  const clipped = () => document.querySelector(".surface-row-label");
+
+  it("opens on a press and clips back on the next one, the title always carrying all of it", () => {
+    const viewer = mount(SHELL_ENTRY_KIND);
+    viewer.set(surfacesSnapshot({ shells: [{ id: "sh1", description: "cargo test --all-features", state: "running" }] }));
+
+    expect(clipped().getAttribute("title")).toBe("cargo test --all-features");
+    expect(clipped().hasAttribute("data-expanded")).toBe(false);
+
+    clipped().click();
+    expect(clipped().hasAttribute("data-expanded")).toBe(true);
+
+    clipped().click();
+    expect(clipped().hasAttribute("data-expanded")).toBe(false);
+    viewer.dispose();
+  });
+
+  it("stays open across a repaint that moved the row around it", () => {
+    const viewer = mount(SHELL_ENTRY_KIND);
+    viewer.set(surfacesSnapshot({ shells: [{ id: "sh1", description: "cargo test", state: "running", tail: [] }] }));
+    clipped().click();
+    const expanded = clipped();
+
+    viewer.set(surfacesSnapshot({ shells: [{ id: "sh1", description: "cargo test", state: "running", tail: ["one"] }] }));
+
+    expect(clipped()).toBe(expanded);
+    expect(clipped().hasAttribute("data-expanded")).toBe(true);
+    viewer.dispose();
+  });
+});
+
 describe("the clock a running row ticks", () => {
   const LAUNCHED_AT = 1788291725678;
 
@@ -114,6 +202,7 @@ describe("the clock a running row ticks", () => {
     });
 
   const clocks = () => [...document.querySelectorAll(".surface-row-clock")].map((span) => span.textContent);
+  const tickingClocks = () => [...document.querySelectorAll("[data-running-since]")];
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -149,7 +238,7 @@ describe("the clock a running row ticks", () => {
     viewer.dispose();
   });
 
-  it("shows a finished row its duration and no clock, and a row with neither nothing", () => {
+  it("shows a finished row its duration in the slot it ticked in, and a row with neither nothing", () => {
     const viewer = mount(AGENT_ENTRY_KIND);
     viewer.set(
       ticking({
@@ -160,9 +249,32 @@ describe("the clock a running row ticks", () => {
       }),
     );
 
-    expect(clocks()).toEqual([]);
-    expect(document.querySelector(".surface-completed-rows").textContent).toContain("1m 05s");
+    expect(clocks()).toEqual(["1m 05s"]);
+    expect(tickingClocks()).toEqual([]);
     expect(document.querySelector(".surface-running").textContent).not.toContain("1m 05s");
+    viewer.dispose();
+  });
+
+  it("ticks the phase's own clock alongside the rows inside it", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set(
+      surfacesSnapshot({
+        workflows: [
+          {
+            id: "wf-1",
+            name: "Review sweep",
+            state: "running",
+            phases: [
+              { title: "Read", agents: [{ id: "a1", label: "reader", state: "running", started_at: LAUNCHED_AT }] },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(clocks()).toEqual(["1:05", "1:05"]);
+    vi.advanceTimersByTime(1000);
+    expect(clocks()).toEqual(["1:06", "1:06"]);
     viewer.dispose();
   });
 

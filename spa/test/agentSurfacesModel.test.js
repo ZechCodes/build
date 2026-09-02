@@ -21,6 +21,7 @@ import {
   surfacePills,
   surfaceRows,
   surfaceStateMark,
+  phaseClock,
   workflowChoicesWorthOffering,
   workflowPhases,
   writeOpenSurface,
@@ -354,7 +355,7 @@ describe("surfaceRows", () => {
   it("stamps an agent row from the same one place, whichever viewer it is bound for", () => {
     const agent = { id: "a1", label: "Reader", state: "running", started_at: 1788291725678 };
     expect(agentRows([agent])[0].runningSince).toBe(1788291725678);
-    expect(workflowPhases({ workflows: [{ id: "w1", phases: [{ title: "Read", agents: [agent] }] }] }).agents[0]
+    expect(workflowPhases({ workflows: [{ id: "w1", phases: [{ title: "Read", agents: [agent] }] }] })[0].rows[0]
       .runningSince).toBe(1788291725678);
   });
 
@@ -433,6 +434,7 @@ describe("agentRows", () => {
 });
 
 describe("workflowPhases", () => {
+  const STARTED_AT = 1788291725678;
   const workflow = {
     id: "w1",
     name: "Review",
@@ -441,53 +443,96 @@ describe("workflowPhases", () => {
       {
         title: "Read",
         agents: [
-          { id: "a1", label: "Reader", state: "done" },
-          { id: "a2", label: "Skimmer", state: "running" },
+          { id: "a1", label: "Reader", state: "done", started_at: STARTED_AT, duration_ms: 20000 },
+          { id: "a2", label: "Skimmer", state: "running", started_at: STARTED_AT + 5000 },
         ],
       },
       { title: "Write", agents: [{ label: "Writer" }, { label: "Editor" }] },
     ],
   };
 
-  it("counts the done agents of every phase", () => {
-    const { phases } = workflowPhases(oneWorkflow(workflow), 0, 0);
-    expect(phases).toEqual([
-      { key: "phase-0", index: 0, title: "Read", total: 2, done: 1, selected: true },
-      { key: "phase-1", index: 1, title: "Write", total: 2, done: 0, selected: false },
+  const phasesOf = (surfaces, index = 0, nowMs = STARTED_AT) => workflowPhases(surfaces, index, nowMs);
+
+  it("stacks every phase in order with its title, its counts and its state", () => {
+    expect(
+      phasesOf(oneWorkflow(workflow)).map((phase) => [phase.key, phase.title, phase.done, phase.total, phase.state]),
+    ).toEqual([
+      ["phase-0", "Read", 1, 2, "running"],
+      ["phase-1", "Write", 0, 2, "pending"],
     ]);
   });
 
-  it("hands back the selected phase's agents already through agentRows", () => {
-    expect(workflowPhases(oneWorkflow(workflow), 0, 0).agents).toEqual(agentRows(workflow.phases[0].agents));
+  it("calls a phase done once every agent in it has finished", () => {
+    const finished = { phases: [{ title: "Read", agents: [{ id: "a1", state: "done" }, { id: "a2", state: "failed" }] }] };
+    expect(phasesOf(oneWorkflow(finished))[0].state).toBe("done");
+    expect(phasesOf(oneWorkflow({ phases: [{ title: "Read", agents: [] }] }))[0].state).toBe("pending");
+  });
+
+  it("opens the running phase and leaves the others shut", () => {
+    expect(phasesOf(oneWorkflow(workflow)).map((phase) => phase.open)).toEqual([true, false]);
+  });
+
+  it("nests each phase's agents, already through agentRows", () => {
+    expect(phasesOf(oneWorkflow(workflow))[0].rows).toEqual(agentRows(workflow.phases[0].agents));
   });
 
   it("keys two id-less agents of a phase apart, so patchList never sees a duplicate", () => {
-    expect(workflowPhases(oneWorkflow(workflow), 0, 1).agents.map((row) => row.key)).toEqual([
-      "agent-0",
-      "agent-1",
-    ]);
+    expect(phasesOf(oneWorkflow(workflow))[1].rows.map((row) => row.key)).toEqual(["agent-0", "agent-1"]);
   });
 
   it("keys a phase through the one keying function rather than a rule of its own", () => {
-    const named = workflowPhases(oneWorkflow({ phases: [{ id: "read", title: "Read" }, { title: "Write" }] }), 0, 0);
-    expect(named.phases.map((phase) => phase.key)).toEqual(["read", "phase-1"]);
+    const named = phasesOf(oneWorkflow({ phases: [{ id: "read", title: "Read" }, { title: "Write" }] }));
+    expect(named.map((phase) => phase.key)).toEqual(["read", "phase-1"]);
   });
 
-  it("clamps a selection the workflow no longer has", () => {
-    expect(workflowPhases(oneWorkflow(workflow), 0, 9).phases[0].selected).toBe(true);
-    expect(workflowPhases(oneWorkflow(workflow), 0, 9).agents).toEqual(agentRows(workflow.phases[0].agents));
+  it("carries the phase's own clock, ticking from the earliest start while an agent runs", () => {
+    const [reading, writing] = phasesOf(oneWorkflow(workflow), 0, STARTED_AT + 65000);
+    expect([reading.clock, reading.runningSince]).toEqual(["1:05", STARTED_AT]);
+    expect([writing.clock, writing.runningSince]).toEqual(["", null]);
   });
 
   it("gives nothing for a workflow carrying no phases", () => {
-    expect(workflowPhases(null, 0, 0)).toEqual({ phases: [], agents: [] });
-    expect(workflowPhases(oneWorkflow({ id: "w1" }), 0, 0)).toEqual({ phases: [], agents: [] });
+    expect(workflowPhases(null, 0, 0)).toEqual([]);
+    expect(workflowPhases(oneWorkflow({ id: "w1" }), 0, 0)).toEqual([]);
   });
 
   it("reads the chosen workflow's phases itself, so no caller carries a raw phases array", () => {
     const second = { id: "w2", name: "Ship", phases: [{ title: "Tag", agents: [{ id: "b1", label: "Tagger" }] }] };
     const both = { workflows: [workflow, second] };
-    expect(workflowPhases(both, 1, 0).phases.map((phase) => phase.title)).toEqual(["Tag"]);
-    expect(workflowPhases(both, 9, 0).phases.map((phase) => phase.title)).toEqual(["Read", "Write"]);
+    expect(phasesOf(both, 1).map((phase) => phase.title)).toEqual(["Tag"]);
+    expect(phasesOf(both, 9).map((phase) => phase.title)).toEqual(["Read", "Write"]);
+  });
+});
+
+describe("phaseClock", () => {
+  const STARTED_AT = 1788291725678;
+  const clockOf = (agents, nowMs) => phaseClock({ title: "Read", agents }, nowMs);
+
+  it("reads empty until an agent of the phase has started", () => {
+    expect(clockOf([{ id: "a1", state: "queued" }], STARTED_AT)).toEqual({ clock: "", runningSince: null });
+    expect(clockOf([{ id: "a1", state: "running" }], STARTED_AT)).toEqual({ clock: "", runningSince: null });
+    expect(clockOf([], STARTED_AT)).toEqual({ clock: "", runningSince: null });
+  });
+
+  it("spans from the earliest start to now while any agent runs", () => {
+    const agents = [
+      { id: "a1", state: "done", started_at: STARTED_AT + 5000, duration_ms: 1000 },
+      { id: "a2", state: "running", started_at: STARTED_AT },
+    ];
+    expect(clockOf(agents, STARTED_AT + 65000)).toEqual({ clock: "1:05", runningSince: STARTED_AT });
+  });
+
+  it("freezes at the last agent's end once none of them runs", () => {
+    const agents = [
+      { id: "a1", state: "done", started_at: STARTED_AT, duration_ms: 20000 },
+      { id: "a2", state: "done", started_at: STARTED_AT + 20000, duration_ms: 45000 },
+    ];
+    expect(clockOf(agents, STARTED_AT + 900000)).toEqual({ clock: "1:05", runningSince: null });
+  });
+
+  it("ends a finished agent that never said how long it took at its own start", () => {
+    const agents = [{ id: "a1", state: "done", started_at: STARTED_AT }];
+    expect(clockOf(agents, STARTED_AT + 900000)).toEqual({ clock: "0:00", runningSince: null });
   });
 });
 
@@ -499,7 +544,7 @@ describe("the workflow the viewer shows", () => {
   it("is the one the reader chose, and carries no raw phases array", () => {
     expect(openWorkflow(both, 1).name).toBe("Fixtures");
     expect(openWorkflow(both, 1)).not.toHaveProperty("phases");
-    expect(workflowPhases(both, 1, 0).phases.map((phase) => phase.title)).toEqual(["Write"]);
+    expect(workflowPhases(both, 1, 0).map((phase) => phase.title)).toEqual(["Write"]);
   });
 
   it("falls back to the first when the choice is out of range", () => {
@@ -645,14 +690,14 @@ describe("the wire the bridge actually builds", () => {
     const [workflow] = surfaceRows(WORKFLOW_ENTRY_KIND, recorded);
     expect(workflow.name).toBe("readme-analysis");
     expect(workflow.phaseCount).toBe(2);
-    const { phases, agents } = workflowPhases(recorded, 0, 0);
+    const phases = workflowPhases(recorded, 0, 0);
     expect(phases.map((phase) => [phase.title, phase.done, phase.total])).toEqual([
       ["Read", 2, 2],
       ["Summarize", 1, 1],
     ]);
-    expect(agents.map((agent) => agent.label)).toEqual(["line-counter", "char-counter"]);
-    expect(agents[0].model).toBe(recorded.workflows[0].phases[0].agents[0].model);
-    expect(agents[0].tokens).toBe(recorded.workflows[0].phases[0].agents[0].tokens);
+    expect(phases[0].rows.map((agent) => agent.label)).toEqual(["line-counter", "char-counter"]);
+    expect(phases[0].rows[0].model).toBe(recorded.workflows[0].phases[0].agents[0].model);
+    expect(phases[0].rows[0].tokens).toBe(recorded.workflows[0].phases[0].agents[0].tokens);
   });
 });
 

@@ -1,5 +1,5 @@
 import { el } from "../dom.js";
-import { patchElement } from "./domPatch.js";
+import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
 import { runningClock } from "./agentRailModel.js";
@@ -25,25 +25,26 @@ import {
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
+  CLIP_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   PILL_COUNT_SELECTOR,
-  ROW_CLOCK_SELECTOR,
   SURFACE_OVERLAY_BODY_SELECTOR,
   SURFACE_SELECTOR,
+  TICKING_CLOCK_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
   completedFoldHeadHtml,
   completedFoldHtml,
   kindViewerHtml,
+  phaseSectionHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
   surfaceOverlayHtml,
   surfacePillHtml,
   workflowChoiceHtml,
   workflowHeadHtml,
-  workflowPhaseHtml,
   workflowViewerHtml,
 } from "./agentSurfacesRender.js";
 
@@ -52,14 +53,23 @@ const ROW_CLOCK_TICK_MS = 1000;
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
-const oneListOfKind = (kind, render) => ({
-  frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
-  lists: ({ surfaces }) => [{ selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render }],
+const nothingToRender = () => "";
+
+/// Every row renderer takes the viewer's own options — how much width it has
+/// and what a model id is called — so one shape serves all four kinds.
+const rowsOf = (renderRow) => (rowOptions) => (row) => renderRow(row, rowOptions);
+
+const oneListOfKind = (kind, renderOf) => ({
+  frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
+  lists: ({ surfaces, rowOptions }) => [
+    { selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render: renderOf(rowOptions) },
+  ],
 });
 
-const runningAboveWhatFinished = (kind, render) => ({
-  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, render),
-  lists: ({ surfaces }) => {
+const runningAboveWhatFinished = (kind, renderOf) => ({
+  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, nothingToRender),
+  lists: ({ surfaces, rowOptions }) => {
+    const render = renderOf(rowOptions);
     const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
     return [
       { selector: SURFACE_SELECTOR.running, rows: running, render },
@@ -68,41 +78,63 @@ const runningAboveWhatFinished = (kind, render) => ({
   },
 });
 
-const VIEWER_PLANS = {
-  [WORKFLOW_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, [], [], []),
-    headSelector: WORKFLOW_HEAD_SELECTOR,
-    headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
-    lists: ({ surfaces, selectedWorkflowIndex, selectedPhaseIndex }) => {
-      const { phases, agents } = workflowPhases(surfaces, selectedWorkflowIndex, selectedPhaseIndex);
-      return [
-        {
-          selector: SURFACE_SELECTOR.workflowChoices,
-          rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
-          render: workflowChoiceHtml,
-        },
-        { selector: SURFACE_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
-        { selector: SURFACE_SELECTOR.workflowAgents, rows: agents, render: agentRowHtml },
-      ];
-    },
-  },
-  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
-  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
-  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
+/// The running phase stands open the moment its section is made, and never
+/// again: which folds are open is the reader's from there.
+const openTheRunningPhase = (section, phase) => {
+  if (phase.open) section.open = true;
 };
 
-export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
+const VIEWER_PLANS = {
+  [WORKFLOW_ENTRY_KIND]: {
+    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
+    headSelector: WORKFLOW_HEAD_SELECTOR,
+    headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
+    lists: ({ surfaces, selectedWorkflowIndex, nowMs, rowOptions }) => [
+      {
+        selector: SURFACE_SELECTOR.workflowChoices,
+        rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
+        render: workflowChoiceHtml,
+      },
+      {
+        selector: SURFACE_SELECTOR.workflowPhases,
+        rows: workflowPhases(surfaces, selectedWorkflowIndex, nowMs),
+        render: (phase) => phaseSectionHtml(phase, rowOptions),
+        wire: openTheRunningPhase,
+        nested: (phase) => ({
+          selector: SURFACE_SELECTOR.workflowAgents,
+          rows: phase.rows,
+          render: rowsOf(agentRowHtml)(rowOptions),
+        }),
+      },
+    ],
+  },
+  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, rowsOf(agentRowHtml)),
+  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, rowsOf(shellRowHtml)),
+  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, rowsOf(checklistItemHtml)),
+};
+
+/// A press on clipped text opens it out, and the next one clips it back. The
+/// mark is the reader's: the patch leaves it alone, and no render writes it.
+function expandClippedText(event) {
+  const clipped = event.target.closest(CLIP_SELECTOR);
+  if (!clipped) return false;
+  event.preventDefault();
+  clipped.toggleAttribute(EXPANDED_ATTRIBUTE);
+  return true;
+}
+
+export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
+  const rowOptions = { compact, modelLabel };
   let surfaces = null;
   let selectedWorkflowIndex = 0;
-  let selectedPhaseIndex = 0;
   let ticker = null;
 
   const paintRowClocks = () => {
     const nowMs = Date.now();
-    const spans = [...host.querySelectorAll(ROW_CLOCK_SELECTOR)].filter(
+    const spans = [...host.querySelectorAll(TICKING_CLOCK_SELECTOR)].filter(
       (span) => !span.closest(`[${EXITING_ATTRIBUTE}]`),
     );
     for (const span of spans) {
@@ -136,12 +168,27 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     return standing.querySelector(SURFACE_SELECTOR.completed);
   };
 
+  const paintList = (container, list) => {
+    const painted = patchList(container, list.rows, {
+      keyOf: (row) => row.key,
+      render: list.render,
+      wire: list.wire,
+      ...VIEWER_ROW_MOTION,
+    });
+    if (!list.nested) return;
+    painted.forEach((element, index) => {
+      const inner = list.nested(list.rows[index]);
+      paintList(element.querySelector(inner.selector), inner);
+    });
+  };
+
   const paint = () => {
     const paintContext = {
       surfaces,
       workflow: openWorkflow(surfaces, selectedWorkflowIndex),
       selectedWorkflowIndex,
-      selectedPhaseIndex,
+      nowMs: Date.now(),
+      rowOptions,
     };
     if (plan.headSelector) {
       patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
@@ -149,26 +196,16 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
     for (const list of plan.lists(paintContext)) {
       const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
       if (!container) continue;
-      patchList(container, list.rows, {
-        keyOf: (row) => row.key,
-        render: list.render,
-        ...VIEWER_ROW_MOTION,
-      });
+      paintList(container, list);
     }
     tickWhileAnyRowIsRunning();
   };
 
   const onViewerPress = (event) => {
+    if (expandClippedText(event)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
       selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
-      selectedPhaseIndex = 0;
-      paint();
-      return;
-    }
-    const phase = event.target.closest("[data-phase-index]");
-    if (phase) {
-      selectedPhaseIndex = Number(phase.dataset.phaseIndex);
       paint();
       return;
     }
@@ -193,7 +230,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
   };
 }
 
-export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, { onOpenThreadItem, modelLabel, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -203,7 +240,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, hos
       if (onClose) onClose();
     },
   });
-  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem, modelLabel });
   return {
     kind,
     set(surfaces) {
@@ -213,7 +250,7 @@ export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, hos
   };
 }
 
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, onPillsChanged }) {
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, modelLabel, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
@@ -255,7 +292,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
     }
     closingFrame = null;
     if (viewer) viewer.dispose();
-    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem });
+    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem, modelLabel, compact: true });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };

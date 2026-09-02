@@ -3,7 +3,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
-import { CHECKLIST_ENTRY_KIND, SHELL_ENTRY_KIND } from "../src/core/agentSurfacesModel.js";
+import {
+  CHECKLIST_ENTRY_KIND,
+  SHELL_ENTRY_KIND,
+  WORKFLOW_ENTRY_KIND,
+} from "../src/core/agentSurfacesModel.js";
 import { surfacesSnapshot } from "./surfacesFixture.js";
 
 vi.mock("../src/core/notify.js", () => ({ notifyError: () => {}, notify: () => {} }));
@@ -162,6 +166,61 @@ describe("the rows of an open viewer", () => {
 
     await settleMotion();
     expect(viewerHost().contains(arriving)).toBe(false);
+  });
+});
+
+describe("the phases an open workflow stacks", () => {
+  const workflow = (phases) => ({
+    workflows: [
+      {
+        id: "wf-1",
+        name: "Review sweep",
+        state: "running",
+        phases: phases.map((labels, index) => ({
+          title: `phase ${index}`,
+          agents: labels.map((label) => ({ id: label, label, state: "running" })),
+        })),
+      },
+    ],
+  });
+
+  const sections = () => [...viewerHost().querySelectorAll(".surface-phase")];
+
+  const openWorkflowViewer = async (surfaces, phases) => {
+    surfaces.set(workflow(phases));
+    pillOf(WORKFLOW_ENTRY_KIND).click();
+    await settleMotion();
+    started.length = 0;
+  };
+
+  it("grows a phase that arrives, and a row that arrives inside one already standing", async () => {
+    const surfaces = mount();
+    await openWorkflowViewer(surfaces, [["reader"]]);
+
+    surfaces.set(workflow([["reader", "skimmer"], ["judge"]]));
+    await settleMotion();
+
+    const arrivingRow = sections()[0].querySelector(`[data-key="skimmer"]`);
+    const arrivingSection = sections()[1];
+    expect(animationsOn(arrivingRow)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
+    expect(animationsOn(arrivingSection)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
+    expect(arrivingRow.hidden).toBe(false);
+    expect(arrivingSection.hidden).toBe(false);
+  });
+
+  it("shrinks a phase away before it is taken out of the stack", async () => {
+    const surfaces = mount();
+    await openWorkflowViewer(surfaces, [["reader"], ["judge"]]);
+    const leaving = sections()[1];
+
+    surfaces.set(workflow([["reader"]]));
+    await motionBeat();
+
+    expect(animationsOn(leaving)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+    expect(viewerHost().contains(leaving)).toBe(true);
+
+    await settleMotion();
+    expect(viewerHost().contains(leaving)).toBe(false);
   });
 });
 

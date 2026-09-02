@@ -1,4 +1,4 @@
-import { workingClock } from "./agentRailModel.js";
+import { runningClock, workingClock } from "./agentRailModel.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -18,6 +18,10 @@ const KIND_LABELS = {
   [SHELL_ENTRY_KIND]: "Shells",
   [CHECKLIST_ENTRY_KIND]: "Checklist",
 };
+
+const PENDING_STATE = "pending";
+const RUNNING_STATE = "running";
+const DONE_STATE = "done";
 
 const RUNNING_MARK = "running";
 const DONE_MARK = "ok";
@@ -190,10 +194,6 @@ function keyedRows(keyPrefix, entryKind, entries, normalise) {
   }));
 }
 
-function keyedPhaseRows(phases, shapePhase) {
-  return keyedBy("phase", phases, shapePhase);
-}
-
 function phasesOf(workflow) {
   return workflow && Array.isArray(workflow.phases) ? workflow.phases : [];
 }
@@ -283,20 +283,56 @@ export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex) {
   return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
-export function workflowPhases(surfaces, selectedWorkflowIndex = 0, selectedPhaseIndex = 0) {
+/** One phase's wall-clock span: from the earliest agent that started, running
+ *  to `nowMs` while any of them still is and to the last end once none is.
+ *  A phase no agent has started yet has no span to read. */
+export function phaseClock(phase, nowMs) {
+  const agents = agentsOf(phase);
+  const starts = agents.map((agent) => agent.started_at).filter(Number.isFinite);
+  if (!starts.length) return { clock: "", runningSince: null };
+  const startedAt = Math.min(...starts);
+  if (agents.some((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, RUNNING_MARK))) {
+    return { clock: spanClock(startedAt, nowMs), runningSince: startedAt };
+  }
+  const ends = agents.map(agentEndedAt).filter(Number.isFinite);
+  return { clock: spanClock(startedAt, Math.max(...ends)), runningSince: null };
+}
+
+function spanClock(fromMs, toMs) {
+  return runningClock((toMs - fromMs) / 1000);
+}
+
+function agentEndedAt(agent) {
+  if (!Number.isFinite(agent.started_at)) return null;
+  return agent.started_at + (Number.isFinite(agent.duration_ms) ? agent.duration_ms : 0);
+}
+
+function phaseState(agents) {
+  if (agents.some((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, RUNNING_MARK))) return RUNNING_STATE;
+  const finished = agents.filter((agent) => {
+    const stateMark = surfaceStateMark(AGENT_ENTRY_KIND, agent.state);
+    return !!stateMark && FINISHED_MARKS.includes(stateMark.mark);
+  });
+  return agents.length && finished.length === agents.length ? DONE_STATE : PENDING_STATE;
+}
+
+/** The chosen workflow as a stack: every phase in order, its agents nested,
+ *  each one carrying what its section shows and whether it opens on arrival. */
+export function workflowPhases(surfaces, selectedWorkflowIndex = 0, nowMs = 0) {
   const phases = phasesOf(selectedWorkflowEntry(surfaces, selectedWorkflowIndex));
-  if (!phases.length) return { phases: [], agents: [] };
-  const selected = chosenIndex(phases.length, selectedPhaseIndex);
-  return {
-    phases: keyedPhaseRows(phases, (phase, index) => ({
-      index,
+  return keyedBy("phase", phases, (phase) => {
+    const agents = agentsOf(phase);
+    const state = phaseState(agents);
+    return {
       title: phase.title || "",
-      total: agentsOf(phase).length,
-      done: agentsOf(phase).filter((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, DONE_MARK)).length,
-      selected: index === selected,
-    })),
-    agents: agentRows(agentsOf(phases[selected])),
-  };
+      total: agents.length,
+      done: agents.filter((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, DONE_MARK)).length,
+      state,
+      open: state === RUNNING_STATE,
+      ...phaseClock(phase, nowMs),
+      rows: agentRows(agents),
+    };
+  });
 }
 
 const ROW_SUBJECTS = {

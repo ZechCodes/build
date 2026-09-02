@@ -1474,3 +1474,45 @@ describe("revisiting a conversation", () => {
     expect(body.textContent).not.toContain("No conversation yet");
   });
 });
+
+// The agent's surfaces ride the digest the rail already reads, so the pills go
+// where the reader is already looking: inside the pinned composer block,
+// between the status line and the box. A row's action is an ordinary message
+// out of the rail's one send path.
+describe("the agent's surfaces", () => {
+  const shellSurfaces = {
+    shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
+  };
+
+  const openPanelWithSurfaces = async () => {
+    payload = branchRow({ agents: [agent({ surfaces: shellSurfaces })] });
+    await mount();
+  };
+
+  it("mounts the pills between the status line and the box", async () => {
+    await openPanelWithSurfaces();
+
+    const block = railHost().querySelector(".rail-composer");
+    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-surfaces", ""]);
+    expect(block.querySelector('#rail-surfaces [data-surface-kind="shells"]')).not.toBe(null);
+    expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
+  });
+
+  it("sends a row's action as a message, leaving the draft and the focus alone", async () => {
+    await openPanelWithSurfaces();
+    const input = railHost().querySelector("#railinput");
+    input.value = "half a sentence";
+    input.focus();
+
+    railHost().querySelector('[data-surface-kind="shells"]').click();
+    const row = railHost().querySelector(".surface-shells .surface-row");
+    row.querySelector(".caret").click();
+    row.querySelector('.mi[data-action="stop-shell"]').click();
+    await flush();
+
+    expect(callsTo("thread.post")[0].params.body).toBe('Please stop the background command "cargo test".');
+    expect(railHost().querySelector("#railinput").value).toBe("half a sentence");
+    expect(document.activeElement).toBe(input);
+    expect(railHost().querySelector(".surface-shells")).not.toBe(null);
+  });
+});

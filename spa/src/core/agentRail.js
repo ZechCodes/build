@@ -52,6 +52,7 @@ import {
   MUTATION_THREAD_PAGE,
   createThreadCache,
   paintThreadKeepingPlace,
+  revealThreadSequence,
   threadHtml,
   wireThreadAttachments,
   wireThreadOptions,
@@ -60,6 +61,7 @@ import {
   wireThreadRevisionLinks,
   writeThreadKeepingComposer,
 } from "./thread.js";
+import { mountAgentSurfaces } from "./agentSurfaces.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
 
@@ -76,6 +78,9 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
+/** Where the surface pills and their viewer are mounted: inside the pinned
+ *  composer block, between the status line and the box. */
+const RAIL_SURFACES_ID = "rail-surfaces";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on
@@ -395,6 +400,9 @@ export function mountAgentRail(host, context) {
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
   let composerModelMenu = null;
+  // The pills under the box and the viewer above them, mounted with it and
+  // painted from the open agent's own digest.
+  let surfacesBlock = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
@@ -645,6 +653,7 @@ export function mountAgentRail(host, context) {
     const wantedBody = `${shownMode}:${addingAgent ? "new" : selectedId || "ghost"}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
+      disposeSurfaces();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat" ? composerRowHtml() : ""}`;
@@ -799,6 +808,7 @@ export function mountAgentRail(host, context) {
     if (!entity.agents.length || addingAgent) {
       paintNewAgent(body);
       syncComposer();
+      syncSurfaces();
       return;
     }
     const thread = threadFor();
@@ -818,6 +828,7 @@ export function mountAgentRail(host, context) {
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
     };
     syncComposer();
+    syncSurfaces();
     reportRead(body);
   };
 
@@ -832,6 +843,7 @@ export function mountAgentRail(host, context) {
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
       <div class="rail-status" id="rail-status" hidden></div>
+      <div class="rail-surfaces" id="${RAIL_SURFACES_ID}"></div>
       ${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
@@ -921,7 +933,38 @@ export function mountAgentRail(host, context) {
       onError: (error) => notifyError("Message failed", error.message),
     });
     composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    mountSurfaces(panel);
     syncComposer();
+    syncSurfaces();
+  };
+
+  /// The surfaces block, mounted once with the box it sits above.
+  ///
+  /// Its send is the rail's own, so asking a workflow to stop adopts, wakes and
+  /// refreshes exactly as typing the same sentence would; a press on a subagent
+  /// asks the conversation beside it to open the call that spawned it.
+  const mountSurfaces = (panel) => {
+    const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
+    if (!region) return;
+    surfacesBlock = mountAgentSurfaces(region, {
+      key: `${entity.entityId || key}:${selectedId || ""}`,
+      onSendMessage: (message) => send(message, []),
+      onOpenThreadItem: (sequence) => revealThreadSequence(host.querySelector("#rail-body"), sequence),
+    });
+  };
+
+  const disposeSurfaces = () => {
+    if (!surfacesBlock) return;
+    surfacesBlock.dispose();
+    surfacesBlock = null;
+  };
+
+  /// What the pills say: the open agent's own snapshot, and nothing at all
+  /// while the chooser is up or the carrier reports none.
+  const syncSurfaces = () => {
+    if (!surfacesBlock) return;
+    const agent = agentInFocus();
+    surfacesBlock.set((agent && agent.surfaces) || null);
   };
 
   /** A reference in the conversation goes where it points, as far as the two
@@ -1226,6 +1269,7 @@ export function mountAgentRail(host, context) {
       statusTicker = null;
       unsubscribeFeed();
       disposeTui();
+      disposeSurfaces();
       faces.forEach((face) => face.renderer.destroy());
       faces.clear();
       host.innerHTML = "";

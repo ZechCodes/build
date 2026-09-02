@@ -234,9 +234,9 @@ impl WorktreeManager {
     pub fn restore(&self, worktree: &Worktree, isolation: Isolation)
         -> Result<Worktree, WorktreeError>;
 
-    // ---- everything else: dispatches on `Isolation::of(&path)` --------------
+    // ---- everything else: keyed on `Isolation::of(&path)`, bar `remove_checkout` ----
     pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError>;
-    pub fn remove_checkout(&self, path: &Path, name: &str) -> Result<(), WorktreeError>;
+    pub fn remove_checkout(&self, path: &Path, name: &str) -> Result<(), WorktreeError>;  // every backend's `remove`
     pub fn publish(&self, path: &Path, branch: &str) -> Result<(), WorktreeError>;
     pub fn sync_base(&self, path: &Path, base_branch: &str) -> Result<(), WorktreeError>;
     pub fn merge_into_base(&self, path: &Path, branch: &str, base_branch: &str)
@@ -276,9 +276,13 @@ Rules:
   stale, and `materialize`'s own error is then the answer.
 - `remove` = `publish` when the checkout exists and `keep_branch` (a publish
   failure fails the removal: an abandon must not lose the branch), then
-  `remove_checkout`, then `delete_branch_at` when `!keep_branch`. When the
-  checkout is gone, `remove_checkout` still asks **every** backend to clear its
-  record (a stale `git worktree` entry, nothing for a clone).
+  `remove_checkout`, then `delete_branch_at` when `!keep_branch`.
+- `remove_checkout` asks **every** backend's `remove`, never `backend_of`: a gone
+  checkout has no `Isolation::of` to key on, and absence is success for every
+  backend, so present and gone are one path and a stale `git worktree` entry is
+  cleared either way. It owns that `Isolation::ALL` walk as `record_held` owns the
+  `holds_record` one — fallible, returned to the caller, distinct from `prune`'s
+  logging walk. Those three walks are the only ones; no caller repeats them.
 - `discover` runs both backends' `discover`, drops the primary and `excluded`,
   calls `sync_base` on each path (best effort, logged; a no-op for worktrees),
   then `describe_checkout` (§4.1) on each. Sort as today.
@@ -307,9 +311,10 @@ pub fn describe_checkout(
 
 computes the summary from the checkout at `path` alone, so a clone and a linked
 worktree are described by one function. `ExternalWorktree` gains
-`pub isolation: Isolation` (`Isolation::of(path)`, defaulting to `Worktree` if
-`None` — a foreign standalone repo never reaches here because no backend
-discovers it). `external_worktrees_json` emits it as `"isolation"`.
+`pub isolation: Isolation` from `Isolation::of(path)?`: the function already
+answers `Option`, so a path that is not a Build checkout is described by nobody
+rather than described as a `Worktree` — the same condition `backend_of` answers
+with `NotABuildCheckout`. `external_worktrees_json` emits it as `"isolation"`.
 
 `ExternalWorktree.name` is the checkout's **directory basename**, in both
 isolations, and `resolve_worktree_name`'s walk of git's registry is deleted — the

@@ -380,6 +380,10 @@ export function mountGitPane(
     // standalone Files/Changes hosts), the daemon answers with the entity's
     // first agent, which is what this surface always meant.
     agentSelection = createAgentSelection(),
+    // Where the reader goes when they leave the diff for the file itself:
+    // `openFile({ path, line })`, the mounting view's own navigation. A pane
+    // mounted without one offers no such control.
+    openFile = null,
   } = {},
 ) {
   let disposed = false;
@@ -598,6 +602,7 @@ export function mountGitPane(
     // reviewer last sent comments on THIS changeset says so.
     const stackFor = (files, patch) => ({
       commentable,
+      openable: Boolean(openFile),
       noiseExpanded: noiseExpanded.has(String(selected)),
       expanded: folds.expanded,
       collapsed: folds.collapsed,
@@ -1182,6 +1187,10 @@ export function mountGitPane(
     // review plug owns the detail pane it owns its comments too — this layer
     // must not also claim them, or one tap would write two comments.
     if (!reviewMounted && commentLayer && commentLayer.handleClick(event)) return;
+    // Out of the diff and into the file: claimed before the folds, since the
+    // control sits in a capped file's header and the fold would otherwise eat
+    // the press as "expand me".
+    if (openFilePressed(target)) return;
     // Diff folding for the changesets this pane draws: the filename bar shuts
     // the file (and shows a shut one again), a press on a capped body opens
     // it. Controls in the bar (⋯, ✎) keep their jobs. The fold is state, so
@@ -1197,6 +1206,15 @@ export function mountGitPane(
       showMore();
       return;
     }
+  };
+
+  /** Take the reader to the file itself when they press the way out. Returns
+   *  whether the press was that. */
+  const openFilePressed = (target) => {
+    const control = target.closest("[data-open-file]");
+    if (!control || !openFile) return false;
+    openFile({ path: control.dataset.openFile, line: Number(control.dataset.line) || null });
+    return true;
   };
 
   /** Answer a press on a file's fold affordance by moving its key in the open

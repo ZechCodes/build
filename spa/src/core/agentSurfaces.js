@@ -2,7 +2,7 @@ import { el } from "../dom.js";
 import { EXPANDED_ATTRIBUTE, patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
-import { runningClock } from "./agentRailModel.js";
+import { elapsedClock } from "./agentRailModel.js";
 import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
@@ -55,22 +55,22 @@ const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const nothingToRender = () => "";
 
-/// Every row renderer takes the viewer's own options — how much width it has
-/// and what a model id is called — so one shape serves all four kinds.
-const rowsOf = (renderRow) => (rowOptions) => (row) => renderRow(row, rowOptions);
-
-const oneListOfKind = (kind, renderOf) => ({
+const oneListOfKind = (kind, renderRow) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], nothingToRender),
-  lists: ({ surfaces, rowOptions }) => [
-    { selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render: renderOf(rowOptions) },
+  lists: ({ surfaces, reading, rowOptions }) => [
+    {
+      selector: SURFACE_SELECTOR[kind],
+      rows: surfaceRows(kind, surfaces, reading),
+      render: (row) => renderRow(row, rowOptions),
+    },
   ],
 });
 
-const runningAboveWhatFinished = (kind, renderOf) => ({
+const runningAboveWhatFinished = (kind, renderRow) => ({
   frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, nothingToRender),
-  lists: ({ surfaces, rowOptions }) => {
-    const render = renderOf(rowOptions);
-    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
+  lists: ({ surfaces, reading, rowOptions }) => {
+    const render = (row) => renderRow(row, rowOptions);
+    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces, reading));
     return [
       { selector: SURFACE_SELECTOR.running, rows: running, render },
       { selector: SURFACE_SELECTOR.completed, rows: completed, render, folded: true },
@@ -89,28 +89,28 @@ const VIEWER_PLANS = {
     frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
     headSelector: WORKFLOW_HEAD_SELECTOR,
     headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
-    lists: ({ surfaces, selectedWorkflowIndex, nowMs, rowOptions }) => [
+    lists: ({ surfaces, selectedWorkflowIndex, reading, rowOptions }) => [
       {
         selector: SURFACE_SELECTOR.workflowChoices,
-        rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
+        rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading),
         render: workflowChoiceHtml,
       },
       {
         selector: SURFACE_SELECTOR.workflowPhases,
-        rows: workflowPhases(surfaces, selectedWorkflowIndex, nowMs),
+        rows: workflowPhases(surfaces, selectedWorkflowIndex, reading),
         render: (phase) => phaseSectionHtml(phase, rowOptions),
         wire: openTheRunningPhase,
         nested: (phase) => ({
           selector: SURFACE_SELECTOR.workflowAgents,
           rows: phase.rows,
-          render: rowsOf(agentRowHtml)(rowOptions),
+          render: (row) => agentRowHtml(row, rowOptions),
         }),
       },
     ],
   },
-  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, rowsOf(agentRowHtml)),
-  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, rowsOf(shellRowHtml)),
-  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, rowsOf(checklistItemHtml)),
+  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
+  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
+  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
 /// A press on clipped text opens it out, and the next one clips it back. The
@@ -127,7 +127,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
-  const rowOptions = { compact, modelLabel };
+  const rowOptions = { compact };
   let surfaces = null;
   let selectedWorkflowIndex = 0;
   let ticker = null;
@@ -138,7 +138,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       (span) => !span.closest(`[${EXITING_ATTRIBUTE}]`),
     );
     for (const span of spans) {
-      span.textContent = runningClock((nowMs - Number(span.dataset.runningSince)) / 1000);
+      span.textContent = elapsedClock(Number(span.dataset.runningSince), nowMs);
     }
     return spans.length;
   };
@@ -183,11 +183,12 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   };
 
   const paint = () => {
+    const reading = { nowMs: Date.now(), modelLabel };
     const paintContext = {
       surfaces,
-      workflow: openWorkflow(surfaces, selectedWorkflowIndex),
+      workflow: openWorkflow(surfaces, selectedWorkflowIndex, reading),
       selectedWorkflowIndex,
-      nowMs: Date.now(),
+      reading,
       rowOptions,
     };
     if (plan.headSelector) {

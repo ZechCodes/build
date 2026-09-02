@@ -6,7 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
-import { fileKey } from "./diff.js";
+import { fileKey, firstLineOf } from "./diff.js";
 import { anchorTop } from "./paintKeepingPlace.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
@@ -143,7 +143,7 @@ function foldClassOf(file, { expanded, collapsed, viewed }) {
  *  file is open it also carries `data-expanded`, which is what the patch in
  *  core/domPatch.js reads to leave an expansion alone. */
 export function diffFileHtml(file, options = {}) {
-  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false } = options;
+  const { commentable = false, changedSince = null, viewed = null, withViewedToggle = false, fileMenu = null, overridable = false, openable = false } = options;
   const lang = langForPath(file.path);
   const key = fileKey(file);
   const isViewed = viewed ? viewed.has(file.path) : false;
@@ -157,13 +157,20 @@ export function diffFileHtml(file, options = {}) {
     : "";
   return `
       <div class="${classes}" data-file="${esc(file.path)}" data-key="${esc(key)}"${openMark}><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${commentButton}${fileMenuHtml(file.path, fileMenu)}</div>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file.path, fileMenu)}</div>
         <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
           maskDotenv: isDotenvPath(file.path),
           hunkMarks: file.triageHunks || null,
           overridable,
         })}</table></div>
         <div class="diff-expand" aria-hidden="true">Expand full diff ↓</div></div>`;
+}
+
+/** The way out of the diff and into the file itself, at the line the diff is
+ *  about. Drawn only where the surface has somewhere to send the reader. */
+function openFileButtonHtml(file, openable) {
+  if (!openable) return "";
+  return `<button class="fopen" data-open-file="${esc(file.path)}" data-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
 }
 
 /** The file header's ⋯ and, when this file's menu is the open one, its verbs.

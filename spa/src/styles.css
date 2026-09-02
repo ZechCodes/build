@@ -570,9 +570,12 @@ tr.dhl td { background:var(--hl-bg) !important; } tr.dhl td.ln { background:var(
   font-weight:600; pointer-events:none; }
 .file .fhead { cursor:pointer; }
 .file.collapsed .dscroll { display:none; }
-.fcmt { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
+.fcmt, .fopen { font:inherit; font-size:12px; line-height:1; color:var(--dim); background:none; border:none;
   border-radius:5px; padding:3px 6px; cursor:pointer; margin-left:8px; flex:none; }
-.fcmt:hover { background:var(--accent-soft); color:var(--accent); }
+.fcmt:hover, .fopen:hover { background:var(--accent-soft); color:var(--accent); }
+/* The way out of the diff sits with the file's other controls, and stops short
+   of the comment ✎ so the two are not one blob of glyphs. */
+.fopen + .fcmt { margin-left:2px; }
 /* re-review memory: changed-since chip, per-file viewed toggle, changes-only filter */
 .fchanged { font-size:10.5px; color:var(--amber); border:1px solid var(--amber); border-radius:6px; padding:1px 6px; margin-left:6px; }
 .fviewed { margin-left:auto; font-size:11px; color:var(--dim); display:flex; gap:4px; align-items:center; cursor:pointer; }

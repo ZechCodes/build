@@ -67,7 +67,7 @@ describe("the Files browser on its own", () => {
   });
 
   it("opens the file a deep link named, without anything else pointing it there", async () => {
-    const { host, files } = mountFiles({ initialPath: "src/a.js" });
+    const { host, files } = mountFiles({ initialPath: { path: "src/a.js" } });
     await vi.waitFor(() => expect(host.querySelector(".fppath")).toBeTruthy());
     expect(host.querySelector(".fppath").textContent).toBe("src/a.js");
     expect(host.querySelector(".fcrumb").textContent).toBe("src");

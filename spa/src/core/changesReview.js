@@ -87,6 +87,10 @@ export function createReviewPlug({
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
+  // Where the reader goes when they leave the diff for the file itself:
+  // `openFile({ path, line })`, the mounting surface's own navigation. A plug
+  // mounted without one offers no such control.
+  openFile = null,
 }) {
   let host = null;
   let watcher = null;
@@ -192,6 +196,7 @@ export function createReviewPlug({
     const entries = filesToRender.length
       ? diffStackEntries(filesToRender, {
           commentable: editable,
+          openable: Boolean(openFile),
           changedSince: changed,
           viewed: viewedFiles,
           expanded: folds.expanded,
@@ -273,6 +278,14 @@ export function createReviewPlug({
         if (expandedGroups.has(name)) expandedGroups.delete(name);
         else expandedGroups.add(name);
         render();
+        return;
+      }
+      // Out of the diff and into the file: claimed before the folds, since the
+      // control sits in a capped file's header and the fold would otherwise
+      // eat the press as "expand me".
+      const openControl = event.target.closest("[data-open-file]");
+      if (openControl && openFile) {
+        openFile({ path: openControl.dataset.openFile, line: Number(openControl.dataset.line) || null });
         return;
       }
       if (trayMounted && commentLayer && commentLayer.handleClick(event)) return;

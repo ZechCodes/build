@@ -238,6 +238,10 @@ export function runningClock(seconds) {
   return `${Math.floor(elapsed / 3600)}:${twoDigits(Math.floor((elapsed % 3600) / 60))}`;
 }
 
+export function elapsedClock(sinceMs, nowMs) {
+  return runningClock((nowMs - sinceMs) / 1000);
+}
+
 export function startupStatusLine(conversationItems = [], agentLabel = "Agent") {
   const newest = conversationItems[conversationItems.length - 1];
   if (!isStartupEvent(newest)) return null;

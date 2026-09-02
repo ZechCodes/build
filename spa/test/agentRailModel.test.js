@@ -17,6 +17,7 @@ import {
   selectAgentId,
   startupStatusLine,
   statText,
+  elapsedClock,
   workingClock,
   runningClock,
   workingSeconds,
@@ -268,6 +269,12 @@ describe("the pinned status line above the composer", () => {
     expect(runningClock(5399)).toBe("89:59");
     expect(runningClock(5400)).toBe("1:30");
     expect(runningClock(90000)).toBe("25:00");
+  });
+
+  it("clocks how long ago a stamp was, in the running clock's own form", () => {
+    expect(elapsedClock(NOW - 65_000, NOW)).toBe("1:05");
+    expect(elapsedClock(NOW, NOW)).toBe("0:00");
+    expect(elapsedClock(NOW + 5_000, NOW)).toBe("0:00");
   });
 
   it("says the additions and deletions, and nothing when there are none", () => {

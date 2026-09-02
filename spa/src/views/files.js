@@ -82,12 +82,14 @@ export function filesTreeHtml(dir, entries) {
 
 /** Pure: the syntax-highlighted source view for a file. Code is highlighted by
  *  the path's extension (langForPath) and, for an unknown extension, falls back
- *  to escaped plain text — highlightCode never emits a live tag either way. */
+ *  to escaped plain text — highlightCode never emits a live tag either way.
+ *  Every row states its line, so a reader arriving from a diff can be taken to
+ *  the line the diff was about. */
 export function sourcePreviewHtml(path, text) {
   const lang = langForPath(path);
   const rows = text
     .split("\n")
-    .map((line, index) => `<tr><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
+    .map((line, index) => `<tr data-line="${index + 1}"><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
     .join("");
   return `<div class="fsrc"><table>${rows}</table></div>`;
 }
@@ -140,6 +142,11 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * worktree_id]}) spread into every fs.* call; `callRpc(method, params)` is the
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
+ *
+ * `initialPath` is where the browser opens: `{ path, line }`, from a link in a
+ * conversation or the way out of a diff. The tree opens on the file's own
+ * directory, the preview on the file, and — where the line is named and the
+ * file reads as source — the view is scrolled to that line.
  */
 export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   // The tree and the preview are the two columns of the shell's two-column
@@ -167,7 +174,9 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
   // beside the preview, so the empty state names it instead of pointing at it.
   showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
-  let dir = initialPath ? parentPath(initialPath) : ""; // current directory, relative to the scope root
+  const openAt = initialPath || null; // { path, line } — where this mount opens
+  let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
+  let scrollToLine = openAt && openAt.line ? openAt.line : null; // consumed by the first preview
   let sourceOverride = false; // per-selected-file "view source" toggle
 
   const renderTree = (entries) => {
@@ -275,6 +284,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
       <div class="fphead"><span class="fppath mono">${esc(path)}</span><span class="fpsize mono">${Number(file.size) || 0} bytes</span>${revealAll}${toggle}</div>
       <div class="fpbody">${dotenv ? dotenv.html + truncNotice : previewBodyHtml(path, file, sourceOverride)}</div>`;
     if (dotenv) wireDotenvSpoilers(dotenv.secrets);
+    scrollRequestedLineIntoView();
     const toggleBtn = previewEl.querySelector("#fsrctoggle");
     if (toggleBtn)
       toggleBtn.onclick = () => {
@@ -283,11 +293,22 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
       };
   };
 
+  /** The line the reader was sent to, put in the middle of the view — once.
+   *  A file with no source rows to land on (a rendered preview, a binary)
+   *  keeps the request until one is drawn. */
+  const scrollRequestedLineIntoView = () => {
+    if (!scrollToLine) return;
+    const row = previewEl.querySelector(`.fsrc tr[data-line="${scrollToLine}"]`);
+    if (!row || typeof row.scrollIntoView !== "function") return;
+    scrollToLine = null;
+    row.scrollIntoView({ block: "center" });
+  };
+
   loadTree(dir).then(() => {
-    if (!initialPath) return;
-    const fileName = initialPath.split("/").at(-1);
+    if (!openAt) return;
+    const fileName = openAt.path.split("/").at(-1);
     const row = [...treeEl.querySelectorAll(".ffile")].find((entry) => entry.dataset.file === fileName);
-    selectFile(initialPath, row || null);
+    selectFile(openAt.path, row || null);
   });
 
   return { dispose: () => drawer.dispose() };

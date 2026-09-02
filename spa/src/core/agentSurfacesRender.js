@@ -60,8 +60,6 @@ export function clippedTextHtml(text, { className = "", lines = 1 } = {}) {
   return `<span class="${classes}" ${CLIP_LINES_ATTRIBUTE}="${esc(lines)}" title="${esc(text)}">${esc(text)}</span>`;
 }
 
-const rawModelId = (modelId) => modelId;
-
 function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
 }
@@ -75,17 +73,10 @@ function noteHtml(description, subject) {
   return clippedTextHtml(description, { className: ROW_NOTE_CLASS, lines: 2 });
 }
 
-/// The one clock slot: empty while the ticker owns it, the span it took once it
-/// is over, nothing at all for a row that never timed anything.
-function clockHtml(text, runningSince) {
+function clockHtml(clock, runningSince) {
   const ticking = Number.isFinite(runningSince) ? ` ${RUNNING_SINCE_ATTRIBUTE}="${esc(runningSince)}"` : "";
-  if (!ticking && !text) return "";
-  return `<span class="${ROW_CLOCK_CLASS}"${ticking}>${esc(text)}</span>`;
-}
-
-function rowClockHtml(row) {
-  const running = Number.isFinite(row.runningSince);
-  return clockHtml(running ? "" : row.duration || "", row.runningSince);
+  if (!ticking && !clock) return "";
+  return `<span class="${ROW_CLOCK_CLASS}"${ticking}>${esc(clock)}</span>`;
 }
 
 function rowHeadHtml(row, { trailing = "" } = {}) {
@@ -93,7 +84,7 @@ function rowHeadHtml(row, { trailing = "" } = {}) {
       ${stateMarkHtml(row.stateMark)}
       ${clippedTextHtml(row.subject, { className: ROW_LABEL_CLASS })}
       ${trailing}
-      ${rowClockHtml(row)}
+      ${clockHtml(row.clock, row.runningSince)}
     </div>`;
 }
 
@@ -113,15 +104,12 @@ function agentStatsHtml(row) {
   return `<div class="surface-row-stats">${stats.map(statHtml).join("")}</div>`;
 }
 
-/// What the agent is doing, or what came of it: the failure first, then the
-/// result it finished with, then the tool it is on.
-function agentLineHtml(row, modelLabel) {
-  const model = modelLabel(row.model);
+function agentLineHtml(row) {
   const detail = row.error || row.result || row.lastTool;
-  if (!model && !detail) return "";
+  if (!row.model && !detail) return "";
   const detailClass = row.error ? `${ROW_DETAIL_CLASS} ${ROW_ERROR_CLASS}` : ROW_DETAIL_CLASS;
   return `<div class="surface-row-line">
-      ${model ? `<span class="surface-row-model">${esc(model)}</span>` : ""}
+      ${row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : ""}
       ${detail ? clippedTextHtml(detail, { className: detailClass }) : ""}
     </div>`;
 }
@@ -131,10 +119,10 @@ function callSequenceAttribute(row) {
 }
 
 /** One agent, two lines — three where there is width for the counts. */
-export function agentRowHtml(row, { compact = false, modelLabel = rawModelId } = {}) {
+export function agentRowHtml(row, { compact = false } = {}) {
   return surfaceRowHtml("surface-agent", row, {
     attributes: callSequenceAttribute(row),
-    body: `${agentLineHtml(row, modelLabel)}
+    body: `${agentLineHtml(row)}
     ${compact ? "" : agentStatsHtml(row)}`,
   });
 }
@@ -153,7 +141,7 @@ export function surfacePillHtml(pill, openKind) {
 /** One phase of a workflow: a fold the reader owns, over a keyed list of its
  *  agents. Whether it stands open is never said here — the mount opens the
  *  running one as it arrives, and the reader has it after that. */
-export function phaseSectionHtml(phase, { compact = false, modelLabel = rawModelId } = {}) {
+export function phaseSectionHtml(phase, { compact = false } = {}) {
   return `<details class="${PHASE_CLASS}" data-key="${esc(phase.key)}" data-state="${esc(phase.state)}">
     <summary class="${PHASE_HEAD_CLASS}">
       ${clippedTextHtml(phase.title, { className: "surface-phase-title" })}
@@ -161,7 +149,7 @@ export function phaseSectionHtml(phase, { compact = false, modelLabel = rawModel
       ${clockHtml(phase.clock, phase.runningSince)}
     </summary>
     <div class="${VIEWER_CLASS.workflowAgents}" ${KEYED_LIST_ATTRIBUTE}>${phase.rows
-      .map((row) => agentRowHtml(row, { compact, modelLabel }))
+      .map((row) => agentRowHtml(row, { compact }))
       .join("")}</div>
   </details>`;
 }

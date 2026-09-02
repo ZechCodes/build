@@ -1,4 +1,4 @@
-import { runningClock, workingClock } from "./agentRailModel.js";
+import { elapsedClock, runningClock } from "./agentRailModel.js";
 
 export const WORKFLOW_ENTRY_KIND = "workflows";
 export const AGENT_ENTRY_KIND = "subagents";
@@ -178,18 +178,24 @@ function keyedBy(keyPrefix, entries, shape) {
   });
 }
 
-function runningSinceOf(kind, entry) {
-  if (!stateMarkIs(kind, entry, RUNNING_MARK)) return null;
-  return Number.isFinite(entry.started_at) ? entry.started_at : null;
+/** The one clock rule, in the one form: ticking from the stamp it started at
+ *  while it runs, frozen at what it took once it does not, empty for a thing
+ *  that never timed anything. */
+export function entryClock(startedAt, durationMs, running, nowMs) {
+  if (running && Number.isFinite(startedAt)) {
+    return { clock: elapsedClock(startedAt, nowMs), runningSince: startedAt };
+  }
+  if (Number.isFinite(durationMs)) return { clock: runningClock(durationMs / 1000), runningSince: null };
+  return { clock: "", runningSince: null };
 }
 
-function keyedRows(keyPrefix, entryKind, entries, normalise) {
+function keyedRows(keyPrefix, entryKind, entries, normalise, { nowMs = 0 } = {}) {
   return keyedBy(keyPrefix, entries, (entry, index) => ({
     id: entry.id || null,
     state: entry.state || "",
     stateMark: surfaceStateMark(entryKind, entry.state),
     subject: rowSubject(entryKind, entry),
-    runningSince: runningSinceOf(entryKind, entry),
+    ...entryClock(entry.started_at, entry.duration_ms, stateMarkIs(entryKind, entry, RUNNING_MARK), nowMs),
     ...normalise(entry, index),
   }));
 }
@@ -207,11 +213,10 @@ function lastToolText(lastTool) {
   return [lastTool.name, lastTool.summary].filter(Boolean).join(" ");
 }
 
-function agentRow(entry) {
+function agentRow(entry, modelLabel) {
   return {
     label: entry.label || "",
-    model: entry.model || "",
-    duration: Number.isFinite(entry.duration_ms) ? workingClock(entry.duration_ms / 1000) : "",
+    model: entry.model ? modelLabel(entry.model) : "",
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
     lastTool: lastToolText(entry.last_tool),
@@ -222,8 +227,12 @@ function agentRow(entry) {
   };
 }
 
-export function agentRows(agents) {
-  return keyedRows("agent", AGENT_ENTRY_KIND, Array.isArray(agents) ? agents : [], agentRow);
+const rawModelId = (modelId) => modelId;
+
+export function agentRows(agents, reading = {}) {
+  const { modelLabel = rawModelId } = reading;
+  const entries = Array.isArray(agents) ? agents : [];
+  return keyedRows("agent", AGENT_ENTRY_KIND, entries, (entry) => agentRow(entry, modelLabel), reading);
 }
 
 const ROW_NORMALISERS = {
@@ -242,11 +251,11 @@ const ROW_NORMALISERS = {
   }),
 };
 
-export function surfaceRows(kind, surfaces) {
+export function surfaceRows(kind, surfaces, reading = {}) {
   const entries = entriesOfKind(surfaces, kind);
-  if (kind === AGENT_ENTRY_KIND) return agentRows(entries);
+  if (kind === AGENT_ENTRY_KIND) return agentRows(entries, reading);
   const normalise = ROW_NORMALISERS[kind];
-  return normalise ? keyedRows(kind, kind, entries, normalise) : [];
+  return normalise ? keyedRows(kind, kind, entries, normalise, reading) : [];
 }
 
 function rowHasFinished(row) {
@@ -270,67 +279,61 @@ function selectedWorkflowEntry(surfaces, selectedWorkflowIndex) {
   return entries[chosenIndex(entries.length, selectedWorkflowIndex)];
 }
 
-export function openWorkflow(surfaces, selectedWorkflowIndex = 0) {
-  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+export function openWorkflow(surfaces, selectedWorkflowIndex = 0, reading = {}) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces, reading);
   if (!rows.length) return null;
   return rows[chosenIndex(rows.length, selectedWorkflowIndex)];
 }
 
-export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex) {
-  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading = {}) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces, reading);
   if (rows.length < 2) return [];
   const selected = chosenIndex(rows.length, selectedWorkflowIndex);
   return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
 /** One phase's wall-clock span: from the earliest agent that started, running
- *  to `nowMs` while any of them still is and to the last end once none is.
- *  A phase no agent has started yet has no span to read. */
-export function phaseClock(phase, nowMs) {
-  const agents = agentsOf(phase);
-  const starts = agents.map((agent) => agent.started_at).filter(Number.isFinite);
-  if (!starts.length) return { clock: "", runningSince: null };
-  const startedAt = Math.min(...starts);
-  if (agents.some((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, RUNNING_MARK))) {
-    return { clock: spanClock(startedAt, nowMs), runningSince: startedAt };
-  }
-  const ends = agents.map(agentEndedAt).filter(Number.isFinite);
-  return { clock: spanClock(startedAt, Math.max(...ends)), runningSince: null };
+ *  to `nowMs` while any of them still is and to the last end once none is. */
+export function phaseClock(agents, running, nowMs) {
+  const { startedAt, endedAt } = phaseSpan(agents);
+  return entryClock(startedAt, startedAt === null ? null : endedAt - startedAt, running, nowMs);
 }
 
-function spanClock(fromMs, toMs) {
-  return runningClock((toMs - fromMs) / 1000);
+function phaseSpan(agents) {
+  return agents.reduce(
+    (span, agent) => {
+      if (!Number.isFinite(agent.started_at)) return span;
+      const endedAt = agent.started_at + (Number.isFinite(agent.duration_ms) ? agent.duration_ms : 0);
+      if (span.startedAt === null) return { startedAt: agent.started_at, endedAt };
+      return { startedAt: Math.min(span.startedAt, agent.started_at), endedAt: Math.max(span.endedAt, endedAt) };
+    },
+    { startedAt: null, endedAt: null },
+  );
 }
 
-function agentEndedAt(agent) {
-  if (!Number.isFinite(agent.started_at)) return null;
-  return agent.started_at + (Number.isFinite(agent.duration_ms) ? agent.duration_ms : 0);
-}
+const rowMarkIs = (row, mark) => !!row.stateMark && row.stateMark.mark === mark;
 
-function phaseState(agents) {
-  if (agents.some((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, RUNNING_MARK))) return RUNNING_STATE;
-  const finished = agents.filter((agent) => {
-    const stateMark = surfaceStateMark(AGENT_ENTRY_KIND, agent.state);
-    return !!stateMark && FINISHED_MARKS.includes(stateMark.mark);
-  });
-  return agents.length && finished.length === agents.length ? DONE_STATE : PENDING_STATE;
+function phaseState(rows, running) {
+  if (running) return RUNNING_STATE;
+  return rows.length && rows.every(rowHasFinished) ? DONE_STATE : PENDING_STATE;
 }
 
 /** The chosen workflow as a stack: every phase in order, its agents nested,
  *  each one carrying what its section shows and whether it opens on arrival. */
-export function workflowPhases(surfaces, selectedWorkflowIndex = 0, nowMs = 0) {
+export function workflowPhases(surfaces, selectedWorkflowIndex = 0, reading = {}) {
   const phases = phasesOf(selectedWorkflowEntry(surfaces, selectedWorkflowIndex));
   return keyedBy("phase", phases, (phase) => {
     const agents = agentsOf(phase);
-    const state = phaseState(agents);
+    const rows = agentRows(agents, reading);
+    const running = rows.some((row) => rowMarkIs(row, RUNNING_MARK));
     return {
       title: phase.title || "",
-      total: agents.length,
-      done: agents.filter((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, DONE_MARK)).length,
-      state,
-      open: state === RUNNING_STATE,
-      ...phaseClock(phase, nowMs),
-      rows: agentRows(agents),
+      total: rows.length,
+      done: rows.filter((row) => rowMarkIs(row, DONE_MARK)).length,
+      state: phaseState(rows, running),
+      open: running,
+      ...phaseClock(agents, running, reading.nowMs || 0),
+      rows,
     };
   });
 }

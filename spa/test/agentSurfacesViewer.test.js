@@ -238,7 +238,7 @@ describe("the clock a running row ticks", () => {
     viewer.dispose();
   });
 
-  it("shows a finished row its duration in the slot it ticked in, and a row with neither nothing", () => {
+  it("shows a finished row what it took in the slot it ticked in, and a row with neither nothing", () => {
     const viewer = mount(AGENT_ENTRY_KIND);
     viewer.set(
       ticking({
@@ -249,9 +249,9 @@ describe("the clock a running row ticks", () => {
       }),
     );
 
-    expect(clocks()).toEqual(["1m 05s"]);
+    expect(clocks()).toEqual(["1:05"]);
     expect(tickingClocks()).toEqual([]);
-    expect(document.querySelector(".surface-running").textContent).not.toContain("1m 05s");
+    expect(document.querySelector(".surface-running").textContent).not.toContain("1:05");
     viewer.dispose();
   });
 

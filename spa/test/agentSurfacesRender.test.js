@@ -90,7 +90,7 @@ const stagedWorkflow = {
 };
 
 const oneWorkflow = (workflow) => ({ workflows: [workflow] });
-const phasesOf = (workflow, nowMs = 0) => workflowPhases(oneWorkflow(workflow), 0, nowMs);
+const phasesOf = (workflow, nowMs = 0) => workflowPhases(oneWorkflow(workflow), 0, { nowMs });
 const workflowRow = (workflow) => surfaceRows("workflows", oneWorkflow(workflow))[0];
 const subagentViewerHtml = (rows) =>
   runningAndCompletedViewerHtml(AGENT_ENTRY_KIND, runningAndCompletedRows(rows), agentRowHtml);
@@ -127,11 +127,10 @@ describe("agentRowHtml", () => {
     expect(row.querySelector(".surface-row-stats").textContent).toContain("4 calls");
   });
 
-  it("reads the model's display name off the label its caller hands it, and the raw id without one", () => {
-    const row = agentRows([readerEntry])[0];
-    const named = parseHtml(agentRowHtml(row, { modelLabel: (id) => `Opus 5 · ${id}` }));
-    expect(named.querySelector(".surface-row-model").textContent).toBe("Opus 5 · haiku");
-    expect(parseHtml(agentRowHtml(row)).querySelector(".surface-row-model").textContent).toBe("haiku");
+  it("prints the model name the row arrived with, having named it nowhere itself", () => {
+    const named = agentRows([readerEntry], { modelLabel: (id) => `Opus 5 · ${id}` })[0];
+    expect(parseHtml(agentRowHtml(named)).querySelector(".surface-row-model").textContent).toBe("Opus 5 · haiku");
+    expect(coreSourceOf("agentSurfacesRender.js")).not.toContain("modelLabel");
   });
 
   it("draws the state mark the model named and nothing for a state it does not recognise", () => {
@@ -152,27 +151,27 @@ describe("agentRowHtml", () => {
   });
 
   it("gives a running row a clock span to tick in, and every other row none", () => {
-    const ticking = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, started_at: 1788291725678 }])[0]));
-    const clock = ticking.querySelector(".surface-row-clock");
-    expect(clock.dataset.runningSince).toBe("1788291725678");
-    expect(clock.textContent).toBe("");
+    const running = agentRows([{ ...readerEntry, started_at: STARTED_AT }], { nowMs: STARTED_AT + 65000 })[0];
+    const clock = parseHtml(agentRowHtml(running)).querySelector(".surface-row-clock");
+    expect(clock.dataset.runningSince).toBe(String(STARTED_AT));
+    expect(clock.textContent).toBe("1:05");
 
     expect(agentRowHtml(agentRows([{ id: "a1", label: "Reader", state: "queued" }])[0])).not.toContain(
       "surface-row-clock",
     );
   });
 
-  it("hands a finished agent's duration to the same slot the clock ticks in", () => {
+  it("freezes a finished agent's clock in the slot it ticked in, reading as a phase clock reads", () => {
     const finished = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, state: "done" }])[0]));
     const clock = finished.querySelector(".surface-row-clock");
-    expect(clock.textContent).toBe("1m 05s");
+    expect(clock.textContent).toBe("1:05");
     expect(clock.hasAttribute("data-running-since")).toBe(false);
   });
 
   it("gives a running shell the same clock span through the same head", () => {
     const [row] = surfaceRows(SHELL_ENTRY_KIND, {
       shells: [{ id: "s1", description: "cargo test", state: "running", started_at: 1788291725678 }],
-    });
+    }, { nowMs: 1788291725678 });
     expect(parseHtml(shellRowHtml(row)).querySelector(".surface-row-clock").dataset.runningSince).toBe(
       "1788291725678",
     );

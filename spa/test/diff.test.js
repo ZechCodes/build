@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createFileFolds, fileKey, parseDiff } from "../src/core/diff.js";
+import { createFileFolds, fileKey, firstLineOf, parseDiff } from "../src/core/diff.js";
 
 const SAMPLE_PATCH = `diff --git a/greeting.py b/greeting.py
 new file mode 100644
@@ -109,5 +109,18 @@ describe("createFileFolds", () => {
     const folds = createFileFolds();
     folds.pressedHead("EDIT:a.js");
     expect(folds.collapsed.has("EDIT:a.js")).toBe(true);
+  });
+});
+
+describe("firstLineOf", () => {
+  it("names the first line of the file the diff touches", () => {
+    const [added, edited] = parseDiff(SAMPLE_PATCH);
+    expect(firstLineOf(edited)).toBe(10);
+    expect(firstLineOf(added)).toBe(1);
+  });
+
+  it("falls back to the top of the file when the diff names no new line", () => {
+    expect(firstLineOf({ rows: [] })).toBe(1);
+    expect(firstLineOf({ rows: [{ t: "del", o: 4, text: "gone" }] })).toBe(1);
   });
 });

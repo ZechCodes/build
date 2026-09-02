@@ -43,6 +43,14 @@ export function fileKey(file) {
   return `${file.status}:${file.path}`;
 }
 
+/** The line a reader lands on when they leave the diff for the file itself:
+ *  the first line the patch touches, or the top of the file when it names
+ *  none (a pure deletion). */
+export function firstLineOf(file) {
+  const row = (file.rows || []).find((each) => typeof each.n === "number");
+  return row ? row.n : 1;
+}
+
 /** The folds of one changeset, as the reader left them.
  *
  *  Three states, two sets: a file the reader opened is in `expanded`, one they

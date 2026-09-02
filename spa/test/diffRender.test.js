@@ -335,3 +335,36 @@ describe("diffStackEntries", () => {
     }
   });
 });
+
+// A diff says what changed; the file says what it is now. One control in each
+// file's head carries the reader from one to the other.
+describe("the way into the Files view", () => {
+  const files = [
+    {
+      path: "src/a.js",
+      status: "EDIT",
+      add: 1,
+      del: 0,
+      rows: [
+        { t: "hunk", text: "@@ -12,2 +12,3 @@" },
+        { t: "ctx", o: 12, n: 12, text: "keep" },
+        { t: "add", n: 13, text: "x" },
+      ],
+    },
+  ];
+
+  it("offers nothing where the surface cannot open a file", () => {
+    expect(diffFilesHtml(files)).not.toContain("data-open-file");
+  });
+
+  it("carries the path and the first line the diff touches", () => {
+    const html = diffFilesHtml(files, { openable: true });
+    expect(html).toContain('data-open-file="src/a.js"');
+    expect(html).toContain('data-line="12"');
+  });
+
+  it("escapes the path it carries", () => {
+    const evil = [{ path: '"><img src=x>', status: "EDIT", add: 0, del: 0, rows: [] }];
+    expect(diffFilesHtml(evil, { openable: true })).not.toContain("<img");
+  });
+});

@@ -91,6 +91,10 @@ export async function renderBranch() {
   // focus back to the composer.
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
+  // Where Changes sent the reader, consumed by the mount it was set for: a
+  // later revisit to the same branch opens the Files tab where it left it.
+  let openFileOnMount = App.openFileOnMount;
+  App.openFileOnMount = null;
   root.className = "surface";
   root.innerHTML = `<div id="tabbody" class="flush"><div class="empty">loading…</div></div>`;
   /** Changes/Files, painted into whichever rail the mounted pane just built
@@ -249,6 +253,14 @@ export async function renderBranch() {
   };
   setToolbarVerb(paintFinish);
 
+  /** The way out of a diff: the file itself, in the Files tab, at the line the
+   *  diff was about. The hash names the tab; the place inside it rides the
+   *  one-shot the next render reads. */
+  const openInFilesTab = ({ path, line }) => {
+    App.openFileOnMount = { path, line };
+    go({ name: "branch", projectId, branch, tab: "files" });
+  };
+
   /** The plug for the Changes rail's aggregate entry, made once per backing.
    *  A run reviews through its own diff and verbs; a bare worktree adopts on
    *  the first comment or action; the primary checkout carries none. */
@@ -261,6 +273,7 @@ export async function renderBranch() {
         reviewPlug = createTaskReview({
           taskId: scope.run_id,
           callRpc,
+          openFile: openInFilesTab,
           getTask: () => (row ? row.run : null),
           isOffline: () => App.offline,
           agentSelection,
@@ -272,6 +285,7 @@ export async function renderBranch() {
           projectId: scope.project_id,
           worktreeId: scope.worktree_id,
           callRpc,
+          openFile: openInFilesTab,
           adopting: adopterFor(scope),
           isOffline: () => App.offline,
           // Adoption keeps the URL — the same branch now stands on a run, so
@@ -309,7 +323,8 @@ export async function renderBranch() {
       return;
     }
     if (tab === "files") {
-      pane = renderFilesTab(host, { scope, callRpc });
+      pane = renderFilesTab(host, { scope, callRpc, initialPath: openFileOnMount });
+      openFileOnMount = null;
       ensureTabsPainted();
       return;
     }
@@ -319,6 +334,7 @@ export async function renderBranch() {
       agentCommitOptions: row && row.run ? taskAgentCommitOptions(row.run.state, row.run.goal) : [],
       review: reviewFor(scope),
       agentSelection,
+      openFile: openInFilesTab,
       // Review prioritization: the run's freshest triage pass orders whichever
       // changeset is open, and the reviewer's trust dial is remembered for the
       // project they are reading.

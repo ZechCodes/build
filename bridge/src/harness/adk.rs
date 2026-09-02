@@ -333,24 +333,41 @@ type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<ActivityReport>>>>;
 
 const SHELL_TAIL_INTERVAL: Duration = Duration::from_secs(1);
 
+type ShellPollerSlot = Arc<Mutex<Option<JoinHandle<()>>>>;
+
+#[cfg(test)]
 fn running_shell_outputs(state: &Mutex<ProtocolState>) -> Vec<(String, PathBuf)> {
     state.lock().unwrap().surfaces.running_shell_outputs()
+}
+
+fn shells_left_to_tail(
+    state: &Mutex<ProtocolState>,
+    activity: &ActivitySlot,
+    shell_poller: &ShellPollerSlot,
+) -> Option<Vec<(String, PathBuf)>> {
+    let session_ended = activity.lock().unwrap().is_none();
+    let held = state.lock().unwrap();
+    let running = held.surfaces.running_shell_outputs();
+    match session_ended || running.is_empty() {
+        true => {
+            *shell_poller.lock().unwrap() = None;
+            None
+        }
+        false => Some(running),
+    }
 }
 
 fn spawn_shell_tail_poller(
     state: Arc<Mutex<ProtocolState>>,
     activity: ActivitySlot,
     revision: SurfaceRevision,
+    shell_poller: ShellPollerSlot,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || loop {
         std::thread::sleep(SHELL_TAIL_INTERVAL);
-        if activity.lock().unwrap().is_none() {
+        let Some(running) = shells_left_to_tail(&state, &activity, &shell_poller) else {
             return;
-        }
-        let running = running_shell_outputs(&state);
-        if running.is_empty() {
-            return;
-        }
+        };
         for (shell_id, output_path) in running {
             match ShellTail::read(&output_path) {
                 Ok(tailed) => {
@@ -845,20 +862,19 @@ impl ProtocolReader {
     }
 
     fn ensure_shell_tail_poller(&self) {
-        if running_shell_outputs(&self.state).is_empty() {
+        let state = self.state.lock().unwrap();
+        if state.surfaces.running_shell_outputs().is_empty() {
             return;
         }
         let mut poller = self.shell_poller.lock().unwrap();
-        if poller
-            .as_ref()
-            .is_some_and(|tailing| !tailing.is_finished())
-        {
+        if poller.is_some() {
             return;
         }
         *poller = Some(spawn_shell_tail_poller(
             Arc::clone(&self.state),
             Arc::clone(&self.activity),
             self.revision.clone(),
+            Arc::clone(&self.shell_poller),
         ));
     }
 
@@ -2229,15 +2245,6 @@ mod tests {
         reader.shell_poller.lock().unwrap().is_none()
     }
 
-    fn the_poller_has_finished(reader: &ProtocolReader) -> bool {
-        reader
-            .shell_poller
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|polling| polling.is_finished())
-    }
-
     fn tail_of_the_shell(reader: &ProtocolReader, shell_id: &str) -> Vec<String> {
         surfaces_of(reader)
             .into_iter()
@@ -2347,7 +2354,7 @@ mod tests {
     fn the_notification_that_closes_the_shell_ends_the_poller() {
         let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
         let mut reader = reader_tailing(SHELL_TASK_ID, &output_path);
-        assert!(!the_poller_has_finished(&reader));
+        assert!(!no_poller_is_running(&reader));
 
         read_lines_into(
             &mut reader,
@@ -2355,7 +2362,7 @@ mod tests {
         );
 
         assert!(
-            becomes_true_within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
             "the poller outlived the last running shell"
         );
     }
@@ -2368,7 +2375,7 @@ mod tests {
         reader.activity.lock().unwrap().take();
 
         assert!(
-            becomes_true_within(Duration::from_secs(2), || the_poller_has_finished(&reader)),
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
             "the poller outlived the stdout reader that started it"
         );
         assert!(
@@ -2390,7 +2397,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(2_200));
 
         assert!(
-            !the_poller_has_finished(&reader),
+            !no_poller_is_running(&reader),
             "a file that went missing is not the end of the session"
         );
         assert_eq!(
@@ -2410,6 +2417,22 @@ mod tests {
     }
 
     #[test]
+    fn a_poller_that_walked_away_leaves_the_slot_empty_for_the_next_shell() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let mut reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+
+        assert!(
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
+            "a poller with nothing left to tail clears its own slot before it returns"
+        );
+    }
+
+    #[test]
     fn a_second_shell_started_after_the_poller_left_starts_a_fresh_one() {
         let (_first_directory, first_path) = shell_output_file_holding(&hundred_numbered_lines());
         let (_second_directory, second_path) = shell_output_file_holding("second shell\n");
@@ -2420,7 +2443,7 @@ mod tests {
             &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
         );
         assert!(becomes_true_within(Duration::from_secs(2), || {
-            the_poller_has_finished(&reader)
+            no_poller_is_running(&reader)
         }));
 
         read_lines_into(
@@ -2433,7 +2456,7 @@ mod tests {
         );
 
         assert_ne!(polling_thread_of(&reader), the_poller_that_left);
-        assert!(!the_poller_has_finished(&reader));
+        assert!(!no_poller_is_running(&reader));
         assert!(
             becomes_true_within(Duration::from_secs(3), || {
                 tail_of_the_shell(&reader, "s2ndshell") == vec!["second shell".to_string()]

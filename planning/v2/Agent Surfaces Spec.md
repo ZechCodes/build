@@ -321,3 +321,17 @@ rail never has. It becomes a vertical stack.
   line. Phase clocks tick through the same interval the row clocks use. No
   new painter: the phase list is one keyed list of `details` elements, each
   holding one keyed list of agent rows.
+
+## Revision 2026-09-02e: surfaces from the local cache
+
+- The rail seeds an agent's surfaces from the local cache the way it seeds
+  the conversation: a `surfaces` record per (device, entity, agent) holding
+  the last snapshot the rail saw, read on mount and on agent switch, painted
+  at once (pills and, when a kind is remembered open, its viewer), then
+  replaced by the first live payload.
+- The record is written whenever the rail absorbs a payload whose snapshot
+  differs from the one it holds, and by the background cache sync from the
+  same detail payload it already reads the conversation from. It is evicted
+  with the entity like every other kind.
+- Nothing about visibility, grace, or the open-kind memory changes; they see
+  a seeded snapshot exactly as they would a live one.

@@ -54,11 +54,6 @@ export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
 );
 
-/** Text the viewer shows a few lines of. The whole of it rides in the title, so
- *  a hover reads it, and a press opens it out — which is why every clipped
- *  thing in every viewer is built here and nowhere else. A clip inside a fold
- *  or a button is for hovering alone: the press there belongs to what holds
- *  it, and only a press target says so in its role. */
 export function clippedTextHtml(text, { className = "", lines = 1, pressable = true } = {}) {
   const classes = className ? `${CLIP_CLASS} ${className}` : CLIP_CLASS;
   const press = pressable ? ` role="button" tabindex="0" aria-expanded="false"` : "";
@@ -127,7 +122,6 @@ function spawningCallHtml(row) {
     title="${SPAWNING_CALL_TITLE}" aria-label="${SPAWNING_CALL_TITLE}">↗</button>`;
 }
 
-/** One agent, two lines — three where there is width for the counts. */
 export function agentRowHtml(row, { compact = false } = {}) {
   return surfaceRowHtml("surface-agent", row, {
     trailing: spawningCallHtml(row),
@@ -147,10 +141,6 @@ export function surfacePillHtml(pill, openKind) {
   </button>`;
 }
 
-/** One phase of a workflow: a fold the reader owns, over the empty list its
- *  agents are keyed into by the painter that owns them. Whether it stands open
- *  is never said here — the mount opens the running one, and the reader has it
- *  after that. */
 export function phaseSectionHtml(phase) {
   return `<details class="${PHASE_CLASS}" data-key="${esc(phase.key)}" data-state="${esc(phase.state)}">
     <summary class="${PHASE_HEAD_CLASS}">

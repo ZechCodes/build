@@ -178,9 +178,6 @@ function keyedBy(keyPrefix, entries, shape) {
   });
 }
 
-/** The one clock rule, in the one form: ticking from the stamp it started at
- *  while it runs, frozen at what it took once it does not, empty for a thing
- *  that never timed anything. */
 export function entryClock(startedAt, durationMs, running, nowMs) {
   if (running && Number.isFinite(startedAt)) {
     return { clock: elapsedClock(startedAt, nowMs), runningSince: startedAt };
@@ -292,8 +289,6 @@ export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, re
   return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
-/** One phase's wall-clock span: from the earliest agent that started, running
- *  to `nowMs` while any of them still is and to the last end once none is. */
 export function phaseClock(agents, running, nowMs) {
   const { startedAt, endedAt } = phaseSpan(agents);
   return entryClock(startedAt, startedAt === null ? null : endedAt - startedAt, running, nowMs);
@@ -318,8 +313,6 @@ function phaseState(rows, running) {
   return rows.length && rows.every(rowHasFinished) ? DONE_STATE : PENDING_STATE;
 }
 
-/** The chosen workflow as a stack: every phase in order, its agents nested,
- *  each one carrying what its section shows and whether it opens on arrival. */
 export function workflowPhases(surfaces, selectedWorkflowIndex = 0, reading = {}) {
   const phases = phasesOf(selectedWorkflowEntry(surfaces, selectedWorkflowIndex));
   return keyedBy("phase", phases, (phase) => {

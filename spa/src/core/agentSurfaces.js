@@ -78,8 +78,6 @@ const runningAboveWhatFinished = (kind, renderRow) => ({
   },
 });
 
-/// A phase opens once, the first paint that finds it running; which folds
-/// stand open is the reader's from there.
 const openNewlyRunningPhase = (opened, section, phase) => {
   if (!phase.open || opened.has(phase.key)) return;
   opened.add(phase.key);
@@ -115,8 +113,6 @@ const VIEWER_PLANS = {
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
-/// A press on clipped text opens it out, and the next one clips it back. The
-/// mark is the reader's: the patch leaves it alone, and no render writes it.
 function expandClippedText(event) {
   const clipped = event.target.closest(PRESSABLE_CLIP_SELECTOR);
   if (!clipped) return false;

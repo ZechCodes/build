@@ -1032,8 +1032,6 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
-  /** What a surface row calls a model: the catalog's own name for it, and the
-   *  raw id while the catalog knows nothing of it. */
   const surfaceModelLabel = (modelId) => {
     const agent = agentInFocus();
     return activeModelLabel(catalog, agent ? agent.provider : "", modelId);

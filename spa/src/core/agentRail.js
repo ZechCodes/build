@@ -76,7 +76,11 @@ import {
   wireThreadRevisionLinks,
   writeThreadKeepingComposer,
 } from "./thread.js";
-import { mountAgentSurfaces } from "./agentSurfaces.js";
+import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
+import { surfaceMenuOptions } from "./agentSurfacesModel.js";
+import { menuButtonMarkup, mountSplitMenu } from "./splitButton.js";
+import { el } from "../dom.js";
+import { patchElement } from "./domPatch.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
 
@@ -94,6 +98,10 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_SURFACES_ID = "rail-surfaces";
+const SURFACE_MENU_CLASS = "rail-surface-menu";
+const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
+const SURFACE_MENU_LABEL = "⋯";
+const SURFACE_MENU_TITLE = "Open a surface";
 const AGENT_NOT_YET_BORN = "ghost";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
@@ -242,6 +250,15 @@ export function railStatusHtml(status) {
   return working + git;
 }
 
+/** Pure: the ⋯ that lists the surfaces this agent has something in, in the
+ *  region the head keeps for it. The region is always written and the button
+ *  only when there is something to open, so a poll that gains or loses a kind
+ *  patches one span rather than rewriting the header a press is landing on. */
+function surfaceMenuHtml(options) {
+  const menu = options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
+  return `<span class="${SURFACE_MENU_CLASS}">${menu}</span>`;
+}
+
 /** Pure: the panel's header — who you are talking to, the way down to the
  *  agent's screen and back, and, on an agent that can be taken back off, the
  *  `−` that mirrors the strip's `+`.
@@ -250,7 +267,7 @@ export function railStatusHtml(status) {
  *  can go, so the pair of chips is a single pressed-state button: pressed means
  *  the PTY is showing. `hasTerminal` false drops it rather than dimming it — an
  *  agent that reports its own work has no basement to offer. */
-export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true } = {}) {
+export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
@@ -265,6 +282,7 @@ export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
     ${tui}
+    ${surfaceMenuHtml(surfaceOptions)}
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
@@ -388,6 +406,9 @@ export function mountAgentRail(host, context) {
   let composerControl = null;
   let composerModelMenu = null;
   let surfacesBlock = null;
+  let surfaceOverlay = null; // the surface a menu option opened, over the panel
+  let paintedSurfaceMenu = ""; // what the head's ⋯ last offered
+
 
   const agentIdOf = (agent) => agent.id;
 
@@ -662,7 +683,7 @@ export function mountAgentRail(host, context) {
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat" ? composerRowHtml() : ""}`;
       panel.dataset.head = wantedHead;
@@ -683,10 +704,16 @@ export function mountAgentRail(host, context) {
       // after the fact), or the last agent beside this one went away. Nothing
       // else in the head can move on a poll, and rewriting it every tick would
       // eat a press that landed mid-repaint.
-      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, { removable, hasTerminal });
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
+        removable,
+        hasTerminal,
+        surfaceOptions: surfaceMenuOptionsInFocus(),
+      });
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
+    paintSurfaceMenu(panel);
+    syncSurfaceOverlay();
     if (shownMode === "chat") {
       paintChat();
       paintRailStatus();
@@ -694,6 +721,7 @@ export function mountAgentRail(host, context) {
   };
 
   const wireHead = (panel) => {
+    wireSurfaceMenu(panel);
     const tuiToggle = panel.querySelector(".rail-tui");
     if (tuiToggle) {
       // The head only draws this button for an agent that has a terminal, so a
@@ -971,23 +999,37 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
+  /** What a surface viewer is given, wherever it is mounted: the rail's one
+   *  send path for a row's action, and the rail's one way back to the thread
+   *  for a spawned call. The pills and the header's overlay share it. */
+  const surfaceViewerHandlers = () => ({
+    onSendMessage: (message) => send(message, []),
+    onOpenThreadItem: (sequence) => {
+      if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+      notifyError(
+        "That call is not in the loaded conversation",
+        "Scroll back to load older items, then press the row again.",
+      );
+    },
+  });
+
+  /** The open agent's surfaces snapshot, or null while there is no agent or the
+   *  carrier reports none. */
+  const surfacesInFocus = () => {
+    const agent = agentInFocus();
+    return (agent && agent.surfaces) || null;
+  };
+
+  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
+
   const mountSurfaces = (panel) => {
     const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
     if (!region) return;
-    surfacesBlock = mountAgentSurfaces(region, {
-      key: conversationKey(),
-      onSendMessage: (message) => send(message, []),
-      onOpenThreadItem: (sequence) => {
-        if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
-        notifyError(
-          "That call is not in the loaded conversation",
-          "Scroll back to load older items, then press the row again.",
-        );
-      },
-    });
+    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerHandlers() });
   };
 
   const disposeSurfaces = () => {
+    closeSurfaceOverlay();
     if (!surfacesBlock) return;
     surfacesBlock.dispose();
     surfacesBlock = null;
@@ -995,8 +1037,52 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaces = () => {
     if (!surfacesBlock) return;
-    const agent = agentInFocus();
-    surfacesBlock.set((agent && agent.surfaces) || null);
+    surfacesBlock.set(surfacesInFocus());
+  };
+
+  /** The head's ⋯, rewritten only when what it offers changed. A read that
+   *  moved a count no reader can see must not shut the menu they just opened,
+   *  and patching rather than replacing keeps the open one open. */
+  const paintSurfaceMenu = (panel) => {
+    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
+    if (!region) return;
+    const html = surfaceMenuHtml(surfaceMenuOptionsInFocus());
+    if (html === paintedSurfaceMenu) return;
+    paintedSurfaceMenu = html;
+    patchElement(region, el(html));
+    wireSurfaceMenu(panel);
+  };
+
+  const wireSurfaceMenu = (panel) => {
+    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
+    paintedSurfaceMenu = region ? surfaceMenuHtml(surfaceMenuOptionsInFocus()) : "";
+    if (!region || !region.querySelector(".caret")) return;
+    mountSplitMenu(region, { onChoose: (kind) => openSurface(kind) });
+  };
+
+  /** One surface, read as a modal over the panel. It is fed every snapshot the
+   *  rail reads while it is up, and taken down when the reader dismisses it or
+   *  the panel under it changes agents. */
+  const openSurface = (kind) => {
+    closeSurfaceOverlay();
+    surfaceOverlay = openSurfaceOverlay(kind, {
+      ...surfaceViewerHandlers(),
+      onClose: () => {
+        surfaceOverlay = null;
+      },
+    });
+    syncSurfaceOverlay();
+  };
+
+  const syncSurfaceOverlay = () => {
+    if (!surfaceOverlay) return;
+    surfaceOverlay.set(surfacesInFocus());
+  };
+
+  const closeSurfaceOverlay = () => {
+    if (!surfaceOverlay) return;
+    surfaceOverlay.close();
+    surfaceOverlay = null;
   };
 
   /** A reference in the conversation goes where it points, as far as the two

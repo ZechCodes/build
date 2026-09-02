@@ -17,6 +17,8 @@ import {
   readOpenSurface,
   rowActions,
   runningAndCompletedRows,
+  surfaceKindLabel,
+  surfaceMenuOptions,
   surfacePills,
   surfaceRows,
   surfaceStateMark,
@@ -67,6 +69,34 @@ describe("surfacePills", () => {
     });
     expect(pills.map((pill) => pill.kind)).toEqual(["workflows", "subagents", "shells", "checklist"]);
     expect(pills.map((pill) => pill.count)).toEqual([0, 1, 1, 0]);
+  });
+});
+
+describe("surfaceMenuOptions", () => {
+  it("offers every kind with content, whatever the grace would say about its pill", () => {
+    const settled = { shells: [{ id: "s1", state: "done" }], checklist: [{ id: "t1", state: "pending" }] };
+    expect(surfacePills(settled)).toEqual([{ kind: "checklist", label: "Checklist", count: 0 }]);
+    expect(surfaceMenuOptions(settled).map((option) => option.id)).toEqual([SHELL_ENTRY_KIND, "checklist"]);
+  });
+
+  it("labels an option with its kind and says the running count only while something runs", () => {
+    const [shells, checklist] = surfaceMenuOptions({
+      shells: [{ id: "s1", state: "running" }, { id: "s2", state: "running" }],
+      checklist: [{ id: "t1", state: "completed" }],
+    });
+    expect(shells).toEqual({ id: SHELL_ENTRY_KIND, label: "Shells", description: "2 running" });
+    expect(checklist).toEqual({ id: "checklist", label: "Checklist", description: "" });
+  });
+
+  it("offers nothing at all for a snapshot with no kinds", () => {
+    expect(surfaceMenuOptions(null)).toEqual([]);
+    expect(surfaceMenuOptions({ shells: [] })).toEqual([]);
+  });
+
+  it("names a kind the same way the pill does", () => {
+    expect(surfaceKindLabel(SHELL_ENTRY_KIND)).toBe("Shells");
+    expect(surfaceKindLabel(WORKFLOW_ENTRY_KIND)).toBe("Workflows");
+    expect(surfaceKindLabel("sonnets")).toBe("");
   });
 });
 

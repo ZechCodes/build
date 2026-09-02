@@ -118,11 +118,34 @@ function pillIsShown(kind, runningCount, visibility, nowMs) {
   return graceEnd(visibility, kind, nowMs) !== null;
 }
 
+export function surfaceKindLabel(kind) {
+  return KIND_LABELS[kind] || "";
+}
+
+/** The kinds this snapshot has something in, each with what is running in it.
+ *  The one count in the client: the pills filter this by their grace rule, the
+ *  conversation menu lists all of it. */
+function kindsWithContent(surfaces) {
+  return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0).map((kind) => ({
+    kind,
+    label: surfaceKindLabel(kind),
+    count: runningEntryCount(surfaces, kind),
+  }));
+}
+
 export function surfacePills(surfaces, visibility = null, nowMs = 0) {
-  return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0)
-    .map((kind) => ({ kind, count: runningEntryCount(surfaces, kind) }))
-    .filter(({ kind, count }) => pillIsShown(kind, count, visibility, nowMs))
-    .map(({ kind, count }) => ({ kind, label: KIND_LABELS[kind], count }));
+  return kindsWithContent(surfaces).filter(({ kind, count }) => pillIsShown(kind, count, visibility, nowMs));
+}
+
+/** The conversation menu's options, shaped for `menuButtonMarkup`: every kind
+ *  with content, whatever the pills' grace would say about it, since a reader
+ *  asking for a surface by name is asking for the one they remember. */
+export function surfaceMenuOptions(surfaces) {
+  return kindsWithContent(surfaces).map(({ kind, label, count }) => ({
+    id: kind,
+    label,
+    description: count ? `${count} running` : "",
+  }));
 }
 
 export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {

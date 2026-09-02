@@ -3,6 +3,7 @@ import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
 import { mountSplitMenu } from "./splitButton.js";
 import { notifyError } from "./notify.js";
+import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
@@ -16,6 +17,7 @@ import {
   openedSurfaceVisibility,
   readOpenSurface,
   runningAndCompletedRows,
+  surfaceKindLabel,
   surfacePills,
   surfaceRows,
   workflowChoicesWorthOffering,
@@ -25,6 +27,7 @@ import {
 import {
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
+  SURFACE_OVERLAY_BODY_SELECTOR,
   SURFACE_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
@@ -34,6 +37,7 @@ import {
   kindViewerHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
+  surfaceOverlayHtml,
   surfacePillsHtml,
   workflowChoiceHtml,
   workflowHeadHtml,
@@ -249,6 +253,33 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       paintedLists.clear();
       host.innerHTML = "";
     },
+  };
+}
+
+/** One kind's viewer as a modal over the panel, at whatever height it needs.
+ *  The caller keeps handing it snapshots through `set` for as long as it is up,
+ *  so the overlay and the pills under it show the same picture, and a kind that
+ *  loses everything shows its empty viewer rather than closing under the
+ *  reader. */
+export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null }) {
+  let viewer = null;
+  const { body, close } = openModal({
+    dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
+    onClose: () => {
+      viewer.dispose();
+      if (onClose) onClose();
+    },
+  });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, {
+    onSendMessage,
+    onOpenThreadItem,
+  });
+  return {
+    kind,
+    set(surfaces) {
+      viewer.set(surfaces);
+    },
+    close,
   };
 }
 

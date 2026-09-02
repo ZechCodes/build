@@ -1,5 +1,6 @@
 import { esc } from "./text.js";
 import { menuButtonMarkup } from "./splitButton.js";
+import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import {
   AGENT_ENTRY_KIND,
@@ -28,6 +29,9 @@ const CLASS_THIS_MODULE_EMITS = {
   [CHECKLIST_ENTRY_KIND]: "surface-checklist",
 };
 
+const SURFACE_OVERLAY_BODY_CLASS = "surface-overlay-body";
+
+export const SURFACE_OVERLAY_BODY_SELECTOR = `.${SURFACE_OVERLAY_BODY_CLASS}`;
 export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
@@ -192,5 +196,13 @@ export function shellRowHtml(row) {
 export function checklistItemHtml(row) {
   return surfaceRowHtml("surface-checklist-item", row, {
     body: noteHtml(row.description, row.subject),
+  });
+}
+
+/** The dialog a surface is read in when the conversation menu opens it: the
+ *  kind's name, and an empty body for its viewer to mount into. */
+export function surfaceOverlayHtml(label) {
+  return modalDialogHtml(`<h3>${esc(label)}</h3><div class="${SURFACE_OVERLAY_BODY_CLASS}"></div>`, {
+    className: "modal-surface",
   });
 }

@@ -14,6 +14,12 @@ const ELEMENT_NODE = 1;
 
 const MOVED_PROPERTIES = ["hidden", "style"];
 
+/** What the reader chose to see in full, and what another painter keys. Both
+ *  are marks on the live page that no render describes, so the patch reads
+ *  them off the live element and leaves what they cover alone. */
+export const EXPANDED_ATTRIBUTE = "data-expanded";
+export const KEYED_LIST_ATTRIBUTE = "data-keyed-list";
+
 /** Whether two nodes can be made to say the same thing, or one has to replace
  *  the other outright. */
 const interchangeable = (live, next) =>
@@ -28,6 +34,8 @@ const sameAttachment = (live, next) =>
   live.getAttribute("data-attachment-path") === next.getAttribute("data-attachment-path");
 
 const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === "DETAILS";
+
+const textTheReaderExpanded = (live, name) => name === EXPANDED_ATTRIBUTE;
 
 const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
@@ -50,6 +58,7 @@ function patchAttributes(live, next) {
     if (name === "src" && keepsItsBytes) continue;
     if ((name === "width" || name === "height") && keepsItsSurface) continue;
     if (foldTheReaderOpened(live, name)) continue;
+    if (textTheReaderExpanded(live, name)) continue;
     if (shownByAMove(live, name)) continue;
     live.removeAttribute(name);
   }
@@ -64,6 +73,9 @@ function patchAttributes(live, next) {
 /// resolved the same conversation a true no-op.
 export function patchElement(live, next) {
   patchAttributes(live, next);
+  // A keyed list's children answer to patchList, which knows their names; this
+  // patch would read the render's empty container as "they all left".
+  if (live.hasAttribute(KEYED_LIST_ATTRIBUTE)) return;
   const liveChildren = [...live.childNodes];
   const nextChildren = [...next.childNodes];
   nextChildren.forEach((source, index) => {

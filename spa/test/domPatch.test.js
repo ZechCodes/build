@@ -7,7 +7,7 @@
 // only that word.
 
 import { describe, expect, it } from "vitest";
-import { patchElement } from "../src/core/domPatch.js";
+import { EXPANDED_ATTRIBUTE, KEYED_LIST_ATTRIBUTE, patchElement } from "../src/core/domPatch.js";
 
 const tree = (html) => {
   const host = document.createElement("div");
@@ -66,6 +66,23 @@ describe("patching a live tree to say what a rendered one says", () => {
     patchElement(live, tree(`<details><summary>a</summary></details><div class="splitmenu" hidden></div>`));
     expect(live.querySelector("details").open).toBe(true);
     expect(live.querySelector(".splitmenu").hasAttribute("hidden")).toBe(false);
+  });
+
+  it("leaves the text the reader chose to see in full expanded", () => {
+    const live = tree(`<span class="clip" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
+    patchElement(live, tree(`<span class="clip">a longer line</span>`));
+    expect(live.querySelector("span").hasAttribute(EXPANDED_ATTRIBUTE)).toBe(true);
+    expect(live.querySelector("span").textContent).toBe("a longer line");
+  });
+
+  it("leaves the children of a list another painter keys alone", () => {
+    const live = tree(`<div ${KEYED_LIST_ATTRIBUTE} class="one"><p data-key="a">row</p></div>`);
+    const row = live.querySelector("p");
+
+    patchElement(live, tree(`<div ${KEYED_LIST_ATTRIBUTE} class="two"></div>`));
+
+    expect(live.querySelector("div").className).toBe("two");
+    expect(live.querySelector("p")).toBe(row);
   });
 
   it("replaces a node the render made a different kind of thing", () => {

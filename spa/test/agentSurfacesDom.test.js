@@ -58,6 +58,9 @@ const pill = (kind) => document.querySelector(`[data-surface-kind="${kind}"]`);
 const pressPill = (kind) => pill(kind).click();
 const pressed = (kind) => pill(kind).getAttribute("aria-pressed");
 const viewerRows = (selector) => [...document.querySelectorAll(`${selector} > .surface-row`)];
+const runningRows = () => viewerRows(".surface-running");
+const completedRows = () => viewerRows(".surface-completed-rows");
+const completedFold = () => document.querySelector(".surface-completed");
 
 const chooseRowAction = (row, actionId) => {
   row.querySelector(".caret").click();
@@ -211,11 +214,11 @@ describe("painting the viewer", () => {
     const input = document.getElementById("railinput");
     input.value = "half a sentence";
     input.focus();
-    const rowsBefore = viewerRows(".surface-subagents");
+    const rowsBefore = [...runningRows(), ...completedRows()];
 
     surfaces.set(snapshot());
 
-    expect(viewerRows(".surface-subagents")).toEqual(rowsBefore);
+    expect([...runningRows(), ...completedRows()]).toEqual(rowsBefore);
     expect(input.value).toBe("half a sentence");
     expect(document.activeElement).toBe(input);
     surfaces.dispose();
@@ -339,10 +342,10 @@ describe("painting the viewer", () => {
     });
 
     pressPill(SHELL_ENTRY_KIND);
-    expect(viewerRows(".surface-shells").map((row) => row.dataset.key)).toEqual(["shells-0", "shells-1"]);
+    expect(runningRows().map((row) => row.dataset.key)).toEqual(["shells-0", "shells-1"]);
 
     pressPill(AGENT_ENTRY_KIND);
-    expect(viewerRows(".surface-subagents").map((row) => row.dataset.key)).toEqual(["same", "agent-1"]);
+    expect(runningRows().map((row) => row.dataset.key)).toEqual(["same", "agent-1"]);
     surfaces.dispose();
   });
 
@@ -369,7 +372,7 @@ describe("a row's action", () => {
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
     pressPill(AGENT_ENTRY_KIND);
-    const [row] = viewerRows(".surface-subagents");
+    const [row] = completedRows();
     const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, snapshot())[0]);
 
     chooseRowAction(row, action.id);
@@ -402,7 +405,7 @@ describe("a row's action", () => {
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
     pressPill(SHELL_ENTRY_KIND);
-    const [row] = viewerRows(".surface-shells");
+    const [row] = runningRows();
     row.querySelector(".caret").click();
 
     surfaces.set(snapshot());
@@ -419,7 +422,7 @@ describe("a row's action", () => {
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
     pressPill(SHELL_ENTRY_KIND);
-    const [row] = viewerRows(".surface-shells");
+    const [row] = runningRows();
     row.querySelector(".caret").click();
 
     const replaced = snapshot();
@@ -458,18 +461,20 @@ describe("a menu the paint had to rebuild", () => {
     surfaces.dispose();
   });
 
-  it("still chooses an action after a shell's exit code gives the row a new trailing slot", () => {
+  it("still chooses an action on the row a finished shell was redrawn as inside the fold", () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
     pressPill(SHELL_ENTRY_KIND);
-    const [row] = viewerRows(".surface-shells");
+    const [wasRunning] = runningRows();
 
     const finished = snapshot();
     finished.shells[0] = { ...finished.shells[0], state: "done", exit_code: 0 };
     surfaces.set(finished);
 
-    expect(viewerRows(".surface-shells")[0]).toBe(row);
+    expect(runningRows()).toEqual([]);
+    const [row] = completedRows();
+    expect(row).not.toBe(wasRunning);
     const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, finished)[0]);
     chooseRowAction(row, action.id);
 
@@ -482,13 +487,13 @@ describe("a menu the paint had to rebuild", () => {
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
     pressPill(AGENT_ENTRY_KIND);
-    const [row] = viewerRows(".surface-subagents");
+    const [row] = completedRows();
 
     const named = snapshot();
     named.subagents[0] = { ...named.subagents[0], model: "haiku" };
     surfaces.set(named);
 
-    expect(viewerRows(".surface-subagents")[0]).toBe(row);
+    expect(completedRows()[0]).toBe(row);
     const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, named)[0]);
     chooseRowAction(row, action.id);
 
@@ -502,7 +507,7 @@ describe("a set that would change nothing", () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     pressPill(SHELL_ENTRY_KIND);
-    const [row] = viewerRows(".surface-shells");
+    const [row] = runningRows();
     const marker = document.createElement("span");
     marker.className = "paint-witness";
     row.appendChild(marker);
@@ -520,13 +525,87 @@ describe("pressing a subagent row", () => {
     const surfaces = mount({ onOpenThreadItem });
     surfaces.set(snapshot());
     pressPill(AGENT_ENTRY_KIND);
-    const [spawned, unspawned] = viewerRows(".surface-subagents");
+    const [spawned] = completedRows();
+    const [unspawned] = runningRows();
 
     spawned.click();
     expect(onOpenThreadItem.mock.calls).toEqual([[SPAWNING_CALL_SEQUENCE]]);
 
     unspawned.click();
     expect(onOpenThreadItem).toHaveBeenCalledTimes(1);
+    surfaces.dispose();
+  });
+});
+
+describe("the fold the finished rows sit under", () => {
+  it("holds every finished row and counts them, leaving the running ones above it", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(AGENT_ENTRY_KIND);
+
+    expect(runningRows().map((row) => row.dataset.key)).toEqual(["s2"]);
+    expect(completedRows().map((row) => row.dataset.key)).toEqual(["s1"]);
+    expect(completedFold().querySelector(".surface-completed-head").textContent.trim()).toBe("Completed (1)");
+    surfaces.dispose();
+  });
+
+  it("is not there at all while nothing has finished", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+
+    expect(runningRows()).toHaveLength(1);
+    expect(completedFold()).toBe(null);
+    surfaces.dispose();
+  });
+
+  it("appears when the first row finishes and goes when the last finished row leaves", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+
+    const finished = snapshot();
+    finished.shells[0] = { ...finished.shells[0], state: "done" };
+    surfaces.set(finished);
+    expect(completedFold()).not.toBe(null);
+    expect(completedRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
+
+    surfaces.set(snapshot());
+    expect(completedFold()).toBe(null);
+    expect(runningRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
+    surfaces.dispose();
+  });
+
+  it("keeps the fold the reader opened, and the rows under it, across a repaint", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(AGENT_ENTRY_KIND);
+    const fold = completedFold();
+    fold.open = true;
+    const [finishedRow] = completedRows();
+
+    const moved = snapshot();
+    moved.subagents[1] = { ...moved.subagents[1], model: "haiku" };
+    surfaces.set(moved);
+
+    expect(completedFold()).toBe(fold);
+    expect(fold.open).toBe(true);
+    expect(completedRows()[0]).toBe(finishedRow);
+    surfaces.dispose();
+  });
+
+  it("counts the fold again when another row finishes", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(AGENT_ENTRY_KIND);
+
+    const both = snapshot();
+    both.subagents[1] = { ...both.subagents[1], state: "done" };
+    surfaces.set(both);
+
+    expect(completedFold().querySelector(".surface-completed-head").textContent.trim()).toBe("Completed (2)");
+    expect(completedRows().map((row) => row.dataset.key)).toEqual(["s1", "s2"]);
+    expect(runningRows()).toEqual([]);
     surfaces.dispose();
   });
 });

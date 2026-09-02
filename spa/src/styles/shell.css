@@ -524,6 +524,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-error { color:var(--red); }
 .surface-row .splitbtn { flex:none; }
 .surface-agent[data-call-sequence] { cursor:pointer; }
+.surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
+.surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
+.surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;
+  list-style:none; }
+.surface-completed-head::-webkit-details-marker { display:none; }
+.surface-completed-head:hover { color:var(--ink2); }
 .surface-shell-tail-head { cursor:pointer; color:var(--dim); font-size:10.5px; list-style:none; }
 .surface-shell-tail-head::-webkit-details-marker { display:none; }
 .surface-shell-tail-body { max-height:140px; overflow:auto; margin:2px 0 0;

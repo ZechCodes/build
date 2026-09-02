@@ -13,19 +13,27 @@ const ACTION_MENU_TITLE = "Ask the agent about this";
 const ROW_HEAD_CLASS = "surface-row-head";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
-const KEYED_LIST_CLASS_THIS_MODULE_EMITS = {
+const COMPLETED_FOLD_CLASS = "surface-completed";
+const COMPLETED_FOLD_HEAD_CLASS = "surface-completed-head";
+
+const CLASS_THIS_MODULE_EMITS = {
+  viewer: "surface-viewer",
   workflowChoices: "surface-workflows",
   workflowPhases: "surface-phases",
   workflowAgents: "surface-phase-agents",
+  running: "surface-running",
+  completed: "surface-completed-rows",
   [AGENT_ENTRY_KIND]: "surface-subagents",
   [SHELL_ENTRY_KIND]: "surface-shells",
   [CHECKLIST_ENTRY_KIND]: "surface-checklist",
 };
 
 export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
+export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
+export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 
-export const SURFACE_LIST_SELECTOR = Object.fromEntries(
-  Object.entries(KEYED_LIST_CLASS_THIS_MODULE_EMITS).map(([name, className]) => [name, `.${className}`]),
+export const SURFACE_SELECTOR = Object.fromEntries(
+  Object.entries(CLASS_THIS_MODULE_EMITS).map(([name, className]) => [name, `.${className}`]),
 );
 
 function stateMarkHtml(stateMark) {
@@ -132,18 +140,39 @@ export function workflowHeadHtml(workflow) {
 }
 
 export function workflowViewerHtml(workflow, choices, phases, agents) {
-  return `<div class="surface-viewer surface-workflow">
-    <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
+  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} surface-workflow">
+    <div class="${CLASS_THIS_MODULE_EMITS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
     <div class="surface-workflow-body">
-      <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
-      <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
+      <div class="${CLASS_THIS_MODULE_EMITS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
+      <div class="${CLASS_THIS_MODULE_EMITS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
     </div>
   </div>`;
 }
 
 export function kindViewerHtml(kind, rows, renderRow) {
-  return `<div class="surface-viewer ${KEYED_LIST_CLASS_THIS_MODULE_EMITS[kind]}">${rows.map(renderRow).join("")}</div>`;
+  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} ${CLASS_THIS_MODULE_EMITS[kind]}">${rows
+    .map(renderRow)
+    .join("")}</div>`;
+}
+
+export function completedFoldHeadHtml(count) {
+  return `<summary class="${COMPLETED_FOLD_HEAD_CLASS}">Completed (${esc(count)})</summary>`;
+}
+
+export function completedFoldHtml(count, rowsHtml = "") {
+  return `<details class="${COMPLETED_FOLD_CLASS}">
+    ${completedFoldHeadHtml(count)}
+    <div class="${CLASS_THIS_MODULE_EMITS.completed}">${rowsHtml}</div>
+  </details>`;
+}
+
+export function runningAndCompletedViewerHtml(kind, { running, completed }, renderRow) {
+  const fold = completed.length ? completedFoldHtml(completed.length, completed.map(renderRow).join("")) : "";
+  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} ${CLASS_THIS_MODULE_EMITS[kind]}">
+    <div class="${CLASS_THIS_MODULE_EMITS.running}">${running.map(renderRow).join("")}</div>
+    ${fold}
+  </div>`;
 }
 
 function shellTailHtml(tail) {

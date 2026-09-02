@@ -15,6 +15,7 @@ import {
   openWorkflow,
   openedSurfaceVisibility,
   readOpenSurface,
+  runningAndCompletedRows,
   surfacePills,
   surfaceRows,
   workflowChoicesWorthOffering,
@@ -22,11 +23,16 @@ import {
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
-  SURFACE_LIST_SELECTOR,
+  COMPLETED_FOLD_HEAD_SELECTOR,
+  COMPLETED_FOLD_SELECTOR,
+  SURFACE_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
+  completedFoldHeadHtml,
+  completedFoldHtml,
   kindViewerHtml,
+  runningAndCompletedViewerHtml,
   shellRowHtml,
   surfacePillsHtml,
   workflowChoiceHtml,
@@ -43,8 +49,19 @@ const MENU_SELECTOR = ".splitbtn";
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
   lists: ({ surfaces }) => [
-    { selector: SURFACE_LIST_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, carriesRowActions: true },
+    { selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, carriesRowActions: true },
   ],
+});
+
+const runningAboveWhatFinished = (kind, render) => ({
+  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, render),
+  lists: ({ surfaces }) => {
+    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
+    return [
+      { selector: SURFACE_SELECTOR.running, rows: running, render, carriesRowActions: true },
+      { selector: SURFACE_SELECTOR.completed, rows: completed, render, carriesRowActions: true, folded: true },
+    ];
+  },
 });
 
 const VIEWER_PLANS = {
@@ -56,13 +73,13 @@ const VIEWER_PLANS = {
       const { phases, agents } = workflowPhases(surfaces, selectedWorkflowIndex, selectedPhaseIndex);
       return [
         {
-          selector: SURFACE_LIST_SELECTOR.workflowChoices,
+          selector: SURFACE_SELECTOR.workflowChoices,
           rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
           render: workflowChoiceHtml,
         },
-        { selector: SURFACE_LIST_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
+        { selector: SURFACE_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
         {
-          selector: SURFACE_LIST_SELECTOR.workflowAgents,
+          selector: SURFACE_SELECTOR.workflowAgents,
           rows: agents,
           render: agentRowHtml,
           carriesRowActions: true,
@@ -70,8 +87,8 @@ const VIEWER_PLANS = {
       ];
     },
   },
-  [AGENT_ENTRY_KIND]: oneListOfKind(AGENT_ENTRY_KIND, agentRowHtml),
-  [SHELL_ENTRY_KIND]: oneListOfKind(SHELL_ENTRY_KIND, shellRowHtml),
+  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
+  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
@@ -159,6 +176,22 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     }
   };
 
+  /** The container the finished rows are painted into, made when the first row
+   *  finishes and taken away when the last one leaves. */
+  const foldTheFinishedRowsSitUnder = (count) => {
+    const standing = viewerRegion.querySelector(COMPLETED_FOLD_SELECTOR);
+    if (!count) {
+      if (standing) standing.remove();
+      return null;
+    }
+    if (!standing) {
+      viewerRegion.querySelector(SURFACE_SELECTOR.viewer).appendChild(el(completedFoldHtml(count)));
+      return viewerRegion.querySelector(SURFACE_SELECTOR.completed);
+    }
+    patchElement(standing.querySelector(COMPLETED_FOLD_HEAD_SELECTOR), el(completedFoldHeadHtml(count)));
+    return standing.querySelector(SURFACE_SELECTOR.completed);
+  };
+
   const paintViewer = () => {
     paintedLists.clear();
     if (!openKind) {
@@ -182,8 +215,10 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
       patchElement(viewerRegion.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
     }
     for (const list of plan.lists(paintContext)) {
+      const container = list.folded ? foldTheFinishedRowsSitUnder(list.rows.length) : viewerRegion.querySelector(list.selector);
+      if (!container) continue;
       paintedLists.set(list.selector, list);
-      patchList(viewerRegion.querySelector(list.selector), list.rows, {
+      patchList(container, list.rows, {
         keyOf: (row) => row.key,
         render: list.render,
       });

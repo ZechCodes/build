@@ -1,17 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { modalDialogHtml, openModal } from "../src/core/modal.js";
-import { motionSettled } from "../src/core/motion.js";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 
 const DIALOG = modalDialogHtml("<p>the words</p>");
-
-/** A close nobody holds the promise of — Escape, a press on the scrim — is over
- *  once nothing is moving and the promise chain behind it has run. */
-const untilClosed = async () => {
-  await motionSettled();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-};
 
 const scrimOnScreen = () => document.querySelector(".modal-scrim");
 
@@ -74,7 +66,7 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    await untilClosed();
+    await motionBeat();
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(underlyingSawEscape).toBe(false);
@@ -104,7 +96,7 @@ describe("openModal", () => {
     openModal({ dialogHtml: DIALOG, onClose });
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    await untilClosed();
+    await motionBeat();
 
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
@@ -115,12 +107,12 @@ describe("openModal", () => {
     const { body } = openModal({ dialogHtml: DIALOG, onClose });
 
     body.click();
-    await untilClosed();
+    await motionBeat();
     expect(onClose).not.toHaveBeenCalled();
     expect(scrimOnScreen()).not.toBe(null);
 
     scrimOnScreen().click();
-    await untilClosed();
+    await motionBeat();
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(scrimOnScreen()).toBe(null);
   });
@@ -139,7 +131,7 @@ describe("openModal", () => {
 
   it("puts focus in the dialog once it is on screen", async () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
-    await untilClosed();
+    await motionBeat();
 
     expect(document.activeElement).toBe(body.querySelector("button"));
   });
@@ -148,7 +140,7 @@ describe("openModal", () => {
     const { body } = openModal({ dialogHtml: modalDialogHtml("<button>Cancel</button><button>Confirm</button>") });
     const confirm = body.querySelectorAll("button")[1];
     confirm.focus();
-    await untilClosed();
+    await motionBeat();
 
     expect(document.activeElement).toBe(confirm);
   });
@@ -221,7 +213,7 @@ describe("the modal's motion", () => {
     expect(scrimOnScreen()).not.toBe(null);
 
     await settleMotion(started);
-    await untilClosed();
+    await motionBeat();
 
     expect(scrimOnScreen()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);
@@ -240,7 +232,7 @@ describe("the modal's motion", () => {
     expect(scrimOnScreen()).not.toBe(null);
 
     await settleMotion(started);
-    await untilClosed();
+    await motionBeat();
 
     expect(scrimOnScreen()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);

@@ -560,7 +560,7 @@ export function mountConsole(host, context) {
           retryWhenReconnected(() => {
             if (paneTermId !== termId) return; // the console is showing something else now
             paneTermId = null; // …otherwise mount this terminal afresh
-            paintBody();
+            paintBody(shownSize());
           });
           return;
         }

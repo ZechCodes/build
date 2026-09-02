@@ -84,6 +84,39 @@ export function createSingleFlight() {
   };
 }
 
+const MENU_GAP_PX = 6;
+
+function scrollingAncestorOf(element) {
+  for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+    const overflowY = getComputedStyle(ancestor).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return ancestor;
+  }
+  return null;
+}
+
+function placeMenuFromButtonBox(menu, buttonBox) {
+  const opensAbove = buttonBox.top - MENU_GAP_PX >= menu.offsetHeight;
+  menu.style.position = "fixed";
+  menu.style.right = `${window.innerWidth - buttonBox.right}px`;
+  menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
+  menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
+}
+
+function liftMenuOutOfScroll(container, menu, closeMenu) {
+  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect());
+  const onViewportMoved = () => closeMenu();
+  document.addEventListener("scroll", onViewportMoved, { capture: true });
+  window.addEventListener("resize", onViewportMoved);
+  return () => {
+    document.removeEventListener("scroll", onViewportMoved, { capture: true });
+    window.removeEventListener("resize", onViewportMoved);
+    menu.style.position = "";
+    menu.style.top = "";
+    menu.style.bottom = "";
+    menu.style.right = "";
+  };
+}
+
 /** Wire the caret and the menu of a split button already in the DOM: the caret
  *  toggles it, a press outside closes it, and choosing an item closes it and
  *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
@@ -106,12 +139,18 @@ export function mountSplitMenu(container, { onChoose }) {
   // press anywhere inside the split button (the caret that toggles it, the item
   // being reached for) is not outside.
   let stopWatchingOutsidePress = null;
+  let settleLiftedMenu = null;
   const closeMenu = () => {
     if (menu) menu.hidden = true;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
+    if (settleLiftedMenu) {
+      settleLiftedMenu();
+      settleLiftedMenu = null;
+    }
   };
   const openMenu = () => {
     menu.hidden = false;
+    if (scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;

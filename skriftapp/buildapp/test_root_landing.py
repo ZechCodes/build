@@ -154,20 +154,18 @@ DESIGN_TOKENS = (
     "--dotfield-gap",
     "--hero-padding-block-start",
     "--space-screenshot-top",
-    "--flow-max-width",
-    "--flow-lane-you",
-    "--flow-lane-agents",
-    "--flow-lane-width",
+    "--flow-columns",
+    "--flow-col-gap",
+    "--flow-row-gap",
     "--flow-line-width",
-    "--flow-arrow-head",
-    "--flow-arrow-length",
-    "--flow-text-padding",
-    "--flow-step-gap",
-    "--flow-card-padding",
-    "--space-flow-actors-bottom",
-    "--space-flow-arrow-top",
-    "--font-size-flow-step",
-    "--line-height-flow-step",
+    "--flow-link",
+    "--flow-node-padding",
+    "--font-size-flow-title",
+    "--line-height-flow-title",
+    "--font-size-flow-body",
+    "--line-height-flow-body",
+    "--space-flow-header-bottom",
+    "--space-flow-title-bottom",
     "--screenshot-crop-aspect",
     "--screenshot-side-height",
     "--hero-side-copy-width",
@@ -395,40 +393,45 @@ FLOW_TITLE_MARKUP = (
     '<h2 class="section-title">A run,<br>'
     '<span class="title-accent">start to finish.</span></h2>'
 )
-FLOW_LABEL_MARKUP = '<span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN</span>'
-FLOW_ACTORS_MARKUP = (
-    '<div class="flow-actors eyebrow"><span class="flow-actor">YOU</span>'
-    '<span class="flow-actor">YOUR AGENTS</span></div>'
-)
+FLOW_LABEL_MARKUP = '<span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN /06</span>'
 FLOW_STEPS = (
-    ("to-agents", "Open an issue. Say what you want, in your words."),
-    ("to-you", "The agent asks what's unclear."),
-    ("to-agents", "You answer. The issue is now the spec."),
-    ("agents", "Builds a workflow and runs it. Every change lands on one branch in its own worktree."),
-    ("agents", "A review agent organizes the diff: what changed, why, where to look first."),
-    ("to-you", "“Ready for review” lands in your inbox."),
-    ("to-agents", "Comment on a line, or approve."),
-    ("you", "Merge. The branch cleans itself up."),
+    ("/01", "YOU", "you", "to-agents", "Open an issue", "Say what you want, in your words."),
+    ("/02", "AGENTS", "agents", "", "Workshop it", "The agent asks what's unclear. You answer. The issue is now the spec."),
+    ("/03", "AGENTS", "agents", "", "Plan and build", "A workflow runs. Every change lands on one branch in its own worktree."),
+    ("/04", "AGENTS", "agents", "to-you", "Organize the diff", "A review agent sorts what changed, why, and where to look first."),
+    ("/05", "YOU", "you", "", "Spot-check", "“Ready for review” hits your inbox. Comment on a line, or approve."),
+    ("/06", "YOU", "you", "", "Merge", "The branch cleans itself up."),
 )
-FLOW_RULES = (
-    ".flow{max-width:var(--flow-max-width);margin-inline:auto}",
-    '.flow-steps::before,.flow-steps::after{content:"";position:absolute;top:0;bottom:0;'
-    "width:var(--flow-line-width);background:var(--hairline-neutral)}",
-    ".flow-steps::before{left:var(--flow-lane-you)}",
-    ".flow-steps::after{left:var(--flow-lane-agents)}",
-    ".flow-step--to-agents::after{left:var(--flow-lane-agents);"
-    "border-left:var(--flow-arrow-length) solid var(--color-text-muted);transform:translate(-100%,50%)}",
-    ".flow-step--to-you::after{left:var(--flow-lane-you);"
-    "border-right:var(--flow-arrow-length) solid var(--color-text-muted);transform:translateY(50%)}",
-    ".flow-step--agents,.flow-step--you{width:var(--flow-lane-width);"
-    "padding:var(--flow-card-padding);background:var(--color-background);border:var(--hairline)}",
-    ".flow-step--agents{justify-self:end}",
-    ".flow-step--you{justify-self:start}",
-    ".flow-step-text{display:inline-block;background:var(--color-background);"
-    "padding-inline:var(--flow-text-padding)}",
+FLOW_STEP_RULES = (
+    ".flow-steps{list-style:none;display:grid;gap:var(--flow-row-gap)}",
+    ".flow-step{position:relative;background:var(--surface-card);border:var(--hairline);"
+    "padding:var(--flow-node-padding);--font-size-card-title:var(--font-size-flow-title);"
+    "--line-height-card-title:var(--line-height-flow-title);"
+    "--font-size-card-body:var(--font-size-flow-body);"
+    "--line-height-card-body:var(--line-height-flow-body);"
+    "--space-card-header-bottom:var(--space-flow-header-bottom);"
+    "--space-card-title-bottom:var(--space-flow-title-bottom)}",
+    '.flow-step::before{content:"";position:absolute;pointer-events:none;'
+    "top:100%;left:50%;height:var(--flow-row-gap);border-left:var(--flow-link)}",
+    ".flow-step:last-child::before{content:none}",
 )
-FLOW_STEP_GAP_DESKTOP_TOKEN = "--flow-step-gap:30px"
-FLOW_STEP_GAP_MOBILE_TOKEN = "--flow-step-gap:22px"
+FLOW_DESKTOP_MEDIA_PRELUDE = "@media (min-width:1024px){"
+FLOW_DESKTOP_RULES = (
+    ".flow-steps{grid-template-columns:repeat(var(--flow-columns),1fr);grid-auto-rows:1fr;"
+    "column-gap:var(--flow-col-gap)}",
+    ".flow-step--you{grid-row:1}",
+    ".flow-step--agents{grid-row:2}",
+    ".flow-step::before{top:50%;left:100%;width:var(--flow-col-gap);"
+    "height:auto;border-left:0;border-top:var(--flow-link)}",
+    ".flow-step--to-agents::before,.flow-step--to-you::before{"
+    "width:calc(var(--flow-col-gap) / 2);height:calc(100% + var(--flow-row-gap));"
+    "border-right:var(--flow-link)}",
+    ".flow-step--to-you::before{top:auto;bottom:50%;border-top:0;border-bottom:var(--flow-link)}",
+    ".flow-step--to-agents::after{top:calc(150% + var(--flow-row-gap))}",
+    ".flow-step--to-you::after{top:calc(-50% - var(--flow-row-gap))}",
+)
+FLOW_ROW_GAP_DESKTOP_TOKEN = "--flow-row-gap:28px"
+FLOW_ROW_GAP_MOBILE_TOKEN = "--flow-row-gap:18px"
 
 CTA_TITLE_MARKUP = (
     '<h2 class="section-title section-title--cta">Get in '
@@ -807,21 +810,32 @@ def test_rail_has_five_dashes_with_the_first_active():
 def test_flow_section_walks_one_run_between_you_and_your_agents():
     html = _landing_html()
     assert html.index(FEATURES_TITLE_MARKUP) < html.index(FLOW_SECTION_OPENER) < html.index(CTA_TITLE_MARKUP)
-    for markup in (FLOW_TITLE_MARKUP, FLOW_LABEL_MARKUP, FLOW_ACTORS_MARKUP):
-        assert markup in html
-    for kind, text in FLOW_STEPS:
-        inner = f'<span class="flow-step-text">{text}</span>' if kind.startswith("to-") else text
-        assert f'<li class="flow-step flow-step--{kind}">{inner}</li>' in html
+    assert FLOW_TITLE_MARKUP in html
+    assert FLOW_LABEL_MARKUP in html
+    for number, actor, lane, link, title, body in FLOW_STEPS:
+        classes = f"flow-step flow-step--{lane}" + (f" flow-step--{link}" if link else "")
+        assert (
+            f'<li class="{classes}">\n'
+            f'      <div class="card-header eyebrow"><span class="card-number">{number}</span>'
+            f'<span class="eyebrow--muted">{actor}</span></div>\n'
+            f'      <h3 class="card-title">{title}</h3>\n'
+            f'      <p class="card-body">{body}</p>' in html
+        )
     assert html.count('<li class="flow-step ') == len(FLOW_STEPS)
 
 
-def test_flow_lifelines_arrows_and_activity_boxes_are_styled_from_tokens():
+def test_flow_nodes_stack_on_phones_and_form_two_lanes_on_desktop():
     css = _landing_text(STYLESHEET_NAME)
-    for rule in FLOW_RULES:
+    for rule in FLOW_STEP_RULES:
         assert rule in _rules_outside_media_blocks(css)
-    assert FLOW_STEP_GAP_DESKTOP_TOKEN in _rules_outside_media_blocks(css)
-    assert FLOW_STEP_GAP_MOBILE_TOKEN in css
-    assert FLOW_STEP_GAP_MOBILE_TOKEN not in _rules_outside_media_blocks(css)
+    desktop_block = css[css.index(FLOW_DESKTOP_MEDIA_PRELUDE):]
+    desktop_block = desktop_block[: desktop_block.index("\n}")]
+    for rule in FLOW_DESKTOP_RULES:
+        assert rule in desktop_block
+        assert rule not in _rules_outside_media_blocks(css)
+    assert FLOW_ROW_GAP_DESKTOP_TOKEN in _rules_outside_media_blocks(css)
+    assert FLOW_ROW_GAP_MOBILE_TOKEN in css
+    assert FLOW_ROW_GAP_MOBILE_TOKEN not in _rules_outside_media_blocks(css)
 
 
 def test_cta_section_copy_is_verbatim():

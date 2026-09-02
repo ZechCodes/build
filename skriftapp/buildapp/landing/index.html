@@ -74,21 +74,40 @@
 <section class="flow-section rule-bottom" id="flow"><div class="content-container">
   <div class="section-header">
     <h2 class="section-title">A run,<br><span class="title-accent">start to finish.</span></h2>
-    <span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN</span>
+    <span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN /06</span>
   </div>
-  <div class="flow">
-    <div class="flow-actors eyebrow"><span class="flow-actor">YOU</span><span class="flow-actor">YOUR AGENTS</span></div>
-    <ol class="flow-steps">
-      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">Open an issue. Say what you want, in your words.</span></li>
-      <li class="flow-step flow-step--to-you"><span class="flow-step-text">The agent asks what's unclear.</span></li>
-      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">You answer. The issue is now the spec.</span></li>
-      <li class="flow-step flow-step--agents">Builds a workflow and runs it. Every change lands on one branch in its own worktree.</li>
-      <li class="flow-step flow-step--agents">A review agent organizes the diff: what changed, why, where to look first.</li>
-      <li class="flow-step flow-step--to-you"><span class="flow-step-text">“Ready for review” lands in your inbox.</span></li>
-      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">Comment on a line, or approve.</span></li>
-      <li class="flow-step flow-step--you">Merge. The branch cleans itself up.</li>
-    </ol>
-  </div>
+  <ol class="flow-steps">
+    <li class="flow-step flow-step--you flow-step--to-agents">
+      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">YOU</span></div>
+      <h3 class="card-title">Open an issue</h3>
+      <p class="card-body">Say what you want, in your words.</p>
+    </li>
+    <li class="flow-step flow-step--agents">
+      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">AGENTS</span></div>
+      <h3 class="card-title">Workshop it</h3>
+      <p class="card-body">The agent asks what's unclear. You answer. The issue is now the spec.</p>
+    </li>
+    <li class="flow-step flow-step--agents">
+      <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">AGENTS</span></div>
+      <h3 class="card-title">Plan and build</h3>
+      <p class="card-body">A workflow runs. Every change lands on one branch in its own worktree.</p>
+    </li>
+    <li class="flow-step flow-step--agents flow-step--to-you">
+      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">AGENTS</span></div>
+      <h3 class="card-title">Organize the diff</h3>
+      <p class="card-body">A review agent sorts what changed, why, and where to look first.</p>
+    </li>
+    <li class="flow-step flow-step--you">
+      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">YOU</span></div>
+      <h3 class="card-title">Spot-check</h3>
+      <p class="card-body">“Ready for review” hits your inbox. Comment on a line, or approve.</p>
+    </li>
+    <li class="flow-step flow-step--you">
+      <div class="card-header eyebrow"><span class="card-number">/06</span><span class="eyebrow--muted">YOU</span></div>
+      <h3 class="card-title">Merge</h3>
+      <p class="card-body">The branch cleans itself up.</p>
+    </li>
+  </ol>
 </div></section>
 <section class="cta-section viewport-section" id="waitlist"><div class="content-container">
     <h2 class="section-title section-title--cta">Get in <span class="title-accent title-accent--glow">early.</span></h2>

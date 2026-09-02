@@ -162,7 +162,7 @@ export function createReviewPlug({
     actions.innerHTML = "";
   };
 
-  let paintChangeset = null; // made for the host this plug is mounted into
+  let paintChangeset = null;
 
   function render() {
     if (!host) return;

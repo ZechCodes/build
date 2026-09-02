@@ -424,7 +424,7 @@ export function mountGitPane(
   // nothing about a commit's), and whether they have dialled the ordering off
   // for this project.
   const expandedGroups = new Map(); // changeset key → the group names opened in it
-  const fileFolds = new Map(); // changeset key → core/diff.js createFileFolds
+  const fileFolds = new Map();
   const triageProject = projectId || (scope && scope.project_id) || null;
   let trustDial = loadTrustDial(triageProject);
   // Re-review memory, per changeset: what the reviewer saw when they last sent
@@ -435,7 +435,7 @@ export function mountGitPane(
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
-  let paintChangesetInto = null; // the detail host's own paint, made with it
+  let paintChangesetInto = null;
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -704,7 +704,7 @@ export function mountGitPane(
       if (reviewMounted) {
         review.unmount();
         reviewMounted = false;
-        detailHost.innerHTML = ""; // the plug's DOM was the plug's; it goes with it
+        detailHost.innerHTML = "";
       }
       paintKeepingPlace(
         detailHost,

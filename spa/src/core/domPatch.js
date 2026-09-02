@@ -34,13 +34,10 @@ const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === 
 
 const EXPANSION_MARKS = [EXPANDED_ATTRIBUTE, "aria-expanded"];
 
-// The one element whose expansion no render describes: a clipped line the
-// reader pressed open. Everywhere else an expansion is state the render draws
-// from, and a mark left behind on the page is stale by definition.
-const CLIP_ELEMENT = ".surface-clip";
+const CLIPPED_LINE_ELEMENT = ".surface-clip";
 
 const expansionTheReaderOwns = (live, name) =>
-  EXPANSION_MARKS.includes(name) && live.hasAttribute(EXPANDED_ATTRIBUTE) && live.matches(CLIP_ELEMENT);
+  EXPANSION_MARKS.includes(name) && live.hasAttribute(EXPANDED_ATTRIBUTE) && live.matches(CLIPPED_LINE_ELEMENT);
 
 const keyedByAnotherPainter = (live) => live.hasAttribute(KEYED_LIST_ATTRIBUTE);
 
@@ -103,7 +100,6 @@ export function patchElement(live, next) {
   for (const extra of liveChildren.slice(nextChildren.length)) live.removeChild(extra);
 }
 
-/// Make `host` say `html`, leaving standing whatever already says it.
 export function patchInnerHtml(host, html) {
   const next = host.cloneNode(false);
   next.innerHTML = html;

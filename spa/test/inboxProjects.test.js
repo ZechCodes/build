@@ -4,7 +4,7 @@
 // per block, and the unrouted captures standing above them all.
 
 import { describe, it, expect } from "vitest";
-import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "../src/core/inboxProjects.js";
+import { blockIsFolded, newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "../src/core/inboxProjects.js";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
@@ -140,7 +140,7 @@ describe("the blocks the projects face lists", () => {
     expect(keys(blocks.find((block) => block.id === "p1").entries)).toEqual(["capture:cap-routed"]);
   });
 
-  it("partitions each block's quiet rows into its own Recent, and opens a thin block's Recent by itself", () => {
+  it("partitions each block's quiet rows into its own Recent", () => {
     const { blocks } = projectBlocks({
       projects,
       nowMs: NOW,
@@ -155,10 +155,26 @@ describe("the blocks the projects face lists", () => {
     const dotfiles = blocks.find((block) => block.id === "p2");
     expect(keys(relaydb.entries)).toEqual(["run-1"]);
     expect(keys(relaydb.recent)).toEqual(["run-old"]);
-    expect(relaydb.autoOpen).toBe(true);
     expect(dotfiles.entries.length).toBe(5);
     expect(keys(dotfiles.recent)).toEqual(["iss-old"]);
-    expect(dotfiles.autoOpen).toBe(false);
+  });
+
+  // Quiet rows always start hidden: a block holding only quiet rows starts
+  // folded, and what the user says of a block outranks that either way.
+  it("folds a quiet-only block shut to begin with, and lets the user's word stand", () => {
+    const { blocks } = projectBlocks({
+      projects,
+      nowMs: NOW,
+      items: [branch({ anchor: ago(300), last_activity: ago(40) }), issue()],
+    });
+    const quietOnly = blocks.find((block) => block.id === "p1");
+    const live = blocks.find((block) => block.id === "p2");
+    const empty = blocks.find((block) => block.id === "p3");
+    expect(blockIsFolded(quietOnly, new Map())).toBe(true);
+    expect(blockIsFolded(live, new Map())).toBe(false);
+    expect(blockIsFolded(empty, new Map())).toBe(false);
+    expect(blockIsFolded(quietOnly, new Map([["p1", false]]))).toBe(false);
+    expect(blockIsFolded(live, new Map([["p2", true]]))).toBe(true);
   });
 
   it("drops what the inbox drops: finished rows, cleared rows, and an issue a live branch is implementing", () => {

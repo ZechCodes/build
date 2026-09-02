@@ -252,8 +252,11 @@ describe("the projects face", () => {
     expect(rowFor("run-1").querySelector(".sdot")).toBeNull();
     expect(blockFor("p1").querySelector("[data-recent-toggle]")).toBeNull();
     expect(blockFor("p1").querySelector("[data-project-fold]").disabled).toBe(false);
-    blockFor("p1").querySelector("[data-project-fold]").click();
+    // Quiet rows start hidden: the block starts folded, and the chevron opens it.
     expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
+    blockFor("p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
   });
 
   it("highlights the block holding the branch or issue the route stands on", () => {
@@ -291,7 +294,7 @@ describe("the projects face", () => {
     blockFor("p1").querySelector("[data-project-fold]").click();
     expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
     expect(blockFor("p1").querySelector("[data-project-fold]").getAttribute("aria-expanded")).toBe("false");
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual(["p1"]);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: true });
     feed(feedItems);
     expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
 
@@ -303,7 +306,7 @@ describe("the projects face", () => {
 
     blockFor("p1").querySelector("[data-project-fold]").click();
     expect(blockFor("p1").classList.contains("inbox-folded")).toBe(false);
-    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual([]);
+    expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual({ p1: false });
   });
 
   it("opens the create surface on the block's project from its +, on the Branch tab", () => {
@@ -332,9 +335,13 @@ describe("the projects face", () => {
       issueRow({ issue_id: "iss-old", anchor: hoursAgo(200), last_activity: hoursAgo(30) }),
     ]);
     const toggleIn = (projectId) => blockFor(projectId).querySelector("[data-recent-toggle]");
-    // relaydb has five live rows, so its Recent stays shut; dotfiles has one, so its opens itself.
+    // Both start shut, however thin the block above; each opens on its own press.
     expect(toggleIn("p1").getAttribute("aria-expanded")).toBe("false");
     expect(rowFor("run-old")).toBeNull();
+    expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("false");
+    expect(rowFor("iss-old")).toBeNull();
+    toggleIn("p2").click();
+    await flush();
     expect(toggleIn("p2").getAttribute("aria-expanded")).toBe("true");
     expect(rowFor("iss-old")).toBeTruthy();
     expect(rowFor("iss-old").parentElement.className).toBe("inbox-recent");

@@ -14,12 +14,18 @@ import pytest
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
+from buildapp.landing_page import SHELL_NAME
 from buildapp.root_controller import (
     LANDING_DIR,
     LANDING_PAGE_NAME,
     WAITLIST_FRAGMENT_NAME,
     WAITLIST_PLACEHOLDER,
     RootController,
+)
+from buildapp.unsubscribe_pages import (
+    render_confirm_page,
+    render_invalid_page,
+    render_removed_page,
 )
 
 STYLESHEET_NAME = "landing.css"
@@ -82,8 +88,18 @@ COLOUR_LITERAL_PATTERN = r"#[0-9a-fA-F]{3,8}\b|rgba?\(|gradient\("
 MEDIA_PRELUDE_PATTERN = r"@media[^{]*\{"
 SIZE_LITERAL_PATTERN = r"\d(?:\.\d+)?(?:px|rem|em|vw|vh)\b"
 BLOCK_COMMENT_OPENER = "/*"
+MARKUP_COMMENT_OPENER = "<!--"
 LINE_COMMENT_OPENER = "//"
-COMMENTABLE_SOURCE_SUFFIXES = (".css", ".js")
+COMMENT_OPENERS_BY_SUFFIX = {
+    ".css": BLOCK_COMMENT_OPENER,
+    ".js": BLOCK_COMMENT_OPENER,
+    ".html": MARKUP_COMMENT_OPENER,
+}
+DOCTYPE_DECLARATION = "<!doctype"
+HEAD_ELEMENT_OPENER = "<head"
+MARKUP_SUFFIX = "*.html"
+CONFIRM_PAGE_ADDRESS = "a@b.co"
+CONFIRM_PAGE_TOKEN = "token"
 
 DESIGN_TOKENS = (
     "--color-accent-channels",
@@ -547,12 +563,23 @@ def test_old_landing_script_is_gone():
 
 def test_landing_sources_carry_no_comments():
     for source in LANDING_DIR.rglob("*"):
-        if source.suffix not in COMMENTABLE_SOURCE_SUFFIXES:
+        block_comment_opener = COMMENT_OPENERS_BY_SUFFIX.get(source.suffix)
+        if block_comment_opener is None:
             continue
-        text = source.read_text()
-        assert BLOCK_COMMENT_OPENER not in text
-        for line in text.splitlines():
+        source_text = source.read_text()
+        assert block_comment_opener not in source_text
+        for line in source_text.splitlines():
             assert not line.strip().startswith(LINE_COMMENT_OPENER)
+
+
+def test_index_is_a_body_fragment_and_the_shell_owns_the_document():
+    assert HEAD_ELEMENT_OPENER not in _landing_text(LANDING_PAGE_NAME)
+    documents = [
+        source.name
+        for source in sorted(LANDING_DIR.rglob(MARKUP_SUFFIX))
+        if DOCTYPE_DECLARATION in source.read_text()
+    ]
+    assert documents == [SHELL_NAME]
 
 
 def test_hero_copy_is_verbatim():
@@ -763,9 +790,16 @@ def test_waitlist_success_line_is_not_capped_at_the_form_width():
 
 
 def test_every_markup_class_has_a_rule_and_every_rule_class_is_applied():
+    rendered_pages = (
+        _landing_html(),
+        render_confirm_page(CONFIRM_PAGE_ADDRESS, CONFIRM_PAGE_TOKEN),
+        render_removed_page(),
+        render_invalid_page(),
+    )
     markup_classes = {
         class_name
-        for attribute in re.findall(CLASS_ATTRIBUTE_PATTERN, _landing_html())
+        for page in rendered_pages
+        for attribute in re.findall(CLASS_ATTRIBUTE_PATTERN, page)
         for class_name in attribute.split()
     }
     stylesheet = _landing_text(STYLESHEET_NAME).replace(FONT_FACE_DECLARATION, "")

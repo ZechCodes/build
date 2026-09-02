@@ -47,6 +47,9 @@ section[id]{scroll-margin-top:var(--nav-height)}
 .waitlist-input:focus{border-color:var(--hairline-accent)}
 .waitlist-error{color:var(--color-alert)}
 .waitlist-success{font-weight:500;font-size:var(--font-size-success);line-height:var(--line-height-success);letter-spacing:var(--letter-spacing-success);color:var(--color-accent)}
+.unsubscribe-panel{padding-block:var(--cta-padding-block)}
+.unsubscribe-action{margin-top:var(--space-form-top)}
+.unsubscribe-address{text-transform:none}
 
 .feature-cards{display:grid;grid-template-columns:repeat(6,1fr);gap:var(--bento-gap)}
 .feature-card{grid-column:span 3;background:var(--surface-card);border:var(--hairline);padding:var(--card-padding);transition:border-color var(--duration-card-hover),background var(--duration-card-hover)}

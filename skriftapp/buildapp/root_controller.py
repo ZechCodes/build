@@ -5,21 +5,37 @@ which owns the auth gate. Landing assets live in ``buildapp/landing/`` — not i
 ``buildapp/static/``, which the SPA build wipes (emptyOutDir) — and are served
 from /landing/* with the same traversal guard as the SPA assets. The page is
 CSP-clean: no inline script or style, every stylesheet and module a same-origin
-file. The waitlist block appears twice on the page, so it is written once in
-``waitlist.html`` and substituted into both placeholders when the page is read.
+file. The document itself — head, stylesheet link, footer bar — belongs to
+``landing_page.render_shell``, which the unsubscribe pages render through too; this
+module owns only the landing body and its copy. The waitlist block appears twice on the
+page, so it is written once in ``waitlist.html`` and substituted into both placeholders
+when the page is read.
 """
 
 import asyncio
-from pathlib import Path
 
 from litestar import Controller, get
 from litestar.exceptions import NotFoundException
 from litestar.response import Response
 
-LANDING_DIR = Path(__file__).parent / "landing"
+from buildapp.landing_page import (
+    LANDING_DIR,
+    fill_slots,
+    read_landing_file,
+    render_shell,
+)
+
 LANDING_PAGE_NAME = "index.html"
 WAITLIST_FRAGMENT_NAME = "waitlist.html"
-WAITLIST_PLACEHOLDER = "{{waitlist}}"
+WAITLIST_SLOT_NAME = "waitlist"
+WAITLIST_PLACEHOLDER = f"{{{{{WAITLIST_SLOT_NAME}}}}}"
+LANDING_TITLE = "Build — the agentic coding IDE · early access"
+LANDING_DESCRIPTION = (
+    "Build is the agentic coding IDE for teams. It surfaces the work that needs you — "
+    "reviews, decisions, direction — and dispatches everything else to your agents. "
+    "Not public yet."
+)
+LANDING_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
 
 LANDING_MEDIA_TYPES = {
     ".js": "text/javascript",
@@ -32,9 +48,15 @@ LANDING_MEDIA_TYPES = {
 
 
 def render_landing_page() -> str:
-    page = (LANDING_DIR / LANDING_PAGE_NAME).read_text()
-    waitlist = (LANDING_DIR / WAITLIST_FRAGMENT_NAME).read_text().rstrip("\n")
-    return page.replace(WAITLIST_PLACEHOLDER, waitlist)
+    waitlist = read_landing_file(WAITLIST_FRAGMENT_NAME).rstrip("\n")
+    return render_shell(
+        title=LANDING_TITLE,
+        description=LANDING_DESCRIPTION,
+        body=fill_slots(
+            read_landing_file(LANDING_PAGE_NAME), {WAITLIST_SLOT_NAME: waitlist}
+        ),
+        scripts=LANDING_SCRIPTS,
+    )
 
 
 class RootController(Controller):

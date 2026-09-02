@@ -1,5 +1,4 @@
 import { esc } from "./text.js";
-import { menuButtonMarkup } from "./splitButton.js";
 import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import {
@@ -8,10 +7,8 @@ import {
   SHELL_ENTRY_KIND,
 } from "./agentSurfacesModel.js";
 
-const ACTION_MENU_LABEL = "Ask";
-const ACTION_MENU_TITLE = "Ask the agent about this";
-
 const ROW_HEAD_CLASS = "surface-row-head";
+const ROW_CLOCK_CLASS = "surface-row-clock";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
 const COMPLETED_FOLD_CLASS = "surface-completed";
@@ -37,6 +34,7 @@ export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
+export const ROW_CLOCK_SELECTOR = `.${ROW_CLOCK_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
@@ -44,11 +42,6 @@ export const SURFACE_SELECTOR = Object.fromEntries(
 
 function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
-}
-
-function actionMenuHtml(actions) {
-  if (!actions || !actions.length) return "";
-  return menuButtonMarkup(ACTION_MENU_LABEL, actions, { title: ACTION_MENU_TITLE });
 }
 
 function statHtml(text) {
@@ -60,12 +53,17 @@ function noteHtml(description, subject) {
   return `<span class="surface-row-note">${esc(description)}</span>`;
 }
 
+function rowClockHtml(row) {
+  if (!Number.isFinite(row.runningSince)) return "";
+  return `<span class="${ROW_CLOCK_CLASS}" data-running-since="${esc(row.runningSince)}"></span>`;
+}
+
 function rowHeadHtml(row, { headClass = ROW_HEAD_CLASS, trailing = "" } = {}) {
   return `<div class="${headClass}">
       ${stateMarkHtml(row.stateMark)}
       <span class="surface-row-label">${esc(row.subject)}</span>
       ${trailing}
-      ${actionMenuHtml(row.actions)}
+      ${rowClockHtml(row)}
     </div>`;
 }
 

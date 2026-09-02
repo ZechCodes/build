@@ -24,7 +24,6 @@ import {
   SURFACE_KINDS,
   WORKFLOW_ENTRY_KIND,
   agentRows,
-  rowActions,
   rowSubject,
   runningAndCompletedRows,
   surfacePills,
@@ -116,26 +115,41 @@ describe("agentRowHtml", () => {
     );
   });
 
-  it("offers the row's actions through the shared menu markup", () => {
+  it("gives a running row a clock span to tick in, and every other row none", () => {
+    const ticking = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, started_at: 1788291725678 }])[0]));
+    const clock = ticking.querySelector(".surface-row-clock");
+    expect(clock.dataset.runningSince).toBe("1788291725678");
+    expect(clock.textContent).toBe("");
+
+    expect(agentRowHtml(agentRows([readerEntry])[0])).not.toContain("surface-row-clock");
+    const finished = { ...readerEntry, state: "done", started_at: 1788291725678 };
+    expect(agentRowHtml(agentRows([finished])[0])).not.toContain("surface-row-clock");
+  });
+
+  it("still reads a finished agent's duration through the stats it always wrote it in", () => {
+    const finished = agentRows([{ ...readerEntry, state: "done" }])[0];
+    expect(parseHtml(agentRowHtml(finished)).querySelector(".surface-row-stats").textContent).toContain("1m 05s");
+  });
+
+  it("gives a running shell the same clock span through the same head", () => {
+    const [row] = surfaceRows(SHELL_ENTRY_KIND, {
+      shells: [{ id: "s1", description: "cargo test", state: "running", started_at: 1788291725678 }],
+    });
+    expect(parseHtml(shellRowHtml(row)).querySelector(".surface-row-clock").dataset.runningSince).toBe(
+      "1788291725678",
+    );
+  });
+
+  it("draws no menu of any kind on a row", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0]));
-    expect(row.querySelectorAll(".splitbtn .splitmenu .mi").length).toBeGreaterThan(0);
-    expect(row.querySelector(".splitmenu").hasAttribute("hidden")).toBe(true);
+    expect(row.querySelector(".splitbtn")).toBe(null);
+    expect(row.querySelector(".splitmenu")).toBe(null);
   });
 
   it("emits data-call-sequence for a row that carries one and no such attribute for a row that does not", () => {
     const spawned = agentRowHtml(agentRows([{ ...readerEntry, call_sequence: 12 }])[0]);
     expect(parseHtml(spawned).querySelector("[data-call-sequence]").dataset.callSequence).toBe("12");
     expect(agentRowHtml(agentRows([readerEntry])[0])).not.toContain("data-call-sequence");
-  });
-
-  it("takes its actions from the model's one agent kind rather than restating that kind", () => {
-    const row = agentRows([readerEntry])[0];
-    const items = [...parseHtml(agentRowHtml(row)).querySelectorAll(".splitmenu .mi")];
-    const actions = rowActions(AGENT_ENTRY_KIND, row);
-    expect(items.map((item) => item.dataset.action)).toEqual(actions.map((action) => action.id));
-    expect(items.map((item) => item.querySelector(".md").textContent)).toEqual(
-      actions.map((action) => action.description),
-    );
   });
 
   it("escapes everything the model can put in it", () => {
@@ -188,7 +202,7 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
     }
   });
 
-  it("paints the name the row's action menu speaks, for a row carrying only an id", () => {
+  it("paints the name the row goes by, for a row carrying only an id", () => {
     const namelessRows = [
       [AGENT_ENTRY_KIND, agentRowHtml, surfaceRows(AGENT_ENTRY_KIND, { subagents: [{ id: "a1", state: "running" }] })[0]],
       [SHELL_ENTRY_KIND, shellRowHtml, surfaceRows(SHELL_ENTRY_KIND, { shells: [{ id: "s1", state: "running" }] })[0]],
@@ -202,7 +216,6 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
       const painted = parseHtml(renderRow(row)).querySelector(".surface-row-label").textContent;
       expect(painted).toBe(rowSubject(kind, row));
       expect(painted.length).toBeGreaterThan(0);
-      expect(rowActions(kind, row)[0].message).toContain(painted);
     }
   });
 
@@ -317,11 +330,11 @@ describe("workflowViewerHtml", () => {
     expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents)).toContain(agentRowHtml(agents[0]));
   });
 
-  it("names the workflow, marks its state and offers its actions", () => {
+  it("names the workflow, marks its state and hangs no menu off its head", () => {
     const painted = parseHtml(view(freshWorkflow, 0));
     expect(painted.textContent).toContain("Review");
     expect(painted.querySelector(".surface-workflow-head [data-outcome]")).toBeTruthy();
-    expect(painted.querySelectorAll(".surface-workflow-head .splitmenu .mi").length).toBeGreaterThan(0);
+    expect(painted.querySelector(".surface-workflow-head .splitbtn")).toBe(null);
   });
 
   it("names each workflow the reader may choose between, pressing the one on show", () => {
@@ -508,10 +521,16 @@ describe("the renderer is pure markup", () => {
     }
   });
 
-  it("reads a row's subject and actions off the row rather than asking the model a second time", () => {
+  it("reads a row's subject off the row rather than asking the model a second time", () => {
     const source = coreSourceOf("agentSurfacesRender.js");
     expect(source).not.toContain("rowSubject");
-    expect(source).not.toContain("rowActions");
+  });
+
+  it("builds no menu markup at all", () => {
+    const source = coreSourceOf("agentSurfacesRender.js");
+    expect(source).not.toContain("menuButtonMarkup");
+    expect(source).not.toContain("splitButton.js");
+    expect(source).not.toContain("Ask");
   });
 });
 

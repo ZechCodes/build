@@ -219,13 +219,23 @@ export function aheadBehindText(stat) {
 /** The elapsed-time clock the pinned line ticks: seconds alone under a
  *  minute, minutes and seconds under an hour, hours and minutes beyond —
  *  never days, which a line this narrow has no room to read. */
+const CLOCK_TURNS_TO_HOURS_AT_SECONDS = 90 * 60;
+
+const twoDigits = (value) => String(value).padStart(2, "0");
+
 export function workingClock(seconds) {
-  const s = Math.max(0, Math.floor(seconds || 0));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
-  const hours = Math.floor(s / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  const elapsed = Math.max(0, Math.floor(seconds || 0));
+  if (elapsed < 60) return `${elapsed}s`;
+  if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ${twoDigits(elapsed % 60)}s`;
+  return `${Math.floor(elapsed / 3600)}h ${twoDigits(Math.floor((elapsed % 3600) / 60))}m`;
+}
+
+export function runningClock(seconds) {
+  const elapsed = Math.max(0, Math.floor(seconds || 0));
+  if (elapsed < CLOCK_TURNS_TO_HOURS_AT_SECONDS) {
+    return `${Math.floor(elapsed / 60)}:${twoDigits(elapsed % 60)}`;
+  }
+  return `${Math.floor(elapsed / 3600)}:${twoDigits(Math.floor((elapsed % 3600) / 60))}`;
 }
 
 export function startupStatusLine(conversationItems = [], agentLabel = "Agent") {
@@ -249,7 +259,7 @@ function startupText(startup, nowMs) {
 export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent") {
   const working = workingSeconds(row && row.working_time, nowMs);
   return {
-    working: working === null ? "" : workingClock(working),
+    working: working === null ? "" : runningClock(working),
     starting: working === null ? startupText(startupStatusLine(conversationItems, agentLabel), nowMs) : "",
     sync: aheadBehindText(row && row.stat),
     stat: statText(row && row.stat),

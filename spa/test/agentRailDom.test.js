@@ -1239,7 +1239,7 @@ describe("the pinned status line above the composer", () => {
     await mount();
     expect(railStatus().hidden).toBe(false);
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
-    expect(railStatusLead().textContent).toBe("Working 12m 30s");
+    expect(railStatusLead().textContent).toBe("Working 12:30");
   });
 
   it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
@@ -1300,7 +1300,7 @@ describe("the pinned status line above the composer", () => {
       }],
       projects: [],
     });
-    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).toContain("Working 0:05");
     expect(railStatus().textContent).not.toContain("Run started");
     expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
   });
@@ -1333,10 +1333,10 @@ describe("the pinned status line above the composer", () => {
       projects: [],
     });
     await mount();
-    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).toContain("Working 0:05");
     vi.advanceTimersByTime(3000);
     await flush();
-    expect(railStatus().textContent).toContain("Working 8s");
+    expect(railStatus().textContent).toContain("Working 0:08");
   });
 });
 
@@ -1902,22 +1902,20 @@ describe("the agent's surfaces, carried by the status row", () => {
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
 
-  it("sends a row's action as a message, leaving the draft and the focus alone", async () => {
+  it("opens a viewer with no row menu, leaving the draft and the focus alone", async () => {
     await openPanelWithSurfaces();
     const input = railHost().querySelector("#railinput");
     input.value = "half a sentence";
     input.focus();
 
     railHost().querySelector('[data-surface-kind="shells"]').click();
-    const row = railHost().querySelector(".surface-shells .surface-row");
-    row.querySelector(".caret").click();
-    row.querySelector('.mi[data-action="stop-shell"]').click();
     await flush();
 
-    expect(callsTo("thread.post")[0].params.body).toBe('Please stop the background command "cargo test".');
+    const row = railHost().querySelector(".surface-shells .surface-row");
+    expect(row.querySelector(".splitbtn")).toBe(null);
+    expect(callsTo("thread.post")).toEqual([]);
     expect(railHost().querySelector("#railinput").value).toBe("half a sentence");
     expect(document.activeElement).toBe(input);
-    expect(railHost().querySelector(".surface-shells")).not.toBe(null);
   });
 
   it("says so when the call a subagent row points at is outside the loaded conversation", async () => {
@@ -2303,12 +2301,42 @@ describe("the one status row", () => {
     expect(railHost().querySelector(".sdot")).toBe(null);
   });
 
+  it("keeps the clock's digits fixed in width so a tick never nudges the pills", () => {
+    const clockRule = shellCss.match(/\.rail-status-text \{[^}]*\}/);
+    expect(clockRule).not.toBe(null);
+    expect(clockRule[0]).toContain("font-variant-numeric:tabular-nums");
+    expect(clockRule[0]).toContain("min-width:5ch");
+    expect(clockRule[0]).toContain("display:inline-block");
+  });
+
+  it("shimmers the status clock and every row clock through one rule, and holds still under reduced motion", () => {
+    expect(shellCss.match(/@keyframes clock-shimmer/g)).toHaveLength(1);
+    expect(shellCss.match(/linear-gradient\(100deg/g)).toHaveLength(1);
+    const shimmerRule = shellCss.match(/\n\.rail-status-working, \.surface-row-clock \{ color:transparent;[^}]*\}/);
+    expect(shimmerRule[0]).toContain("animation:clock-shimmer");
+    expect(shimmerRule[0]).toContain("background-clip:text");
+    expect(shimmerRule[0]).toContain("var(--clock-ink)");
+    const stillRule = shellCss.match(
+      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock \{[^}]*\}/,
+    );
+    expect(stillRule).not.toBe(null);
+    expect(stillRule[0]).toContain("animation:none");
+  });
+
+  it("wears the working colour on the status clock and grey on a row clock, holding its digits still", () => {
+    expect(shellCss.match(/\.rail-status-working \{ --clock-ink:var\(--accent\); \}/)).not.toBe(null);
+    const rowClockRule = shellCss.match(/\n\.surface-row-clock \{[^}]*\}/);
+    expect(rowClockRule[0]).toContain("--clock-ink:var(--dim)");
+    expect(rowClockRule[0]).toContain("font-variant-numeric:tabular-nums");
+    expect(rowClockRule[0]).toContain("min-width:4ch");
+  });
+
   it("reads Working and the clock while no pill is asking for the room", async () => {
     await aTurnInFlight();
     await mount();
     await motionSettled();
 
-    expect(railStatusLead().textContent).toBe("Working 1m 25s");
+    expect(railStatusLead().textContent).toBe("Working 1:25");
     expect(workingWord().hidden).toBe(false);
   });
 
@@ -2319,7 +2347,7 @@ describe("the one status row", () => {
     await motionSettled();
 
     expect(workingWord().hidden).toBe(true);
-    expect(railStatusLead().textContent).toContain("1m 25s");
+    expect(railStatusLead().textContent).toContain("1:25");
 
     payload = branchRow({ agents: [agent({ surfaces: {} })] });
     vi.advanceTimersByTime(2000);

@@ -174,13 +174,18 @@ function keyedBy(keyPrefix, entries, shape) {
   });
 }
 
+function runningSinceOf(kind, entry) {
+  if (!stateMarkIs(kind, entry, RUNNING_MARK)) return null;
+  return Number.isFinite(entry.started_at) ? entry.started_at : null;
+}
+
 function keyedRows(keyPrefix, entryKind, entries, normalise) {
   return keyedBy(keyPrefix, entries, (entry, index) => ({
     id: entry.id || null,
     state: entry.state || "",
     stateMark: surfaceStateMark(entryKind, entry.state),
     subject: rowSubject(entryKind, entry),
-    actions: rowActions(entryKind, entry),
+    runningSince: runningSinceOf(entryKind, entry),
     ...normalise(entry, index),
   }));
 }
@@ -305,71 +310,6 @@ export function rowSubject(kind, entry) {
   const subjectOf = ROW_SUBJECTS[kind];
   if (!subjectOf || !entry) return "";
   return subjectOf(entry);
-}
-
-const ROW_ACTIONS = {
-  [WORKFLOW_ENTRY_KIND]: (subject) => [
-    {
-      id: "stop-workflow",
-      label: "Ask to stop",
-      description: "Ask the agent to stop this workflow",
-      message: `Please stop the workflow "${subject}".`,
-    },
-    {
-      id: "explain-workflow",
-      label: "Ask what it is doing",
-      description: "Ask the agent what this workflow is working on",
-      message: `What is the workflow "${subject}" working on right now?`,
-    },
-  ],
-  [AGENT_ENTRY_KIND]: (subject) => [
-    {
-      id: "stop-agent",
-      label: "Ask to stop",
-      description: "Ask the agent to stop this one",
-      message: `Please stop the agent "${subject}".`,
-    },
-    {
-      id: "explain-agent",
-      label: "Ask what it is doing",
-      description: "Ask what this agent is working on",
-      message: `What is the agent "${subject}" working on right now?`,
-    },
-  ],
-  [SHELL_ENTRY_KIND]: (subject) => [
-    {
-      id: "stop-shell",
-      label: "Ask to stop",
-      description: "Ask the agent to stop this background command",
-      message: `Please stop the background command "${subject}".`,
-    },
-    {
-      id: "report-shell",
-      label: "Ask for its output",
-      description: "Ask the agent what this background command has printed",
-      message: `What has the background command "${subject}" printed so far?`,
-    },
-  ],
-  [CHECKLIST_ENTRY_KIND]: (subject) => [
-    {
-      id: "start-item",
-      label: "Ask to work on it",
-      description: "Ask the agent to take this item next",
-      message: `Please work on "${subject}" next.`,
-    },
-    {
-      id: "explain-item",
-      label: "Ask about it",
-      description: "Ask the agent where this item stands",
-      message: `Where does "${subject}" stand?`,
-    },
-  ],
-};
-
-export function rowActions(kind, entry) {
-  const actionsOf = ROW_ACTIONS[kind];
-  if (!actionsOf || !entry) return [];
-  return actionsOf(rowSubject(kind, entry));
 }
 
 export function readOpenSurface(key, storage = globalThis.localStorage) {

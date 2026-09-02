@@ -4,7 +4,6 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  RECENT_AUTO_OPEN_BELOW,
   activeEntryKey,
   branchDoneConfirm,
   dismissParamsOf,
@@ -253,17 +252,6 @@ describe("the Recent section", () => {
     expect(recent.map((entry) => entry.entityId)).toEqual(["run-a", "run-b"]);
   });
 
-  it("opens itself when the inbox proper is nearly empty", () => {
-    expect(inboxEntries({ items: [branch(), quiet()], nowMs: NOW }).autoOpen).toBe(true);
-  });
-
-  it("stays shut when the inbox proper has enough to read", () => {
-    const busy = Array.from({ length: RECENT_AUTO_OPEN_BELOW }, (_, index) =>
-      branch({ branch: `build/live-${index}`, run_id: `run-live-${index}`, anchor: ago(index + 1) }),
-    );
-    expect(inboxEntries({ items: [...busy, quiet()], nowMs: NOW }).autoOpen).toBe(false);
-  });
-
   it("is one disclosure, counting what is behind it", () => {
     const { recent } = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
     const shut = recentToggleHtml(recent, false);
@@ -274,12 +262,13 @@ describe("the Recent section", () => {
     expect(recentToggleHtml(recent, true)).toContain('aria-expanded="true"');
   });
 
-  it("follows its own auto-open when nobody has said otherwise", () => {
-    const partition = inboxEntries({ items: [branch(), quiet()], nowMs: NOW });
-    expect(recentIsOpen(partition, null)).toBe(true);
-    expect(recentIsOpen(partition, undefined)).toBe(true);
-    expect(recentIsOpen(partition, false)).toBe(false);
-    expect(recentIsOpen({ autoOpen: false }, true)).toBe(true);
+  // Recent always starts shut, however thin the list above it: only the user
+  // opens it.
+  it("starts shut and opens only when the user says so", () => {
+    expect(recentIsOpen(null)).toBe(false);
+    expect(recentIsOpen(undefined)).toBe(false);
+    expect(recentIsOpen(false)).toBe(false);
+    expect(recentIsOpen(true)).toBe(true);
   });
 
   it("says nothing at all when nothing has gone quiet", () => {
@@ -473,9 +462,9 @@ describe("what a row says", () => {
 
   it("offers Done whenever there is something to finish", () => {
     const [nothing] = listed([branch({ can_finish: false })]);
-    expect(inboxRowHtml(nothing, {})).not.toContain("data-done=");
+    expect(inboxRowHtml(nothing, { openMenuKey: "run-1" })).not.toContain("data-done=");
     const [finishable] = listed([branch()]);
-    expect(inboxRowHtml(finishable, {})).toContain('data-done="run-1"');
+    expect(inboxRowHtml(finishable, { openMenuKey: "run-1" })).toContain('data-done="run-1"');
   });
 
   it("offers mute in the entry's own menu, and says so when it is already muted", () => {
@@ -484,9 +473,11 @@ describe("what a row says", () => {
     expect(html).toContain('data-mute="run-1"');
     expect(html).toContain("Unmute");
     expect(html).toContain("inbox-muted");
-    // The open menu is the one whose row was asked for; a shut one is hidden.
+    // The open menu is the one whose row was asked for; a shut one is not in
+    // the markup at all — the DOM patcher would never re-hide it.
     expect(html).toMatch(/class="splitmenu inbox-menu">/);
-    expect(inboxRowHtml(entry, {})).toMatch(/class="splitmenu inbox-menu" hidden>/);
+    expect(inboxRowHtml(entry, {})).not.toContain("splitmenu");
+    expect(inboxRowHtml(entry, {})).not.toContain("data-mute=");
   });
 
   // The reviewer's second screenshot: a Done button with a caret laid over the
@@ -495,7 +486,7 @@ describe("what a row says", () => {
   // is the right distance for it.
   it("keeps Done one step behind the ⋯, first in the menu, and never on the row", () => {
     const [entry] = listed([branch()]);
-    const html = inboxRowHtml(entry, {});
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain("inbox-more");
     expect(html).toContain("⋯");
     expect(html).not.toContain('class="splitbtn"');
@@ -506,7 +497,7 @@ describe("what a row says", () => {
 
   it("wears the same ⋯ on a row with no Done", () => {
     const [entry] = listed([branch({ can_finish: false })]);
-    const html = inboxRowHtml(entry, {});
+    const html = inboxRowHtml(entry, { openMenuKey: "run-1" });
     expect(html).toContain("inbox-more");
     expect(html).not.toContain("data-done=");
     expect(html).toContain('data-dismiss="run-1"');

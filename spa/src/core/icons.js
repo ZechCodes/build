@@ -16,3 +16,6 @@ export { default as ICON_PAPERCLIP } from "lucide-static/icons/paperclip.svg?raw
 export { default as ICON_X } from "lucide-static/icons/x.svg?raw";
 export { default as ICON_ARROW_RIGHT } from "lucide-static/icons/arrow-right.svg?raw";
 export { default as ICON_FOLDERS } from "lucide-static/icons/folders.svg?raw";
+export { default as ICON_PLUS } from "lucide-static/icons/plus.svg?raw";
+export { default as ICON_CHEVRON_DOWN } from "lucide-static/icons/chevron-down.svg?raw";
+export { default as ICON_CHEVRON_RIGHT } from "lucide-static/icons/chevron-right.svg?raw";

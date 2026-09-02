@@ -7,7 +7,7 @@
 // with the two creates at its foot. Picking a project re-scopes and hands you
 // straight to its work list (there is no project page any more; branches and
 // issues are the only navigation targets); picking work goes there; picking a
-// create asks for the one thing it needs and opens what it made.
+// create opens the one create surface (core/createWork.js) on that project.
 //
 // Right: a slot the standing view can fill with its own verb — a branch's
 // Done, say — then the ⋯ that carries what used to be the tab row's right
@@ -28,19 +28,15 @@
 import { $ } from "../dom.js";
 import { esc } from "./text.js";
 import { App, go } from "../app.js";
-import { refreshFeed, subscribeFeed } from "./taskFeed.js";
+import { subscribeFeed } from "./taskFeed.js";
 import { notifyError } from "./notify.js";
-import { loadAgentDefaults } from "./agentDefaults.js";
-import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { openProjectSettings } from "../sheets/projectSettings.js";
-import { branchNamePreview, projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
+import { openCreateWork } from "./createWork.js";
+import { projectMenuModel, toolbarIdentity, workMenuModel } from "./toolbarModel.js";
 import { patchList } from "./patchList.js";
 import "../styles/shell.css";
 
 const SCOPE_KEY = "build.toolbar.project";
-/** Names the create form's three harness controls, so its panel and compose's
- *  can be open at once without either answering for the other. */
-const CHOICE_PREFIX = "tb-choice";
 
 let feed = { items: [], projects: [] };
 let scopedProjectId = null;
@@ -176,9 +172,7 @@ function paint({ entering = false } = {}) {
     });
   }
   paintVerb();
-  // A create form is a question in flight: the feed may move under it, and its
-  // answer is not repainted away.
-  if (open && !(open.create && open.create.busy)) paintMenu();
+  if (open) paintMenu();
 }
 
 // ---- the menu each selector opens -------------------------------------------
@@ -229,7 +223,6 @@ function openJumpMenu(anchor) {
     mode: "jump",
     list: anchor.dataset.select === "project" ? "projects" : "work",
     query: "",
-    create: null,
   };
   paintMenu();
   const filter = open.element.querySelector(".tb-filter");
@@ -254,10 +247,6 @@ function showList(list) {
 /// tick under an open menu redraws only the rows that actually changed.
 function paintMenu() {
   if (!open || open.mode !== "jump") return;
-  if (open.create) {
-    paintCreate();
-    return;
-  }
   paintMenuShell();
   const entries = open.list === "projects" ? projectMenuEntries() : workMenuEntries();
   patchList(open.element.querySelector(".tbmenu-list"), entries, {
@@ -306,38 +295,19 @@ function onMenuClick(event) {
     return;
   }
   const create = event.target.closest("[data-create]");
-  if (create) {
-    open.create = newCreate(create.dataset.create);
-    paintMenu();
-  }
+  if (create) openCreate(create.dataset.create);
 }
 
-/** A create form's state. The harness starts at the account's defaults — the
- *  panel is where a create says otherwise, and it starts shut. `navigate` is
- *  how the thing made is opened: the toolbar's own creates go straight there,
- *  the rail's put the rail away first on a narrow viewport. */
-function newCreate(kind, navigate = go) {
-  return { kind, busy: false, error: "", value: "", choice: loadAgentDefaults(), choiceOpen: false, navigate };
-}
-
-/** The create form, opened from somewhere other than the toolbar's own menu —
- *  the rail's project blocks. It is the same form in the same popup, scoped to
- *  the project named (which re-scopes the toolbar too: the two must never name
- *  different projects), and cancelling it shuts the popup whole, since there
- *  is no list behind it to come back to. */
-export function openCreateFrom(anchor, { projectId, kind, navigate = go }) {
+/** The one create surface, on the scoped project. A device with no project
+ *  has nowhere to create, and says so. */
+function openCreate(kind) {
+  const projectId = scopeProjectId();
   closeMenu();
-  rememberScope(projectId);
-  open = {
-    ...menuShell(anchor, "tbmenu"),
-    select: "",
-    mode: "jump",
-    list: "work",
-    query: "",
-    standalone: true,
-    create: newCreate(kind, navigate),
-  };
-  paintMenu();
+  if (!projectId || !projectsOf().some((project) => project.id === projectId)) {
+    notifyError("No project to create in.", "Add a project in Settings first.");
+    return;
+  }
+  openCreateWork({ projectId, projectName: projectNameOf(projectId), kind });
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all
@@ -404,171 +374,6 @@ function workMenuShellHtml() {
       <button class="mi" data-create="issue" type="button" role="menuitem"><span class="mt">New issue…</span>
         <span class="md">Nothing runs until your first message</span></button>
     </div>`;
-}
-
-// ---- the two creates --------------------------------------------------------
-
-/** What each create asks for. One field, because one field is all it needs: a
- *  branch needs a name, an issue needs what you want. */
-const CREATE_COPY = {
-  branch: {
-    title: "New branch",
-    hint: "A checkout and a branch of its own. Nothing is dispatched — the first message you send starts an agent there.",
-    placeholder: "e.g. mascot model spike",
-    label: "Name",
-  },
-  issue: {
-    title: "New issue",
-    hint: "Say what you want. No planning agent starts until you send the first message.",
-    placeholder: "e.g. Add a /health endpoint that returns build SHA and uptime…",
-    label: "Goal",
-  },
-};
-
-/** The harness question, on the create that can answer it.
- *
- *  An issue carries its agent's provider, model and effort from the moment it
- *  is filed. A new branch carries no agent at all — nothing runs there until an
- *  agent is added or a dispatch names one — so asking would be asking about
- *  something that does not exist yet. */
-function createChoiceHtml() {
-  if (open.create.kind !== "issue") return "";
-  return agentChoicePanelHtml(App.modelCatalog || { providers: [] }, open.create.choice, {
-    prefix: CHOICE_PREFIX,
-    open: open.create.choiceOpen,
-  });
-}
-
-function wireCreateChoice(host) {
-  const holder = host.querySelector(".agent-choice");
-  if (!holder) return;
-  holder.querySelector("[data-agent-choice-toggle]").onclick = () => {
-    open.create.choiceOpen = !open.create.choiceOpen;
-    paintCreate();
-  };
-  const onChange = (changed) => () => {
-    open.create.choice = reconcileAgentChoice(readAgentChoice(host, CHOICE_PREFIX), changed);
-    paintCreate();
-  };
-  const control = (field) => holder.querySelector(`#${CHOICE_PREFIX}-${field}`);
-  control("provider").onchange = onChange({ providerChanged: true });
-  control("model").onchange = onChange({ modelChanged: true });
-  control("effort").onchange = onChange({});
-}
-
-function paintCreate() {
-  const { kind, busy, error, value } = open.create;
-  // The create takes the whole popup, frame and all, so coming back from it
-  // builds the list's frame again.
-  open.element.dataset.list = "create";
-  const copy = CREATE_COPY[kind];
-  const scopedName = projectNameOf(scopeProjectId()) || "this project";
-  // The typed answer is state, not something the DOM happens to be holding: a
-  // refused create repaints this form, and it must repaint with what was typed —
-  // caret included, since the feed can tick while the question is still open.
-  const typing = open.element.querySelector("#tb-create-input");
-  const caret = typing && document.activeElement === typing ? typing.selectionStart : value.length;
-  open.element.innerHTML = `
-    <div class="tb-create">
-      <div class="tb-create-head">${esc(copy.title)} in ${esc(scopedName)}</div>
-      <div class="tb-create-hint dim">${esc(copy.hint)}</div>
-      <label class="tb-create-label" for="tb-create-input">${esc(copy.label)}</label>
-      ${
-        kind === "issue"
-          ? `<textarea id="tb-create-input" rows="3" placeholder="${esc(copy.placeholder)}">${esc(value)}</textarea>`
-          : `<input id="tb-create-input" type="text" class="path" placeholder="${esc(copy.placeholder)}" autocomplete="off" value="${esc(value)}" />`
-      }
-      ${createChoiceHtml()}
-      <div class="tb-create-row">
-        <span class="dim mono tb-create-preview" id="tb-create-preview"></span>
-        <button class="btn mini" data-create-cancel type="button">Cancel</button>
-        <button class="btn mini primary" data-create-go type="button"${busy ? " disabled" : ""}>${busy ? "creating…" : "Create"}</button>
-      </div>
-      <div class="warn tb-create-error"${error ? "" : " hidden"}>${esc(error)}</div>
-    </div>`;
-  wireCreateChoice(open.element);
-  const input = open.element.querySelector("#tb-create-input");
-  input.focus();
-  input.setSelectionRange(caret, caret);
-  const preview = open.element.querySelector("#tb-create-preview");
-  const sync = () => {
-    open.create.value = input.value;
-    if (kind === "branch") preview.textContent = branchNamePreview(input.value);
-  };
-  input.oninput = sync;
-  sync();
-  input.onkeydown = (event) => {
-    if (event.key === "Enter" && (kind === "branch" || event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      submitCreate(input.value);
-    }
-  };
-  open.element.querySelector("[data-create-cancel]").onclick = () => {
-    if (open.standalone) {
-      closeMenu();
-      return;
-    }
-    open.create = null;
-    paintMenu();
-    open.element.querySelector(".tb-filter").focus();
-  };
-  open.element.querySelector("[data-create-go]").onclick = () => submitCreate(input.value);
-}
-
-/** The create's harness choice, as create params. An empty choice sends
- *  nothing and the daemon's own default stands. */
-function agentParams() {
-  return agentChoiceParams(App.modelCatalog || { providers: [] }, open.create.choice);
-}
-
-async function submitCreate(raw) {
-  if (!open || !open.create || open.create.busy) return;
-  const { kind, navigate } = open.create;
-  open.create.value = String(raw || "");
-  const value = open.create.value.trim();
-  if (!value) {
-    open.create.error = kind === "branch" ? "Name it first." : "Describe the issue first.";
-    paintCreate();
-    return;
-  }
-  const projectId = scopeProjectId();
-  if (!projectId) {
-    open.create.error = "No project to create in.";
-    paintCreate();
-    return;
-  }
-  open.create.busy = true;
-  open.create.error = "";
-  paintCreate();
-  try {
-    const route = kind === "branch" ? await createBranch(projectId, value) : await createIssue(projectId, value);
-    closeMenu();
-    refreshFeed();
-    // A freshly cut branch has nobody in it yet — the rail opens on the ghost
-    // composer, and that is exactly where typing the first message belongs.
-    if (kind === "branch") App.focusComposerOnMount = true;
-    navigate(route);
-  } catch (error) {
-    if (!open || !open.create) {
-      notifyError(kind === "branch" ? "Couldn't create the branch" : "Couldn't file the issue", error.message);
-      return;
-    }
-    open.create.busy = false;
-    open.create.error = error.message;
-    paintCreate();
-  }
-}
-
-async function createBranch(projectId, name) {
-  const created = await App.call("worktree.create", { project_id: projectId, name });
-  return { name: "branch", projectId: created.project_id || projectId, branch: created.branch, tab: "changes" };
-}
-
-/** Inert by contract: the record exists, and nothing runs behind it until the
- *  first message (the bridge dispatches planning on that post). */
-async function createIssue(projectId, goal) {
-  const created = await App.call("issue.create", { goal, project_id: projectId, dispatch: false, ...agentParams() });
-  return { name: "issue", projectId: created.project_id || projectId, id: created.issue_id || created.plan_id };
 }
 
 // ---- the ⋯ -------------------------------------------------------------------

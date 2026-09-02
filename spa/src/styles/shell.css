@@ -231,37 +231,40 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
   background:none; border:0; padding:4px 6px; cursor:pointer;
   font:inherit; font-size:11.5px; color:var(--dim); text-align:left; }
 .inbox-recent-toggle:hover { color:var(--ink2); }
-.inbox-recent-caret { flex:none; width:10px; }
+.inbox-recent-caret { flex:none; display:flex; }
 .inbox-recent-count { margin-left:auto; font-family:var(--mono); }
 
 /* ---- the projects face ----
-   The same rows, gathered under the project each belongs to. A block is its
-   head — fold, name, unread, the create — and its rows; the unrouted captures
-   stand above every block on their own, and the new-project control ends the
-   list. */
+   The inbox, grouped by project. Each block is a box: its head — fold, name,
+   unread, the + that creates — and its rows; the block holding the branch or
+   issue the route stands on wears the composer's focused look. The unrouted
+   captures stand above every block on their own, and the new-project control
+   heads the list. */
+.inbox-new-project { display:flex; align-items:center; gap:6px; width:100%; margin:0 0 8px;
+  background:none; border:1px dashed var(--line2); border-radius:9px; padding:7px 10px;
+  cursor:pointer; font:inherit; font-size:12px; color:var(--dim); text-align:left; }
+.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
+.inbox-new-project svg { width:14px; height:14px; flex:none; }
 .inbox-unsorted:not(:empty) { margin-bottom:8px; }
-.inbox-project { margin-bottom:6px; }
-.inbox-project-head { display:flex; align-items:center; gap:4px; padding:3px 2px 3px 0; }
-.inbox-fold { flex:none; width:18px; background:none; border:0; padding:0; cursor:pointer;
-  font:inherit; font-size:11px; color:var(--dim); text-align:center; }
-.inbox-fold:hover { color:var(--ink2); }
+.inbox-project { border:1px solid var(--line); border-radius:12px; padding:4px 4px 5px;
+  margin-bottom:8px; transition:border-color .12s ease, box-shadow .12s ease; }
+.inbox-project.active { border-color:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 2px; }
+.inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg { width:16px; height:16px; display:block; }
+.inbox-fold { flex:none; }
 .inbox-project-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
-  white-space:nowrap; text-align:left; background:none; border:0; padding:3px 4px;
+  white-space:nowrap; text-align:left; background:none; border:0; padding:4px 4px;
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
   color:var(--ink2); }
 .inbox-project-name:hover { background:var(--line2); color:var(--ink); }
 .inbox-project-name.inbox-unroutable:hover { background:none; color:var(--ink2); }
 .inbox-project-head .inbox-unread { margin-left:0; }
 .inbox-project-create { flex:none; }
-.inbox-project-create .inbox-menu { min-width:200px; }
-.inbox-project-rows { padding-left:6px; }
+.inbox-project-rows { padding:2px 2px 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
 .inbox-project-empty { font-size:11.5px; padding:2px 8px 4px; }
-.inbox-project .inbox-recent { margin:2px 0 0 6px; border-top:0; padding-top:0; }
-.inbox-new-project { display:block; width:100%; margin-top:10px; background:none;
-  border:1px dashed var(--line2); border-radius:8px; padding:7px 10px; cursor:pointer;
-  font:inherit; font-size:12px; color:var(--dim); text-align:left; }
-.inbox-new-project:hover { color:var(--ink2); border-color:var(--dim); }
+.inbox-project .inbox-recent { margin:2px 0 0; border-top:0; padding-top:0; }
 
 /* ---- view column (centre) ---- */
 /* Positioned, because the console's full size is an overlay over this column
@@ -366,21 +369,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .tb-scope-switch:hover { text-decoration:underline; }
 .tb-none { font-size:12px; padding:2px 8px 6px; }
 .tbmenu-foot { flex:none; border-top:1px solid var(--line); padding-top:4px; margin-top:4px; }
-
-/* The create form the two ⌄ creates swap the list for: one field, because one
-   field is all either of them needs. */
-.tb-create { display:flex; flex-direction:column; gap:6px; padding:4px; }
-.tb-create-head { font-size:12.5px; font-weight:600; }
-.tb-create-hint { font-size:11.5px; }
-.tb-create-label { font-size:11px; color:var(--dim); }
-.tb-create input, .tb-create textarea { width:100%; font:inherit; font-size:12.5px;
-  color:var(--ink); background:var(--bg); border:1px solid var(--line);
-  border-radius:6px; padding:6px 8px; resize:vertical; }
-.tb-create-row { display:flex; align-items:center; gap:6px; }
-.tb-create-preview { flex:1; font-size:11px; overflow:hidden;
-  text-overflow:ellipsis; white-space:nowrap; }
-.tb-create-error { font-size:11px; }
-.tb-create-error[hidden] { display:none; }
 
 /* ---- the completion report ----
    The agent's handoff, on its done event: the densest thing in the timeline, so

@@ -1,33 +1,26 @@
-// The rail's projects face, as a pure model: every project the device knows is
-// a block, and the block holds the project's live rows — the same rows the
-// inbox lists, partitioned and ordered the same way, just gathered under the
-// project they belong to. The blocks stand in the inbox's own order too: the
-// one whose oldest row has waited longest comes first, and a project with no
-// rows at all comes after every one that has some.
+// The rail's projects face, as a pure model: the inbox, grouped by project.
+// The rows are the inbox's rows in the inbox's order; each is filed under the
+// project it belongs to, so a block's rows read top to bottom exactly as they
+// do on the inbox, and the blocks stand in the order their first live row
+// holds there — the inbox's top row is the top row of the top block. A project
+// whose rows have all gone quiet stands after every project with live work,
+// and a project with no rows at all after those, in the device's own order.
+// Each block partitions its quiet rows into a Recent of its own, by the
+// inbox's rule.
 //
 // A capture nothing has routed yet belongs to no project, so it belongs to no
 // block. It stands above them all on its own, an inbox row like any other.
 //
 // The block's head opens the project's primary checkout — the `main` row is the
-// nearest thing a project has to a page — and offers the two creates, a branch
-// and an issue, in the split button the rows' Done wears. A block folds shut
-// by its chevron and stays that way until it is opened again.
+// nearest thing a project has to a page — and offers the one create surface
+// behind a +. A block folds shut by its chevron and stays that way until it is
+// opened again.
 //
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
-import { entryRoute, inboxEntries } from "./inbox.js";
-
-const NO_PROJECT = "";
-
-/** Oldest anchor first; a block nobody can date sorts after the ones somebody
- *  can — the inbox's rule, applied to projects. */
-function byAnchor(left, right) {
-  if (left.anchorMs === right.anchorMs) return 0;
-  if (left.anchorMs === null) return 1;
-  if (right.anchorMs === null) return -1;
-  return left.anchorMs - right.anchorMs;
-}
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT, ICON_PLUS } from "./icons.js";
+import { RECENT_AUTO_OPEN_BELOW, entryRoute, inboxEntries } from "./inbox.js";
 
 /** The blocks' identity and names: the device's projects in its order, plus
  *  one for any project a row names that the device has not listed — the row
@@ -41,83 +34,88 @@ function projectsNamed(projects, items) {
   return named;
 }
 
+/** Where a block stands: by its first live row's place on the inbox; failing
+ *  that by its first quiet row's, after every block with live work; failing
+ *  that last of all. */
+function rankOf(block, liveRank, quietRank) {
+  if (liveRank.has(block.id)) return [0, liveRank.get(block.id)];
+  if (quietRank.has(block.id)) return [1, quietRank.get(block.id)];
+  return [2, 0];
+}
+
+const byRank = (left, right) => left.rank[0] - right.rank[0] || left.rank[1] - right.rank[1];
+
+/** The place each project's first row holds in `entries`. */
+function firstRank(entries) {
+  const rank = new Map();
+  entries.forEach((entry, index) => {
+    if (entry.projectId && !rank.has(entry.projectId)) rank.set(entry.projectId, index);
+  });
+  return rank;
+}
+
 /**
  * The projects face: `{ unsorted, blocks }`.
  *
- * `unsorted` is the rows that belong to no project yet, oldest first. Each
- * block is `{ key, id, name, entries, recent, autoOpen, anchorMs, route,
- * unreadCount }` — its rows partitioned into the list proper and Recent
- * exactly as inboxEntries partitions the inbox, `route` where its head opens
- * (the primary checkout, or nowhere), and the blocks in anchor order.
+ * `unsorted` is the rows that belong to no project yet, in inbox order. Each
+ * block is `{ key, id, name, entries, recent, autoOpen, route, unreadCount }`
+ * — its rows partitioned into the list proper and Recent exactly as the inbox
+ * partitions them, `route` where its head opens (the primary checkout, or
+ * nowhere), and the blocks in the inbox's order.
  */
 export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } = {}) {
-  const byProject = new Map();
-  for (const item of items) {
-    const id = item.project_id || NO_PROJECT;
-    if (!byProject.has(id)) byProject.set(id, []);
-    byProject.get(id).push(item);
-  }
-  const loose = inboxEntries({ items: byProject.get(NO_PROJECT) || [], nowMs });
+  const inbox = inboxEntries({ items, nowMs });
+  const liveRank = firstRank(inbox.entries);
+  const quietRank = firstRank(inbox.recent);
+  const under = (entries, id) => entries.filter((entry) => entry.projectId === id);
   const blocks = [...projectsNamed(projects, items)].map(([id, name]) => {
-    const rows = byProject.get(id) || [];
-    const partition = inboxEntries({ items: rows, nowMs });
-    const all = [...partition.entries, ...partition.recent];
-    const dated = all.map((entry) => entry.anchorMs).filter((anchor) => anchor !== null);
-    const primary = rows.find((row) => row.kind === "branch" && row.primary);
-    return {
+    const entries = under(inbox.entries, id);
+    const recent = under(inbox.recent, id);
+    const primary = items.find((row) => row.kind === "branch" && row.primary && row.project_id === id);
+    const block = {
       key: `project:${id}`,
       id,
       name,
-      entries: partition.entries,
-      recent: partition.recent,
-      autoOpen: partition.autoOpen,
-      anchorMs: dated.length ? Math.min(...dated) : null,
+      entries,
+      recent,
+      autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW,
       route: primary ? entryRoute(primary) : null,
-      unreadCount: all.reduce((total, entry) => total + entry.unreadCount, 0),
+      unreadCount: [...entries, ...recent].reduce((total, entry) => total + entry.unreadCount, 0),
     };
+    return { ...block, rank: rankOf(block, liveRank, quietRank) };
   });
-  return { unsorted: [...loose.entries, ...loose.recent], blocks: blocks.sort(byAnchor) };
-}
-
-/** The block's create: a branch on the button, an issue behind the caret — the
- *  same split button a finishable row wears, so it reads the same. The menu is
- *  in the markup only while it is open: the DOM patcher leaves a split menu's
- *  `hidden` alone (a poll must not shut what the reader opened), so a menu
- *  that closes has to leave rather than hide. */
-function createHtml(block, open) {
-  const menu = open
-    ? `<div class="splitmenu inbox-menu">
-      <div class="mi" data-project-create="${esc(block.id)}" data-create-kind="issue"><span class="mt">New issue…</span><span class="md">Nothing runs until your first message</span></div>
-    </div>`
-    : "";
-  return `<div class="splitbtn inbox-project-create">
-      <button class="btn mini" type="button" data-project-create="${esc(block.id)}" data-create-kind="branch" title="New branch in ${esc(block.name)}" aria-label="New branch in ${esc(block.name)}">Branch</button>
-      <button class="btn mini caret" type="button" data-menu="${esc(block.key)}" title="More" aria-label="More ways to create in ${esc(block.name)}">▾</button>
-      ${menu}
-    </div>`;
+  return {
+    unsorted: [...under(inbox.entries, ""), ...under(inbox.recent, "")],
+    blocks: blocks.sort(byRank).map(({ rank, ...block }) => block),
+  };
 }
 
 /** The block's head: the fold, the name that opens the project's checkout,
- *  how much inside is waiting, and the create. `ui`: { openMenuKey, folded }. */
+ *  how much inside is waiting, and the + that opens the create surface.
+ *  `ui`: { folded }. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.id));
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
   return `<div class="inbox-project-head">
-    <button class="inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}">${folded ? "▸" : "▾"}</button>
+    <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}">${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>
     ${unread}
-    ${createHtml(block, ui.openMenuKey === block.key)}
+    <button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>
   </div>`;
 }
 
 /** One block: its head, and the container its rows are reconciled into. The
  *  rows are not rendered here — they are the wiring's keyed list, so a row
- *  keeps its element across paints the way every inbox row does. */
+ *  keeps its element across paints the way every inbox row does. `ui`:
+ *  { folded, activeProjectId } — the active block is the one holding the
+ *  branch or issue the route stands on. */
 export function projectBlockHtml(block, ui = {}) {
-  const folded = !!(ui.folded && ui.folded.has(block.id));
-  return `<div class="inbox-project${folded ? " inbox-folded" : ""}" data-key="${esc(block.key)}" data-project="${esc(block.id)}">${projectHeadHtml(
+  const classes = ["inbox-project", ui.folded && ui.folded.has(block.id) ? "inbox-folded" : "", ui.activeProjectId === block.id ? "active" : ""]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="${classes}" data-key="${esc(block.key)}" data-project="${esc(block.id)}">${projectHeadHtml(
     block,
     ui,
   )}<div class="inbox-project-rows"></div></div>`;
@@ -128,7 +126,7 @@ export function projectEmptyHtml() {
   return '<div class="inbox-project-empty dim">Nothing here yet.</div>';
 }
 
-/** The one control at the foot of the projects face. */
+/** The one control at the head of the projects face. */
 export function newProjectButtonHtml() {
-  return '<button class="inbox-new-project" type="button" data-new-project>＋ New project</button>';
+  return `<button class="inbox-new-project" type="button" data-new-project>${ICON_PLUS}<span>New project</span></button>`;
 }

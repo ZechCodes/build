@@ -1,7 +1,7 @@
-// The rail's projects face, as a pure model: every project the device knows as
-// a block, its live rows beneath it in the inbox's own order, a Recent fold per
-// block, the blocks themselves in anchor order, and the unrouted captures
-// standing on their own above them all.
+// The rail's projects face, as a pure model: the inbox grouped by project —
+// every project a block, its rows beneath it in the inbox's own order, the
+// blocks in the order their first live row holds on the inbox, a Recent fold
+// per block, and the unrouted captures standing above them all.
 
 import { describe, it, expect } from "vitest";
 import {
@@ -89,7 +89,7 @@ const names = (blocks) => blocks.map((block) => block.name);
 const keys = (entries) => entries.map((entry) => entry.key);
 
 describe("the blocks the projects face lists", () => {
-  it("puts every project's live rows under it, oldest anchor first, and orders the projects the same way", () => {
+  it("files every row under its project in inbox order, and stands the blocks in the order their first live row holds", () => {
     const { blocks } = projectBlocks({
       projects,
       nowMs: NOW,
@@ -100,7 +100,8 @@ describe("the blocks the projects face lists", () => {
         branch({ project_id: "p3", project: "mascot", branch: "build/model", run_id: "run-3", anchor: ago(10) }),
       ],
     });
-    // mascot's oldest row is 10h old, relaydb's 3h, dotfiles' 2h.
+    // The inbox reads mascot (10h), relaydb (3h), dotfiles (2h), relaydb (1h):
+    // the top row's project is the top block, and so on down.
     expect(names(blocks)).toEqual(["mascot", "relaydb", "dotfiles"]);
     expect(keys(blocks[1].entries)).toEqual(["run-1", "run-2"]);
     expect(keys(blocks[2].entries)).toEqual(["iss-1"]);
@@ -110,7 +111,23 @@ describe("the blocks the projects face lists", () => {
     const { blocks } = projectBlocks({ projects, nowMs: NOW, items: [issue()] });
     expect(names(blocks)).toEqual(["dotfiles", "relaydb", "mascot"]);
     expect(blocks[1].entries).toEqual([]);
-    expect(blocks[1].anchorMs).toBeNull();
+  });
+
+  // The reviewer's screenshot: a project whose only row had gone quiet stood
+  // above projects with live work, because it was ranked by that row's age.
+  it("stands a project whose rows have all gone quiet after every project with live work", () => {
+    const { blocks } = projectBlocks({
+      projects,
+      nowMs: NOW,
+      items: [
+        branch({ anchor: ago(300), last_activity: ago(40) }),
+        issue({ anchor: ago(1) }),
+        branch({ project_id: "p3", project: "mascot", branch: "build/model", run_id: "run-3", anchor: ago(2) }),
+      ],
+    });
+    expect(names(blocks)).toEqual(["mascot", "dotfiles", "relaydb"]);
+    expect(blocks[2].entries).toEqual([]);
+    expect(keys(blocks[2].recent)).toEqual(["run-1"]);
   });
 
   it("keeps the unrouted captures out of every block — they stand on their own, oldest first", () => {
@@ -204,23 +221,23 @@ describe("the blocks the projects face lists", () => {
 describe("what a block looks like", () => {
   const block = () => projectBlocks({ projects, nowMs: NOW, items: [branch({ unread: true, unread_count: 2 })] }).blocks[0];
 
-  it("heads the block with the fold, the project's name that opens it, its unread, and the create", () => {
+  it("heads the block with the fold, the project's name that opens it, its unread, and one + that creates", () => {
     const html = projectHeadHtml(block(), {});
     expect(html).toContain('data-project-fold="p1"');
     expect(html).toContain('aria-expanded="true"');
     expect(html).toContain('data-project-open="p1"');
     expect(html).toContain(">relaydb<");
     expect(html).toContain('class="badge inbox-unread">2<');
-    expect(html).toMatch(/data-project-create="p1"[^>]*data-create-kind="branch"/);
-    expect(projectHeadHtml(block(), { openMenuKey: "project:p1" })).toMatch(/data-project-create="p1"[^>]*data-create-kind="issue"/);
-    expect(html).toContain('data-menu="project:p1"');
-    expect(html).not.toContain("splitmenu");
+    expect(html).toMatch(/<button class="iconbtn inbox-project-create"[^>]*data-project-create="p1"[^>]*>[\s\S]*?<svg[^>]*lucide-plus/);
+    expect(html).not.toContain("splitbtn");
+    expect(html).not.toContain("data-menu=");
   });
 
-  it("shows the create menu only while it is the open one, and the fold shut when the block is folded", () => {
-    const html = projectHeadHtml(block(), { openMenuKey: "project:p1", folded: new Set(["p1"]) });
-    expect(html).toContain('class="splitmenu inbox-menu">');
-    expect(html).toContain('aria-expanded="false"');
+  it("draws the fold as a chevron icon, down when open and right when the block is folded", () => {
+    expect(projectHeadHtml(block(), {})).toMatch(/data-project-fold="p1"[^>]*>[\s\S]*?<svg[^>]*lucide-chevron-down/);
+    const folded = projectHeadHtml(block(), { folded: new Set(["p1"]) });
+    expect(folded).toContain('aria-expanded="false"');
+    expect(folded).toMatch(/data-project-fold="p1"[^>]*>[\s\S]*?<svg[^>]*lucide-chevron-right/);
   });
 
   it("marks a block with no checkout to open as unroutable and says so", () => {
@@ -245,9 +262,15 @@ describe("what a block looks like", () => {
     expect(projectBlockHtml(block(), {})).not.toContain("inbox-folded");
   });
 
-  it("says when a block is empty, and offers a new project at the foot", () => {
+  it("marks the block the route stands in as active, and no other", () => {
+    expect(projectBlockHtml(block(), { activeProjectId: "p1" })).toMatch(/class="inbox-project active"/);
+    expect(projectBlockHtml(block(), { activeProjectId: "p2" })).not.toContain(" active");
+  });
+
+  it("says when a block is empty, and offers a new project", () => {
     expect(projectEmptyHtml()).toContain("Nothing here yet");
     expect(newProjectButtonHtml()).toContain("data-new-project");
     expect(newProjectButtonHtml()).toContain("New project");
+    expect(newProjectButtonHtml()).toContain("<svg");
   });
 });

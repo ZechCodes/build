@@ -982,6 +982,20 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal h3 { margin:0 0 3px; font-size:17px; }
 .modal .sub { color:var(--ink2); font-size:13px; }
 .modal .row { display:flex; justify-content:flex-end; gap:10px; margin-top:14px; }
+/* The create modal: two tabs, one field, and the harness question on the
+   Issue tab. The field takes the dialog's width; the preview of the branch
+   the daemon will cut sits at the row's left, the verbs at its right. */
+.modal-create .create-tabs { margin:12px 0 10px; }
+.modal-create .create-hint { margin-bottom:8px; }
+.modal-create .create-label { display:block; font-size:11px; color:var(--dim); margin-bottom:4px; }
+.modal-create input, .modal-create textarea { width:100%; font:inherit; font-size:13px; }
+.modal-create textarea { resize:vertical; }
+.modal-create .agent-choice { margin-top:8px; }
+.modal-create .create-error { display:block; margin-top:8px; font-size:12px; }
+.modal-create .create-error[hidden] { display:none; }
+.modal-create .create-row { align-items:center; }
+.modal-create .create-preview { flex:1; min-width:0; font-size:11px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
 .modal.modal-surface { max-width:640px; max-height:78vh; display:flex; flex-direction:column; padding:14px 16px; }
 .modal-surface h3 { margin:0 0 8px; font-size:15px; }
 .modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }

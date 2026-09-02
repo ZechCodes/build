@@ -11,6 +11,7 @@ const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S
 const NOW = Date.now();
 const ago = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 
+let savedFeed = null;
 let feed = {
   items: [
     {
@@ -67,9 +68,11 @@ const openProjectSettings = vi.fn();
 vi.mock("../src/sheets/projectSettings.js", () => ({ openProjectSettings: (...args) => openProjectSettings(...args) }));
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
+const openCreateWork = vi.fn();
+vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 
 const { App } = await import("../src/app.js");
-const { initToolbar, openCreateFrom, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
@@ -81,11 +84,14 @@ const openJump = (which = "project") => {
 };
 
 beforeEach(() => {
+  if (!savedFeed) savedFeed = feed;
   if (!document.getElementById("shell")) document.body.innerHTML = bodyHtml;
   localStorage.clear();
   App.gated = false;
   App.route = { name: "branch", projectId: "p1", branch: "build/login", tab: "changes" };
   App.focusComposerOnMount = false;
+  openCreateWork.mockClear();
+  notifyError.mockClear();
   App.call = vi.fn(async (method) => {
     if (method === "worktree.create") return { project_id: "p1", branch: "build/mascot-model-spike", worktree_id: "wt-9" };
     if (method === "issue.create") return { project_id: "p1", issue_id: "plan-9", plan_id: "plan-9" };
@@ -283,93 +289,34 @@ describe("the project you pick, against a feed that keeps ticking", () => {
 });
 
 describe("creating from the menu", () => {
-  it("cuts a branch and opens it, echoing the branch the daemon will name", async () => {
+  // Both creates open the one create surface (core/createWork.js), on the
+  // scoped project, on the tab that was picked; the menu is gone by then.
+  it("opens the create modal on the Branch tab, scoped to the project the menu is on", () => {
     openJump("item").querySelector('[data-create="branch"]').click();
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "Mascot Model Spike!";
-    input.dispatchEvent(new Event("input"));
-    expect(menu().querySelector("#tb-create-preview").textContent).toBe("build/mascot-model-spike");
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p1", name: "Mascot Model Spike!" });
-    expect(location.hash).toBe("#/project/p1/branch/build%2Fmascot-model-spike/changes");
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "branch" });
     expect(menu()).toBeNull();
-    // The branch view this navigation lands on reads this to focus the rail's
-    // composer the moment it exists — a branch this fresh has nobody in it yet.
-    expect(App.focusComposerOnMount).toBe(true);
   });
 
-  it("files an issue that starts nothing, and opens it", async () => {
+  it("opens it on the Issue tab for the issue create", () => {
     openJump("item").querySelector('[data-create="issue"]').click();
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "Add a /health endpoint";
-    input.dispatchEvent(new Event("input"));
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    // Issue creation is not what was asked for this — only a branch cut from
-    // this form arms the composer autofocus.
-    expect(App.focusComposerOnMount).toBe(false);
-    // Inert by contract: the record exists and no agent is dispatched until the
-    // first message.
-    expect(App.call).toHaveBeenCalledWith("issue.create", {
-      goal: "Add a /health endpoint",
-      project_id: "p1",
-      dispatch: false,
-    });
-    expect(location.hash).toBe("#/project/p1/issue/plan-9");
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p1", projectName: "relaydb", kind: "issue" });
   });
 
-  it("carries the harness picker on the issue create — the same panel compose asks with", async () => {
-    App.modelCatalog = {
-      default_provider: "claude",
-      providers: [
-        { id: "claude", label: "Claude Code", models: [{ id: "opus", label: "Opus", supports_effort: true }], efforts: ["low"] },
-      ],
-    };
-    openJump("item").querySelector('[data-create="issue"]').click();
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "Add a /health endpoint";
-    input.dispatchEvent(new Event("input"));
-    menu().querySelector("[data-agent-choice-toggle]").click();
-    const model = menu().querySelector("#tb-choice-model");
-    model.value = "opus";
-    model.dispatchEvent(new Event("change", { bubbles: true }));
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(App.call).toHaveBeenCalledWith("issue.create", {
-      goal: "Add a /health endpoint",
-      project_id: "p1",
-      dispatch: false,
-      provider: "claude",
-      model: "opus",
-    });
+  it("creates in the project you picked, not the one you are standing on", () => {
+    openJump("project").querySelector('[data-project="p2"]').click();
+    menu().querySelector('[data-create="branch"]').click();
+    expect(openCreateWork).toHaveBeenCalledWith({ projectId: "p2", projectName: "mascot", kind: "branch" });
   });
 
-  it("asks no harness question of a branch create, which starts no agent to answer for", () => {
+  it("says so instead of opening anything when the device has no project", async () => {
+    feed = { items: [], projects: [] };
+    await refreshFeed();
+    toolbarRouteChanged();
     openJump("item").querySelector('[data-create="branch"]').click();
-    expect(menu().querySelector("[data-agent-choice-toggle]")).toBeNull();
-  });
-
-  it("says what went wrong without losing what was typed", async () => {
-    App.call = vi.fn(async () => {
-      throw new Error("a worktree named that already exists");
-    });
-    openJump("item").querySelector('[data-create="branch"]').click();
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "scratch";
-    input.dispatchEvent(new Event("input"));
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(menu().querySelector(".tb-create-error").textContent).toContain("already exists");
-    expect(menu().querySelector("#tb-create-input").value).toBe("scratch");
-  });
-
-  it("refuses an empty answer instead of creating something unnamed", async () => {
-    openJump("item").querySelector('[data-create="issue"]').click();
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(App.call).not.toHaveBeenCalledWith("issue.create", expect.anything());
-    expect(menu().querySelector(".tb-create-error").textContent).toContain("Describe the issue");
+    expect(openCreateWork).not.toHaveBeenCalled();
+    expect(notifyError).toHaveBeenCalledWith("No project to create in.", expect.any(String));
+    feed = savedFeed;
+    await refreshFeed();
   });
 });
 
@@ -427,59 +374,5 @@ describe("the ⋯", () => {
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="archive"]').click();
     expect(location.hash).toBe("#/account/archive");
-  });
-});
-
-// ---- the create, opened from the rail ---------------------------------------
-// A project block on the rail offers the same two creates. They open the same
-// form in the same popup, scoped to the block's project, with no list behind
-// them to come back to.
-
-describe("creating from the rail", () => {
-  const anchor = () => document.getElementById("inbox-collapse");
-
-  it("opens the form scoped to the named project, and cancel shuts the popup whole", () => {
-    openCreateFrom(anchor(), { projectId: "p2", kind: "branch", navigate: vi.fn() });
-    expect(menu().querySelector(".tb-create-head").textContent).toBe("New branch in mascot");
-    menu().querySelector("[data-create-cancel]").click();
-    expect(menu()).toBeNull();
-  });
-
-  it("cuts the branch in that project and hands what it made to the caller's navigate", async () => {
-    const navigate = vi.fn();
-    openCreateFrom(anchor(), { projectId: "p2", kind: "branch", navigate });
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "Mascot Model Spike!";
-    input.dispatchEvent(new Event("input"));
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p2", name: "Mascot Model Spike!" });
-    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "build/mascot-model-spike", tab: "changes" });
-    expect(menu()).toBeNull();
-  });
-
-  it("files an issue in that project", async () => {
-    const navigate = vi.fn();
-    openCreateFrom(anchor(), { projectId: "p2", kind: "issue", navigate });
-    expect(menu().querySelector(".tb-create-head").textContent).toBe("New issue in mascot");
-    const input = menu().querySelector("#tb-create-input");
-    input.value = "Add a health endpoint";
-    input.dispatchEvent(new Event("input"));
-    menu().querySelector("[data-create-go]").click();
-    await flush();
-    expect(App.call).toHaveBeenCalledWith(
-      "issue.create",
-      expect.objectContaining({ goal: "Add a health endpoint", project_id: "p2", dispatch: false }),
-    );
-    expect(navigate).toHaveBeenCalledWith({ name: "issue", projectId: "p1", id: "plan-9" });
-  });
-
-  it("replaces a jump menu that was already open", () => {
-    openJump("project");
-    expect(menu()).toBeTruthy();
-    openCreateFrom(anchor(), { projectId: "p1", kind: "branch", navigate: vi.fn() });
-    expect(document.querySelectorAll(".tbmenu").length).toBe(1);
-    expect(menu().querySelector(".tb-create-head").textContent).toBe("New branch in relaydb");
-    menu().querySelector("[data-create-cancel]").click();
   });
 });

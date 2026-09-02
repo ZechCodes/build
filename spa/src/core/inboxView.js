@@ -3,10 +3,10 @@
 // of the list, Recent.
 //
 // The rail has two faces. The inbox is the one list across every project; the
-// projects face gathers the same rows under the project each belongs to, with
-// a Recent fold per block, the block's head opening the project's checkout and
-// offering its two creates, and a new-project control at the foot. The rows
-// are the same rows either way, and so is everything a row can do.
+// projects face is that same list grouped by project, with a Recent fold per
+// block, the block's head opening the project's checkout and offering the
+// create surface, and a new-project control at the top. The rows are the same
+// rows either way, and so is everything a row can do.
 //
 // WHICH rows appear and what they say is core/inbox.js and core/inboxProjects.js;
 // this module is the wiring. Read state is the bridge's now (`entity.seen`), so
@@ -44,7 +44,7 @@ import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
 import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectEmptyHtml, projectHeadHtml } from "./inboxProjects.js";
 import { loadFoldedProjects, persistFoldedProjects } from "./railMode.js";
-import { openCreateFrom } from "./toolbar.js";
+import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
@@ -63,8 +63,9 @@ let rerouteBranchProject = null; // the project in that picker whose branch fiel
 const recentOpen = new Map();
 // The project blocks folded shut, by project id. Remembered on this device.
 let folded = new Set();
-// Where each block's head opens, off the last paint of the projects face.
-let blockRoutes = new Map();
+// Each block as last painted, by project id: where its head opens, and what
+// it is called — which is what the create it offers is titled with.
+let blocksPainted = new Map();
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
@@ -170,6 +171,9 @@ function rowUi(showProject) {
     rerouteBranches: branchOptions(items, rerouteBranchProject),
     showProject,
     folded,
+    // The block holding the branch or issue the route stands on. A capture's
+    // route names no project; the row it stands on does.
+    activeProjectId: App.route.projectId || (entries.find((entry) => entry.key === activeEntryKey(App.route, entries)) || {}).projectId || null,
   };
 }
 
@@ -185,25 +189,25 @@ function drawInbox(list, shown, nowMs) {
   paintRecent(list, partition, ui, "inbox");
 }
 
-/** The projects face: the unrouted captures on their own, then a block per
- *  project with its rows and its own Recent, then the new-project control. */
+/** The projects face: the new-project control, the unrouted captures on their
+ *  own, then a block per project with its rows and its own Recent. */
 function drawProjects(list, shown, nowMs) {
   const face = projectBlocks({ items: shown, projects, nowMs });
   entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
-  blockRoutes = new Map(face.blocks.map((block) => [block.id, block.route]));
+  blocksPainted = new Map(face.blocks.map((block) => [block.id, block]));
   const ui = rowUi(false);
   const frame = projectsFrame(list);
   patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
   paintBlocks(frame.blocks, face.blocks, ui);
 }
 
-/** The projects face's frame, built once: the loose rows' container, the
- *  blocks', and the new-project control after them both. */
+/** The projects face's frame, built once: the new-project control, the loose
+ *  rows' container, and the blocks'. */
 function projectsFrame(list) {
   let unsorted = list.querySelector(":scope > .inbox-unsorted");
   if (!unsorted) {
     unsorted = el('<div class="inbox-unsorted"></div>');
-    list.append(unsorted, el('<div class="inbox-projects"></div>'), el(newProjectButtonHtml()));
+    list.append(el(newProjectButtonHtml()), unsorted, el('<div class="inbox-projects"></div>'));
   }
   return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
 }
@@ -229,6 +233,7 @@ function paintBlocks(host, blocks, ui) {
       host.insertBefore(element, anchor);
     } else {
       element.classList.toggle("inbox-folded", folded.has(block.id));
+      element.classList.toggle("active", ui.activeProjectId === block.id);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
@@ -346,7 +351,7 @@ function openMenu(key) {
   draw();
   if (openMenuKey === null) return;
   const close = (outside) => {
-    if (outside.target.closest(".inbox-actions, .inbox-project-create")) return;
+    if (outside.target.closest(".inbox-actions")) return;
     document.removeEventListener("pointerdown", close);
     closeMenu();
   };
@@ -356,8 +361,8 @@ function openMenu(key) {
 // ---- project blocks -----------------------------------------------------------
 //
 // What a block's head can do: fold, open the project's checkout, and create —
-// a branch or an issue, through the toolbar's own create form, scoped to the
-// block's project. And the one control after every block: a new project.
+// a branch or an issue, on the one create surface, scoped to the block's
+// project. And the one control above every block: a new project.
 
 /** The block controls, answered off the same one listener. True when the press
  *  was one of them. */
@@ -369,14 +374,15 @@ function projectClicked(target) {
   }
   const head = target.closest("[data-project-open]");
   if (head) {
-    const route = blockRoutes.get(head.dataset.projectOpen);
-    if (route) goFromInbox(route);
+    const block = blocksPainted.get(head.dataset.projectOpen);
+    if (block && block.route) goFromInbox(block.route);
     return true;
   }
   const create = target.closest("[data-project-create]");
   if (create) {
+    const block = blocksPainted.get(create.dataset.projectCreate);
     closeMenu();
-    openCreateFrom(create, { projectId: create.dataset.projectCreate, kind: create.dataset.createKind, navigate: goFromInbox });
+    openCreateWork({ projectId: create.dataset.projectCreate, projectName: block ? block.name : "", kind: "branch", navigate: goFromInbox });
     return true;
   }
   if (target.closest("[data-new-project]")) {

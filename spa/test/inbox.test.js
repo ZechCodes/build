@@ -489,28 +489,27 @@ describe("what a row says", () => {
     expect(inboxRowHtml(entry, {})).toMatch(/class="splitmenu inbox-menu" hidden>/);
   });
 
-  // The reviewer's screenshot: Done and ⋯ sat apart, and the menu read as the
-  // row's own thing. The git verbs already say it right — a primary with a
-  // caret joined to its side — so a finishable row wears the same split button.
-  it("joins the menu to Done as a caret, the way the git verbs wear theirs", () => {
+  // The reviewer's second screenshot: a Done button with a caret laid over the
+  // row covered the row's own words. Done destroys, so one step behind the
+  // row's one quiet ⋯ — first in the menu, with its confirmation behind it —
+  // is the right distance for it.
+  it("keeps Done one step behind the ⋯, first in the menu, and never on the row", () => {
     const [entry] = listed([branch()]);
-    const html = inboxRowHtml(entry, {});
-    expect(html).toContain('class="splitbtn"');
-    expect(html).toMatch(/<button class="btn mini caret" data-menu="run-1"[^>]*>▾<\/button>/);
-    expect(html).not.toContain("inbox-more");
-    expect(html).not.toContain("⋯");
-    // The menu itself is unchanged: Clear, mute, and Done with its cost.
-    expect(html).toContain('data-dismiss="run-1"');
-    expect(html).toContain('data-mute="run-1"');
-    expect(html).toMatch(/splitmenu inbox-menu[^>]*>[\s\S]*data-done="run-1"/);
-  });
-
-  it("keeps the ⋯ on a row with no Done to join it to", () => {
-    const [entry] = listed([branch({ can_finish: false })]);
     const html = inboxRowHtml(entry, {});
     expect(html).toContain("inbox-more");
     expect(html).toContain("⋯");
     expect(html).not.toContain('class="splitbtn"');
+    expect(html).not.toMatch(/<button[^>]*data-done=/);
+    const order = [...html.matchAll(/data-(done|dismiss|mute)="run-1"/g)].map((m) => m[1]);
+    expect(order).toEqual(["done", "dismiss", "mute"]);
+  });
+
+  it("wears the same ⋯ on a row with no Done", () => {
+    const [entry] = listed([branch({ can_finish: false })]);
+    const html = inboxRowHtml(entry, {});
+    expect(html).toContain("inbox-more");
+    expect(html).not.toContain("data-done=");
+    expect(html).toContain('data-dismiss="run-1"');
   });
 
   it("escapes everything the repo named", () => {

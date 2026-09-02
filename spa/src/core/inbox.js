@@ -29,6 +29,7 @@
 
 import { esc } from "./text.js";
 import { entityIdOf } from "./entityId.js";
+import { ICON_CHEVRON_DOWN, ICON_CHEVRON_RIGHT } from "./icons.js";
 
 const DAY_MS = 24 * 3600 * 1000;
 
@@ -363,30 +364,26 @@ export function activeEntryKey(route, entries) {
   return match ? match.key : null;
 }
 
-/** The row's action cluster: Done, where there is something to finish, with
- *  the row's menu — clear, mute, and Done — one caret away, in the same split
- *  button the git verbs wear. Rows with no Done keep the menu behind a ⋯.
+/** The row's action cluster: one quiet ⋯, and behind it the row's menu — Done
+ *  where there is something to finish, then Clear, then Mute.
  *
- *  Clear leads, and every row has it, because it is the one verb that costs
- *  nothing: the row leaves and comes back the moment something new needs the
- *  user. On a row with a conversation "something new" is the next attention
- *  event; on one with none (a bare checkout, the primary) the bridge clears it
- *  at the commit it sits on, and a new commit brings it back.
+ *  Done leads because it is the verb the row is for, and it sits behind the
+ *  menu rather than on the row because it destroys (a branch's checkout and
+ *  records, an issue to the archive) — one step and a confirmation is the
+ *  right distance for that, and a button laid over the row's own words was
+ *  not. It is offered only where there is something to finish.
+ *
+ *  Every row has Clear, because it is the one verb that costs nothing: the
+ *  row leaves and comes back the moment something new needs the user. On a
+ *  row with a conversation "something new" is the next attention event; on
+ *  one with none (a bare checkout, the primary) the bridge clears it at the
+ *  commit it sits on, and a new commit brings it back.
  *
  *  Mute keeps the row and takes its voice, so it needs an entity with a voice
- *  to take; Done destroys, and is offered only where there is something to
- *  finish. A row with neither still has its menu — Clear is what it is for. */
+ *  to take. A row with neither Done nor Mute still has its menu — Clear is
+ *  what it is for. */
 function menuHtml(entry, open) {
-  const items = [
-    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
-  ];
-  if (entry.entityId) {
-    items.push(
-      `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
-        entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
-      }</span></div>`,
-    );
-  }
+  const items = [];
   if (entry.canFinish) {
     items.push(
       `<div class="mi" data-done="${esc(entry.key)}"><span class="mt">Done</span><span class="md">${
@@ -394,13 +391,18 @@ function menuHtml(entry, open) {
       }</span></div>`,
     );
   }
-  const menu = `<div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
-  // A finishable row wears the git verbs' split button: Done with the menu's
-  // caret joined to its side. A row with no Done keeps the ⋯ on its own.
-  if (entry.canFinish)
-    return `<div class="splitbtn"><button class="btn mini" data-done="${esc(entry.key)}" type="button" aria-label="Done with ${esc(entry.name)}">Done</button><button class="btn mini caret" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">▾</button>${menu}</div>`;
+  items.push(
+    `<div class="mi" data-dismiss="${esc(entry.key)}"><span class="mt">Clear from inbox</span><span class="md">Hides it until something new needs you</span></div>`,
+  );
+  if (entry.entityId) {
+    items.push(
+      `<div class="mi" data-mute="${esc(entry.key)}"><span class="mt">${entry.muted ? "Unmute" : "Mute"}</span><span class="md">${
+        entry.muted ? "Let this entry ask again" : "Keep this entry, stop it asking"
+      }</span></div>`,
+    );
+  }
   return `<button class="iconbtn inbox-more" data-menu="${esc(entry.key)}" title="More" aria-label="More actions for ${esc(entry.name)}">⋯</button>
-    ${menu}`;
+    <div class="splitmenu inbox-menu"${open ? "" : " hidden"}>${items.join("")}</div>`;
 }
 
 /** Everything the two lines leave out, on the row itself: what the work is for,
@@ -459,7 +461,7 @@ export function recentIsOpen({ autoOpen = false } = {}, recentOpen) {
  *  so a press opens the right one. */
 export function recentToggleHtml(recent, open, scope = "inbox") {
   return `<button class="inbox-recent-toggle" type="button" data-recent-toggle="${esc(scope)}" aria-expanded="${open ? "true" : "false"}">
-      <span class="inbox-recent-caret" aria-hidden="true">${open ? "▾" : "▸"}</span><span>Recent</span><span class="inbox-recent-count">${recent.length}</span>
+      <span class="inbox-recent-caret" aria-hidden="true">${open ? ICON_CHEVRON_DOWN : ICON_CHEVRON_RIGHT}</span><span>Recent</span><span class="inbox-recent-count">${recent.length}</span>
     </button>`;
 }
 

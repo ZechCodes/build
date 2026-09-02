@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 // The rail's projects face, wired: the switch between the two faces, the
 // blocks painted from the feed with their rows beneath them, the fold, the
-// head that opens the project's checkout, the create behind each block, the
-// new-project control at the foot, and a Recent fold per block.
+// head that opens the project's checkout, the + on each block that opens the
+// create surface, the new-project control at the top, the active block, and a
+// Recent fold per block.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -29,8 +30,8 @@ vi.mock("../src/core/taskFeed.js", () => ({
   refreshFeed: (...args) => refreshFeed(...args),
   primaryRunIdFor: () => null,
 }));
-const openCreateFrom = vi.fn();
-vi.mock("../src/core/toolbar.js", () => ({ openCreateFrom: (...args) => openCreateFrom(...args) }));
+const openCreateWork = vi.fn();
+vi.mock("../src/core/createWork.js", () => ({ openCreateWork: (...args) => openCreateWork(...args) }));
 const openNewRepo = vi.fn();
 vi.mock("../src/sheets/newRepo.js", () => ({ openNewRepo: (...args) => openNewRepo(...args) }));
 
@@ -167,7 +168,7 @@ beforeEach(async () => {
   App.gated = false;
   App.call = vi.fn(async () => ({ ok: true }));
   refreshFeed.mockClear();
-  openCreateFrom.mockClear();
+  openCreateWork.mockClear();
   openNewRepo.mockClear();
   feedItems = [branchRow(), primaryRow(), issueRow(), captureRow()];
   initInboxRail();
@@ -227,8 +228,36 @@ describe("the projects face", () => {
     expect(blockFor("p1").querySelector(".inbox-project-head .inbox-unread").textContent).toBe("1");
     // The block already says which project, so the row does not.
     expect(rowFor("run-1").querySelector(".inbox-tag")).toBeNull();
-    expect(list().querySelector("[data-new-project]")).toBeTruthy();
-    expect(list().lastElementChild.matches("[data-new-project]")).toBe(true);
+    // New project heads the list.
+    expect(list().firstElementChild.matches("[data-new-project]")).toBe(true);
+  });
+
+  it("stands a project whose rows have all gone quiet after the ones with live work", () => {
+    feed([
+      branchRow({ anchor: hoursAgo(300), last_activity: hoursAgo(40) }),
+      issueRow(),
+      branchRow({ project_id: "p3", project: "mascot", branch: "build/model", run_id: "run-3", anchor: hoursAgo(2) }),
+      captureRow(),
+    ]);
+    expect(blocks().map((block) => block.dataset.project)).toEqual(["p3", "p2", "p1"]);
+    expect(rowsIn(blockFor("p1"))).toEqual([]);
+    expect(blockFor("p1").querySelector("[data-recent-toggle]")).toBeTruthy();
+  });
+
+  it("highlights the block holding the branch or issue the route stands on", () => {
+    expect(list().querySelector(".inbox-project.active")).toBeNull();
+    App.route = { name: "branch", projectId: "p2", branch: "x", tab: "changes" };
+    feed(feedItems);
+    expect([...list().querySelectorAll(".inbox-project.active")].map((block) => block.dataset.project)).toEqual(["p2"]);
+    App.route = { name: "capture", id: "cap-1" };
+    feed(feedItems);
+    expect(list().querySelector(".inbox-project.active")).toBeNull();
+  });
+
+  it("draws the folds and the Recent toggles as chevron icons", () => {
+    expect(blockFor("p1").querySelector("[data-project-fold] svg")).toBeTruthy();
+    feed([branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) }), primaryRow()]);
+    expect(blockFor("p1").querySelector("[data-recent-toggle] svg")).toBeTruthy();
   });
 
   it("opens a row like the inbox does", async () => {
@@ -265,30 +294,15 @@ describe("the projects face", () => {
     expect(JSON.parse(localStorage.getItem("build.inbox.folded"))).toEqual([]);
   });
 
-  it("creates a branch in the block's project from its button, through the toolbar's own create", () => {
-    const button = blockFor("p2").querySelector('[data-project-create="p2"][data-create-kind="branch"]');
-    button.click();
-    expect(openCreateFrom).toHaveBeenCalledTimes(1);
-    const [anchor, options] = openCreateFrom.mock.calls[0];
-    expect(anchor).toBe(button);
-    expect(options.projectId).toBe("p2");
-    expect(options.kind).toBe("branch");
+  it("opens the create surface on the block's project from its +, on the Branch tab", () => {
+    blockFor("p2").querySelector('[data-project-create="p2"]').click();
+    expect(openCreateWork).toHaveBeenCalledTimes(1);
+    const [options] = openCreateWork.mock.calls[0];
+    expect(options).toMatchObject({ projectId: "p2", projectName: "dotfiles", kind: "branch" });
     expect(typeof options.navigate).toBe("function");
   });
 
-  it("offers the issue behind the caret, and shuts the menu once it is chosen", async () => {
-    const caret = blockFor("p2").querySelector('[data-menu="project:p2"]');
-    expect(blockFor("p2").querySelector(".inbox-project-create .splitmenu")).toBeNull();
-    caret.click();
-    await flush();
-    expect(blockFor("p2").querySelector(".inbox-project-create .splitmenu")).toBeTruthy();
-    blockFor("p2").querySelector('[data-project-create="p2"][data-create-kind="issue"]').click();
-    expect(openCreateFrom).toHaveBeenCalledTimes(1);
-    expect(openCreateFrom.mock.calls[0][1]).toMatchObject({ projectId: "p2", kind: "issue" });
-    expect(blockFor("p2").querySelector(".inbox-project-create .splitmenu")).toBeNull();
-  });
-
-  it("opens the new-repository sheet from the foot, and re-reads the feed once it is made", () => {
+  it("opens the new-repository sheet from the top, and re-reads the feed once it is made", () => {
     list().querySelector("[data-new-project]").click();
     expect(openNewRepo).toHaveBeenCalledTimes(1);
     openNewRepo.mock.calls[0][0]();

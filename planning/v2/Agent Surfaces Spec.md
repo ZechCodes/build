@@ -252,7 +252,10 @@ Locked after the first revision shipped. SPA only.
   timer alone; when the last pill leaves it grows back.
 - No status dot of any kind. The working colour on the timer is the only
   working signal.
-- The viewer a pill opens sits above the status row.
+- The viewer a pill opens sits above the line that tops the composer block,
+  at the bottom of the conversation column, pushing the conversation up as it
+  reveals. Nothing is drawn between the conversation and the viewer: no
+  border, no divider.
 
 ### Motion
 

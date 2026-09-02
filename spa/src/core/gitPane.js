@@ -34,7 +34,8 @@ import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { DIFF_PLACE_KEEPING, diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -42,7 +43,6 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
-import { patchElement } from "./domPatch.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
@@ -581,18 +581,6 @@ export function mountGitPane(
     };
   };
 
-  // The parts of a changeset that move independently: its header, the keyed
-  // stack of files, and the pending-comment tray. Each is patched in its own
-  // place, so a poll that changed one file writes one file.
-  const CHANGESET_PARTS = '<div class="cshead"></div><div class="dstack" data-keyed-list></div><div class="cstray"></div>';
-
-  /** Make `host` say `html`, leaving standing whatever already says it. */
-  const patchHtml = (host, html) => {
-    const next = host.cloneNode(false);
-    next.innerHTML = html;
-    patchElement(host, next);
-  };
-
   /** The one renderer for every changeset: a header, the stacked full file
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
@@ -612,23 +600,15 @@ export function mountGitPane(
       review: triageOverlay(patch),
     });
     if (selected === "uncommitted") {
-      if (!hasUncommittedChanges(lastStatus)) {
-        renderedFiles = [];
-        paintChangeset(detailHost, {
-          header: uncommittedHeaderHtml(lastStatus) + changesetPlaceholderHtml("No uncommitted changes."),
-          files: [],
-        });
-        return;
-      }
       const files = parseDiff(lastStatus.patch);
-      renderedFiles = files;
+      renderedFiles = hasUncommittedChanges(lastStatus) ? files : [];
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       paintChangeset(detailHost, {
         header: uncommittedHeaderHtml(lastStatus),
-        files,
-        stackOptions: { ...stackFor(files, lastStatus.patch), fileMenu },
+        files: renderedFiles,
+        stackOptions: { ...stackFor(renderedFiles, lastStatus.patch), fileMenu, empty: "No uncommitted changes." },
       });
       return;
     }
@@ -652,14 +632,24 @@ export function mountGitPane(
    *  reader keep their scroll, their selection and their place in a file while
    *  an agent writes underneath them. */
   const paintChangeset = (detailHost, { header, files, stackOptions = {} }) => {
-    if (!detailHost.querySelector(".dstack")) detailHost.innerHTML = CHANGESET_PARTS;
-    patchHtml(detailHost.querySelector(".cshead"), header);
-    patchList(detailHost.querySelector(".dstack"), diffStackEntries(files, stackOptions), {
-      keyOf: (entry) => entry.key,
-      render: (entry) => entry.html,
+    paintInto(detailHost)({
+      bar: header,
+      entries: diffStackEntries(files, stackOptions),
+      tray: commentLayer ? commentLayer.trayHtml() : "",
     });
-    patchHtml(detailHost.querySelector(".cstray"), commentLayer ? commentLayer.trayHtml() : "");
     if (commentLayer) commentLayer.attach(detailHost);
+  };
+
+  // One paint per detail host — the skeleton is rebuilt on a scope error and on
+  // a shell rebuild, and the paint is keyed to the host it was made for.
+  let changesetPaint = null;
+  let paintedHost = null;
+  const paintInto = (detailHost) => {
+    if (paintedHost !== detailHost) {
+      paintedHost = detailHost;
+      changesetPaint = createChangesetPaint(detailHost);
+    }
+    return changesetPaint;
   };
 
   /** The commit box: disclosed only while uncommitted changes exist, and only
@@ -735,6 +725,7 @@ export function mountGitPane(
       if (reviewMounted) {
         review.unmount();
         reviewMounted = false;
+        detailHost.innerHTML = ""; // the plug's DOM was the plug's; it goes with it
       }
       // The detail column is what the reader scrolls, so every write into it
       // goes through the one paint that keeps them where they were.

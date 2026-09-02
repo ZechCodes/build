@@ -97,3 +97,10 @@ export function patchElement(live, next) {
   });
   for (const extra of liveChildren.slice(nextChildren.length)) live.removeChild(extra);
 }
+
+/// Make `host` say `html`, leaving standing whatever already says it.
+export function patchInnerHtml(host, html) {
+  const next = host.cloneNode(false);
+  next.innerHTML = html;
+  patchElement(host, next);
+}

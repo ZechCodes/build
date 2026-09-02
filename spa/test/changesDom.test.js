@@ -54,7 +54,7 @@ const show = () => ({
 });
 
 /** Mount the pane over a scripted RPC channel, then let the first poll land. */
-async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc = {} } = {}) {
+async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc = {}, review = null } = {}) {
   const calls = [];
   let currentStatus = status;
   const callRpc = vi.fn(async (method, params) => {
@@ -71,7 +71,7 @@ async function mount({ status = dirtyStatus(), scope = { run_id: "run-1" }, rpc 
   });
   const container = document.createElement("div");
   document.body.appendChild(container);
-  const pane = mountGitPane(container, { scope, callRpc });
+  const pane = mountGitPane(container, { scope, callRpc, review });
   await settle();
   return { container, pane, callRpc, calls };
 }
@@ -116,6 +116,54 @@ describe("the Changes rail", () => {
   it("discloses the commit box only while uncommitted changes exist", async () => {
     const { container, pane } = await mount();
     expect(container.querySelector(".gitmsg")).toBeTruthy();
+    pane.dispose();
+  });
+
+  it("says once, and in its own words, that a clean tree has nothing in it", async () => {
+    const { container, pane } = await mount({ status: cleanStatus() });
+    await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
+    const detail = container.querySelector(".cdetail-host");
+    expect(detail.textContent).toContain("No uncommitted changes.");
+    expect(detail.textContent).not.toContain("No file changes");
+    expect(detail.querySelectorAll(".empty").length).toBe(1);
+    pane.dispose();
+  });
+});
+
+// The aggregate review is a plug that owns the detail pane while it is
+// selected, and every other changeset is painted into the same host. Whoever
+// wrote there last, the next painter finds the parts it owns or makes them.
+describe("the detail pane the review plug and the changesets share", () => {
+  /** A plug with the shape the real one has: it writes its own bar, its own
+   *  keyed stack and its own tray into the host it is handed. */
+  const stubReview = () => {
+    const calls = [];
+    return {
+      calls,
+      getBase: () => "main",
+      mount: (host) => {
+        calls.push("mount");
+        host.innerHTML =
+          '<div class="csbar">aggregate</div><div class="dstack" data-keyed-list><div class="file" data-key="EDIT:agg.js"></div></div><div class="cstray"></div>';
+      },
+      unmount: () => calls.push("unmount"),
+    };
+  };
+
+  it("paints a changeset again after the plug has owned the pane, twice over", async () => {
+    const review = stubReview();
+    const { container, pane } = await mount({ review });
+    expect(container.querySelector(".cdetail-host").textContent).toContain("aggregate");
+
+    for (const round of [1, 2]) {
+      await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
+      const detail = container.querySelector(".cdetail-host");
+      expect(detail.textContent, `round ${round}`).not.toContain("aggregate");
+      expect(detail.querySelector('.file[data-file="src/a.js"]'), `round ${round}`).toBeTruthy();
+      expect(detail.querySelector(".csheader"), `round ${round}`).toBeTruthy();
+      await click(container.querySelector('.rrow[data-sel="review"]'));
+    }
+    expect(review.calls).toEqual(["mount", "unmount", "mount", "unmount", "mount"]);
     pane.dispose();
   });
 });

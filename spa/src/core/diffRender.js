@@ -7,7 +7,6 @@ import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { createFileFolds, fileKey, firstLineOf } from "./diff.js";
-import { anchorTop } from "./paintKeepingPlace.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
@@ -222,8 +221,10 @@ function fileMenuHtml(path, fileMenu) {
  *  machine noise (lockfiles, caches, Build metadata) as ONE collapsed group at
  *  the bottom with a count line. Noise is never filtered away — the doc's rule
  *  is collapse, never hide — so a reviewer can always open it.
- *  `noiseExpanded` is the caller's persisted disclosure state; every other
- *  option passes straight through to diffFilesHtml.
+ *  `noiseExpanded` is the caller's persisted disclosure state; `empty` is what
+ *  the surface says when the changeset holds nothing at all, in its own words —
+ *  one owner for that line, rather than a second message above the stack. Every
+ *  other option passes straight through to diffFilesHtml.
  *
  *  `review` plugs the triage overlay in (see reviewStackEntries). Omitting it
  *  leaves the output byte-identical to what it always was, which is what a
@@ -235,23 +236,15 @@ export function diffStackHtml(files, options = {}) {
     .join("");
 }
 
-/** Where a repaint of a stack leaves the reader: on the file they were reading.
- *  The markup that names each file is here, so the way to find it again is
- *  here too — both controllers hand this to core/paintKeepingPlace.js. */
-export const DIFF_PLACE_KEEPING = {
-  opening: (scroller) => !scroller.querySelector(".file[data-key]"),
-  policy: anchorTop(".file[data-key]"),
-};
-
 /** The same stack as a keyed list: `[{ key, html }]`, one entry per block a
  *  repaint can move — a file (named by its file key), the triage bar, a triage
  *  section or group, the noise group. A controller patches those into a
  *  container with core/patchList.js, so a tick that changed one file leaves
  *  every other block — and the reader's place in it — standing. */
-export function diffStackEntries(files, { noiseExpanded = false, review = null, ...fileOptions } = {}) {
+export function diffStackEntries(files, { noiseExpanded = false, review = null, empty = "No file changes.", ...fileOptions } = {}) {
   const grouped = groupNoiseFiles(files);
   if (!grouped.files.length && !grouped.noise.length)
-    return [{ key: "empty", html: '<div class="empty">No file changes.</div>' }];
+    return [{ key: "empty", html: `<div class="empty">${esc(empty)}</div>` }];
   const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions) : [];
   if (!grouped.noise.length) return entries;
   return [...entries, { key: "noise", html: noiseGroupHtml(grouped.noise, noiseExpanded, fileOptions) }];

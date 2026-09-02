@@ -19,15 +19,14 @@ import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { DIFF_PLACE_KEEPING, diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
-import { patchElement } from "./domPatch.js";
 import { paintKeepingPlace } from "./paintKeepingPlace.js";
-import { patchList } from "./patchList.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -46,9 +45,8 @@ export function reviewBarHtml(files, { statusHtml = "", offerChangedOnly = false
 
 /** What the stack says when the filter has hidden everything, or there is
  *  nothing to show at all. */
-export function emptyStackHtml(totalFiles, changedOnly) {
-  if (totalFiles && changedOnly) return '<div class="empty">Nothing changed since your review.</div>';
-  return '<div class="empty">No file changes yet.</div>';
+export function emptyStackText(totalFiles, changedOnly) {
+  return totalFiles && changedOnly ? "Nothing changed since your review." : "No file changes yet.";
 }
 
 /**
@@ -169,19 +167,7 @@ export function createReviewPlug({
     actions.innerHTML = "";
   };
 
-  // The three parts of the plug's host that move independently: the bar over
-  // the stack, the keyed stack itself, and the tray the surface's verbs live
-  // in. Each is patched in its own place, so a poll that changed one file
-  // writes one file — and the reviewer keeps their scroll, their selection and
-  // whatever they had open.
-  const REVIEW_PARTS = '<div class="csbar"></div><div class="dstack" data-keyed-list></div><div class="cstray"></div>';
-
-  /** Make `host` say `html`, leaving standing whatever already says it. */
-  const patchHtml = (element, html) => {
-    const next = element.cloneNode(false);
-    next.innerHTML = html;
-    patchElement(element, next);
-  };
+  let paintChangeset = null; // made for the host this plug is mounted into
 
   function render() {
     if (!host) return;
@@ -193,38 +179,35 @@ export function createReviewPlug({
     const filesToRender = changedOnlyFilter ? renderedFiles.filter((file) => changed.has(file.path)) : renderedFiles;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;
-    const entries = filesToRender.length
-      ? diffStackEntries(filesToRender, {
-          commentable: editable,
-          openable: Boolean(openFile),
-          changedSince: changed,
-          viewed: viewedFiles,
-          folds,
-          withViewedToggle: editable,
-          noiseExpanded,
-          review:
-            triageReport === undefined
-              ? null
-              : {
-                  triage: currentTriage(),
-                  patch: renderedPatch,
-                  dial: trustDial,
-                  expandedGroups,
-                  overridable: Boolean(overrides),
-                },
-        })
-      : [{ key: "empty", html: emptyStackHtml(renderedFiles.length, changedOnlyFilter) }];
-    if (!host.querySelector(".dstack")) host.innerHTML = REVIEW_PARTS;
-    patchHtml(
-      host.querySelector(".csbar"),
-      reviewBarHtml(renderedFiles, {
+    const entries = diffStackEntries(filesToRender, {
+      commentable: editable,
+      openable: Boolean(openFile),
+      changedSince: changed,
+      viewed: viewedFiles,
+      folds,
+      withViewedToggle: editable,
+      noiseExpanded,
+      empty: emptyStackText(renderedFiles.length, changedOnlyFilter),
+      review:
+        triageReport === undefined
+          ? null
+          : {
+              triage: currentTriage(),
+              patch: renderedPatch,
+              dial: trustDial,
+              expandedGroups,
+              overridable: Boolean(overrides),
+            },
+    });
+    paintChangeset({
+      bar: reviewBarHtml(renderedFiles, {
         statusHtml: statusHtml(),
         offerChangedOnly: reviewStamps.size > 0,
         changedOnly: changedOnlyFilter,
       }),
-    );
-    patchList(host.querySelector(".dstack"), entries, { keyOf: (entry) => entry.key, render: (entry) => entry.html });
-    patchHtml(host.querySelector(".cstray"), trayMounted ? commentLayer.trayHtml() : changesActionbarHtml());
+      entries,
+      tray: trayMounted ? commentLayer.trayHtml() : changesActionbarHtml(),
+    });
     if (trayMounted) commentLayer.attach(host);
     else paintActions();
     wire();
@@ -378,6 +361,7 @@ export function createReviewPlug({
     mount(element) {
       if (watcher) watcher.dispose(); // a mount over a live one reads twice
       host = element;
+      paintChangeset = createChangesetPaint(host);
       diffKey = null; // a fresh host always needs a first paint
       livePainted = false;
       host.innerHTML = '<div class="empty">loading…</div>';

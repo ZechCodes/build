@@ -653,7 +653,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      shell push the panel down with the toolbar instead of past it. */
   .rail-panel { position:absolute; left:0; right:var(--agent-strip);
     top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
-    width:auto; border-left:0; background:var(--bg);
+    width:auto; background:var(--bg);
     box-shadow:-8px 0 24px var(--shadow-soft); }
 }
 

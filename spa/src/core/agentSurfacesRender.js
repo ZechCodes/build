@@ -98,15 +98,19 @@ export function workflowPhaseHtml(phase) {
   </button>`;
 }
 
-export function workflowViewerHtml(workflow, phases, agents) {
+export function workflowHeadHtml(workflow) {
   const subject = rowSubject(WORKFLOW_ENTRY_KIND, workflow);
-  return `<div class="surface-viewer surface-workflow">
-    <div class="surface-workflow-head">
+  return `<div class="surface-workflow-head">
       ${stateMarkHtml(workflow.stateMark)}
       <span class="surface-row-label">${esc(subject)}</span>
       ${noteHtml(workflow.description, subject)}
       ${actionMenuHtml(WORKFLOW_ENTRY_KIND, workflow)}
-    </div>
+    </div>`;
+}
+
+export function workflowViewerHtml(workflow, phases, agents) {
+  return `<div class="surface-viewer surface-workflow">
+    ${workflowHeadHtml(workflow)}
     <div class="surface-workflow-body">
       <div class="surface-phases">${phases.map(workflowPhaseHtml).join("")}</div>
       <div class="surface-phase-agents">${agents.map(agentRowHtml).join("")}</div>

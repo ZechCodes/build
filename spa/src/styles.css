@@ -1082,10 +1082,6 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-activity-outcome.blocked { color:var(--red); opacity:1; }
 .thread-activity[open] .thread-activity-preview { display:none; }
 .thread-activity .thread-event-detail { margin-top:2px; }
-/* What a spawned agent said, inside the row of the call that spawned it. Ruled
-   off and indented so the fold reads as that agent's own run rather than as
-   more of this one's, and capped at the same eight rows a run of activity is:
-   a subagent that talked for an hour cannot push the conversation off screen. */
 .thread-activity-children { --activity-row:26px; margin-top:4px; padding-left:10px;
   border-left:1px solid var(--line); max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
 /* A whole run of activity — everything between two things somebody said — as

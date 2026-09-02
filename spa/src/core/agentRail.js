@@ -78,8 +78,6 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
-/** Where the surface pills and their viewer are mounted: inside the pinned
- *  composer block, between the status line and the box. */
 const RAIL_SURFACES_ID = "rail-surfaces";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
@@ -400,8 +398,6 @@ export function mountAgentRail(host, context) {
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
   let composerModelMenu = null;
-  // The pills under the box and the viewer above them, mounted with it and
-  // painted from the open agent's own digest.
   let surfacesBlock = null;
 
   const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
@@ -938,11 +934,6 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
-  /// The surfaces block, mounted once with the box it sits above.
-  ///
-  /// Its send is the rail's own, so asking a workflow to stop adopts, wakes and
-  /// refreshes exactly as typing the same sentence would; a press on a subagent
-  /// asks the conversation beside it to open the call that spawned it.
   const mountSurfaces = (panel) => {
     const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
     if (!region) return;
@@ -959,8 +950,6 @@ export function mountAgentRail(host, context) {
     surfacesBlock = null;
   };
 
-  /// What the pills say: the open agent's own snapshot, and nothing at all
-  /// while the chooser is up or the carrier reports none.
   const syncSurfaces = () => {
     if (!surfacesBlock) return;
     const agent = agentInFocus();

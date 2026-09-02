@@ -164,6 +164,27 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
+  it("keeps the agent rows and the scroll when the workflow's own head moves", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(WORKFLOW_ENTRY_KIND);
+    const viewerRegion = document.querySelector(".rail-surfaces-viewer");
+    viewerRegion.scrollTop = 40;
+    const [firstAgentRow] = viewerRows(".surface-phase-agents");
+    const [firstPhase] = [...document.querySelectorAll(".surface-phase")];
+
+    const finished = snapshot();
+    finished.workflows[0].state = "done";
+    finished.workflows[0].description = "Read every parser and judge it";
+    surfaces.set(finished);
+
+    expect(viewerRows(".surface-phase-agents")[0]).toBe(firstAgentRow);
+    expect([...document.querySelectorAll(".surface-phase")][0]).toBe(firstPhase);
+    expect(viewerRegion.scrollTop).toBe(40);
+    expect(document.querySelector(".surface-workflow-head").textContent).toContain("Read every parser");
+    surfaces.dispose();
+  });
+
   it("paints a phase's agents without rebuilding them when another phase is chosen", () => {
     const surfaces = mount();
     surfaces.set(snapshot());

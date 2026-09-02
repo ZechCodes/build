@@ -164,6 +164,13 @@ export function surfaceRows(kind, surfaces) {
   return normalise ? keyedRows(kind, entries, normalise) : [];
 }
 
+export function openWorkflow(surfaces) {
+  const [entry] = entriesOfKind(surfaces, WORKFLOW_ENTRY_KIND);
+  if (!entry) return null;
+  const [row] = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+  return { ...row, phases: phasesOf(entry) };
+}
+
 export function workflowPhases(workflow, selectedIndex) {
   const phases = phasesOf(workflow);
   if (!phases.length) return { phases: [], agents: [] };

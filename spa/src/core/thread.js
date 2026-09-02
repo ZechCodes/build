@@ -838,10 +838,6 @@ function activityHtml(event, meta, agentLabel, foldedChildrenHtml = "") {
   </details>`;
 }
 
-/// What names a row to `revealThreadSequence`, and what a child's
-/// `parent_sequence` points at. Only an activity row carries it: those are the
-/// rows a tool call mints, and a tool call is the only thing anything folds
-/// under.
 function sequenceAttribute(event) {
   return Number.isFinite(event.sequence) ? ` data-sequence="${esc(event.sequence)}"` : "";
 }
@@ -936,57 +932,35 @@ function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   </div>`;
 }
 
-/// One row a spawned agent minted, drawn inside the row that spawned it.
-function foldedChildHtml(item, agentLabel) {
-  if (item.type === "message") return messageHtml(item.data || {}, agentLabel);
-  return eventHtml(item.data || {}, agentLabel);
-}
-
-/// Which rows belong inside another row, and what to draw in the fold of the
-/// row they belong to.
-///
-/// A subagent's rows carry the sequence of the tool call that spawned them, and
-/// that call already has a row here: the child belongs inside it rather than
-/// beside it, so the run above it counts what the reader can actually see.
-///
-/// A child folds only under a parent the window actually holds. A page fetched
-/// from the middle of a long conversation can carry a child whose spawning call
-/// is still above it, and that row stands on its own until the page above it
-/// arrives. Only an activity row can host a fold — it is the only row with a
-/// body to put anything in — so a child naming any other row stands on its own
-/// too.
 function threadFolding(items, agentLabel) {
-  const hostSequences = new Set(
-    items
-      .filter((item) => item.type !== "message" && activityMetaOf(item.data || {}))
-      .map((item) => (item.data || {}).sequence)
+  const eventItems = items.filter((item) => item.type !== "message");
+  const sequenceOf = (item) => (item.data || {}).sequence;
+  const parentSequenceOf = (item) => (item.data || {}).parent_sequence;
+  const activitySequences = new Set(
+    eventItems
+      .filter((item) => activityMetaOf(item.data || {}))
+      .map(sequenceOf)
       .filter((sequence) => Number.isFinite(sequence)),
   );
+  const parentedItems = eventItems.filter((item) => activitySequences.has(parentSequenceOf(item)));
+  const childSequences = new Set(parentedItems.map(sequenceOf).filter((sequence) => Number.isFinite(sequence)));
+  const foldingChildren = parentedItems.filter((item) => !childSequences.has(parentSequenceOf(item)));
+  const foldedItems = new Set(foldingChildren);
   const childrenByParent = new Map();
-  const foldedItems = new Set();
-  for (const item of items) {
-    const parent = (item.data || {}).parent_sequence;
-    if (!Number.isFinite(parent) || !hostSequences.has(parent)) continue;
-    foldedItems.add(item);
+  for (const item of foldingChildren) {
+    const parent = parentSequenceOf(item);
     childrenByParent.set(parent, [...(childrenByParent.get(parent) || []), item]);
   }
   const foldedChildrenHtmlOf = (sequence) => {
     const children = childrenByParent.get(sequence);
     if (!children) return "";
     return `<div class="thread-activity-children">${children
-      .map((child) => foldedChildHtml(child, agentLabel))
+      .map((child) => eventHtml(child.data || {}, agentLabel))
       .join("")}</div>`;
   };
   return { foldedItems, foldedChildrenHtmlOf };
 }
 
-/// Scroll `scroller` to the row carrying `sequence` and open every fold over
-/// it, so a press on a subagent lands the reader on the call that spawned it
-/// with the call's own body already open.
-///
-/// Answers whether there was such a row: a sequence naming a call above the
-/// window the reader holds is nothing this can reach, and saying so is what
-/// lets the caller leave the reader where they are.
 export function revealThreadSequence(scroller, sequence) {
   if (!scroller) return false;
   const row = scroller.querySelector(`[data-sequence="${esc(sequence)}"]`);

@@ -33,6 +33,28 @@ const subagentThought = {
   },
 };
 
+const subagentCall = {
+  type: "event",
+  data: {
+    event: "tool_use",
+    sequence: 11,
+    parent_sequence: SPAWNING_CALL_SEQUENCE,
+    summary: "Agent read the parser",
+    created_at: "2026-09-01T12:00:01Z",
+  },
+};
+
+const grandchildCall = {
+  type: "event",
+  data: {
+    event: "tool_use",
+    sequence: 20,
+    parent_sequence: 11,
+    summary: "Read spa/src/core/patchList.js",
+    created_at: "2026-09-01T12:00:02Z",
+  },
+};
+
 const laterCall = {
   type: "event",
   data: {
@@ -65,6 +87,19 @@ describe("rows that fold under the call that spawned them", () => {
     const children = parent.querySelector(".thread-activity-children");
     expect(children.textContent).toContain("The lock has to move");
     expect(document.querySelectorAll(".thread-activity-children")).toHaveLength(1);
+  });
+
+  it("draws every row the window holds exactly once when a spawned agent spawned one", () => {
+    paint([spawningCall, subagentCall, grandchildCall, laterCall]);
+
+    for (const sequence of [SPAWNING_CALL_SEQUENCE, 11, 20, 12]) {
+      expect(document.querySelectorAll(`[data-sequence="${sequence}"]`)).toHaveLength(1);
+    }
+    const parent = rowOfSequence(SPAWNING_CALL_SEQUENCE);
+    expect(parent.querySelector(".thread-activity-children").children).toHaveLength(1);
+    expect(document.querySelectorAll(".thread-activity-children")).toHaveLength(1);
+    expect(rowOfSequence(20).closest(".thread-activity-children")).toBe(null);
+    expect(document.querySelector(".thread-activity-count").textContent).toBe("3");
   });
 
   it("draws a row whose parent is above the window flat, exactly once, until the parent arrives", () => {

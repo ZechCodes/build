@@ -1729,9 +1729,9 @@ mod tests {
     use crate::harness::shell_tail::SHELL_TAIL_LINES;
     use crate::harness::stream_fixtures::{
         fixture_line, fixture_lines, hundred_numbered_lines, shell_output_file_holding,
-        SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_ID,
-        SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE, SHELL_STARTED_LINE, SHELL_TASK_ID,
-        SUBAGENT_FIXTURE, WORKFLOW_FIXTURE,
+        FIRST_CREATE_CALL_ID, SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE,
+        SHELL_LAUNCH_CALL_ID, SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE, SHELL_STARTED_LINE,
+        SHELL_TASK_ID, SUBAGENT_FIXTURE, SUBAGENT_SPAWNING_CALL_ID, WORKFLOW_FIXTURE,
     };
     use crate::harness::surfaces::SurfaceWorkflow;
 
@@ -1746,8 +1746,6 @@ mod tests {
             assert!(task_status_is_terminal(ended), "{ended}");
         }
     }
-
-    const SUBAGENT_SPAWNING_CALL: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
 
     fn row_kind(reported: &ActivityReport) -> &'static str {
         match &reported.activity {
@@ -1806,7 +1804,7 @@ mod tests {
     #[test]
     fn the_subagent_fixture_folds_the_subagents_own_rows_under_the_call_that_spawned_them() {
         let rows = reports_minted_by(SUBAGENT_FIXTURE);
-        let spawning_call = Some(SUBAGENT_SPAWNING_CALL);
+        let spawning_call = Some(SUBAGENT_SPAWNING_CALL_ID);
 
         assert_eq!(
             kinds_and_parents_of(&rows),
@@ -2092,7 +2090,7 @@ mod tests {
         reader.read_line(&lines[26]);
 
         assert_eq!(
-            reader.calls.get("toolu_01V6RPmcsmyRyEVKSdcpKTMJ"),
+            reader.calls.get(FIRST_CREATE_CALL_ID),
             Some(&RecordedCall::Minted {
                 tool: "TaskCreate".to_string(),
                 parent_call_id: None,

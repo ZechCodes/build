@@ -68,6 +68,13 @@ pub(crate) fn hundred_numbered_lines() -> String {
 
 pub(crate) const WORKFLOW_SPAWNING_CALL_ID: &str = "toolu_01TPFUY53rBEJPmkKu7rJPWV";
 pub(crate) const SUBAGENT_SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
+pub(crate) const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
+pub(crate) const SUBAGENT_TASK_ID: &str = "aba8d0dbf79bd05f1";
+pub(crate) const LINE_COUNTER_AGENT_ID: &str = "acdd7854c4bce379a";
+pub(crate) const CHAR_COUNTER_AGENT_ID: &str = "a1a79b6791abd41ee";
+pub(crate) const SUMMARIZER_AGENT_ID: &str = "abecba7acf45aac98";
+pub(crate) const FIRST_CREATE_CALL_ID: &str = "toolu_01V6RPmcsmyRyEVKSdcpKTMJ";
+pub(crate) const FIRST_UPDATE_CALL_ID: &str = "toolu_01UExMFQFbhqwFX9Qz4M3L1q";
 
 const WORKFLOW_LAST_TOOL_SUMMARY: &str =
     "/private/tmp/claude-501/-Users-zech--superconductor-worktre…";
@@ -75,7 +82,7 @@ const WORKFLOW_LAST_TOOL_SUMMARY: &str =
 pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
     AgentSurfaces {
         workflows: vec![SurfaceWorkflow {
-            id: "w81x1fmx5".to_string(),
+            id: WORKFLOW_TASK_ID.to_string(),
             name: "readme-analysis".to_string(),
             description: Some("Count README.md lines and characters, then summarize".to_string()),
             state: Some("running".to_string()),
@@ -84,7 +91,7 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
                     title: "Read".to_string(),
                     agents: vec![
                         recorded_workflow_agent(
-                            "acdd7854c4bce379a",
+                            LINE_COUNTER_AGENT_ID,
                             "line-counter",
                             1_788_290_134_700,
                             4_732,
@@ -92,7 +99,7 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
                             "2",
                         ),
                         recorded_workflow_agent(
-                            "a1a79b6791abd41ee",
+                            CHAR_COUNTER_AGENT_ID,
                             "char-counter",
                             1_788_290_134_700,
                             34_926,
@@ -104,7 +111,7 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
                 SurfacePhase {
                     title: "Summarize".to_string(),
                     agents: vec![recorded_workflow_agent(
-                        "abecba7acf45aac98",
+                        SUMMARIZER_AGENT_ID,
                         "summarizer",
                         1_788_290_170_370,
                         7_689,
@@ -115,7 +122,7 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
             ],
         }],
         subagents: vec![SurfaceAgent {
-            id: "aba8d0dbf79bd05f1".to_string(),
+            id: SUBAGENT_TASK_ID.to_string(),
             label: "Read README.md and report character count".to_string(),
             state: Some("done".to_string()),
             result: Some("4".to_string()),

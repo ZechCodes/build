@@ -18838,7 +18838,9 @@ mod tests {
     use std::process::Command;
 
     use crate::harness::claude;
-    use crate::harness::stream_fixtures::{recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID};
+    use crate::harness::stream_fixtures::{
+        recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_TASK_ID,
+    };
     use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
@@ -35762,7 +35764,7 @@ mod tests {
             "{row:?}"
         );
         assert_eq!(
-            row["agents"][0]["surfaces"]["subagents"][0]["id"], "aba8d0dbf79bd05f1",
+            row["agents"][0]["surfaces"]["subagents"][0]["id"], SUBAGENT_TASK_ID,
             "the rail reads a branch's agents off the row: {row:?}"
         );
 
@@ -35867,7 +35869,7 @@ mod tests {
 
         assert_eq!(posted["ok"], true, "{posted:?}");
         assert_eq!(
-            posted["result"]["agents"][0]["surfaces"]["workflows"][0]["id"], "w81x1fmx5",
+            posted["result"]["agents"][0]["surfaces"]["workflows"][0]["id"], WORKFLOW_TASK_ID,
             "{posted:?}"
         );
         drop(dir);

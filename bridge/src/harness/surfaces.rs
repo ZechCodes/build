@@ -814,10 +814,12 @@ mod tests {
     use crate::harness::adk::tool_result_text;
     use crate::harness::stream_fixtures::{
         fixture_events, fixture_line, recorded_workflow_surfaces,
-        the_line_counter_carrying_a_spawning_call_id, SHELL_AND_CHECKLIST_FIXTURE,
+        the_line_counter_carrying_a_spawning_call_id, CHAR_COUNTER_AGENT_ID, FIRST_CREATE_CALL_ID,
+        FIRST_UPDATE_CALL_ID, LINE_COUNTER_AGENT_ID, SHELL_AND_CHECKLIST_FIXTURE,
         SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE,
         SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID, SHELL_UPDATED_LINE, SUBAGENT_FIXTURE,
-        WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
+        SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
+        WORKFLOW_TASK_ID,
     };
 
     fn one_checklist_item() -> SurfaceChecklistItem {
@@ -901,7 +903,7 @@ mod tests {
     fn no_snapshot_ever_writes_an_internal_field() {
         let surfaces = AgentSurfaces {
             workflows: vec![SurfaceWorkflow {
-                id: "w81x1fmx5".to_string(),
+                id: WORKFLOW_TASK_ID.to_string(),
                 name: "count-and-summarize".to_string(),
                 description: Some("Count README.md lines".to_string()),
                 state: Some("running".to_string()),
@@ -984,8 +986,6 @@ mod tests {
         assert_eq!(wire_agent_state("thinking", false), None);
     }
 
-    const WORKFLOW_TASK_ID: &str = "w81x1fmx5";
-
     fn feed(ledger: &mut SurfaceLedger, event: &Value) -> bool {
         let subtype = event["subtype"]
             .as_str()
@@ -994,22 +994,23 @@ mod tests {
         ledger.read_task_event(&subtype, event)
     }
 
-    fn feed_workflow_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
-        feed(ledger, &fixture_line(WORKFLOW_FIXTURE, line_number))
+    fn feed_line(ledger: &mut SurfaceLedger, fixture: &str, line_number: usize) -> bool {
+        feed(ledger, &fixture_line(fixture, line_number))
+    }
+
+    fn snapshot_of(ledger: &SurfaceLedger) -> AgentSurfaces {
+        ledger.snapshot().expect("the ledger holds a snapshot")
+    }
+
+    fn the_only<T: Clone + std::fmt::Debug>(held: &[T]) -> T {
+        assert_eq!(held.len(), 1, "{held:?}");
+        held[0].clone()
     }
 
     fn written(ledger: &SurfaceLedger) -> String {
-        ledger
-            .snapshot()
-            .expect("the ledger holds a snapshot")
+        snapshot_of(ledger)
             .wire_value(&no_call_sequence)
             .to_string()
-    }
-
-    fn the_only_workflow(ledger: &SurfaceLedger) -> SurfaceWorkflow {
-        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
-        assert_eq!(snapshot.workflows.len(), 1, "{snapshot:?}");
-        snapshot.workflows[0].clone()
     }
 
     fn agent_named(workflow: &SurfaceWorkflow, label: &str) -> SurfaceAgent {
@@ -1035,7 +1036,7 @@ mod tests {
     fn ledger_through_the_final_progress_array() -> SurfaceLedger {
         let mut ledger = SurfaceLedger::default();
         for line_number in [37, 40, 46, 63] {
-            feed_workflow_line(&mut ledger, line_number);
+            feed_line(&mut ledger, WORKFLOW_FIXTURE, line_number);
         }
         ledger
     }
@@ -1061,9 +1062,9 @@ mod tests {
     fn a_started_local_workflow_opens_a_running_workflow() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(feed_workflow_line(&mut ledger, 37));
+        assert!(feed_line(&mut ledger, WORKFLOW_FIXTURE, 37));
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         assert_eq!(workflow.id, WORKFLOW_TASK_ID);
         assert_eq!(workflow.name, "readme-analysis");
         assert_eq!(
@@ -1077,7 +1078,7 @@ mod tests {
     #[test]
     fn a_started_workflow_never_holds_the_script_it_was_handed() {
         let mut ledger = SurfaceLedger::default();
-        feed_workflow_line(&mut ledger, 37);
+        feed_line(&mut ledger, WORKFLOW_FIXTURE, 37);
 
         assert!(
             !written(&ledger).contains("export const meta"),
@@ -1089,11 +1090,11 @@ mod tests {
     #[test]
     fn the_first_progress_array_names_both_phases_and_a_queued_agent() {
         let mut ledger = SurfaceLedger::default();
-        feed_workflow_line(&mut ledger, 37);
+        feed_line(&mut ledger, WORKFLOW_FIXTURE, 37);
 
-        assert!(feed_workflow_line(&mut ledger, 40));
+        assert!(feed_line(&mut ledger, WORKFLOW_FIXTURE, 40));
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         let titles: Vec<&str> = workflow
             .phases
             .iter()
@@ -1102,12 +1103,12 @@ mod tests {
         assert_eq!(titles, vec!["Read", "Summarize"]);
 
         let line_counter = agent_named(&workflow, "line-counter");
-        assert_eq!(line_counter.id, "acdd7854c4bce379a");
+        assert_eq!(line_counter.id, LINE_COUNTER_AGENT_ID);
         assert_eq!(line_counter.state.as_deref(), Some("running"));
         assert_eq!(phase_holding(&workflow, "line-counter"), "Read");
 
         let char_counter = agent_named(&workflow, "char-counter");
-        assert_eq!(char_counter.id, "w81x1fmx5:2");
+        assert_eq!(char_counter.id, format!("{WORKFLOW_TASK_ID}:2"));
         assert_eq!(char_counter.state.as_deref(), Some("queued"));
         assert_eq!(phase_holding(&workflow, "char-counter"), "Read");
     }
@@ -1115,11 +1116,11 @@ mod tests {
     #[test]
     fn a_usage_tick_carrying_no_progress_array_moves_nothing() {
         let mut ledger = SurfaceLedger::default();
-        feed_workflow_line(&mut ledger, 37);
-        feed_workflow_line(&mut ledger, 40);
+        feed_line(&mut ledger, WORKFLOW_FIXTURE, 37);
+        feed_line(&mut ledger, WORKFLOW_FIXTURE, 40);
         let before = written(&ledger);
 
-        assert!(!feed_workflow_line(&mut ledger, 46));
+        assert!(!feed_line(&mut ledger, WORKFLOW_FIXTURE, 46));
 
         assert_eq!(written(&ledger), before);
     }
@@ -1128,10 +1129,10 @@ mod tests {
     fn the_final_progress_array_takes_the_real_id_and_the_agent_totals() {
         let ledger = ledger_through_the_final_progress_array();
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         assert_eq!(
             agent_named(&workflow, "char-counter").id,
-            "a1a79b6791abd41ee"
+            CHAR_COUNTER_AGENT_ID
         );
         for label in ["line-counter", "char-counter", "summarizer"] {
             assert_eq!(
@@ -1173,14 +1174,14 @@ mod tests {
 
         assert!(feed(&mut ledger, &without_the_char_counter));
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         assert!(
             !written(&ledger).contains("char-counter"),
             "a dropped agent leaves the snapshot: {workflow:?}"
         );
         assert_eq!(
             agent_named(&workflow, "line-counter").id,
-            "acdd7854c4bce379a"
+            LINE_COUNTER_AGENT_ID
         );
     }
 
@@ -1200,9 +1201,12 @@ mod tests {
 
         assert!(feed(&mut ledger, &naming_an_unlisted_phase));
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         assert_eq!(phase_holding(&workflow, "verifier"), "Verify");
-        assert_eq!(agent_named(&workflow, "verifier").id, "w81x1fmx5:9");
+        assert_eq!(
+            agent_named(&workflow, "verifier").id,
+            format!("{WORKFLOW_TASK_ID}:9")
+        );
     }
 
     #[test]
@@ -1224,7 +1228,7 @@ mod tests {
 
         assert!(feed(&mut ledger, &phases_without_indexes));
 
-        let workflow = the_only_workflow(&ledger);
+        let workflow = the_only(&snapshot_of(&ledger).workflows);
         let titles: Vec<&str> = workflow
             .phases
             .iter()
@@ -1238,11 +1242,17 @@ mod tests {
     fn the_closing_lines_finish_the_workflow_and_an_unclaimed_status_changes_nothing() {
         let mut ledger = ledger_through_the_final_progress_array();
 
-        assert!(feed_workflow_line(&mut ledger, 65));
-        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+        assert!(feed_line(&mut ledger, WORKFLOW_FIXTURE, 65));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).workflows).state.as_deref(),
+            Some("done")
+        );
 
-        assert!(!feed_workflow_line(&mut ledger, 66));
-        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+        assert!(!feed_line(&mut ledger, WORKFLOW_FIXTURE, 66));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).workflows).state.as_deref(),
+            Some("done")
+        );
 
         assert!(!feed(
             &mut ledger,
@@ -1252,7 +1262,10 @@ mod tests {
                 "status": "running",
             })
         ));
-        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("done"));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).workflows).state.as_deref(),
+            Some("done")
+        );
 
         assert!(feed(
             &mut ledger,
@@ -1262,17 +1275,20 @@ mod tests {
                 "status": "failed",
             })
         ));
-        assert_eq!(the_only_workflow(&ledger).state.as_deref(), Some("failed"));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).workflows).state.as_deref(),
+            Some("failed")
+        );
     }
 
     #[test]
     fn a_progress_line_for_a_workflow_that_never_started_is_ignored() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed_workflow_line(&mut ledger, 40));
+        assert!(!feed_line(&mut ledger, WORKFLOW_FIXTURE, 40));
         assert!(ledger.snapshot().is_none());
 
-        feed_workflow_line(&mut ledger, 37);
+        feed_line(&mut ledger, WORKFLOW_FIXTURE, 37);
         let before = written(&ledger);
         let mut for_another_task = fixture_line(WORKFLOW_FIXTURE, 63);
         for_another_task["task_id"] = json!("some-other-task");
@@ -1291,22 +1307,9 @@ mod tests {
         assert!(snapshot.workflows.is_empty(), "{snapshot:?}");
     }
 
-    const SUBAGENT_TASK_ID: &str = "aba8d0dbf79bd05f1";
-    const SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
-
-    fn feed_subagent_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
-        feed(ledger, &fixture_line(SUBAGENT_FIXTURE, line_number))
-    }
-
-    fn the_only_subagent(ledger: &SurfaceLedger) -> SurfaceAgent {
-        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
-        assert_eq!(snapshot.subagents.len(), 1, "{snapshot:?}");
-        snapshot.subagents[0].clone()
-    }
-
     fn ledger_through_the_started_subagent() -> SurfaceLedger {
         let mut ledger = SurfaceLedger::default();
-        feed_subagent_line(&mut ledger, 11);
+        feed_line(&mut ledger, SUBAGENT_FIXTURE, 11);
         ledger
     }
 
@@ -1314,35 +1317,38 @@ mod tests {
     fn a_started_local_agent_opens_a_running_subagent() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(feed_subagent_line(&mut ledger, 11));
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 11));
 
-        let subagent = the_only_subagent(&ledger);
+        let subagent = the_only(&snapshot_of(&ledger).subagents);
         assert_eq!(subagent.id, SUBAGENT_TASK_ID);
         assert_eq!(
             subagent.label,
             "Read README.md and report character count".to_string()
         );
         assert_eq!(subagent.state.as_deref(), Some("running"));
-        assert_eq!(subagent.spawning_call_id.as_deref(), Some(SPAWNING_CALL_ID));
+        assert_eq!(
+            subagent.spawning_call_id.as_deref(),
+            Some(SUBAGENT_SPAWNING_CALL_ID)
+        );
         assert_eq!(subagent.started_at, None);
     }
 
     #[test]
     fn a_repeated_started_line_keeps_what_the_subagent_has_accumulated() {
         let mut ledger = ledger_through_the_started_subagent();
-        feed_subagent_line(&mut ledger, 25);
-        let progressed = the_only_subagent(&ledger);
+        feed_line(&mut ledger, SUBAGENT_FIXTURE, 25);
+        let progressed = the_only(&snapshot_of(&ledger).subagents);
 
-        assert!(!feed_subagent_line(&mut ledger, 11));
+        assert!(!feed_line(&mut ledger, SUBAGENT_FIXTURE, 11));
 
-        let restarted = the_only_subagent(&ledger);
+        let restarted = the_only(&snapshot_of(&ledger).subagents);
         assert_eq!(restarted.last_tool, progressed.last_tool);
         assert_eq!(restarted.tokens, progressed.tokens);
         assert_eq!(restarted.tool_calls, progressed.tool_calls);
         assert_eq!(restarted.duration_ms, progressed.duration_ms);
         assert_eq!(
             restarted.spawning_call_id.as_deref(),
-            Some(SPAWNING_CALL_ID)
+            Some(SUBAGENT_SPAWNING_CALL_ID)
         );
     }
 
@@ -1354,7 +1360,7 @@ mod tests {
 
         assert!(feed(&mut ledger, &sprawling));
 
-        let summary = the_only_subagent(&ledger)
+        let summary = the_only(&snapshot_of(&ledger).subagents)
             .last_tool
             .expect("a progressed subagent names its tool")
             .summary
@@ -1377,7 +1383,7 @@ mod tests {
             "subagent_type",
             "general-purpose",
             "spawning_call_id",
-            SPAWNING_CALL_ID,
+            SUBAGENT_SPAWNING_CALL_ID,
         ] {
             assert!(
                 !snapshot.contains(withheld),
@@ -1390,9 +1396,9 @@ mod tests {
     fn a_subagent_progress_line_takes_the_current_step_and_the_usage_totals() {
         let mut ledger = ledger_through_the_started_subagent();
 
-        assert!(feed_subagent_line(&mut ledger, 25));
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 25));
 
-        let subagent = the_only_subagent(&ledger);
+        let subagent = the_only(&snapshot_of(&ledger).subagents);
         assert_eq!(
             subagent.last_tool,
             Some(SurfaceTool {
@@ -1409,10 +1415,10 @@ mod tests {
     #[test]
     fn the_same_subagent_progress_line_twice_moves_nothing_the_second_time() {
         let mut ledger = ledger_through_the_started_subagent();
-        feed_subagent_line(&mut ledger, 25);
+        feed_line(&mut ledger, SUBAGENT_FIXTURE, 25);
         let before = written(&ledger);
 
-        assert!(!feed_subagent_line(&mut ledger, 25));
+        assert!(!feed_line(&mut ledger, SUBAGENT_FIXTURE, 25));
 
         assert_eq!(written(&ledger), before);
     }
@@ -1420,13 +1426,16 @@ mod tests {
     #[test]
     fn the_closing_lines_finish_the_subagent_and_take_its_answer() {
         let mut ledger = ledger_through_the_started_subagent();
-        feed_subagent_line(&mut ledger, 25);
+        feed_line(&mut ledger, SUBAGENT_FIXTURE, 25);
 
-        assert!(feed_subagent_line(&mut ledger, 30));
-        assert_eq!(the_only_subagent(&ledger).state.as_deref(), Some("done"));
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 30));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).subagents).state.as_deref(),
+            Some("done")
+        );
 
-        assert!(feed_subagent_line(&mut ledger, 31));
-        let closed = the_only_subagent(&ledger);
+        assert!(feed_line(&mut ledger, SUBAGENT_FIXTURE, 31));
+        let closed = the_only(&snapshot_of(&ledger).subagents);
         assert_eq!(closed.state.as_deref(), Some("done"));
         assert_eq!(closed.result.as_deref(), Some("4"));
         assert_eq!(closed.error, None);
@@ -1436,7 +1445,7 @@ mod tests {
     fn a_notification_for_a_subagent_that_never_started_mints_nothing() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(!feed_subagent_line(&mut ledger, 31));
+        assert!(!feed_line(&mut ledger, SUBAGENT_FIXTURE, 31));
         assert!(ledger.snapshot().is_none());
     }
 
@@ -1453,7 +1462,10 @@ mod tests {
                 "summary": "the reader gave up",
             })
         ));
-        assert_eq!(the_only_subagent(&ledger).state.as_deref(), Some("failed"));
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).subagents).state.as_deref(),
+            Some("failed")
+        );
 
         assert!(!feed(
             &mut ledger,
@@ -1464,7 +1476,7 @@ mod tests {
                 "summary": "still going",
             })
         ));
-        let unclaimed = the_only_subagent(&ledger);
+        let unclaimed = the_only(&snapshot_of(&ledger).subagents);
         assert_eq!(unclaimed.state.as_deref(), Some("failed"));
         assert_eq!(unclaimed.error.as_deref(), Some("the reader gave up"));
         assert_eq!(unclaimed.result, None);
@@ -1484,7 +1496,7 @@ mod tests {
             })
         ));
 
-        let result = the_only_subagent(&ledger)
+        let result = the_only(&snapshot_of(&ledger).subagents)
             .result
             .expect("a completed subagent carries its answer");
         assert!(!result.contains('\n'), "{result}");
@@ -1517,26 +1529,13 @@ mod tests {
         assert_eq!(keys, vec!["subagents".to_string()]);
     }
 
-    fn feed_shell_line(ledger: &mut SurfaceLedger, line_number: usize) -> bool {
-        feed(
-            ledger,
-            &fixture_line(SHELL_AND_CHECKLIST_FIXTURE, line_number),
-        )
-    }
-
     fn the_launch_answer() -> Value {
         fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE)
     }
 
-    fn the_only_shell(ledger: &SurfaceLedger) -> SurfaceShell {
-        let snapshot = ledger.snapshot().expect("the ledger holds a snapshot");
-        assert_eq!(snapshot.shells.len(), 1, "{snapshot:?}");
-        snapshot.shells[0].clone()
-    }
-
     fn ledger_through_the_launched_shell() -> SurfaceLedger {
         let mut ledger = SurfaceLedger::default();
-        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
         feed_tool_answer(&mut ledger, SHELL_LAUNCH_CALL_LINE, &the_launch_answer());
         ledger
     }
@@ -1552,10 +1551,14 @@ mod tests {
     fn a_started_background_shell_is_running_with_nothing_to_tail_yet() {
         let mut ledger = SurfaceLedger::default();
 
-        assert!(feed_shell_line(&mut ledger, SHELL_STARTED_LINE));
+        assert!(feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_STARTED_LINE
+        ));
 
         assert_eq!(
-            the_only_shell(&ledger),
+            the_only(&snapshot_of(&ledger).shells),
             SurfaceShell {
                 id: SHELL_TASK_ID.to_string(),
                 description: Some("Background job with ticks and finished message".to_string()),
@@ -1574,7 +1577,7 @@ mod tests {
     #[test]
     fn the_launching_answer_names_the_one_file_the_poller_tails() {
         let mut ledger = SurfaceLedger::default();
-        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
 
         assert!(feed_tool_answer(
             &mut ledger,
@@ -1596,10 +1599,11 @@ mod tests {
     #[test]
     fn a_launching_answer_naming_no_output_path_records_none() {
         let mut ledger = SurfaceLedger::default();
-        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
         let mut pathless = the_launch_answer();
-        pathless["message"]["content"][0]["content"] =
-            json!("Command running in background with ID: bn93ge6bt.");
+        pathless["message"]["content"][0]["content"] = json!(format!(
+            "Command running in background with ID: {SHELL_TASK_ID}."
+        ));
 
         assert!(!feed_tool_answer(
             &mut ledger,
@@ -1613,7 +1617,7 @@ mod tests {
     #[test]
     fn a_launching_answer_for_a_shell_the_ledger_never_started_records_none() {
         let mut ledger = SurfaceLedger::default();
-        feed_shell_line(&mut ledger, SHELL_STARTED_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
         let mut a_stranger = the_launch_answer();
         a_stranger["tool_use_result"]["backgroundTaskId"] = json!("someone-elses-shell");
 
@@ -1632,7 +1636,10 @@ mod tests {
         let ticking = tail_reading(&["tick 1", "tick 2"], None);
 
         assert!(ledger.read_shell_tail(SHELL_TASK_ID, ticking.clone()));
-        assert_eq!(the_only_shell(&ledger).tail, vec!["tick 1", "tick 2"]);
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).shells).tail,
+            vec!["tick 1", "tick 2"]
+        );
 
         assert!(!ledger.read_shell_tail(SHELL_TASK_ID, ticking));
     }
@@ -1643,7 +1650,10 @@ mod tests {
 
         assert!(!ledger.read_shell_tail("never-started", tail_reading(&["tick 1"], None)));
 
-        assert_eq!(the_only_shell(&ledger).tail, Vec::<String>::new());
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).shells).tail,
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -1655,7 +1665,7 @@ mod tests {
             tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.exit_code, Some(3));
         assert_eq!(closed.state.as_deref(), Some("done"));
         assert!(ledger.running_shell_outputs().is_empty());
@@ -1665,10 +1675,18 @@ mod tests {
     fn the_notification_closes_the_shell_and_ends_the_tailing() {
         let mut ledger = ledger_through_the_launched_shell();
 
-        assert!(feed_shell_line(&mut ledger, SHELL_UPDATED_LINE));
-        assert!(feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE));
+        assert!(feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_UPDATED_LINE
+        ));
+        assert!(feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_NOTIFICATION_LINE
+        ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.state.as_deref(), Some("done"));
         assert_eq!(closed.exit_code, Some(0));
         assert!(ledger.running_shell_outputs().is_empty());
@@ -1693,7 +1711,7 @@ mod tests {
             )
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.state.as_deref(), Some("failed"));
         assert_eq!(closed.exit_code, Some(137));
         assert!(ledger.running_shell_outputs().is_empty());
@@ -1708,7 +1726,7 @@ mod tests {
             &the_notification_reporting("failed", "Background command was killed")
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.state.as_deref(), Some("failed"));
         assert_eq!(closed.exit_code, None);
     }
@@ -1716,15 +1734,19 @@ mod tests {
     #[test]
     fn a_marker_arriving_after_the_notification_claims_no_exit_code() {
         let mut ledger = ledger_through_the_launched_shell();
-        feed_shell_line(&mut ledger, SHELL_UPDATED_LINE);
-        feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_UPDATED_LINE);
+        feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_NOTIFICATION_LINE,
+        );
 
         assert!(ledger.read_shell_tail(
             SHELL_TASK_ID,
             tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(
             closed.exit_code,
             Some(0),
@@ -1736,15 +1758,23 @@ mod tests {
     #[test]
     fn a_shell_restarted_under_the_same_id_reads_its_own_marker_again() {
         let mut ledger = ledger_through_the_launched_shell();
-        feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE);
+        feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_NOTIFICATION_LINE,
+        );
 
-        assert!(feed_shell_line(&mut ledger, SHELL_STARTED_LINE));
+        assert!(feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_STARTED_LINE
+        ));
         assert!(ledger.read_shell_tail(
             SHELL_TASK_ID,
             tail_reading(&["[exited with code 3]"], Some(3))
         ));
 
-        let restarted = the_only_shell(&ledger);
+        let restarted = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(restarted.state.as_deref(), Some("done"));
         assert_eq!(restarted.exit_code, Some(3));
     }
@@ -1762,7 +1792,7 @@ mod tests {
             tail_reading(&["tick 9", "[exited with code 137]"], Some(137))
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(
             closed.state.as_deref(),
             Some("failed"),
@@ -1780,9 +1810,13 @@ mod tests {
             tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
 
-        assert!(!feed_shell_line(&mut ledger, SHELL_UPDATED_LINE));
+        assert!(!feed_line(
+            &mut ledger,
+            SHELL_AND_CHECKLIST_FIXTURE,
+            SHELL_UPDATED_LINE
+        ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(
             closed.exit_code,
             Some(3),
@@ -1794,14 +1828,14 @@ mod tests {
     #[test]
     fn a_marker_after_a_status_line_still_records_the_code_no_notification_named() {
         let mut ledger = ledger_through_the_launched_shell();
-        feed_shell_line(&mut ledger, SHELL_UPDATED_LINE);
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_UPDATED_LINE);
 
         assert!(ledger.read_shell_tail(
             SHELL_TASK_ID,
             tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
 
-        assert_eq!(the_only_shell(&ledger).exit_code, Some(3));
+        assert_eq!(the_only(&snapshot_of(&ledger).shells).exit_code, Some(3));
     }
 
     #[test]
@@ -1817,13 +1851,10 @@ mod tests {
             &the_notification_reporting("failed", "Background command was killed")
         ));
 
-        let closed = the_only_shell(&ledger);
+        let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.state.as_deref(), Some("failed"));
         assert_eq!(closed.exit_code, None);
     }
-
-    const FIRST_CREATE_CALL_ID: &str = "toolu_01V6RPmcsmyRyEVKSdcpKTMJ";
-    const FIRST_UPDATE_CALL_ID: &str = "toolu_01UExMFQFbhqwFX9Qz4M3L1q";
 
     fn tool_call_block(call_line: usize) -> Value {
         fixture_line(SHELL_AND_CHECKLIST_FIXTURE, call_line)["message"]["content"][0].clone()
@@ -1870,10 +1901,7 @@ mod tests {
     }
 
     fn the_checklist(ledger: &SurfaceLedger) -> Vec<SurfaceChecklistItem> {
-        ledger
-            .snapshot()
-            .expect("the ledger holds a snapshot")
-            .checklist
+        snapshot_of(ledger).checklist
     }
 
     fn the_checklist_item(ledger: &SurfaceLedger, id: &str) -> SurfaceChecklistItem {

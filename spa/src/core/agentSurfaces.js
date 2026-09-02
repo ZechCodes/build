@@ -78,10 +78,12 @@ const runningAboveWhatFinished = (kind, renderRow) => ({
   },
 });
 
-/// The running phase stands open the moment its section is made, and never
-/// again: which folds are open is the reader's from there.
-const openTheRunningPhase = (section, phase) => {
-  if (phase.open) section.open = true;
+/// A phase opens once, the first paint that finds it running; which folds
+/// stand open is the reader's from there.
+const openNewlyRunningPhase = (opened, section, phase) => {
+  if (!phase.open || opened.has(phase.key)) return;
+  opened.add(phase.key);
+  section.open = true;
 };
 
 const VIEWER_PLANS = {
@@ -89,7 +91,7 @@ const VIEWER_PLANS = {
     frameHtmlWithEmptyLists: () => workflowViewerHtml({}, []),
     headSelector: WORKFLOW_HEAD_SELECTOR,
     headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
-    lists: ({ surfaces, selectedWorkflowIndex, reading, rowOptions }) => [
+    lists: ({ surfaces, selectedWorkflowIndex, reading, rowOptions, openedPhases }) => [
       {
         selector: SURFACE_SELECTOR.workflowChoices,
         rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex, reading),
@@ -98,8 +100,8 @@ const VIEWER_PLANS = {
       {
         selector: SURFACE_SELECTOR.workflowPhases,
         rows: workflowPhases(surfaces, selectedWorkflowIndex, reading),
-        render: (phase) => phaseSectionHtml(phase, rowOptions),
-        wire: openTheRunningPhase,
+        render: phaseSectionHtml,
+        onPainted: (section, phase) => openNewlyRunningPhase(openedPhases, section, phase),
         nested: (phase) => ({
           selector: SURFACE_SELECTOR.workflowAgents,
           rows: phase.rows,
@@ -130,6 +132,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
   const rowOptions = { compact };
+  const openedPhases = new Set();
   let surfaces = null;
   let selectedWorkflowIndex = 0;
   let ticker = null;
@@ -174,12 +177,13 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     const painted = patchList(container, list.rows, {
       keyOf: (row) => row.key,
       render: list.render,
-      wire: list.wire,
       ...VIEWER_ROW_MOTION,
     });
-    if (!list.nested) return;
     painted.forEach((element, index) => {
-      const inner = list.nested(list.rows[index]);
+      const row = list.rows[index];
+      if (list.onPainted) list.onPainted(element, row);
+      if (!list.nested) return;
+      const inner = list.nested(row);
       paintList(element.querySelector(inner.selector), inner);
     });
   };
@@ -192,6 +196,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
       selectedWorkflowIndex,
       reading,
       rowOptions,
+      openedPhases,
     };
     if (plan.headSelector) {
       patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));

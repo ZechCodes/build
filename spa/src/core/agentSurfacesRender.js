@@ -147,19 +147,18 @@ export function surfacePillHtml(pill, openKind) {
   </button>`;
 }
 
-/** One phase of a workflow: a fold the reader owns, over a keyed list of its
- *  agents. Whether it stands open is never said here — the mount opens the
- *  running one as it arrives, and the reader has it after that. */
-export function phaseSectionHtml(phase, { compact = false } = {}) {
+/** One phase of a workflow: a fold the reader owns, over the empty list its
+ *  agents are keyed into by the painter that owns them. Whether it stands open
+ *  is never said here — the mount opens the running one, and the reader has it
+ *  after that. */
+export function phaseSectionHtml(phase) {
   return `<details class="${PHASE_CLASS}" data-key="${esc(phase.key)}" data-state="${esc(phase.state)}">
     <summary class="${PHASE_HEAD_CLASS}">
       ${clippedTextHtml(phase.title, { className: "surface-phase-title", pressable: false })}
       <span class="surface-phase-count">${esc(phase.done)}/${esc(phase.total)}</span>
       ${clockHtml(phase.clock, phase.runningSince)}
     </summary>
-    <div class="${VIEWER_CLASS.workflowAgents}" ${KEYED_LIST_ATTRIBUTE}>${phase.rows
-      .map((row) => agentRowHtml(row, { compact }))
-      .join("")}</div>
+    <div class="${VIEWER_CLASS.workflowAgents}" ${KEYED_LIST_ATTRIBUTE}></div>
   </details>`;
 }
 
@@ -178,13 +177,11 @@ export function workflowHeadHtml(workflow) {
   </div>`;
 }
 
-export function workflowViewerHtml(workflow, choices, phases = [], options = {}) {
+export function workflowViewerHtml(workflow, choices, phases = []) {
   return `<div class="${VIEWER_CLASS.viewer} surface-workflow">
     <div class="${VIEWER_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
-    <div class="${VIEWER_CLASS.workflowPhases}">${phases
-      .map((phase) => phaseSectionHtml(phase, options))
-      .join("")}</div>
+    <div class="${VIEWER_CLASS.workflowPhases}">${phases.map(phaseSectionHtml).join("")}</div>
   </div>`;
 }
 

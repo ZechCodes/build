@@ -232,9 +232,7 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
     expect(shellViewerHtml([shellRow])).toContain(shellRowHtml(shellRow));
     expect(checklistViewerHtml([checklistRow])).toContain(checklistItemHtml(checklistRow));
     const phases = phasesOf(freshWorkflow);
-    const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), [], phases);
-    expect(workflowHtml).toContain(phaseSectionHtml(phases[0]));
-    expect(workflowHtml).toContain(agentRowHtml(phases[0].rows[0]));
+    expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases)).toContain(phaseSectionHtml(phases[0]));
   });
 
   it("leaves each viewer a frame the mount can fill when it is handed no rows", () => {
@@ -335,7 +333,8 @@ describe("the workflow viewer, stacked", () => {
     workflowViewerHtml(workflowRow(workflow), choices, phasesOf(workflow, nowMs));
 
   it("paints both of the id-less queued agents a fresh workflow carries, each marked queued", () => {
-    const painted = parseHtml(view(freshWorkflow));
+    const [phase] = phasesOf(freshWorkflow);
+    const painted = parseHtml(phase.rows.map((row) => agentRowHtml(row)).join(""));
     const agentRowElements = [...painted.querySelectorAll(".surface-agent")];
     expect(agentRowElements.length).toBe(2);
     expect(painted.textContent).toContain("Reader");
@@ -347,7 +346,7 @@ describe("the workflow viewer, stacked", () => {
     ]);
   });
 
-  it("stacks one section per phase, in order, each holding its own agents", () => {
+  it("stacks one section per phase, in order, each with an empty list for its agents", () => {
     const painted = parseHtml(view(stagedWorkflow));
     const sections = [...painted.querySelectorAll(".surface-phase")];
     expect(sections.map((section) => section.tagName)).toEqual(["DETAILS", "DETAILS"]);
@@ -356,12 +355,8 @@ describe("the workflow viewer, stacked", () => {
       "1/2",
       "0/1",
     ]);
-    expect(sections[1].querySelector(".surface-row-label").textContent).toBe("Writer");
-  });
-
-  it("draws each agent through the one agent row renderer", () => {
-    const phases = phasesOf(freshWorkflow);
-    expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases)).toContain(agentRowHtml(phases[0].rows[0]));
+    expect(sections.map((section) => section.querySelector(".surface-phase-agents").innerHTML)).toEqual(["", ""]);
+    expect(phasesOf(stagedWorkflow)[1].rows.map((row) => row.subject)).toEqual(["Writer"]);
   });
 
   it("names the workflow and marks its state on one line, with the description clipped beneath", () => {
@@ -384,7 +379,7 @@ describe("the workflow viewer, stacked", () => {
     expect(html).toContain(workflowChoiceHtml(choices[0]));
   });
 
-  it("escapes the workflow's own name and its agents' labels", () => {
+  it("escapes the workflow's own name and its phase titles", () => {
     const poisoned = { id: "w1", name: HOSTILE_MARKUP, state: "running", phases: [{ title: HOSTILE_MARKUP, agents: [{ label: HOSTILE_MARKUP }] }] };
     const html = view(poisoned, workflowChoicesWorthOffering({ workflows: [poisoned, poisoned] }, 0));
     expectEscaped(html);
@@ -412,11 +407,11 @@ describe("phaseSectionHtml", () => {
     expect(parseHtml(phaseSectionHtml(runningPhase())).firstElementChild.hasAttribute("open")).toBe(false);
   });
 
-  it("holds its agents in a list another painter keys, through the one row renderer", () => {
-    const phase = runningPhase();
-    const list = parseHtml(phaseSectionHtml(phase, { compact: true })).querySelector(".surface-phase-agents");
+  it("leaves its agents to the painter that keys them, holding an empty list for it", () => {
+    const list = parseHtml(phaseSectionHtml(runningPhase())).querySelector(".surface-phase-agents");
     expect(list.hasAttribute(KEYED_LIST_ATTRIBUTE)).toBe(true);
-    expect(list.innerHTML).toBe(parseHtml(phase.rows.map((row) => agentRowHtml(row, { compact: true })).join("")).innerHTML);
+    expect(list.innerHTML).toBe("");
+    expect(phaseSectionHtml(runningPhase())).not.toContain("surface-agent");
   });
 
   it("carries no clock at all for a phase nothing has started", () => {
@@ -625,18 +620,17 @@ describe("the wire the bridge actually builds", () => {
   });
 
   it("paints the recorded workflow's head, phases and agents", () => {
-    const phases = workflowPhases(recorded, 0, 0);
+    const phases = workflowPhases(recorded);
     const painted = parseHtml(workflowViewerHtml(surfaceRows(WORKFLOW_ENTRY_KIND, recorded)[0], [], phases));
     expect(painted.querySelector(".surface-workflow-head").textContent).toContain("readme-analysis");
     expect([...painted.querySelectorAll(".surface-phase-count")].map((count) => count.textContent)).toEqual([
       "2/2",
       "1/1",
     ]);
-    expect(
-      [...painted.querySelectorAll(".surface-phase")].map((section) =>
-        [...section.querySelectorAll(".surface-row-label")].map((label) => label.textContent),
-      ),
-    ).toEqual([["line-counter", "char-counter"], ["summarizer"]]);
+    expect(phases.map((phase) => phase.rows.map((row) => row.subject))).toEqual([
+      ["line-counter", "char-counter"],
+      ["summarizer"],
+    ]);
   });
 });
 

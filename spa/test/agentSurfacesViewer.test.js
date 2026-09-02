@@ -91,6 +91,25 @@ describe("mountSurfaceViewer", () => {
     viewer.dispose();
   });
 
+  it("opens the phase that starts running later, and leaves a collapsed one collapsed", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set(snapshot());
+    expect(phaseSections().map((section) => section.open)).toEqual([true, false]);
+
+    const moved = snapshot();
+    moved.workflows[0].phases[0].agents[0].state = "done";
+    moved.workflows[0].phases[1].agents[0].state = "running";
+    viewer.set(moved);
+
+    expect(phaseSections().map((section) => section.open)).toEqual([true, true]);
+
+    phaseSections()[1].open = false;
+    viewer.set(moved);
+
+    expect(phaseSections()[1].open).toBe(false);
+    viewer.dispose();
+  });
+
   it("leaves a section the reader toggled where the reader put it, repaint after repaint", () => {
     const viewer = mount(WORKFLOW_ENTRY_KIND);
     viewer.set(snapshot());

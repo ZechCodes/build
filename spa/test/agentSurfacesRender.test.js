@@ -3,9 +3,14 @@ import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
+  COMPLETED_FOLD_HEAD_SELECTOR,
+  COMPLETED_FOLD_SELECTOR,
+  SURFACE_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
+  completedFoldHtml,
   kindViewerHtml,
+  runningAndCompletedViewerHtml,
   shellRowHtml,
   surfacePillsHtml,
   workflowChoiceHtml,
@@ -21,6 +26,7 @@ import {
   agentRows,
   rowActions,
   rowSubject,
+  runningAndCompletedRows,
   surfacePills,
   surfaceRows,
   surfaceStateMark,
@@ -66,8 +72,10 @@ const freshWorkflow = {
 
 const oneWorkflow = (workflow) => ({ workflows: [workflow] });
 const workflowRow = (workflow) => surfaceRows("workflows", oneWorkflow(workflow))[0];
-const subagentViewerHtml = (rows) => kindViewerHtml(AGENT_ENTRY_KIND, rows, agentRowHtml);
-const shellViewerHtml = (rows) => kindViewerHtml(SHELL_ENTRY_KIND, rows, shellRowHtml);
+const subagentViewerHtml = (rows) =>
+  runningAndCompletedViewerHtml(AGENT_ENTRY_KIND, runningAndCompletedRows(rows), agentRowHtml);
+const shellViewerHtml = (rows) =>
+  runningAndCompletedViewerHtml(SHELL_ENTRY_KIND, runningAndCompletedRows(rows), shellRowHtml);
 const checklistViewerHtml = (rows) => kindViewerHtml(CHECKLIST_ENTRY_KIND, rows, checklistItemHtml);
 
 describe("agentRowHtml", () => {
@@ -199,13 +207,13 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
   });
 
   it("stamps each row with the key it arrived under, so a later keyed paint keeps it", () => {
-    const rows = surfaceRows(SHELL_ENTRY_KIND, {
-      shells: [{ id: "s1", description: "npm test", state: "running" }, { id: "s2", description: "cargo test", state: "done" }],
+    const rows = surfaceRows(CHECKLIST_ENTRY_KIND, {
+      checklist: [{ id: "t1", subject: "one", state: "pending" }, { id: "t2", subject: "two", state: "completed" }],
     });
-    const viewer = parseHtml(shellViewerHtml(rows)).querySelector(".surface-viewer");
+    const viewer = parseHtml(checklistViewerHtml(rows)).querySelector(".surface-viewer");
     expect([...viewer.children].map((child) => child.dataset.key)).toEqual(rows.map((row) => row.key));
     const painted = [...viewer.children];
-    patchList(viewer, rows, { keyOf: (row) => row.key, render: shellRowHtml });
+    patchList(viewer, rows, { keyOf: (row) => row.key, render: checklistItemHtml });
     expect([...viewer.children]).toEqual(painted);
   });
 });
@@ -236,11 +244,23 @@ describe("surfacePillsHtml", () => {
     ]);
   });
 
-  it("gives a live pill one working dot and a settled pill none", () => {
+  it("counts the running work of a pill and says nothing at all for a pill with none", () => {
     const row = parseHtml(surfacePillsHtml(pills, null));
-    const [live, settled] = [...row.querySelectorAll("button")];
-    expect(live.querySelectorAll(".sdot.sdot-working").length).toBe(1);
-    expect(settled.querySelectorAll(".sdot-working").length).toBe(0);
+    const [busy, settled] = [...row.querySelectorAll("button")];
+    expect(busy.querySelector(".surface-pill-count").textContent).toBe("1");
+    expect(settled.querySelector(".surface-pill-count")).toBe(null);
+    expect(settled.textContent.trim()).toBe("Checklist");
+  });
+
+  it("renders a workflows pill whose only workflow has finished as the label alone", () => {
+    const finished = surfacePills({ workflows: [{ id: "w1", name: "Review", state: "done" }] });
+    const button = parseHtml(surfacePillsHtml(finished, null)).querySelector("button");
+    expect(button.textContent.trim()).toBe("Workflows");
+    expect(button.querySelector(".surface-pill-count")).toBe(null);
+  });
+
+  it("wears no dot, the count being what says work is running", () => {
+    expect(surfacePillsHtml(pills, null)).not.toContain("sdot");
   });
 
   it("says the label and the count of each pill", () => {
@@ -254,7 +274,7 @@ describe("surfacePillsHtml", () => {
   });
 
   it("escapes a pill label", () => {
-    const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1, live: false }], null);
+    const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1 }], null);
     expectEscaped(html);
   });
 });
@@ -496,5 +516,69 @@ describe("the renderer is pure markup", () => {
     const source = coreSourceOf("agentSurfacesRender.js");
     expect(source).not.toContain("rowSubject");
     expect(source).not.toContain("rowActions");
+  });
+});
+
+describe("the viewer that folds away what has finished", () => {
+  const shellRows = (states) =>
+    surfaceRows(SHELL_ENTRY_KIND, {
+      shells: states.map((state, index) => ({ id: `s${index}`, description: `command ${index}`, state })),
+    });
+
+  const viewerOf = (states) => parseHtml(shellViewerHtml(shellRows(states))).querySelector(".surface-viewer");
+
+  it("lists the running rows above the fold and the finished ones inside it", () => {
+    const viewer = viewerOf(["running", "done", "failed"]);
+    expect([...viewer.querySelectorAll(".surface-running > .surface-row")].map((row) => row.dataset.key)).toEqual([
+      "s0",
+    ]);
+    expect(
+      [...viewer.querySelectorAll(".surface-completed .surface-completed-rows > .surface-row")].map(
+        (row) => row.dataset.key,
+      ),
+    ).toEqual(["s1", "s2"]);
+  });
+
+  it("says how many rows the fold holds, and keeps it shut until the reader opens it", () => {
+    const fold = viewerOf(["running", "done", "failed"]).querySelector(".surface-completed");
+    expect(fold.tagName).toBe("DETAILS");
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector(".surface-completed-head").textContent.trim()).toBe("Completed (2)");
+  });
+
+  it("omits the fold entirely while nothing has finished", () => {
+    expect(viewerOf(["running"]).querySelector(".surface-completed")).toBe(null);
+    expect(viewerOf([]).querySelector(".surface-completed")).toBe(null);
+  });
+
+  it("paints both lists with the one row renderer of the kind", () => {
+    const rows = shellRows(["running", "done"]);
+    const html = shellViewerHtml(rows);
+    expect(html).toContain(shellRowHtml(rows[0]));
+    expect(html).toContain(shellRowHtml(rows[1]));
+    const agents = agentRows([
+      { id: "a1", label: "Reader", state: "running" },
+      { id: "a2", label: "Counter", state: "done" },
+    ]);
+    const agentHtml = subagentViewerHtml(agents);
+    expect(agentHtml).toContain(agentRowHtml(agents[0]));
+    expect(agentHtml).toContain(agentRowHtml(agents[1]));
+  });
+
+  it("leaves the mount one frame with an empty running list and no fold", () => {
+    const empty = parseHtml(shellViewerHtml([]));
+    expect(empty.children.length).toBe(1);
+    expect(empty.querySelector(".surface-viewer.surface-shells")).toBeTruthy();
+    expect(empty.querySelector(".surface-running").children.length).toBe(0);
+  });
+
+  it("names each list a keyed paint fills", () => {
+    const viewer = viewerOf(["running", "done"]);
+    expect(viewer.querySelector(SURFACE_SELECTOR.running)).toBeTruthy();
+    expect(viewer.querySelector(SURFACE_SELECTOR.completed)).toBeTruthy();
+    expect(viewer.querySelector(COMPLETED_FOLD_SELECTOR)).toBeTruthy();
+    expect(parseHtml(completedFoldHtml(2)).querySelector(COMPLETED_FOLD_HEAD_SELECTOR).textContent.trim()).toBe(
+      "Completed (2)",
+    );
   });
 });

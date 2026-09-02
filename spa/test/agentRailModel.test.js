@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_PATTERN_COUNT,
   agentCanInterrupt,
@@ -7,13 +8,13 @@ import {
   aheadBehindText,
   bubbleTip,
   canRemoveAgent,
-  completionReportSections,
   providerLabel,
   railBubbles,
   railEntity,
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
+  startupStatusLine,
   statText,
   workingClock,
   workingSeconds,
@@ -273,26 +274,66 @@ describe("the pinned status line above the composer", () => {
 
   it("reads all three off the row, each blank when the row does not know it", () => {
     const row = { working_time: { since: ago(750), seconds: 750 }, stat: { insertions: 42, deletions: 7, ahead: 2, behind: 0 } };
-    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", sync: "↑2", stat: "+42 −7" });
-    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", sync: "", stat: "" });
-    expect(railWorkStatus(null, NOW)).toEqual({ working: "", sync: "", stat: "" });
+    expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", starting: "", sync: "↑2", stat: "+42 −7" });
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
+    expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
   });
 });
 
-describe("the completion report", () => {
-  it("keeps the lists that were filled in, in reading order", () => {
-    const sections = completionReportSections({
-      critical_files: ["src/a.rs — holds the change"],
-      risk_notes: [],
-      decisions: ["kept the old name"],
-      skips: ["did not touch the migration"],
-    });
-    expect(sections.map((s) => s.title)).toEqual(["Critical files", "Decisions", "Skipped"]);
-    expect(sections[0].items).toEqual(["src/a.rs — holds the change"]);
+describe("the startup line the status slot borrows from the conversation", () => {
+  const startup = (event, secondsAgo) => ({ type: "event", data: { event, created_at: ago(secondsAgo) } });
+
+  it("reads the newest item when that item is a startup event", () => {
+    expect(startupStatusLine([startup("run_started", 120)])).toEqual({ title: "Run started", at: NOW - 120000 });
+    expect(startupStatusLine([startup("run_started", 900), startup("session_started", 120)]))
+      .toEqual({ title: "Agent session started", at: NOW - 120000 });
   });
 
-  it("is nothing at all when the agent filled in nothing", () => {
-    expect(completionReportSections({ critical_files: [], risk_notes: [] })).toEqual([]);
-    expect(completionReportSections(null)).toEqual([]);
+  it("is nothing once anything newer is on the record", () => {
+    expect(startupStatusLine([])).toBeNull();
+    expect(startupStatusLine([startup("session_started", 120), { type: "message", data: { role: "agent", body: "on it" } }])).toBeNull();
+    expect(startupStatusLine([startup("session_started", 120), startup("reasoning", 60)])).toBeNull();
+    expect(startupStatusLine([{ type: "event", data: { event: "done" } }])).toBeNull();
+  });
+
+  it("carries no stamp for an event that arrived without one", () => {
+    expect(startupStatusLine([{ type: "event", data: { event: "run_started" } }])).toEqual({ title: "Run started", at: null });
+  });
+
+  it("stands in the working slot with its age, and only while nothing is working", () => {
+    const items = [startup("session_started", 120)];
+    expect(railWorkStatus({ working_time: null, stat: null }, NOW, items)).toEqual({
+      working: "",
+      starting: "Agent session started · 2m ago",
+      sync: "",
+      stat: "",
+    });
+    expect(railWorkStatus({ working_time: { since: ago(5), seconds: 5 } }, NOW, items)).toEqual({
+      working: "5s",
+      starting: "",
+      sync: "",
+      stat: "",
+    });
+  });
+
+  it("names the session's start in the harness's own words", () => {
+    const items = [startup("session_started", 120)];
+    expect(startupStatusLine(items, "Codex")).toEqual({ title: "Codex session started", at: NOW - 120000 });
+    expect(railWorkStatus(null, NOW, items, "Codex").starting).toBe("Codex session started · 2m ago");
+  });
+
+  it("says the title alone when the event carried no stamp", () => {
+    const items = [{ type: "event", data: { event: "run_started" } }];
+    expect(railWorkStatus(null, NOW, items).starting).toBe("Run started");
+  });
+});
+
+describe("what the rail's model is allowed to reach for", () => {
+  it("stays a pure model: no DOM, no wire, no renderer", () => {
+    const source = coreSourceOf("agentRailModel.js");
+    expect(source).not.toContain("document");
+    expect(source).not.toContain("App.call");
+    expect(source).not.toContain("fetch(");
+    expect(source).not.toContain('from "./thread.js"');
   });
 });

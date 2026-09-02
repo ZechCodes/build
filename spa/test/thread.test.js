@@ -245,7 +245,7 @@ describe("conversation thread rendering", () => {
     document.body.innerHTML = threadHtml({
       sessions: [{ provider: "Codex CLI" }],
       items: [
-        { type: "event", data: { event: "session_started" } },
+        { type: "event", data: { event: "session_ended" } },
         { type: "event", data: { event: "done", summary: "Finished the task." } },
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
@@ -253,7 +253,7 @@ describe("conversation thread rendering", () => {
     const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
     expect(completionHead).toContain("Codex commented");
     expect(completionHead).not.toContain("Agent commented");
-    expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex session ended");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
   });
 
@@ -263,14 +263,40 @@ describe("conversation thread rendering", () => {
     document.body.innerHTML = threadHtml({
       sessions: [{ provider: "claude_adk" }],
       items: [
-        { type: "event", data: { event: "session_started" } },
+        { type: "event", data: { event: "session_ended" } },
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
     const shown = document.querySelector(".thread-items").textContent;
-    expect(shown).toContain("Claude Code session started");
+    expect(shown).toContain("Claude Code session ended");
     expect(shown).not.toMatch(/claude_adk/);
     expect(shown).not.toMatch(/headless/i);
+  });
+});
+
+describe("the startup events the status line has taken over", () => {
+  it("keeps them out of the timeline and paints every other kind", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "event", data: { event: "session_started", created_at: "2026-07-24T12:00:00Z" } },
+        { type: "event", data: { event: "run_started", created_at: "2026-07-24T12:01:00Z" } },
+        { type: "event", data: { event: "session_ended", created_at: "2026-07-24T12:02:00Z" } },
+        { type: "message", data: { role: "agent", body: "on it", created_at: "2026-07-24T12:03:00Z" } },
+      ],
+    });
+    const shown = document.querySelector(".thread-items").textContent;
+    expect(shown).not.toContain("session started");
+    expect(shown).not.toContain("Run started");
+    expect(shown).toContain("Agent session ended");
+    expect(shown).toContain("on it");
+    expect(document.querySelectorAll(".thread-event")).toHaveLength(1);
+  });
+
+  it("leaves a conversation of nothing but startup events empty", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "run_started", created_at: "2026-07-24T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-empty")).toBeTruthy();
   });
 });
 
@@ -1158,7 +1184,7 @@ describe("the persisted window", () => {
   it("exports what it holds and seeds an empty cache back to it", () => {
     const cache = createThreadCache();
     cache.absorb({ items: [item(1), item(2)], has_more: true, thread_total: 5, thread_last_sequence: 2 });
-    const saved = cache.exportWindow();
+    const saved = cache.readWindow();
     expect(saved.items).toHaveLength(2);
     const revived = createThreadCache();
     expect(revived.seedWindow(saved)).toBe(true);
@@ -1170,14 +1196,14 @@ describe("the persisted window", () => {
     const cache = createThreadCache();
     cache.absorb({ items: [item(1), item(2)], has_more: false, thread_total: 2, thread_last_sequence: 2 });
     const revived = createThreadCache();
-    revived.seedWindow(cache.exportWindow());
+    revived.seedWindow(cache.readWindow());
     const folded = revived.absorb({ items: [item(3)], thread_total: 3 });
     expect(folded.items.map((held) => held.data.sequence)).toEqual([1, 2, 3]);
   });
 
   it("exports nothing while no window is open, and refuses a seed over one", () => {
     const cache = createThreadCache();
-    expect(cache.exportWindow()).toBeNull();
+    expect(cache.readWindow()).toBeNull();
     cache.absorb({ items: [item(1)], has_more: false, thread_total: 1, thread_last_sequence: 1 });
     expect(cache.seedWindow({ items: [item(9)], deliveredSequence: 9 })).toBe(false);
     expect(cache.cursorParam()).toEqual({ thread_after_sequence: 1 });

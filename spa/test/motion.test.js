@@ -12,8 +12,10 @@ import {
   MOTION_DURATION_MS,
   MOTION_EASING,
   hide,
+  motionHooks,
   motionSettled,
   reveal,
+  settleHidden,
 } from "../src/core/motion.js";
 
 const boxOf = (width, height) => ({ width, height, top: 0, left: 0, right: width, bottom: height });
@@ -226,6 +228,134 @@ describe("a move that is countermanded before it finishes", () => {
 
     started[0].finish();
     await Promise.all([hidden, again]);
+    expect(pill.hidden).toBe(true);
+  });
+});
+
+describe("an element the document does not hold", () => {
+  it("changes one that was never in it at once, asking for no animation", async () => {
+    const started = recordAnimations();
+    const loose = document.createElement("span");
+    loose.hidden = true;
+
+    await reveal(loose, { axis: "width" });
+
+    expect(started).toHaveLength(0);
+    expect(loose.hidden).toBe(false);
+    expect(inlineStyleOf(loose)).toBe("");
+  });
+
+  it("finishes a move whose element left the document under it", async () => {
+    const started = recordAnimations();
+    const pill = elementSized(120);
+
+    const hidden = hide(pill, { axis: "width" });
+    await tick();
+    pill.remove();
+    started[0].finish();
+    await hidden;
+
+    expect(pill.hidden).toBe(true);
+    await expect(motionSettled()).resolves.toBeUndefined();
+  });
+});
+
+describe("a move the browser refuses to run", () => {
+  const animateThatThrows = () => {
+    Element.prototype.animate = function animate() {
+      throw new Error("no timeline here");
+    };
+  };
+
+  it("reports the failure, stays out of the way of the next move, and leaves nothing moving", async () => {
+    animateThatThrows();
+    const pill = elementSized(120);
+
+    await expect(hide(pill, { axis: "width" })).rejects.toThrow("no timeline here");
+    expect(pill.hidden).toBe(true);
+    expect(inlineStyleOf(pill)).toBe("");
+    await expect(motionSettled()).resolves.toBeUndefined();
+
+    const started = recordAnimations();
+    const revealed = reveal(pill, { axis: "width" });
+    await tick();
+
+    expect(started).toHaveLength(1);
+    started[0].finish();
+    await revealed;
+    expect(pill.hidden).toBe(false);
+  });
+});
+
+describe("a move countermanded on a page that cannot animate", () => {
+  it("leaves no dead record behind for the next move to be answered from", async () => {
+    const started = recordAnimations();
+    const pill = elementSized(120);
+
+    const hidden = hide(pill, { axis: "width" });
+    await tick();
+    expect(started).toHaveLength(1);
+
+    stopRecordingAnimations();
+    await reveal(pill, { axis: "width" });
+    await hidden;
+    expect(pill.hidden).toBe(false);
+
+    await hide(pill, { axis: "width" });
+
+    expect(pill.hidden).toBe(true);
+  });
+});
+
+describe("the hooks a keyed list paints its arrivals and departures with", () => {
+  it("grows an entry that arrived from nothing and shrinks one that left", async () => {
+    const started = recordAnimations();
+    const hooks = motionHooks({ axis: "height" });
+    const row = elementSized(200, 40);
+
+    const arriving = hooks.onEnter(row);
+    await tick();
+    expect(started[0].keyframes).toEqual([
+      { height: "0px", opacity: 0 },
+      { height: "40px", opacity: 1 },
+    ]);
+    started[0].finish();
+    await arriving;
+    expect(row.hidden).toBe(false);
+
+    const leaving = hooks.onExit(row);
+    await tick();
+    expect(started[1].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+    started[1].finish();
+    await leaving;
+    expect(row.hidden).toBe(true);
+  });
+});
+
+describe("settling an element hidden without moving it", () => {
+  it("cancels the move it was running and takes it out of the layout at once", async () => {
+    const started = recordAnimations();
+    const viewer = elementHidden(400, 260);
+
+    const revealed = reveal(viewer, { axis: "height" });
+    await tick();
+    expect(started).toHaveLength(1);
+
+    settleHidden(viewer);
+
+    expect(started[0].cancelled).toBe(true);
+    expect(viewer.hidden).toBe(true);
+    expect(inlineStyleOf(viewer)).toBe("");
+
+    await revealed;
+    await expect(motionSettled()).resolves.toBeUndefined();
+  });
+
+  it("takes one no move is holding out of the layout just the same", () => {
+    const pill = elementSized(120);
+
+    settleHidden(pill);
+
     expect(pill.hidden).toBe(true);
   });
 });

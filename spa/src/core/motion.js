@@ -85,13 +85,29 @@ export function hide(element, { axis = "width" } = {}) {
   return move(element, HIDE, axis);
 }
 
+export function settleHidden(element) {
+  const standing = moves.get(element);
+  if (standing) countermand(element, standing);
+  settle(element, HIDE);
+}
+
+export function motionHooks({ axis = "width" } = {}) {
+  return {
+    onEnter: (element) => {
+      element.hidden = true;
+      return reveal(element, { axis });
+    },
+    onExit: (element) => hide(element, { axis }),
+  };
+}
+
 function move(element, direction, axis) {
   const standing = moves.get(element);
   if (standing && standing.direction === direction) return standing.finished;
-  if (standing) countermand(standing);
+  if (standing) countermand(element, standing);
   else if (isShown(element) === (direction === REVEAL)) return Promise.resolve();
 
-  if (prefersReducedMotion() || typeof element.animate !== "function") {
+  if (!element.isConnected || prefersReducedMotion() || typeof element.animate !== "function") {
     settle(element, direction);
     return Promise.resolve();
   }
@@ -105,8 +121,18 @@ function move(element, direction, axis) {
     run.stop = resolve;
   });
   moves.set(element, run);
-  enqueue(() => play(element, run).then(run.done, run.fail));
+  enqueue(() => play(element, run).then(run.done, (error) => failMove(element, run, error)));
   return run.finished;
+}
+
+function failMove(element, run, error) {
+  forget(element, run);
+  settle(element, run.direction);
+  run.fail(error);
+}
+
+function forget(element, run) {
+  if (moves.get(element) === run) moves.delete(element);
 }
 
 /// What the element is on its way to being, which is what a second call about
@@ -174,7 +200,7 @@ async function play(element, run) {
   // so the element is never drawn at the size the keyframes ended on.
   settle(element, direction);
   run.animation.cancel();
-  if (moves.get(element) === run) moves.delete(element);
+  forget(element, run);
 }
 
 /// Stop a move the other direction has overtaken.
@@ -182,8 +208,9 @@ async function play(element, run) {
 /// The running animation is cancelled rather than left to fight the new one,
 /// and the caller waiting on the countermanded move is answered — it is over,
 /// even though it did not arrive.
-function countermand(run) {
+function countermand(element, run) {
   run.countermanded = true;
+  forget(element, run);
   if (run.animation) run.animation.cancel();
   run.stop();
   run.done();
@@ -197,7 +224,7 @@ function enqueue(start) {
   moving += 1;
   const admitted = queue;
   queue = admitted.then(() => pause(MOTION_BEAT_MS));
-  admitted.then(start).then(release);
+  admitted.then(start).finally(release);
 }
 
 function release() {

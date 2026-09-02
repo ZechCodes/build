@@ -40,15 +40,17 @@ export function stopRecordingAnimations() {
  *  little more for the timer to actually land. */
 export const motionBeat = () => new Promise((resolve) => setTimeout(resolve, MOTION_BEAT_MS + 10));
 
-/// Finish everything recorded, beat by beat, until the queue is empty.
-///
-/// A move that was still waiting its turn when the last one finished has not
-/// been recorded yet, so the rounds go on admitting and finishing until nothing
-/// is moving.
+const SETTLING_ROUNDS = 24;
+
 export async function settleMotion(started) {
-  for (let round = 0; round < 12; round += 1) {
+  for (let round = 0; round < SETTLING_ROUNDS; round += 1) {
     started.forEach((run) => run.finish());
+    let still = false;
+    motionSettled().then(() => {
+      still = true;
+    });
     await motionBeat();
+    if (still) return;
   }
   await motionSettled();
 }

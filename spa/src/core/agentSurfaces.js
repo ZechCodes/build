@@ -360,12 +360,15 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem
   pillHost.addEventListener("click", onPillPress);
 
   return {
-    set(nextSurfaces) {
+    /** `asOfMs` is when the snapshot was SEEN — now for a live payload, the
+     *  record's own stamp for one read off disk. It is what the linger is
+     *  measured from, so an old snapshot arms no fresh grace. */
+    set(nextSurfaces, asOfMs = Date.now()) {
       const arriving = JSON.stringify(nextSurfaces || null);
       const unchangedSinceLastPaint = arriving === paintedSurfaces;
       paintedSurfaces = arriving;
       surfaces = nextSurfaces || null;
-      visibility = advanceSurfaceVisibility(visibility, surfaces, Date.now());
+      visibility = advanceSurfaceVisibility(visibility, surfaces, asOfMs);
       if (unchangedSinceLastPaint) return;
       paint();
     },

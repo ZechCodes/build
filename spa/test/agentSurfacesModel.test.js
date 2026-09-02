@@ -21,6 +21,7 @@ import {
   surfaceMenuOptions,
   surfacePills,
   surfaceRows,
+  surfacesAfterGrace,
   surfaceStateMark,
   phaseClock,
   workflowChoicesWorthOffering,
@@ -155,6 +156,37 @@ describe("the pills that count running work and linger", () => {
       ["workflows", 1],
       ["checklist", 0],
     ]);
+  });
+});
+
+describe("a snapshot read back long after it was saved", () => {
+  const saved = {
+    workflows: [{ id: "w1", name: "Review", state: "running" }],
+    subagents: [{ id: "a1", state: "running" }],
+    shells: [{ id: "s1", state: "running" }],
+    checklist: [{ id: "t1", state: "pending" }],
+  };
+  const savedAt = 1000;
+
+  it("keeps every kind while the grace has not run out", () => {
+    expect(surfacesAfterGrace(saved, savedAt, savedAt + SURFACE_PILL_GRACE_MS)).toEqual(saved);
+  });
+
+  it("drops the kinds that only a live tab can answer for once it has", () => {
+    expect(surfacesAfterGrace(saved, savedAt, savedAt + SURFACE_PILL_GRACE_MS + 1)).toEqual({
+      workflows: saved.workflows,
+      checklist: saved.checklist,
+    });
+  });
+
+  it("leaves the snapshot it was handed alone", () => {
+    const given = { ...saved };
+    surfacesAfterGrace(given, savedAt, savedAt + SURFACE_PILL_GRACE_MS * 10);
+    expect(given).toEqual(saved);
+  });
+
+  it("answers nothing for nothing", () => {
+    expect(surfacesAfterGrace(null, savedAt, savedAt + SURFACE_PILL_GRACE_MS * 10)).toBe(null);
   });
 });
 

@@ -84,7 +84,7 @@ const { readCached, writeCached, wipeCache } = await import("../src/core/localCa
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
-const { writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
+const { SURFACE_PILL_GRACE_MS, writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
 const { surfacesCacheAddress, surfacesRecord } = await import("../src/core/surfacesCache.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -1952,6 +1952,11 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
   const surfacesAddress = (sub) => surfacesCacheAddress({ deviceId: "dev-1", entityId: "run-3", agentId: sub });
   const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), surfacesRecord(surfaces));
+  const saveSurfacesLongAgo = async (sub, surfaces) => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() - SURFACE_PILL_GRACE_MS - 1);
+    await saveSurfaces(sub, surfaces);
+    clock.mockRestore();
+  };
   const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
   const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
   const pillKinds = () =>
@@ -1982,6 +1987,24 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual([]);
+  });
+
+  it("seeds no kind a live tab answers for from a snapshot older than the grace", async () => {
+    await saveSurfacesLongAgo("ag-1", {
+      ...shellsRunning("cargo test"),
+      ...aChecklist,
+      subagents: [{ id: "s-1", label: "reviewer", state: "running" }],
+    });
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["checklist"]);
+  });
+
+  it("seeds the same snapshot whole while the grace still holds", async () => {
+    await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["shells", "checklist"]);
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {

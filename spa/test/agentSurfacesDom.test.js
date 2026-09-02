@@ -143,6 +143,16 @@ describe("the pill that lingers after the work stops", () => {
     surfaces.dispose();
   });
 
+  it("lingers from when the snapshot was seen, not from when it was handed over", async () => {
+    const surfaces = mount();
+    surfaces.set(snapshot(), Date.now() - SURFACE_PILL_GRACE_MS - 1);
+    expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
+
+    surfaces.set(finishedShells());
+    expect(standing(`[data-surface-kind="${SHELL_ENTRY_KIND}"]`)).toEqual([]);
+    surfaces.dispose();
+  });
+
   it("keeps the pill and the viewer while it is open, and closes both a grace after it is shut", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());

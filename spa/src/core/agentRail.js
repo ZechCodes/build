@@ -82,7 +82,7 @@ import {
   writeThreadKeepingComposer,
 } from "./thread.js";
 import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
-import { surfaceMenuOptions } from "./agentSurfacesModel.js";
+import { surfaceMenuOptions, surfacesAfterGrace } from "./agentSurfacesModel.js";
 import { surfacesCacheAddress, surfacesFingerprint, surfacesFromRecord, surfacesRecord } from "./surfacesCache.js";
 import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
@@ -377,7 +377,7 @@ export function mountAgentRail(host, context) {
   const seedSurfaces = (record, seededFor) => {
     const seen = surfacesFromRecord(record);
     if (!seen || surfacesAnsweredFor === seededFor) return;
-    seededSurfaces = seen;
+    seededSurfaces = { surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()), at: seen.at };
     surfacesOnDisk = surfacesFingerprint(seen.surfaces);
     syncSurfaces();
     syncSurfaceOverlay();
@@ -1103,13 +1103,17 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  const surfacesInFocus = () => {
+  /** The snapshot the panel is showing and when it was seen: now for a live
+   *  payload, the record's own stamp for one still standing on the disk. */
+  const surfacesSeen = () => {
     const agent = agentInFocus();
-    if (!agent) return null;
-    return agent.surfaces || (seededSurfaces && seededSurfaces.surfaces);
+    const live = agent && agent.surfaces;
+    if (live) return { surfaces: live, at: Date.now() };
+    if (agent && seededSurfaces) return seededSurfaces;
+    return { surfaces: null, at: Date.now() };
   };
 
-  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
+  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesSeen().surfaces);
 
   const mountSurfaces = (panel) => {
     const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
@@ -1133,7 +1137,8 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaces = () => {
     if (!surfacesBlock) return;
-    surfacesBlock.set(surfacesInFocus());
+    const seen = surfacesSeen();
+    surfacesBlock.set(seen.surfaces, seen.at);
   };
 
   const paintSurfaceMenu = (panel) => {
@@ -1158,7 +1163,7 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaceOverlay = () => {
     if (!surfaceOverlay) return;
-    surfaceOverlay.set(surfacesInFocus());
+    surfaceOverlay.set(surfacesSeen().surfaces);
   };
 
   const closeSurfaceOverlay = () => {

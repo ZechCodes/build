@@ -109,12 +109,6 @@ function placeMenuFromButtonBox(menu, buttonBox, menuHeight) {
   menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
 }
 
-/** How tall the menu will stand once it is open, asked while it is still shut.
- *
- *  Which side of the button the menu opens on is decided before it has grown,
- *  and a shut menu is not rendered, so it is shown for the length of the
- *  measurement and put back. Nothing is painted inside one task, so nothing of
- *  this reaches the screen. */
 function menuHeightWhenShown(menu) {
   if (!menu.hidden) return menu.offsetHeight;
   menu.hidden = false;
@@ -141,9 +135,9 @@ function liftMenuOutOfScroll(container, menu, closeMenu) {
 /** Wire the caret and the menu of a split button already in the DOM: the caret
  *  toggles it, a press outside closes it, and choosing an item closes it and
  *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
- *  shut it for its own reasons — a press that starts working, say; it resolves
- *  once the menu has finished shrinking away. A container holding a lone button
- *  (no caret, no menu) wires nothing and the close is a no-op.
+ *  shut it for its own reasons — a press that starts working, say. A container
+ *  holding a lone button (no caret, no menu) wires nothing and the close is a
+ *  no-op.
  *
  *  Split out of `mountSplitButton` because the composer's send is a split
  *  button whose press is NOT a single-flight action with a busy label: it is a
@@ -161,18 +155,11 @@ export function mountSplitMenu(container, { onChoose }) {
   // being reached for) is not outside.
   let stopWatchingOutsidePress = null;
   let settleLiftedMenu = null;
-  // Whether the menu is open is what it is on its way to being, not what it is
-  // this frame: a menu that is still shrinking is shut, and a caret pressed
-  // while it shrinks opens it again rather than closing it twice.
   let menuIsOpen = false;
   const closeMenu = () => {
     if (!menu) return Promise.resolve();
     menuIsOpen = false;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
-    // A lifted menu that lost its fixed placement mid-shrink would jump back
-    // into the scroller it was lifted out of, so the placement stands until the
-    // shrinking is over — and goes on standing if the menu opened again while
-    // it shrank, because it is the placement that menu is still wearing.
     return hide(menu, MENU_MOVE).then(() => {
       if (menuIsOpen || !settleLiftedMenu) return;
       settleLiftedMenu();

@@ -12,8 +12,6 @@
 
 const ELEMENT_NODE = 1;
 
-/** What `core/motion.js` borrows off an element it moves: whether the element
- *  is in the layout, and how much of it is. */
 const MOVED_PROPERTIES = ["hidden", "style"];
 
 /** Whether two nodes can be made to say the same thing, or one has to replace
@@ -33,13 +31,6 @@ const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === 
 
 const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
-/// Whether the render is speaking about something a move owns.
-///
-/// An element marked `data-motion` is shown and sized by `core/motion.js` —
-/// mid-move, and after it, since the state a move settles on is one no render
-/// can know. A paint that wrote `hidden` back would take a pill's count cap out
-/// of the layout the frame its exit began, and one that cleared the inline
-/// sizes would hand the element back to layout mid-shrink.
 const shownByAMove = (live, name) => MOVED_PROPERTIES.includes(name) && live.hasAttribute("data-motion");
 
 function patchAttributes(live, next) {

@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-// The console head as a strip of open terminals.
-//
-// The head is a label that opens and shuts the panel, a horizontally scrolling
-// strip of one tab per terminal with the + riding sticky at its right edge, and
-// the grow control on the far right. The strip is a keyed list: a tab arrives
-// by growing into the row and leaves by shrinking out of it, and everything
-// else — a selection, a size — patches the tabs already standing.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -49,8 +42,6 @@ const strip = () => region().querySelector(".console-tabs");
 const tabElements = () => [...region().querySelectorAll(".console-tab")];
 const tabNames = () => [...region().querySelectorAll(".console-tab-name")].map((cell) => cell.textContent);
 
-/** The one element a piece of head markup describes, for reading the pure
- *  renderer's answer as a tree rather than as a string. */
 const parse = (html) => {
   const holder = document.createElement("div");
   holder.innerHTML = html;

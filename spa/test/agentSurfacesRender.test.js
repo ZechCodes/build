@@ -248,8 +248,6 @@ describe("surfacePillHtml", () => {
     expect(settled.textContent.trim()).toBe("Checklist");
   });
 
-  // The cap grows and shrinks through core/motion.js, so whether it is in the
-  // layout is not the render's to say on any paint after the first.
   it("hands the cap and the pill itself to the motion primitive", () => {
     expect(rendered(busyPill, null).hasAttribute("data-motion")).toBe(true);
     expect(rendered(busyPill, null).querySelector(".surface-pill-count").hasAttribute("data-motion")).toBe(true);

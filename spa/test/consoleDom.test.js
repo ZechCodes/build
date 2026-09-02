@@ -93,8 +93,6 @@ afterEach(() => {
 });
 
 describe("the shut console", () => {
-  // The strip is the way in, so a shut console has to know what is open in the
-  // checkout it stands on. Listing is all it does: nothing is ever created.
   it("is a bar with the checkout's terminals beside it, and creates none of them", async () => {
     manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     await mount();
@@ -257,8 +255,6 @@ describe("the terminals", () => {
   });
 });
 
-// The panel holds a screen or it holds nothing, and nothing is not a state it
-// is ever shown in: it opens on a terminal, and shuts the moment it has none.
 describe("a console with no terminals", () => {
   const storedSize = () => localStorage.getItem("build.console.size.branch:p1:build/login");
 
@@ -278,10 +274,14 @@ describe("a console with no terminals", () => {
     expect(size()).toBe("collapsed");
     expect(region().querySelector(".console-body").textContent).toBe("");
     expect(storedSize()).toBeNull();
-    // …and the backtick is the same control by another name.
+  });
+
+  it("is the same control under the backtick, and just as inert", async () => {
+    await mount();
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "`", bubbles: true, cancelable: true }));
     await flush();
     expect(size()).toBe("collapsed");
+    expect(storedSize()).toBeNull();
   });
 
   it("shuts when the last terminal is closed, and reopens at the size it was left", async () => {

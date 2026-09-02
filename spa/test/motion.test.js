@@ -1,9 +1,4 @@
 // @vitest-environment jsdom
-// One primitive owns every enter and exit, so a row that arrives grows into
-// place and a row that leaves is gone from the document only once it has
-// finished leaving. Several of them in the same paint queue up a beat apart
-// rather than all moving at once, and a reader who asked for less movement
-// gets the same state change with no animation at all.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { motionBeat as tick, recordAnimations, stopRecordingAnimations } from "./motionRecorder.js";

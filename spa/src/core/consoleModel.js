@@ -14,7 +14,6 @@ export const CONSOLE_SIZES = ["collapsed", "half", "full"];
 const SIZE_KEY_PREFIX = "build.console.size.";
 const REOPEN_KEY_PREFIX = "build.console.reopen.";
 
-/** The size a console with no memory of an open one opens at. */
 export const DEFAULT_OPEN_SIZE = "half";
 
 /** A stored or passed-in size, or the shut bar — which is what an unreadable
@@ -39,12 +38,16 @@ export function readConsoleSize(key, storage = globalThis.localStorage) {
   }
 }
 
-export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
+function rememberSize(prefix, key, size, storage) {
   try {
-    storage.setItem(SIZE_KEY_PREFIX + key, consoleSize(size));
+    storage.setItem(prefix + key, consoleSize(size));
   } catch {
     /* private mode: the choice lasts the mount */
   }
+}
+
+export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
+  rememberSize(SIZE_KEY_PREFIX, key, size, storage);
 }
 
 const openSizeOf = (value) => (consoleSize(value) === "collapsed" ? DEFAULT_OPEN_SIZE : consoleSize(value));
@@ -53,8 +56,6 @@ export function toggledConsoleSize(size, openSize = DEFAULT_OPEN_SIZE) {
   return consoleSize(size) === "collapsed" ? openSizeOf(openSize) : "collapsed";
 }
 
-/** The size this device last had that work item's console OPEN at. Shut is not
- *  one, so shutting the panel never costs the size it was left at. */
 export function readConsoleReopenSize(key, storage = globalThis.localStorage) {
   try {
     return openSizeOf(storage.getItem(REOPEN_KEY_PREFIX + key));
@@ -65,11 +66,7 @@ export function readConsoleReopenSize(key, storage = globalThis.localStorage) {
 
 export function writeConsoleReopenSize(key, size, storage = globalThis.localStorage) {
   if (consoleSize(size) === "collapsed") return;
-  try {
-    storage.setItem(REOPEN_KEY_PREFIX + key, consoleSize(size));
-  } catch {
-    /* private mode: the choice lasts the mount */
-  }
+  rememberSize(REOPEN_KEY_PREFIX, key, size, storage);
 }
 
 /** The grow control: bigger, until there is no bigger, and then back. */

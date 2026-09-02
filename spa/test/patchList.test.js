@@ -621,7 +621,6 @@ describe("renaming an entry to the identity the answer gave it", () => {
   });
 });
 
-/** A promise the test finishes when it wants the exit to be over. */
 function deferred() {
   let settle;
   const promise = new Promise((resolve) => {
@@ -640,8 +639,6 @@ const refused = () => {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-/** The keys of the entries the list is showing — the ones on their way out are
- *  still in the document, but they are no longer entries. */
 const liveKeysOf = (list) =>
   [...list.children].filter((child) => !child.hasAttribute("data-exiting")).map((child) => child.getAttribute("data-key"));
 

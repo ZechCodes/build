@@ -106,7 +106,6 @@ const RAIL_STATUS_GIT_ID = "rail-status-git";
 const RAIL_VIEWER_ID = "rail-surfaces-viewer";
 const WORKING_WORD_SELECTOR = ".rail-status-working-word";
 const STATUS_TEXT_SELECTOR = ".rail-status-text";
-/** A pill that is in the row rather than on its way out of it. */
 const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
 const SURFACE_MENU_CLASS = "rail-surface-menu";
 const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
@@ -256,9 +255,6 @@ function paintStatusGit(git, status) {
   else hide(git, { axis: "width" });
 }
 
-/// The one row pinned above the composer: what the turn is doing, the pills the
-/// agent's surfaces put up, and the git facts — in that order, the pills
-/// scrolling in whatever room the other two leave them.
 const railStatusRowHtml = () =>
   `<div class="rail-status" id="${RAIL_STATUS_ID}" hidden>
     <span class="rail-status-lead" id="${RAIL_STATUS_LEAD_ID}" hidden></span>
@@ -266,9 +262,6 @@ const railStatusRowHtml = () =>
     <span class="rail-status-git" id="${RAIL_STATUS_GIT_ID}" hidden></span>
   </div>`;
 
-/// Where a pill's viewer opens: the last thing in the conversation column,
-/// above the line that tops the composer block, so it pushes the conversation
-/// up as it grows rather than covering it.
 const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
 
 function surfaceMenuHtml(options) {

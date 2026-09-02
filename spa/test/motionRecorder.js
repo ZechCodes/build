@@ -1,12 +1,5 @@
-// Standing in for the browser's animation engine, which jsdom has none of.
-//
-// Every call the motion primitive makes is recorded and left running until the
-// test finishes it by hand, so a test can look at what a move asked for before
-// deciding when it is over.
-
 import { MOTION_BEAT_MS, motionSettled } from "../src/core/motion.js";
 
-/** Every animation the primitive started, each one finished by hand. */
 export function recordAnimations() {
   const started = [];
   running = [];
@@ -41,8 +34,6 @@ export function stopRecordingAnimations() {
   delete Element.prototype.animate;
 }
 
-/** Long enough for the queue to admit the next move: the beat it waits, and a
- *  little more for the timer to actually land. */
 export const motionBeat = () => new Promise((resolve) => setTimeout(resolve, MOTION_BEAT_MS + 10));
 
 const SETTLING_ROUNDS = 24;

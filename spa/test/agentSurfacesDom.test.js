@@ -22,8 +22,6 @@ const SURFACES_KEY = "branch-1:agent-1";
 
 const snapshot = () => surfacesSnapshot();
 
-/// The panel the rail hands the surfaces: a strip inside the status row, and a
-/// viewer of its own at the bottom of the conversation column.
 const conversationColumn = () => {
   document.body.innerHTML = `<div class="rail-panel">
     <div class="rail-body" id="rail-body"></div>
@@ -52,8 +50,6 @@ const mount = (options = {}) =>
   });
 
 const pill = (kind) => document.querySelector(`[data-surface-kind="${kind}"]`);
-/// A viewer leaves before its content does, so a press that closes one is over
-/// only once nothing is moving.
 const pressPill = async (kind) => {
   pill(kind).click();
   await motionSettled();

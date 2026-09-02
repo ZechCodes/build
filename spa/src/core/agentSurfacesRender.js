@@ -106,17 +106,14 @@ export function agentRowHtml(row) {
   });
 }
 
-/// One pill, and the cap its count rides in at the pill's end.
-///
-/// The cap is always in the markup and never taken out: `data-motion` says its
-/// shown-ness belongs to `core/motion.js`, which grows it into place when a
-/// count arrives and shrinks it away when the last of the work finishes — the
-/// pill closing up behind it rather than jumping a cap's width.
+const pillCountCapHtml = (count) =>
+  `<span class="${PILL_COUNT_CLASS}" data-motion${count ? "" : " hidden"}>${count ? esc(count) : ""}</span>`;
+
 export function surfacePillHtml(pill, openKind) {
   return `<button type="button" class="surface-pill" data-motion data-surface-kind="${esc(pill.kind)}"
     aria-pressed="${pill.kind === openKind}">
     <span class="surface-pill-label">${esc(pill.label)}</span>
-    <span class="${PILL_COUNT_CLASS}" data-motion${pill.count ? "" : " hidden"}>${pill.count ? esc(pill.count) : ""}</span>
+    ${pillCountCapHtml(pill.count)}
   </button>`;
 }
 

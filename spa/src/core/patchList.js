@@ -36,21 +36,10 @@
 //   where it is. Headers, empty states and footers are the caller's, and belong
 //   either ahead of the entries or outside the container: new entries are
 //   appended at the end of a container that holds no entries yet.
-// - `onEnter(element)` runs for an entry that was not in the container before,
-//   once it is standing in its finished place, and `onExit(element)` runs for
-//   one that has left. An exit that gives back a promise keeps the element in
-//   the container until that promise resolves — which is what lets it animate
-//   out — and while it is leaving it keeps its key and is marked
-//   `data-exiting`, so it is no longer an entry but is still findable. An exit
-//   that gives back nothing takes the element out at once. Both hooks are
-//   optional, and a list painted without them behaves exactly as it always
-//   has.
 
 import { patchElement } from "./domPatch.js";
 
 const KEY = "data-key";
-/** What an entry on its way out wears while it is leaving: no longer an entry,
- *  still in the container, and findable by anyone who cares which. */
 export const EXITING_ATTRIBUTE = "data-exiting";
 const ELEMENT_NODE = 1;
 
@@ -122,13 +111,6 @@ function alreadyInOrder(positions) {
   return staying;
 }
 
-/// Let a departed entry leave in its own time, and take it out of the
-/// container once it has.
-///
-/// The token is how a finished exit knows whether it is still the exit the
-/// element is running: an entry that left, came back and left again has two of
-/// them, and only the one the element is wearing may remove it. Clearing the
-/// mark is therefore also how a returning entry abandons its exit.
 function startExit(container, element, onExit) {
   const leaving = onExit(element);
   if (!leaving || typeof leaving.then !== "function") {
@@ -151,15 +133,9 @@ function startExit(container, element, onExit) {
 
 /// The keyed children `container` gets to keep, in the order they sit in.
 ///
-/// Everything else keyed goes: the entries that left — through `onExit` where
-/// the caller gave one, which may hold the element in the document a while
-/// longer — and any second element claiming a key already spoken for, a ghost
-/// the paint would otherwise never be able to reach again, since a key only
-/// ever finds the first of them.
-///
-/// An element already on its way out is nobody's entry: it is passed over,
-/// keeping its place, unless its key is wanted again, in which case the exit is
-/// abandoned and the element is an entry once more.
+/// Everything else keyed goes: the entries that left, and any second element
+/// claiming a key already spoken for — a ghost the paint would otherwise never
+/// be able to reach again, since a key only ever finds the first of them.
 function keptEntries(container, wanted, onExit) {
   const live = new Map();
   for (const child of [...container.children]) {
@@ -255,8 +231,7 @@ export function patchList(container, entries, { keyOf, render, wire, onEnter, on
   }
 
   // Once, in list order, with the list already saying what it will say — so a
-  // handler can measure the row it is on or scroll it into view. An entry
-  // remade because its tag changed is not an arrival: its key was already here.
+  // handler can measure the row it is on or scroll it into view.
   for (const { element, entry, arrived } of made) {
     if (wire) wire(element, entry);
     if (arrived && onEnter) onEnter(element);

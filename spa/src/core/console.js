@@ -1,17 +1,6 @@
 // The console: the basement of every work surface.
 //
-// It sits at the bottom of the view column on the branch and issue surfaces,
-// shut by default — a label, and beside it a scrolling strip of one tab per
-// terminal open in the checkout the work item stands in (a branch's worktree;
-// the primary checkout for an issue and for main). The strip is the way in:
-// pressing a tab puts that terminal's screen at half the view, the + at the end
-// of the strip opens another shell, and the grow control lays the panel over
-// the whole view. Each work item remembers the size it was left at.
-//
-// The panel holds a screen or a line saying why there is none; it is never
-// shown empty. So a console with no terminals is a bar and a +, the label does
-// nothing, and closing the last terminal shuts the panel without spending the
-// size it was open at.
+// It sits at the bottom of the view column on the branch and issue surfaces.
 //
 // Terminals are the human's own shells and nothing else: an agent is Build's,
 // lives in the agent rail, and is never one of these. The panes ride the ONE
@@ -123,8 +112,6 @@ export function mountUserTerminalPane(host, termId, { onExit }) {
   });
 }
 
-/** Pure: the way in and out. The label is the whole control — a caret beside it
- *  would say a second time what the panel under it already says. */
 export function consoleToggleHtml(size) {
   const open = size !== "collapsed";
   return `<button type="button" class="console-bar" id="console-toggle" aria-expanded="${open}"
@@ -132,7 +119,6 @@ export function consoleToggleHtml(size) {
       <span class="console-label">Console</span></button>`;
 }
 
-/** Pure: one terminal's tab — its ordinal, and the way to close it. */
 export function consoleTabHtml(tab, selected) {
   return (
     `<span class="console-tab${tab.id === selected ? " active" : ""}" data-motion>` +
@@ -141,23 +127,17 @@ export function consoleTabHtml(tab, selected) {
   );
 }
 
-/** Pure: the + that opens another shell. It rides at the end of the strip and
- *  sticks to its right edge, so a strip scrolled off the end still offers it. */
 export function consoleNewTerminalHtml() {
   return `<button type="button" class="iconbtn console-new" data-motion
       title="New terminal" aria-label="New terminal">+</button>`;
 }
 
-/** Pure: the control that lays the console over the whole view, and takes it
- *  back to half. It means nothing while the console is shut. */
 export function consoleGrowHtml(size) {
   const label = size === "full" ? "Half the view" : "Over the whole view";
   return `<button type="button" class="iconbtn console-grow" data-motion
       title="${label}" aria-label="${label}">${size === "full" ? "⤡" : "⤢"}</button>`;
 }
 
-/** Pure: the empty head — the way in and out, and the two regions the mount
- *  paints the strip of terminals and the grow control into. */
 export function consoleHeadHtml(size) {
   return `${consoleToggleHtml(size)}<div class="console-tabs scrollstrip"></div><div class="console-controls"></div>`;
 }
@@ -274,14 +254,6 @@ export function mountConsole(host, context) {
     writeCached(address, { scope, termIds: terms.ids() });
   };
 
-  /// List the checkout's terminals, once, as the console is stood up — the
-  /// strip says what is open there whether the panel is shut or not.
-  /// Nothing is ever created here: standing the console up must not spawn a
-  /// shell on the user's machine, least of all on a size the last visit
-  /// remembered.
-  ///
-  /// The saved tab list paints the head first, without a round trip; the live
-  /// list reconciles it the moment it lands.
   const ensureTerminals = async () => {
     if (terms || loading) return;
     loading = true;
@@ -341,8 +313,6 @@ export function mountConsole(host, context) {
     if (address && scope && terms) writeCached(address, { scope, termIds: terms.ids() });
   };
 
-  /// The + opens a shell AND the panel: a terminal nobody can see is not what
-  /// was asked for. A create that failed opens it too — on the reason.
   const newTerminal = async () => {
     if (!terms) return;
     try {
@@ -382,11 +352,6 @@ export function mountConsole(host, context) {
 
   // ---- painting --------------------------------------------------------------
 
-  /// The head is stood up once and then kept: its terminals are a keyed list,
-  /// so a tab grows into the strip when it arrives and shrinks out of it when
-  /// it goes, and a selection or a size patches the tabs already standing. The
-  /// BODY is where a live PTY hangs, so it is rebuilt only when the terminal in
-  /// it changes.
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".console")) {
@@ -408,8 +373,6 @@ export function mountConsole(host, context) {
     paintGrowControl(head.querySelector(".console-controls"), drawn);
   };
 
-  /// The toggle is the one control that is there whatever the console is doing,
-  /// so it is the one wired to the element rather than to a paint.
   const wireHead = (head) => {
     head.querySelector("#console-toggle").onclick = () => toggleConsole();
   };
@@ -424,15 +387,11 @@ export function mountConsole(host, context) {
     paintNewTerminalControl(strip);
   };
 
-  /// A tab answers for whichever terminal it is keyed to at the time it is
-  /// clicked — the element outlives every list it was painted from.
   const wireTab = (tab) => {
     tab.querySelector(".console-tab-name").onclick = () => selectTerminal(tab.dataset.key);
     tab.querySelector(".tx").onclick = () => closeTerminal(tab.dataset.key);
   };
 
-  /// The + is the strip's last cell, and only where there is a checkout to open
-  /// a shell in.
   const paintNewTerminalControl = (strip) => {
     const standing = strip.querySelector(".console-new");
     if (!terms) {
@@ -469,8 +428,6 @@ export function mountConsole(host, context) {
     reveal(standing, { axis: "width" });
   };
 
-  /// A tab is a way into the console as well as a choice of terminal: pressing
-  /// one on a shut console opens it on that terminal.
   const selectTerminal = (termId) => {
     if (termId !== selected) {
       selected = termId;
@@ -479,9 +436,6 @@ export function mountConsole(host, context) {
     openPanel();
   };
 
-  /// The newest tab and the + are what a create is about, so the strip is put
-  /// where they are rather than where it was left — once the arriving tab has
-  /// grown into the room it is going to take.
   const scrollStripToNewest = () =>
     motionSettled().then(() => {
       const strip = host.querySelector(".console-tabs");
@@ -490,9 +444,6 @@ export function mountConsole(host, context) {
 
   const body = () => host.querySelector(".console-body");
 
-  /// A shut console holds no screen: the panel shrinks away and the pane is let
-  /// go on the other side of that, so the reader watches it leave rather than a
-  /// blank box. The PTY keeps running on the machine.
   const paintBody = (drawn) => {
     const region = body();
     if (!region) return;
@@ -515,24 +466,14 @@ export function mountConsole(host, context) {
     region.innerHTML = `<div class="console-empty"><span class="dim">${esc(bodyMessage())}</span></div>`;
   };
 
-  /// What the body has to say when there is no screen in it, and "" when it has
-  /// nothing to say — which is the state the console is never shown in.
   const bodyMessage = () => {
-    // The machine being out of reach is not the same as it holding no
-    // terminals, and neither is a branch that names no directory at all.
     if (unreachable) return RECONNECTING_MESSAGE;
     if (unresolved) return "There is no checkout here to open a terminal in.";
     return "";
   };
 
-  /** Whether the panel would hold anything: a terminal's screen, or a line
-   *  saying why there is none. */
   const hasSomethingToShow = () => !!((terms && selected) || bodyMessage());
 
-  /// A panel with nothing in it says nothing, so it is not shown: the console is
-  /// drawn at the size it was asked for while it holds a screen or a message,
-  /// and shut whenever it holds neither. The size it was asked for is kept
-  /// through that, so the terminal that opens next opens the console with it.
   const drawnSize = () => (hasSomethingToShow() ? requestedSize : "collapsed");
 
   const mountPane = (region, termId) => {
@@ -595,8 +536,6 @@ export function mountConsole(host, context) {
     paint();
   };
 
-  /// Show the panel on whatever the console is holding. A console already at a
-  /// size keeps it — the create or the tab press was about the terminal.
   const openPanel = () => {
     if (requestedSize === "collapsed") setSize(reopenSize);
     else paint();
@@ -604,9 +543,6 @@ export function mountConsole(host, context) {
 
   const growPanel = () => setSize(grownConsoleSize(drawnSize()));
 
-  /// The label, and the backtick. With nothing to show it is inert: there is no
-  /// empty panel to open, and the size the console is remembered at is left as
-  /// it is rather than being written over by a press that did nothing.
   const toggleConsole = () => {
     if (!hasSomethingToShow()) return;
     setSize(toggledConsoleSize(drawnSize(), reopenSize));
@@ -625,9 +561,6 @@ export function mountConsole(host, context) {
   document.addEventListener("keydown", onKeydown);
 
   paint();
-  // The strip says what is open in this checkout whether the panel is shut or
-  // not, so the listing is part of standing the console up. Listing only: a
-  // console has never created a shell it was not asked for.
   ensureTerminals();
 
   return {

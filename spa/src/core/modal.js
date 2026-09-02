@@ -14,13 +14,8 @@ export function openModal({ dialogHtml, scrimId = "", onClose = null, host = doc
   dialog.hidden = true;
   host.appendChild(scrim);
 
-  // The scrim darkens what is under it and the dialog grows into the space it
-  // makes, so the scrim goes first and the dialog a beat behind it.
   const onScreen = Promise.all([reveal(scrim, { axis: "opacity" }), reveal(dialog, { axis: "height" })]);
 
-  // A closing that has begun is the answer to every later close: the promise it
-  // returns is the same one, so `onClose` fires once no matter how many ways
-  // the reader reached for the exit.
   let closing = null;
   const close = () => {
     if (closing) return closing;
@@ -41,10 +36,6 @@ export function openModal({ dialogHtml, scrimId = "", onClose = null, host = doc
     if (event.target === scrim) close();
   };
 
-  // The dialog is not rendered until it has revealed, so a caller that reaches
-  // for a control the moment it opens is reaching for something the browser
-  // will not focus. Focus lands on the first control once there is one to land
-  // on, unless the caller has already put it somewhere of its own.
   onScreen.then(() => {
     if (closing || scrim.contains(document.activeElement)) return;
     dialog.querySelector("button")?.focus();

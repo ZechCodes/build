@@ -1,12 +1,4 @@
 // @vitest-environment jsdom
-// How the surfaces enter and leave the status row and the conversation column.
-//
-// A pill that arrives grows into the strip; one that leaves shrinks away and is
-// out of the document only once it has finished. A pill's count is a cap at its
-// end that grows and shrinks in place, the pill staying where it is. The viewer
-// grows upward out of the composer's top line when a kind opens and shrinks
-// back before its content is let go — but changing which kind is open is a swap,
-// not a departure and an arrival.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";

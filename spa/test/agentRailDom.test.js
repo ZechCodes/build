@@ -79,7 +79,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
-const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { mountAgentRail, railStatusHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -133,6 +133,7 @@ const bubbles = () => [...railHost().querySelectorAll(".rail-bubble")];
 const livePainters = () => painters.filter((painter) => !painter.destroyed);
 const countOn = (bubble) => bubble.querySelector(".rail-count");
 const panel = () => railHost().querySelector(".rail-panel");
+const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 
@@ -772,16 +773,54 @@ describe("taking an agent back off the branch", () => {
 });
 
 describe("the conversation panel", () => {
-  it("carries the agent, both faces of it, and a box to write in", async () => {
+  it("carries the agent, the one way down to its screen, and a box to write in", async () => {
     await mount();
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+    const modes = [...panel().querySelectorAll(".rail-mode")];
+    expect(modes).toHaveLength(1);
+    expect(modes[0].textContent).toBe("TUI");
+    expect(modes[0].getAttribute("aria-pressed")).toBe("false");
+    expect(modes[0].classList.contains("on")).toBe(false);
+    expect(modes[0].title).toBe("Show the terminal");
     expect(panel().querySelector("#railinput")).toBeTruthy();
+  });
+
+  it("offers no Chat chip and no mode group: the panel already lives in the conversation", async () => {
+    await mount();
+    expect(railHost().querySelector('[data-mode="chat"]')).toBe(null);
+    expect(railHost().querySelector(".rail-modes")).toBe(null);
+  });
+
+  it("drops to the screen and comes back on the same button", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBe(null);
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(tuiToggle().classList.contains("on")).toBe(true);
+    expect(tuiToggle().title).toBe("Back to the conversation");
+
+    tuiToggle().click();
+    await flush();
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("false");
+    expect(tuiToggle().classList.contains("on")).toBe(false);
+  });
+
+  it("remembers the face per work item, reopening on the screen the reader left the branch on", async () => {
+    await mount();
+    tuiToggle().click();
+    await flush();
+    rail.dispose();
+
+    await mount();
+    expect(tuiToggle().getAttribute("aria-pressed")).toBe("true");
+    expect(panel().querySelector("#railinput")).toBe(null);
   });
 
   it("swaps the same panel onto the agent's screen, addressed by that agent", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalled();
     expect(mountAgentTab.mock.calls[0][1]).toEqual({ id: "run-3", agent_id: "ag-1" });
@@ -793,7 +832,7 @@ describe("the conversation panel", () => {
   it("resumes the agent the pane belongs to, on the harness it already has", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
 
     await mountAgentTab.mock.calls[0][2].onStart();
@@ -804,7 +843,7 @@ describe("the conversation panel", () => {
   it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
@@ -817,7 +856,7 @@ describe("the conversation panel", () => {
 
     mountAgentTab.mock.calls[0][2].onStart();
     await flush();
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
     panel().querySelector("#railinput").value = "carry on";
     panel().querySelector("#railsend").click();
@@ -830,7 +869,7 @@ describe("the conversation panel", () => {
   it("puts the agent back where it was and says why when the start is refused", async () => {
     payload = branchRow({ agents: [agent({ state: "exited" })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     const answering = App.call;
     App.call = vi.fn(async (method, params) => {
@@ -844,7 +883,7 @@ describe("the conversation panel", () => {
     await expect(mountAgentTab.mock.calls[0][2].onStart()).rejects.toThrow("no session could be spawned");
     expect(notifyError).not.toHaveBeenCalled();
 
-    panel().querySelector('[data-mode="chat"]').click();
+    tuiToggle().click();
     await flush();
     panel().querySelector("#railinput").value = "try again";
     panel().querySelector("#railsend").click();
@@ -860,7 +899,7 @@ describe("the conversation panel", () => {
   it("offers the terminal only to an agent whose session has one", async () => {
     payload = branchRow({ agents: [agent({ has_terminal: false })] });
     await mount();
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
   });
 
@@ -869,7 +908,7 @@ describe("the conversation panel", () => {
   it("keeps the terminal for a digest that never mentions one", async () => {
     await mount();
     expect(agent().has_terminal).toBe(undefined);
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat", "tui"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(1);
   });
 
   // The face the panel wears is remembered per work item, so opening a
@@ -878,7 +917,7 @@ describe("the conversation panel", () => {
   it("puts the panel back on the conversation when a terminal-less agent is opened", async () => {
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2, has_terminal: false })] });
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
 
@@ -886,7 +925,7 @@ describe("the conversation panel", () => {
     await flush();
 
     expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
-    expect([...panel().querySelectorAll(".rail-mode")].map((m) => m.dataset.mode)).toEqual(["chat"]);
+    expect(panel().querySelectorAll(".rail-mode")).toHaveLength(0);
     expect(panel().querySelector("#railinput")).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
 
@@ -894,7 +933,7 @@ describe("the conversation panel", () => {
     // still where it was left.
     bubbles()[0].click();
     await flush();
-    expect(panel().querySelector('[data-mode="tui"]')).toBeTruthy();
+    expect(tuiToggle()).toBeTruthy();
     expect(mountAgentTab).toHaveBeenCalledTimes(2);
   });
 
@@ -903,7 +942,7 @@ describe("the conversation panel", () => {
   // has to go with it.
   it("takes the terminal away from a panel standing on one when the agent loses it", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(panel().querySelector("#railinput")).toBe(null);
 
@@ -911,13 +950,13 @@ describe("the conversation panel", () => {
     vi.advanceTimersByTime(1600);
     await flush();
 
-    expect(panel().querySelector('[data-mode="tui"]')).toBe(null);
+    expect(panel().querySelector(".rail-tui")).toBe(null);
     expect(panel().querySelector("#railinput")).toBeTruthy();
   });
 
   it("leaves a live screen alone while the rail keeps polling", async () => {
     await mount();
-    panel().querySelector('[data-mode="tui"]').click();
+    tuiToggle().click();
     await flush();
     expect(mountAgentTab).toHaveBeenCalledTimes(1);
     const before = panel();
@@ -1228,7 +1267,64 @@ describe("the pinned status line above the composer", () => {
     expect(git).toBeTruthy();
     expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
     expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
-    expect(git.previousElementSibling.className).toBe("rail-status-working");
+    expect(git.previousElementSibling.className).toBe("rail-status-lead rail-status-working");
+  });
+
+  it("shows the startup event in the working slot while no turn is in flight", async () => {
+    payload = branchRow({
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [{ type: "event", data: { event: "run_started", created_at: new Date(Date.now() - 120000).toISOString(), sequence: 1 } }],
+        },
+      },
+    });
+    await mount();
+    expect(railStatus().hidden).toBe(false);
+    expect(railStatus().textContent).toContain("Run started · 2m ago");
+    expect(railStatus().querySelector(".sdot-working")).toBeNull();
+    expect(railStatus().querySelector(".sdot-inactive")).toBeTruthy();
+
+    await pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 5000).toISOString(), seconds: 5 }, stat: null,
+      }],
+      projects: [],
+    });
+    expect(railStatus().textContent).toContain("Working 5s");
+    expect(railStatus().textContent).not.toContain("Run started");
+    expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
+  });
+
+  it("names the session's start in the harness that raised it", async () => {
+    payload = branchRow({
+      agents: [agent({ provider: "codex" })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [{ type: "event", data: { event: "session_started", created_at: new Date(Date.now() - 120000).toISOString(), sequence: 1 } }],
+        },
+      },
+    });
+    await mount();
+    expect(railStatus().textContent).toContain("Codex session started");
+  });
+
+  it("renders the startup line in the lead slot, never beside a working clock", () => {
+    const starting = railStatusHtml({ working: "", starting: "Run started · 2m ago", sync: "", stat: "" });
+    expect(starting).toContain("sdot-inactive");
+    expect(starting).toContain("Run started · 2m ago");
+    expect(starting).toContain('class="rail-status-lead rail-status-starting"');
+    expect(starting).not.toContain("sdot-working");
+    expect(starting).not.toContain("rail-status-working");
+
+    const working = railStatusHtml({ working: "5s", starting: "Run started · 2m ago", sync: "", stat: "" });
+    expect(working).toContain("Working 5s");
+    expect(working).not.toContain("Run started");
+    expect(railStatusHtml({ working: "", starting: "", sync: "", stat: "" })).toBe("");
   });
 
   it("ticks the elapsed time between feed reads", async () => {

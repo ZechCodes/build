@@ -5,6 +5,10 @@
 
 import { esc } from "./text.js";
 
+export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
+const CARET_SELECTOR = ".caret";
+const SPLIT_MENU_SELECTOR = ".splitmenu";
+
 /** The app's button vocabulary a split button can be painted in: the accent
  *  primary (the default — a surface's decisive verb) or the mini secondary the
  *  dense toolbars use. Nothing else: a split button is a button, and it reads
@@ -80,6 +84,39 @@ export function createSingleFlight() {
   };
 }
 
+const MENU_GAP_PX = 6;
+
+function scrollingAncestorOf(element) {
+  for (let ancestor = element.parentElement; ancestor && ancestor !== document.body; ancestor = ancestor.parentElement) {
+    const overflowY = getComputedStyle(ancestor).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return ancestor;
+  }
+  return null;
+}
+
+function placeMenuFromButtonBox(menu, buttonBox) {
+  const opensAbove = buttonBox.top - MENU_GAP_PX >= menu.offsetHeight;
+  menu.style.position = "fixed";
+  menu.style.right = `${window.innerWidth - buttonBox.right}px`;
+  menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
+  menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
+}
+
+function liftMenuOutOfScroll(container, menu, closeMenu) {
+  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect());
+  const onViewportMoved = () => closeMenu();
+  document.addEventListener("scroll", onViewportMoved, { capture: true });
+  window.addEventListener("resize", onViewportMoved);
+  return () => {
+    document.removeEventListener("scroll", onViewportMoved, { capture: true });
+    window.removeEventListener("resize", onViewportMoved);
+    menu.style.position = "";
+    menu.style.top = "";
+    menu.style.bottom = "";
+    menu.style.right = "";
+  };
+}
+
 /** Wire the caret and the menu of a split button already in the DOM: the caret
  *  toggles it, a press outside closes it, and choosing an item closes it and
  *  reports the option's id. Returns `{ closeMenu }` for a caller that has to
@@ -92,8 +129,8 @@ export function createSingleFlight() {
  *  submit that restores its own button, and re-rendering it under the poll is
  *  the composer's business. What both share is the menu. */
 export function mountSplitMenu(container, { onChoose }) {
-  const caret = container.querySelector(".caret");
-  const menu = container.querySelector(".splitmenu");
+  const caret = container.querySelector(CARET_SELECTOR);
+  const menu = container.querySelector(SPLIT_MENU_SELECTOR);
 
   // The open menu's outside-press watch. It is armed in the same event cycle as
   // the click that opens the menu — deferring it to a macrotask loses the race
@@ -102,15 +139,21 @@ export function mountSplitMenu(container, { onChoose }) {
   // press anywhere inside the split button (the caret that toggles it, the item
   // being reached for) is not outside.
   let stopWatchingOutsidePress = null;
+  let settleLiftedMenu = null;
   const closeMenu = () => {
     if (menu) menu.hidden = true;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
+    if (settleLiftedMenu) {
+      settleLiftedMenu();
+      settleLiftedMenu = null;
+    }
   };
   const openMenu = () => {
     menu.hidden = false;
+    if (scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
-      if (container.querySelector(".splitbtn")?.contains(event.target)) return;
+      if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
       closeMenu();
     };
     document.addEventListener("pointerdown", onOutsidePress);
@@ -138,6 +181,18 @@ export function mountSplitMenu(container, { onChoose }) {
   return { closeMenu };
 }
 
+const menuMountedInContainer = new WeakMap();
+
+export function mountMenuIfChanged(container, markup, { onChoose }) {
+  const mounted = menuMountedInContainer.get(container);
+  if (mounted && mounted.markup === markup) return mounted.closeMenu;
+  if (mounted) mounted.closeMenu();
+  container.innerHTML = markup;
+  const { closeMenu } = mountSplitMenu(container, { onChoose });
+  menuMountedInContainer.set(container, { markup, closeMenu });
+  return closeMenu;
+}
+
 /** What each container was last mounted from. A poll-driven caller remounts the
  *  same button over and over, and the markup is what says whether that remount
  *  would change anything at all. Keyed weakly: a container that goes away takes
@@ -160,13 +215,13 @@ export function mountSplitButton(container, { options, run, variant = "primary",
   // opened, nor swap a busy button for a fresh one: a click in progress
   // outranks a poll tick, which lands again once the menu is shut. Options that
   // actually moved still rebuild — what the button offers has changed.
-  const held = container.querySelector(".splitmenu:not([hidden])") || (flight.active() && container.querySelector(".splitbtn"));
+  const held = container.querySelector(`${SPLIT_MENU_SELECTOR}:not([hidden])`) || (flight.active() && container.querySelector(SPLIT_BUTTON_SELECTOR));
   if (held && mountedMarkup.get(container) === markup) return;
   container.innerHTML = markup;
   mountedMarkup.set(container, markup);
   const byId = Object.fromEntries(options.map((o) => [o.id, o]));
   const primary = container.querySelector(".btn:not(.caret)");
-  const caret = container.querySelector(".caret");
+  const caret = container.querySelector(CARET_SELECTOR);
   const { closeMenu } = mountSplitMenu(container, { onChoose: (optionId) => invoke(optionId) });
 
   const invoke = async (optionId) => {

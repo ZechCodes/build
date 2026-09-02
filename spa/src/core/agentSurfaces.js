@@ -1,16 +1,23 @@
 import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
 import { patchList } from "./patchList.js";
-import { mountSplitMenu } from "./splitButton.js";
+import { SPLIT_BUTTON_SELECTOR, mountSplitMenu } from "./splitButton.js";
 import { notifyError } from "./notify.js";
+import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
+  advanceSurfaceVisibility,
+  emptySurfaceVisibility,
+  nextSurfacePillExpiry,
   openSurfaceKind,
   openWorkflow,
+  openedSurfaceVisibility,
   readOpenSurface,
+  runningAndCompletedRows,
+  surfaceKindLabel,
   surfacePills,
   surfaceRows,
   workflowChoicesWorthOffering,
@@ -18,12 +25,19 @@ import {
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
-  SURFACE_LIST_SELECTOR,
+  COMPLETED_FOLD_HEAD_SELECTOR,
+  COMPLETED_FOLD_SELECTOR,
+  SURFACE_OVERLAY_BODY_SELECTOR,
+  SURFACE_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
+  completedFoldHeadHtml,
+  completedFoldHtml,
   kindViewerHtml,
+  runningAndCompletedViewerHtml,
   shellRowHtml,
+  surfaceOverlayHtml,
   surfacePillsHtml,
   workflowChoiceHtml,
   workflowHeadHtml,
@@ -34,13 +48,22 @@ import {
 const VIEWER_ABOVE_PILLS_HTML = `<div class="rail-surfaces-viewer" data-surface-viewer></div>
   <div class="rail-surfaces-pills" data-surface-pills></div>`;
 
-const MENU_SELECTOR = ".splitbtn";
-
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
   lists: ({ surfaces }) => [
-    { selector: SURFACE_LIST_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, carriesRowActions: true },
+    { selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, carriesRowActions: true },
   ],
+});
+
+const runningAboveWhatFinished = (kind, render) => ({
+  frameHtmlWithEmptyLists: () => runningAndCompletedViewerHtml(kind, { running: [], completed: [] }, render),
+  lists: ({ surfaces }) => {
+    const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
+    return [
+      { selector: SURFACE_SELECTOR.running, rows: running, render, carriesRowActions: true },
+      { selector: SURFACE_SELECTOR.completed, rows: completed, render, carriesRowActions: true, folded: true },
+    ];
+  },
 });
 
 const VIEWER_PLANS = {
@@ -52,13 +75,13 @@ const VIEWER_PLANS = {
       const { phases, agents } = workflowPhases(surfaces, selectedWorkflowIndex, selectedPhaseIndex);
       return [
         {
-          selector: SURFACE_LIST_SELECTOR.workflowChoices,
+          selector: SURFACE_SELECTOR.workflowChoices,
           rows: workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex),
           render: workflowChoiceHtml,
         },
-        { selector: SURFACE_LIST_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
+        { selector: SURFACE_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
         {
-          selector: SURFACE_LIST_SELECTOR.workflowAgents,
+          selector: SURFACE_SELECTOR.workflowAgents,
           rows: agents,
           render: agentRowHtml,
           carriesRowActions: true,
@@ -66,21 +89,16 @@ const VIEWER_PLANS = {
       ];
     },
   },
-  [AGENT_ENTRY_KIND]: oneListOfKind(AGENT_ENTRY_KIND, agentRowHtml),
-  [SHELL_ENTRY_KIND]: oneListOfKind(SHELL_ENTRY_KIND, shellRowHtml),
+  [AGENT_ENTRY_KIND]: runningAboveWhatFinished(AGENT_ENTRY_KIND, agentRowHtml),
+  [SHELL_ENTRY_KIND]: runningAboveWhatFinished(SHELL_ENTRY_KIND, shellRowHtml),
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
-export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem }) {
-  host.innerHTML = VIEWER_ABOVE_PILLS_HTML;
-  const viewerRegion = host.querySelector("[data-surface-viewer]");
-  const pillRegion = host.querySelector("[data-surface-pills]");
+export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem }) {
+  const plan = VIEWER_PLANS[kind];
+  if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
   let surfaces = null;
-  let paintedSurfaces = null;
-  let chosenKind = readOpenSurface(key);
-  let openKind = null;
-  let paintedKind = null;
   let selectedWorkflowIndex = 0;
   let selectedPhaseIndex = 0;
   const paintedLists = new Map();
@@ -123,11 +141,11 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     chooseRowAction(row, actionId);
   };
 
-  const actionChooserFor = (plan, menuElement) => {
+  const actionChooserFor = (menuElement) => {
     if (plan.headSelector && menuElement.closest(plan.headSelector)) return chooseTheHeadsAction;
     for (const [selector, list] of paintedLists) {
       if (!list.carriesRowActions) continue;
-      const container = viewerRegion.querySelector(selector);
+      const container = host.querySelector(selector);
       if (!container || !container.contains(menuElement)) continue;
       const rowElement = menuElement.closest("[data-key]");
       return (actionId) => chooseTheRowsAction(rowElement, selector, actionId);
@@ -135,10 +153,10 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     return null;
   };
 
-  const wireMenusThePaintLeftBare = (plan) => {
-    for (const menuElement of viewerRegion.querySelectorAll(MENU_SELECTOR)) {
+  const wireUnwiredMenus = () => {
+    for (const menuElement of host.querySelectorAll(SPLIT_BUTTON_SELECTOR)) {
       if (menuClosersByElement.has(menuElement)) continue;
-      const chooseAction = actionChooserFor(plan, menuElement);
+      const chooseAction = actionChooserFor(menuElement);
       if (!chooseAction) continue;
       const { closeMenu } = mountSplitMenu(menuElement, { onChoose: chooseAction });
       menuClosersByElement.set(menuElement, closeMenu);
@@ -147,25 +165,28 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
 
   const closeMenusOfDiscardedElements = () => {
     for (const [element, closeMenu] of [...menuClosersByElement]) {
-      if (viewerRegion.contains(element)) continue;
+      if (host.contains(element)) continue;
       closeMenu();
       menuClosersByElement.delete(element);
     }
   };
 
-  const paintViewer = () => {
+  const completedFoldContainer = (count) => {
+    const standing = host.querySelector(COMPLETED_FOLD_SELECTOR);
+    if (!count) {
+      if (standing) standing.remove();
+      return null;
+    }
+    if (!standing) {
+      host.querySelector(SURFACE_SELECTOR.viewer).appendChild(el(completedFoldHtml(count)));
+      return host.querySelector(SURFACE_SELECTOR.completed);
+    }
+    patchElement(standing.querySelector(COMPLETED_FOLD_HEAD_SELECTOR), el(completedFoldHeadHtml(count)));
+    return standing.querySelector(SURFACE_SELECTOR.completed);
+  };
+
+  const paint = () => {
     paintedLists.clear();
-    if (!openKind) {
-      viewerRegion.innerHTML = "";
-      paintedKind = null;
-      closeMenusOfDiscardedElements();
-      return;
-    }
-    const plan = VIEWER_PLANS[openKind];
-    if (paintedKind !== openKind) {
-      viewerRegion.innerHTML = plan.frameHtmlWithEmptyLists();
-      paintedKind = openKind;
-    }
     const paintContext = {
       surfaces,
       workflow: openWorkflow(surfaces, selectedWorkflowIndex),
@@ -173,21 +194,107 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
       selectedPhaseIndex,
     };
     if (plan.headSelector) {
-      patchElement(viewerRegion.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
+      patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
     }
     for (const list of plan.lists(paintContext)) {
+      const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
+      if (!container) continue;
       paintedLists.set(list.selector, list);
-      patchList(viewerRegion.querySelector(list.selector), list.rows, {
+      patchList(container, list.rows, {
         keyOf: (row) => row.key,
         render: list.render,
       });
     }
     closeMenusOfDiscardedElements();
-    wireMenusThePaintLeftBare(plan);
+    wireUnwiredMenus();
   };
 
-  const paintPills = () => {
-    const html = surfacePillsHtml(surfacePills(surfaces), openKind);
+  const onViewerPress = (event) => {
+    if (event.target.closest(SPLIT_BUTTON_SELECTOR)) return;
+    const workflow = event.target.closest("[data-workflow-index]");
+    if (workflow) {
+      selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
+      selectedPhaseIndex = 0;
+      paint();
+      return;
+    }
+    const phase = event.target.closest("[data-phase-index]");
+    if (phase) {
+      selectedPhaseIndex = Number(phase.dataset.phaseIndex);
+      paint();
+      return;
+    }
+    const spawned = event.target.closest("[data-call-sequence]");
+    if (spawned && onOpenThreadItem) onOpenThreadItem(Number(spawned.dataset.callSequence));
+  };
+
+  host.innerHTML = plan.frameHtmlWithEmptyLists();
+  host.addEventListener("click", onViewerPress);
+
+  return {
+    kind,
+    set(nextSurfaces) {
+      surfaces = nextSurfaces || null;
+      paint();
+    },
+    dispose() {
+      for (const closeMenu of menuClosersByElement.values()) closeMenu();
+      menuClosersByElement.clear();
+      host.removeEventListener("click", onViewerPress);
+      paintedLists.clear();
+      host.innerHTML = "";
+    },
+  };
+}
+
+export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null }) {
+  let viewer = null;
+  const { body, close } = openModal({
+    dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
+    onClose: () => {
+      viewer.dispose();
+      if (onClose) onClose();
+    },
+  });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, {
+    onSendMessage,
+    onOpenThreadItem,
+  });
+  return {
+    kind,
+    set(surfaces) {
+      viewer.set(surfaces);
+    },
+    close,
+  };
+}
+
+export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem }) {
+  host.innerHTML = VIEWER_ABOVE_PILLS_HTML;
+  const viewerRegion = host.querySelector("[data-surface-viewer]");
+  const pillRegion = host.querySelector("[data-surface-pills]");
+
+  let surfaces = null;
+  let paintedSurfaces = null;
+  let chosenKind = readOpenSurface(key);
+  let viewer = null;
+  let visibility = emptySurfaceVisibility();
+  let hidingTimer = null;
+
+  const openKind = () => visibility.openKind;
+
+  const paintViewer = () => {
+    if (viewer && viewer.kind !== openKind()) {
+      viewer.dispose();
+      viewer = null;
+    }
+    if (!openKind()) return;
+    if (!viewer) viewer = mountSurfaceViewer(viewerRegion, openKind(), { onSendMessage, onOpenThreadItem });
+    viewer.set(surfaces);
+  };
+
+  const paintPills = (nowMs) => {
+    const html = surfacePillsHtml(surfacePills(surfaces, visibility, nowMs), openKind());
     const next = html ? el(html) : null;
     const live = pillRegion.firstElementChild;
     if (live && next && live.tagName === next.tagName) {
@@ -197,57 +304,52 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     pillRegion.innerHTML = html;
   };
 
+  const armPillHidingTimer = (nowMs) => {
+    if (hidingTimer !== null) clearTimeout(hidingTimer);
+    hidingTimer = null;
+    const expiry = nextSurfacePillExpiry(surfaces, visibility, nowMs);
+    if (expiry === null) return;
+    hidingTimer = setTimeout(() => {
+      hidingTimer = null;
+      paint();
+    }, expiry - nowMs);
+  };
+
   const paint = () => {
-    openKind = openSurfaceKind(surfaces, chosenKind);
+    const nowMs = Date.now();
+    visibility = openedSurfaceVisibility(visibility, openSurfaceKind(surfaces, chosenKind, visibility, nowMs), nowMs);
     paintViewer();
-    paintPills();
+    paintPills(nowMs);
+    armPillHidingTimer(nowMs);
   };
 
   const onPillPress = (event) => {
     const button = event.target.closest("[data-surface-kind]");
     if (!button) return;
     const kind = button.dataset.surfaceKind;
-    chosenKind = kind === openKind ? null : kind;
+    chosenKind = kind === openKind() ? null : kind;
     writeOpenSurface(key, chosenKind);
     paint();
   };
 
-  const onViewerPress = (event) => {
-    if (event.target.closest(MENU_SELECTOR)) return;
-    const workflow = event.target.closest("[data-workflow-index]");
-    if (workflow) {
-      selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
-      selectedPhaseIndex = 0;
-      paintViewer();
-      return;
-    }
-    const phase = event.target.closest("[data-phase-index]");
-    if (phase) {
-      selectedPhaseIndex = Number(phase.dataset.phaseIndex);
-      paintViewer();
-      return;
-    }
-    const spawned = event.target.closest("[data-call-sequence]");
-    if (spawned && onOpenThreadItem) onOpenThreadItem(Number(spawned.dataset.callSequence));
-  };
-
   pillRegion.addEventListener("click", onPillPress);
-  viewerRegion.addEventListener("click", onViewerPress);
 
   return {
     set(nextSurfaces) {
       const arriving = JSON.stringify(nextSurfaces || null);
-      if (arriving === paintedSurfaces) return;
+      const unchangedSinceLastPaint = arriving === paintedSurfaces;
       paintedSurfaces = arriving;
       surfaces = nextSurfaces || null;
+      visibility = advanceSurfaceVisibility(visibility, surfaces, Date.now());
+      if (unchangedSinceLastPaint) return;
       paint();
     },
     dispose() {
-      for (const closeMenu of menuClosersByElement.values()) closeMenu();
-      menuClosersByElement.clear();
+      if (hidingTimer !== null) clearTimeout(hidingTimer);
+      hidingTimer = null;
+      if (viewer) viewer.dispose();
+      viewer = null;
       pillRegion.removeEventListener("click", onPillPress);
-      viewerRegion.removeEventListener("click", onViewerPress);
-      paintedLists.clear();
       paintedSurfaces = null;
       host.innerHTML = "";
     },

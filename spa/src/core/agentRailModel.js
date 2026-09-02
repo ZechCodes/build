@@ -17,6 +17,8 @@
 import { entityIdOf } from "./entityId.js";
 import { unreadReasonText } from "./inbox.js";
 import { providerLabel } from "./modelPicker.js";
+import { humanAge } from "./text.js";
+import { isStartupEvent, startupEventTitle } from "./threadEvents.js";
 
 // One naming table for the whole client (core/modelPicker.js): the new-agent
 // cards, the Account select and the rail's bubbles all say the same word for
@@ -226,14 +228,29 @@ export function workingClock(seconds) {
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
+export function startupStatusLine(conversationItems = [], agentLabel = "Agent") {
+  const newest = conversationItems[conversationItems.length - 1];
+  if (!isStartupEvent(newest)) return null;
+  const event = newest.data || {};
+  const at = Date.parse(event.created_at || "");
+  return { title: startupEventTitle(event, agentLabel), at: Number.isFinite(at) ? at : null };
+}
+
+function startupText(startup, nowMs) {
+  if (!startup) return "";
+  if (startup.at === null) return startup.title;
+  return `${startup.title} · ${humanAge((nowMs - startup.at) / 1000)}`;
+}
+
 /** The pinned line above the composer: whether the work item has a turn in
  *  flight right now (and for how long), how far it stands from upstream, and
  *  its diffstat — each "" when the row does not know it, so a work item with
  *  nothing to report pins nothing at all. */
-export function railWorkStatus(row, nowMs = Date.now()) {
+export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent") {
   const working = workingSeconds(row && row.working_time, nowMs);
   return {
     working: working === null ? "" : workingClock(working),
+    starting: working === null ? startupText(startupStatusLine(conversationItems, agentLabel), nowMs) : "",
     sync: aheadBehindText(row && row.stat),
     stat: statText(row && row.stat),
   };
@@ -278,23 +295,4 @@ export function railEntity(payload, kind = "branch") {
     agents,
     thread: (row.run && row.run.thread) || null,
   };
-}
-
-// The report's four lists, in the order a reviewer reads them: what carries the
-// change, what it decided, what it might break, what it left alone.
-const REPORT_SECTIONS = [
-  { key: "critical_files", title: "Critical files" },
-  { key: "decisions", title: "Decisions" },
-  { key: "risk_notes", title: "Risks" },
-  { key: "skips", title: "Skipped" },
-];
-
-/** The report as sections worth rendering. A list the agent left out is left
- *  out here too — an empty heading says nothing and costs a reader a line. */
-export function completionReportSections(report) {
-  if (!report) return [];
-  return REPORT_SECTIONS.map((section) => ({
-    title: section.title,
-    items: (report[section.key] || []).filter((entry) => String(entry || "").trim()),
-  })).filter((section) => section.items.length);
 }

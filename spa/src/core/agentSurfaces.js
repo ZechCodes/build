@@ -8,8 +8,12 @@ import {
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
+  advanceSurfaceVisibility,
+  emptySurfaceVisibility,
+  nextSurfacePillExpiry,
   openSurfaceKind,
   openWorkflow,
+  openedSurfaceVisibility,
   readOpenSurface,
   surfacePills,
   surfaceRows,
@@ -81,6 +85,8 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   let chosenKind = readOpenSurface(key);
   let openKind = null;
   let paintedKind = null;
+  let visibility = emptySurfaceVisibility();
+  let hidingTimer = null;
   let selectedWorkflowIndex = 0;
   let selectedPhaseIndex = 0;
   const paintedLists = new Map();
@@ -186,8 +192,8 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     wireMenusThePaintLeftBare(plan);
   };
 
-  const paintPills = () => {
-    const html = surfacePillsHtml(surfacePills(surfaces), openKind);
+  const paintPills = (nowMs) => {
+    const html = surfacePillsHtml(surfacePills(surfaces, visibility, nowMs), openKind);
     const next = html ? el(html) : null;
     const live = pillRegion.firstElementChild;
     if (live && next && live.tagName === next.tagName) {
@@ -197,10 +203,24 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     pillRegion.innerHTML = html;
   };
 
+  const armTheNextHiding = (nowMs) => {
+    if (hidingTimer !== null) clearTimeout(hidingTimer);
+    hidingTimer = null;
+    const expiry = nextSurfacePillExpiry(surfaces, visibility, nowMs);
+    if (expiry === null) return;
+    hidingTimer = setTimeout(() => {
+      hidingTimer = null;
+      paint();
+    }, expiry - nowMs);
+  };
+
   const paint = () => {
-    openKind = openSurfaceKind(surfaces, chosenKind);
+    const nowMs = Date.now();
+    openKind = openSurfaceKind(surfaces, chosenKind, visibility, nowMs);
+    if (visibility.openKind !== openKind) visibility = openedSurfaceVisibility(visibility, openKind, nowMs);
     paintViewer();
-    paintPills();
+    paintPills(nowMs);
+    armTheNextHiding(nowMs);
   };
 
   const onPillPress = (event) => {
@@ -237,12 +257,16 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   return {
     set(nextSurfaces) {
       const arriving = JSON.stringify(nextSurfaces || null);
-      if (arriving === paintedSurfaces) return;
+      const saysWhatIsPainted = arriving === paintedSurfaces;
       paintedSurfaces = arriving;
       surfaces = nextSurfaces || null;
+      visibility = advanceSurfaceVisibility(visibility, surfaces, Date.now());
+      if (saysWhatIsPainted) return;
       paint();
     },
     dispose() {
+      if (hidingTimer !== null) clearTimeout(hidingTimer);
+      hidingTimer = null;
       for (const closeMenu of menuClosersByElement.values()) closeMenu();
       menuClosersByElement.clear();
       pillRegion.removeEventListener("click", onPillPress);

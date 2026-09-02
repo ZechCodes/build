@@ -21,11 +21,13 @@ const KIND_LABELS = {
 
 const RUNNING_MARK = "running";
 const DONE_MARK = "ok";
+const FAILED_MARK = "error";
+const FINISHED_MARKS = [DONE_MARK, FAILED_MARK];
 
 const RUN_STATE_MARKS = {
   running: { mark: RUNNING_MARK, label: "Running" },
   done: { mark: DONE_MARK, label: "Done" },
-  failed: { mark: "error", label: "Failed" },
+  failed: { mark: FAILED_MARK, label: "Failed" },
 };
 
 const AGENT_STATE_MARKS = {
@@ -47,6 +49,10 @@ const STATE_MARKS_BY_KIND = {
 
 const OPEN_SURFACE_KEY_PREFIX = "build.agentSurfaces.open.";
 
+export const SURFACE_PILL_GRACE_MS = 60000;
+
+const KINDS_THAT_LINGER = [AGENT_ENTRY_KIND, SHELL_ENTRY_KIND];
+
 export function surfaceStateMark(kind, state) {
   const marks = STATE_MARKS_BY_KIND[kind];
   if (!marks) return null;
@@ -64,19 +70,81 @@ function stateMarkIs(kind, entry, mark) {
   return !!stateMark && stateMark.mark === mark;
 }
 
-export function surfacePills(surfaces) {
+export function emptySurfaceVisibility() {
+  return { openKind: null, kinds: {} };
+}
+
+function kindVisibility(visibility, kind) {
+  const kinds = (visibility && visibility.kinds) || {};
+  return kinds[kind] || {};
+}
+
+export function advanceSurfaceVisibility(visibility, surfaces, nowMs) {
+  const kinds = { ...((visibility && visibility.kinds) || {}) };
+  for (const kind of KINDS_THAT_LINGER) {
+    if (!runningEntryCount(surfaces, kind)) continue;
+    kinds[kind] = { ...kindVisibility(visibility, kind), lastRunningSeenAt: nowMs };
+  }
+  return { openKind: (visibility && visibility.openKind) || null, kinds };
+}
+
+export function openedSurfaceVisibility(visibility, kind, nowMs) {
+  const wasOpen = (visibility && visibility.openKind) || null;
+  const opening = kind || null;
+  if (wasOpen === opening) return visibility || emptySurfaceVisibility();
+  const kinds = { ...((visibility && visibility.kinds) || {}) };
+  if (wasOpen) kinds[wasOpen] = { ...kindVisibility(visibility, wasOpen), closedAt: nowMs };
+  return { openKind: opening, kinds };
+}
+
+function runningEntryCount(surfaces, kind) {
+  return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length;
+}
+
+/** When the last grace this kind is holding runs out, or null once none is. */
+function graceEnd(visibility, kind, nowMs) {
+  const { lastRunningSeenAt, closedAt } = kindVisibility(visibility, kind);
+  const ends = [lastRunningSeenAt, closedAt]
+    .filter((at) => Number.isFinite(at))
+    .map((at) => at + SURFACE_PILL_GRACE_MS)
+    .filter((end) => end > nowMs);
+  return ends.length ? Math.max(...ends) : null;
+}
+
+function pillIsShown(kind, runningCount, visibility, nowMs) {
+  if (!KINDS_THAT_LINGER.includes(kind)) return true;
+  if (runningCount > 0) return true;
+  if (visibility && visibility.openKind === kind) return true;
+  return graceEnd(visibility, kind, nowMs) !== null;
+}
+
+export function surfacePills(surfaces, visibility = null, nowMs = 0) {
   return SURFACE_KINDS.map((kind) => ({ kind, entries: entriesOfKind(surfaces, kind) }))
     .filter(({ entries }) => entries.length > 0)
-    .map(({ kind, entries }) => ({
+    .map(({ kind, entries }) => ({ kind, entries, running: runningEntryCount(surfaces, kind) }))
+    .filter(({ kind, running }) => pillIsShown(kind, running, visibility, nowMs))
+    .map(({ kind, entries, running }) => ({
       kind,
       label: KIND_LABELS[kind],
-      count: entries.length,
-      live: entries.some((entry) => stateMarkIs(kind, entry, RUNNING_MARK)),
+      count: KINDS_THAT_LINGER.includes(kind) ? running : entries.length,
+      live: running > 0,
     }));
 }
 
-export function openSurfaceKind(surfaces, wanted) {
-  return surfacePills(surfaces).some((pill) => pill.kind === wanted) ? wanted : null;
+export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {
+  const expiries = KINDS_THAT_LINGER.filter(
+    (kind) =>
+      entriesOfKind(surfaces, kind).length > 0 &&
+      !runningEntryCount(surfaces, kind) &&
+      !(visibility && visibility.openKind === kind),
+  )
+    .map((kind) => graceEnd(visibility, kind, nowMs))
+    .filter((end) => end !== null);
+  return expiries.length ? Math.min(...expiries) : null;
+}
+
+export function openSurfaceKind(surfaces, wanted, visibility = null, nowMs = 0) {
+  return surfacePills(surfaces, visibility, nowMs).some((pill) => pill.kind === wanted) ? wanted : null;
 }
 
 function claimKey(kind, id, index, claimed) {
@@ -158,6 +226,17 @@ export function surfaceRows(kind, surfaces) {
   if (kind === AGENT_ENTRY_KIND) return agentRows(entries);
   const normalise = ROW_NORMALISERS[kind];
   return normalise ? keyedRows(kind, kind, entries, normalise) : [];
+}
+
+function rowHasFinished(row) {
+  return !!row.stateMark && FINISHED_MARKS.includes(row.stateMark.mark);
+}
+
+export function runningAndCompletedRows(rows) {
+  return {
+    running: rows.filter((row) => !rowHasFinished(row)),
+    completed: rows.filter(rowHasFinished),
+  };
 }
 
 function chosenIndex(count, wantedIndex) {

@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
+  SURFACE_PILL_GRACE_MS,
   WORKFLOW_ENTRY_KIND,
   rowActions,
   surfaceRows,
@@ -116,6 +117,89 @@ describe("the surface pills", () => {
     expect(document.querySelector(".surface-viewer")).toBe(null);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
     third.dispose();
+  });
+});
+
+describe("the pill that lingers after the work stops", () => {
+  const finishedShells = () => {
+    const finished = snapshot();
+    finished.shells = finished.shells.map((shell) => ({ ...shell, state: "done", exit_code: 0 }));
+    return finished;
+  };
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("counts the running shells and drops the pill when the grace it armed runs out", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("1");
+
+    surfaces.set(finishedShells());
+    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("0");
+
+    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS - 1);
+    expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
+
+    vi.advanceTimersByTime(1);
+    expect(pill(SHELL_ENTRY_KIND)).toBe(null);
+    surfaces.dispose();
+  });
+
+  it("keeps the pill and the viewer while it is open, and closes both a grace after it is shut", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    surfaces.set(finishedShells());
+
+    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS * 3);
+    expect(pressed(SHELL_ENTRY_KIND)).toBe("true");
+    expect(document.querySelector(".surface-shells")).not.toBe(null);
+
+    pressPill(SHELL_ENTRY_KIND);
+    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS - 1);
+    expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
+    vi.advanceTimersByTime(1);
+    expect(pill(SHELL_ENTRY_KIND)).toBe(null);
+    expect(document.querySelector(".surface-viewer")).toBe(null);
+    surfaces.dispose();
+  });
+
+  it("closes the viewer of a kind the grace stopped showing", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    surfaces.set(finishedShells());
+    pressPill(CHECKLIST_ENTRY_KIND);
+
+    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS);
+
+    expect(pill(SHELL_ENTRY_KIND)).toBe(null);
+    expect(document.querySelector(".surface-checklist")).not.toBe(null);
+    surfaces.dispose();
+  });
+
+  it("keeps the pill of a kind still running, and arms no timer for it", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    expect(vi.getTimerCount()).toBe(0);
+
+    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS * 3);
+    expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
+    surfaces.dispose();
+  });
+
+  it("arms one timer at a time and clears it on dispose", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    surfaces.set(finishedShells());
+    expect(vi.getTimerCount()).toBe(1);
+
+    surfaces.set({ ...finishedShells(), checklist: [{ id: "c2", subject: "another", state: "pending" }] });
+    expect(vi.getTimerCount()).toBe(1);
+
+    surfaces.dispose();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -247,8 +331,11 @@ describe("painting the viewer", () => {
   it("paints entries with missing or repeated ids rather than throwing", () => {
     const surfaces = mount();
     surfaces.set({
-      shells: [{ description: "first" }, { description: "second" }],
-      subagents: [{ id: "same", label: "one" }, { id: "same", label: "two" }],
+      shells: [{ description: "first", state: "running" }, { description: "second", state: "running" }],
+      subagents: [
+        { id: "same", label: "one", state: "running" },
+        { id: "same", label: "two", state: "running" },
+      ],
     });
 
     pressPill(SHELL_ENTRY_KIND);

@@ -6,7 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
-import { createFileFolds, fileKey, firstLineOf } from "./diff.js";
+import { fileKey, firstLineOf, untouchedFold } from "./diff.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
@@ -130,13 +130,10 @@ export function diffFilesHtml(files, options = {}) {
 
 const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
 
-// A stack drawn with no reader behind it asks the same module the same
-// question, rather than a second rule about what an untouched file wears.
-const NOTHING_MOVED = createFileFolds();
-
 /** The fold one file wears, from the reader's state alone. */
 function foldClassOf(file, { folds, viewed }) {
-  return FOLD_CLASS[(folds || NOTHING_MOVED).foldOf(fileKey(file), { viewed })];
+  const key = fileKey(file);
+  return FOLD_CLASS[folds ? folds.foldOf(key, { viewed }) : untouchedFold(key, viewed)];
 }
 
 /** One file of a changeset: its header, its rows, and the fold the reader left

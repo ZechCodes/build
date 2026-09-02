@@ -63,8 +63,9 @@ const SHUT = "shut";
 const CAPPED = "capped";
 
 /** The fold a file the reader has not touched wears: shut once they have
- *  ticked it off as read, and otherwise the capped peek every file starts at. */
-function untouchedFold(key, viewed) {
+ *  ticked it off as read, and otherwise the capped peek every file starts at.
+ *  A stack drawn with no reader behind it wears these too. */
+export function untouchedFold(key, viewed) {
   return viewed && viewed.has(pathOf(key)) ? SHUT : CAPPED;
 }
 

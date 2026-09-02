@@ -295,7 +295,8 @@ describe("folds the reader owns", () => {
     expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });
 
-  it("collapses a viewed file the reader has not moved", () => {
+  it("collapses a viewed file, with or without a reader's folds behind it", () => {
+    expect(diffFilesHtml(files, { viewed: new Set(["a.js"]) })).toContain('class="file collapsed" data-key="EDIT:a.js"');
     const html = diffFilesHtml(files, { folds: createFileFolds(), viewed: new Set(["a.js"]) });
     expect(html).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });

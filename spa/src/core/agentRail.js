@@ -327,21 +327,26 @@ export function mountAgentRail(host, context) {
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
-  let threadSeedTried = false; // one cache seed per conversation key
+  let seedTried = false; // one cache seed per conversation key
   let lastPersistedSequence = 0; // the window already on disk, to skip idle rewrites
+  let seededSurfaces = null; // the saved snapshot, painted until a payload answers
+  let persistedSurfaces = null; // the snapshot already on disk, serialized
+  let surfacesOwner = null; // whose payload has answered about surfaces
 
-  /** The local cache's address for the open conversation, or null while the
-   *  entity is not yet known (no feed row) or no session device is live. */
-  const threadCacheAddress = () => {
+  /** The local cache's address for one kind of record on the open
+   *  conversation, or null while the entity is not yet known (no feed row) or
+   *  no session device is live. One builder, so the conversation and its
+   *  surfaces can never drift apart. */
+  const cacheAddress = (kind) => {
     const deviceId = cacheDeviceId();
     const entityId = context.kind === "issue" ? context.issueId : feedRow ? entityIdOf(feedRow) : null;
     if (!deviceId || !entityId) return null;
-    return { deviceId, entityId, kind: "thread", sub: selectedId || "" };
+    return { deviceId, entityId, kind, sub: selectedId || "" };
   };
 
-  /** Seed the empty cache from the saved window, once per conversation key.
-   *  After a seed the next detail read is a forward delta rather than a first
-   *  page — the history is already local. A live window refuses the seed.
+  /** Seed the empty cache from the saved window. After a seed the next detail
+   *  read is a forward delta rather than a first page — the history is already
+   *  local. A live window refuses the seed.
    *
    *  A successful seed claims the cache for the agent it was read for
    *  (threadAgentId): the rail remembers which bubble was open across
@@ -350,37 +355,75 @@ export function mountAgentRail(host, context) {
    *  delta cursor was already sent, which is a conversation that paints empty
    *  until the safety poll. And it paints: the reader is owed the history in
    *  hand, not a loading frame until the wire answers. */
-  const trySeedThread = async () => {
-    const address = threadCacheAddress();
-    if (!address || threadSeedTried) return;
-    threadSeedTried = true;
+  const seedThreadWindow = (record, seededFor) => {
+    if (!record || !threadCache.seedWindow(record.value)) return;
+    lastPersistedSequence = record.value.deliveredSequence || 0;
+    threadAgentId = seededFor;
+    paintChat();
+  };
+
+  /** Seed the pills — and the viewer of whichever kind is remembered open —
+   *  from the saved snapshot, so an agent's workflows and shells stand up with
+   *  its conversation rather than one wire answer later. A payload that has
+   *  already spoken for this agent outranks the disk. */
+  const seedSurfaces = (record, seededFor) => {
+    const surfaces = record && record.value ? record.value.surfaces : null;
+    if (!surfaces || surfacesOwner === seededFor) return;
+    seededSurfaces = surfaces;
+    persistedSurfaces = JSON.stringify(surfaces);
+    syncSurfaces();
+    syncSurfaceOverlay();
+  };
+
+  /** Both saved records, once per conversation key, discarded whole if the
+   *  reader opened another bubble while the read was in flight. */
+  const trySeedFromCache = async () => {
+    const threadAddress = cacheAddress("thread");
+    if (!threadAddress || seedTried) return;
+    seedTried = true;
     const seededFor = selectedId;
-    const record = await readCached(address);
-    if (disposed || !record || seededFor !== selectedId) return;
-    if (threadCache.seedWindow(record.value)) {
-      lastPersistedSequence = record.value.deliveredSequence || 0;
-      threadAgentId = seededFor;
-      paintChat();
-    }
+    const [thread, surfaces] = await Promise.all([readCached(threadAddress), readCached(cacheAddress("surfaces"))]);
+    if (disposed || seededFor !== selectedId) return;
+    seedSurfaces(surfaces, seededFor);
+    seedThreadWindow(thread, seededFor);
   };
 
   /** Persist the window when it has moved. Fire-and-forget, sequence-guarded:
    *  a repaint that absorbed nothing new writes nothing. */
   const persistThreadWindow = () => {
-    const address = threadCacheAddress();
+    const address = cacheAddress("thread");
     const window = threadCache.readWindow();
     if (!address || !window || window.deliveredSequence === lastPersistedSequence) return;
     lastPersistedSequence = window.deliveredSequence;
     writeCached(address, window);
   };
 
-  /** Drop the conversation cache — and with it, the seed's one-shot flag, so
-   *  the next conversation key seeds from its own saved window. */
-  const resetThreadCache = () => {
+  /** The payload has answered about this agent's surfaces, so the seed's turn
+   *  is over — an answer carrying none clears the pills as it always did.
+   *  A snapshot that moved is written through for the next visit; one that
+   *  stands still, or an answer with nothing to say, leaves the record alone. */
+  const absorbSurfaces = () => {
+    surfacesOwner = selectedId;
+    seededSurfaces = null;
+    const agent = agentInFocus();
+    const surfaces = agent ? agent.surfaces : null;
+    const address = cacheAddress("surfaces");
+    const arriving = surfaces ? JSON.stringify(surfaces) : null;
+    if (!address || !arriving || arriving === persistedSurfaces) return;
+    persistedSurfaces = arriving;
+    writeCached(address, { surfaces, savedAt: Date.now() });
+  };
+
+  /** Drop what the cache holds for this conversation — and with it, the seed's
+   *  one-shot flag, so the next conversation key seeds from its own records. */
+  const resetConversationCache = () => {
     threadCache.reset();
-    threadSeedTried = false;
+    seedTried = false;
     lastPersistedSequence = 0;
     absorbedThreadPayload = null;
+    seededSurfaces = null;
+    persistedSurfaces = null;
+    surfacesOwner = null;
   };
   // The one payload already folded through the cache. A repaint hands the same
   // payload back, and absorbing it twice is not idempotent for the one shape
@@ -419,7 +462,7 @@ export function mountAgentRail(host, context) {
 
   const openConversation = (agentId) => {
     chooseAgent(agentId);
-    resetThreadCache();
+    resetConversationCache();
     threadAgentId = agentId;
   };
   const pendingAgentsScope = () => `agents:${key}`;
@@ -557,9 +600,9 @@ export function mountAgentRail(host, context) {
   /// surface before the rail asked for; the param is here so the panel follows
   /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
-    // The saved window first, so a revisit's first read is a forward delta
+    // The saved records first, so a revisit's first read is a forward delta
     // with the history already local. One try per conversation key.
-    await trySeedThread();
+    await trySeedFromCache();
     const askedAgentId = selectedId && !isProvisionalKey(selectedId) ? { agent_id: selectedId } : {};
     const scope = { ...threadCache.cursorParam(), ...askedAgentId };
     if (context.kind === "issue") {
@@ -620,6 +663,7 @@ export function mountAgentRail(host, context) {
     // when we asked about none, which is every first read — the entity's own,
     // which is the agent the selection just landed on (its first).
     if (!isProvisionalKey(selectedId)) threadOwner = asked === null ? selectedId : asked;
+    absorbSurfaces();
     paint();
   };
 
@@ -785,9 +829,9 @@ export function mountAgentRail(host, context) {
   const threadWindow = () => {
     // The cache holds one conversation; switching bubbles switches which.
     if (threadAgentId !== selectedId) {
-      resetThreadCache();
+      resetConversationCache();
       threadAgentId = selectedId;
-      trySeedThread(); // fire and forget; the refresh under way folds onto it
+      trySeedFromCache(); // fire and forget; the refresh under way folds onto it
     }
     // The payload in hand belongs to the agent it was read for. Just after a
     // switch that is the agent just left, and absorbing it would refill the
@@ -1050,7 +1094,8 @@ export function mountAgentRail(host, context) {
 
   const surfacesInFocus = () => {
     const agent = agentInFocus();
-    return (agent && agent.surfaces) || null;
+    if (!agent) return null;
+    return agent.surfaces || seededSurfaces;
   };
 
   const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());

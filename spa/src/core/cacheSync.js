@@ -44,6 +44,16 @@ function gitScopeOf(row) {
   return null;
 }
 
+/** The surfaces snapshot each agent in a detail payload carries, stored where
+ *  the rail seeds its pills from. An agent whose harness offers nothing here
+ *  writes nothing, and keeps whatever it last had. */
+async function writeSurfaces(deviceId, entityId, agents) {
+  for (const agent of agents) {
+    if (!agent.id || !agent.surfaces) continue;
+    await writeCached({ deviceId, entityId, kind: "surfaces", sub: agent.id }, { surfaces: agent.surfaces, savedAt: Date.now() });
+  }
+}
+
 /** Re-read the conversations that were ever warmed on this entity — one full
  *  first page per agent, stored as the saved window the rail seeds from. A
  *  conversation never opened has no record here and is never asked for. */
@@ -57,8 +67,10 @@ async function refreshThreads(deviceId, entityId, row) {
         ...(agentSub ? { agent_id: agentSub } : {}),
         thread_limit: FIRST_PAGE_ITEMS,
       });
-      const shaped = windowFromThreadPayload(railEntity(payload, isIssue ? "issue" : "branch").thread);
+      const detail = railEntity(payload, isIssue ? "issue" : "branch");
+      const shaped = windowFromThreadPayload(detail.thread);
       if (shaped) await writeCached({ deviceId, entityId, kind: "thread", sub: agentSub }, shaped);
+      await writeSurfaces(deviceId, entityId, detail.agents);
     } catch {
       /* transient, or the agent left — the next event tries again */
     }

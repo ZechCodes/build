@@ -242,6 +242,31 @@ describe("keeping warmed conversations fresh", () => {
     expect(record.value.deliveredSequence).toBe(3);
   });
 
+  it("writes a surfaces record for each agent in the detail payload that carries one", async () => {
+    await cache.writeCached(
+      { deviceId: "dev-1", entityId: "run-1", kind: "thread", sub: "ag-1" },
+      { items: [{ id: "m-1", data: { sequence: 1 } }], deliveredSequence: 1 },
+    );
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.get")
+        return {
+          run: {
+            thread: { items: [{ id: "m-2", data: { sequence: 2 } }], has_more: false, thread_total: 2 },
+            agents: [
+              { id: "ag-1", surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running" }] } },
+              { id: "ag-2" },
+            ],
+          },
+        };
+      return {};
+    });
+    sync.startCacheSync();
+    await feed([branchItem()]);
+    const record = await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-1" });
+    expect(record.value.surfaces.shells).toHaveLength(1);
+    expect(await cache.readCached({ deviceId: "dev-1", entityId: "run-1", kind: "surfaces", sub: "ag-2" })).toBeUndefined();
+  });
+
   it("asks for no conversation that was never opened", async () => {
     sync.startCacheSync();
     await feed([branchItem()]);

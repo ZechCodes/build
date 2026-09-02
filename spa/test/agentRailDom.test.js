@@ -84,6 +84,7 @@ const { readCached, writeCached, wipeCache } = await import("../src/core/localCa
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
+const { writeOpenSurface } = await import("../src/core/agentSurfacesModel.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
@@ -1935,6 +1936,145 @@ describe("the agent's surfaces, carried by the status row", () => {
 
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
+  });
+});
+
+describe("the agent's surfaces, seeded from the local cache", () => {
+  const feedItems = [{
+    kind: "branch", project_id: "p1", branch: "build/login", run_id: "run-3", worktree_id: "wt-3",
+    agents: [agent(), agent({ id: "ag-2", ordinal: 2 })],
+  }];
+  const railContext = { kind: "branch", projectId: "p1", branch: "build/login" };
+  const shellsRunning = (...descriptions) => ({
+    shells: descriptions.map((description, index) => ({ id: `sh-${index}`, description, state: "running", tail: [] })),
+  });
+  const aChecklist = { checklist: [{ id: "t-1", subject: "wire the seed", state: "in_progress" }] };
+  const surfacesAddress = (sub) => ({ deviceId: "dev-1", entityId: "run-3", kind: "surfaces", sub });
+  const saveSurfaces = (sub, surfaces) => writeCached(surfacesAddress(sub), { surfaces, savedAt: 1 });
+  const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
+  const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
+  const pillKinds = () =>
+    [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
+  const pillCount = (kind) =>
+    railStatusPills().querySelector(`[data-surface-kind="${kind}"] .surface-pill-count`).textContent.trim();
+  const answerNothing = () => {
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise(() => {});
+      return {};
+    });
+  };
+
+  beforeEach(() => {
+    feedSnapshot = { items: feedItems, projects: [] };
+  });
+
+  it("paints the saved pills before the first read answers", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual(["shells"]);
+  });
+
+  it("paints no pill for an agent the cache never saw", async () => {
+    answerNothing();
+    await mount();
+    expect(pillKinds()).toEqual([]);
+  });
+
+  it("opens the remembered kind's viewer on the saved snapshot", async () => {
+    writeOpenSurface("run-3:ag-1", "shells");
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    await mount();
+    expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
+  });
+
+  it("seeds the agent switched to, not the one left behind", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    await saveSurfaces("ag-2", aChecklist);
+    answerNothing();
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(pillKinds()).toEqual(["checklist"]);
+  });
+
+  it("drops a seed whose agent was left while the read was in flight", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    rail = mountAgentRail(railHost(), railContext);
+    bubbles()[1].click(); // ag-1's seed is still in flight
+    await flush();
+    expect(pillKinds()).toEqual([]);
+  });
+
+  it("replaces the seeded pills with the first live payload", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test", "cargo clippy"));
+    let answer = null;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "models.list") return CATALOG;
+      if (method === "branch.get") return new Promise((resolve) => { answer = resolve; });
+      return {};
+    });
+    await mount();
+    expect(pillCount("shells")).toBe("2");
+
+    answer(branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] }));
+    await flush();
+    expect(pillCount("shells")).toBe("1");
+  });
+
+  it("writes the snapshot a payload moved, and rewrites nothing while it holds still", async () => {
+    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo test") })] });
+    await mount();
+    expect(await savedDescription("ag-1")).toBe("cargo test");
+
+    await saveSurfaces("ag-1", shellsRunning("left by another hand"));
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(await savedDescription("ag-1")).toBe("left by another hand");
+
+    payload = branchRow({ agents: [agent({ surfaces: shellsRunning("cargo clippy") })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+    expect(await savedDescription("ag-1")).toBe("cargo clippy");
+  });
+
+  it("leaves the record alone for a payload carrying no surfaces at all", async () => {
+    await saveSurfaces("ag-1", shellsRunning("from the last visit"));
+    payload = branchRow({ agents: [agent()] });
+    await mount();
+    expect(await savedDescription("ag-1")).toBe("from the last visit");
+  });
+
+  it("addresses the conversation and its surfaces alike, the kind apart", async () => {
+    payload = branchRow({
+      agents: [agent({ surfaces: shellsRunning("cargo test") })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "hello", created_at: "2026-08-30T12:00:00Z" } }],
+          has_more: false, thread_total: 1, thread_last_sequence: 1, sessions: [],
+        },
+      },
+    });
+    await mount();
+    expect(await readCached({ deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" })).toBeTruthy();
+    expect(await savedSurfaces("ag-1")).toBeTruthy();
+  });
+
+  it("leaves no seed landing after the rail is gone", async () => {
+    await saveSurfaces("ag-1", shellsRunning("cargo test"));
+    answerNothing();
+    rail = mountAgentRail(railHost(), railContext);
+    rail.dispose();
+    rail = null;
+    await flush();
+    expect(railHost().querySelector(".surface-pill")).toBe(null);
+    expect(notifyError).not.toHaveBeenCalled();
   });
 });
 

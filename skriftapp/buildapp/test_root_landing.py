@@ -197,7 +197,6 @@ DESIGN_TOKENS = (
     "--space-cta-form-top",
     "--space-card-header-bottom",
     "--space-card-title-bottom",
-    "--space-agent-support-top",
     "--space-dashes-top",
     "--space-footer-gap",
     "--font-size-hero",
@@ -235,8 +234,6 @@ DESIGN_TOKENS = (
     "--line-height-success",
     "--font-size-agent-name",
     "--letter-spacing-agent-name",
-    "--font-size-agent-support",
-    "--letter-spacing-agent-support",
     "--font-size-footer",
     "--letter-spacing-footer",
     "--opacity-disabled",
@@ -315,7 +312,7 @@ SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:1744 / 800"
 SCREENSHOT_CROP_MOBILE_TOKEN = "--screenshot-crop-aspect:921 / 900"
 
 AGENTS_LABEL_MARKUP = (
-    '<p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>'
+    '<p class="eyebrow eyebrow--muted agents-label">USE YOUR HARNESS</p>'
 )
 AGENTS_LABEL_RULE = (
     ".agents-label{display:flex;align-items:center;padding:var(--agent-cell-padding)}"
@@ -327,7 +324,6 @@ AGENTS_GRID_INTERMEDIATE_RULE = (
 HERO_FONT_SIZE_DESKTOP_TOKEN = "--font-size-hero:76px"
 HERO_FONT_SIZE_INTERMEDIATE_TOKEN = "--font-size-hero:clamp(44px,6vw,76px)"
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
-AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
 
 FEATURES_TITLE_MARKUP = (
     '<h2 class="section-title">Everything agents need.<br>'
@@ -476,7 +472,6 @@ COMPONENT_LAYER_SELECTORS = (
     ".agents-grid",
     ".agents-label",
     ".agent-cell",
-    ".agent-support",
     ".nav-bar",
     ".nav-links",
     ".nav-actions",
@@ -714,11 +709,12 @@ def test_screenshot_gap_and_crop_are_retuned_for_the_phone_capture():
         assert mobile_token not in _rules_outside_media_blocks(css)
 
 
-def test_every_agent_name_is_listed_with_supported():
+def test_every_harness_is_listed_by_name_alone():
     html = _landing_html()
     assert AGENTS_LABEL_MARKUP in html
     for agent_name in AGENT_NAMES:
-        assert f'<div class="agent-cell">{agent_name}{AGENT_SUPPORT_LABEL}</div>' in html
+        assert f'<div class="agent-cell">{agent_name}</div>' in html
+    assert "agent-support" not in html
 
 
 def test_features_header_copy_is_verbatim():

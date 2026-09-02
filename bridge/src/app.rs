@@ -18409,13 +18409,11 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    let died_over = match s.tabs.get_mut(&key) {
-                        Some(tab) => {
-                            tab.live = false;
-                            take_unanswered_call_rows(tab)
-                        }
-                        None => Vec::new(),
+                    let Some(tab) = s.tabs.get_mut(&key) else {
+                        return;
                     };
+                    tab.live = false;
+                    let unanswered_call_sequences = take_unanswered_call_sequences(tab);
                     match named_conversation(&s, &key) {
                         Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
@@ -18433,7 +18431,7 @@ fn spawn_activity_pump(
                     // BEFORE the session ends — so the timeline reads
                     // calls-closed-then-session-ended rather than a session
                     // ending over work that still claims to run.
-                    for sequence in died_over {
+                    for sequence in unanswered_call_sequences {
                         s.resolve_agent_tool_call(
                             &owner,
                             &agent_id,
@@ -18669,9 +18667,9 @@ fn mark_call_answered(state: &mut AppState, key: &TabKey, call_id: &str) -> Opti
     Some(row.sequence)
 }
 
-/// The rows of the calls the session died over, oldest first, with the tab's
-/// whole pairing map emptied: it lives and dies with the session.
-fn take_unanswered_call_rows(tab: &mut Tab) -> Vec<u64> {
+/// The thread sequences of the calls the session died over, oldest first, with
+/// the tab's whole pairing map emptied: it lives and dies with the session.
+fn take_unanswered_call_sequences(tab: &mut Tab) -> Vec<u64> {
     let mut unanswered: Vec<u64> = std::mem::take(&mut tab.call_sequences)
         .into_values()
         .filter(|row| !row.answered)
@@ -34819,6 +34817,24 @@ mod tests {
         )
     }
 
+    /// A run with the live, terminal-free agent tab a reported activity pumps
+    /// into, already shared — the whole preamble an activity-pump test needs
+    /// before it opens a broadcast channel.
+    fn a_run_with_a_reporting_tab(
+        run_id: &str,
+    ) -> (tempfile::TempDir, Arc<Mutex<AppState>>, TabKey) {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(&mut app, &repo, dir.path(), run_id, RunState::Building);
+        let agent_id = crate::agent::derived_agent_id(run_id);
+        let key = derived_agent_key(&root, run_id);
+        app.tabs.insert(
+            key.clone(),
+            terminal_free_agent_tab(&root, run_id, &agent_id),
+        );
+        (dir, app.shared(), key)
+    }
+
     /// A live agent tab at `root` carrying a session that reports exactly what
     /// it was told — the only way a test can put a turn-boundary carrier where
     /// the daemon expects one, since a PTY can only be asked about paint.
@@ -35405,25 +35421,11 @@ mod tests {
     /// have nothing left to fold them under.
     #[tokio::test]
     async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
-        let (dir, repo) = init_repo();
-        let mut app = qa_state(&repo, dir.path());
-        let root = insert_run(
-            &mut app,
-            &repo,
-            dir.path(),
-            "run-folded",
-            RunState::Building,
-        );
-        let agent_id = crate::agent::derived_agent_id("run-folded");
-        let key = derived_agent_key(&root, "run-folded");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-folded", &agent_id),
-        );
-        let state = app.shared();
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-folded");
 
-        let reported =
-            crate::harness::adk::rows_minted_by(crate::harness::stream_fixtures::SUBAGENT_FIXTURE);
+        let reported = crate::harness::adk::reports_minted_by(
+            crate::harness::stream_fixtures::SUBAGENT_FIXTURE,
+        );
         let (activity, subscribed) = broadcast::channel(reported.len());
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
         for report in reported {
@@ -35519,22 +35521,7 @@ mod tests {
     /// lag — lands as a row of its own rather than being dropped.
     #[tokio::test]
     async fn a_report_naming_a_call_with_no_row_lands_flat() {
-        let (dir, repo) = init_repo();
-        let mut app = qa_state(&repo, dir.path());
-        let root = insert_run(
-            &mut app,
-            &repo,
-            dir.path(),
-            "run-orphan",
-            RunState::Building,
-        );
-        let agent_id = crate::agent::derived_agent_id("run-orphan");
-        let key = derived_agent_key(&root, "run-orphan");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-orphan", &agent_id),
-        );
-        let state = app.shared();
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-orphan");
 
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
@@ -35570,23 +35557,17 @@ mod tests {
     /// ended rather than a session ending over work that still claims to run.
     #[tokio::test]
     async fn the_death_rites_close_the_calls_the_session_died_over() {
-        let (dir, repo) = init_repo();
-        let mut app = qa_state(&repo, dir.path());
-        let root = insert_run(&mut app, &repo, dir.path(), "run-died", RunState::Building);
-        let agent_id = crate::agent::derived_agent_id("run-died");
-        let key = derived_agent_key(&root, "run-died");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-died", &agent_id),
-        );
-        primary_thread_mut(&mut app.runs.get_mut("run-died").unwrap().agents).start_session(
-            "claude",
-            None,
-            None,
-            "build",
-            &now_rfc3339(),
-        );
-        let state = app.shared();
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-died");
+        primary_thread_mut(
+            &mut state
+                .lock()
+                .unwrap()
+                .runs
+                .get_mut("run-died")
+                .unwrap()
+                .agents,
+        )
+        .start_session("claude", None, None, "build", &now_rfc3339());
 
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));

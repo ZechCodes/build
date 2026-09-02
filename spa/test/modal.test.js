@@ -153,7 +153,7 @@ describe("the modal's motion", () => {
     started = recordAnimations();
   });
   afterEach(async () => {
-    await settleMotion(started);
+    await settleMotion();
     stopRecordingAnimations();
     document.body.innerHTML = "";
   });
@@ -172,7 +172,7 @@ describe("the modal's motion", () => {
     expect(started[1].element).toBe(body);
     expect(keyframedProperties(started[1])).toContain("height");
 
-    await settleMotion(started);
+    await settleMotion();
     expect(scrim.hidden).toBe(false);
     expect(body.hidden).toBe(false);
   });
@@ -180,7 +180,7 @@ describe("the modal's motion", () => {
   it("shrinks the dialog and fades the scrim before the scrim leaves the document", async () => {
     const onClose = vi.fn();
     const { body, close } = openModal({ dialogHtml: DIALOG, onClose });
-    await settleMotion(started);
+    await settleMotion();
     const scrim = scrimOnScreen();
     started.length = 0;
 
@@ -193,7 +193,7 @@ describe("the modal's motion", () => {
     expect(scrimOnScreen()).toBe(scrim);
     expect(onClose).not.toHaveBeenCalled();
 
-    await settleMotion(started);
+    await settleMotion();
     await closing;
 
     expect(scrimOnScreen()).toBe(null);
@@ -203,7 +203,7 @@ describe("the modal's motion", () => {
   it("takes Escape through the same closing move", async () => {
     const onClose = vi.fn();
     openModal({ dialogHtml: DIALOG, onClose });
-    await settleMotion(started);
+    await settleMotion();
     started.length = 0;
 
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -212,7 +212,7 @@ describe("the modal's motion", () => {
     expect(started).toHaveLength(2);
     expect(scrimOnScreen()).not.toBe(null);
 
-    await settleMotion(started);
+    await settleMotion();
     await motionBeat();
 
     expect(scrimOnScreen()).toBe(null);
@@ -222,7 +222,7 @@ describe("the modal's motion", () => {
   it("takes a press on the scrim through the same closing move", async () => {
     const onClose = vi.fn();
     openModal({ dialogHtml: DIALOG, onClose });
-    await settleMotion(started);
+    await settleMotion();
     started.length = 0;
 
     scrimOnScreen().click();
@@ -231,7 +231,7 @@ describe("the modal's motion", () => {
     expect(started).toHaveLength(2);
     expect(scrimOnScreen()).not.toBe(null);
 
-    await settleMotion(started);
+    await settleMotion();
     await motionBeat();
 
     expect(scrimOnScreen()).toBe(null);

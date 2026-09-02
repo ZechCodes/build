@@ -7,6 +7,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
+import { recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
 
 // The conversation cache writes through IndexedDB; give the module a fake one
 // before anything imports it.
@@ -80,8 +81,7 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
-const { mountAgentRail, railStatusGitHtml, railStatusLeadHtml, railStatusShape, resetAgentRailMemory } =
-  await import("../src/core/agentRail.js");
+const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
@@ -141,6 +141,7 @@ const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
 const railStatusLead = () => railHost().querySelector("#rail-status-lead");
 const railStatusPills = () => railHost().querySelector("#rail-status-pills");
+const railStatusGit = () => railHost().querySelector("#rail-status-git");
 const workingWord = () => railHost().querySelector(".rail-status-working-word");
 
 const pushFeed = async (snapshot) => {
@@ -1319,26 +1320,6 @@ describe("the pinned status line above the composer", () => {
     expect(railStatus().textContent).toContain("Codex session started");
   });
 
-  it("names the lead's shape, the working clock winning over the startup line", () => {
-    expect(railStatusShape({ working: "5s", starting: "Run started · 2m ago" })).toBe("working");
-    expect(railStatusShape({ working: "", starting: "Run started · 2m ago" })).toBe("starting");
-    expect(railStatusShape({ working: "", starting: "" })).toBe("quiet");
-  });
-
-  it("gives the working shape a word of its own to collapse and a slot for the clock", () => {
-    expect(railStatusLeadHtml("working")).toContain('class="rail-status-working-word"');
-    expect(railStatusLeadHtml("working")).toContain('class="rail-status-text"');
-    expect(railStatusLeadHtml("starting")).not.toContain("rail-status-working-word");
-    expect(railStatusLeadHtml("starting")).toContain('class="rail-status-text"');
-    expect(railStatusLeadHtml("quiet")).toBe("");
-  });
-
-  it("says only the git facts it has, and nothing at all without them", () => {
-    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("↑2");
-    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("+4 −1");
-    expect(railStatusGitHtml({ sync: "", stat: "" })).toBe("");
-  });
-
   it("ticks the elapsed time between feed reads", async () => {
     // The ticker's Date.now() has to move with the fake clock for this one, so
     // this test fakes Date too — the others read `since` off the real clock at
@@ -2347,6 +2328,32 @@ describe("the one status row", () => {
 
     expect(railStatusPills().querySelector(".surface-pill")).toBe(null);
     expect(workingWord().hidden).toBe(false);
+  });
+
+  it("grows the row and its lead into place, and shrinks them out when the row falls quiet", async () => {
+    const started = recordAnimations();
+    const movesOn = (element) => started.filter((run) => run.element === element);
+    try {
+      await aTurnInFlight();
+      await mount();
+      await settleMotion();
+
+      expect(railStatus().hidden).toBe(false);
+      expect(movesOn(railStatus())[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
+      expect(movesOn(railStatusLead())[0].keyframes[0]).toEqual({ width: "0px", opacity: 0 });
+      expect(movesOn(railStatusGit())[0].keyframes[0]).toEqual({ width: "0px", opacity: 0 });
+
+      started.length = 0;
+      await pushFeed({ items: [], projects: [] });
+      await settleMotion();
+
+      expect(movesOn(railStatusLead())[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
+      expect(movesOn(railStatusGit())[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
+      expect(movesOn(railStatus())[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+      expect(railStatus().hidden).toBe(true);
+    } finally {
+      stopRecordingAnimations();
+    }
   });
 
   it("scrolls the pills in the room between the lead and the git facts, with no bar to show for it", () => {

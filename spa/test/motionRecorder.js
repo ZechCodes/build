@@ -9,6 +9,7 @@ import { MOTION_BEAT_MS, motionSettled } from "../src/core/motion.js";
 /** Every animation the primitive started, each one finished by hand. */
 export function recordAnimations() {
   const started = [];
+  running = [];
   Element.prototype.animate = function animate(keyframes, options) {
     let finish;
     const run = {
@@ -16,6 +17,7 @@ export function recordAnimations() {
       keyframes,
       options,
       cancelled: false,
+      over: false,
       finished: new Promise((resolve) => {
         finish = () => resolve(run);
       }),
@@ -23,16 +25,19 @@ export function recordAnimations() {
         run.cancelled = true;
       },
       finish() {
+        run.over = true;
         finish();
       },
     };
     started.push(run);
+    running.push(run);
     return run;
   };
   return started;
 }
 
 export function stopRecordingAnimations() {
+  running = [];
   delete Element.prototype.animate;
 }
 
@@ -42,15 +47,17 @@ export const motionBeat = () => new Promise((resolve) => setTimeout(resolve, MOT
 
 const SETTLING_ROUNDS = 24;
 
-export async function settleMotion(started) {
+let running = [];
+
+export async function settleMotion() {
   for (let round = 0; round < SETTLING_ROUNDS; round += 1) {
-    started.forEach((run) => run.finish());
+    running.forEach((run) => run.finish());
     let still = false;
     motionSettled().then(() => {
       still = true;
     });
     await motionBeat();
-    if (still) return;
+    if (still && running.every((run) => run.over || run.cancelled)) return;
   }
   await motionSettled();
 }

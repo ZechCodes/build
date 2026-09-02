@@ -65,7 +65,7 @@ const openConsole = async (termIds) => {
   await flush();
   region().querySelector(".console-bar").click();
   await flush();
-  await settleMotion(started);
+  await settleMotion();
 };
 
 beforeEach(() => {
@@ -84,7 +84,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (panel) panel.dispose();
   panel = null;
-  await settleMotion(started);
+  await settleMotion();
   stopRecordingAnimations();
   started = [];
 });
@@ -180,7 +180,7 @@ describe("the strip as a keyed list", () => {
     expect(leaving.hasAttribute("data-exiting")).toBe(true);
     const move = started.filter((run) => run.element === leaving).pop();
     expect(move.keyframes[1].width).toBe("0px");
-    await settleMotion(started);
+    await settleMotion();
     expect(region().querySelector('.console-tab[data-key="term-1"]')).toBeNull();
   });
 

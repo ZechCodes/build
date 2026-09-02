@@ -130,7 +130,7 @@ describe("a split menu's motion", () => {
     started = recordAnimations();
   });
   afterEach(async () => {
-    await settleMotion(started);
+    await settleMotion();
     stopRecordingAnimations();
     document.body.innerHTML = "";
   });
@@ -153,7 +153,7 @@ describe("a split menu's motion", () => {
     expect(keyframedProperties(started[0])).toContain("height");
     expect(menu.hidden).toBe(false);
 
-    await settleMotion(started);
+    await settleMotion();
     started.length = 0;
     caret.click();
     await motionBeat();
@@ -162,14 +162,14 @@ describe("a split menu's motion", () => {
     expect(keyframedProperties(started[0])).toContain("height");
     expect(menu.hidden).toBe(false);
 
-    await settleMotion(started);
+    await settleMotion();
     expect(menu.hidden).toBe(true);
   });
 
   it("shrinks it shut the same way on a press outside it", async () => {
     const { menu, caret } = mountMenuInside(plainHost());
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
     started.length = 0;
 
     document.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
@@ -178,7 +178,7 @@ describe("a split menu's motion", () => {
     expect(started.filter((run) => run.element === menu)).toHaveLength(1);
     expect(menu.hidden).toBe(false);
 
-    await settleMotion(started);
+    await settleMotion();
     expect(menu.hidden).toBe(true);
   });
 
@@ -188,7 +188,7 @@ describe("a split menu's motion", () => {
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
 
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
     expect(menu.style.position).toBe("fixed");
     started.length = 0;
 
@@ -198,7 +198,7 @@ describe("a split menu's motion", () => {
     expect(menu.style.position).toBe("fixed");
     expect(menu.style.bottom).toBe("306px");
 
-    await settleMotion(started);
+    await settleMotion();
 
     expect(menu.hidden).toBe(true);
     expect(menu.style.position).toBe("");
@@ -210,14 +210,14 @@ describe("a split menu's motion", () => {
     container.querySelector(".splitbtn").getBoundingClientRect = () => box({ top: 500, bottom: 530, left: 900, right: 980 });
     Object.defineProperty(menu, "offsetHeight", { value: 90, configurable: true });
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
 
     const addListener = vi.spyOn(document, "addEventListener");
 
     caret.click();
     await motionBeat();
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
 
     expect(menu.hidden).toBe(false);
     expect(menu.style.position).toBe("fixed");
@@ -229,7 +229,7 @@ describe("a split menu's motion", () => {
   it("opens again on a caret press that lands while it is shutting", async () => {
     const { caret, menu } = mountMenuInside(plainHost());
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
     started.length = 0;
 
     caret.click();
@@ -237,7 +237,7 @@ describe("a split menu's motion", () => {
     expect(started).toHaveLength(1);
 
     caret.click();
-    await settleMotion(started);
+    await settleMotion();
 
     expect(started[0].cancelled).toBe(true);
     expect(started).toHaveLength(2);

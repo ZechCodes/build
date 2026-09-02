@@ -60,7 +60,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (block) block.dispose();
   block = null;
-  await settleMotion(started);
+  await settleMotion();
   stopRecordingAnimations();
   started = [];
   document.body.innerHTML = "";
@@ -75,7 +75,7 @@ describe("a pill arriving and leaving the strip", () => {
     const [pill] = pills();
     expect(pill).toBeTruthy();
     expect(animationsOn(pill)[0].keyframes[0]).toHaveProperty("width");
-    await settleMotion(started);
+    await settleMotion();
     expect(pill.hidden).toBe(false);
 
     started.length = 0;
@@ -86,7 +86,7 @@ describe("a pill arriving and leaving the strip", () => {
     expect(animationsOn(pill)[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
     expect(pillHost().contains(pill)).toBe(true);
 
-    await settleMotion(started);
+    await settleMotion();
     expect(pillHost().contains(pill)).toBe(false);
   });
 });
@@ -95,7 +95,7 @@ describe("the cap a pill's count rides in", () => {
   it("sits at the pill's end, behind its label", async () => {
     const surfaces = mount();
     surfaces.set(checklistOnly("in_progress"));
-    await settleMotion(started);
+    await settleMotion();
 
     const pill = pillOf(CHECKLIST_ENTRY_KIND);
     expect([...pill.children].map((child) => child.className)).toEqual([
@@ -108,7 +108,7 @@ describe("the cap a pill's count rides in", () => {
   it("grows into place when the count arrives and shrinks away when it goes, the pill staying", async () => {
     const surfaces = mount();
     surfaces.set(checklistOnly("pending"));
-    await settleMotion(started);
+    await settleMotion();
 
     const pill = pillOf(CHECKLIST_ENTRY_KIND);
     const cap = capOf(CHECKLIST_ENTRY_KIND);
@@ -118,7 +118,7 @@ describe("the cap a pill's count rides in", () => {
     surfaces.set(checklistOnly("in_progress"));
     await motionBeat();
     expect(animationsOn(cap)[0].keyframes[0]).toEqual({ width: "0px", opacity: 0 });
-    await settleMotion(started);
+    await settleMotion();
     expect(cap.hidden).toBe(false);
     expect(cap.textContent).toBe("1");
 
@@ -126,7 +126,7 @@ describe("the cap a pill's count rides in", () => {
     surfaces.set(checklistOnly("completed"));
     await motionBeat();
     expect(animationsOn(cap)[0].keyframes[1]).toEqual({ width: "0px", opacity: 0 });
-    await settleMotion(started);
+    await settleMotion();
 
     expect(cap.hidden).toBe(true);
     expect(pillOf(CHECKLIST_ENTRY_KIND)).toBe(pill);
@@ -150,7 +150,7 @@ describe("the rows of an open viewer", () => {
     const surfaces = mount();
     surfaces.set(shells("cargo test"));
     pillOf(SHELL_ENTRY_KIND).click();
-    await settleMotion(started);
+    await settleMotion();
 
     started.length = 0;
     surfaces.set(shells("cargo test", "cargo clippy"));
@@ -159,7 +159,7 @@ describe("the rows of an open viewer", () => {
     const arriving = shellRows()[1];
     expect(arriving.textContent).toContain("cargo clippy");
     expect(animationsOn(arriving)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
-    await settleMotion(started);
+    await settleMotion();
     expect(arriving.hidden).toBe(false);
 
     started.length = 0;
@@ -169,7 +169,7 @@ describe("the rows of an open viewer", () => {
     expect(animationsOn(arriving)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
     expect(viewerHost().contains(arriving)).toBe(true);
 
-    await settleMotion(started);
+    await settleMotion();
     expect(viewerHost().contains(arriving)).toBe(false);
   });
 });
@@ -178,14 +178,14 @@ describe("the viewer at the bottom of the conversation", () => {
   it("grows by its height when a kind opens", async () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
-    await settleMotion(started);
+    await settleMotion();
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
     await motionBeat();
 
     expect(animationsOn(viewerHost())[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
-    await settleMotion(started);
+    await settleMotion();
     expect(viewerHost().hidden).toBe(false);
     expect(viewerHost().querySelector(".surface-shells")).not.toBe(null);
   });
@@ -194,7 +194,7 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
-    await settleMotion(started);
+    await settleMotion();
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
@@ -203,7 +203,7 @@ describe("the viewer at the bottom of the conversation", () => {
     expect(animationsOn(viewerHost())[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
     expect(viewerHost().querySelector(".surface-shells")).not.toBe(null);
 
-    await settleMotion(started);
+    await settleMotion();
     expect(viewerHost().hidden).toBe(true);
     expect(viewerHost().innerHTML).toBe("");
   });
@@ -212,13 +212,13 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
-    await settleMotion(started);
+    await settleMotion();
 
     started.length = 0;
     pillOf(SHELL_ENTRY_KIND).click();
     await motionBeat();
     pillOf(SHELL_ENTRY_KIND).click();
-    await settleMotion(started);
+    await settleMotion();
 
     expect(viewerHost().hidden).toBe(false);
     expect(viewerHost().querySelector(".surface-shells")).not.toBe(null);
@@ -228,13 +228,13 @@ describe("the viewer at the bottom of the conversation", () => {
   it("is hidden and empty when the panel is disposed mid-reveal", async () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
-    await settleMotion(started);
+    await settleMotion();
 
     pillOf(SHELL_ENTRY_KIND).click();
     await motionBeat();
     surfaces.dispose();
     block = null;
-    await settleMotion(started);
+    await settleMotion();
 
     expect(viewerHost().hidden).toBe(true);
     expect(viewerHost().innerHTML).toBe("");
@@ -244,7 +244,7 @@ describe("the viewer at the bottom of the conversation", () => {
     const surfaces = mount();
     surfaces.set(surfacesSnapshot());
     pillOf(SHELL_ENTRY_KIND).click();
-    await settleMotion(started);
+    await settleMotion();
 
     started.length = 0;
     pillOf(CHECKLIST_ENTRY_KIND).click();

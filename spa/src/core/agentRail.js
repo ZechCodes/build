@@ -24,6 +24,7 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  QUIET_SHAPE,
   agentCanInterrupt,
   agentHasTerminal,
   agentTitle,
@@ -31,10 +32,12 @@ import {
   providerLabel,
   railBubbles,
   railEntity,
+  railStatusShape,
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
 } from "./agentRailModel.js";
+import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
@@ -52,7 +55,7 @@ import {
   subscribeOptimistic,
 } from "./optimistic.js";
 import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
-import { hide, reveal } from "./motion.js";
+import { hide, motionSettled, reveal } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -233,56 +236,15 @@ export function syncStripPainters(bubbles, painted, faces) {
   });
 }
 
-const WORKING_SHAPE = "working";
-const STARTING_SHAPE = "starting";
-const QUIET_SHAPE = "quiet";
-
-const RAIL_STATUS_LEAD_CLASS = {
-  [WORKING_SHAPE]: "rail-status-lead rail-status-working",
-  [STARTING_SHAPE]: "rail-status-lead rail-status-starting",
-  [QUIET_SHAPE]: "rail-status-lead",
-};
-
-/** Pure: which of the two things the row's lead is saying — how long the turn
- *  in flight has been running, or when the session began — or that it has
- *  nothing to say. */
-export function railStatusShape(status) {
-  if (status.working) return WORKING_SHAPE;
-  if (status.starting) return STARTING_SHAPE;
-  return QUIET_SHAPE;
-}
-
-/// Pure: the markup each shape of the lead is made of, written once when the
-/// shape changes and never again — the clock inside it is set as text.
-///
-/// "Working" is a span of its own because it is the one word the row gives up
-/// when the pills want the room, and a tick that rebuilt it would take the
-/// collapse with it.
-export function railStatusLeadHtml(shape) {
-  if (shape === WORKING_SHAPE) {
-    return `<span class="rail-status-working-word">Working</span> <span class="rail-status-text"></span>`;
-  }
-  if (shape === STARTING_SHAPE) return `<span class="rail-status-text"></span>`;
-  return "";
-}
-
-/** Pure: how far the work item stands from upstream and its diffstat, in one
- *  group pinned to the row's end so the ticking clock widens into the pills'
- *  room rather than shoving the facts along. */
-export function railStatusGitHtml(status) {
-  const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
-  const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  return sync + stat;
-}
-
 function paintStatusLead(lead, status) {
   const shape = railStatusShape(status);
   if (lead.dataset.shape !== shape) {
     lead.dataset.shape = shape;
-    lead.className = RAIL_STATUS_LEAD_CLASS[shape];
+    lead.className = railStatusLeadClass(shape);
     lead.innerHTML = railStatusLeadHtml(shape);
   }
-  lead.hidden = shape === QUIET_SHAPE;
+  if (shape === QUIET_SHAPE) hide(lead, { axis: "width" });
+  else reveal(lead, { axis: "width" });
   const text = lead.querySelector(STATUS_TEXT_SELECTOR);
   if (text) text.textContent = status.working || status.starting;
 }
@@ -290,7 +252,8 @@ function paintStatusLead(lead, status) {
 function paintStatusGit(git, status) {
   const html = railStatusGitHtml(status);
   if (git.innerHTML !== html) git.innerHTML = html;
-  git.hidden = !html;
+  if (html) reveal(git, { axis: "width" });
+  else hide(git, { axis: "width" });
 }
 
 /// The one row pinned above the composer: what the turn is doing, the pills the
@@ -543,33 +506,45 @@ export function mountAgentRail(host, context) {
     return (window && window.items) || [];
   };
 
-  /// What the row says about itself once the lead, the pills and the git facts
-  /// have each had their say: whether there is anything in it to show, and
-  /// whether the word "Working" still has room to stand in.
-  ///
-  /// A pill on its way out has already given the word its room back, so the two
-  /// cross rather than queue.
-  const syncRailStatusRow = () => {
-    const row = host.querySelector(`#${RAIL_STATUS_ID}`);
+  const statusRow = () => host.querySelector(`#${RAIL_STATUS_ID}`);
+
+  const showRowIfPopulated = () => {
+    const row = statusRow();
     if (!row) return;
     const lead = row.querySelector(`#${RAIL_STATUS_LEAD_ID}`);
-    const pills = row.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
     const git = row.querySelector(`#${RAIL_STATUS_GIT_ID}`);
-    row.hidden = lead.hidden && git.hidden && !pills.children.length;
-    const word = lead.querySelector(WORKING_WORD_SELECTOR);
+    const pills = row.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
+    const populated = !lead.hidden || !git.hidden || !!pills.querySelector(STANDING_PILL_SELECTOR);
+    if (populated) reveal(row, { axis: "height" });
+    else hide(row, { axis: "height" });
+  };
+
+  const collapseWorkingUnderPills = () => {
+    const row = statusRow();
+    if (!row) return;
+    const word = row.querySelector(WORKING_WORD_SELECTOR);
     if (!word) return;
-    if (pills.querySelector(STANDING_PILL_SELECTOR)) hide(word, { axis: "width" });
-    else reveal(word, { axis: "width" });
+    if (row.querySelector(`#${RAIL_STATUS_PILLS_ID}`).querySelector(STANDING_PILL_SELECTOR)) {
+      hide(word, { axis: "width" });
+    } else {
+      reveal(word, { axis: "width" });
+    }
+  };
+
+  const syncRailStatusRow = () => {
+    showRowIfPopulated();
+    collapseWorkingUnderPills();
   };
 
   const paintRailStatus = () => {
-    const row = host.querySelector(`#${RAIL_STATUS_ID}`);
+    const row = statusRow();
     if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
     const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel);
     paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
     paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status);
     syncRailStatusRow();
+    motionSettled().then(syncRailStatusRow);
   };
 
   const unsubscribePending = subscribeOptimistic(pendingAgentsScope(), () => paint());

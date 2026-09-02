@@ -2024,6 +2024,28 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     expect(railHost().querySelector("#rail-surfaces-viewer").textContent).toContain("cargo test");
   });
 
+  const shapelessRecords = [{ surfaces: "boom" }, { surfaces: { shells: "boom" } }, {}];
+  for (const shapeless of shapelessRecords) {
+    it(`paints the conversation and no pill for a record holding ${JSON.stringify(shapeless)}`, async () => {
+      await writeCached(surfacesAddress("ag-1"), shapeless);
+      await writeCached(
+        { deviceId: "dev-1", entityId: "run-3", kind: "thread", sub: "ag-1" },
+        {
+          items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "user", body: "the history", created_at: "2026-08-30T12:00:00Z" } }],
+          olderItemsRemain: false,
+          deliveredSequence: 1,
+          knownTotalItems: 1,
+        },
+      );
+      answerNothing();
+      await mount();
+      expect(pillKinds()).toEqual([]);
+      expect(menuKinds()).toEqual([]);
+      expect(railHost().querySelector("#rail-body").textContent).toContain("the history");
+      expect(notifyError).not.toHaveBeenCalled();
+    });
+  }
+
   it("seeds the agent switched to, not the one left behind", async () => {
     await saveSurfaces("ag-1", shellsRunning("cargo test"));
     await saveSurfaces("ag-2", aChecklist);

@@ -252,6 +252,11 @@ impl SurfaceLedger {
         self.pending_checklist_creates.clear();
     }
 
+    #[cfg(test)]
+    pub fn pending_create_count(&self) -> usize {
+        self.pending_checklist_creates.len()
+    }
+
     pub fn snapshot(&self) -> Option<AgentSurfaces> {
         let held = AgentSurfaces {
             workflows: self.workflows.clone(),

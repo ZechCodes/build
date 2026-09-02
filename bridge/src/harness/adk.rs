@@ -1247,6 +1247,7 @@ impl ProtocolReader {
             }
         }
         self.calls = still_open_under_a_spawned_agent;
+        self.state.lock().unwrap().surfaces.close_pending_creates();
     }
 
     /// Hand one event to whoever is listening, naming the call that spawned the
@@ -2179,6 +2180,30 @@ mod tests {
 
         assert_eq!(after_one_pass, 0, "every call in the fixture was answered");
         assert_eq!(reader.calls.len(), after_one_pass);
+    }
+
+    const TASK_CREATE_CALL_LINE: usize = 27;
+    const TURN_RESULT_LINE: usize = 81;
+
+    fn pending_create_count_of(reader: &ProtocolReader) -> usize {
+        reader.state.lock().unwrap().surfaces.pending_create_count()
+    }
+
+    #[test]
+    fn a_turn_that_ended_between_a_create_and_its_answer_leaves_the_ledger_nothing_pending() {
+        let mut reader = reader_over_a_silent_session();
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[TASK_CREATE_CALL_LINE]),
+        );
+        assert_eq!(pending_create_count_of(&reader), 1);
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[TURN_RESULT_LINE]),
+        );
+
+        assert_eq!(pending_create_count_of(&reader), 0);
     }
 
     fn a_background_shell_line_set(

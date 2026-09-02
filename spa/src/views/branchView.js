@@ -251,11 +251,6 @@ export async function renderBranch() {
   };
   setToolbarVerb(paintFinish);
 
-  /** Where a surface of this view can send the reader, made once and handed to
-   *  whatever mounts under it. Today that is the way out of a diff: the file
-   *  itself, in the Files tab, at the line the diff was about — the hash names
-   *  the tab, and the place inside it rides the one-shot the next render
-   *  reads. */
   const navigate = {
     openFile: ({ path, line }) => {
       App.openFileOnMount = { path, line };

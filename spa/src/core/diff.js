@@ -33,26 +33,15 @@ export function parseDiff(patch) {
   return files;
 }
 
-// ---- file identity ---------------------------------------------------------
-
-/** The name one file of a patch answers to: its path, plus its status, so a
- *  rename's delete and its add are two files rather than one name claimed
- *  twice. It names both the element (`data-key`) and the reader's state for
- *  it, which is what lets a repaint find the file it is holding. */
 export function fileKey(file) {
   return `${file.status}:${file.path}`;
 }
 
-/** The path a file key was made from — the one string a comment, a discard and
- *  a Viewed tick all speak in. */
 export function pathOf(key) {
   const text = String(key);
   return text.slice(text.indexOf(":") + 1);
 }
 
-/** The line a reader lands on when they leave the diff for the file itself:
- *  the first line the patch touches, or the top of the file when it names
- *  none (a pure deletion). */
 export function firstLineOf(file) {
   const row = (file.rows || []).find((each) => typeof each.n === "number");
   return row ? row.n : 1;
@@ -62,27 +51,16 @@ const OPEN = "open";
 const SHUT = "shut";
 const CAPPED = "capped";
 
-/** The fold a file the reader has not touched wears: shut once they have
- *  ticked it off as read, and otherwise the capped peek every file starts at.
- *  A stack drawn with no reader behind it wears these too. */
 export function untouchedFold(key, viewed) {
   return viewed && viewed.has(pathOf(key)) ? SHUT : CAPPED;
 }
 
-/** The folds of one changeset, as the reader left them.
- *
- *  One state per file they moved — open or shut — and nothing at all for a file
- *  they have not touched, which is what lets a Viewed tick shut a file without
- *  standing in the way of the reader opening it again. The render asks
- *  `foldOf`; the handlers ask `press` (the header, one control that shuts what
- *  is showing and shows what is shut) and `openBody` (a press on the capped
- *  peek). Nothing anywhere reads a class list back. */
 export function createFileFolds() {
   const moved = new Map();
   const foldOf = (key, { viewed = null } = {}) => moved.get(key) || untouchedFold(key, viewed);
   return {
     foldOf,
-    press: (key, where) => moved.set(key, foldOf(key, where) === SHUT ? OPEN : SHUT),
+    press: (key, { viewed = null } = {}) => moved.set(key, foldOf(key, { viewed }) === SHUT ? OPEN : SHUT),
     openBody: (key) => moved.set(key, OPEN),
   };
 }

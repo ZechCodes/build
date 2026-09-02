@@ -57,9 +57,6 @@
 .tdial:hover { color:var(--accent); border-color:var(--accent); }
 .tdial[aria-pressed="true"] { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); }
 
-/* An ordered stack is a flat list of files — one keyed block each, so a repaint
-   moves only what moved — and the section a file belongs to is a mark on the
-   file rather than a box around several. */
 .tsectionhead { font-size:12px; font-family:var(--mono); color:var(--dim);
   padding:2px 2px 8px; letter-spacing:.02em; }
 .file.tcritical { border-left:2px solid var(--red); }
@@ -69,14 +66,10 @@
   border:none; width:100%; text-align:left; padding:10px 13px; cursor:pointer; border-radius:11px;
   display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
 .tgrouphead:hover { color:var(--accent); background:var(--line2); }
-/* Opened, the group's head stands over the files it opened rather than around
-   them: it keeps the box's line as its own underline. */
 .tgrouphead.open { border:1px solid var(--line); border-radius:11px 11px 0 0; margin-top:4px; }
 .tgrouphead .tgname { color:var(--ink); }
 .tgrouphead .tgrationale { flex:1 1 100%; color:var(--dim); font-family:inherit; }
 .file.tgrouped { margin-left:12px; }
-/* Collapsed, never dropped: a shut group's diffs are always in the DOM, so a
-   reviewer can find them — and their own browser can — without opening it. */
 .tgroup .tgfiles { display:none; padding:12px 12px 2px; }
 
 .hchip { display:inline-flex; align-items:baseline; gap:6px; margin-left:10px; padding:1px 7px;
@@ -138,11 +131,6 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
 .gitpane .cdetail-host, .issueview .ivviewer { padding-bottom:0;
   scroll-padding-bottom:calc(var(--pane-bottom) + 58px); }
 .issueview .ivviewer > :last-child:not(.actionbar) { margin-bottom:var(--pane-bottom); }
-/* A changeset is painted in parts — its bar, its keyed stack, its tray — so
-   that a repaint moves only what moved. The tray states no box of its own: the
-   sticky bar inside it belongs to the column, and a box around it would pin it
-   to the tray's own few pixels at the foot. The stack is what the column ends
-   on, so the stack pays the scroll-end room. */
 .gitpane .cstray { display:contents; }
 .gitpane .dstack { padding-bottom:var(--pane-bottom); }
 

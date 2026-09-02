@@ -85,9 +85,6 @@ export function createReviewPlug({
   // pushes can say when it moved instead of being asked every 1.6 seconds. A
   // surface that names none keeps the safety poll and nothing else.
   entity = null,
-  // Where a surface of the mounting view can send the reader:
-  // `navigate.openFile({ path, line })`, the view's own routing. A plug mounted
-  // without it offers no such control.
   navigate = null,
 }) {
   const openFile = (navigate && navigate.openFile) || null;
@@ -106,9 +103,6 @@ export function createReviewPlug({
   let triageProject = null;
   let trustDial = false;
   const expandedGroups = new Set(); // the collapsed triage groups the reviewer opened
-  // Which files the reviewer opened and which they shut. State, not a class
-  // list: the stack is drawn from it, so a poll that moves the diff leaves
-  // every fold where the reviewer put it.
   const folds = createFileFolds();
   // Disagreeing with the pass: applied to the stack on the tap, sent after, and
   // held here only until the pass comes back carrying it.
@@ -214,8 +208,6 @@ export function createReviewPlug({
     wire();
   }
 
-  // What a press in this stack can mean. Each claim answers whether the press
-  // was its own; the first that answers owns it.
   const claimSecret = (event) => toggleSecretSpoiler(event.target);
 
   const claimNoiseGroup = (event) => {
@@ -225,8 +217,6 @@ export function createReviewPlug({
     return true;
   };
 
-  // The trust dial: the reviewer's own reading of how much of the pass's
-  // reading to take, remembered per project.
   const claimTrustDial = (event) => {
     if (!event.target.closest(".tdial")) return false;
     trustDial = !trustDial;
@@ -235,9 +225,6 @@ export function createReviewPlug({
     return true;
   };
 
-  // Disagreeing with where the pass put a hunk, before the comment layer sees
-  // the press: the offer sits on a hunk row, and a line tap there would
-  // otherwise open a comment on it.
   const claimOverride = (event) => Boolean(overrides && overrides.handleClick(event));
 
   const claimTriageGroup = (event) => {
@@ -265,9 +252,6 @@ export function createReviewPlug({
     }),
   ];
 
-  /** The filter and the per-file Viewed box. Both are the reviewer's state and
-   *  both repaint from it — the choice survives the poll because the stack is
-   *  drawn from what they chose, not from what a press left in the DOM. */
   function wire() {
     host.onchange = (event) => {
       const target = event.target;

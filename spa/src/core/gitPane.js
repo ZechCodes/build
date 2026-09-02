@@ -380,9 +380,6 @@ export function mountGitPane(
     // standalone Files/Changes hosts), the daemon answers with the entity's
     // first agent, which is what this surface always meant.
     agentSelection = createAgentSelection(),
-    // Where a surface of the mounting view can send the reader:
-    // `navigate.openFile({ path, line })`, the view's own routing. A pane
-    // mounted without it offers no such control.
     navigate = null,
   } = {},
 ) {
@@ -427,10 +424,6 @@ export function mountGitPane(
   // nothing about a commit's), and whether they have dialled the ordering off
   // for this project.
   const expandedGroups = new Map(); // changeset key → the group names opened in it
-  // The folds of every changeset the reader has touched: which files they
-  // opened and which they shut, keyed the same way, so a repaint under a
-  // working agent — and a trip to another changeset and back — finds each file
-  // as it was left.
   const fileFolds = new Map(); // changeset key → core/diff.js createFileFolds
   const triageProject = projectId || (scope && scope.project_id) || null;
   let trustDial = loadTrustDial(triageProject);
@@ -517,8 +510,7 @@ export function mountGitPane(
 
   const defaultSelection = () => defaultChangesSelection({ status: lastStatus, review });
 
-  /** The open changeset's folds, made the first time the reader touches it. */
-  const foldsHere = () => {
+  const foldsOfOpenChangeset = () => {
     const key = String(selected);
     if (!fileFolds.has(key)) fileFolds.set(key, createFileFolds());
     return fileFolds.get(key);
@@ -588,7 +580,7 @@ export function mountGitPane(
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
   const renderChangeset = (detailHost) => {
-    const folds = foldsHere();
+    const folds = foldsOfOpenChangeset();
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
     const stackFor = (files, patch) => ({
@@ -630,10 +622,6 @@ export function mountGitPane(
     });
   };
 
-  /** Paint one changeset in place: its bar, the stack as a keyed list, and the
-   *  tray. Identical parts come out of it untouched, which is what lets the
-   *  reader keep their scroll, their selection and their place in a file while
-   *  an agent writes underneath them. */
   const paintChangeset = (detailHost, { bar, files, stackOptions = {} }) => {
     paintChangesetInto({
       bar,
@@ -718,15 +706,10 @@ export function mountGitPane(
         reviewMounted = false;
         detailHost.innerHTML = ""; // the plug's DOM was the plug's; it goes with it
       }
-      // The detail column is what the reader scrolls, so every write into it
-      // goes through the one paint that keeps them where they were.
       paintKeepingPlace(
         detailHost,
         () => {
           if (selected === null || selected === undefined) {
-            // A clean branch opens at the commit list: nothing selected, no
-            // commit box, and a line saying what to do rather than an empty
-            // pane.
             detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
             return;
           }
@@ -1081,10 +1064,6 @@ export function mountGitPane(
     else render();
   };
 
-  // What a press in the pane can mean. Each claim answers whether the press was
-  // its own; the first that answers owns it, and the order below is the whole
-  // of the arbitration — a control that sits inside another's target (the ⋯
-  // inside a file header, the offer inside a capped file) is claimed above it.
   const claimSecret = (event) => toggleSecretSpoiler(event.target);
 
   const claimFetch = (event) => {
@@ -1093,12 +1072,7 @@ export function mountGitPane(
     return true;
   };
 
-  // The Pull/Push/Stash split buttons wire their own behavior (including the
-  // force-push inline confirm inside runSyncOption). Their menu-item presses
-  // bubble here, so the claim is made and nothing done — otherwise the
-  // "disarm on any other press" fallthrough would clear the confirm the press
-  // just armed.
-  const claimSyncButton = (event) => Boolean(event.target.closest(".gtsync") || event.target.closest(".gtstash"));
+  const claimSyncButtonWiredElsewhere = (event) => Boolean(event.target.closest(".gtsync") || event.target.closest(".gtstash"));
 
   const claimAbort = (event) => {
     if (!event.target.closest(".gitabort")) return false;
@@ -1114,8 +1088,6 @@ export function mountGitPane(
     return true;
   };
 
-  // The file header's ⋯ — where the per-file verbs live now that the stage
-  // checkboxes are gone. One menu is open at a time; a second press shuts it.
   const claimFileMenu = (event) => {
     const button = event.target.closest(".fmenu");
     if (!button) return false;
@@ -1126,13 +1098,8 @@ export function mountGitPane(
     return true;
   };
 
-  // Disagreeing with where the pass put a hunk. While the review plug owns the
-  // detail pane it owns its overlay too — this layer must not also claim it, or
-  // one press would post two disagreements.
   const claimOverride = (event) => Boolean(!reviewMounted && overrides && overrides.handleClick(event));
 
-  // The trust dial: the reviewer says how much of the pass's reading they want.
-  // Remembered per project, so the answer is asked once.
   const claimTrustDial = (event) => {
     if (!event.target.closest(".tdial")) return false;
     trustDial = !trustDial;
@@ -1141,8 +1108,6 @@ export function mountGitPane(
     return true;
   };
 
-  // A collapsed triage group: a press opens it, per changeset, across repaints —
-  // the same discipline the noise group is opened with.
   const claimTriageGroup = (event) => {
     const head = event.target.closest(".tgrouphead");
     if (!head) return false;
@@ -1156,7 +1121,6 @@ export function mountGitPane(
     return true;
   };
 
-  // The collapsed noise group at the bottom of a stack, opened per changeset.
   const claimNoiseGroup = (event) => {
     if (!event.target.closest(".noisehead")) return false;
     const key = String(selected);
@@ -1166,8 +1130,6 @@ export function mountGitPane(
     return true;
   };
 
-  // Rail selection: the pinned entries and the commit rows. selectRail clears
-  // any armed confirm itself.
   const claimRailRow = (event) => {
     const pinned = event.target.closest(".rrow[data-sel]");
     const commit = event.target.closest(".crow[data-hash]");
@@ -1176,13 +1138,10 @@ export function mountGitPane(
     return true;
   };
 
-  // The stack's own presses, in the order both surfaces claim them. While the
-  // review plug owns the detail pane it owns its comments and its folds, so
-  // this layer offers neither — one tap must not write two comments.
   const claims = [
     claimSecret,
     claimFetch,
-    claimSyncButton,
+    claimSyncButtonWiredElsewhere,
     claimAbort,
     claimDiscard,
     claimFileMenu,
@@ -1194,15 +1153,13 @@ export function mountGitPane(
     ...stackClaims({
       comments: () => (reviewMounted ? null : commentLayer),
       openFile: () => openFile,
-      folds: () => (reviewMounted ? null : foldsHere()),
+      folds: () => (reviewMounted ? null : foldsOfOpenChangeset()),
       repaint: render,
     }),
   ];
 
   const handleClick = (event) => {
     for (const claim of claims) if (claim(event)) return;
-    // Nothing claimed it: a stale confirm is disarmed before the press does its
-    // own job.
     if (disarmConfirm()) render();
     if (event.target.closest(".gitmore")) showMore();
   };

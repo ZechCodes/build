@@ -82,10 +82,7 @@ export function filesTreeHtml(dir, entries) {
 
 /** Pure: the syntax-highlighted source view for a file. Code is highlighted by
  *  the path's extension (langForPath) and, for an unknown extension, falls back
- *  to escaped plain text — highlightCode never emits a live tag either way.
- *  Every row states its line the way a diff row states it — `data-new-line`,
- *  the line in the file as it stands — so a reader arriving from a diff can be
- *  taken to the line the diff was about. */
+ *  to escaped plain text — highlightCode never emits a live tag either way. */
 export function sourcePreviewHtml(path, text) {
   const lang = langForPath(path);
   const rows = text
@@ -143,11 +140,6 @@ export function previewPlaceholderHtml(kind, message = "", hint = "") {
  * worktree_id]}) spread into every fs.* call; `callRpc(method, params)` is the
  * app RPC (fs.* ride the app session, not the terminal socket). No polling —
  * fetches only on navigation/selection. Returns { dispose() }.
- *
- * `openAt` is where the browser opens: `{ path, line }`, from a link in a
- * conversation or the way out of a diff. The tree opens on the file's own
- * directory, the preview on the file, and — where the line is named and the
- * file reads as source — the view is scrolled to that line.
  */
 export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   // The tree and the preview are the two columns of the shell's two-column
@@ -176,11 +168,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   showPlaceholder("idle", "No file open", "Choose a file from the tree to read it here.");
 
   let dir = openAt ? parentPath(openAt.path) : ""; // current directory, relative to the scope root
-  // The line this mount was sent to, and the file it was sent to it in. Both,
-  // because a file with no source rows to land on — a rendered preview, a
-  // picture — leaves the request standing, and it must not then land on
-  // whatever the reader opens next.
-  let jumpTo = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
+  let requestedLine = openAt && openAt.line ? { path: openAt.path, line: openAt.line } : null;
   let sourceOverride = false; // per-selected-file "view source" toggle
 
   const renderTree = (entries) => {
@@ -232,7 +220,7 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
   };
 
   const selectFile = async (path, row) => {
-    if (jumpTo && jumpTo.path !== path) jumpTo = null;
+    if (requestedLine && requestedLine.path !== path) requestedLine = null;
     treeEl.querySelectorAll(".frow.sel").forEach((r) => r.classList.remove("sel"));
     if (row) row.classList.add("sel");
     sourceOverride = false;
@@ -298,15 +286,11 @@ export function renderFilesTab(body, { scope, callRpc, openAt = null }) {
       };
   };
 
-  /** The line the reader was sent to, put in the middle of the view — once, and
-   *  only in the file it was asked for. A rendered preview of that file (or a
-   *  binary) has no row to land on, and switching to the source view of it
-   *  still does. */
   const scrollRequestedLineIntoView = (path) => {
-    if (!jumpTo || jumpTo.path !== path) return;
-    const row = previewEl.querySelector(`.fsrc tr[data-new-line="${jumpTo.line}"]`);
+    if (!requestedLine || requestedLine.path !== path) return;
+    const row = previewEl.querySelector(`.fsrc tr[data-new-line="${requestedLine.line}"]`);
     if (!row || typeof row.scrollIntoView !== "function") return;
-    jumpTo = null;
+    requestedLine = null;
     row.scrollIntoView({ block: "center" });
   };
 

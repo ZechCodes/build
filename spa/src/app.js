@@ -37,10 +37,6 @@ export const App = {
   // name/projectId/branch/tab).
   focusComposerOnMount: false,
 
-  // One-shot, the same idiom: `{ path, line }` set by the Changes surface
-  // right before routing to the Files tab, read and cleared by the very next
-  // renderBranch. The route cannot carry it — a hash names a tab, not a place
-  // inside one.
   openFileOnMount: null,
 };
 

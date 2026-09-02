@@ -1,10 +1,12 @@
-// The inbox rail's chrome: whether it is docked or away, and the account entry
-// at its foot. The entries themselves are the inbox view's business; this
-// module only owns the rail as a piece of the shell.
+// The inbox rail's chrome: whether it is docked or away, which of its two faces
+// it is showing, and the account entry at its foot. The entries themselves are
+// the inbox view's business; this module only owns the rail as a piece of the
+// shell.
 
 import { $ } from "../dom.js";
 import { App, go } from "../app.js";
-import { inboxListRouteChanged, mountInboxList } from "./inboxView.js";
+import { inboxListRouteChanged, mountInboxList, setInboxView } from "./inboxView.js";
+import { loadRailView, persistRailView, railViewSwitchHtml } from "./railMode.js";
 import "../styles/shell.css";
 
 const COLLAPSED_KEY = "build.inbox.collapsed";
@@ -62,6 +64,19 @@ export function goFromInbox(route) {
   if (window.innerWidth < 900) setInboxCollapsed(true);
 }
 
+/* The two faces — the one list, or the projects — behind the switch at the
+   head's right edge. The choice is remembered on this device. */
+function paintViewSwitch(view) {
+  const host = $("#inbox-views");
+  if (host) host.innerHTML = railViewSwitchHtml(view);
+}
+
+function chooseView(view) {
+  persistRailView(view, localStorage);
+  paintViewSwitch(view);
+  setInboxView(view);
+}
+
 let mounted = false;
 
 /** Mount once. Re-entrant: a reconnect calls this again and it just repaints. */
@@ -90,6 +105,14 @@ export function initInboxRail() {
     if (document.body.classList.contains("inbox-peek")) schedulePeekClose();
   };
   $("#inbox-scrim").onclick = () => setInboxCollapsed(true);
+  const views = $("#inbox-views");
+  views.onclick = (event) => {
+    const button = event.target.closest("[data-inbox-view]");
+    if (button) chooseView(button.dataset.inboxView);
+  };
+  const view = loadRailView(localStorage);
+  paintViewSwitch(view);
+  setInboxView(view);
   mountInboxList();
   inboxRouteChanged();
 }

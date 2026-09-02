@@ -2,9 +2,16 @@
 // open, Done, mute, and say why it failed — and the one disclosure at the end
 // of the list, Recent.
 //
-// WHICH rows appear and what they say is core/inbox.js; this module is the
-// wiring. Read state is the bridge's now (`entity.seen`), so opening an entry
-// tells the daemon, and nothing about what has been read is kept on the device.
+// The rail has two faces. The inbox is the one list across every project; the
+// projects face gathers the same rows under the project each belongs to, with
+// a Recent fold per block, the block's head opening the project's checkout and
+// offering its two creates, and a new-project control at the foot. The rows
+// are the same rows either way, and so is everything a row can do.
+//
+// WHICH rows appear and what they say is core/inbox.js and core/inboxProjects.js;
+// this module is the wiring. Read state is the bridge's now (`entity.seen`), so
+// opening an entry tells the daemon, and nothing about what has been read is
+// kept on the device.
 
 import { $, el } from "../dom.js";
 import { App } from "../app.js";
@@ -35,6 +42,10 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
+import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectEmptyHtml, projectHeadHtml } from "./inboxProjects.js";
+import { loadFoldedProjects, persistFoldedProjects } from "./railMode.js";
+import { openCreateFrom } from "./toolbar.js";
+import { openNewRepo } from "../sheets/newRepo.js";
 import { branchOptions, mergeCaptureRows } from "./compose.js";
 import { adoptCaptureRecord, pendingCaptureRows, subscribePendingCaptures } from "./composeView.js";
 import "../styles/shell.css";
@@ -42,12 +53,18 @@ import "../styles/shell.css";
 let items = [];
 let projects = [];
 let entries = [];
+let view = "inbox"; // which face the rail is showing: "inbox" or "projects"
 let openMenuKey = null;
 let rerouteKey = null; // the capture row whose destination picker is open
 let rerouteBranchProject = null; // the project in that picker whose branch field is open
-// Whether Recent is open, once the user has said. Null means nobody has, and
-// the partition decides for itself (it opens when the list above it is thin).
-let recentOpen = null;
+// Whether each Recent is open, once the user has said — keyed by whose Recent
+// it is: the inbox's, or one project block's. A scope nobody has spoken for
+// lets its partition decide (it opens when the list above it is thin).
+const recentOpen = new Map();
+// The project blocks folded shut, by project id. Remembered on this device.
+let folded = new Set();
+// Where each block's head opens, off the last paint of the projects face.
+let blockRoutes = new Map();
 const capturesBeingRerouted = new Set();
 const errors = new Map(); // row key → the message its row is showing
 const captureErrors = new Map(); // capture id → the message its row is showing
@@ -110,17 +127,39 @@ export const INBOX_SCOPE = "inbox";
 // own rows; the daemon's copy wins wherever both name the same capture.
 const mergedItems = () => mergeCaptureRows(items, pendingCaptureRows());
 
+/** Show one of the rail's two faces. The shell calls this with what the user
+ *  chose (and remembered); the list repaints as that face. */
+export function setInboxView(next) {
+  if (next === view) return;
+  view = next;
+  openMenuKey = null;
+  draw();
+}
+
 function draw() {
   const list = $("#inbox-list");
   if (!list) return;
-  const partition = inboxEntries({
-    items: projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf }),
-    nowMs: Date.now(),
-  });
-  // Every row on screen, Recent included: what the route stands on and what a
-  // click resolves to do not care which section a row sits in.
-  entries = [...partition.entries, ...partition.recent];
-  const ui = {
+  const shown = projectOptimistic(INBOX_SCOPE, mergedItems(), { keyOf: entryKeyOf });
+  const nowMs = Date.now();
+  list.onclick = onListClick;
+  list.onkeydown = onListKeydown;
+  // A different face is a different list: the one is emptied for the other,
+  // and every paint after that reconciles in place.
+  if (list.dataset.view !== view) {
+    list.dataset.view = view;
+    list.replaceChildren();
+  }
+  const scroll = list.scrollTop;
+  if (view === "projects") drawProjects(list, shown, nowMs);
+  else drawInbox(list, shown, nowMs);
+  list.scrollTop = scroll;
+  paintErrors(list);
+}
+
+/** What every row is painted with. `showProject` is whether a row names its
+ *  own project — under a project block it has already been told. */
+function rowUi(showProject) {
+  return {
     activeKey: activeEntryKey(App.route, entries),
     openMenuKey,
     rerouteKey,
@@ -129,47 +168,109 @@ function draw() {
     // The branches that project already has, off the same feed rows the
     // compose panel offers: one source for "which branches are there".
     rerouteBranches: branchOptions(items, rerouteBranchProject),
+    showProject,
+    folded,
   };
-  list.onclick = onListClick;
-  list.onkeydown = onListKeydown;
-  const scroll = list.scrollTop;
-  paintEmpty(list, entries.length === 0);
-  patchList(list, partition.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-  paintRecent(list, partition, ui);
-  list.scrollTop = scroll;
-  paintErrors(list);
 }
 
-/** The line the rail shows in place of rows when it is holding nothing. It is
- *  chrome, not a row, and it goes the moment there is a row — a row is placed
- *  after the last row, so nothing else may be sitting down there. */
-function paintEmpty(list, empty) {
-  const standing = list.querySelector(".inbox-clear");
+/** The inbox face: one list, Recent at its end. */
+function drawInbox(list, shown, nowMs) {
+  const partition = inboxEntries({ items: shown, nowMs });
+  // Every row on screen, Recent included: what the route stands on and what a
+  // click resolves to do not care which section a row sits in.
+  entries = [...partition.entries, ...partition.recent];
+  const ui = rowUi(true);
+  paintEmpty(list, entries.length === 0, inboxEmptyHtml, ".inbox-clear");
+  patchList(list, partition.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintRecent(list, partition, ui, "inbox");
+}
+
+/** The projects face: the unrouted captures on their own, then a block per
+ *  project with its rows and its own Recent, then the new-project control. */
+function drawProjects(list, shown, nowMs) {
+  const face = projectBlocks({ items: shown, projects, nowMs });
+  entries = [...face.unsorted, ...face.blocks.flatMap((block) => [...block.entries, ...block.recent])];
+  blockRoutes = new Map(face.blocks.map((block) => [block.id, block.route]));
+  const ui = rowUi(false);
+  const frame = projectsFrame(list);
+  patchList(frame.unsorted, face.unsorted, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  paintBlocks(frame.blocks, face.blocks, ui);
+}
+
+/** The projects face's frame, built once: the loose rows' container, the
+ *  blocks', and the new-project control after them both. */
+function projectsFrame(list) {
+  let unsorted = list.querySelector(":scope > .inbox-unsorted");
+  if (!unsorted) {
+    unsorted = el('<div class="inbox-unsorted"></div>');
+    list.append(unsorted, el('<div class="inbox-projects"></div>'), el(newProjectButtonHtml()));
+  }
+  return { unsorted, blocks: list.querySelector(":scope > .inbox-projects") };
+}
+
+/** The blocks, reconciled by project: a block that is still there keeps its
+ *  element — and so its rows keep theirs, since each block's rows are its own
+ *  keyed list — and only its head is patched. Blocks are placed back to front,
+ *  each in front of the one that follows it, so a project that moved costs
+ *  one move and the rest stay put. */
+function paintBlocks(host, blocks, ui) {
+  const wanted = new Set(blocks.map((block) => block.key));
+  const standing = new Map();
+  for (const child of [...host.children]) {
+    if (wanted.has(child.dataset.key)) standing.set(child.dataset.key, child);
+    else child.remove();
+  }
+  let anchor = null;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    let element = standing.get(block.key);
+    if (!element) {
+      element = el(projectBlockHtml(block, ui));
+      host.insertBefore(element, anchor);
+    } else {
+      element.classList.toggle("inbox-folded", folded.has(block.id));
+      patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
+      if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
+    }
+    const rows = element.querySelector(":scope > .inbox-project-rows");
+    paintEmpty(rows, block.entries.length === 0 && block.recent.length === 0, projectEmptyHtml, ".inbox-project-empty");
+    patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+    paintRecent(element, block, ui, block.id);
+    anchor = element;
+  }
+}
+
+/** The line a container shows in place of rows when it is holding nothing. It
+ *  is chrome, not a row, and it goes the moment there is a row — a row is
+ *  placed after the last row, so nothing else may be sitting down there. */
+function paintEmpty(container, empty, html, selector) {
+  const standing = container.querySelector(selector);
   if (empty === Boolean(standing)) return;
   if (standing) standing.remove();
-  else list.appendChild(el(inboxEmptyHtml()));
+  else container.appendChild(el(html()));
 }
 
-/** Recent: the disclosure at the end of the list, and behind it the rows that
+/** Recent: the disclosure at the end of a list, and behind it the rows that
  *  have gone quiet. It is its own container, so the quiet rows are its keyed
- *  children and each list reconciles only its own. */
-function paintRecent(list, partition, ui) {
+ *  children and each list reconciles only its own. `scope` names whose Recent
+ *  it is, which is what the user's open-or-shut is remembered under. */
+function paintRecent(host, partition, ui, scope) {
   if (!partition.recent.length) {
-    list.querySelector(".inbox-recent")?.remove();
+    host.querySelector(":scope > .inbox-recent")?.remove();
     return;
   }
-  let section = list.querySelector(".inbox-recent");
+  let section = host.querySelector(":scope > .inbox-recent");
   if (!section) {
     section = document.createElement("div");
     section.className = "inbox-recent";
-    section.append(el(recentToggleHtml(partition.recent, false)));
+    section.append(el(recentToggleHtml(partition.recent, false, scope)));
   }
   // Recent follows the list proper. A row that arrives while nothing was keyed
   // above it lands after the section, so the section is put back at the end
   // whenever a paint has left something below it.
-  if (list.lastElementChild !== section) list.appendChild(section);
-  const open = recentIsOpen(partition, recentOpen);
-  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open)));
+  if (host.lastElementChild !== section) host.appendChild(section);
+  const open = recentIsOpen(partition, recentOpen.get(scope));
+  patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open, scope)));
   patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
 }
 
@@ -227,11 +328,12 @@ function onListClick(event) {
   // on the section stays as they left it, whatever the list above it does.
   const recentToggle = target.closest("[data-recent-toggle]");
   if (recentToggle) {
-    recentOpen = recentToggle.getAttribute("aria-expanded") !== "true";
+    recentOpen.set(recentToggle.dataset.recentToggle, recentToggle.getAttribute("aria-expanded") !== "true");
     draw();
     return;
   }
   if (captureClicked(target)) return;
+  if (projectClicked(target)) return;
   // The row's own controls answer for themselves; everything else on it opens.
   const row = target.closest(".inbox-entry");
   if (row && !target.closest(".inbox-actions")) openEntry(entryOf(row.dataset.key));
@@ -244,11 +346,52 @@ function openMenu(key) {
   draw();
   if (openMenuKey === null) return;
   const close = (outside) => {
-    if (outside.target.closest(".inbox-actions")) return;
+    if (outside.target.closest(".inbox-actions, .inbox-project-create")) return;
     document.removeEventListener("pointerdown", close);
     closeMenu();
   };
   setTimeout(() => document.addEventListener("pointerdown", close), 0);
+}
+
+// ---- project blocks -----------------------------------------------------------
+//
+// What a block's head can do: fold, open the project's checkout, and create —
+// a branch or an issue, through the toolbar's own create form, scoped to the
+// block's project. And the one control after every block: a new project.
+
+/** The block controls, answered off the same one listener. True when the press
+ *  was one of them. */
+function projectClicked(target) {
+  const fold = target.closest("[data-project-fold]");
+  if (fold) {
+    toggleFold(fold.dataset.projectFold);
+    return true;
+  }
+  const head = target.closest("[data-project-open]");
+  if (head) {
+    const route = blockRoutes.get(head.dataset.projectOpen);
+    if (route) goFromInbox(route);
+    return true;
+  }
+  const create = target.closest("[data-project-create]");
+  if (create) {
+    closeMenu();
+    openCreateFrom(create, { projectId: create.dataset.projectCreate, kind: create.dataset.createKind, navigate: goFromInbox });
+    return true;
+  }
+  if (target.closest("[data-new-project]")) {
+    openNewRepo(() => refreshFeed());
+    return true;
+  }
+  return false;
+}
+
+/** A fold is the user's, and it holds: across the feed, and across reloads. */
+function toggleFold(projectId) {
+  if (folded.has(projectId)) folded.delete(projectId);
+  else folded.add(projectId);
+  persistFoldedProjects(folded, localStorage);
+  draw();
 }
 
 // ---- capture rows -------------------------------------------------------------
@@ -460,6 +603,7 @@ export function mountInboxList() {
     return;
   }
   mounted = true;
+  folded = loadFoldedProjects(localStorage);
   subscribePendingCaptures(drawFromFeed);
   subscribeOptimistic(INBOX_SCOPE, draw);
   subscribeFeed((feed) => {

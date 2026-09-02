@@ -18,6 +18,7 @@ vi.mock("../src/app.js", () => ({
 vi.mock("../src/core/inboxView.js", () => ({
   mountInboxList: vi.fn(),
   inboxListRouteChanged: vi.fn(),
+  setInboxView: vi.fn(),
 }));
 
 const hover = (element, type) =>
@@ -40,10 +41,10 @@ afterEach(() => {
 });
 
 describe("the inbox head", () => {
-  it("puts the toggle to the left of the app name", () => {
+  it("puts the toggle to the left of the app name, and the face switch at the right edge", () => {
     const head = document.querySelector(".inbox-head");
     const order = [...head.children].map((child) => child.id || child.className);
-    expect(order).toEqual(["inbox-collapse", "logo"]);
+    expect(order).toEqual(["inbox-collapse", "logo", "inbox-views"]);
   });
 
   it("names the app with an uppercase B", () => {

@@ -69,7 +69,7 @@ const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
 
 const { App } = await import("../src/app.js");
-const { initToolbar, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
+const { initToolbar, openCreateFrom, stopToolbar, toolbarRouteChanged } = await import("../src/core/toolbar.js");
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
 const bar = () => document.querySelector("#toolbar .toolbar");
@@ -427,5 +427,59 @@ describe("the ⋯", () => {
     bar().querySelector('[data-select="more"]').click();
     menu().querySelector('[data-action="archive"]').click();
     expect(location.hash).toBe("#/account/archive");
+  });
+});
+
+// ---- the create, opened from the rail ---------------------------------------
+// A project block on the rail offers the same two creates. They open the same
+// form in the same popup, scoped to the block's project, with no list behind
+// them to come back to.
+
+describe("creating from the rail", () => {
+  const anchor = () => document.getElementById("inbox-collapse");
+
+  it("opens the form scoped to the named project, and cancel shuts the popup whole", () => {
+    openCreateFrom(anchor(), { projectId: "p2", kind: "branch", navigate: vi.fn() });
+    expect(menu().querySelector(".tb-create-head").textContent).toBe("New branch in mascot");
+    menu().querySelector("[data-create-cancel]").click();
+    expect(menu()).toBeNull();
+  });
+
+  it("cuts the branch in that project and hands what it made to the caller's navigate", async () => {
+    const navigate = vi.fn();
+    openCreateFrom(anchor(), { projectId: "p2", kind: "branch", navigate });
+    const input = menu().querySelector("#tb-create-input");
+    input.value = "Mascot Model Spike!";
+    input.dispatchEvent(new Event("input"));
+    menu().querySelector("[data-create-go]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("worktree.create", { project_id: "p2", name: "Mascot Model Spike!" });
+    expect(navigate).toHaveBeenCalledWith({ name: "branch", projectId: "p1", branch: "build/mascot-model-spike", tab: "changes" });
+    expect(menu()).toBeNull();
+  });
+
+  it("files an issue in that project", async () => {
+    const navigate = vi.fn();
+    openCreateFrom(anchor(), { projectId: "p2", kind: "issue", navigate });
+    expect(menu().querySelector(".tb-create-head").textContent).toBe("New issue in mascot");
+    const input = menu().querySelector("#tb-create-input");
+    input.value = "Add a health endpoint";
+    input.dispatchEvent(new Event("input"));
+    menu().querySelector("[data-create-go]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith(
+      "issue.create",
+      expect.objectContaining({ goal: "Add a health endpoint", project_id: "p2", dispatch: false }),
+    );
+    expect(navigate).toHaveBeenCalledWith({ name: "issue", projectId: "p1", id: "plan-9" });
+  });
+
+  it("replaces a jump menu that was already open", () => {
+    openJump("project");
+    expect(menu()).toBeTruthy();
+    openCreateFrom(anchor(), { projectId: "p1", kind: "branch", navigate: vi.fn() });
+    expect(document.querySelectorAll(".tbmenu").length).toBe(1);
+    expect(menu().querySelector(".tb-create-head").textContent).toBe("New branch in relaydb");
+    menu().querySelector("[data-create-cancel]").click();
   });
 });

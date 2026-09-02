@@ -2,8 +2,10 @@
 // each row says, and what Done promises before it destroys anything.
 //
 // One list across every project — the inbox is the user's, not a project's, so
-// there are no per-project blocks and no worktree fold. The rows are issues,
-// branches and captures. An issue a branch is implementing right now is not a
+// there are no per-project blocks and no worktree fold. (The rail's other face,
+// core/inboxProjects.js, gathers these same rows under their projects; the rows
+// and their order are decided here either way.) The rows are issues, branches
+// and captures. An issue a branch is implementing right now is not a
 // row: one piece of work, one row, and the branch is where that work is. Delete
 // that branch without merging and the issue is work again, so it comes back —
 // with an event on its conversation naming the branch it lost (the bridge writes
@@ -409,14 +411,15 @@ function rowTooltip(entry) {
 
 /** One inbox row, in two lines: the state dot and what this is, with the unread
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
- *  openMenuKey }. */
+ *  openMenuKey, showProject }. */
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
   const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
-  // "main" must never read as the same thing.
-  const projectTag = `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  // "main" must never read as the same thing. A row painted under its project's
+  // own block (`showProject: false`) has already been told.
+  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
   const classes = [
     "srow",
     "inbox-entry",
@@ -451,9 +454,11 @@ export function recentIsOpen({ autoOpen = false } = {}, recentOpen) {
 }
 
 /** Recent's disclosure: the one control at the end of the list, counting what is
- *  behind it. The quiet rows themselves are ordinary rows, painted under it. */
-export function recentToggleHtml(recent, open) {
-  return `<button class="inbox-recent-toggle" type="button" data-recent-toggle aria-expanded="${open ? "true" : "false"}">
+ *  behind it. The quiet rows themselves are ordinary rows, painted under it.
+ *  `scope` names whose Recent this is — the inbox's, or one project block's —
+ *  so a press opens the right one. */
+export function recentToggleHtml(recent, open, scope = "inbox") {
+  return `<button class="inbox-recent-toggle" type="button" data-recent-toggle="${esc(scope)}" aria-expanded="${open ? "true" : "false"}">
       <span class="inbox-recent-caret" aria-hidden="true">${open ? "▾" : "▸"}</span><span>Recent</span><span class="inbox-recent-count">${recent.length}</span>
     </button>`;
 }

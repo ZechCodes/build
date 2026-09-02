@@ -307,18 +307,37 @@ function onMenuClick(event) {
   }
   const create = event.target.closest("[data-create]");
   if (create) {
-    // The harness starts at the account's defaults — the panel is where a
-    // create says otherwise, and it starts shut.
-    open.create = {
-      kind: create.dataset.create,
-      busy: false,
-      error: "",
-      value: "",
-      choice: loadAgentDefaults(),
-      choiceOpen: false,
-    };
+    open.create = newCreate(create.dataset.create);
     paintMenu();
   }
+}
+
+/** A create form's state. The harness starts at the account's defaults — the
+ *  panel is where a create says otherwise, and it starts shut. `navigate` is
+ *  how the thing made is opened: the toolbar's own creates go straight there,
+ *  the rail's put the rail away first on a narrow viewport. */
+function newCreate(kind, navigate = go) {
+  return { kind, busy: false, error: "", value: "", choice: loadAgentDefaults(), choiceOpen: false, navigate };
+}
+
+/** The create form, opened from somewhere other than the toolbar's own menu —
+ *  the rail's project blocks. It is the same form in the same popup, scoped to
+ *  the project named (which re-scopes the toolbar too: the two must never name
+ *  different projects), and cancelling it shuts the popup whole, since there
+ *  is no list behind it to come back to. */
+export function openCreateFrom(anchor, { projectId, kind, navigate = go }) {
+  closeMenu();
+  rememberScope(projectId);
+  open = {
+    ...menuShell(anchor, "tbmenu"),
+    select: "",
+    mode: "jump",
+    list: "work",
+    query: "",
+    standalone: true,
+    create: newCreate(kind, navigate),
+  };
+  paintMenu();
 }
 
 /** The counter a menu row wears: what is waiting inside it, and nothing at all
@@ -485,6 +504,10 @@ function paintCreate() {
     }
   };
   open.element.querySelector("[data-create-cancel]").onclick = () => {
+    if (open.standalone) {
+      closeMenu();
+      return;
+    }
     open.create = null;
     paintMenu();
     open.element.querySelector(".tb-filter").focus();
@@ -500,7 +523,7 @@ function agentParams() {
 
 async function submitCreate(raw) {
   if (!open || !open.create || open.create.busy) return;
-  const { kind } = open.create;
+  const { kind, navigate } = open.create;
   open.create.value = String(raw || "");
   const value = open.create.value.trim();
   if (!value) {
@@ -524,7 +547,7 @@ async function submitCreate(raw) {
     // A freshly cut branch has nobody in it yet — the rail opens on the ghost
     // composer, and that is exactly where typing the first message belongs.
     if (kind === "branch") App.focusComposerOnMount = true;
-    go(route);
+    navigate(route);
   } catch (error) {
     if (!open || !open.create) {
       notifyError(kind === "branch" ? "Couldn't create the branch" : "Couldn't file the issue", error.message);

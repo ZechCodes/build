@@ -41,6 +41,9 @@
         <div class="inbox-head">
           <button class="iconbtn" id="inbox-collapse" title="Collapse the inbox">◫</button>
           <span class="logo">Build</span>
+          <!-- The rail's two faces: the one list, or the projects. Painted by
+               core/inboxShell.js, which remembers the choice. -->
+          <div class="inbox-views" id="inbox-views" role="group" aria-label="Rail view"></div>
         </div>
         <!-- Global compose: capture first, route after. Pinned above the
              entries, on every route — the gate keeps it too, and holds what is

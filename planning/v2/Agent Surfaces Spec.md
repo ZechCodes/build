@@ -191,3 +191,46 @@ fixtures.
 - Reading workflow agent transcripts from disk.
 - Killing shells or workflows from the bridge.
 - Surfaces for the Codex or PTY carriers.
+
+## Revision 2026-09-02: grace-timed pills, one TUI toggle, conversation menu, startup line
+
+Locked after the first pass shipped. Bridge unchanged; all four are SPA.
+
+### Pills that count running work and linger sixty seconds
+
+- For `shells` and `subagents` the pill count is the number of **running**
+  entries, and the pill is shown while any of these hold: an entry is running;
+  fewer than 60 seconds have passed since an entry was last seen running; the
+  kind's viewer is open; fewer than 60 seconds have passed since that viewer
+  was closed. Otherwise the pill is hidden. The grace is one named constant.
+- `workflows` and `checklist` keep today's rule: shown while they have content,
+  count is the number of entries.
+- The viewer for `shells` and `subagents` lists running entries first and puts
+  finished ones under a collapsed "Completed (n)" fold. The fold's open state
+  belongs to the reader and survives repaints.
+- Hiding is driven by a timer set for the next expiry, not by polling.
+
+### One TUI toggle, no Chat chip
+
+- The Chat / TUI pair in the conversation header becomes a single pressed-state
+  TUI button, shown only for agents that have a terminal. Pressed means the
+  panel shows the PTY; pressing again returns to the conversation.
+
+### Conversation menu with surface overlays
+
+- The conversation header gains a menu (⋯) listing every surface kind that
+  currently has content, with its count. Choosing one opens that surface as a
+  modal overlay: the same viewer, same rows, same row actions, painted from the
+  same snapshot on every refresh while open, with no height cap.
+- The overlay reuses the modal scrim and dialog the confirm dialog uses, and
+  dismisses on Escape or scrim click. One modal primitive serves both.
+- The menu is hidden when there is nothing to list.
+
+### Startup events live in the status line, not the chat
+
+- `session_started` and `run_started` events are no longer painted in the
+  timeline. The bridge keeps minting them; they carry the session lineage.
+- While the agent shows no Working clock and the newest item in the loaded
+  conversation is one of those events, the status line shows that event's
+  title and age in the slot the Working ticker uses. The first Working tick
+  replaces it.

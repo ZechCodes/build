@@ -11,12 +11,7 @@ import {
   SHELL_ENTRY_KIND,
   SURFACE_PILL_GRACE_MS,
   WORKFLOW_ENTRY_KIND,
-  rowActions,
-  surfaceRows,
 } from "../src/core/agentSurfacesModel.js";
-
-const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
 
 const SURFACES_KEY = "branch-1:agent-1";
 
@@ -45,7 +40,6 @@ const mount = (options = {}) =>
   mountAgentSurfaces({
     ...conversationColumn(),
     key: SURFACES_KEY,
-    onSendMessage: options.onSendMessage || (async () => {}),
     onOpenThreadItem: options.onOpenThreadItem || (() => {}),
   });
 
@@ -65,15 +59,7 @@ const runningRows = () => viewerRows(".surface-running");
 const completedRows = () => viewerRows(".surface-completed-rows");
 const completedFold = () => document.querySelector(".surface-completed");
 
-const chooseRowAction = (row, actionId) => {
-  row.querySelector(".caret").click();
-  row.querySelector(`.mi[data-action="${actionId}"]`).click();
-};
-
-beforeEach(() => {
-  notifyError.mockClear();
-  globalThis.localStorage.clear();
-});
+beforeEach(() => globalThis.localStorage.clear());
 
 describe("the surface pills", () => {
   it("paints one pill per kind with content, and toggles one viewer at a time", async () => {
@@ -371,104 +357,30 @@ describe("painting the viewer", () => {
   });
 });
 
-describe("a row's action", () => {
-  it("sends exactly the message rowActions named, once", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
+describe("the rows a viewer paints", () => {
+  it("draws no menu on any row, and none on the workflow head", async () => {
+    const surfaces = mount();
     surfaces.set(snapshot());
-    await pressPill(AGENT_ENTRY_KIND);
-    const [row] = completedRows();
-    const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, snapshot())[0]);
 
-    chooseRowAction(row, action.id);
-
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    for (const kind of [AGENT_ENTRY_KIND, SHELL_ENTRY_KIND, CHECKLIST_ENTRY_KIND, WORKFLOW_ENTRY_KIND]) {
+      await pressPill(kind);
+      expect(document.querySelectorAll(".splitbtn")).toHaveLength(0);
+      expect(document.querySelectorAll(".splitmenu")).toHaveLength(0);
+    }
     surfaces.dispose();
   });
 
-  it("says a refused send failed and leaves the viewer where it was", async () => {
-    const onSendMessage = vi.fn(async () => {
-      throw new Error("no agent is listening");
-    });
-    const surfaces = mount({ onSendMessage });
-    surfaces.set(snapshot());
-    await pressPill(CHECKLIST_ENTRY_KIND);
-    const [row] = viewerRows(".surface-checklist");
-    const [action] = rowActions(CHECKLIST_ENTRY_KIND, surfaceRows(CHECKLIST_ENTRY_KIND, snapshot())[0]);
-
-    chooseRowAction(row, action.id);
-    await vi.waitFor(() => expect(notifyError).toHaveBeenCalled());
-
-    expect(notifyError.mock.calls[0][1]).toBe("no agent is listening");
-    expect(pressed(CHECKLIST_ENTRY_KIND)).toBe("true");
-    expect(document.querySelector(".surface-checklist")).not.toBe(null);
-    surfaces.dispose();
-  });
-
-  it("leaves a menu the reader opened open across a repaint, still choosing the same action", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
-    surfaces.set(snapshot());
-    await pressPill(SHELL_ENTRY_KIND);
-    const [row] = runningRows();
-    row.querySelector(".caret").click();
-
-    surfaces.set(snapshot());
-
-    expect(row.querySelector(".splitmenu").hidden).toBe(false);
-    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, snapshot())[0]);
-    row.querySelector(`.mi[data-action="${action.id}"]`).click();
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
-    surfaces.dispose();
-  });
-
-  it("says so when the row a menu was opened on has left the snapshot", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
-    surfaces.set(snapshot());
-    await pressPill(SHELL_ENTRY_KIND);
-    const [row] = runningRows();
-    row.querySelector(".caret").click();
-
-    const replaced = snapshot();
-    replaced.shells = [{ id: "sh2", description: "cargo clippy", state: "running", tail: [] }];
-    surfaces.set(replaced);
-    row.querySelector(".mi").click();
-
-    expect(onSendMessage).not.toHaveBeenCalled();
-    expect(notifyError).toHaveBeenCalledTimes(1);
-    surfaces.dispose();
-  });
-
-  it("never reaches the bridge itself", async () => {
+  it("never reaches the bridge itself, and offers no menu to reach it with", async () => {
     const source = coreSourceOf("agentSurfaces.js");
 
     expect(source).not.toContain("App.call");
     expect(source).not.toContain("../app.js");
-    expect(source).not.toContain("setInterval");
-  });
-});
-
-describe("a menu the paint had to rebuild", () => {
-  it("works on the workflow head from the very first paint", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
-    surfaces.set(snapshot());
-    await pressPill(WORKFLOW_ENTRY_KIND);
-
-    const head = document.querySelector(".surface-workflow-head");
-    const [action] = rowActions(WORKFLOW_ENTRY_KIND, snapshot().workflows[0]);
-    head.querySelector(".caret").click();
-
-    expect(head.querySelector(".splitmenu").hidden).toBe(false);
-    head.querySelector(`.mi[data-action="${action.id}"]`).click();
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
-    surfaces.dispose();
+    expect(source).not.toContain("mountSplitMenu");
+    expect(source).not.toContain("onSendMessage");
   });
 
-  it("still chooses an action on the row a finished shell was redrawn as inside the fold", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
+  it("redraws a shell that finished as a row inside the fold", async () => {
+    const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(SHELL_ENTRY_KIND);
     const [wasRunning] = runningRows();
@@ -480,16 +392,12 @@ describe("a menu the paint had to rebuild", () => {
     expect(runningRows()).toEqual([]);
     const [row] = completedRows();
     expect(row).not.toBe(wasRunning);
-    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, finished)[0]);
-    chooseRowAction(row, action.id);
-
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    expect(row.textContent).toContain("cargo test");
     surfaces.dispose();
   });
 
-  it("still chooses an action after a subagent's model gives the row a new trailing slot", async () => {
-    const onSendMessage = vi.fn(async () => {});
-    const surfaces = mount({ onSendMessage });
+  it("keeps the row a subagent's model gave a new trailing slot", async () => {
+    const surfaces = mount();
     surfaces.set(snapshot());
     await pressPill(AGENT_ENTRY_KIND);
     const [row] = completedRows();
@@ -499,10 +407,7 @@ describe("a menu the paint had to rebuild", () => {
     surfaces.set(named);
 
     expect(completedRows()[0]).toBe(row);
-    const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, named)[0]);
-    chooseRowAction(row, action.id);
-
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    expect(row.textContent).toContain("haiku");
     surfaces.dispose();
   });
 });

@@ -38,7 +38,6 @@ const mount = () => {
     pillHost: pillHost(),
     viewerHost: viewerHost(),
     key: SURFACES_KEY,
-    onSendMessage: async () => {},
     onOpenThreadItem: () => {},
   });
   return block;

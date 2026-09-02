@@ -2,8 +2,6 @@ import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { patchList } from "./patchList.js";
-import { SPLIT_BUTTON_SELECTOR, mountSplitMenu } from "./splitButton.js";
-import { notifyError } from "./notify.js";
 import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
@@ -52,9 +50,7 @@ const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
-  lists: ({ surfaces }) => [
-    { selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, carriesRowActions: true },
-  ],
+  lists: ({ surfaces }) => [{ selector: SURFACE_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render }],
 });
 
 const runningAboveWhatFinished = (kind, render) => ({
@@ -62,8 +58,8 @@ const runningAboveWhatFinished = (kind, render) => ({
   lists: ({ surfaces }) => {
     const { running, completed } = runningAndCompletedRows(surfaceRows(kind, surfaces));
     return [
-      { selector: SURFACE_SELECTOR.running, rows: running, render, carriesRowActions: true },
-      { selector: SURFACE_SELECTOR.completed, rows: completed, render, carriesRowActions: true, folded: true },
+      { selector: SURFACE_SELECTOR.running, rows: running, render },
+      { selector: SURFACE_SELECTOR.completed, rows: completed, render, folded: true },
     ];
   },
 });
@@ -82,12 +78,7 @@ const VIEWER_PLANS = {
           render: workflowChoiceHtml,
         },
         { selector: SURFACE_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
-        {
-          selector: SURFACE_SELECTOR.workflowAgents,
-          rows: agents,
-          render: agentRowHtml,
-          carriesRowActions: true,
-        },
+        { selector: SURFACE_SELECTOR.workflowAgents, rows: agents, render: agentRowHtml },
       ];
     },
   },
@@ -96,83 +87,13 @@ const VIEWER_PLANS = {
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
-export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem }) {
+export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
 
   let surfaces = null;
   let selectedWorkflowIndex = 0;
   let selectedPhaseIndex = 0;
-  const paintedLists = new Map();
-  const menuClosersByElement = new Map();
-
-  const sendRowMessage = async (message) => {
-    try {
-      await onSendMessage(message);
-    } catch (error) {
-      notifyError("Could not ask the agent", error.message);
-    }
-  };
-
-  const chooseRowAction = (row, actionId) => {
-    const action = (row.actions || []).find((candidate) => candidate.id === actionId);
-    if (!action) throw new Error(`agentSurfaces: no action "${actionId}" on row "${row.key}"`);
-    sendRowMessage(action.message);
-  };
-
-  const rowUnderMenu = (rowElement, selector) => {
-    const painted = paintedLists.get(selector);
-    return painted ? painted.rows.find((candidate) => candidate.key === rowElement.dataset.key) : null;
-  };
-
-  const chooseTheHeadsAction = (actionId) => {
-    const workflow = openWorkflow(surfaces, selectedWorkflowIndex);
-    if (!workflow) {
-      notifyError("Could not ask the agent", "that workflow is gone");
-      return;
-    }
-    chooseRowAction(workflow, actionId);
-  };
-
-  const chooseTheRowsAction = (rowElement, selector, actionId) => {
-    const row = rowUnderMenu(rowElement, selector);
-    if (!row) {
-      notifyError("Could not ask the agent", "that row is gone");
-      return;
-    }
-    chooseRowAction(row, actionId);
-  };
-
-  const actionChooserFor = (menuElement) => {
-    if (plan.headSelector && menuElement.closest(plan.headSelector)) return chooseTheHeadsAction;
-    for (const [selector, list] of paintedLists) {
-      if (!list.carriesRowActions) continue;
-      const container = host.querySelector(selector);
-      if (!container || !container.contains(menuElement)) continue;
-      const rowElement = menuElement.closest("[data-key]");
-      return (actionId) => chooseTheRowsAction(rowElement, selector, actionId);
-    }
-    return null;
-  };
-
-  const wireUnwiredMenus = () => {
-    for (const menuElement of host.querySelectorAll(SPLIT_BUTTON_SELECTOR)) {
-      if (menuClosersByElement.has(menuElement)) continue;
-      const chooseAction = actionChooserFor(menuElement);
-      if (!chooseAction) continue;
-      const { closeMenu } = mountSplitMenu(menuElement, { onChoose: chooseAction });
-      menuClosersByElement.set(menuElement, closeMenu);
-    }
-  };
-
-  const closeMenusOfDiscardedElements = () => {
-    for (const [element, closeMenu] of [...menuClosersByElement]) {
-      if (host.contains(element)) continue;
-      closeMenu();
-      menuClosersByElement.delete(element);
-    }
-  };
-
   const completedFoldContainer = (count) => {
     const standing = host.querySelector(COMPLETED_FOLD_SELECTOR);
     if (!count) {
@@ -188,7 +109,6 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 
   const paint = () => {
-    paintedLists.clear();
     const paintContext = {
       surfaces,
       workflow: openWorkflow(surfaces, selectedWorkflowIndex),
@@ -201,19 +121,15 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
     for (const list of plan.lists(paintContext)) {
       const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
       if (!container) continue;
-      paintedLists.set(list.selector, list);
       patchList(container, list.rows, {
         keyOf: (row) => row.key,
         render: list.render,
         ...VIEWER_ROW_MOTION,
       });
     }
-    closeMenusOfDiscardedElements();
-    wireUnwiredMenus();
   };
 
   const onViewerPress = (event) => {
-    if (event.target.closest(SPLIT_BUTTON_SELECTOR)) return;
     const workflow = event.target.closest("[data-workflow-index]");
     if (workflow) {
       selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
@@ -241,16 +157,13 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       paint();
     },
     dispose() {
-      for (const closeMenu of menuClosersByElement.values()) closeMenu();
-      menuClosersByElement.clear();
       host.removeEventListener("click", onViewerPress);
-      paintedLists.clear();
       host.innerHTML = "";
     },
   };
 }
 
-export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null, host = document.body }) {
+export function openSurfaceOverlay(kind, { onOpenThreadItem, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
@@ -260,10 +173,7 @@ export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onCl
       if (onClose) onClose();
     },
   });
-  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, {
-    onSendMessage,
-    onOpenThreadItem,
-  });
+  viewer = mountSurfaceViewer(body.querySelector(SURFACE_OVERLAY_BODY_SELECTOR), kind, { onOpenThreadItem });
   return {
     kind,
     set(surfaces) {
@@ -273,7 +183,7 @@ export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onCl
   };
 }
 
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, onOpenThreadItem, onPillsChanged }) {
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onOpenThreadItem, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
@@ -315,7 +225,7 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, o
     }
     closingFrame = null;
     if (viewer) viewer.dispose();
-    viewer = mountSurfaceViewer(viewerHost, kind, { onSendMessage, onOpenThreadItem });
+    viewer = mountSurfaceViewer(viewerHost, kind, { onOpenThreadItem });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };

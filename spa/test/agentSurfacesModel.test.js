@@ -15,7 +15,6 @@ import {
   openWorkflow,
   openedSurfaceVisibility,
   readOpenSurface,
-  rowActions,
   runningAndCompletedRows,
   surfaceKindLabel,
   surfaceMenuOptions,
@@ -328,16 +327,14 @@ describe("surfaceRows", () => {
       state: "running",
       stateMark: surfaceStateMark("workflows", "running"),
       subject: "Review",
-      actions: rowActions("workflows", entry),
       phaseCount: 2,
     });
   });
 
-  it("stamps every row with the subject and the actions its menu speaks, so no painter recomputes them", () => {
+  it("stamps every row with the subject its label reads, so no painter recomputes it", () => {
     const shell = { id: "s1", description: "npm test", state: "running" };
     const [row] = surfaceRows("shells", { shells: [shell] });
     expect(row.subject).toBe("npm test");
-    expect(row.actions).toEqual(rowActions("shells", shell));
     const nameless = { id: "s2", state: "running" };
     expect(surfaceRows("shells", { shells: [nameless] })[0].subject).toBe("s2");
   });
@@ -533,16 +530,12 @@ describe("surfaceStateMark", () => {
   });
 });
 
-describe("rowActions", () => {
-  it("shapes each action the way menuButtonMarkup takes it, and carries the message to send", () => {
-    const actions = rowActions("workflows", { id: "w1", name: "Review", state: "running" });
-    expect(actions.length).toBeGreaterThan(0);
-    for (const action of actions) {
-      expect(Object.keys(action).sort()).toEqual(["description", "id", "label", "message"]);
-      expect(typeof action.message).toBe("string");
-      expect(action.message.length).toBeGreaterThan(0);
-    }
-    expect(actions[0].message).toContain("Review");
+describe("the canned messages that are gone", () => {
+  it("offers no row action of any kind, and names no Ask", () => {
+    const model = coreSourceOf("agentSurfacesModel.js");
+    expect(model).not.toContain("rowActions");
+    expect(model).not.toContain("Ask");
+    expect(surfaceRows(AGENT_ENTRY_KIND, { subagents: [{ id: "a1", label: "Reader" }] })[0].actions).toBe(undefined);
   });
 
   it("names the agent kind once, so the row renderer and the state marks pick the same one", () => {
@@ -550,27 +543,6 @@ describe("rowActions", () => {
     const agents = [{ id: "a1", label: "Reader", state: "running" }];
     expect(surfaceRows(AGENT_ENTRY_KIND, { [AGENT_ENTRY_KIND]: agents })).toEqual(agentRows(agents));
     expect(agentRows(agents)[0].stateMark).toEqual(surfaceStateMark(AGENT_ENTRY_KIND, "running"));
-    expect(rowActions(AGENT_ENTRY_KIND, agents[0]).length).toBeGreaterThan(0);
-  });
-
-  it("calls an agent row an agent, since one renderer serves the workflow and subagent viewers", () => {
-    for (const action of rowActions(AGENT_ENTRY_KIND, { id: "a1", label: "Reader" })) {
-      expect(`${action.id} ${action.label} ${action.description} ${action.message}`).not.toContain("subagent");
-      expect(`${action.description} ${action.message}`).toContain("agent");
-    }
-  });
-
-  it("offers an action for every kind, naming what the row is", () => {
-    expect(rowActions("subagents", { id: "a1", label: "Reader" })[0].message).toContain("Reader");
-    expect(rowActions("shells", { id: "s1", description: "npm test" })[0].message).toContain("npm test");
-    expect(rowActions("checklist", { id: "t1", subject: "Write the test" })[0].message).toContain(
-      "Write the test",
-    );
-  });
-
-  it("offers nothing for a kind it does not know", () => {
-    expect(rowActions("sonnets", { id: "x" })).toEqual([]);
-    expect(rowActions("workflows", null)).toEqual([]);
   });
 });
 

@@ -1,5 +1,4 @@
 import { esc } from "./text.js";
-import { menuButtonMarkup } from "./splitButton.js";
 import { modalDialogHtml } from "./modal.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import {
@@ -7,9 +6,6 @@ import {
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
 } from "./agentSurfacesModel.js";
-
-const ACTION_MENU_LABEL = "Ask";
-const ACTION_MENU_TITLE = "Ask the agent about this";
 
 const ROW_HEAD_CLASS = "surface-row-head";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
@@ -46,11 +42,6 @@ function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
 }
 
-function actionMenuHtml(actions) {
-  if (!actions || !actions.length) return "";
-  return menuButtonMarkup(ACTION_MENU_LABEL, actions, { title: ACTION_MENU_TITLE });
-}
-
 function statHtml(text) {
   return `<span class="surface-row-stat">${esc(text)}</span>`;
 }
@@ -65,7 +56,6 @@ function rowHeadHtml(row, { headClass = ROW_HEAD_CLASS, trailing = "" } = {}) {
       ${stateMarkHtml(row.stateMark)}
       <span class="surface-row-label">${esc(row.subject)}</span>
       ${trailing}
-      ${actionMenuHtml(row.actions)}
     </div>`;
 }
 

@@ -583,7 +583,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-tool, .surface-row-result { overflow:hidden; white-space:nowrap;
   text-overflow:ellipsis; color:var(--dim); }
 .surface-row-error { color:var(--red); }
-.surface-row .splitbtn { flex:none; }
 .surface-agent[data-call-sequence] { cursor:pointer; }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
 .surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }

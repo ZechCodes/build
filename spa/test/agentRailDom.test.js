@@ -1902,22 +1902,20 @@ describe("the agent's surfaces, carried by the status row", () => {
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
 
-  it("sends a row's action as a message, leaving the draft and the focus alone", async () => {
+  it("opens a viewer with no row menu, leaving the draft and the focus alone", async () => {
     await openPanelWithSurfaces();
     const input = railHost().querySelector("#railinput");
     input.value = "half a sentence";
     input.focus();
 
     railHost().querySelector('[data-surface-kind="shells"]').click();
-    const row = railHost().querySelector(".surface-shells .surface-row");
-    row.querySelector(".caret").click();
-    row.querySelector('.mi[data-action="stop-shell"]').click();
     await flush();
 
-    expect(callsTo("thread.post")[0].params.body).toBe('Please stop the background command "cargo test".');
+    const row = railHost().querySelector(".surface-shells .surface-row");
+    expect(row.querySelector(".splitbtn")).toBe(null);
+    expect(callsTo("thread.post")).toEqual([]);
     expect(railHost().querySelector("#railinput").value).toBe("half a sentence");
     expect(document.activeElement).toBe(input);
-    expect(railHost().querySelector(".surface-shells")).not.toBe(null);
   });
 
   it("says so when the call a subagent row points at is outside the loaded conversation", async () => {

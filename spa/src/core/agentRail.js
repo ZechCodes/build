@@ -1033,7 +1033,6 @@ export function mountAgentRail(host, context) {
   };
 
   const surfaceViewerCallbacks = () => ({
-    onSendMessage: (message) => send(message, []),
     onOpenThreadItem: (sequence) => {
       if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
       notifyError(

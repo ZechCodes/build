@@ -1,17 +1,12 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
 import { mountSurfaceViewer } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
   SHELL_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
-  rowActions,
-  surfaceRows,
 } from "../src/core/agentSurfacesModel.js";
-
-const notifyError = vi.fn();
-vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
 
 const snapshot = () => surfacesSnapshot();
 
@@ -21,30 +16,18 @@ const host = () => {
 };
 
 const mount = (kind, options = {}) =>
-  mountSurfaceViewer(host(), kind, {
-    onSendMessage: options.onSendMessage || (async () => {}),
-    onOpenThreadItem: options.onOpenThreadItem || (() => {}),
-  });
+  mountSurfaceViewer(host(), kind, { onOpenThreadItem: options.onOpenThreadItem || (() => {}) });
 
 const runningRows = () => [...document.querySelectorAll(".surface-running > .surface-row")];
 
-const chooseRowAction = (row, actionId) => {
-  row.querySelector(".caret").click();
-  row.querySelector(`.mi[data-action="${actionId}"]`).click();
-};
-
-const shellRowAction = () => rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, snapshot())[0])[0];
-
-beforeEach(() => notifyError.mockClear());
-
 describe("mountSurfaceViewer", () => {
-  it("paints the kind it was mounted for, with its rows and their Ask menus", () => {
+  it("paints the kind it was mounted for, with its rows and no menu on any of them", () => {
     const viewer = mount(SHELL_ENTRY_KIND);
     viewer.set(snapshot());
 
     expect(document.querySelector(".surface-shells")).not.toBe(null);
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
-    expect(runningRows()[0].querySelector(".caret")).not.toBe(null);
+    expect(runningRows()[0].querySelector(".splitbtn")).toBe(null);
     viewer.dispose();
   });
 
@@ -72,31 +55,12 @@ describe("mountSurfaceViewer", () => {
     viewer.dispose();
   });
 
-  it("sends the message the chosen row action named", () => {
-    const onSendMessage = vi.fn(async () => {});
-    const viewer = mount(SHELL_ENTRY_KIND, { onSendMessage });
-    viewer.set(snapshot());
-    const action = shellRowAction();
-
-    chooseRowAction(runningRows()[0], action.id);
-
-    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
-    viewer.dispose();
-  });
-
-  it("says so when the agent refuses the message, and leaves the rows where they were", async () => {
-    const onSendMessage = vi.fn(async () => {
-      throw new Error("the agent is gone");
-    });
-    const viewer = mount(SHELL_ENTRY_KIND, { onSendMessage });
+  it("draws no menu on a workflow head either", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
     viewer.set(snapshot());
 
-    chooseRowAction(runningRows()[0], shellRowAction().id);
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(notifyError.mock.calls).toEqual([["Could not ask the agent", "the agent is gone"]]);
-    expect(runningRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
+    expect(document.querySelector(".surface-workflow-head .splitbtn")).toBe(null);
+    expect(document.querySelectorAll(".splitmenu")).toHaveLength(0);
     viewer.dispose();
   });
 

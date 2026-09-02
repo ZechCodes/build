@@ -30,9 +30,7 @@ vi.mock("../src/core/surfaceTabs.js", () => ({ mountAgentTab: () => ({ dispose: 
 const { App } = await import("../src/app.js");
 const { mountAgentRail, panelHeadHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
 const { openSurfaceOverlay } = await import("../src/core/agentSurfaces.js");
-const { SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND, rowActions, surfaceRows } = await import(
-  "../src/core/agentSurfacesModel.js"
-);
+const { SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND } = await import("../src/core/agentSurfacesModel.js");
 
 const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 
@@ -185,7 +183,7 @@ describe("panelHeadHtml's surface menu", () => {
 
 describe("openSurfaceOverlay", () => {
   it("mounts the kind's viewer in a modal and keeps it current", async () => {
-    const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onSendMessage: async () => {}, onOpenThreadItem: () => {} });
+    const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onOpenThreadItem: () => {} });
     held.set(surfaces());
 
     expect(overlay().querySelector("h3").textContent).toBe("Shells");
@@ -201,7 +199,7 @@ describe("openSurfaceOverlay", () => {
   });
 
   it("keeps the empty viewer up when the kind loses everything under the reader", () => {
-    const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onSendMessage: async () => {}, onOpenThreadItem: () => {} });
+    const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onOpenThreadItem: () => {} });
     held.set(surfaces());
 
     held.set({ workflows: surfaces().workflows });
@@ -214,11 +212,7 @@ describe("openSurfaceOverlay", () => {
 
   it("tells its caller once when Escape takes it away", async () => {
     const onClose = vi.fn();
-    const held = openSurfaceOverlay(WORKFLOW_ENTRY_KIND, {
-      onSendMessage: async () => {},
-      onOpenThreadItem: () => {},
-      onClose,
-    });
+    const held = openSurfaceOverlay(WORKFLOW_ENTRY_KIND, { onOpenThreadItem: () => {}, onClose });
     held.set(surfaces());
 
     pressEscape();
@@ -323,18 +317,11 @@ describe("the surface a menu option opens", () => {
     expect(overlayRows().map((row) => row.dataset.key)).toEqual(["sh1", "sh2"]);
   });
 
-  it("posts a row's Ask straight to the agent", async () => {
+  it("hangs no menu off an overlay row", async () => {
     await openShells();
-    const [row] = overlayRows();
-    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, surfaces())[0]);
 
-    row.querySelector(".caret").click();
-    row.querySelector(`.mi[data-action="${action.id}"]`).click();
-    await flush();
-
-    const posts = calls.filter((call) => call.method === "thread.post");
-    expect(posts).toHaveLength(1);
-    expect(posts[0].params.body).toBe(action.message);
+    expect(overlay().querySelectorAll(".splitbtn")).toHaveLength(0);
+    expect(calls.filter((call) => call.method === "thread.post")).toEqual([]);
   });
 
   it("closes on Escape and leaves nothing of itself behind", async () => {

@@ -19,12 +19,14 @@
 // makes the calls. Branch names come from the repo and are escaped by whoever
 // paints them.
 
-import { branchDoneConfirm } from "./inbox.js";
+import { branchDoneConfirm, entryKeyOf } from "./inbox.js";
+
+export const BRANCH_DONE_OPTION = "finish_delete";
 
 /** The `branch.finish` action each option sends. `delete` takes the branch with
  *  the checkout, which is what Done means. */
 const BRANCH_FINISH_ACTION = {
-  finish_delete: "delete",
+  [BRANCH_DONE_OPTION]: "delete",
 };
 
 /** The verb's options. One behavior, so the split button renders a plain
@@ -33,7 +35,7 @@ const BRANCH_FINISH_ACTION = {
 function branchFinishOptions(branch) {
   return [
     {
-      id: "finish_delete",
+      id: BRANCH_DONE_OPTION,
       label: "Done",
       menuLabel: "Done — delete the branch",
       description: `delete branch ${branch || "this checkout"} and its checkout`,
@@ -65,6 +67,19 @@ export function branchFinishParams(optionId, { projectId, branch }) {
   const action = BRANCH_FINISH_ACTION[optionId];
   if (!action) throw new Error(`unknown branch finish option: ${optionId}`);
   return { project_id: projectId, branch, action };
+}
+
+export function branchFinishFailureSummary(name) {
+  return `Couldn't finish ${name || "this item"}`;
+}
+
+export function branchInboxKey(row, { projectId, branch }) {
+  return entryKeyOf({
+    ...row,
+    kind: "branch",
+    project_id: (row && row.project_id) || projectId,
+    branch: (row && row.branch) || branch,
+  });
 }
 
 /** The four facts Done speaks about, read off a `branch.get` row: which branch,

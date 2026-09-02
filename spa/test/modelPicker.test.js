@@ -10,6 +10,7 @@ import {
   providerLabel,
   providerOptionsHtml,
   creatableCatalog,
+  matchCatalogModel,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
 
@@ -235,5 +236,22 @@ describe("modelParams", () => {
     expect(modelParams(MODELS, "claude-haiku-4-5", "high")).toEqual({
       model: "claude-haiku-4-5",
     });
+  });
+});
+
+describe("the catalog entry an announced model names", () => {
+  it("takes an exact id straight out of the catalog", () => {
+    expect(matchCatalogModel(MODELS, "claude-opus-4-8").label).toBe("Claude Opus 4.8");
+  });
+
+  it("looks past a date suffix the harness pinned onto the id", () => {
+    expect(matchCatalogModel(MODELS, "claude-opus-4-8-20260214").label).toBe("Claude Opus 4.8");
+    expect(matchCatalogModel(MODELS, "claude-haiku-4-5-260214").label).toBe("Claude Haiku 4.5");
+  });
+
+  it("answers nothing for an id the catalog does not carry, rather than the nearest one", () => {
+    expect(matchCatalogModel(MODELS, "claude-opus-4-8-mini")).toBe(null);
+    expect(matchCatalogModel(MODELS, "")).toBe(null);
+    expect(matchCatalogModel(undefined, "claude-opus-4-8")).toBe(null);
   });
 });

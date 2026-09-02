@@ -88,6 +88,11 @@ export function adoptCaptureRecord(capture) {
   announce();
 }
 
+export function forgetCaptureRecord(captureId) {
+  if (!tracked.delete(captureId)) return;
+  announce();
+}
+
 /** Repaint when the held captures change. Returns unsubscribe. */
 export function subscribePendingCaptures(listener) {
   listeners.add(listener);

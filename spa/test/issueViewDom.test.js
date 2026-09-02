@@ -7,6 +7,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mountIssueView, openingStageId, docAnnotatable } from "../src/core/issueView.js";
 import { FIRST_PAGE_ITEMS } from "../src/core/thread.js";
 import { createAgentSelection } from "../src/core/agentSelection.js";
+import { entryKeyOf } from "../src/core/inbox.js";
+import { INBOX_SCOPE } from "../src/core/inboxView.js";
+import { pendingIn, resetOptimistic } from "../src/core/optimistic.js";
+import { dismissAllNotices } from "../src/core/notify.js";
 
 const stage = (overrides = {}) => ({
   id: "s1",
@@ -43,6 +47,7 @@ async function mount(overrides = {}) {
     doc = { stage_id: "s1", contents: "# Wire\n\nRewrite the client so it reads items[]." },
     planDoc = { contents: "# The whole plan" },
     fail = null,
+    hold = null,
     ...options
   } = overrides;
   const host = document.createElement("div");
@@ -53,6 +58,7 @@ async function mount(overrides = {}) {
     callRpc: async (method, params) => {
       calls.push([method, params]);
       if (fail && fail[method]) throw new Error(fail[method]);
+      if (hold && hold[method]) return new Promise(() => {});
       if (method === "issue.get") return issue;
       if (method === "issue.stages") return { stages };
       if (method === "issue.stage_doc") return doc;
@@ -120,12 +126,74 @@ describe("docAnnotatable", () => {
   });
 });
 
+async function answerConfirm(ok) {
+  await flush();
+  const scrim = document.getElementById("confirm-scrim");
+  expect(scrim, "a confirmation was expected").toBeTruthy();
+  scrim.querySelector(ok ? "[data-confirm-ok]" : "[data-confirm-cancel]").click();
+  await flush();
+}
+
 describe("the issue view", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
+    resetOptimistic();
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    dismissAllNotices();
+    resetOptimistic();
+  });
+
+  describe("deleting an abandoned issue", () => {
+    const abandoned = () => issuePayload({ state: "abandoned" });
+
+    it("leaves the issue surface the instant the delete is confirmed, before issue.delete answers", async () => {
+      const gone = [];
+      const { host, view, calls } = await mount({
+        issue: abandoned(),
+        onGone: () => gone.push(true),
+        hold: { "issue.delete": true },
+      });
+      host.querySelector("#issuedelete").click();
+      await answerConfirm(true);
+
+      expect(gone).toEqual([true]);
+      expect(calls.some(([method]) => method === "issue.delete")).toBe(true);
+      const held = pendingIn(INBOX_SCOPE);
+      expect(held).toHaveLength(1);
+      expect(held[0].kind).toBe("remove");
+      expect(held[0].key).toBe(entryKeyOf({ kind: "issue", issue_id: "issue-1", project_id: "proj-1" }));
+      view.dispose();
+    });
+
+    it("opens no record and reaches no daemon when the confirmation is declined", async () => {
+      const gone = [];
+      const { host, view, calls } = await mount({ issue: abandoned(), onGone: () => gone.push(true) });
+      host.querySelector("#issuedelete").click();
+      await answerConfirm(false);
+
+      expect(gone).toEqual([]);
+      expect(calls.some(([method]) => method === "issue.delete")).toBe(false);
+      expect(pendingIn(INBOX_SCOPE)).toEqual([]);
+      view.dispose();
+    });
+
+    it("puts the issue's inbox row back and says why when the delete is refused", async () => {
+      const { host, view } = await mount({
+        issue: abandoned(),
+        fail: { "issue.delete": "the plan is still implementing" },
+        onGone: () => {},
+      });
+      host.querySelector("#issuedelete").click();
+      await answerConfirm(true);
+      await flush();
+
+      expect(pendingIn(INBOX_SCOPE)).toEqual([]);
+      const summaries = [...document.querySelectorAll(".notice-summary")].map((node) => node.textContent);
+      expect(summaries).toEqual(["Could not delete this issue"]);
+      view.dispose();
+    });
   });
 
   it("paints both columns at once — the stage list beside the open stage's doc", async () => {

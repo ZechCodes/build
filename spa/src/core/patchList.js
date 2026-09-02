@@ -146,6 +146,19 @@ function endOfEntries(container) {
   return last ? last.nextSibling : null;
 }
 
+export function rekeyEntry(container, fromKey, toKey) {
+  const from = String(fromKey);
+  const to = String(toKey);
+  const standing = [...container.children].find((child) => child.getAttribute(KEY) === from);
+  if (!standing) return false;
+  if ([...container.children].some((child) => child !== standing && child.getAttribute(KEY) === to)) {
+    container.removeChild(standing);
+    return false;
+  }
+  standing.setAttribute(KEY, to);
+  return true;
+}
+
 /// Make the keyed children of `container` say what `entries` says.
 ///
 /// Returns the entry elements, in order. See the contract at the top of this

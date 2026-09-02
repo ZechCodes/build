@@ -5,7 +5,14 @@
 // reaches the DOM.
 
 import { describe, it, expect } from "vitest";
-import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../src/core/branchFinish.js";
+import {
+  branchCloseout,
+  branchFinishConfirm,
+  branchFinishFacts,
+  branchFinishParams,
+  branchInboxKey,
+} from "../src/core/branchFinish.js";
+import { entryKeyOf } from "../src/core/inbox.js";
 
 const clean = { uncommitted: { files_changed: 0 }, ahead: 0, upstream: "origin/build/login" };
 
@@ -135,5 +142,31 @@ describe("what the confirmation promises", () => {
   it("leaves the issue out when the branch implements none", () => {
     const plan = branchFinishConfirm(branchFinishFacts(branchRow(), "build/login"));
     expect(plan.actions.some((action) => action.includes("issue"))).toBe(false);
+  });
+});
+
+describe("the inbox row this branch is", () => {
+  const urlNames = { projectId: "p1", branch: "build/login" };
+
+  it("names a run-backed branch the way the inbox names it", () => {
+    const backing = branchRow({ run_id: "run-1", worktree_id: "wt-1" });
+    expect(branchInboxKey(backing, urlNames)).toBe(entryKeyOf(backing));
+    expect(branchInboxKey(backing, urlNames)).toBe("run-1");
+  });
+
+  it("names a bare checkout the way the inbox names it", () => {
+    const backing = branchRow({ run_id: null, worktree_id: "wt-1" });
+    expect(branchInboxKey(backing, urlNames)).toBe(entryKeyOf(backing));
+    expect(branchInboxKey(backing, urlNames)).toBe("wt-1");
+  });
+
+  it("names a branch with no checkout by its project and its name", () => {
+    const backing = branchRow({ run_id: null, worktree_id: null });
+    expect(branchInboxKey(backing, urlNames)).toBe(entryKeyOf(backing));
+    expect(branchInboxKey(backing, urlNames)).toBe("branch:p1:build/login");
+  });
+
+  it("names the URL's branch when the read has not answered", () => {
+    expect(branchInboxKey(null, urlNames)).toBe("branch:p1:build/login");
   });
 });

@@ -223,11 +223,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_but_sane_model_id_passes_through() {
-        // A model released after this bridge build must remain usable.
-        assert!(choice(Some("claude-opus-5"), Some("high"))
+    fn validate_does_not_gate_on_the_catalog() {
+        assert!(choice(Some("a-model-no-catalog-names"), Some("high"))
             .validate()
             .is_ok());
+        assert!(choice(Some("claude-fable-5"), Some("max"))
+            .validate()
+            .is_ok());
+        assert!(choice(Some("claude-fable-5"), None).validate().is_ok());
     }
 
     #[test]
@@ -357,22 +360,51 @@ mod tests {
         assert_eq!(AgentProvider::Codex.label(), "Codex");
     }
 
+    const CLAUDE_CARRIERS: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::ClaudeAdk];
+
+    fn catalog_of(carrier: AgentProvider) -> ProviderCatalog {
+        provider_catalogs()
+            .into_iter()
+            .find(|catalog| catalog.id == carrier)
+            .expect("every provider has a catalog")
+    }
+
+    fn claude_carriers_offer(model_id: &str, label: &str) {
+        for carrier in CLAUDE_CARRIERS {
+            let catalog = catalog_of(carrier);
+            let offered = catalog
+                .models
+                .iter()
+                .find(|model| model.id == model_id)
+                .unwrap_or_else(|| panic!("{carrier:?} does not offer {label}"));
+            assert_eq!(offered.label, label);
+            assert!(offered.supports_effort);
+            assert_eq!(offered.efforts, catalog.efforts);
+        }
+    }
+
     /// Both claude carriers run the same CLI, so a model released for one is
     /// available on the other by construction.
     #[test]
     fn opus_5_is_in_both_claude_carriers_catalogs_with_effort() {
-        for carrier in [AgentProvider::Claude, AgentProvider::ClaudeAdk] {
-            let catalog = provider_catalogs()
-                .into_iter()
-                .find(|catalog| catalog.id == carrier)
-                .expect("every provider has a catalog");
-            let opus = catalog
-                .models
-                .iter()
-                .find(|model| model.id == "claude-opus-5")
-                .unwrap_or_else(|| panic!("{carrier:?} does not offer Claude Opus 5"));
-            assert_eq!(opus.label, "Claude Opus 5");
-            assert!(opus.supports_effort);
+        claude_carriers_offer("claude-opus-5", "Claude Opus 5");
+    }
+
+    #[test]
+    fn fable_5_1_leads_both_claude_carriers_catalogs_and_retires_fable_5() {
+        claude_carriers_offer("claude-fable-5-1", "Claude Fable 5.1");
+        for carrier in CLAUDE_CARRIERS {
+            assert_eq!(catalog_of(carrier).models[0].id, "claude-fable-5-1");
+        }
+        for catalog in provider_catalogs() {
+            assert!(
+                !catalog
+                    .models
+                    .iter()
+                    .any(|model| model.id == "claude-fable-5"),
+                "{:?} still offers the retired Claude Fable 5",
+                catalog.id
+            );
         }
     }
 

@@ -15,7 +15,7 @@
 import { esc } from "./text.js";
 import { ICON_ARROW_RIGHT, ICON_PAPERCLIP, ICON_X } from "./icons.js";
 import { menuButtonMarkup, mountSplitMenu, splitButtonMarkup } from "./splitButton.js";
-import { modelMenuLabel, modelMenuOptions, modelMenuSelection } from "./agentChoice.js";
+import { modelMenuLabel, modelMenuOptions, modelMenuSelection, modelMenuTitle } from "./agentChoice.js";
 
 /// Mirrors the bridge's own cap (`ATTACHMENT_MAX_BYTES`). Checked here too, so
 /// a file that cannot land is refused before it is read rather than after a
@@ -192,7 +192,8 @@ export function composerHtml({
 
 /// What one painting of the menu says, as one string to compare the next
 /// against.
-const choiceKey = (provider, choice) => [provider, choice.model || "", choice.effort || ""].join("/");
+const choiceKey = (provider, choice, activeModel) =>
+  [provider, choice.model || "", choice.effort || "", activeModel || ""].join("/");
 
 /// Wire the menu on the composer's left: what the NEXT turn will run on.
 ///
@@ -211,27 +212,27 @@ export function mountComposerModelMenu(root, { ids, onChoose }) {
   let painted = null;
   let paintedCatalog = null;
 
-  const render = (catalog, provider, choice) => {
-    painted = choiceKey(provider, choice);
+  const render = (catalog, provider, choice, activeModel) => {
+    painted = choiceKey(provider, choice, activeModel);
     paintedCatalog = catalog;
     slot.innerHTML = menuButtonMarkup(
-      modelMenuLabel(catalog, provider, choice),
+      modelMenuLabel(catalog, provider, choice, activeModel),
       modelMenuOptions(catalog, provider, choice),
-      { title: "Model and reasoning effort" },
+      { title: modelMenuTitle(catalog, provider, choice, activeModel) },
     );
     mountSplitMenu(slot, {
       onChoose: (action) => {
         const next = modelMenuSelection(action, choice);
-        render(catalog, provider, next);
+        render(catalog, provider, next, activeModel);
         onChoose(next);
       },
     });
   };
 
   return {
-    set(catalog, provider, choice) {
-      if (choiceKey(provider, choice) === painted && catalog === paintedCatalog) return;
-      render(catalog, provider, choice);
+    set(catalog, provider, choice, activeModel = "") {
+      if (choiceKey(provider, choice, activeModel) === painted && catalog === paintedCatalog) return;
+      render(catalog, provider, choice, activeModel);
     },
   };
 }

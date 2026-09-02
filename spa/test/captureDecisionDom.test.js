@@ -31,6 +31,8 @@ vi.mock("../src/core/notify.js", () => ({
 
 let App;
 let mountCaptureDecision;
+let pendingIn;
+let entryKeyOf;
 let host;
 let surface;
 
@@ -86,6 +88,8 @@ beforeEach(async () => {
   location.hash = "#/capture/capture-1";
   ({ App } = await import("../src/app.js"));
   ({ mountCaptureDecision } = await import("../src/core/captureDecisionView.js"));
+  ({ pendingIn } = await import("../src/core/optimistic.js"));
+  ({ entryKeyOf } = await import("../src/core/inbox.js"));
   App.route = { name: "capture", id: "capture-1" };
   App.gated = false;
   record = asking();
@@ -195,6 +199,48 @@ describe("the capture decision page", () => {
     await answerConfirm(false);
     expect(App.call).not.toHaveBeenCalledWith("capture.cancel", expect.anything());
     expect(location.hash).toBe("#/capture/capture-1");
+    expect(pendingIn("inbox")).toEqual([]);
+  });
+
+  it("leaves for the inbox the instant the cancel is confirmed, before capture.cancel answers", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.cancel") return new Promise(() => {});
+      return record;
+    });
+    host.querySelector("#capture-cancel").click();
+    await answerConfirm(true);
+
+    expect(location.hash).toBe("#/inbox");
+    expect(App.call).toHaveBeenCalledWith("capture.cancel", { capture_id: "capture-1" });
+  });
+
+  it("takes the capture's inbox row off under the key the inbox itself speaks", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.cancel") return new Promise(() => {});
+      return record;
+    });
+    host.querySelector("#capture-cancel").click();
+    await answerConfirm(true);
+
+    const held = pendingIn("inbox");
+    expect(held).toHaveLength(1);
+    expect(held[0].kind).toBe("remove");
+    expect(held[0].key).toBe(entryKeyOf({ kind: "capture", capture_id: "capture-1" }));
+  });
+
+  it("puts the row back and says why when the cancel is refused", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.cancel") throw new Error("that capture is already routed");
+      return record;
+    });
+    host.querySelector("#capture-cancel").click();
+    await answerConfirm(true);
+    await flush();
+
+    expect(pendingIn("inbox")).toEqual([]);
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("The capture could not be cancelled", "that capture is already routed");
+    expect(location.hash).toBe("#/inbox");
   });
 
   it("says on the page, and out loud, when the daemon refuses an answer", async () => {

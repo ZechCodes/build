@@ -49,6 +49,7 @@ pub(crate) const SHELL_LAUNCH_CALL_ID: &str = "toolu_018xEixjjwkZczgWKGqQPat6";
 pub(crate) const SHELL_LAUNCH_CALL_LINE: usize = 40;
 pub(crate) const SHELL_STARTED_LINE: usize = 42;
 pub(crate) const SHELL_LAUNCH_ANSWER_LINE: usize = 43;
+pub(crate) const SHELL_LAUNCHED_AT_MS: u64 = 1788291725678;
 pub(crate) const SHELL_UPDATED_LINE: usize = 83;
 pub(crate) const SHELL_NOTIFICATION_LINE: usize = 84;
 pub(crate) const SHELL_OUTPUT_PATH: &str = "/private/tmp/claude-501/-private-tmp-claude-501--Users-zech--superconductor-worktrees-Build-sc-trapped-dewar-4eba-61c19380-be59-489a-9244-b8f732217cc1-scratchpad-probe/fb1738ea-687c-4b18-b494-944dc64dda8c/tasks/bn93ge6bt.output";

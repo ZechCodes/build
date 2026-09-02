@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, watch};
@@ -1193,11 +1193,13 @@ impl ProtocolReader {
                 tool,
                 parent_call_id: None,
             }) => {
+                let now_ms = unix_millis_now();
                 let moved = self.state.lock().unwrap().surfaces.read_tool_answer(
                     &tool,
                     &call_id,
                     event,
                     &answered_text,
+                    now_ms,
                 );
                 self.note_surfaces_moved(moved);
             }
@@ -1333,6 +1335,15 @@ fn tool_call_meat(tool: &str, input: &Value) -> String {
 
 /// What a tool answered. The protocol allows both shapes — a plain string, or
 /// the content blocks a richer tool returns — so both are read.
+/// The reader's own clock, for the one fact a stream line can leave unstamped:
+/// when a background shell was launched.
+fn unix_millis_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_millis() as u64
+}
+
 pub(crate) fn tool_result_text(block: &Value) -> String {
     match &block["content"] {
         Value::String(text) => text.clone(),

@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{json, Value};
+use time::format_description::well_known::Rfc3339;
+use time::OffsetDateTime;
 use tokio::sync::watch;
 
 use super::adk::{one_line, task_status_failed, task_status_is_terminal, TOOL_SUMMARY_LIMIT};
@@ -82,6 +84,8 @@ pub struct SurfaceShell {
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -173,6 +177,7 @@ enum ShellReport {
     },
     Launched {
         output_path: PathBuf,
+        started_at: u64,
     },
     Closed {
         state: &'static str,
@@ -235,9 +240,10 @@ impl SurfaceLedger {
         call_id: &str,
         whole_event: &Value,
         answered_text: &str,
+        now_ms: u64,
     ) -> bool {
         match tool {
-            "Bash" => self.apply_shell_launch(whole_event, answered_text),
+            "Bash" => self.apply_shell_launch(whole_event, answered_text, now_ms),
             _ => self.apply_checklist_answer(tool, call_id, whole_event),
         }
     }
@@ -378,7 +384,7 @@ impl SurfaceLedger {
         }
     }
 
-    fn apply_shell_launch(&mut self, event: &Value, answered_text: &str) -> bool {
+    fn apply_shell_launch(&mut self, event: &Value, answered_text: &str, now_ms: u64) -> bool {
         let shell_id = match event["tool_use_result"]["backgroundTaskId"].as_str() {
             Some(named) => named.to_string(),
             None => return false,
@@ -387,7 +393,13 @@ impl SurfaceLedger {
             Some(named) => named,
             None => return false,
         };
-        self.apply_shell(&shell_id, ShellReport::Launched { output_path })
+        self.apply_shell(
+            &shell_id,
+            ShellReport::Launched {
+                output_path,
+                started_at: stamped_at(event).unwrap_or(now_ms),
+            },
+        )
     }
 
     fn apply_shell(&mut self, shell_id: &str, reported: ShellReport) -> bool {
@@ -397,22 +409,31 @@ impl SurfaceLedger {
                     id: shell_id.to_string(),
                     description,
                     state: Some(RUNNING.to_string()),
+                    started_at: None,
                     exit_code: None,
                     tail: Vec::new(),
                     closed_by_notification: false,
                 };
                 upsert_by_id(&mut self.shells, started)
             }
-            ShellReport::Launched { output_path } => {
-                match held_named(&mut self.shells, shell_id).is_some() {
-                    true => {
-                        let named_before = self
-                            .shell_outputs
-                            .insert(shell_id.to_string(), output_path.clone());
-                        named_before.as_ref() != Some(&output_path)
+            ShellReport::Launched {
+                output_path,
+                started_at,
+            } => {
+                let stamped = match held_named(&mut self.shells, shell_id) {
+                    Some(held) => {
+                        let launched = SurfaceShell {
+                            started_at: held.started_at.or(Some(started_at)),
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, launched)
                     }
-                    false => false,
-                }
+                    None => return false,
+                };
+                let named_before = self
+                    .shell_outputs
+                    .insert(shell_id.to_string(), output_path.clone());
+                stamped || named_before.as_ref() != Some(&output_path)
             }
             ShellReport::Closed { state, exit_code } => {
                 match held_named(&mut self.shells, shell_id) {
@@ -547,6 +568,12 @@ fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> 
         }),
         _ => Some(ShellReport::StatusChanged { state }),
     }
+}
+
+fn stamped_at(event: &Value) -> Option<u64> {
+    let written = event["timestamp"].as_str()?;
+    let stamped = OffsetDateTime::parse(written, &Rfc3339).ok()?;
+    u64::try_from(stamped.unix_timestamp_nanos() / 1_000_000).ok()
 }
 
 fn output_path_named_in(answered: &str) -> Option<PathBuf> {
@@ -826,10 +853,10 @@ mod tests {
         fixture_events, fixture_line, recorded_workflow_surfaces,
         the_line_counter_carrying_a_spawning_call_id, CHAR_COUNTER_AGENT_ID, FIRST_CREATE_CALL_ID,
         FIRST_UPDATE_CALL_ID, LINE_COUNTER_AGENT_ID, SHELL_AND_CHECKLIST_FIXTURE,
-        SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE,
-        SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID, SHELL_UPDATED_LINE, SUBAGENT_FIXTURE,
-        SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
-        WORKFLOW_TASK_ID,
+        SHELL_LAUNCHED_AT_MS, SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE,
+        SHELL_NOTIFICATION_LINE, SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID,
+        SHELL_UPDATED_LINE, SUBAGENT_FIXTURE, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID,
+        WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID, WORKFLOW_TASK_ID,
     };
 
     fn one_checklist_item() -> SurfaceChecklistItem {
@@ -846,6 +873,7 @@ mod tests {
             id: "bash-1".to_string(),
             description: Some("run the suite".to_string()),
             state: Some(RUNNING.to_string()),
+            started_at: None,
             exit_code: None,
             tail: vec!["test one ... ok".to_string()],
             closed_by_notification: false,
@@ -1646,6 +1674,7 @@ mod tests {
                 id: SHELL_TASK_ID.to_string(),
                 description: Some("Background job with ticks and finished message".to_string()),
                 state: Some(RUNNING.to_string()),
+                started_at: None,
                 exit_code: None,
                 tail: Vec::new(),
                 closed_by_notification: false,
@@ -1711,6 +1740,66 @@ mod tests {
         ));
 
         assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_launched_shell_is_stamped_with_the_time_its_launch_answer_carries() {
+        let ledger = ledger_through_the_launched_shell();
+
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).shells).started_at,
+            Some(SHELL_LAUNCHED_AT_MS)
+        );
+    }
+
+    #[test]
+    fn a_launch_answer_carrying_no_time_is_stamped_with_the_readers_clock() {
+        let mut ledger = SurfaceLedger::default();
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
+        let mut unstamped = the_launch_answer();
+        unstamped["timestamp"] = json!("half past the moon");
+
+        assert!(feed_tool_answer_at(
+            &mut ledger,
+            SHELL_LAUNCH_CALL_LINE,
+            &unstamped,
+            A_READERS_CLOCK
+        ));
+
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).shells).started_at,
+            Some(A_READERS_CLOCK)
+        );
+    }
+
+    #[test]
+    fn a_shell_the_launch_answer_never_reached_writes_no_start_time() {
+        let mut ledger = SurfaceLedger::default();
+        feed_line(&mut ledger, SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
+
+        assert_eq!(the_only(&snapshot_of(&ledger).shells).started_at, None);
+        assert!(
+            !written(&ledger).contains("started_at"),
+            "an unknown start time writes no key: {}",
+            written(&ledger)
+        );
+    }
+
+    #[test]
+    fn a_second_launch_answer_leaves_the_first_start_time_standing() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        feed_tool_answer_at(
+            &mut ledger,
+            SHELL_LAUNCH_CALL_LINE,
+            &the_launch_answer(),
+            A_READERS_CLOCK,
+        );
+
+        assert_eq!(
+            the_only(&snapshot_of(&ledger).shells).started_at,
+            Some(SHELL_LAUNCHED_AT_MS)
+        );
     }
 
     #[test]
@@ -1989,7 +2078,18 @@ mod tests {
         ledger.read_tool_call(&tool_named_by(call_line), &tool_call_block(call_line))
     }
 
+    const A_READERS_CLOCK: u64 = 1_788_300_000_000;
+
     fn feed_tool_answer(ledger: &mut SurfaceLedger, call_line: usize, answer: &Value) -> bool {
+        feed_tool_answer_at(ledger, call_line, answer, A_READERS_CLOCK)
+    }
+
+    fn feed_tool_answer_at(
+        ledger: &mut SurfaceLedger,
+        call_line: usize,
+        answer: &Value,
+        now_ms: u64,
+    ) -> bool {
         let call_id = tool_call_block(call_line)["id"]
             .as_str()
             .unwrap_or_else(|| {
@@ -1997,7 +2097,13 @@ mod tests {
             })
             .to_string();
         let answered_text = tool_result_text(&answer["message"]["content"][0]);
-        ledger.read_tool_answer(&tool_named_by(call_line), &call_id, answer, &answered_text)
+        ledger.read_tool_answer(
+            &tool_named_by(call_line),
+            &call_id,
+            answer,
+            &answered_text,
+            now_ms,
+        )
     }
 
     fn feed_tool_answer_from_the_next_line(ledger: &mut SurfaceLedger, call_line: usize) -> bool {
@@ -2089,7 +2195,13 @@ mod tests {
             .expect("the answer carries a task object")
             .remove("id");
 
-        assert!(!ledger.read_tool_answer("TaskCreate", FIRST_CREATE_CALL_ID, &nameless, ""));
+        assert!(!ledger.read_tool_answer(
+            "TaskCreate",
+            FIRST_CREATE_CALL_ID,
+            &nameless,
+            "",
+            A_READERS_CLOCK
+        ));
 
         assert!(ledger.snapshot().is_none());
         assert!(
@@ -2196,7 +2308,13 @@ mod tests {
         let mut unclaimed = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, 53);
         unclaimed["tool_use_result"]["statusChange"]["to"] = json!("banana");
 
-        assert!(!ledger.read_tool_answer("TaskUpdate", FIRST_UPDATE_CALL_ID, &unclaimed, ""));
+        assert!(!ledger.read_tool_answer(
+            "TaskUpdate",
+            FIRST_UPDATE_CALL_ID,
+            &unclaimed,
+            "",
+            A_READERS_CLOCK
+        ));
 
         assert_eq!(
             the_checklist_item(&ledger, "1").state.as_deref(),

@@ -179,6 +179,17 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
    +/−, and that is the half that says how big this has got. */
 .inbox-facts { font-size:11.5px; color:var(--dim); font-family:var(--mono);
   overflow-wrap:anywhere; }
+/* A quiet row (Recent): one line, no state dot, and what it weighs floating
+   over the line's right edge with the row's own background behind it, so a
+   long name runs under it rather than wrapping. Its text starts where a live
+   row's name does, past the dot column. */
+.inbox-quiet { padding:5px 6px 5px 22px; align-items:center; }
+.inbox-quiet .inbox-line .stitle { font-size:12.5px; }
+.inbox-facts-float { position:absolute; right:6px; top:50%; transform:translateY(-50%);
+  padding-left:10px; background:var(--bg); box-shadow:-10px 0 10px -6px var(--bg);
+  pointer-events:none; white-space:nowrap; }
+.inbox-quiet:hover .inbox-facts-float { background:var(--line2); box-shadow:-10px 0 10px -6px var(--line2); }
+.inbox-quiet.active .inbox-facts-float { background:var(--accent-soft); box-shadow:-10px 0 10px -6px var(--accent-soft); }
 /* A muted entry keeps its place and its live status, and stops shouting. */
 .inbox-muted { opacity:.62; }
 .inbox-muted .inbox-reason { color:var(--dim); }
@@ -250,9 +261,18 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
   margin-bottom:8px; transition:border-color .12s ease, box-shadow .12s ease; }
 .inbox-project.active { border-color:var(--accent);
   box-shadow:0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
-.inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 2px; }
+/* A block with nothing live is flat: no box, just its head and its quiet rows.
+   The 5px inset is the boxed block's border + padding, so the chevron and the
+   + stand in the same column either way. */
+.inbox-project.inbox-flat { border:0; box-shadow:none; padding:0 5px; margin-bottom:2px; }
+.inbox-project-head { display:flex; align-items:center; gap:2px; padding:1px 0; }
 .inbox-fold svg, .inbox-recent-caret svg, .inbox-project-create svg { width:16px; height:16px; display:block; }
-.inbox-fold { flex:none; }
+/* The chevron's column is the rows' state-dot column: the rows sit 2px in and
+   pad 6px, the dot is 8px wide — centre 12px; the fold pads 4px round a 16px
+   icon — centre 12px. The Recent toggle's caret is padded the same. */
+.inbox-fold { flex:none; padding:3px 4px; }
+.inbox-fold[disabled] { opacity:.35; cursor:default; }
+.inbox-fold[disabled]:hover { background:none; color:var(--dim); }
 .inbox-project-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; text-align:left; background:none; border:0; padding:4px 4px;
   border-radius:6px; cursor:pointer; font:inherit; font-size:12.5px; font-weight:650;
@@ -263,8 +283,8 @@ body.inbox-collapsed.inbox-peek #inbox-rail { display:flex; position:fixed;
 .inbox-project-create { flex:none; }
 .inbox-project-rows { padding:2px 2px 0; }
 .inbox-folded .inbox-project-rows, .inbox-folded .inbox-recent { display:none; }
-.inbox-project-empty { font-size:11.5px; padding:2px 8px 4px; }
 .inbox-project .inbox-recent { margin:2px 0 0; border-top:0; padding-top:0; }
+.inbox-project .inbox-recent-toggle { padding-left:4px; }
 
 /* ---- view column (centre) ---- */
 /* Positioned, because the console's full size is an overlay over this column

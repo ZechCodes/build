@@ -4,13 +4,7 @@
 // per block, and the unrouted captures standing above them all.
 
 import { describe, it, expect } from "vitest";
-import {
-  newProjectButtonHtml,
-  projectBlockHtml,
-  projectBlocks,
-  projectEmptyHtml,
-  projectHeadHtml,
-} from "../src/core/inboxProjects.js";
+import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "../src/core/inboxProjects.js";
 
 const NOW = Date.parse("2026-09-02T12:00:00Z");
 const ago = (hours) => new Date(NOW - hours * 3600 * 1000).toISOString();
@@ -111,6 +105,8 @@ describe("the blocks the projects face lists", () => {
     const { blocks } = projectBlocks({ projects, nowMs: NOW, items: [issue()] });
     expect(names(blocks)).toEqual(["dotfiles", "relaydb", "mascot"]);
     expect(blocks[1].entries).toEqual([]);
+    // Nothing live in either: both are flat.
+    expect(blocks.map((block) => block.flat)).toEqual([false, true, true]);
   });
 
   // The reviewer's screenshot: a project whose only row had gone quiet stood
@@ -262,13 +258,27 @@ describe("what a block looks like", () => {
     expect(projectBlockHtml(block(), {})).not.toContain("inbox-folded");
   });
 
+  it("lays a block with nothing live flat, and disables its fold when there is nothing to fold", () => {
+    const { blocks } = projectBlocks({
+      projects,
+      nowMs: NOW,
+      items: [branch({ anchor: ago(300), last_activity: ago(40) })],
+    });
+    const quietOnly = blocks.find((block) => block.id === "p1");
+    const empty = blocks.find((block) => block.id === "p2");
+    expect(projectBlockHtml(quietOnly, {})).toMatch(/class="inbox-project inbox-flat"/);
+    expect(projectHeadHtml(quietOnly, {})).not.toContain("disabled");
+    expect(projectBlockHtml(empty, {})).toMatch(/class="inbox-project inbox-flat"/);
+    expect(projectHeadHtml(empty, {})).toMatch(/data-project-fold="p2"[^>]*disabled/);
+    expect(projectBlockHtml(block(), {})).not.toContain("inbox-flat");
+  });
+
   it("marks the block the route stands in as active, and no other", () => {
     expect(projectBlockHtml(block(), { activeProjectId: "p1" })).toMatch(/class="inbox-project active"/);
     expect(projectBlockHtml(block(), { activeProjectId: "p2" })).not.toContain(" active");
   });
 
-  it("says when a block is empty, and offers a new project", () => {
-    expect(projectEmptyHtml()).toContain("Nothing here yet");
+  it("offers a new project", () => {
     expect(newProjectButtonHtml()).toContain("data-new-project");
     expect(newProjectButtonHtml()).toContain("New project");
     expect(newProjectButtonHtml()).toContain("<svg");

@@ -42,7 +42,7 @@ import {
 } from "./optimistic.js";
 import { patchElement } from "./domPatch.js";
 import { goFromInbox } from "./inboxShell.js";
-import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectEmptyHtml, projectHeadHtml } from "./inboxProjects.js";
+import { newProjectButtonHtml, projectBlockHtml, projectBlocks, projectHeadHtml } from "./inboxProjects.js";
 import { loadFoldedProjects, persistFoldedProjects } from "./railMode.js";
 import { openCreateWork } from "./createWork.js";
 import { openNewRepo } from "../sheets/newRepo.js";
@@ -232,15 +232,22 @@ function paintBlocks(host, blocks, ui) {
       element = el(projectBlockHtml(block, ui));
       host.insertBefore(element, anchor);
     } else {
+      element.classList.toggle("inbox-flat", block.flat);
       element.classList.toggle("inbox-folded", folded.has(block.id));
       element.classList.toggle("active", ui.activeProjectId === block.id);
       patchElement(element.querySelector(":scope > .inbox-project-head"), el(projectHeadHtml(block, ui)));
       if (element.nextSibling !== anchor) host.insertBefore(element, anchor);
     }
     const rows = element.querySelector(":scope > .inbox-project-rows");
-    paintEmpty(rows, block.entries.length === 0 && block.recent.length === 0, projectEmptyHtml, ".inbox-project-empty");
-    patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
-    paintRecent(element, block, ui, block.id);
+    if (block.flat) {
+      // Nothing live: the quiet rows stand straight under the head, and the
+      // block's own chevron is their fold — no Recent disclosure of their own.
+      element.querySelector(":scope > .inbox-recent")?.remove();
+      patchList(rows, block.recent, { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
+    } else {
+      patchList(rows, block.entries, { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+      paintRecent(element, block, ui, block.id);
+    }
     anchor = element;
   }
 }
@@ -276,7 +283,8 @@ function paintRecent(host, partition, ui, scope) {
   if (host.lastElementChild !== section) host.appendChild(section);
   const open = recentIsOpen(partition, recentOpen.get(scope));
   patchElement(section.querySelector("[data-recent-toggle]"), el(recentToggleHtml(partition.recent, open, scope)));
-  patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, ui) });
+  // Recent's rows are quiet rows: one line each, no state dot.
+  patchList(section, open ? partition.recent : [], { keyOf, render: (entry) => inboxRowHtml(entry, { ...ui, quiet: true }) });
 }
 
 /** A row key is whatever the daemon minted (a worktree's is derived from a

@@ -413,9 +413,11 @@ function rowTooltip(entry) {
 
 /** One inbox row, in two lines: the state dot and what this is, with the unread
  *  count at the right edge; then what it weighs. `ui`: { activeKey,
- *  openMenuKey, showProject }. */
+ *  openMenuKey, showProject, quiet }. A quiet row — one in Recent — is one
+ *  line instead (quietRowHtml). */
 export function inboxRowHtml(entry, ui = {}) {
   if (entry.kind === "capture") return captureRowHtml(entry, ui);
+  if (ui.quiet) return quietRowHtml(entry, ui);
   const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
   // One list across every project: which project a row belongs to is the one
   // fact it cannot go without, so it leads line one — two rows both named
@@ -440,6 +442,37 @@ export function inboxRowHtml(entry, ui = {}) {
       <div class="inbox-facts">${esc(entry.facts || GETTING_STARTED)}</div>
       <span class="warn" data-done-error hidden></span>
     </div>
+    <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
+  </div>`;
+}
+
+/** A quiet row, which is what Recent holds: one line — what this is, with
+ *  what it weighs floating over the line's right edge — and no state dot. A
+ *  row that has said nothing for a day has no state worth a glance, and what
+ *  it weighs is the one fact left worth reading, so it takes the right edge
+ *  the way the unread count does on a live row. Same key, same verbs, same
+ *  element shape, so a row going quiet keeps its element. */
+function quietRowHtml(entry, ui) {
+  const unread = entry.unreadCount > 0 ? `<span class="badge inbox-unread">${entry.unreadCount}</span>` : "";
+  const projectTag = ui.showProject === false ? "" : `<span class="inbox-tag">${esc(entry.project || "unknown project")}</span>`;
+  const classes = [
+    "srow",
+    "inbox-entry",
+    "inbox-quiet",
+    entry.key === ui.activeKey ? "active" : "",
+    entry.muted ? "inbox-muted" : "",
+    entry.route ? "" : "inbox-unroutable",
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return `<div class="${classes}" data-key="${esc(entry.key)}"${
+    entry.entityId ? ` data-entity="${esc(entry.entityId)}"` : ""
+  } title="${esc(rowTooltip(entry))}">
+    <div class="inbox-body">
+      <div class="inbox-line inbox-name">${projectTag}<span class="stitle">${esc(entry.name)}</span>${unread}</div>
+      <span class="warn" data-done-error hidden></span>
+    </div>
+    ${entry.facts ? `<span class="inbox-facts inbox-facts-float">${esc(entry.facts)}</span>` : ""}
     <div class="inbox-actions">${menuHtml(entry, ui.openMenuKey === entry.key)}</div>
   </div>`;
 }

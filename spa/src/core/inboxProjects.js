@@ -16,6 +16,11 @@
 // behind a +. A block folds shut by its chevron and stays that way until it is
 // opened again.
 //
+// A block with nothing live in it is flat: no box, just its head. If it has
+// quiet rows they stand straight under the head, with the chevron folding them
+// and no Recent disclosure of their own; if it has nothing at all, the chevron
+// has nothing to fold and is disabled.
+//
 // No DOM, no app imports — the wiring (core/inboxView.js) renders these.
 
 import { esc } from "./text.js";
@@ -58,10 +63,11 @@ function firstRank(entries) {
  * The projects face: `{ unsorted, blocks }`.
  *
  * `unsorted` is the rows that belong to no project yet, in inbox order. Each
- * block is `{ key, id, name, entries, recent, autoOpen, route, unreadCount }`
- * — its rows partitioned into the list proper and Recent exactly as the inbox
- * partitions them, `route` where its head opens (the primary checkout, or
- * nowhere), and the blocks in the inbox's order.
+ * block is `{ key, id, name, entries, recent, autoOpen, flat, route,
+ * unreadCount }` — its rows partitioned into the list proper and Recent
+ * exactly as the inbox partitions them, `flat` when nothing in it is live,
+ * `route` where its head opens (the primary checkout, or nowhere), and the
+ * blocks in the inbox's order.
  */
 export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } = {}) {
   const inbox = inboxEntries({ items, nowMs });
@@ -79,6 +85,7 @@ export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } 
       entries,
       recent,
       autoOpen: entries.length < RECENT_AUTO_OPEN_BELOW,
+      flat: entries.length === 0,
       route: primary ? entryRoute(primary) : null,
       unreadCount: [...entries, ...recent].reduce((total, entry) => total + entry.unreadCount, 0),
     };
@@ -91,15 +98,16 @@ export function projectBlocks({ items = [], projects = [], nowMs = Date.now() } 
 }
 
 /** The block's head: the fold, the name that opens the project's checkout,
- *  how much inside is waiting, and the + that opens the create surface.
- *  `ui`: { folded }. */
+ *  how much inside is waiting, and the + that opens the create surface. The
+ *  fold is disabled on a block with nothing to fold. `ui`: { folded }. */
 export function projectHeadHtml(block, ui = {}) {
   const folded = !!(ui.folded && ui.folded.has(block.id));
+  const foldable = block.entries.length > 0 || block.recent.length > 0;
   const unread = block.unreadCount > 0 ? `<span class="badge inbox-unread">${block.unreadCount}</span>` : "";
   const nameClasses = ["inbox-project-name", block.route ? "" : "inbox-unroutable"].filter(Boolean).join(" ");
   const title = block.route ? `Open ${block.name}'s checkout` : `${block.name} has no checkout to open`;
   return `<div class="inbox-project-head">
-    <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}">${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
+    <button class="iconbtn inbox-fold" type="button" data-project-fold="${esc(block.id)}" aria-expanded="${folded ? "false" : "true"}" aria-label="${folded ? "Unfold" : "Fold"} ${esc(block.name)}"${foldable ? "" : " disabled"}>${folded ? ICON_CHEVRON_RIGHT : ICON_CHEVRON_DOWN}</button>
     <button class="${nameClasses}" type="button" data-project-open="${esc(block.id)}" title="${esc(title)}">${esc(block.name)}</button>
     ${unread}
     <button class="iconbtn inbox-project-create" type="button" data-project-create="${esc(block.id)}" title="New branch or issue in ${esc(block.name)}" aria-label="New branch or issue in ${esc(block.name)}">${ICON_PLUS}</button>
@@ -112,18 +120,18 @@ export function projectHeadHtml(block, ui = {}) {
  *  { folded, activeProjectId } — the active block is the one holding the
  *  branch or issue the route stands on. */
 export function projectBlockHtml(block, ui = {}) {
-  const classes = ["inbox-project", ui.folded && ui.folded.has(block.id) ? "inbox-folded" : "", ui.activeProjectId === block.id ? "active" : ""]
+  const classes = [
+    "inbox-project",
+    block.flat ? "inbox-flat" : "",
+    ui.folded && ui.folded.has(block.id) ? "inbox-folded" : "",
+    ui.activeProjectId === block.id ? "active" : "",
+  ]
     .filter(Boolean)
     .join(" ");
   return `<div class="${classes}" data-key="${esc(block.key)}" data-project="${esc(block.id)}">${projectHeadHtml(
     block,
     ui,
   )}<div class="inbox-project-rows"></div></div>`;
-}
-
-/** What a block says when it holds no rows at all. */
-export function projectEmptyHtml() {
-  return '<div class="inbox-project-empty dim">Nothing here yet.</div>';
 }
 
 /** The one control at the head of the projects face. */

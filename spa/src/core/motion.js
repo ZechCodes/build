@@ -15,6 +15,11 @@
 // the stylesheet says it is. An exit ends with `hidden` set, so the caller can
 // ask "is it shown?" of the element itself.
 //
+// `opacity` is the third axis: something that covers what is under it — the
+// modal scrim — has no size to grow, and shrinking it would drag the page it
+// covers. It arrives and leaves by presence alone, borrowing no size and no
+// overflow.
+//
 // ## Why there is a queue
 //
 // Three pills arriving in one paint all animating at once reads as the row
@@ -36,6 +41,7 @@ export const MOTION_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 
 const REVEAL = "reveal";
 const HIDE = "hide";
+const OPACITY = "opacity";
 
 /** The properties a move borrows for its length and gives back afterwards. */
 const BORROWED_PROPERTIES = ["width", "height", "opacity", "overflow"];
@@ -133,20 +139,28 @@ function naturalSize(element, axis) {
   return axis === "height" ? element.scrollHeight : element.scrollWidth;
 }
 
+/// The two ends of a move: the element as layout would give it, and the
+/// element as nothing.
+function endsOfMove(element, axis) {
+  if (axis === OPACITY) return { grown: { opacity: 1 }, gone: { opacity: 0 } };
+  return {
+    grown: { [axis]: `${naturalSize(element, axis)}px`, opacity: 1 },
+    gone: { [axis]: "0px", opacity: 0 },
+  };
+}
+
 async function play(element, run) {
   if (run.countermanded) return;
   const { axis, direction } = run;
 
   element.hidden = false;
   giveBackBorrowedProperties(element);
-  const grown = { [axis]: `${naturalSize(element, axis)}px`, opacity: 1 };
-  const gone = { [axis]: "0px", opacity: 0 };
+  const { grown, gone } = endsOfMove(element, axis);
   const from = direction === REVEAL ? gone : grown;
   const to = direction === REVEAL ? grown : gone;
 
-  element.style.setProperty("overflow", "hidden");
-  element.style.setProperty(axis, from[axis]);
-  element.style.setProperty("opacity", String(from.opacity));
+  if (axis !== OPACITY) element.style.setProperty("overflow", "hidden");
+  for (const [property, value] of Object.entries(from)) element.style.setProperty(property, String(value));
   run.animation = element.animate([from, to], {
     duration: MOTION_DURATION_MS,
     easing: MOTION_EASING,

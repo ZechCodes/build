@@ -6,6 +6,7 @@
 // gets the same state change with no animation at all.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { motionBeat as tick, recordAnimations, stopRecordingAnimations } from "./motionRecorder.js";
 import {
   MOTION_BEAT_MS,
   MOTION_DURATION_MS,
@@ -14,32 +15,6 @@ import {
   motionSettled,
   reveal,
 } from "../src/core/motion.js";
-
-/** Every animation the primitive started, each one finished by hand. */
-function recordAnimations() {
-  const started = [];
-  Element.prototype.animate = function animate(keyframes, options) {
-    let finish;
-    const run = {
-      element: this,
-      keyframes,
-      options,
-      cancelled: false,
-      finished: new Promise((resolve) => {
-        finish = () => resolve(run);
-      }),
-      cancel() {
-        run.cancelled = true;
-      },
-      finish() {
-        finish();
-      },
-    };
-    started.push(run);
-    return run;
-  };
-  return started;
-}
 
 const boxOf = (width, height) => ({ width, height, top: 0, left: 0, right: width, bottom: height });
 
@@ -60,15 +35,11 @@ const askForLessMotion = () => {
   globalThis.matchMedia = () => ({ matches: true });
 };
 
-/** Long enough for the queue to admit the next move: the beat it waits, and a
- *  little more for the timer to actually land. */
-const tick = () => new Promise((resolve) => setTimeout(resolve, MOTION_BEAT_MS + 10));
-
 const inlineStyleOf = (element) => element.getAttribute("style") || "";
 
 afterEach(async () => {
   await motionSettled();
-  delete Element.prototype.animate;
+  stopRecordingAnimations();
   delete globalThis.matchMedia;
   document.body.innerHTML = "";
   vi.useRealTimers();
@@ -256,5 +227,42 @@ describe("a move that is countermanded before it finishes", () => {
     started[0].finish();
     await Promise.all([hidden, again]);
     expect(pill.hidden).toBe(true);
+  });
+});
+
+describe("an element that has no size to grow, only presence", () => {
+  it("fades it in on opacity alone, borrowing no size and no overflow", async () => {
+    const started = recordAnimations();
+    const scrim = elementHidden(400, 300);
+
+    const revealed = reveal(scrim, { axis: "opacity" });
+    await tick();
+
+    expect(scrim.hidden).toBe(false);
+    expect(started[0].keyframes).toEqual([{ opacity: 0 }, { opacity: 1 }]);
+    expect(scrim.style.overflow).toBe("");
+
+    started[0].finish();
+    await revealed;
+
+    expect(scrim.hidden).toBe(false);
+    expect(inlineStyleOf(scrim)).toBe("");
+  });
+
+  it("fades it out, and only then takes it out of the layout", async () => {
+    const started = recordAnimations();
+    const scrim = elementSized(400, 300);
+
+    const hidden = hide(scrim, { axis: "opacity" });
+    await tick();
+
+    expect(scrim.hidden).toBe(false);
+    expect(started[0].keyframes).toEqual([{ opacity: 1 }, { opacity: 0 }]);
+
+    started[0].finish();
+    await hidden;
+
+    expect(scrim.hidden).toBe(true);
+    expect(inlineStyleOf(scrim)).toBe("");
   });
 });

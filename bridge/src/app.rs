@@ -2915,16 +2915,6 @@ impl AppState {
         persisted
     }
 
-    /// The same tail for a mutation whose answer IS the plan, with
-    /// `thread_detail` saying how much conversation that answer carries. A
-    /// write is the hottest call the SPA makes; answering a one-word post with
-    /// every item a long conversation ever held is the cost paging exists to
-    /// avoid, so a caller that named a `thread_limit` gets that page here too.
-    ///
-    /// The view is taken once the record is back in its map — a mutation
-    /// answers with the very view its own `.get` would, agents included — and
-    /// returned beside the persistence outcome so callers can order their
-    /// errors.
     fn answer_plan_mutation(
         &mut self,
         plan_id: String,
@@ -8326,7 +8316,6 @@ impl AppState {
     /// agent, in rail order.
     fn agent_digests(&self, entity_id: &str, scope: DigestScope) -> Vec<Value> {
         let Ok(roster) = self.entity_agents(entity_id) else {
-            eprintln!("agent_digests: unknown entity {entity_id}");
             return Vec::new();
         };
         let root = self.entity_agent_root(entity_id).ok();
@@ -35786,6 +35775,76 @@ mod tests {
             json!([]),
             "a bare checkout has no run view to take agents from, so the rail still reads the candidate row's own array: {bare:?}"
         );
+        drop(dir);
+    }
+
+    fn the_only_digest_carrying_surfaces(verb: &str, payload: &Value) -> Value {
+        let surfaced: Vec<Value> = agent_digests_within(payload)
+            .into_iter()
+            .filter_map(|digest| digest.get("surfaces").cloned())
+            .collect();
+        assert_eq!(
+            surfaced.len(),
+            1,
+            "{verb} answered with {} surfaced digests: {payload:?}",
+            surfaced.len()
+        );
+        surfaced[0].clone()
+    }
+
+    #[test]
+    fn every_detail_verb_carries_the_open_agents_surfaces() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-detailed",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        let issue_id = plan_id_of(&state.handle(req(
+            "plan.create",
+            json!({ "goal": "an issue with a surfaced agent" }),
+        )));
+        let started = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start" }),
+        ));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let issue_agent = primary_agent_id(&state, &issue_id);
+        let issue_root = state
+            .entity_agent_root(&issue_id)
+            .expect("the issue's agent works in the primary checkout");
+        insert_agent_tab(
+            &mut state,
+            &issue_root,
+            &issue_id,
+            &issue_agent,
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+
+        for (verb, params) in [
+            ("run.get", json!({ "run_id": run_id })),
+            ("issue.get", json!({ "issue_id": issue_id })),
+            ("plan.get", json!({ "plan_id": issue_id })),
+        ] {
+            let answered = state.handle(req(verb, params));
+            assert_eq!(answered["ok"], true, "{verb}: {answered:?}");
+            let surfaces = the_only_digest_carrying_surfaces(verb, &answered["result"]);
+            assert_eq!(
+                surfaces["workflows"][0]["id"], WORKFLOW_TASK_ID,
+                "{verb}: {surfaces:?}"
+            );
+        }
+        drop(dir);
+    }
+
+    #[test]
+    fn an_entity_no_roster_knows_answers_with_no_digests_at_all() {
+        let (dir, repo) = init_repo();
+        let state = qa_state(&repo, dir.path());
+
+        assert!(state
+            .agent_digests("no-such-entity", DigestScope::Detail)
+            .is_empty());
         drop(dir);
     }
 

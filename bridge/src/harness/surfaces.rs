@@ -818,10 +818,11 @@ mod tests {
 
     use super::*;
     use crate::harness::stream_fixtures::{
-        fixture_events, fixture_line, line_counter_from_the_workflow_fixture,
-        SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE,
-        SHELL_NOTIFICATION_LINE, SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID,
-        SHELL_UPDATED_LINE, SUBAGENT_FIXTURE, WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
+        fixture_events, fixture_line, recorded_workflow_surfaces,
+        the_line_counter_carrying_a_spawning_call_id, SHELL_AND_CHECKLIST_FIXTURE,
+        SHELL_LAUNCH_ANSWER_LINE, SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE,
+        SHELL_OUTPUT_PATH, SHELL_STARTED_LINE, SHELL_TASK_ID, SHELL_UPDATED_LINE, SUBAGENT_FIXTURE,
+        WORKFLOW_FIXTURE, WORKFLOW_SPAWNING_CALL_ID,
     };
 
     fn one_checklist_item() -> SurfaceChecklistItem {
@@ -880,7 +881,7 @@ mod tests {
     #[test]
     fn a_subagent_carries_the_call_sequence_the_closure_answers() {
         let surfaces = AgentSurfaces {
-            subagents: vec![line_counter_from_the_workflow_fixture()],
+            subagents: vec![the_line_counter_carrying_a_spawning_call_id()],
             ..AgentSurfaces::default()
         };
         let answers_forty_one = |spawning_call_id: &str| {
@@ -911,10 +912,10 @@ mod tests {
                 state: Some("running".to_string()),
                 phases: vec![SurfacePhase {
                     title: "Read".to_string(),
-                    agents: vec![line_counter_from_the_workflow_fixture()],
+                    agents: vec![the_line_counter_carrying_a_spawning_call_id()],
                 }],
             }],
-            subagents: vec![line_counter_from_the_workflow_fixture()],
+            subagents: vec![the_line_counter_carrying_a_spawning_call_id()],
             shells: vec![one_shell()],
             checklist: vec![one_checklist_item()],
         };
@@ -1042,6 +1043,18 @@ mod tests {
             feed_workflow_line(&mut ledger, line_number);
         }
         ledger
+    }
+
+    #[test]
+    fn the_recorded_snapshot_is_what_the_fixtures_build() {
+        let mut ledger = ledger_through_the_final_progress_array();
+        feed(&mut ledger, &fixture_line(SUBAGENT_FIXTURE, 11));
+        feed(&mut ledger, &fixture_line(SUBAGENT_FIXTURE, 31));
+
+        assert_eq!(
+            ledger.snapshot().expect("the ledger holds a snapshot"),
+            recorded_workflow_surfaces()
+        );
     }
 
     #[test]

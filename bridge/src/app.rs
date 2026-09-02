@@ -8326,6 +8326,7 @@ impl AppState {
     /// agent, in rail order.
     fn agent_digests(&self, entity_id: &str, scope: DigestScope) -> Vec<Value> {
         let Ok(roster) = self.entity_agents(entity_id) else {
+            eprintln!("agent_digests: unknown entity {entity_id}");
             return Vec::new();
         };
         let root = self.entity_agent_root(entity_id).ok();
@@ -34796,12 +34797,10 @@ mod tests {
         }
 
         fn moving_surfaces_on(self, revision: SurfaceRevision) -> DictatedSession {
-            self.watching_surfaces_through(revision.subscribe())
+            self.watching_a_revision_the_caller_can_close(revision.subscribe())
         }
 
-        /// A session watching a channel whose sender the caller keeps, so a
-        /// test can close it out from under the pump.
-        fn watching_surfaces_through(
+        fn watching_a_revision_the_caller_can_close(
             mut self,
             watched: tokio::sync::watch::Receiver<u64>,
         ) -> DictatedSession {
@@ -35964,14 +35963,13 @@ mod tests {
         );
     }
 
-    fn bump_inside_one_change_window(
+    fn note_the_board_then_bump_each_revision_once(
         state: &Arc<Mutex<AppState>>,
-        revision: &SurfaceRevision,
-        bumps: usize,
+        revisions: &[SurfaceRevision],
     ) {
         let state = state.lock().unwrap();
         state.note_board_changed();
-        for _ in 0..bumps {
+        for revision in revisions {
             revision.bump();
         }
     }
@@ -35997,29 +35995,40 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, _handler, _sender, mut rx, session_key) =
             greeted_push_session(&repo, dir.path());
-        let revision = SurfaceRevision::default();
-        let key = {
+        let root = {
             let mut s = state.lock().unwrap();
-            let root = insert_run(
+            insert_run(
                 &mut s,
                 &repo,
                 dir.path(),
                 "run-invalidated",
                 RunState::Building,
-            );
-            insert_dictated_agent_tab(
-                &mut s,
-                &root,
-                "run-invalidated",
-                DictatedSession::reporting(AgentStatus::Working)
-                    .moving_surfaces_on(revision.clone()),
             )
         };
-        let (activity, subscribed) = broadcast::channel(4);
-        spawn_activity_pump(&state, key, Some(subscribed));
+        let revisions: Vec<SurfaceRevision> = (0..5).map(|_| SurfaceRevision::default()).collect();
+        let activity_senders: Vec<_> = revisions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, revision)| {
+                let key = {
+                    let mut s = state.lock().unwrap();
+                    insert_agent_tab(
+                        &mut s,
+                        &root,
+                        "run-invalidated",
+                        &format!("agent-{ordinal}"),
+                        DictatedSession::reporting(AgentStatus::Working)
+                            .moving_surfaces_on(revision.clone()),
+                    )
+                };
+                let (activity, subscribed) = broadcast::channel(4);
+                spawn_activity_pump(&state, key, Some(subscribed));
+                activity
+            })
+            .collect();
         settled_pushes(&mut rx, &session_key).await;
 
-        bump_inside_one_change_window(&state, &revision, 5);
+        note_the_board_then_bump_each_revision_once(&state, &revisions);
 
         let events = change_events(&settled_pushes(&mut rx, &session_key).await);
         assert_eq!(
@@ -36030,15 +36039,15 @@ mod tests {
                 )
                 .count(),
             1,
-            "a burst inside one window is one stale-detail event: {events:?}"
+            "five separately watched bumps inside one window are one stale-detail event: {events:?}"
         );
         let s = state.lock().unwrap();
         assert!(
             activity_rows(primary_thread(&s.runs["run-invalidated"].agents)).is_empty(),
-            "and it minted no conversation row on the way"
+            "and they minted no conversation row on the way"
         );
         drop(s);
-        drop(activity);
+        drop(activity_senders);
     }
 
     #[tokio::test]
@@ -36077,7 +36086,8 @@ mod tests {
         let (revision_sender, watched) = tokio::sync::watch::channel(0u64);
         let (_dir, state, key) = a_run_with_a_dictated_tab(
             "run-unwatchable",
-            DictatedSession::reporting(AgentStatus::Working).watching_surfaces_through(watched),
+            DictatedSession::reporting(AgentStatus::Working)
+                .watching_a_revision_the_caller_can_close(watched),
         );
         let before_pump = Arc::strong_count(&state);
         let (activity, subscribed) = broadcast::channel(4);

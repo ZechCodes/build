@@ -72,10 +72,6 @@ pub(crate) const SUBAGENT_SPAWNING_CALL_ID: &str = "toolu_01P8eCnYQFMqdCaXBXSCcA
 const WORKFLOW_LAST_TOOL_SUMMARY: &str =
     "/private/tmp/claude-501/-Users-zech--superconductor-worktre…";
 
-/// The snapshot a reader holds after `workflow.jsonl` line 63 — three done
-/// agents in two phases — plus the subagent `subagent.jsonl` lines 11 and 31
-/// open and close. Transcribed once, here, because two hand-written copies of
-/// one fixture drift apart.
 pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
     AgentSurfaces {
         workflows: vec![SurfaceWorkflow {
@@ -122,9 +118,6 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
             id: "aba8d0dbf79bd05f1".to_string(),
             label: "Read README.md and report character count".to_string(),
             state: Some("done".to_string()),
-            duration_ms: Some(20_285),
-            tokens: Some(14_357),
-            tool_calls: Some(1),
             result: Some("4".to_string()),
             spawning_call_id: Some(SUBAGENT_SPAWNING_CALL_ID.to_string()),
             ..SurfaceAgent::default()
@@ -133,7 +126,7 @@ pub(crate) fn recorded_workflow_surfaces() -> AgentSurfaces {
     }
 }
 
-pub(crate) fn line_counter_from_the_workflow_fixture() -> SurfaceAgent {
+pub(crate) fn the_line_counter_carrying_a_spawning_call_id() -> SurfaceAgent {
     let recorded = recorded_workflow_surfaces();
     let line_counter = recorded.workflows[0].phases[0].agents[0].clone();
     SurfaceAgent {

@@ -51,6 +51,7 @@ RETIRED_SCRIPT_NAME = "landing.js"
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 SMOKE_CHECK_ASSET_PATTERN = r"getbuild\.ing/landing/([^\s\"']+)"
 SMOKE_CHECK_PAGE_PHRASE = "Ship confidence"
+LANDING_TITLE_MARKUP = "<title>Build — Ship more. Ship confidence.</title>"
 
 APP_LINK = 'href="/app/"'
 BRAND_LINK_MARKUP = (
@@ -293,6 +294,7 @@ HERO_LEAD_COPY = (
     "Build turns an issue into shipped code. An agent plans and builds it on your machi"
     "ne, and a review agent lays the changes out so you know exactly what went out and why."
 )
+LANDING_DESCRIPTION_MARKUP = '<meta name="description" content="' + HERO_LEAD_COPY + '">'
 HERO_LEAD_MARKUP = (
     '<p class="lead">' + HERO_LEAD_COPY + "</p>"
 )
@@ -697,6 +699,8 @@ def test_index_is_a_body_fragment_and_the_shell_owns_the_document():
 
 def test_hero_copy_is_verbatim():
     html = _landing_html()
+    assert LANDING_TITLE_MARKUP in html
+    assert LANDING_DESCRIPTION_MARKUP in html
     assert HERO_EYEBROW_MARKUP in html
     assert HERO_TITLE_MARKUP in html
     assert HERO_LEAD_MARKUP in html

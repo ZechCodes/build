@@ -19,11 +19,10 @@ from buildapp.landing_page import (
 LANDING_PAGE_NAME = "index.html"
 WAITLIST_FRAGMENT_NAME = "waitlist.html"
 WAITLIST_SLOT_NAME = "waitlist"
-LANDING_TITLE = "Build — the agentic coding IDE · early access"
+LANDING_TITLE = "Build — Ship more. Ship confidence."
 LANDING_DESCRIPTION = (
-    "Build is the agentic coding IDE for teams. It surfaces the work that needs you — "
-    "reviews, decisions, direction — and dispatches everything else to your agents. "
-    "Not public yet."
+    "Build turns an issue into shipped code. An agent plans and builds it on your machi"
+    "ne, and a review agent lays the changes out so you know exactly what went out and why."
 )
 LANDING_SCRIPTS = '<script type="module" src="/landing/main.js"></script>'
 

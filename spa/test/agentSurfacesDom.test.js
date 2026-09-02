@@ -139,7 +139,8 @@ describe("the pill that lingers after the work stops", () => {
     expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("1");
 
     surfaces.set(finishedShells());
-    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("0");
+    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count")).toBe(null);
+    expect(pill(SHELL_ENTRY_KIND).textContent.trim()).toBe("Shells");
 
     vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS - 1);
     expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
@@ -303,6 +304,7 @@ describe("painting the viewer", () => {
     pressPill(WORKFLOW_ENTRY_KIND);
 
     expect(pill(WORKFLOW_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("2");
+    expect(pill(CHECKLIST_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("1");
     const choices = [...document.querySelectorAll(".surface-workflow-choice")];
     expect(choices).toHaveLength(2);
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");

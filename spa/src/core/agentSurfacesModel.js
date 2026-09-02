@@ -119,16 +119,10 @@ function pillIsShown(kind, runningCount, visibility, nowMs) {
 }
 
 export function surfacePills(surfaces, visibility = null, nowMs = 0) {
-  return SURFACE_KINDS.map((kind) => ({ kind, entries: entriesOfKind(surfaces, kind) }))
-    .filter(({ entries }) => entries.length > 0)
-    .map(({ kind, entries }) => ({ kind, entries, running: runningEntryCount(surfaces, kind) }))
-    .filter(({ kind, running }) => pillIsShown(kind, running, visibility, nowMs))
-    .map(({ kind, entries, running }) => ({
-      kind,
-      label: KIND_LABELS[kind],
-      count: KINDS_THAT_LINGER.includes(kind) ? running : entries.length,
-      live: running > 0,
-    }));
+  return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0)
+    .map((kind) => ({ kind, count: runningEntryCount(surfaces, kind) }))
+    .filter(({ kind, count }) => pillIsShown(kind, count, visibility, nowMs))
+    .map(({ kind, count }) => ({ kind, label: KIND_LABELS[kind], count }));
 }
 
 export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {

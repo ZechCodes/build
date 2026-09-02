@@ -37,10 +37,8 @@ const checklistSnapshot = {
 };
 
 describe("surfacePills", () => {
-  it("gives one pill per kind that has content", () => {
-    expect(surfacePills(checklistSnapshot)).toEqual([
-      { kind: "checklist", label: "Checklist", count: 3, live: true },
-    ]);
+  it("gives one pill per kind that has content, counting what is running in it", () => {
+    expect(surfacePills(checklistSnapshot)).toEqual([{ kind: "checklist", label: "Checklist", count: 1 }]);
   });
 
   it("gives nothing for a snapshot with no kinds", () => {
@@ -52,12 +50,12 @@ describe("surfacePills", () => {
     expect(surfacePills({ shells: [], sonnets: [{ id: "s1" }] })).toEqual([]);
   });
 
-  it("is live while any entry is running and settled once every entry is done", () => {
+  it("counts what is running and counts nothing once every entry is done", () => {
     const running = { shells: [{ id: "s1", state: "done" }, { id: "s2", state: "running" }] };
     const finished = { shells: [{ id: "s1", state: "done" }, { id: "s2", state: "done" }] };
     const sawItRun = advanceSurfaceVisibility(emptySurfaceVisibility(), running, 0);
-    expect(surfacePills(running, sawItRun, 0)[0].live).toBe(true);
-    expect(surfacePills(finished, sawItRun, 1)[0].live).toBe(false);
+    expect(surfacePills(running, sawItRun, 0)[0].count).toBe(1);
+    expect(surfacePills(finished, sawItRun, 1)[0].count).toBe(0);
   });
 
   it("counts every kind and orders them the same way every time", () => {
@@ -68,7 +66,7 @@ describe("surfacePills", () => {
       workflows: [{ id: "w1", name: "Review", state: "done" }],
     });
     expect(pills.map((pill) => pill.kind)).toEqual(["workflows", "subagents", "shells", "checklist"]);
-    expect(pills.map((pill) => pill.count)).toEqual([1, 1, 1, 1]);
+    expect(pills.map((pill) => pill.count)).toEqual([0, 1, 1, 0]);
   });
 });
 
@@ -87,13 +85,13 @@ describe("the pills that count running work and linger", () => {
 
   it("counts the running shells rather than every shell", () => {
     expect(surfacePills(busy, sawItRun, SEEN_RUNNING_AT)).toEqual([
-      { kind: SHELL_ENTRY_KIND, label: "Shells", count: 1, live: true },
+      { kind: SHELL_ENTRY_KIND, label: "Shells", count: 1 },
     ]);
   });
 
   it("keeps a settled kind's pill for the whole grace and drops it when the grace runs out", () => {
     expect(surfacePills(settled, sawItRun, graceEndsAt - 1000)).toEqual([
-      { kind: SHELL_ENTRY_KIND, label: "Shells", count: 0, live: false },
+      { kind: SHELL_ENTRY_KIND, label: "Shells", count: 0 },
     ]);
     expect(surfacePills(settled, sawItRun, graceEndsAt)).toEqual([]);
   });
@@ -116,15 +114,15 @@ describe("the pills that count running work and linger", () => {
     expect(surfacePills({}, sawItRun, SEEN_RUNNING_AT)).toEqual([]);
   });
 
-  it("leaves workflows and checklist counting every entry, whatever the clock says", () => {
+  it("keeps the workflows and checklist pills whatever the clock says, counting what runs in them", () => {
     const others = {
-      workflows: [{ id: "w1", name: "Review", state: "done" }],
+      workflows: [{ id: "w1", name: "Review", state: "running" }, { id: "w2", name: "Ship", state: "done" }],
       checklist: [{ id: "t1", state: "completed" }, { id: "t2", state: "pending" }],
     };
     const visibility = advanceSurfaceVisibility(emptySurfaceVisibility(), others, 0);
     expect(surfacePills(others, visibility, SURFACE_PILL_GRACE_MS * 100).map((pill) => [pill.kind, pill.count])).toEqual([
       ["workflows", 1],
-      ["checklist", 2],
+      ["checklist", 0],
     ]);
   });
 });
@@ -589,15 +587,14 @@ describe("the remembered open pill", () => {
 describe("the wire the bridge actually builds", () => {
   const recorded = recordedSurfaces();
 
-  it("counts a pill for every kind the recorded streams carry, the finished ones counting nothing", () => {
+  it("shows a pill for every kind the recorded streams carry, none of them counting anything running", () => {
     const sawThemRun = { openKind: null, kinds: { subagents: { lastRunningSeenAt: 0 }, shells: { lastRunningSeenAt: 0 } } };
     expect(surfacePills(recorded, sawThemRun, 1).map((pill) => [pill.kind, pill.count])).toEqual([
-      ["workflows", 1],
+      ["workflows", 0],
       ["subagents", 0],
       ["shells", 0],
-      ["checklist", 3],
+      ["checklist", 0],
     ]);
-    expect(surfacePills(recorded, sawThemRun, 1).every((pill) => pill.live === false)).toBe(true);
   });
 
   it("reads every field name the bridge writes on a subagent", () => {

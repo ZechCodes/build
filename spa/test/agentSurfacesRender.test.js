@@ -244,11 +244,23 @@ describe("surfacePillsHtml", () => {
     ]);
   });
 
-  it("gives a live pill one working dot and a settled pill none", () => {
+  it("counts the running work of a pill and says nothing at all for a pill with none", () => {
     const row = parseHtml(surfacePillsHtml(pills, null));
-    const [live, settled] = [...row.querySelectorAll("button")];
-    expect(live.querySelectorAll(".sdot.sdot-working").length).toBe(1);
-    expect(settled.querySelectorAll(".sdot-working").length).toBe(0);
+    const [busy, settled] = [...row.querySelectorAll("button")];
+    expect(busy.querySelector(".surface-pill-count").textContent).toBe("1");
+    expect(settled.querySelector(".surface-pill-count")).toBe(null);
+    expect(settled.textContent.trim()).toBe("Checklist");
+  });
+
+  it("renders a workflows pill whose only workflow has finished as the label alone", () => {
+    const finished = surfacePills({ workflows: [{ id: "w1", name: "Review", state: "done" }] });
+    const button = parseHtml(surfacePillsHtml(finished, null)).querySelector("button");
+    expect(button.textContent.trim()).toBe("Workflows");
+    expect(button.querySelector(".surface-pill-count")).toBe(null);
+  });
+
+  it("wears no dot, the count being what says work is running", () => {
+    expect(surfacePillsHtml(pills, null)).not.toContain("sdot");
   });
 
   it("says the label and the count of each pill", () => {
@@ -262,7 +274,7 @@ describe("surfacePillsHtml", () => {
   });
 
   it("escapes a pill label", () => {
-    const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1, live: false }], null);
+    const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1 }], null);
     expectEscaped(html);
   });
 });

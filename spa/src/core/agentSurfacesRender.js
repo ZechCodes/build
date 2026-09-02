@@ -104,8 +104,7 @@ function pillHtml(pill, openKind) {
   return `<button type="button" class="surface-pill" data-surface-kind="${esc(pill.kind)}"
     aria-pressed="${pill.kind === openKind}">
     <span class="surface-pill-label">${esc(pill.label)}</span>
-    <span class="surface-pill-count">${esc(pill.count)}</span>
-    ${pill.live ? `<span class="sdot sdot-working"></span>` : ""}
+    ${pill.count ? `<span class="surface-pill-count">${esc(pill.count)}</span>` : ""}
   </button>`;
 }
 

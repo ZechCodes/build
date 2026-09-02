@@ -73,6 +73,14 @@ const EVENT_META = {
   task_update: { label: "Background task", icon: "⧉", activity: true },
 };
 
+/** The events a session's start is announced by. They say the same thing a
+ *  status line can say in one line — that an agent is here and has not spoken
+ *  yet — so the timeline leaves them out and the rail's pinned line shows the
+ *  newest of them until the first Working tick replaces it
+ *  (core/agentRailModel.js's `startupStatusLine`). The bridge keeps minting
+ *  them: they carry the session lineage. */
+export const STATUS_LINE_EVENTS = new Set(["session_started", "run_started"]);
+
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DAY_MS = 24 * HOUR_MS;
@@ -775,6 +783,15 @@ function eventLabel(meta, agentLabel) {
   return meta.label.replace(/^Agent\b/, agentLabel);
 }
 
+/** What a startup event is called, in the same words the timeline used to give
+ *  it — the one place those labels are read now that the status line says them
+ *  instead. "" for anything that is not one of them. */
+export function startupEventTitle(event, agentLabel = "Agent") {
+  const kind = (event && event.event) || "";
+  if (!STATUS_LINE_EVENTS.has(kind)) return "";
+  return eventLabel(EVENT_META[kind], agentLabel);
+}
+
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
 /// The call and the answer are one row, so the row has three states to say and
@@ -986,7 +1003,8 @@ export function revealThreadSequence(scroller, sequence) {
 /// rendered from — which is not the same number any more: a run of activity is
 /// many items and one row, and the count on the conversation's title counts
 /// what was said and done rather than how it fell into runs.
-function timelineHtml(items, agentLabel, threadId) {
+function timelineHtml(sourceItems, agentLabel, threadId) {
+  const items = sourceItems.filter((item) => item.type === "message" || !STATUS_LINE_EVENTS.has((item.data || {}).event));
   const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and

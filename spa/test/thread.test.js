@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, STATUS_LINE_EVENTS, createThreadCache, currentRevisionId, formatRelativeDate, startupEventTitle, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -245,7 +245,7 @@ describe("conversation thread rendering", () => {
     document.body.innerHTML = threadHtml({
       sessions: [{ provider: "Codex CLI" }],
       items: [
-        { type: "event", data: { event: "session_started" } },
+        { type: "event", data: { event: "session_ended" } },
         { type: "event", data: { event: "done", summary: "Finished the task." } },
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
@@ -253,7 +253,7 @@ describe("conversation thread rendering", () => {
     const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
     expect(completionHead).toContain("Codex commented");
     expect(completionHead).not.toContain("Agent commented");
-    expect(document.querySelector(".thread-items").textContent).toContain("Codex session started");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex session ended");
     expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
   });
 
@@ -263,14 +263,51 @@ describe("conversation thread rendering", () => {
     document.body.innerHTML = threadHtml({
       sessions: [{ provider: "claude_adk" }],
       items: [
-        { type: "event", data: { event: "session_started" } },
+        { type: "event", data: { event: "session_ended" } },
         { type: "message", data: { role: "agent", done: true, body: "Finished the task." } },
       ],
     }, { initialMessage: "Do the task" });
     const shown = document.querySelector(".thread-items").textContent;
-    expect(shown).toContain("Claude Code session started");
+    expect(shown).toContain("Claude Code session ended");
     expect(shown).not.toMatch(/claude_adk/);
     expect(shown).not.toMatch(/headless/i);
+  });
+});
+
+describe("the startup events the status line has taken over", () => {
+  it("keeps them out of the timeline and paints every other kind", () => {
+    document.body.innerHTML = threadHtml({
+      items: [
+        { type: "event", data: { event: "session_started", created_at: "2026-07-24T12:00:00Z" } },
+        { type: "event", data: { event: "run_started", created_at: "2026-07-24T12:01:00Z" } },
+        { type: "event", data: { event: "session_ended", created_at: "2026-07-24T12:02:00Z" } },
+        { type: "message", data: { role: "agent", body: "on it", created_at: "2026-07-24T12:03:00Z" } },
+      ],
+    });
+    const shown = document.querySelector(".thread-items").textContent;
+    expect(shown).not.toContain("session started");
+    expect(shown).not.toContain("Run started");
+    expect(shown).toContain("Agent session ended");
+    expect(shown).toContain("on it");
+    expect(document.querySelectorAll(".thread-event")).toHaveLength(1);
+  });
+
+  it("leaves a conversation of nothing but startup events empty", () => {
+    document.body.innerHTML = threadHtml({
+      items: [{ type: "event", data: { event: "run_started", created_at: "2026-07-24T12:00:00Z" } }],
+    });
+    expect(document.querySelector(".thread-empty")).toBeTruthy();
+  });
+
+  it("names them the way the timeline used to, in the harness's own name", () => {
+    expect(STATUS_LINE_EVENTS.has("session_started")).toBe(true);
+    expect(STATUS_LINE_EVENTS.has("run_started")).toBe(true);
+    expect(STATUS_LINE_EVENTS.has("session_ended")).toBe(false);
+    expect(startupEventTitle({ event: "run_started" })).toBe("Run started");
+    expect(startupEventTitle({ event: "session_started" })).toBe("Agent session started");
+    expect(startupEventTitle({ event: "session_started" }, "Codex")).toBe("Codex session started");
+    expect(startupEventTitle({ event: "done" })).toBe("");
+    expect(startupEventTitle(null)).toBe("");
   });
 });
 

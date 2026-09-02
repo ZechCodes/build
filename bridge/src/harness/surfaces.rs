@@ -418,7 +418,7 @@ impl SurfaceLedger {
                 match held_named(&mut self.shells, shell_id) {
                     Some(held) => {
                         let closed = SurfaceShell {
-                            state: Some(state.to_string()),
+                            state: Some(shell_state_for(exit_code, state).to_string()),
                             exit_code,
                             closed_by_notification: true,
                             ..held.clone()
@@ -429,7 +429,10 @@ impl SurfaceLedger {
                 }
             }
             ShellReport::StatusChanged { state } => match held_named(&mut self.shells, shell_id) {
-                Some(held) => replace_when_changed(&mut held.state, Some(state.to_string())),
+                Some(held) => {
+                    let settled = shell_state_for(held.exit_code, state).to_string();
+                    replace_when_changed(&mut held.state, Some(settled))
+                }
                 None => false,
             },
             ShellReport::Tailed(tail) => match held_named(&mut self.shells, shell_id) {
@@ -442,7 +445,7 @@ impl SurfaceLedger {
                         tail: tail.lines,
                         exit_code: marked.or(held.exit_code),
                         state: match marked {
-                            Some(_) => Some(DONE.to_string()),
+                            Some(_) => Some(shell_state_for(marked, DONE).to_string()),
                             None => held.state.clone(),
                         },
                         ..held.clone()
@@ -739,6 +742,13 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
         error: read_text(entry, "error"),
         attempt: entry["attempt"].as_u64().map(|attempt| attempt as u32),
         spawning_call_id: None,
+    }
+}
+
+fn shell_state_for(exit_code: Option<i32>, reported_state: &'static str) -> &'static str {
+    match exit_code {
+        Some(code) if code != 0 => FAILED,
+        _ => reported_state,
     }
 }
 
@@ -1662,13 +1672,27 @@ mod tests {
 
         assert!(ledger.read_shell_tail(
             SHELL_TASK_ID,
+            tail_reading(&["finished", "[exited with code 0]"], Some(0))
+        ));
+
+        let closed = the_only(&snapshot_of(&ledger).shells);
+        assert_eq!(closed.exit_code, Some(0));
+        assert_eq!(closed.state.as_deref(), Some("done"));
+        assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_marker_naming_a_non_zero_code_fails_the_shell() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
             tail_reading(&["finished", "[exited with code 3]"], Some(3))
         ));
 
         let closed = the_only(&snapshot_of(&ledger).shells);
         assert_eq!(closed.exit_code, Some(3));
-        assert_eq!(closed.state.as_deref(), Some("done"));
-        assert!(ledger.running_shell_outputs().is_empty());
+        assert_eq!(closed.state.as_deref(), Some("failed"));
     }
 
     #[test]
@@ -1715,6 +1739,23 @@ mod tests {
         assert_eq!(closed.state.as_deref(), Some("failed"));
         assert_eq!(closed.exit_code, Some(137));
         assert!(ledger.running_shell_outputs().is_empty());
+    }
+
+    #[test]
+    fn a_notification_reporting_completion_at_a_non_zero_code_fails_the_shell() {
+        let mut ledger = ledger_through_the_launched_shell();
+
+        assert!(feed(
+            &mut ledger,
+            &the_notification_reporting(
+                "completed",
+                "Background command \"Background job with ticks and finished message\" completed (exit code 1)",
+            )
+        ));
+
+        let closed = the_only(&snapshot_of(&ledger).shells);
+        assert_eq!(closed.state.as_deref(), Some("failed"));
+        assert_eq!(closed.exit_code, Some(1));
     }
 
     #[test]
@@ -1775,7 +1816,7 @@ mod tests {
         ));
 
         let restarted = the_only(&snapshot_of(&ledger).shells);
-        assert_eq!(restarted.state.as_deref(), Some("done"));
+        assert_eq!(restarted.state.as_deref(), Some("failed"));
         assert_eq!(restarted.exit_code, Some(3));
     }
 
@@ -1822,7 +1863,11 @@ mod tests {
             Some(3),
             "a task_updated line carries no summary, so it claims no exit code"
         );
-        assert_eq!(closed.state.as_deref(), Some("done"));
+        assert_eq!(
+            closed.state.as_deref(),
+            Some("failed"),
+            "and a status line claiming completion cannot un-fail a non-zero exit"
+        );
     }
 
     #[test]

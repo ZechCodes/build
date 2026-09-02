@@ -194,10 +194,21 @@ and this document is wrong — except for the one deviation named under
   a paint-safety net for malformed input, not a substitute for it.
 - **The one shell-state rule, stated here so it has one home** `apply_shell` is
   the only writer of a shell's `state` and `exit_code`. `task_notification` is
-  authoritative; the `[exited with code N]` marker `ShellTail` parses is
-  recorded ONLY while the shell has no exit code from a notification yet. A
-  notification arriving after the marker overwrites it; a marker arriving after
-  a notification changes nothing.
+  authoritative for the exit code; the `[exited with code N]` marker `ShellTail`
+  parses is recorded ONLY while the shell has no exit code from a notification
+  yet. A notification arriving after the marker overwrites it; a marker arriving
+  after a notification changes nothing.
+- **A non-zero exit code fails the shell, whatever status the harness reported**
+  `shell_state_for(exit_code, reported_state)` in `surfaces.rs` is the single
+  place that decides, and every arm of `apply_shell` that writes a state goes
+  through it: a `task_notification` whose status is `completed` but whose summary
+  names `exit code 1`, a `[exited with code 3]` marker, and a later `task_updated`
+  claiming completion all leave the shell `failed`. Zero or no code leaves the
+  reported state alone. The spec pins `running | done | failed` for shells and
+  the fixtures do not show what Claude Code reports for a non-zero exit, so this
+  is decided here rather than left to the reader: a shell that reads `done` next
+  to `exit_code: 1` is the surface lying about the one fact nobody has to
+  interpret.
 
 ### `ShellTail`
 

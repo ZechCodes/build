@@ -208,9 +208,9 @@ impl SurfaceLedger {
                 _ => false,
             },
             "task_progress" | "task_updated" | "task_notification" => match (
-                self.holds_workflow(&task_id),
-                self.holds_subagent(&task_id),
-                self.holds_shell(&task_id),
+                held_named(&mut self.workflows, &task_id).is_some(),
+                held_named(&mut self.subagents, &task_id).is_some(),
+                held_named(&mut self.shells, &task_id).is_some(),
             ) {
                 (true, _, _) => self.apply_workflow(subtype, &task_id, event),
                 (_, true, _) => self.apply_subagent(subtype, &task_id, event),
@@ -273,10 +273,6 @@ impl SurfaceLedger {
         }
     }
 
-    fn holds_workflow(&self, task_id: &str) -> bool {
-        self.workflows.iter().any(|held| held.id == task_id)
-    }
-
     fn apply_workflow(&mut self, subtype: &str, task_id: &str, event: &Value) -> bool {
         match subtype {
             "task_started" => {
@@ -287,20 +283,14 @@ impl SurfaceLedger {
                     state: Some(RUNNING.to_string()),
                     phases: Vec::new(),
                 };
-                match self.workflow_named(task_id) {
-                    Some(held) => replace_when_changed(held, started),
-                    None => {
-                        self.workflows.push(started);
-                        true
-                    }
-                }
+                upsert_by_id(&mut self.workflows, started)
             }
             "task_progress" => {
                 let reported = match event["workflow_progress"].as_array() {
                     Some(entries) => read_workflow_phases(task_id, entries),
                     None => return false,
                 };
-                match self.workflow_named(task_id) {
+                match held_named(&mut self.workflows, task_id) {
                     Some(held) => replace_when_changed(&mut held.phases, reported),
                     None => false,
                 }
@@ -317,34 +307,22 @@ impl SurfaceLedger {
             Some(state) => Some(state.to_string()),
             None => return false,
         };
-        match self.workflow_named(task_id) {
+        match held_named(&mut self.workflows, task_id) {
             Some(held) => replace_when_changed(&mut held.state, closed),
             None => false,
         }
     }
 
-    fn workflow_named(&mut self, task_id: &str) -> Option<&mut SurfaceWorkflow> {
-        self.workflows.iter_mut().find(|held| held.id == task_id)
-    }
-
-    fn holds_subagent(&self, task_id: &str) -> bool {
-        self.subagents.iter().any(|held| held.id == task_id)
-    }
-
     fn apply_subagent(&mut self, subtype: &str, task_id: &str, event: &Value) -> bool {
         match subtype {
-            "task_started" => match self.subagent_named(task_id) {
-                Some(held) => {
-                    let restarted = started_subagent(held, task_id, event);
-                    replace_when_changed(held, restarted)
-                }
-                None => {
-                    let started = started_subagent(&SurfaceAgent::default(), task_id, event);
-                    self.subagents.push(started);
-                    true
-                }
-            },
-            "task_progress" => match self.subagent_named(task_id) {
+            "task_started" => {
+                let accumulated = held_named(&mut self.subagents, task_id)
+                    .map(|held| held.clone())
+                    .unwrap_or_default();
+                let started = started_subagent(&accumulated, task_id, event);
+                upsert_by_id(&mut self.subagents, started)
+            }
+            "task_progress" => match held_named(&mut self.subagents, task_id) {
                 Some(held) => {
                     let progressed = progressed_subagent(held, event);
                     replace_when_changed(held, progressed)
@@ -373,7 +351,7 @@ impl SurfaceLedger {
             Some(state) => state,
             None => return false,
         };
-        match self.subagent_named(task_id) {
+        match held_named(&mut self.subagents, task_id) {
             Some(held) => {
                 let closed = match claimed {
                     FAILED => SurfaceAgent {
@@ -391,18 +369,6 @@ impl SurfaceLedger {
             }
             None => false,
         }
-    }
-
-    fn subagent_named(&mut self, task_id: &str) -> Option<&mut SurfaceAgent> {
-        self.subagents.iter_mut().find(|held| held.id == task_id)
-    }
-
-    fn holds_shell(&self, task_id: &str) -> bool {
-        self.shells.iter().any(|held| held.id == task_id)
-    }
-
-    fn shell_named(&mut self, shell_id: &str) -> Option<&mut SurfaceShell> {
-        self.shells.iter_mut().find(|held| held.id == shell_id)
     }
 
     fn apply_shell_launch(&mut self, call_id: &str, event: &Value) -> bool {
@@ -428,36 +394,34 @@ impl SurfaceLedger {
                     tail: Vec::new(),
                     closed_by_notification: false,
                 };
-                match self.shell_named(shell_id) {
-                    Some(held) => replace_when_changed(held, started),
-                    None => {
-                        self.shells.push(started);
-                        true
+                upsert_by_id(&mut self.shells, started)
+            }
+            ShellReport::Launched { output_path } => {
+                match held_named(&mut self.shells, shell_id).is_some() {
+                    true => {
+                        let named_before = self
+                            .shell_outputs
+                            .insert(shell_id.to_string(), output_path.clone());
+                        named_before.as_ref() != Some(&output_path)
                     }
+                    false => false,
                 }
             }
-            ShellReport::Launched { output_path } => match self.holds_shell(shell_id) {
-                true => {
-                    let named_before = self
-                        .shell_outputs
-                        .insert(shell_id.to_string(), output_path.clone());
-                    named_before.as_ref() != Some(&output_path)
+            ShellReport::Closed { state, exit_code } => {
+                match held_named(&mut self.shells, shell_id) {
+                    Some(held) => {
+                        let closed = SurfaceShell {
+                            state: Some(state.to_string()),
+                            exit_code,
+                            closed_by_notification: true,
+                            ..held.clone()
+                        };
+                        replace_when_changed(held, closed)
+                    }
+                    None => false,
                 }
-                false => false,
-            },
-            ShellReport::Closed { state, exit_code } => match self.shell_named(shell_id) {
-                Some(held) => {
-                    let closed = SurfaceShell {
-                        state: Some(state.to_string()),
-                        exit_code,
-                        closed_by_notification: true,
-                        ..held.clone()
-                    };
-                    replace_when_changed(held, closed)
-                }
-                None => false,
-            },
-            ShellReport::Tailed(tail) => match self.shell_named(shell_id) {
+            }
+            ShellReport::Tailed(tail) => match held_named(&mut self.shells, shell_id) {
                 Some(held) => {
                     let marked = match held.closed_by_notification {
                         true => None,
@@ -528,13 +492,7 @@ impl SurfaceLedger {
             description: described.and_then(|pending| pending.description),
             state: Some(CHECKLIST_PENDING.to_string()),
         };
-        match self.checklist_item_named(&created.id) {
-            Some(held) => replace_when_changed(held, created),
-            None => {
-                self.checklist.push(created);
-                true
-            }
-        }
+        upsert_by_id(&mut self.checklist, created)
     }
 
     fn apply_status_change(&mut self, answered: &Value) -> bool {
@@ -549,14 +507,10 @@ impl SurfaceLedger {
             Some(named) => named.to_string(),
             None => return false,
         };
-        match self.checklist_item_named(&task_id) {
+        match held_named(&mut self.checklist, &task_id) {
             Some(held) => replace_when_changed(&mut held.state, restated),
             None => false,
         }
-    }
-
-    fn checklist_item_named(&mut self, id: &str) -> Option<&mut SurfaceChecklistItem> {
-        self.checklist.iter_mut().find(|held| held.id == id)
     }
 }
 
@@ -656,6 +610,51 @@ fn replace_when_changed<T: PartialEq>(held: &mut T, reported: T) -> bool {
         true => false,
         false => {
             *held = reported;
+            true
+        }
+    }
+}
+
+trait SurfaceEntry {
+    fn entry_id(&self) -> &str;
+}
+
+impl SurfaceEntry for SurfaceWorkflow {
+    fn entry_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl SurfaceEntry for SurfaceAgent {
+    fn entry_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl SurfaceEntry for SurfaceShell {
+    fn entry_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl SurfaceEntry for SurfaceChecklistItem {
+    fn entry_id(&self) -> &str {
+        &self.id
+    }
+}
+
+fn held_named<'held, T: SurfaceEntry>(held: &'held mut [T], id: &str) -> Option<&'held mut T> {
+    held.iter_mut().find(|entry| entry.entry_id() == id)
+}
+
+fn upsert_by_id<T: SurfaceEntry + PartialEq>(held: &mut Vec<T>, reported: T) -> bool {
+    match held
+        .iter()
+        .position(|entry| entry.entry_id() == reported.entry_id())
+    {
+        Some(position) => replace_when_changed(&mut held[position], reported),
+        None => {
+            held.push(reported);
             true
         }
     }

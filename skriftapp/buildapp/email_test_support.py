@@ -12,7 +12,7 @@ from buildapp.waitlist_unsubscribe_token import unsubscribe_url
 
 PUBLIC_BASE_URL = "https://getbuild.ing"
 SECRET_KEY = "the-signing-key"
-OWNER_ADDRESS = "hi@zech.sh"
+OWNER_ADDRESS = "owner@example.invalid"
 FIXTURE_TOKEN = "token-value"
 UNSUBSCRIBE_URL = unsubscribe_url(PUBLIC_BASE_URL, FIXTURE_TOKEN)
 

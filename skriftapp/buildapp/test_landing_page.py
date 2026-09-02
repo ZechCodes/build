@@ -41,6 +41,10 @@ def test_fill_slots_replaces_every_occurrence_of_each_slot():
     assert filled == "one and two and one"
 
 
+def test_fill_slots_never_expands_a_placeholder_carried_in_a_value():
+    assert fill_slots("{{first}}{{second}}", {"first": "{{second}}", "second": "B"}) == "{{second}}B"
+
+
 def test_fill_slots_leaves_unknown_braces_alone():
     assert (
         fill_slots("{{known}} {{unknown}}", {"known": "filled"}) == "filled {{unknown}}"

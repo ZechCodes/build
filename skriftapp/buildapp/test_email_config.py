@@ -128,8 +128,10 @@ def test_k8s_deployment_treats_the_notify_address_as_optional():
 
 def test_bootstrap_script_adds_smtp_keys_only_from_the_operator_environment():
     block = _bootstrap_smtp_block()
-    for name in EMAIL_ENV_VARS:
+    for name in INTERPOLATED_ENV_VARS:
         assert f"require_env {name}" in block
+    assert f"require_env {NOTIFY_ADDRESS_ENV}" not in block
+    assert f'"${{{NOTIFY_ADDRESS_ENV}:-}}"' in block
     assert "random_secret(" not in block
     assert "openssl" not in block
     assignment = re.compile(r"^\s*(" + "|".join(EMAIL_ENV_VARS) + ")=")
@@ -149,7 +151,8 @@ def test_bootstrap_script_never_splices_a_credential_into_the_patch_json():
     assert "stringData" not in block
     for name in EMAIL_ENV_VARS:
         assert f"${{{name}}}" not in block
-        assert f'b64_value "${name}"' in block
+        expected_reference = f"${{{name}:-}}" if name == NOTIFY_ADDRESS_ENV else f"${name}"
+        assert f'b64_value "{expected_reference}"' in block
 
 
 def test_bootstrap_script_defines_require_env_that_exits_nonzero():

@@ -35,6 +35,11 @@ def test_rejects_address_with_internal_whitespace():
     assert normalize_waitlist_address("alice@exa mple.com") is None
 
 
+def test_rejects_local_parts_that_break_a_mail_header():
+    for raw in ("a<b>@example.com", 'a"b@example.com', "a,b@example.com", "a(b)@example.com", "a:b@example.com"):
+        assert normalize_waitlist_address(raw) is None
+
+
 def test_rejects_address_with_two_at_signs():
     assert normalize_waitlist_address("alice@@example.com") is None
     assert normalize_waitlist_address("alice@example@com.org") is None

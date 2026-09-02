@@ -15,7 +15,7 @@ from buildapp.waitlist_controller import JOIN_ROUTE_PATH
 
 SKRIFTAPP_DIR = Path(__file__).resolve().parent.parent
 PRODUCTION_BASE_URL = "https://getbuild.ing"
-JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (20, 86400.0)]
+JOIN_RATE_LIMIT_WINDOWS = [(3, 60.0), (100, 86400.0)]
 
 
 def load_config(config_name: str) -> dict:

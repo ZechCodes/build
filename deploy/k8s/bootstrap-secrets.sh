@@ -15,9 +15,10 @@
 #                   WAITLIST_NOTIFY_ADDRESS (outbound email)
 #   build-relay     RELAY_INTERNAL_SECRET (same value as INTERNAL_API_SECRET)
 #
-# The four email keys are credentials this script cannot invent: export
-# SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS and WAITLIST_NOTIFY_ADDRESS in
-# the environment before running, or the SMTP step aborts.
+# The email keys are credentials this script cannot invent: export
+# SMTP_USERNAME, SMTP_PASSWORD and SMTP_FROM_ADDRESS (and optionally
+# WAITLIST_NOTIFY_ADDRESS) in the environment before running, or the SMTP step
+# aborts.
 set -euo pipefail
 
 NAMESPACE=8ly
@@ -104,19 +105,19 @@ if [[ -z "$(kc get secret build-app -o 'jsonpath={.data.VAPID_PUBLIC_KEY}')" ]];
 fi
 
 # --- build-app smtp (add-if-missing) -----------------------------------------
-# The FastMail credentials and the owner notification address the waitlist mail
-# needs. They are never generated — the operator exports them before running.
+# The FastMail credentials the waitlist mail needs, plus the owner notification
+# address (empty disables the notification). Never generated — the operator
+# exports them before running.
 if smtp_key_missing SMTP_USERNAME || smtp_key_missing SMTP_PASSWORD \
   || smtp_key_missing SMTP_FROM_ADDRESS || smtp_key_missing WAITLIST_NOTIFY_ADDRESS; then
   require_env SMTP_USERNAME
   require_env SMTP_PASSWORD
   require_env SMTP_FROM_ADDRESS
-  require_env WAITLIST_NOTIFY_ADDRESS
   kc patch secret build-app --type merge -p "{\"data\":{
     \"SMTP_USERNAME\":\"$(b64_value "$SMTP_USERNAME")\",
     \"SMTP_PASSWORD\":\"$(b64_value "$SMTP_PASSWORD")\",
     \"SMTP_FROM_ADDRESS\":\"$(b64_value "$SMTP_FROM_ADDRESS")\",
-    \"WAITLIST_NOTIFY_ADDRESS\":\"$(b64_value "$WAITLIST_NOTIFY_ADDRESS")\"}}"
+    \"WAITLIST_NOTIFY_ADDRESS\":\"$(b64_value "${WAITLIST_NOTIFY_ADDRESS:-}")\"}}"
   echo "secret build-app: SMTP keys added"
 fi
 

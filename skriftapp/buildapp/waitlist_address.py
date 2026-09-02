@@ -6,7 +6,7 @@ from __future__ import annotations
 import re
 
 MAX_WAITLIST_ADDRESS_LENGTH = 254
-WAITLIST_ADDRESS_PATTERN = re.compile(r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
+WAITLIST_ADDRESS_PATTERN = re.compile(r"^[a-z0-9!#$%&'*+/=?^_`{|}~.-]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 def normalize_waitlist_address(raw: str) -> str | None:

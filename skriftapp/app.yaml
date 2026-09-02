@@ -44,7 +44,7 @@ rate_limit:
       limits:
         - limit: 3
           per: minute
-        - limit: 20
+        - limit: 100
           per: day
 email:
   backend: skrift.lib.email_backends:SMTPEmailBackend

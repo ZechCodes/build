@@ -442,6 +442,7 @@ export function mountGitPane(
   let pendingConfirm = null; // the armed inline-confirm key (discard/force/abort)
   let armedAt = null; // Date.now() when pendingConfirm was armed (for TTL expiry)
   let drawer = null; // the rail's narrow-viewport pull-out, re-wired per skeleton
+  let paintChangesetInto = null; // the detail host's own paint, made with it
 
   container.innerHTML = '<div class="gitpane"><div class="empty">loading…</div></div>';
 
@@ -500,6 +501,7 @@ export function mountGitPane(
     // a set of changes, a commit — put something in the detail column behind
     // it, so both close it; the "show more" row, which only lengthens the rail,
     // does not.
+    paintChangesetInto = createChangesetPaint(container.querySelector(".cdetail-host"));
     const split = container.querySelector(".changes2");
     split.insertAdjacentHTML("beforeend", paneDrawerHtml("commits"));
     if (drawer) drawer.dispose();
@@ -607,7 +609,7 @@ export function mountGitPane(
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
       paintChangeset(detailHost, {
-        header: uncommittedHeaderHtml(lastStatus),
+        bar: uncommittedHeaderHtml(lastStatus),
         files: renderedFiles,
         stackOptions: { ...stackFor(renderedFiles, lastStatus.patch), fileMenu, empty: "No uncommitted changes." },
       });
@@ -622,35 +624,23 @@ export function mountGitPane(
     const commitFiles = parseDiff(detail.patch);
     renderedFiles = commitFiles;
     paintChangeset(detailHost, {
-      header: commitHeaderHtml(detail),
+      bar: commitHeaderHtml(detail),
       files: commitFiles,
       stackOptions: stackFor(commitFiles, detail.patch),
     });
   };
 
-  /** Paint one changeset in place: the header, the stack as a keyed list, and
-   *  the tray. Identical parts come out of it untouched, which is what lets the
+  /** Paint one changeset in place: its bar, the stack as a keyed list, and the
+   *  tray. Identical parts come out of it untouched, which is what lets the
    *  reader keep their scroll, their selection and their place in a file while
    *  an agent writes underneath them. */
-  const paintChangeset = (detailHost, { header, files, stackOptions = {} }) => {
-    paintInto(detailHost)({
-      bar: header,
+  const paintChangeset = (detailHost, { bar, files, stackOptions = {} }) => {
+    paintChangesetInto({
+      bar,
       entries: diffStackEntries(files, stackOptions),
       tray: commentLayer ? commentLayer.trayHtml() : "",
     });
     if (commentLayer) commentLayer.attach(detailHost);
-  };
-
-  // One paint per detail host — the skeleton is rebuilt on a scope error and on
-  // a shell rebuild, and the paint is keyed to the host it was made for.
-  let changesetPaint = null;
-  let paintedHost = null;
-  const paintInto = (detailHost) => {
-    if (paintedHost !== detailHost) {
-      paintedHost = detailHost;
-      changesetPaint = createChangesetPaint(detailHost);
-    }
-    return changesetPaint;
   };
 
   /** The commit box: disclosed only while uncommitted changes exist, and only

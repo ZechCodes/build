@@ -49,7 +49,9 @@
 import { patchElement } from "./domPatch.js";
 
 const KEY = "data-key";
-const EXITING = "data-exiting";
+/** What an entry on its way out wears while it is leaving: no longer an entry,
+ *  still in the container, and findable by anyone who cares which. */
+export const EXITING_ATTRIBUTE = "data-exiting";
 const ELEMENT_NODE = 1;
 
 let exitsStarted = 0;
@@ -135,10 +137,10 @@ function startExit(container, element, onExit) {
   }
   exitsStarted += 1;
   const token = String(exitsStarted);
-  element.setAttribute(EXITING, token);
+  element.setAttribute(EXITING_ATTRIBUTE, token);
   const takeOut = () => {
-    if (element.getAttribute(EXITING) !== token) return;
-    element.removeAttribute(EXITING);
+    if (element.getAttribute(EXITING_ATTRIBUTE) !== token) return;
+    element.removeAttribute(EXITING_ATTRIBUTE);
     if (element.parentNode === container) container.removeChild(element);
   };
   leaving.then(takeOut, (error) => {
@@ -163,9 +165,9 @@ function keptEntries(container, wanted, onExit) {
   for (const child of [...container.children]) {
     const key = child.getAttribute(KEY);
     if (key === null) continue;
-    const leaving = child.hasAttribute(EXITING);
+    const leaving = child.hasAttribute(EXITING_ATTRIBUTE);
     if (leaving && !wanted.has(key)) continue;
-    if (leaving) child.removeAttribute(EXITING);
+    if (leaving) child.removeAttribute(EXITING_ATTRIBUTE);
     if (live.has(key)) {
       container.removeChild(child);
       continue;

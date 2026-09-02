@@ -12,6 +12,10 @@
 
 const ELEMENT_NODE = 1;
 
+/** What `core/motion.js` borrows off an element it moves: whether the element
+ *  is in the layout, and how much of it is. */
+const MOVED_PROPERTIES = ["hidden", "style"];
+
 /** Whether two nodes can be made to say the same thing, or one has to replace
  *  the other outright. */
 const interchangeable = (live, next) =>
@@ -29,6 +33,15 @@ const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === 
 
 const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
+/// Whether the render is speaking about something a move owns.
+///
+/// An element marked `data-motion` is shown and sized by `core/motion.js` —
+/// mid-move, and after it, since the state a move settles on is one no render
+/// can know. A paint that wrote `hidden` back would take a pill's count cap out
+/// of the layout the frame its exit began, and one that cleared the inline
+/// sizes would hand the element back to layout mid-shrink.
+const shownByAMove = (live, name) => MOVED_PROPERTIES.includes(name) && live.hasAttribute("data-motion");
+
 function patchAttributes(live, next) {
   // A picture the browser already loaded keeps the bytes it holds: the renderer
   // leaves `src` out when it does not know the bytes yet, never to take the
@@ -38,6 +51,7 @@ function patchAttributes(live, next) {
   const keepsItsSurface = live.tagName === "CANVAS";
   for (const { name, value } of [...next.attributes]) {
     if (menuTheReaderOpened(live, name)) continue;
+    if (shownByAMove(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
   for (const { name } of [...live.attributes]) {
@@ -45,6 +59,7 @@ function patchAttributes(live, next) {
     if (name === "src" && keepsItsBytes) continue;
     if ((name === "width" || name === "height") && keepsItsSurface) continue;
     if (foldTheReaderOpened(live, name)) continue;
+    if (shownByAMove(live, name)) continue;
     live.removeAttribute(name);
   }
 }

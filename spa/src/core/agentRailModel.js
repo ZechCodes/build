@@ -243,10 +243,9 @@ function startupText(startup, nowMs) {
 }
 
 /** The pinned line above the composer: whether the work item has a turn in
- *  flight right now (and for how long) — or, before the first tick of one, the
- *  session that started and has not spoken yet — how far it stands from
- *  upstream, and its diffstat. Each "" when the row does not know it, so a work
- *  item with nothing to report pins nothing at all. */
+ *  flight right now (and for how long), how far it stands from upstream, and
+ *  its diffstat — each "" when the row does not know it, so a work item with
+ *  nothing to report pins nothing at all. */
 export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], agentLabel = "Agent") {
   const working = workingSeconds(row && row.working_time, nowMs);
   return {

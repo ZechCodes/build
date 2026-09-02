@@ -142,22 +142,15 @@ export function mountSplitMenu(container, { onChoose }) {
   return { closeMenu };
 }
 
-/** What each container was last given a menu from: the markup, and the closer
- *  that shuts the menu it wired. */
-const mountedMenus = new WeakMap();
+const menuMountedInContainer = new WeakMap();
 
-/** Write `markup` into `container` and wire its menu, unless the container is
- *  already showing exactly that markup — a poll-driven caller repaints the same
- *  offer over and over, and rebuilding it would shut the menu the reader just
- *  opened. Returns the closer either way, so the caller can shut the menu when
- *  the container is about to be discarded. */
 export function mountMenuIfChanged(container, markup, { onChoose }) {
-  const mounted = mountedMenus.get(container);
+  const mounted = menuMountedInContainer.get(container);
   if (mounted && mounted.markup === markup) return mounted.closeMenu;
   if (mounted) mounted.closeMenu();
   container.innerHTML = markup;
   const { closeMenu } = mountSplitMenu(container, { onChoose });
-  mountedMenus.set(container, { markup, closeMenu });
+  menuMountedInContainer.set(container, { markup, closeMenu });
   return closeMenu;
 }
 

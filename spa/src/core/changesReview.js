@@ -19,12 +19,15 @@ import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { diffStackHtml } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, diffStackEntries } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { toggleSecretSpoiler } from "./secrets.js";
 import { watchChanges } from "./changeEvents.js";
+import { patchElement } from "./domPatch.js";
+import { paintKeepingPlace } from "./paintKeepingPlace.js";
+import { patchList } from "./patchList.js";
 
 export const REVIEW_POLL_MS = 1600;
 
@@ -162,14 +165,32 @@ export function createReviewPlug({
     actions.innerHTML = "";
   };
 
+  // The three parts of the plug's host that move independently: the bar over
+  // the stack, the keyed stack itself, and the tray the surface's verbs live
+  // in. Each is patched in its own place, so a poll that changed one file
+  // writes one file — and the reviewer keeps their scroll, their selection and
+  // whatever they had open.
+  const REVIEW_PARTS = '<div class="csbar"></div><div class="dstack" data-keyed-list></div><div class="cstray"></div>';
+
+  /** Make `host` say `html`, leaving standing whatever already says it. */
+  const patchHtml = (element, html) => {
+    const next = element.cloneNode(false);
+    next.innerHTML = html;
+    patchElement(element, next);
+  };
+
   function render() {
     if (!host) return;
+    paintKeepingPlace(host, paintStack, DIFF_PLACE_KEEPING);
+  }
+
+  function paintStack() {
     const changed = changedSinceReview(reviewStamps, renderedFiles);
     const filesToRender = changedOnlyFilter ? renderedFiles.filter((file) => changed.has(file.path)) : renderedFiles;
     const editable = commentableNow && Boolean(commentLayer);
     trayMounted = editable;
-    const stack = filesToRender.length
-      ? diffStackHtml(filesToRender, {
+    const entries = filesToRender.length
+      ? diffStackEntries(filesToRender, {
           commentable: editable,
           changedSince: changed,
           viewed: viewedFiles,
@@ -188,15 +209,18 @@ export function createReviewPlug({
                   overridable: Boolean(overrides),
                 },
         })
-      : emptyStackHtml(renderedFiles.length, changedOnlyFilter);
-    host.innerHTML =
+      : [{ key: "empty", html: emptyStackHtml(renderedFiles.length, changedOnlyFilter) }];
+    if (!host.querySelector(".dstack")) host.innerHTML = REVIEW_PARTS;
+    patchHtml(
+      host.querySelector(".csbar"),
       reviewBarHtml(renderedFiles, {
         statusHtml: statusHtml(),
         offerChangedOnly: reviewStamps.size > 0,
         changedOnly: changedOnlyFilter,
-      }) +
-      stack +
-      (trayMounted ? commentLayer.trayHtml() : changesActionbarHtml());
+      }),
+    );
+    patchList(host.querySelector(".dstack"), entries, { keyOf: (entry) => entry.key, render: (entry) => entry.html });
+    patchHtml(host.querySelector(".cstray"), trayMounted ? commentLayer.trayHtml() : changesActionbarHtml());
     if (trayMounted) commentLayer.attach(host);
     else paintActions();
     wire();

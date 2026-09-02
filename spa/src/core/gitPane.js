@@ -34,7 +34,7 @@ import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { diffStackHtml } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, diffStackEntries } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -42,6 +42,8 @@ import { watchChanges } from "./changeEvents.js";
 import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { patchList } from "./patchList.js";
+import { patchElement } from "./domPatch.js";
+import { paintKeepingPlace } from "./paintKeepingPlace.js";
 import { MUTATION_THREAD_PAGE } from "./thread.js";
 import { el } from "../dom.js";
 
@@ -575,13 +577,25 @@ export function mountGitPane(
     };
   };
 
+  // The parts of a changeset that move independently: its header, the keyed
+  // stack of files, and the pending-comment tray. Each is patched in its own
+  // place, so a poll that changed one file writes one file.
+  const CHANGESET_PARTS = '<div class="cshead"></div><div class="dstack" data-keyed-list></div><div class="cstray"></div>';
+
+  /** Make `host` say `html`, leaving standing whatever already says it. */
+  const patchHtml = (host, html) => {
+    const next = host.cloneNode(false);
+    next.innerHTML = html;
+    patchElement(host, next);
+  };
+
   /** The one renderer for every changeset: a header, the stacked full file
    *  diffs (noise collapsed into its group at the bottom), and — where the
    *  surface can talk to an agent — the pending-comment tray. */
   const renderChangeset = (detailHost) => {
+    const folds = foldsHere();
     // Every stack carries the same re-review chip: a file that moved since the
     // reviewer last sent comments on THIS changeset says so.
-    const folds = foldsHere();
     const stackFor = (files, patch) => ({
       commentable,
       noiseExpanded: noiseExpanded.has(String(selected)),
@@ -596,7 +610,10 @@ export function mountGitPane(
     if (selected === "uncommitted") {
       if (!hasUncommittedChanges(lastStatus)) {
         renderedFiles = [];
-        detailHost.innerHTML = uncommittedHeaderHtml(lastStatus) + changesetPlaceholderHtml("No uncommitted changes.");
+        paintChangeset(detailHost, {
+          header: uncommittedHeaderHtml(lastStatus) + changesetPlaceholderHtml("No uncommitted changes."),
+          files: [],
+        });
         return;
       }
       const files = parseDiff(lastStatus.patch);
@@ -604,11 +621,11 @@ export function mountGitPane(
       // The file's own destructive verb lives behind the header ⋯ — the stage
       // checkboxes it replaced are gone with the staged set.
       const fileMenu = supportsRepoManagement(lastStatus) ? { openPath: fileMenuPath, pendingConfirm } : null;
-      detailHost.innerHTML =
-        uncommittedHeaderHtml(lastStatus) +
-        diffStackHtml(files, { ...stackFor(files, lastStatus.patch), fileMenu }) +
-        (commentLayer ? commentLayer.trayHtml() : "");
-      if (commentLayer) commentLayer.attach(detailHost);
+      paintChangeset(detailHost, {
+        header: uncommittedHeaderHtml(lastStatus),
+        files,
+        stackOptions: { ...stackFor(files, lastStatus.patch), fileMenu },
+      });
       return;
     }
     const detail = showCache.get(selected);
@@ -619,10 +636,25 @@ export function mountGitPane(
     }
     const commitFiles = parseDiff(detail.patch);
     renderedFiles = commitFiles;
-    detailHost.innerHTML =
-      commitHeaderHtml(detail) +
-      diffStackHtml(commitFiles, stackFor(commitFiles, detail.patch)) +
-      (commentLayer ? commentLayer.trayHtml() : "");
+    paintChangeset(detailHost, {
+      header: commitHeaderHtml(detail),
+      files: commitFiles,
+      stackOptions: stackFor(commitFiles, detail.patch),
+    });
+  };
+
+  /** Paint one changeset in place: the header, the stack as a keyed list, and
+   *  the tray. Identical parts come out of it untouched, which is what lets the
+   *  reader keep their scroll, their selection and their place in a file while
+   *  an agent writes underneath them. */
+  const paintChangeset = (detailHost, { header, files, stackOptions = {} }) => {
+    if (!detailHost.querySelector(".dstack")) detailHost.innerHTML = CHANGESET_PARTS;
+    patchHtml(detailHost.querySelector(".cshead"), header);
+    patchList(detailHost.querySelector(".dstack"), diffStackEntries(files, stackOptions), {
+      keyOf: (entry) => entry.key,
+      render: (entry) => entry.html,
+    });
+    patchHtml(detailHost.querySelector(".cstray"), commentLayer ? commentLayer.trayHtml() : "");
     if (commentLayer) commentLayer.attach(detailHost);
   };
 
@@ -700,13 +732,22 @@ export function mountGitPane(
         review.unmount();
         reviewMounted = false;
       }
-      if (selected === null || selected === undefined) {
-        // A clean branch opens at the commit list: nothing selected, no commit
-        // box, and a line saying what to do rather than an empty pane.
-        detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
-      } else {
-        renderChangeset(detailHost);
-      }
+      // The detail column is what the reader scrolls, so every write into it
+      // goes through the one paint that keeps them where they were.
+      paintKeepingPlace(
+        detailHost,
+        () => {
+          if (selected === null || selected === undefined) {
+            // A clean branch opens at the commit list: nothing selected, no
+            // commit box, and a line saying what to do rather than an empty
+            // pane.
+            detailHost.innerHTML = changesetPlaceholderHtml("Pick a commit to see what changed.");
+            return;
+          }
+          renderChangeset(detailHost);
+        },
+        DIFF_PLACE_KEEPING,
+      );
     }
     renderCommitBox();
     setHint(hint);

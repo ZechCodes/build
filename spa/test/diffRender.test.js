@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { diffFilesHtml, diffRowsHtml, diffStackHtml } from "../src/core/diffRender.js";
+import { diffFilesHtml, diffRowsHtml, diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
 import { fileKey } from "../src/core/diff.js";
 
 const files = [
@@ -294,5 +294,44 @@ describe("folds the reader owns", () => {
     const html = diffFilesHtml(files, { viewed: new Set(["a.js"]), expanded: new Set([keyA]) });
     expect(html).toContain('class="file collapsed" data-file="a.js"');
     expect(html).not.toContain("data-expanded");
+  });
+});
+
+// The stack is a keyed list: every block a repaint can move — a file, the
+// triage bar, a group — has a name of its own, so patching one leaves the rest
+// standing. diffStackHtml is those entries joined, and nothing else.
+describe("diffStackEntries", () => {
+  const source = { path: "src/main.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "x" }] };
+  const other = { path: "src/other.py", status: "EDIT", add: 1, del: 0, rows: [{ t: "add", n: 1, text: "y" }] };
+  const lock = { path: "uv.lock", status: "EDIT", add: 9, del: 9, rows: [{ t: "add", n: 1, text: "z" }] };
+
+  it("names every file entry by its file key", () => {
+    const entries = diffStackEntries([source, other]);
+    expect(entries.map((entry) => entry.key)).toEqual([fileKey(source), fileKey(other)]);
+  });
+
+  it("gives the noise group a name of its own, after the files", () => {
+    const entries = diffStackEntries([source, lock]);
+    expect(entries.map((entry) => entry.key)).toEqual([fileKey(source), "noise"]);
+    expect(entries[1].html).toContain("noisegroup");
+  });
+
+  it("says so, under one name, when there is nothing at all", () => {
+    const entries = diffStackEntries([]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].html).toContain("No file changes");
+  });
+
+  it("keeps the keys unique so a list can be patched by them", () => {
+    const entries = diffStackEntries([source, other, lock], { noiseExpanded: true });
+    expect(new Set(entries.map((entry) => entry.key)).size).toBe(entries.length);
+  });
+
+  it("is what diffStackHtml is made of", () => {
+    for (const options of [{}, { noiseExpanded: true }, { commentable: true }]) {
+      expect(diffStackEntries([source, lock], options).map((entry) => entry.html).join("")).toBe(
+        diffStackHtml([source, lock], options),
+      );
+    }
   });
 });

@@ -123,7 +123,7 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
    at its foot. */
 /* The reading column pays the seam gutter itself now, so the bar states no
    right inset of its own — it would stand a double gutter short of the seam. */
-.gitpane .cdetail-host > .actionbar, .issueview .ivviewer > .actionbar {
+.gitpane .cdetail-host .actionbar, .issueview .ivviewer > .actionbar {
   background:var(--bg); box-shadow:0 -14px 16px -6px var(--bg);
 }
 /* A sticky box cannot travel past its parent's content box, so a column that
@@ -135,6 +135,14 @@ tr.hunk:hover .toverride, .toverride:focus { opacity:1; }
   scroll-padding-bottom:calc(var(--pane-bottom) + 58px); }
 .gitpane .cdetail-host > :last-child:not(.actionbar),
 .issueview .ivviewer > :last-child:not(.actionbar) { margin-bottom:var(--pane-bottom); }
+/* A changeset is painted in parts — its header, its keyed stack, its tray — so
+   that a repaint moves only what moved. The tray states no box of its own: the
+   sticky bar inside it belongs to the column, and a box around it would pin it
+   to the tray's own few pixels at the foot. With the parts standing, the
+   scroll-end room is the column's trailing block rather than a margin on
+   whichever part happens to be last. */
+.gitpane .cstray { display:contents; }
+.gitpane .cdetail-host:has(.dstack)::after { content:""; display:block; height:var(--pane-bottom); }
 
 /* ---- work surfaces: the issue view -----------------------------------------
    Stages | stage viewer, persistent: the list is a rail the way the commit list

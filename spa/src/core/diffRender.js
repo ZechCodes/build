@@ -7,6 +7,7 @@ import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
 import { fileKey } from "./diff.js";
+import { anchorTop } from "./paintKeepingPlace.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
 
@@ -184,18 +185,43 @@ function fileMenuHtml(path, fileMenu) {
  *  `noiseExpanded` is the caller's persisted disclosure state; every other
  *  option passes straight through to diffFilesHtml.
  *
- *  `review` plugs the triage overlay in (see reviewStackHtml). Omitting it
+ *  `review` plugs the triage overlay in (see reviewStackEntries). Omitting it
  *  leaves the output byte-identical to what it always was, which is what a
  *  surface with no triage to render — and the poll-repaint freeze contract —
  *  depends on. */
-export function diffStackHtml(files, { noiseExpanded = false, review = null, ...fileOptions } = {}) {
+export function diffStackHtml(files, options = {}) {
+  return diffStackEntries(files, options)
+    .map((entry) => entry.html)
+    .join("");
+}
+
+/** Where a repaint of a stack leaves the reader: on the file they were reading.
+ *  The markup that names each file is here, so the way to find it again is
+ *  here too — both controllers hand this to core/paintKeepingPlace.js. */
+export const DIFF_PLACE_KEEPING = {
+  opening: (scroller) => !scroller.querySelector(".file[data-key]"),
+  policy: anchorTop(".file[data-key]"),
+};
+
+/** The same stack as a keyed list: `[{ key, html }]`, one entry per block a
+ *  repaint can move — a file (named by its file key), the triage bar, a triage
+ *  section or group, the noise group. A controller patches those into a
+ *  container with core/patchList.js, so a tick that changed one file leaves
+ *  every other block — and the reader's place in it — standing. */
+export function diffStackEntries(files, { noiseExpanded = false, review = null, ...fileOptions } = {}) {
   const grouped = groupNoiseFiles(files);
-  if (!grouped.files.length && !grouped.noise.length) return '<div class="empty">No file changes.</div>';
-  const primary = grouped.files.length ? reviewStackHtml(grouped.files, review, fileOptions) : "";
-  if (!grouped.noise.length) return primary;
-  return `${primary}<div class="noisegroup${noiseExpanded ? " open" : ""}">
-    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(grouped.noise.length)}</button>
-    ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(grouped.noise, fileOptions)}</div>` : ""}</div>`;
+  if (!grouped.files.length && !grouped.noise.length)
+    return [{ key: "empty", html: '<div class="empty">No file changes.</div>' }];
+  const entries = grouped.files.length ? reviewStackEntries(grouped.files, review, fileOptions) : [];
+  if (!grouped.noise.length) return entries;
+  return [...entries, { key: "noise", html: noiseGroupHtml(grouped.noise, noiseExpanded, fileOptions) }];
+}
+
+/** The machine's own files, under one count line at the bottom of the stack. */
+function noiseGroupHtml(noise, noiseExpanded, fileOptions) {
+  return `<div class="noisegroup${noiseExpanded ? " open" : ""}">
+    <button class="noisehead" aria-expanded="${noiseExpanded}">${noiseExpanded ? "▾" : "▸"} ${noiseGroupLabel(noise.length)}</button>
+    ${noiseExpanded ? `<div class="noisefiles">${diffFilesHtml(noise, fileOptions)}</div>` : ""}</div>`;
 }
 
 // ---- the triage overlay ----------------------------------------------------
@@ -237,38 +263,44 @@ function triageGroupHtml(section, { expanded, fileOptions }) {
     <div class="tgfiles">${diffFilesHtml(section.files, fileOptions)}</div></div>`;
 }
 
-/** The readable files of one changeset, ordered by triage when a surface plugs
- *  the overlay in.
+/** The readable files of one changeset as keyed entries, ordered by triage when
+ *  a surface plugs the overlay in.
  *
  *  `review` is `{ triage, patch, dial, expandedGroups, overridable }`: the run's
  *  triage payload (or null), the patch those files came from (the hunk ids live
  *  there), whether the reviewer has turned the overlay off, the groups they
  *  have opened, and whether this surface can post their disagreements. Null
  *  `review` — a surface that has no triage to render — takes the plain stack,
- *  unchanged. */
-function reviewStackHtml(files, review, options) {
-  if (!review) return diffFilesHtml(files, options);
+ *  one entry per file. */
+function reviewStackEntries(files, review, options) {
+  const fileEntries = (list, fileOptions) =>
+    list.map((file) => ({ key: fileKey(file), html: diffFileHtml(file, fileOptions) }));
+  if (!review) return fileEntries(files, options);
   const { triage = null, patch = "", dial = false, expandedGroups = null, overridable = false } = review;
   const fileOptions = { ...options, overridable };
   // The dial renders the untriaged stack, and says so — the pass is still
   // there, and one click puts it back.
   if (dial)
-    return (
-      triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) +
-      diffFilesHtml(files, fileOptions)
-    );
+    return [
+      { key: "triagebar", html: triageBarHtml({ status: "none", counts: {} }, { dial: true, offerDial: Boolean(triage) }) },
+      ...fileEntries(files, fileOptions),
+    ];
   const plan = planChangesetTriage({ files, patch, triage });
   const bar = triageBarHtml(plan, { dial: false, offerDial: Boolean(triage) && plan.status !== "none" });
-  const body = plan.sections
-    .map((section) => {
-      if (section.kind === "group")
-        return triageGroupHtml(section, {
+  const sections = plan.sections.map((section) => {
+    if (section.kind === "group")
+      return {
+        key: `group:${section.name}`,
+        html: triageGroupHtml(section, {
           expanded: Boolean(expandedGroups && expandedGroups.has(section.name)),
           fileOptions,
-        });
-      const head = section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
-      return `<div class="tsection t${section.kind}">${head}${diffFilesHtml(section.files, fileOptions)}</div>`;
-    })
-    .join("");
-  return bar + body;
+        }),
+      };
+    const head = section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
+    return {
+      key: `section:${section.kind}`,
+      html: `<div class="tsection t${section.kind}">${head}${diffFilesHtml(section.files, fileOptions)}</div>`,
+    };
+  });
+  return [{ key: "triagebar", html: bar }, ...sections];
 }

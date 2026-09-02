@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
 import { mountSurfaceViewer } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
@@ -12,23 +13,7 @@ import {
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
 
-const SPAWNING_CALL_SEQUENCE = 12;
-
-const snapshot = () => ({
-  workflows: [
-    {
-      id: "wf-1",
-      name: "Review sweep",
-      state: "running",
-      phases: [
-        { title: "Read", agents: [{ id: "a1", label: "reader", state: "running" }] },
-        { title: "Judge", agents: [{ id: "a2", label: "judge", state: "queued" }] },
-      ],
-    },
-  ],
-  subagents: [{ id: "s1", label: "parser reviewer", state: "done", call_sequence: SPAWNING_CALL_SEQUENCE }],
-  shells: [{ id: "sh1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
-});
+const snapshot = () => surfacesSnapshot();
 
 const host = () => {
   document.body.innerHTML = `<div class="overlay-host"></div>`;
@@ -42,6 +27,15 @@ const mount = (kind, options = {}) =>
   });
 
 const runningRows = () => [...document.querySelectorAll(".surface-running > .surface-row")];
+
+const chooseRowAction = (row, actionId) => {
+  row.querySelector(".caret").click();
+  row.querySelector(`.mi[data-action="${actionId}"]`).click();
+};
+
+const shellRowAction = () => rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, snapshot())[0])[0];
+
+beforeEach(() => notifyError.mockClear());
 
 describe("mountSurfaceViewer", () => {
   it("paints the kind it was mounted for, with its rows and their Ask menus", () => {
@@ -82,13 +76,27 @@ describe("mountSurfaceViewer", () => {
     const onSendMessage = vi.fn(async () => {});
     const viewer = mount(SHELL_ENTRY_KIND, { onSendMessage });
     viewer.set(snapshot());
-    const [row] = runningRows();
-    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, snapshot())[0]);
+    const action = shellRowAction();
 
-    row.querySelector(".caret").click();
-    row.querySelector(`.mi[data-action="${action.id}"]`).click();
+    chooseRowAction(runningRows()[0], action.id);
 
     expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    viewer.dispose();
+  });
+
+  it("says so when the agent refuses the message, and leaves the rows where they were", async () => {
+    const onSendMessage = vi.fn(async () => {
+      throw new Error("the agent is gone");
+    });
+    const viewer = mount(SHELL_ENTRY_KIND, { onSendMessage });
+    viewer.set(snapshot());
+
+    chooseRowAction(runningRows()[0], shellRowAction().id);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(notifyError.mock.calls).toEqual([["Could not ask the agent", "the agent is gone"]]);
+    expect(runningRows().map((row) => row.dataset.key)).toEqual(["sh1"]);
     viewer.dispose();
   });
 

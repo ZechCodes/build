@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { surfacesSnapshot } from "./surfacesFixture.js";
 import { resolve } from "node:path";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -31,17 +32,7 @@ const { SHELL_ENTRY_KIND, WORKFLOW_ENTRY_KIND, rowActions, surfaceRows } = await
   "../src/core/agentSurfacesModel.js"
 );
 
-const surfaces = () => ({
-  workflows: [
-    {
-      id: "wf-1",
-      name: "Review sweep",
-      state: "running",
-      phases: [{ title: "Read", agents: [{ id: "a1", label: "reader", state: "running" }] }],
-    },
-  ],
-  shells: [{ id: "sh1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
-});
+const surfaces = () => surfacesSnapshot({ subagents: [], checklist: [] });
 
 const branchRow = (agentOver = {}) => ({
   kind: "branch",

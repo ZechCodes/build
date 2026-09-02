@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
+import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
@@ -15,28 +16,9 @@ import {
 const notifyError = vi.fn();
 vi.mock("../src/core/notify.js", () => ({ notifyError: (...args) => notifyError(...args), notify: () => {} }));
 
-const SPAWNING_CALL_SEQUENCE = 10;
 const SURFACES_KEY = "branch-1:agent-1";
 
-const snapshot = () => ({
-  workflows: [
-    {
-      id: "wf-1",
-      name: "Review sweep",
-      state: "running",
-      phases: [
-        { title: "Read", agents: [{ id: "a1", label: "reader", state: "running" }] },
-        { title: "Judge", agents: [{ id: "a2", label: "judge", state: "queued" }] },
-      ],
-    },
-  ],
-  subagents: [
-    { id: "s1", label: "parser reviewer", state: "done", call_sequence: SPAWNING_CALL_SEQUENCE },
-    { id: "s2", label: "fixture writer", state: "running" },
-  ],
-  shells: [{ id: "sh1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
-  checklist: [{ id: "c1", subject: "Land the fold", state: "in_progress" }],
-});
+const snapshot = () => surfacesSnapshot();
 
 const composerBlock = () => {
   document.body.innerHTML = `<div class="rail-composer">

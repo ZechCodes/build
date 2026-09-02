@@ -1,11 +1,4 @@
 // @vitest-environment jsdom
-// The pills under the composer, and the viewer above them.
-//
-// The region is mounted once and painted from a digest, so the composer beside
-// it is never rebuilt to say a workflow gained an agent: the draft and the
-// caret in it survive every repaint, and so do the rows the reader is looking
-// at.
-
 import { describe, expect, it, beforeEach, vi } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
@@ -358,6 +351,79 @@ describe("a row's action", () => {
     expect(source).not.toContain("App.call");
     expect(source).not.toContain("../app.js");
     expect(source).not.toContain("setInterval");
+  });
+});
+
+describe("a menu the paint had to rebuild", () => {
+  it("works on the workflow head from the very first paint", () => {
+    const onSendMessage = vi.fn(async () => {});
+    const surfaces = mount({ onSendMessage });
+    surfaces.set(snapshot());
+    pressPill(WORKFLOW_ENTRY_KIND);
+
+    const head = document.querySelector(".surface-workflow-head");
+    const [action] = rowActions(WORKFLOW_ENTRY_KIND, snapshot().workflows[0]);
+    head.querySelector(".caret").click();
+
+    expect(head.querySelector(".splitmenu").hidden).toBe(false);
+    head.querySelector(`.mi[data-action="${action.id}"]`).click();
+    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    surfaces.dispose();
+  });
+
+  it("still chooses an action after a shell's exit code gives the row a new trailing slot", () => {
+    const onSendMessage = vi.fn(async () => {});
+    const surfaces = mount({ onSendMessage });
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    const [row] = viewerRows(".surface-shells");
+
+    const finished = snapshot();
+    finished.shells[0] = { ...finished.shells[0], state: "done", exit_code: 0 };
+    surfaces.set(finished);
+
+    expect(viewerRows(".surface-shells")[0]).toBe(row);
+    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, finished)[0]);
+    chooseRowAction(row, action.id);
+
+    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    surfaces.dispose();
+  });
+
+  it("still chooses an action after a subagent's model gives the row a new trailing slot", () => {
+    const onSendMessage = vi.fn(async () => {});
+    const surfaces = mount({ onSendMessage });
+    surfaces.set(snapshot());
+    pressPill(AGENT_ENTRY_KIND);
+    const [row] = viewerRows(".surface-subagents");
+
+    const named = snapshot();
+    named.subagents[0] = { ...named.subagents[0], model: "haiku" };
+    surfaces.set(named);
+
+    expect(viewerRows(".surface-subagents")[0]).toBe(row);
+    const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, named)[0]);
+    chooseRowAction(row, action.id);
+
+    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    surfaces.dispose();
+  });
+});
+
+describe("a set that would change nothing", () => {
+  it("paints nothing at all", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    const [row] = viewerRows(".surface-shells");
+    const marker = document.createElement("span");
+    marker.className = "paint-witness";
+    row.appendChild(marker);
+
+    surfaces.set(snapshot());
+
+    expect(row.querySelector(".paint-witness")).toBe(marker);
+    surfaces.dispose();
   });
 });
 

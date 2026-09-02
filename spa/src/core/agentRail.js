@@ -79,6 +79,7 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_SURFACES_ID = "rail-surfaces";
+const AGENT_NOT_YET_BORN = "ghost";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on
@@ -409,11 +410,7 @@ export function mountAgentRail(host, context) {
     else chosenAgent.delete(key);
     selection.set(selectedId);
   };
-  /** What this panel is standing in front of: the work item, and the agent
-   *  chosen on it — or the one that does not exist yet. One spelling, so the
-   *  draft the composer holds and the surface pill the reader left open are
-   *  remembered against the same conversation. */
-  const conversationKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
+  const conversationKey = () => `${entity.entityId || key}:${selectedId || AGENT_NOT_YET_BORN}`;
   const draftOf = () => drafts.get(conversationKey()) || { body: "", attachments: [] };
   const writeDraft = (next) => drafts.set(conversationKey(), { ...draftOf(), ...next });
 
@@ -944,7 +941,13 @@ export function mountAgentRail(host, context) {
     surfacesBlock = mountAgentSurfaces(region, {
       key: conversationKey(),
       onSendMessage: (message) => send(message, []),
-      onOpenThreadItem: (sequence) => revealThreadSequence(host.querySelector("#rail-body"), sequence),
+      onOpenThreadItem: (sequence) => {
+        if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+        notifyError(
+          "That call is not in the loaded conversation",
+          "Scroll back to load older items, then press the row again.",
+        );
+      },
     });
   };
 

@@ -86,13 +86,22 @@ function claimKey(kind, id, index, claimed) {
   return `${kind}-${fallbackIndex}`;
 }
 
-function keyedRows(kind, entries, normalise) {
+function keyedRows(keyPrefix, markKind, entries, normalise) {
   const claimed = new Set();
-  return entries.map((entry, index) => {
-    const id = entry && entry.id ? String(entry.id) : "";
-    const key = claimKey(kind, id, index, claimed);
+  return entries.map((given, index) => {
+    const entry = given || {};
+    const key = claimKey(keyPrefix, entry.id ? String(entry.id) : "", index, claimed);
     claimed.add(key);
-    return { key, ...normalise(entry || {}, index) };
+    if (!markKind) return { key, ...normalise(entry, index) };
+    return {
+      key,
+      id: entry.id || null,
+      state: entry.state || "",
+      stateMark: surfaceStateMark(markKind, entry.state),
+      subject: rowSubject(markKind, entry),
+      actions: rowActions(markKind, entry),
+      ...normalise(entry, index),
+    };
   });
 }
 
@@ -111,11 +120,8 @@ function lastToolText(lastTool) {
 
 function agentRow(entry) {
   return {
-    id: entry.id || null,
     label: entry.label || "",
     model: entry.model || "",
-    state: entry.state || "",
-    stateMark: surfaceStateMark(AGENT_ENTRY_KIND, entry.state),
     duration: Number.isFinite(entry.duration_ms) ? workingClock(entry.duration_ms / 1000) : "",
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
@@ -128,32 +134,22 @@ function agentRow(entry) {
 }
 
 export function agentRows(agents) {
-  return keyedRows("agent", Array.isArray(agents) ? agents : [], agentRow);
+  return keyedRows("agent", AGENT_ENTRY_KIND, Array.isArray(agents) ? agents : [], agentRow);
 }
 
 const ROW_NORMALISERS = {
   [WORKFLOW_ENTRY_KIND]: (entry) => ({
-    id: entry.id || null,
     name: entry.name || "",
     description: entry.description || "",
-    state: entry.state || "",
-    stateMark: surfaceStateMark(WORKFLOW_ENTRY_KIND, entry.state),
     phaseCount: phasesOf(entry).length,
   }),
   [SHELL_ENTRY_KIND]: (entry) => ({
-    id: entry.id || null,
     description: entry.description || "",
-    state: entry.state || "",
-    stateMark: surfaceStateMark(SHELL_ENTRY_KIND, entry.state),
     exitCode: Number.isFinite(entry.exit_code) ? entry.exit_code : null,
     tail: Array.isArray(entry.tail) ? entry.tail : [],
   }),
   [CHECKLIST_ENTRY_KIND]: (entry) => ({
-    id: entry.id || null,
-    subject: entry.subject || "",
     description: entry.description || "",
-    state: entry.state || "",
-    stateMark: surfaceStateMark(CHECKLIST_ENTRY_KIND, entry.state),
   }),
 };
 
@@ -161,37 +157,38 @@ export function surfaceRows(kind, surfaces) {
   const entries = entriesOfKind(surfaces, kind);
   if (kind === AGENT_ENTRY_KIND) return agentRows(entries);
   const normalise = ROW_NORMALISERS[kind];
-  return normalise ? keyedRows(kind, entries, normalise) : [];
+  return normalise ? keyedRows(kind, kind, entries, normalise) : [];
 }
 
 function chosenIndex(count, wantedIndex) {
   return wantedIndex >= 0 && wantedIndex < count ? wantedIndex : 0;
 }
 
-export function openWorkflow(surfaces, selectedIndex = 0) {
+function selectedWorkflowEntry(surfaces, selectedWorkflowIndex) {
   const entries = entriesOfKind(surfaces, WORKFLOW_ENTRY_KIND);
   if (!entries.length) return null;
-  const selected = chosenIndex(entries.length, selectedIndex);
-  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
-  return { ...rows[selected], phases: phasesOf(entries[selected]) };
+  return entries[chosenIndex(entries.length, selectedWorkflowIndex)];
 }
 
-/// The workflows the reader may choose between, or nothing at all while there
-/// is only one to look at — the viewer's head already names that one, and a
-/// chooser with a single answer in it is a row of chrome saying nothing.
-export function workflowChoices(surfaces, selectedIndex) {
+export function openWorkflow(surfaces, selectedWorkflowIndex = 0) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+  if (!rows.length) return null;
+  return rows[chosenIndex(rows.length, selectedWorkflowIndex)];
+}
+
+export function workflowChoicesWorthOffering(surfaces, selectedWorkflowIndex) {
   const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
   if (rows.length < 2) return [];
-  const selected = chosenIndex(rows.length, selectedIndex);
+  const selected = chosenIndex(rows.length, selectedWorkflowIndex);
   return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
-export function workflowPhases(workflow, selectedIndex) {
-  const phases = phasesOf(workflow);
+export function workflowPhases(surfaces, selectedWorkflowIndex = 0, selectedPhaseIndex = 0) {
+  const phases = phasesOf(selectedWorkflowEntry(surfaces, selectedWorkflowIndex));
   if (!phases.length) return { phases: [], agents: [] };
-  const selected = chosenIndex(phases.length, selectedIndex);
+  const selected = chosenIndex(phases.length, selectedPhaseIndex);
   return {
-    phases: keyedRows("phase", phases, (phase, index) => ({
+    phases: keyedRows("phase", null, phases, (phase, index) => ({
       index,
       title: phase.title || "",
       total: agentsOf(phase).length,
@@ -291,7 +288,8 @@ export function readOpenSurface(key, storage = globalThis.localStorage) {
 
 export function writeOpenSurface(key, kind, storage = globalThis.localStorage) {
   try {
-    storage.setItem(OPEN_SURFACE_KEY_PREFIX + key, kind);
+    if (kind) storage.setItem(OPEN_SURFACE_KEY_PREFIX + key, kind);
+    else storage.removeItem(OPEN_SURFACE_KEY_PREFIX + key);
   } catch {
     return;
   }

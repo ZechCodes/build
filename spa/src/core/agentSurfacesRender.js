@@ -5,9 +5,6 @@ import {
   AGENT_ENTRY_KIND,
   CHECKLIST_ENTRY_KIND,
   SHELL_ENTRY_KIND,
-  WORKFLOW_ENTRY_KIND,
-  rowActions,
-  rowSubject,
 } from "./agentSurfacesModel.js";
 
 const ACTION_MENU_LABEL = "Ask";
@@ -15,10 +12,7 @@ const ACTION_MENU_TITLE = "Ask the agent about this";
 
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
-/** The container class of every keyed list a viewer paints, named where the
- *  markup that carries it is written — so the painter queries the name this
- *  module emits rather than a second copy of it. */
-const SURFACE_LIST_CLASS = {
+const KEYED_LIST_CLASS_THIS_MODULE_EMITS = {
   workflowChoices: "surface-workflows",
   workflowPhases: "surface-phases",
   workflowAgents: "surface-phase-agents",
@@ -30,16 +24,15 @@ const SURFACE_LIST_CLASS = {
 export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 
 export const SURFACE_LIST_SELECTOR = Object.fromEntries(
-  Object.entries(SURFACE_LIST_CLASS).map(([name, className]) => [name, `.${className}`]),
+  Object.entries(KEYED_LIST_CLASS_THIS_MODULE_EMITS).map(([name, className]) => [name, `.${className}`]),
 );
 
 function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
 }
 
-function actionMenuHtml(kind, row) {
-  const actions = rowActions(kind, row);
-  if (!actions.length) return "";
+function actionMenuHtml(actions) {
+  if (!actions || !actions.length) return "";
   return menuButtonMarkup(ACTION_MENU_LABEL, actions, { title: ACTION_MENU_TITLE });
 }
 
@@ -52,13 +45,13 @@ function noteHtml(description, subject) {
   return `<span class="surface-row-note">${esc(description)}</span>`;
 }
 
-function surfaceRowHtml(rowClass, kind, row, { attributes = "", trailing = "", body = "" } = {}) {
+function surfaceRowHtml(rowClass, row, { attributes = "", trailing = "", body = "" } = {}) {
   return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}"${attributes}>
     <div class="surface-row-head">
       ${stateMarkHtml(row.stateMark)}
-      <span class="surface-row-label">${esc(rowSubject(kind, row))}</span>
+      <span class="surface-row-label">${esc(row.subject)}</span>
       ${trailing}
-      ${actionMenuHtml(kind, row)}
+      ${actionMenuHtml(row.actions)}
     </div>
     ${body}
   </div>`;
@@ -85,7 +78,7 @@ function callSequenceAttribute(row) {
 }
 
 export function agentRowHtml(row) {
-  return surfaceRowHtml("surface-agent", AGENT_ENTRY_KIND, row, {
+  return surfaceRowHtml("surface-agent", row, {
     attributes: callSequenceAttribute(row),
     trailing: row.model ? `<span class="surface-row-model">${esc(row.model)}</span>` : "",
     body: `${row.lastTool ? `<div class="surface-row-tool">${esc(row.lastTool)}</div>` : ""}
@@ -122,33 +115,33 @@ export function workflowChoiceHtml(choice) {
   return `<button type="button" class="surface-workflow-choice" data-key="${esc(choice.key)}"
     data-workflow-index="${esc(choice.index)}" aria-pressed="${choice.selected}">
     ${stateMarkHtml(choice.stateMark)}
-    <span class="surface-phase-title">${esc(rowSubject(WORKFLOW_ENTRY_KIND, choice))}</span>
+    <span class="surface-phase-title">${esc(choice.subject)}</span>
   </button>`;
 }
 
 export function workflowHeadHtml(workflow) {
-  const subject = rowSubject(WORKFLOW_ENTRY_KIND, workflow);
+  const subject = workflow.subject || "";
   return `<div class="${WORKFLOW_HEAD_CLASS}">
       ${stateMarkHtml(workflow.stateMark)}
       <span class="surface-row-label">${esc(subject)}</span>
       ${noteHtml(workflow.description, subject)}
-      ${actionMenuHtml(WORKFLOW_ENTRY_KIND, workflow)}
+      ${actionMenuHtml(workflow.actions)}
     </div>`;
 }
 
 export function workflowViewerHtml(workflow, choices, phases, agents) {
   return `<div class="surface-viewer surface-workflow">
-    <div class="${SURFACE_LIST_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
+    <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
     <div class="surface-workflow-body">
-      <div class="${SURFACE_LIST_CLASS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
-      <div class="${SURFACE_LIST_CLASS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
+      <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
+      <div class="${KEYED_LIST_CLASS_THIS_MODULE_EMITS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
     </div>
   </div>`;
 }
 
-export function subagentViewerHtml(rows) {
-  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[AGENT_ENTRY_KIND]}">${rows.map(agentRowHtml).join("")}</div>`;
+export function kindViewerHtml(kind, rows, renderRow) {
+  return `<div class="surface-viewer ${KEYED_LIST_CLASS_THIS_MODULE_EMITS[kind]}">${rows.map(renderRow).join("")}</div>`;
 }
 
 function shellTailHtml(tail) {
@@ -160,24 +153,14 @@ function shellTailHtml(tail) {
 }
 
 export function shellRowHtml(row) {
-  return surfaceRowHtml("surface-shell", SHELL_ENTRY_KIND, row, {
+  return surfaceRowHtml("surface-shell", row, {
     trailing: Number.isFinite(row.exitCode) ? statHtml(`exit ${row.exitCode}`) : "",
     body: shellTailHtml(row.tail),
   });
 }
 
-export function shellViewerHtml(rows) {
-  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[SHELL_ENTRY_KIND]}">${rows.map(shellRowHtml).join("")}</div>`;
-}
-
 export function checklistItemHtml(row) {
-  return surfaceRowHtml("surface-checklist-item", CHECKLIST_ENTRY_KIND, row, {
-    body: noteHtml(row.description, rowSubject(CHECKLIST_ENTRY_KIND, row)),
+  return surfaceRowHtml("surface-checklist-item", row, {
+    body: noteHtml(row.description, row.subject),
   });
-}
-
-export function checklistViewerHtml(rows) {
-  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[CHECKLIST_ENTRY_KIND]}">${rows
-    .map(checklistItemHtml)
-    .join("")}</div>`;
 }

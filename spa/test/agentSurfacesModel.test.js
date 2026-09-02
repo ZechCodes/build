@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
+import { memoryStorage, refusingStorage } from "./memoryStorage.js";
 import {
   AGENT_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
@@ -11,20 +12,13 @@ import {
   surfacePills,
   surfaceRows,
   surfaceStateMark,
-  workflowChoices,
+  workflowChoicesWorthOffering,
   workflowPhases,
   writeOpenSurface,
 } from "../src/core/agentSurfacesModel.js";
 import { outcomeMarkHtml } from "../src/core/outcomeMark.js";
 
-const memoryStorage = () => {
-  const entries = new Map();
-  return {
-    getItem: (key) => (entries.has(key) ? entries.get(key) : null),
-    setItem: (key, value) => entries.set(key, String(value)),
-    entries,
-  };
-};
+const oneWorkflow = (workflow) => ({ workflows: [workflow] });
 
 const checklistSnapshot = {
   checklist: [
@@ -115,16 +109,13 @@ describe("surfaceRows", () => {
   });
 
   it("draws a workflow row without handing it a raw phases array", () => {
-    const rows = surfaceRows("workflows", {
-      workflows: [
-        {
-          id: "w1",
-          name: "Review",
-          state: "running",
-          phases: [{ title: "Read", agents: [{ label: "Reader" }] }, { title: "Write", agents: [] }],
-        },
-      ],
-    });
+    const entry = {
+      id: "w1",
+      name: "Review",
+      state: "running",
+      phases: [{ title: "Read", agents: [{ label: "Reader" }] }, { title: "Write", agents: [] }],
+    };
+    const rows = surfaceRows("workflows", oneWorkflow(entry));
     expect(rows[0]).toEqual({
       key: "w1",
       id: "w1",
@@ -132,8 +123,19 @@ describe("surfaceRows", () => {
       description: "",
       state: "running",
       stateMark: surfaceStateMark("workflows", "running"),
+      subject: "Review",
+      actions: rowActions("workflows", entry),
       phaseCount: 2,
     });
+  });
+
+  it("stamps every row with the subject and the actions its menu speaks, so no painter recomputes them", () => {
+    const shell = { id: "s1", description: "npm test", state: "running" };
+    const [row] = surfaceRows("shells", { shells: [shell] });
+    expect(row.subject).toBe("npm test");
+    expect(row.actions).toEqual(rowActions("shells", shell));
+    const nameless = { id: "s2", state: "running" };
+    expect(surfaceRows("shells", { shells: [nameless] })[0].subject).toBe("s2");
   });
 
   it("delegates the subagents arm to agentRows rather than keying them a second way", () => {
@@ -228,7 +230,7 @@ describe("workflowPhases", () => {
   };
 
   it("counts the done agents of every phase", () => {
-    const { phases } = workflowPhases(workflow, 0);
+    const { phases } = workflowPhases(oneWorkflow(workflow), 0, 0);
     expect(phases).toEqual([
       { key: "phase-0", index: 0, title: "Read", total: 2, done: 1, selected: true },
       { key: "phase-1", index: 1, title: "Write", total: 2, done: 0, selected: false },
@@ -236,26 +238,36 @@ describe("workflowPhases", () => {
   });
 
   it("hands back the selected phase's agents already through agentRows", () => {
-    expect(workflowPhases(workflow, 0).agents).toEqual(agentRows(workflow.phases[0].agents));
+    expect(workflowPhases(oneWorkflow(workflow), 0, 0).agents).toEqual(agentRows(workflow.phases[0].agents));
   });
 
   it("keys two id-less agents of a phase apart, so patchList never sees a duplicate", () => {
-    expect(workflowPhases(workflow, 1).agents.map((row) => row.key)).toEqual(["agent-0", "agent-1"]);
+    expect(workflowPhases(oneWorkflow(workflow), 0, 1).agents.map((row) => row.key)).toEqual([
+      "agent-0",
+      "agent-1",
+    ]);
   });
 
   it("keys a phase through the one keying function rather than a rule of its own", () => {
-    const named = workflowPhases({ phases: [{ id: "read", title: "Read" }, { title: "Write" }] }, 0);
+    const named = workflowPhases(oneWorkflow({ phases: [{ id: "read", title: "Read" }, { title: "Write" }] }), 0, 0);
     expect(named.phases.map((phase) => phase.key)).toEqual(["read", "phase-1"]);
   });
 
   it("clamps a selection the workflow no longer has", () => {
-    expect(workflowPhases(workflow, 9).phases[0].selected).toBe(true);
-    expect(workflowPhases(workflow, 9).agents).toEqual(agentRows(workflow.phases[0].agents));
+    expect(workflowPhases(oneWorkflow(workflow), 0, 9).phases[0].selected).toBe(true);
+    expect(workflowPhases(oneWorkflow(workflow), 0, 9).agents).toEqual(agentRows(workflow.phases[0].agents));
   });
 
   it("gives nothing for a workflow carrying no phases", () => {
-    expect(workflowPhases(null, 0)).toEqual({ phases: [], agents: [] });
-    expect(workflowPhases({ id: "w1" }, 0)).toEqual({ phases: [], agents: [] });
+    expect(workflowPhases(null, 0, 0)).toEqual({ phases: [], agents: [] });
+    expect(workflowPhases(oneWorkflow({ id: "w1" }), 0, 0)).toEqual({ phases: [], agents: [] });
+  });
+
+  it("reads the chosen workflow's phases itself, so no caller carries a raw phases array", () => {
+    const second = { id: "w2", name: "Ship", phases: [{ title: "Tag", agents: [{ id: "b1", label: "Tagger" }] }] };
+    const both = { workflows: [workflow, second] };
+    expect(workflowPhases(both, 1, 0).phases.map((phase) => phase.title)).toEqual(["Tag"]);
+    expect(workflowPhases(both, 9, 0).phases.map((phase) => phase.title)).toEqual(["Read", "Write"]);
   });
 });
 
@@ -264,9 +276,10 @@ describe("the workflow the viewer shows", () => {
   const fixtureSweep = { id: "w2", name: "Fixtures", state: "done", phases: [{ title: "Write", agents: [] }] };
   const both = { workflows: [reviewSweep, fixtureSweep] };
 
-  it("is the one the reader chose, with its own phases", () => {
+  it("is the one the reader chose, and carries no raw phases array", () => {
     expect(openWorkflow(both, 1).name).toBe("Fixtures");
-    expect(openWorkflow(both, 1).phases).toEqual(fixtureSweep.phases);
+    expect(openWorkflow(both, 1)).not.toHaveProperty("phases");
+    expect(workflowPhases(both, 1, 0).phases.map((phase) => phase.title)).toEqual(["Write"]);
   });
 
   it("falls back to the first when the choice is out of range", () => {
@@ -279,16 +292,16 @@ describe("the workflow the viewer shows", () => {
   });
 
   it("offers a choice per workflow, pressing the chosen one", () => {
-    expect(workflowChoices(both, 1)).toEqual([
+    expect(workflowChoicesWorthOffering(both, 1)).toEqual([
       { ...surfaceRows(WORKFLOW_ENTRY_KIND, both)[0], index: 0, selected: false },
       { ...surfaceRows(WORKFLOW_ENTRY_KIND, both)[1], index: 1, selected: true },
     ]);
-    expect(workflowChoices(both, 9)[0].selected).toBe(true);
+    expect(workflowChoicesWorthOffering(both, 9)[0].selected).toBe(true);
   });
 
   it("offers no choice at all while there is only one workflow to look at", () => {
-    expect(workflowChoices({ workflows: [reviewSweep] }, 0)).toEqual([]);
-    expect(workflowChoices({}, 0)).toEqual([]);
+    expect(workflowChoicesWorthOffering({ workflows: [reviewSweep] }, 0)).toEqual([]);
+    expect(workflowChoicesWorthOffering({}, 0)).toEqual([]);
   });
 });
 
@@ -376,16 +389,18 @@ describe("the remembered open pill", () => {
   });
 
   it("survives a storage that refuses to answer", () => {
-    const refusing = {
-      getItem: () => {
-        throw new Error("private mode");
-      },
-      setItem: () => {
-        throw new Error("private mode");
-      },
-    };
+    const refusing = refusingStorage();
     expect(readOpenSurface("k", refusing)).toBe(null);
     expect(() => writeOpenSurface("k", "shells", refusing)).not.toThrow();
+    expect(() => writeOpenSurface("k", null, refusing)).not.toThrow();
+  });
+
+  it("clears the memory itself when no kind is open, so no caller spells the empty value", () => {
+    const storage = memoryStorage();
+    writeOpenSurface("issue-1:agent-1", "shells", storage);
+    writeOpenSurface("issue-1:agent-1", null, storage);
+    expect(readOpenSurface("issue-1:agent-1", storage)).toBe(null);
+    expect([...storage.entries.keys()]).toEqual([]);
   });
 
   it("reaches storage only through the injected object", () => {

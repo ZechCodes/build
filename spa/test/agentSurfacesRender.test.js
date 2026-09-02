@@ -4,10 +4,8 @@ import { coreSourceOf } from "./coreSource.js";
 import {
   agentRowHtml,
   checklistItemHtml,
-  checklistViewerHtml,
+  kindViewerHtml,
   shellRowHtml,
-  shellViewerHtml,
-  subagentViewerHtml,
   surfacePillsHtml,
   workflowChoiceHtml,
   workflowPhaseHtml,
@@ -25,7 +23,7 @@ import {
   surfacePills,
   surfaceRows,
   surfaceStateMark,
-  workflowChoices,
+  workflowChoicesWorthOffering,
   workflowPhases,
 } from "../src/core/agentSurfacesModel.js";
 import { patchList } from "../src/core/patchList.js";
@@ -65,12 +63,17 @@ const freshWorkflow = {
   ],
 };
 
-const workflowRow = (workflow) => surfaceRows("workflows", { workflows: [workflow] })[0];
+const oneWorkflow = (workflow) => ({ workflows: [workflow] });
+const workflowRow = (workflow) => surfaceRows("workflows", oneWorkflow(workflow))[0];
+const subagentViewerHtml = (rows) => kindViewerHtml(AGENT_ENTRY_KIND, rows, agentRowHtml);
+const shellViewerHtml = (rows) => kindViewerHtml(SHELL_ENTRY_KIND, rows, shellRowHtml);
+const checklistViewerHtml = (rows) => kindViewerHtml(CHECKLIST_ENTRY_KIND, rows, checklistItemHtml);
 
 describe("agentRowHtml", () => {
   it("is one renderer: a workflow agent and a subagent of the same entry paint the same bytes", () => {
     const fromWorkflow = workflowPhases(
-      { phases: [{ title: "Read", agents: [readerEntry] }] },
+      oneWorkflow({ phases: [{ title: "Read", agents: [readerEntry] }] }),
+      0,
       0,
     ).agents[0];
     const fromSubagents = surfaceRows("subagents", { subagents: [readerEntry] })[0];
@@ -148,7 +151,7 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
     shells: [{ id: "s1", description: "npm test", state: "running", tail: ["one"] }],
   })[0];
   const checklistRow = surfaceRows("checklist", { checklist: [{ id: "t1", subject: "one", state: "pending" }] })[0];
-  const phaseRow = workflowPhases(freshWorkflow, 0).phases[0];
+  const phaseRow = workflowPhases(oneWorkflow(freshWorkflow), 0, 0).phases[0];
 
   it("gives back exactly one element per row, which is what patchList renders with", () => {
     const markupOfEveryKind = [
@@ -163,7 +166,7 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
   it("is the one source of each kind's row markup, its viewer being the frame around it", () => {
     expect(shellViewerHtml([shellRow])).toContain(shellRowHtml(shellRow));
     expect(checklistViewerHtml([checklistRow])).toContain(checklistItemHtml(checklistRow));
-    const { phases, agents } = workflowPhases(freshWorkflow, 0);
+    const { phases, agents } = workflowPhases(oneWorkflow(freshWorkflow), 0, 0);
     const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents);
     expect(workflowHtml).toContain(workflowPhaseHtml(phases[0]));
     expect(workflowHtml).toContain(agentRowHtml(agents[0]));
@@ -256,8 +259,8 @@ describe("surfacePillsHtml", () => {
 });
 
 describe("workflowViewerHtml", () => {
-  const view = (workflow, selectedIndex, choices = []) => {
-    const { phases, agents } = workflowPhases(workflow, selectedIndex);
+  const view = (workflow, selectedPhaseIndex, choices = []) => {
+    const { phases, agents } = workflowPhases(oneWorkflow(workflow), 0, selectedPhaseIndex);
     return workflowViewerHtml(workflowRow(workflow), choices, phases, agents);
   };
 
@@ -293,7 +296,7 @@ describe("workflowViewerHtml", () => {
   });
 
   it("draws each agent through the one agent row renderer", () => {
-    const { phases, agents } = workflowPhases(freshWorkflow, 0);
+    const { phases, agents } = workflowPhases(oneWorkflow(freshWorkflow), 0, 0);
     expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents)).toContain(agentRowHtml(agents[0]));
   });
 
@@ -306,7 +309,7 @@ describe("workflowViewerHtml", () => {
 
   it("names each workflow the reader may choose between, pressing the one on show", () => {
     const twoWorkflows = { workflows: [freshWorkflow, { id: "w2", name: "Fixtures", state: "running" }] };
-    const choices = workflowChoices(twoWorkflows, 1);
+    const choices = workflowChoicesWorthOffering(twoWorkflows, 1);
     const html = view(freshWorkflow, 0, choices);
     const buttons = [...parseHtml(html).querySelectorAll(".surface-workflow-choice")];
     expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
@@ -316,7 +319,7 @@ describe("workflowViewerHtml", () => {
 
   it("escapes the workflow's own name and its agents' labels", () => {
     const poisoned = { id: "w1", name: HOSTILE_MARKUP, state: "running", phases: [{ title: HOSTILE_MARKUP, agents: [{ label: HOSTILE_MARKUP }] }] };
-    const html = view(poisoned, 0, workflowChoices({ workflows: [poisoned, poisoned] }, 0));
+    const html = view(poisoned, 0, workflowChoicesWorthOffering({ workflows: [poisoned, poisoned] }, 0));
     expectEscaped(html);
   });
 });
@@ -406,9 +409,28 @@ describe("checklistViewerHtml", () => {
     );
   });
 
-  it("escapes an item's subject", () => {
-    const html = checklistViewerHtml(rows([{ id: "t1", subject: HOSTILE_MARKUP, state: "pending" }]));
-    expectEscaped(html);
+  it("says an item's description beside its subject", () => {
+    const painted = parseHtml(
+      checklistViewerHtml(
+        rows([{ id: "t1", subject: "Land the fold", description: "and pin it to the fixture", state: "pending" }]),
+      ),
+    );
+    expect(painted.querySelector(".surface-row-note").textContent).toBe("and pin it to the fixture");
+  });
+
+  it("says a description that only repeats the subject once", () => {
+    const painted = parseHtml(
+      checklistViewerHtml(rows([{ id: "t1", subject: "Land the fold", description: "Land the fold", state: "pending" }])),
+    );
+    expect(painted.querySelector(".surface-row-note")).toBe(null);
+    expect(painted.textContent.match(/Land the fold/g)).toHaveLength(1);
+  });
+
+  it("escapes an item's subject and its description", () => {
+    expectEscaped(checklistViewerHtml(rows([{ id: "t1", subject: HOSTILE_MARKUP, state: "pending" }])));
+    expectEscaped(
+      checklistViewerHtml(rows([{ id: "t1", subject: "one", description: HOSTILE_MARKUP, state: "pending" }])),
+    );
   });
 });
 
@@ -420,11 +442,17 @@ describe("the renderer is pure markup", () => {
     }
   });
 
-  it("names no surface kind of its own, taking all four from the model", () => {
+  it("names no surface kind of its own, taking every one it keys by from the model", () => {
     const source = coreSourceOf("agentSurfacesRender.js");
     for (const kind of SURFACE_KINDS) expect(source).not.toContain(`"${kind}"`);
-    for (const constantName of ["WORKFLOW_ENTRY_KIND", "AGENT_ENTRY_KIND", "SHELL_ENTRY_KIND", "CHECKLIST_ENTRY_KIND"]) {
+    for (const constantName of ["AGENT_ENTRY_KIND", "SHELL_ENTRY_KIND", "CHECKLIST_ENTRY_KIND"]) {
       expect(source).toContain(constantName);
     }
+  });
+
+  it("reads a row's subject and actions off the row rather than asking the model a second time", () => {
+    const source = coreSourceOf("agentSurfacesRender.js");
+    expect(source).not.toContain("rowSubject");
+    expect(source).not.toContain("rowActions");
   });
 });

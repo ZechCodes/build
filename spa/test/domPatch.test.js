@@ -102,3 +102,25 @@ describe("patching a live tree to say what a rendered one says", () => {
     expect(picture.hasAttribute("src")).toBe(false);
   });
 });
+
+describe("patching a canvas being painted into", () => {
+  it("leaves a canvas the size it was drawn at", () => {
+    const live = tree(`<canvas class="rail-glyph"></canvas>`);
+    const face = live.querySelector("canvas");
+    face.width = 64;
+    face.height = 64;
+
+    const records = mutationsOf(live, tree(`<canvas class="rail-glyph"></canvas>`));
+
+    expect(live.querySelector("canvas")).toBe(face);
+    expect(face.getAttribute("width")).toBe("64");
+    expect(face.getAttribute("height")).toBe("64");
+    expect(records).toEqual([]);
+  });
+
+  it("takes the size the render names", () => {
+    const live = tree(`<canvas width="64" height="64"></canvas>`);
+    patchElement(live, tree(`<canvas width="32" height="32"></canvas>`));
+    expect(live.querySelector("canvas").getAttribute("width")).toBe("32");
+  });
+});

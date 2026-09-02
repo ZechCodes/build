@@ -17,6 +17,10 @@ import { confirmAction, isConfirmOpen } from "./confirm.js";
 import { notifyError } from "./notify.js";
 import { branchOptions } from "./compose.js";
 import { esc } from "./text.js";
+import { entryKeyOf } from "./inbox.js";
+import { INBOX_SCOPE } from "./inboxView.js";
+import { forgetCaptureRecord } from "./composeView.js";
+import { removeRecord, runOptimistic } from "./optimistic.js";
 import {
   answerParams,
   captureCancelConfirm,
@@ -269,20 +273,17 @@ export function mountCaptureDecision(host, captureId) {
   async function cancel() {
     if (busy || disposed) return;
     if (!(await confirmAction(captureCancelConfirm(model())))) return;
-    busy = true;
-    error = "";
-    draw();
-    try {
-      await App.call("capture.cancel", { capture_id: captureId });
-      busy = false;
-      await refreshFeed();
-      if (!disposed) go({ name: "inbox" });
-    } catch (failure) {
-      error = messageOf(failure);
-      notifyError("The capture could not be cancelled", error);
-      busy = false;
-      draw();
-    }
+    go({ name: "inbox" });
+    await runOptimistic({
+      scope: INBOX_SCOPE,
+      records: [removeRecord(entryKeyOf({ kind: "capture", capture_id: captureId }))],
+      call: async () => {
+        await App.call("capture.cancel", { capture_id: captureId });
+        forgetCaptureRecord(captureId);
+      },
+      failureSummary: "The capture could not be cancelled",
+    });
+    await refreshFeed();
   }
 
   // ---- the read -----------------------------------------------------------------

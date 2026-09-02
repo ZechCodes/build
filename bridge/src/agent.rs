@@ -80,6 +80,8 @@ pub struct Agent {
     /// sharpening of a path that already answers.
     #[serde(default)]
     pub resume_session_id: Option<String>,
+    #[serde(default)]
+    pub active_model: Option<String>,
 }
 
 impl Agent {
@@ -101,6 +103,7 @@ impl Agent {
             created_at: created_at.into(),
             state: AgentLifecycle::Idle,
             resume_session_id: None,
+            active_model: None,
         }
     }
 }

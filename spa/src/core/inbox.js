@@ -307,18 +307,12 @@ function byAnchor(left, right) {
  * A row the user cleared (`dismissed`) is in neither list — that is what
  * clearing means, and it is the whole difference from Recent, where a row that
  * has only gone quiet still sits.
- *
- * `hiddenKeys` holds the row keys a verb from this client just removed — Done,
- * or a clear the daemon has not confirmed yet — so a stale feed paint cannot
- * put the row back on screen. Keys, not entity ids: every row has a key, and
- * the rows no entity stands behind can be cleared like any other.
  */
-export function inboxEntries({ items = [], nowMs = Date.now(), hiddenKeys = new Set() } = {}) {
+export function inboxEntries({ items = [], nowMs = Date.now() } = {}) {
   const rows = items
     .filter(isListed)
     .map(toEntry)
     .filter((entry) => !entry.dismissed)
-    .filter((entry) => !hiddenKeys.has(entry.key))
     .sort(byAnchor);
   const quiet = (entry) => entry.lastActivityMs !== null && nowMs - entry.lastActivityMs > RECENT_AFTER_MS;
   const entries = rows.filter((entry) => !quiet(entry));

@@ -203,19 +203,6 @@ describe("what the inbox lists", () => {
     expect(listed([issue({ state: "archived" })])).toEqual([]);
   });
 
-  it("leaves out what the user just said Done to", () => {
-    const entries = inboxEntries({ items: [branch(), issue()], nowMs: NOW, hiddenKeys: new Set(["run-1"]) }).entries;
-    expect(entries.map((entry) => entry.entityId)).toEqual(["iss-1"]);
-  });
-
-  // A row that names no entity is hidden by its key — the one name every row
-  // has — so a clear this client just sent holds it off the screen too.
-  it("leaves out a hidden row that names no entity", () => {
-    const primary = branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false });
-    const entries = inboxEntries({ items: [primary, issue()], nowMs: NOW, hiddenKeys: new Set(["branch:p1:main"]) }).entries;
-    expect(entries.map((entry) => entry.key)).toEqual(["iss-1"]);
-  });
-
   it("carries a project's primary checkout — it is the project's own row", () => {
     const entries = listed([
       branch({ branch: "main", run_id: null, worktree_id: null, primary: true, can_finish: false, anchor: ago(1) }),

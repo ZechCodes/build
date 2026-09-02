@@ -30,6 +30,8 @@ let initCompose;
 let flushCaptures;
 let pendingCaptureRows;
 let adoptCaptureRecord;
+let forgetCaptureRecord;
+let subscribePendingCaptures;
 let CAPTURE_QUEUE_KEY;
 
 const flush = () => new Promise((done) => setTimeout(done, 0));
@@ -69,7 +71,8 @@ beforeEach(async () => {
   ];
   refreshFeed.mockClear();
   ({ App } = await import("../src/app.js"));
-  ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord } = await import("../src/core/composeView.js"));
+  ({ initCompose, flushCaptures, pendingCaptureRows, adoptCaptureRecord, forgetCaptureRecord, subscribePendingCaptures } =
+    await import("../src/core/composeView.js"));
   ({ CAPTURE_QUEUE_KEY } = await import("../src/core/compose.js"));
   App.route = { name: "inbox" };
   App.gated = false;
@@ -236,6 +239,18 @@ describe("a route the client is watching", () => {
 
     expect(pendingCaptureRows(wouldHaveGone).length).toBe(1);
     expect(pendingCaptureRows(nearlyGone + ROUTED_LINGER_MS + 10).length).toBe(0);
+  });
+
+  it("forgets a capture the client is holding once it is cancelled", async () => {
+    await settledCapture(routedTo({ routing: { project_id: "p1", kind: "issue", target_id: "iss-9" } }));
+    const repaints = vi.fn();
+    subscribePendingCaptures(repaints);
+    expect(pendingCaptureRows().map((row) => row.capture_id)).toEqual(["capture-1"]);
+
+    forgetCaptureRecord("capture-1");
+
+    expect(pendingCaptureRows()).toEqual([]);
+    expect(repaints).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a capture the feed still carries to the feed, which is its record", async () => {

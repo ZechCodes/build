@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -1200,5 +1200,14 @@ describe("the persisted window", () => {
     });
     expect(windowFromThreadPayload({ items: [] })).toBeNull();
     expect(windowFromThreadPayload(null)).toBeNull();
+  });
+});
+
+describe("naming a thread item", () => {
+  it("names a thread item by its sequence", () => {
+    expect(threadItemKey({ type: "message", data: { sequence: 12 } })).toBe("12");
+    expect(threadItemKey({ type: "event", data: { sequence: 0 } })).toBe("0");
+    expect(threadItemKey({ type: "message", data: {} })).toBe("");
+    expect(threadItemKey({})).toBe("");
   });
 });

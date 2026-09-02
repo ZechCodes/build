@@ -36,12 +36,12 @@ const menu = () => slot().querySelector(".splitmenu");
 const items = () => [...menu().querySelectorAll(".mi")].map((item) => item.dataset.action);
 const item = (action) => menu().querySelector(`.mi[data-action="${action}"]`);
 
-const mount = (choice, { provider = "claude_adk", onChoose = vi.fn() } = {}) => {
+const mount = (choice, { provider = "claude_adk", onChoose = vi.fn(), activeModel = "" } = {}) => {
   document.body.innerHTML = `<div id="host">${composerHtml({
     inputId: IDS.input, sendId: IDS.send, hintId: IDS.hint, placeholder: "…", modelMenu: true,
   })}</div>`;
   const control = mountComposerModelMenu(host(), { ids: IDS, onChoose });
-  control.set(CATALOG, provider, choice);
+  control.set(CATALOG, provider, choice, activeModel);
   return { control, onChoose };
 };
 
@@ -125,5 +125,48 @@ describe("a repaint under the poll", () => {
     const { control } = mount({ provider: "claude_adk", model: "", effort: "" });
     control.set(CATALOG, "claude_adk", { provider: "claude_adk", model: "claude-opus-5", effort: "low" });
     expect(button().textContent).toContain("Claude Opus 5 · low");
+  });
+});
+
+describe("the model the agent is running on", () => {
+  it("says on its button the model the agent is running on", () => {
+    mount({ provider: "claude_adk", model: "", effort: "" }, { activeModel: "claude-opus-5" });
+    expect(button().textContent).toContain("Claude Opus 5");
+  });
+
+  it("names the pending model beside the running one, and still checks the pending row", () => {
+    mount({ provider: "claude_adk", model: "claude-haiku-4-5", effort: "" }, { activeModel: "claude-opus-5" });
+    expect(button().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
+    expect(button().title).toBe("Running Claude Opus 5. Claude Haiku 4.5 at the next start.");
+    button().click();
+    expect(item("model:claude-haiku-4-5").className).toContain("on");
+    expect(item("model:claude-opus-5").className).not.toContain("on");
+  });
+
+  it("shows the newly picked model as the next start's, the moment it is pressed", () => {
+    mount({ provider: "claude_adk", model: "", effort: "" }, { activeModel: "claude-opus-5" });
+    button().click();
+    item("model:claude-haiku-4-5").click();
+    expect(button().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
+  });
+
+  it("leaves the open menu alone when nothing about the active model moved", () => {
+    const { control } = mount(
+      { provider: "claude_adk", model: "claude-opus-5", effort: "" },
+      { activeModel: "claude-opus-5" },
+    );
+    button().click();
+    const opened = menu();
+
+    control.set(CATALOG, "claude_adk", { provider: "claude_adk", model: "claude-opus-5", effort: "" }, "claude-opus-5");
+
+    expect(menu()).toBe(opened);
+    expect(menu().hidden).toBe(false);
+  });
+
+  it("repaints when the model the agent is running on moves under it", () => {
+    const { control } = mount({ provider: "claude_adk", model: "", effort: "" }, { activeModel: "claude-opus-5" });
+    control.set(CATALOG, "claude_adk", { provider: "claude_adk", model: "", effort: "" }, "claude-haiku-4-5");
+    expect(button().textContent).toContain("Claude Haiku 4.5");
   });
 });

@@ -2301,6 +2301,15 @@ describe("the one status row", () => {
     expect(railHost().querySelector(".sdot")).toBe(null);
   });
 
+  it("spans the whole width on a phone, so nothing shows beside the conversation", () => {
+    const phoneRule = shellCss.match(/@media \(max-width: 760px\) \{[\s\S]*?\.rail-panel \{([^}]*)\}/);
+    expect(phoneRule).not.toBe(null);
+    expect(phoneRule[1]).toContain("left:0");
+    expect(phoneRule[1]).toContain("right:var(--agent-strip)");
+    expect(phoneRule[1]).toContain("width:auto");
+    expect(phoneRule[1]).not.toContain("100vw");
+  });
+
   it("keeps the clock's digits fixed in width so a tick never nudges the pills", () => {
     const clockRule = shellCss.match(/\.rail-status-text \{[^}]*\}/);
     expect(clockRule).not.toBe(null);

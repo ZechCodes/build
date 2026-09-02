@@ -651,9 +651,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
      which project and branch this agent is working in is the one thing a phone
      cannot afford to cover. Absolute rather than fixed so the banners above the
      shell push the panel down with the toolbar instead of past it. */
-  .rail-panel { position:absolute; right:var(--agent-strip);
+  .rail-panel { position:absolute; left:0; right:var(--agent-strip);
     top:calc(var(--toolbar-h) + 1px); bottom:0; z-index:30;
-    width:min(400px, calc(100vw - 60px)); background:var(--bg);
+    width:auto; border-left:0; background:var(--bg);
     box-shadow:-8px 0 24px var(--shadow-soft); }
 }
 

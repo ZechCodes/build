@@ -13,6 +13,7 @@ import {
   sendControlHtml,
 } from "./composer.js";
 import { mountSplitMenu } from "./splitButton.js";
+import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 
 const EVENT_META = {
@@ -781,9 +782,9 @@ function eventLabel(meta, agentLabel) {
 /// doesn't — the agent was told, and the agent calling the human is what a
 /// blocker is for.
 const TOOL_OUTCOME_MARKS = {
-  ok: { glyph: "✓", label: "The tool answered" },
-  error: { glyph: "✕", label: "The tool reported an error", tone: "blocked" },
-  unanswered: { glyph: "⊘", label: "No answer arrived" },
+  ok: { mark: "ok", label: "The tool answered" },
+  error: { mark: "error", label: "The tool reported an error" },
+  unanswered: { mark: "unanswered", label: "No answer arrived" },
 };
 
 /// The mark, or nothing at all.
@@ -794,10 +795,9 @@ const TOOL_OUTCOME_MARKS = {
 /// carries: the additive wire read in the client's direction, where the safe
 /// reading of a token from a newer daemon is the one that claims nothing.
 function toolOutcomeHtml(outcome) {
-  const mark = TOOL_OUTCOME_MARKS[outcome];
-  if (!mark) return "";
-  return `<span class="thread-activity-outcome ${mark.tone || ""}" data-outcome="${esc(outcome)}"
-    role="img" aria-label="${esc(mark.label)}">${mark.glyph}</span>`;
+  const entry = TOOL_OUTCOME_MARKS[outcome];
+  if (!entry) return "";
+  return outcomeMarkHtml(entry.mark, entry.label);
 }
 
 /// Activity, folded.

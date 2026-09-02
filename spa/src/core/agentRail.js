@@ -327,7 +327,7 @@ export function mountAgentRail(host, context) {
   let addingAgent = false;
   let threadAgentId = null; // whose conversation the cache holds
   let loadingOlderItems = false; // a page of history is in flight
-  let seededSurfaces = null; // the saved snapshot, painted until a payload answers
+  let seededSurfaces = null;
 
   /** Who the open conversation's records belong to, or null while the entity is
    *  not yet known (no feed row) or no session device is live. One identity, so

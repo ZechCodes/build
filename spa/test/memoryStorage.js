@@ -19,3 +19,10 @@ export const refusingStorage = () => ({
     throw new Error("private mode");
   },
 });
+
+export const writeRefusingStorage = (seed = {}) => ({
+  ...memoryStorage(seed),
+  setItem: () => {
+    throw new Error("private mode");
+  },
+});

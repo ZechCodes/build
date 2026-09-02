@@ -5,6 +5,7 @@
 
 import { describe, it, expect } from "vitest";
 import { parseDiff, patchHunks } from "../src/core/diff.js";
+import { memoryStorage } from "./memoryStorage.js";
 import {
   planChangesetTriage,
   loadTrustDial,
@@ -313,21 +314,12 @@ describe("triageFingerprint", () => {
 });
 
 describe("the trust dial", () => {
-  const storage = () => {
-    const values = new Map();
-    return {
-      getItem: (key) => (values.has(key) ? values.get(key) : null),
-      setItem: (key, value) => values.set(key, String(value)),
-      removeItem: (key) => values.delete(key),
-    };
-  };
-
   it("defaults to the ordered stack — the overlay is on until the reviewer turns it off", () => {
-    expect(loadTrustDial("proj-1", storage())).toBe(false);
+    expect(loadTrustDial("proj-1", memoryStorage())).toBe(false);
   });
 
   it("remembers the reviewer's choice per project", () => {
-    const store = storage();
+    const store = memoryStorage();
     saveTrustDial("proj-1", true, store);
     expect(loadTrustDial("proj-1", store)).toBe(true);
     expect(loadTrustDial("proj-2", store)).toBe(false);
@@ -336,7 +328,7 @@ describe("the trust dial", () => {
   });
 
   it("keeps no preference for a surface with no project to key it by", () => {
-    const store = storage();
+    const store = memoryStorage();
     saveTrustDial(null, true, store);
     expect(loadTrustDial(null, store)).toBe(false);
   });

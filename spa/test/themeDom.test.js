@@ -13,15 +13,7 @@ import {
   themeControlHtml,
   terminalTheme,
 } from "../src/core/theme.js";
-
-const memory = (seed = {}) => {
-  const map = new Map(Object.entries(seed));
-  return {
-    getItem: (k) => (map.has(k) ? map.get(k) : null),
-    setItem: (k, v) => map.set(k, v),
-    removeItem: (k) => map.delete(k),
-  };
-};
+import { memoryStorage } from "./memoryStorage.js";
 
 // A matchMedia stand-in whose match state can be flipped, notifying listeners
 // the way the browser does when the OS switches appearance.
@@ -68,18 +60,18 @@ describe("applyStoredTheme", () => {
   beforeEach(() => document.documentElement.removeAttribute("data-theme"));
 
   it("resolves the stored preference against the OS", () => {
-    const storage = memory({ [THEME_KEY]: "system" });
+    const storage = memoryStorage({ [THEME_KEY]: "system" });
     expect(applyStoredTheme({ doc: document, storage, media: fakeMedia(true) })).toBe("dark");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
   it("honours an explicit choice against a disagreeing OS", () => {
-    const storage = memory({ [THEME_KEY]: "light" });
+    const storage = memoryStorage({ [THEME_KEY]: "light" });
     expect(applyStoredTheme({ doc: document, storage, media: fakeMedia(true) })).toBe("light");
   });
 
   it("falls back to light when the browser cannot report a preference", () => {
-    expect(applyStoredTheme({ doc: document, storage: memory(), media: null })).toBe("light");
+    expect(applyStoredTheme({ doc: document, storage: memoryStorage(), media: null })).toBe("light");
   });
 });
 
@@ -88,7 +80,7 @@ describe("installTheme", () => {
 
   it("keeps following the OS while the preference is 'system'", () => {
     const media = fakeMedia(false);
-    installTheme({ doc: document, storage: memory(), media });
+    installTheme({ doc: document, storage: memoryStorage(), media });
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
     media.flip(true);
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
@@ -96,7 +88,7 @@ describe("installTheme", () => {
 
   it("ignores the OS once the user has chosen a side", () => {
     const media = fakeMedia(false);
-    installTheme({ doc: document, storage: memory({ [THEME_KEY]: "light" }), media });
+    installTheme({ doc: document, storage: memoryStorage({ [THEME_KEY]: "light" }), media });
     media.flip(true);
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });
@@ -128,7 +120,7 @@ describe("bindThemeControl", () => {
   });
 
   it("stores the clicked choice and repaints the page and the control", () => {
-    const storage = memory();
+    const storage = memoryStorage();
     const media = fakeMedia(false);
     const host = document.createElement("div");
     host.innerHTML = themeControlHtml("system");
@@ -143,7 +135,7 @@ describe("bindThemeControl", () => {
   });
 
   it("returns to the OS when 'system' is picked back", () => {
-    const storage = memory({ [THEME_KEY]: "light" });
+    const storage = memoryStorage({ [THEME_KEY]: "light" });
     const media = fakeMedia(true);
     const host = document.createElement("div");
     host.innerHTML = themeControlHtml("light");

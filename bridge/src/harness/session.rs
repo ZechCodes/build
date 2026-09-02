@@ -227,6 +227,10 @@ pub trait AgentSession: Send + Sync {
         None
     }
 
+    fn active_model(&self) -> Option<String> {
+        None
+    }
+
     /// Age the evidence-of-work stamp, so a live session reports the silence of
     /// one that has been sitting idle for `ago`.
     ///

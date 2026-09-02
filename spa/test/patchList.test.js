@@ -9,7 +9,7 @@
 // a paint that says what the last one said writes nothing at all.
 
 import { describe, expect, it, vi } from "vitest";
-import { patchList } from "../src/core/patchList.js";
+import { patchList, rekeyEntry } from "../src/core/patchList.js";
 
 const listIn = (document, html = "") => {
   const list = document.createElement("ul");
@@ -573,5 +573,50 @@ describe("a list it cannot paint honestly", () => {
   it("says so when the render gives back no element", () => {
     const list = listIn(document);
     expect(() => patchList(list, entriesFor("a"), { ...plan, render: () => "   " })).toThrow(/"a"/);
+  });
+});
+
+describe("renaming an entry to the identity the answer gave it", () => {
+  it("renames an entry without rebuilding it", () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("pending-agent-1"), {
+      ...plan,
+      render: () => `<li><canvas class="face"></canvas><input class="say"></li>`,
+    });
+    const item = list.firstElementChild;
+    const face = item.querySelector("canvas");
+    const say = item.querySelector("input");
+    say.focus();
+
+    expect(rekeyEntry(list, "pending-agent-1", "ag-2")).toBe(true);
+    expect(keysOf(list)).toEqual(["ag-2"]);
+
+    patchList(list, entriesFor("ag-2"), {
+      ...plan,
+      render: () => `<li><canvas class="face"></canvas><input class="say"></li>`,
+    });
+
+    expect(list.firstElementChild).toBe(item);
+    expect(item.querySelector("canvas")).toBe(face);
+    expect(item.querySelector("input")).toBe(say);
+    expect(document.activeElement).toBe(say);
+  });
+
+  it("drops the stale element when the new key is already standing", () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("pending-agent-1", "ag-2"), plan);
+    const real = list.children[1];
+
+    expect(rekeyEntry(list, "pending-agent-1", "ag-2")).toBe(false);
+
+    expect(keysOf(list)).toEqual(["ag-2"]);
+    expect(list.firstElementChild).toBe(real);
+  });
+
+  it("says nothing happened when the key it was given is not there", () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a"), plan);
+    expect(rekeyEntry(list, "b", "c")).toBe(false);
+    expect(keysOf(list)).toEqual(["a"]);
   });
 });

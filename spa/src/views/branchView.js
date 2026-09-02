@@ -34,14 +34,20 @@ import { renderFilesTab } from "./files.js";
 import { createTaskReview } from "./taskReview.js";
 import { createWorktreeReview } from "./worktreeReview.js";
 import { createAdopters } from "../core/adoption.js";
-import { noteSelfAction } from "../core/inboxView.js";
+import { INBOX_SCOPE, finishWorkItem, noteSelfAction } from "../core/inboxView.js";
 import { entityIdOf } from "../core/entityId.js";
 import { mountSplitButton, createSingleFlight } from "../core/splitButton.js";
 import { confirmAction } from "../core/confirm.js";
-import { notifyError } from "../core/notify.js";
 import { refreshFeed, subscribeFeed } from "../core/taskFeed.js";
 import { SMALLEST_THREAD_PAGE } from "../core/thread.js";
-import { branchCloseout, branchFinishConfirm, branchFinishFacts, branchFinishParams } from "../core/branchFinish.js";
+import {
+  branchCloseout,
+  branchFinishConfirm,
+  branchFinishFacts,
+  branchFinishFailureSummary,
+  branchInboxKey,
+} from "../core/branchFinish.js";
+import { isPending, removeRecord, runOptimistic } from "../core/optimistic.js";
 import "../styles/shell.css";
 import "../styles/surfaces.css";
 
@@ -179,24 +185,36 @@ export async function renderBranch() {
   const finishFlight = createSingleFlight();
 
   /** One close-out: read what the deletion costs off the freshest row, confirm
-   *  the exact outline, send it, and leave for the inbox. A rejection restores
-   *  the button (the split button's contract) and the notice carries the
-   *  reason. */
+   *  the exact outline, send it, and leave for the inbox. */
   const runFinish = async (optionId) => {
     const facts = branchFinishFacts(row, branch);
     const name = facts.branch;
     // A cancel throws BEFORE any RPC: the button restores and no notice appears.
     if (!(await confirmAction(branchFinishConfirm(facts)))) throw new Error("cancelled");
-    try {
-      await callRpc("branch.finish", branchFinishParams(optionId, { projectId, branch: name }));
-    } catch (error) {
-      notifyError(`Couldn't finish ${name}`, (error && error.message) || String(error));
-      throw error;
-    }
-    refreshFeed();
-    // The issue ends with the branch only when the work landed; otherwise the
-    // bridge hands it back to the inbox.
-    finished({ issueEnded: facts.merged });
+    const inboxKey = branchInboxKey(row, { projectId, branch: name });
+    if (isPending(INBOX_SCOPE, inboxKey)) return;
+    const finishing = runOptimistic({
+      scope: INBOX_SCOPE,
+      records: [removeRecord(inboxKey)],
+      call: () =>
+        finishWorkItem(
+          {
+            kind: "branch",
+            entityId: entityIdOf(row),
+            issueId: row && row.issue_id,
+            projectId,
+            branch: name,
+            // The issue ends with the branch only when the work landed;
+            // otherwise the bridge hands it back to the inbox.
+            issueEnded: facts.merged,
+          },
+          optionId,
+        ),
+      failureSummary: branchFinishFailureSummary(name),
+    });
+    home();
+    await finishing;
+    await refreshFeed();
   };
 
   // What the Done control was last painted from. The row poll runs every 1.6

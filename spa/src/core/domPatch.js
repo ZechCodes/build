@@ -35,6 +35,7 @@ function patchAttributes(live, next) {
   // picture away. Only while it is the same attachment, though — an `<img>`
   // pointed at a new file must not go on showing the old one.
   const keepsItsBytes = sameAttachment(live, next);
+  const keepsItsSurface = live.tagName === "CANVAS";
   for (const { name, value } of [...next.attributes]) {
     if (menuTheReaderOpened(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
@@ -42,6 +43,7 @@ function patchAttributes(live, next) {
   for (const { name } of [...live.attributes]) {
     if (next.hasAttribute(name)) continue;
     if (name === "src" && keepsItsBytes) continue;
+    if ((name === "width" || name === "height") && keepsItsSurface) continue;
     if (foldTheReaderOpened(live, name)) continue;
     live.removeAttribute(name);
   }

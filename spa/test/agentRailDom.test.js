@@ -80,6 +80,7 @@ const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
 const { mountAgentRail, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
 const { FIRST_PAGE_ITEMS } = await import("../src/core/thread.js");
@@ -150,6 +151,7 @@ beforeEach(async () => {
   document.body.innerHTML = bodyHtml;
   localStorage.clear();
   resetAgentRailMemory();
+  resetOptimistic();
   setCacheDevice("dev-1");
   await wipeCache();
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
@@ -170,6 +172,7 @@ beforeEach(async () => {
     if (method === "run.adopt") return { run_id: "run-9" };
     if (method === "agent.start") return { agent_id: "ag-new", term_id: "agent:ag-new" };
     if (method === "agent.add") return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
+    if (method === "thread.post") return { posted_sequence: 7 };
     return {};
   });
 });
@@ -247,16 +250,18 @@ describe("the bubble strip", () => {
     expect(bubbles()[0].classList.contains("working")).toBe(false);
   });
 
-  it("rebuilds the strip when the agents themselves change", async () => {
+  it("keeps each bubble's element when another agent joins the strip", async () => {
     await mount();
     const before = bubbles()[0];
+    const painter = livePainters()[0];
     payload = branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
 
     vi.advanceTimersByTime(1600);
     await flush();
 
     expect(bubbles()).toHaveLength(3);
-    expect(bubbles()[0]).not.toBe(before);
+    expect(bubbles()[0]).toBe(before);
+    expect(painter.destroyed).toBe(false);
   });
 
   it("wears a painted pattern instead of a number", async () => {
@@ -494,7 +499,7 @@ describe("the painter behind a bubble", () => {
 });
 
 describe("taking an agent back off the branch", () => {
-  const twoAgents = () => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })] });
+  const twoAgents = (over = {}) => branchRow({ agents: [agent(), agent({ id: "ag-2", ordinal: 2 })], ...over });
   const removeButton = () => panel().querySelector(".rail-remove");
   const confirmModal = () => document.getElementById("confirm-scrim");
 
@@ -503,6 +508,24 @@ describe("taking an agent back off the branch", () => {
     await mount();
     bubbles()[1].click();
     await flush();
+  };
+
+  const holdRemove = () => {
+    const answering = App.call;
+    let refuse = null;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "agent.remove") return new Promise((_, reject) => { refuse = reject; });
+      return answering(method, params);
+    });
+    return { refuse: (error) => refuse(error) };
+  };
+  const railBodyNow = () => railHost().querySelector("#rail-body");
+  const confirmEveryModal = () => {
+    document.querySelectorAll(".modal-scrim").forEach((scrim) => {
+      const ok = scrim.querySelector("[data-confirm-ok]");
+      if (ok) ok.click();
+    });
   };
 
   it("offers removal on every agent, the first and the only one included", async () => {
@@ -606,6 +629,146 @@ describe("taking an agent back off the branch", () => {
     expect(removeButton()).toBeTruthy();
     expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
   });
+
+  it("takes the agent off the moment the answer is yes, before the daemon replies", async () => {
+    payload = twoAgents({
+      run: {
+        run_id: "run-3",
+        thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
+      },
+    });
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
+    holdRemove();
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(payload.agents.map((each) => each.id)).toEqual(["ag-1", "ag-2"]);
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(0);
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("drops to the ghost when the agent it took off was the only one, before the daemon replies", async () => {
+    await mount();
+    holdRemove();
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(payload.agents.map((each) => each.id)).toEqual(["ag-1"]);
+    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("New agent");
+    expect(panel().querySelector("#railinput")).toBeTruthy();
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("does not resurrect the agent when a read lands mid-flight still listing it", async () => {
+    await openSecondAgent();
+    holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    const readsBefore = callsTo("branch.get").length;
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(callsTo("branch.get").length).toBeGreaterThan(readsBefore);
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+    expect(notifyError).not.toHaveBeenCalled();
+  });
+
+  it("puts the agent and its conversation back when the daemon refuses, and says so once", async () => {
+    payload = twoAgents({
+      run: {
+        run_id: "run-3",
+        thread: { items: [{ id: "m-1", type: "message", data: { sequence: 1, role: "agent", body: "words from the second agent" } }], sessions: [] },
+      },
+    });
+    await mount();
+    bubbles()[1].click();
+    await flush();
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
+    const held = holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", ""]);
+
+    held.refuse(new Error("agent is mid-spawn"));
+    await flush();
+
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+    expect(railBodyNow().querySelectorAll(".thread-body")).toHaveLength(1);
+    expect(removeButton()).toBeTruthy();
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not remove the agent", "agent is mid-spawn");
+  });
+
+  it("stands the refused removal back up without waiting for a read that never answers", async () => {
+    await openSecondAgent();
+    const held = holdRemove();
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      calls.push({ method, params });
+      if (method === "branch.get") throw new Error("the bridge is not answering");
+      return answering(method, params);
+    });
+
+    held.refuse(new Error("agent is mid-spawn"));
+    await flush();
+
+    expect(bubbles().map((b) => b.dataset.agent)).toEqual(["ag-1", "ag-2", ""]);
+    expect(bubbles()[1].classList.contains("active")).toBe(true);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 2");
+  });
+
+  it("removes an agent the create record still names", async () => {
+    payload = branchRow({ agents: [] });
+    await mount();
+    panel().querySelector("#railinput").value = "start here";
+    panel().querySelector("#railsend").click();
+    await flush();
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+
+    removeButton().click();
+    await flush();
+    confirmModal().querySelector("[data-confirm-ok]").click();
+    await flush();
+
+    expect(callsTo("agent.remove")[0].params).toEqual({ entity_id: "run-3", agent_id: "ag-2" });
+    expect(bubbles().map((b) => b.dataset.bubble)).toEqual(["ghost"]);
+  });
+
+  it("refuses a second removal of the same agent while the first is in flight", async () => {
+    await openSecondAgent();
+    holdRemove();
+
+    removeButton().click();
+    removeButton().click();
+    await flush();
+    confirmEveryModal();
+    await flush();
+
+    expect(callsTo("agent.remove")).toHaveLength(1);
+  });
 });
 
 describe("the conversation panel", () => {
@@ -636,6 +799,58 @@ describe("the conversation panel", () => {
     await mountAgentTab.mock.calls[0][2].onStart();
 
     expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-1" });
+  });
+
+  it("marks the agent live the instant Resume is pressed, so a message behind it starts nothing twice", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    mountAgentTab.mock.calls[0][2].onStart();
+    await flush();
+    panel().querySelector('[data-mode="chat"]').click();
+    await flush();
+    panel().querySelector("#railinput").value = "carry on";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(callsTo("agent.start")).toHaveLength(1);
+  });
+
+  it("puts the agent back where it was and says why when the start is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    panel().querySelector('[data-mode="tui"]').click();
+    await flush();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.start") {
+        calls.push({ method, params });
+        throw new Error("no session could be spawned");
+      }
+      return answering(method, params);
+    });
+
+    await expect(mountAgentTab.mock.calls[0][2].onStart()).rejects.toThrow("no session could be spawned");
+    expect(notifyError).not.toHaveBeenCalled();
+
+    panel().querySelector('[data-mode="chat"]').click();
+    await flush();
+    panel().querySelector("#railinput").value = "try again";
+    panel().querySelector("#railsend").click();
+    await flush();
+
+    expect(callsTo("agent.start")).toHaveLength(2);
   });
 
   // The terminal is a capability, not a guarantee. A harness that reports its
@@ -1265,8 +1480,112 @@ describe("the composer's model menu", () => {
     await flush();
 
     expect(callsTo("agent.choose")[0].params).toEqual({
-      entity_id: "run-3", model: "claude-opus-5", effort: "",
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-opus-5", effort: "",
     });
+  });
+
+  it("keeps the effort put on top of a pick the bridge has not caught up with", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "" })] });
+    await mount();
+
+    modelMenuButton().click();
+    menuItem("model:claude-opus-5").click();
+    await flush();
+    modelMenuButton().click();
+    menuItem("effort:high").click();
+    await flush();
+
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5", effort: "high" })] });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5 · high");
+  });
+
+  it("says the model the open agent is actually running on, with no second round trip", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    await mount();
+
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5");
+    expect(callsTo("agent.choose")).toEqual([]);
+  });
+
+  it("names the pending model beside it once the menu has chosen another", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        payload = branchRow({
+          agents: [agent({ model: params.model, effort: "", active_model: "claude-opus-5" })],
+        });
+        return {};
+      }
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+
+    expect(callsTo("agent.choose")[0].params).toEqual({
+      entity_id: "run-3", agent_id: "ag-1", model: "claude-haiku-4-5", effort: "",
+    });
+    expect(modelMenuButton().textContent).toContain("Claude Opus 5 → Claude Haiku 4.5");
+    expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
+  });
+
+  it("says Default model for an agent that has never run and chose nothing", async () => {
+    payload = branchRow({ agents: [agent({ model: "", effort: "", active_model: "" })] });
+    await mount();
+
+    expect(modelMenuButton().textContent).toContain("Default model");
+  });
+
+  it("moves the label the instant a model is picked, before agent.choose answers", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+    expect(callsTo("agent.choose")).toHaveLength(1);
+    await flush();
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+  });
+
+  it("keeps the pick through a branch.get that still names the old model", async () => {
+    payload = branchRow({ agents: [agent({ model: "claude-opus-5" })] });
+    await mount();
+    const answering = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method === "agent.choose") {
+        calls.push({ method, params });
+        return new Promise(() => {});
+      }
+      return answering(method, params);
+    });
+
+    modelMenuButton().click();
+    menuItem("model:claude-haiku-4-5").click();
+    await flush();
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(modelMenuButton().textContent).toContain("Claude Haiku 4.5");
+    modelMenuButton().click();
+    expect(menuItem("model:claude-haiku-4-5").className).toContain("on");
   });
 
   it("says a refusal the standard way and puts the menu back on what the bridge holds", async () => {
@@ -1529,5 +1848,339 @@ describe("the agent's surfaces, pinned between the status line and the box", () 
 
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
+  });
+});
+
+describe("creating an agent, before the daemon has answered for it", () => {
+  const agentless = () => branchRow({ agents: [] });
+  const composer = () => railHost().querySelector("#railinput");
+  const timeline = () => railHost().querySelector(".thread-items");
+
+  const holdAgentAdd = () => {
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.add") return answer(method, params);
+      calls.push({ method, params });
+      await held;
+      return { entity_id: "run-3", agent: agent({ id: "ag-2", ordinal: 2, state: "idle" }) };
+    });
+    return release;
+  };
+
+  const refuseCall = (refused, message) => {
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== refused) return answer(method, params);
+      calls.push({ method, params });
+      throw new Error(message);
+    });
+  };
+
+  const press = async (body) => {
+    composer().value = body;
+    railHost().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("paints a pending agent the daemon has not answered for yet", async () => {
+    payload = agentless();
+    await mount();
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const running = runOptimistic({
+      scope: "agents:branch:p1:build/login",
+      records: [insertRecord("ag-7", agent({ id: "ag-7", ordinal: 1 }))],
+      call: () => held,
+      failureSummary: "Could not start the agent",
+    });
+    await flush();
+
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
+
+    vi.advanceTimersByTime(3200);
+    await flush();
+    expect(bubbles().map((bubble) => bubble.dataset.agent)).toEqual(["ag-7", ""]);
+
+    release();
+    await running;
+  });
+
+  it("paints the agent, its conversation and a cleared box in the same tick as the press", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
+    expect(bubbles()[0].classList.contains("active")).toBe(true);
+    expect(panel().querySelector(".rail-who").textContent).toBe("Claude Code 1");
+    expect(timeline().textContent).toContain("start here");
+    expect(composer().value).toBe("");
+    expect(callsTo("agent.add")).toHaveLength(1);
+    expect(callsTo("thread.post")).toEqual([]);
+
+    release();
+    await flush();
+  });
+
+  it("renames the bubble to the agent the daemon made, without rebuilding anything", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const painter = livePainters().at(-1);
+    const body = railHost().querySelector("#rail-body");
+    const input = composer();
+    input.focus();
+
+    release();
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(bubble.dataset.agent).toBe("ag-2");
+    expect(painter.destroyed).toBe(false);
+    expect(railHost().querySelector("#rail-body")).toBe(body);
+    expect(composer()).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(callsTo("thread.post")[0].params).toMatchObject({
+      entity_id: "run-3", agent_id: "ag-2", body: "start here",
+    });
+    expect(callsTo("agent.start")[0].params).toEqual({ id: "run-3", agent_id: "ag-2" });
+  });
+
+  it("keeps the sent message on screen while the post behind it is still in flight", async () => {
+    payload = agentless();
+    await mount();
+    let releasePost = null;
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      await new Promise((resolve) => {
+        releasePost = resolve;
+      });
+      return { posted_sequence: 7 };
+    });
+
+    await press("start here");
+
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+    expect(timeline().textContent).toContain("start here");
+
+    releasePost();
+    await flush();
+    expect(timeline().textContent).toContain("start here");
+  });
+
+  it("keeps the bubble it painted when the read that names the real agent lands", async () => {
+    payload = agentless();
+    await mount();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const painter = livePainters().at(-1);
+    bubble.focus();
+    payload = branchRow({ agents: [agent({ id: "ag-2", ordinal: 2, state: "idle" })] });
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(painter.destroyed).toBe(false);
+    expect(document.activeElement).toBe(bubble);
+  });
+
+  it("leaves the optimistic agent standing when a read lands mid-flight", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    const bubble = bubbles()[0];
+    const reads = callsTo("branch.get").length;
+
+    vi.advanceTimersByTime(3200);
+    await flush();
+
+    expect(bubbles()[0]).toBe(bubble);
+    expect(bubbles()).toHaveLength(2);
+    expect(callsTo("branch.get").length).toBeGreaterThan(reads);
+    expect(callsTo("branch.get").every((call) => call.params.agent_id === undefined)).toBe(true);
+
+    release();
+    await flush();
+  });
+
+  it("puts the message back in the box when the agent could not be created", async () => {
+    payload = agentless();
+    await mount();
+    refuseCall("agent.add", "no room");
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["ghost"]);
+    expect(railHost().querySelector(".rail-newagent")).toBeTruthy();
+    expect(composer().value).toBe("start here");
+    expect(document.activeElement).toBe(composer());
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no room");
+  });
+
+  it("keeps the agent when only the message was refused", async () => {
+    payload = agentless();
+    await mount();
+    refuseCall("thread.post", "no conversation");
+
+    await press("start here");
+
+    expect(bubbles().map((bubble) => bubble.dataset.bubble)).toEqual(["agent", "add"]);
+    expect(bubbles()[0].dataset.agent).toBe("ag-2");
+    expect(timeline().textContent).not.toContain("start here");
+    expect(composer().value).toBe("start here");
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Could not start the agent", "no conversation");
+  });
+
+  it("posts a message typed before the agent existed to the agent that now does", async () => {
+    payload = agentless();
+    await mount();
+    const release = holdAgentAdd();
+    await press("start here");
+    await press("and this too");
+
+    release();
+    await flush();
+    await flush();
+
+    const posts = callsTo("thread.post");
+    expect(posts.map((call) => call.params.body)).toEqual(["start here", "and this too"]);
+    expect(posts.every((call) => call.params.agent_id === "ag-2")).toBe(true);
+  });
+});
+
+describe("sending to an agent that is already there", () => {
+  const composer = () => railHost().querySelector("#railinput");
+  const timeline = () => railHost().querySelector(".thread-items");
+  const copiesOf = (body) => (timeline() ? timeline().textContent.split(body).length - 1 : 0);
+
+  const holdThreadPost = () => {
+    let release = null;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      await held;
+      return { posted_sequence: 7 };
+    });
+    return release;
+  };
+
+  const refuseThreadPost = (message) => {
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "thread.post") return answer(method, params);
+      calls.push({ method, params });
+      throw new Error(message);
+    });
+  };
+
+  const press = async (body) => {
+    composer().value = body;
+    railHost().querySelector("#railsend").click();
+    await flush();
+  };
+
+  it("shows the message and clears the box before thread.post answers", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const release = holdThreadPost();
+
+    await press("look at the login flow");
+
+    expect(timeline().textContent).toContain("look at the login flow");
+    expect(composer().value).toBe("");
+    expect(railHost().querySelector("#railsend").disabled).toBe(false);
+    expect(callsTo("thread.post")).toHaveLength(1);
+
+    release();
+    await flush();
+  });
+
+  it("keeps the sent message standing through a read that does not carry it yet", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    const release = holdThreadPost();
+    await press("look at the login flow");
+
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+
+    release();
+    await flush();
+  });
+
+  it("rekeys the sent message onto the sequence thread.post names, without a second copy", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    await press("look at the login flow");
+    expect(copiesOf("look at the login flow")).toBe(1);
+
+    payload = branchRow({
+      agents: [agent({ state: "live" })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          items: [{ type: "message", data: { sequence: 7, role: "user", body: "look at the login flow" } }],
+          sessions: [],
+        },
+      },
+    });
+    vi.advanceTimersByTime(1600);
+    await flush();
+
+    expect(copiesOf("look at the login flow")).toBe(1);
+  });
+
+  it("leaves a delivered message where it landed when only the wake is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "exited" })] });
+    await mount();
+    const answer = App.call;
+    App.call = vi.fn(async (method, params) => {
+      if (method !== "agent.start") return answer(method, params);
+      calls.push({ method, params });
+      throw new Error("no session could be spawned");
+    });
+
+    await press("look at the login flow");
+
+    expect(callsTo("thread.post")).toHaveLength(1);
+    expect(copiesOf("look at the login flow")).toBe(1);
+    expect(composer().value).toBe("");
+    expect(notifyError).toHaveBeenCalledTimes(1);
+  });
+
+  it("puts the words back in the box and says why when thread.post is refused", async () => {
+    payload = branchRow({ agents: [agent({ state: "live" })] });
+    await mount();
+    refuseThreadPost("the conversation is gone");
+
+    await press("look at the login flow");
+
+    expect(copiesOf("look at the login flow")).toBe(0);
+    expect(composer().value).toBe("look at the login flow");
+    expect(document.activeElement).toBe(composer());
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
   });
 });

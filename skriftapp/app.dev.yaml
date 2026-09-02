@@ -4,6 +4,7 @@ controllers:
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
+  - buildapp.waitlist_controller:WaitlistController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController
 models:
@@ -18,6 +19,10 @@ auth:
       label: Demo Login
 rate_limit:
   enabled: false
+email:
+  backend: skrift.lib.email_backends:ConsoleEmailBackend
+  from_address: Build <hello@localhost>
+  public_base_url: http://localhost:8090
 # Dev-only: the local relay may call /internal/* without X-Internal-Secret as long
 # as it connects from localhost. Production requires INTERNAL_API_SECRET.
 internal_api:

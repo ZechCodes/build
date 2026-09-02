@@ -10,8 +10,15 @@
 # Creates:
 #   build-postgres  POSTGRES_PASSWORD
 #   build-app       SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL,
-#                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push)
+#                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push),
+#                   SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS,
+#                   WAITLIST_NOTIFY_ADDRESS (outbound email)
 #   build-relay     RELAY_INTERNAL_SECRET (same value as INTERNAL_API_SECRET)
+#
+# The email keys are credentials this script cannot invent: export
+# SMTP_USERNAME, SMTP_PASSWORD and SMTP_FROM_ADDRESS (and optionally
+# WAITLIST_NOTIFY_ADDRESS) in the environment before running, or the SMTP step
+# aborts.
 set -euo pipefail
 
 NAMESPACE=8ly
@@ -30,7 +37,16 @@ secret_value() { # secret_value <secret> <key>
 
 random_secret() { openssl rand -hex 32; }
 
+require_env() { [[ -n "${!1:-}" ]] || { echo "bootstrap-secrets: $1 must be set in the environment (never generated)" >&2; exit 1; }; }
+
 b64url() { base64 | tr -d '=\n' | tr '/+' '_-'; }
+
+# Secret values go into `.data` as base64 rather than into `.stringData` raw:
+# base64 is always JSON-safe, so a quote or a backslash in a password or a
+# display-name from address cannot break (or extend) the merge patch.
+b64_value() { printf %s "$1" | base64 | tr -d '\n'; }
+
+smtp_key_missing() { [[ -z "$(kc get secret build-app -o "jsonpath={.data.$1}")" ]]; }
 
 # Generate a VAPID (P-256) keypair into VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY:
 # the raw 32-byte private scalar and the 65-byte uncompressed public point,
@@ -86,6 +102,23 @@ if [[ -z "$(kc get secret build-app -o 'jsonpath={.data.VAPID_PUBLIC_KEY}')" ]];
     \"VAPID_PUBLIC_KEY\":\"$VAPID_PUBLIC_KEY\",
     \"VAPID_SUBJECT\":\"$VAPID_SUBJECT\"}}"
   echo "secret build-app: VAPID keys added"
+fi
+
+# --- build-app smtp (add-if-missing) -----------------------------------------
+# The FastMail credentials the waitlist mail needs, plus the owner notification
+# address (empty disables the notification). Never generated — the operator
+# exports them before running.
+if smtp_key_missing SMTP_USERNAME || smtp_key_missing SMTP_PASSWORD \
+  || smtp_key_missing SMTP_FROM_ADDRESS || smtp_key_missing WAITLIST_NOTIFY_ADDRESS; then
+  require_env SMTP_USERNAME
+  require_env SMTP_PASSWORD
+  require_env SMTP_FROM_ADDRESS
+  kc patch secret build-app --type merge -p "{\"data\":{
+    \"SMTP_USERNAME\":\"$(b64_value "$SMTP_USERNAME")\",
+    \"SMTP_PASSWORD\":\"$(b64_value "$SMTP_PASSWORD")\",
+    \"SMTP_FROM_ADDRESS\":\"$(b64_value "$SMTP_FROM_ADDRESS")\",
+    \"WAITLIST_NOTIFY_ADDRESS\":\"$(b64_value "${WAITLIST_NOTIFY_ADDRESS:-}")\"}}"
+  echo "secret build-app: SMTP keys added"
 fi
 
 # --- build-relay ---------------------------------------------------------------

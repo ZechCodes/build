@@ -38,6 +38,15 @@ pub enum RelayError {
     Transport(#[from] transport::TransportError),
     #[error("protocol error: {0}")]
     Protocol(String),
+    #[error("relay silent for {}s", .0.as_secs())]
+    Silent(Duration),
+}
+
+const DEFAULT_HEARTBEAT_INTERVAL_S: u64 = 30;
+const MISSED_HEARTBEATS_BEFORE_SILENT: u32 = 3;
+
+pub fn silence_deadline(heartbeat_interval_s: u64) -> Duration {
+    Duration::from_secs(heartbeat_interval_s.max(1)) * MISSED_HEARTBEATS_BEFORE_SILENT
 }
 
 impl From<tokio_tungstenite::tungstenite::Error> for RelayError {
@@ -635,8 +644,14 @@ pub async fn run_with_connector(
     // Handlers run here, not on this task: below, the loop only reads, decrypts
     // and enqueues, so no handler can stop the socket from being drained.
     let mut dispatcher = Dispatcher::new(handler);
+    let mut deadline = silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S);
 
-    while let Some(message) = source.next().await {
+    loop {
+        let Ok(next) = tokio::time::timeout(deadline, source.next()).await else {
+            abort_heartbeat(heartbeat);
+            return Err(RelayError::Silent(deadline));
+        };
+        let Some(message) = next else { break };
         let message = message?;
         let text = match message {
             Message::Text(t) => t,
@@ -653,7 +668,8 @@ pub async fn run_with_connector(
                 let interval = msg
                     .get("heartbeat_interval_s")
                     .and_then(Value::as_u64)
-                    .unwrap_or(30);
+                    .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
+                deadline = silence_deadline(interval);
                 // Upload our transport public key so clients can wrap to it.
                 send(
                     &out_tx,
@@ -687,12 +703,16 @@ pub async fn run_with_connector(
         }
     }
 
-    if let Some(h) = heartbeat {
-        h.abort();
-    }
+    abort_heartbeat(heartbeat);
     drop(out_tx);
     let _ = writer.await;
     Ok(())
+}
+
+fn abort_heartbeat(heartbeat: Option<tokio::task::JoinHandle<()>>) {
+    if let Some(task) = heartbeat {
+        task.abort();
+    }
 }
 
 /// A client opened a session: unwrap its session key and prove receipt with an
@@ -793,10 +813,9 @@ fn spawn_heartbeat(
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_s.max(1)));
         loop {
             ticker.tick().await;
-            if out_tx
-                .send(Message::Text(json!({"type": "heartbeat"}).to_string()))
-                .is_err()
-            {
+            let heartbeat = out_tx.send(Message::Text(json!({"type": "heartbeat"}).to_string()));
+            let ping = out_tx.send(Message::Ping(Vec::new()));
+            if heartbeat.is_err() || ping.is_err() {
                 break;
             }
         }
@@ -818,6 +837,21 @@ fn tracing_protocol_error(err: &RelayError) {
     // Protocol errors on a single frame must not kill the connection; a real
     // build wires this to `tracing`. Kept minimal here.
     let _ = err;
+}
+
+#[cfg(test)]
+mod silence_tests {
+    #[test]
+    fn a_relay_is_silent_after_three_missed_heartbeats() {
+        assert_eq!(
+            super::silence_deadline(30),
+            std::time::Duration::from_secs(90)
+        );
+        assert_eq!(
+            super::silence_deadline(0),
+            std::time::Duration::from_secs(3)
+        );
+    }
 }
 
 #[cfg(test)]

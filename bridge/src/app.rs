@@ -3205,6 +3205,23 @@ impl AppState {
         });
     }
 
+    fn recorded_active_model(&self, owner: &str, agent_id: &str) -> Option<String> {
+        self.entity_agents(owner)
+            .ok()?
+            .by_id(agent_id)?
+            .active_model
+            .clone()
+    }
+
+    fn record_agent_active_model(&mut self, owner: &str, agent_id: &str, running: Option<String>) {
+        if self.recorded_active_model(owner, agent_id) == running {
+            return;
+        }
+        self.edit_agent_record("record_agent_active_model", owner, agent_id, |agent| {
+            agent.active_model = running;
+        });
+    }
+
     /// Post one thing the agent reported doing into the conversation it speaks
     /// in.
     ///
@@ -3847,12 +3864,14 @@ impl AppState {
             active.model_choice = choice;
             let persisted = self.persist_plan_record(entity_id, &active);
             self.plans.insert(entity_id.to_string(), active);
+            self.note_entity_changed(entity_id);
             return persisted;
         }
         let mut active = self.take_run(entity_id)?;
         active.model_choice = choice;
         let persisted = self.persist_run_record(entity_id, &active);
         self.runs.insert(entity_id.to_string(), active);
+        self.note_entity_changed(entity_id);
         persisted
     }
 
@@ -8174,13 +8193,29 @@ impl AppState {
     /// choice without spawning anything.
     ///
     /// The provider is not a question here: an agent is locked to the harness
-    /// it was created on, so this keeps the entity's own and refuses a caller
-    /// that names one, by that harness's name. A live session is untouched —
+    /// it was created on, and a caller that names one is refused by that
+    /// harness's name. A live session is untouched —
     /// the choice is what the NEXT start spends, which is exactly what the
     /// menu offers.
     fn agent_choose(&mut self, params: &Value) -> Result<Value, String> {
         let entity_id = require_str(params, "entity_id")?;
-        let locked = self.entity_model_choice(&entity_id)?.provider;
+        let entity_provider = self.entity_model_choice(&entity_id)?.provider;
+        let on_another_harness = params
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|agent_id| !agent_id.is_empty())
+            .and_then(|agent_id| {
+                let provider = self
+                    .entity_agents(&entity_id)
+                    .ok()?
+                    .by_id(agent_id)?
+                    .choice
+                    .provider;
+                (provider != entity_provider).then(|| (agent_id.to_string(), provider))
+            });
+        let locked = on_another_harness
+            .as_ref()
+            .map_or(entity_provider, |(_, provider)| *provider);
         if let Some(named) = params.get("provider").and_then(Value::as_str) {
             if !named.is_empty() {
                 return Err(format!(
@@ -8190,13 +8225,25 @@ impl AppState {
             }
         }
         let choice = model_choice_from(params, locked)?;
-        self.set_entity_model_choice(&entity_id, choice.clone())?;
+        match on_another_harness {
+            Some((agent_id, _)) => {
+                self.set_agent_model_choice(&entity_id, &agent_id, choice.clone())
+            }
+            None => self.set_entity_model_choice(&entity_id, choice.clone())?,
+        }
         Ok(json!({
             "entity_id": entity_id,
             "provider": choice.provider,
             "model": choice.model,
             "effort": choice.effort,
         }))
+    }
+
+    fn set_agent_model_choice(&mut self, entity_id: &str, agent_id: &str, choice: ModelChoice) {
+        self.edit_agent_record("set_agent_model_choice", entity_id, agent_id, |agent| {
+            agent.choice = choice;
+        });
+        self.note_entity_changed(entity_id);
     }
 
     /// `agent.remove` — take an agent back off a branch's rail.
@@ -8349,12 +8396,23 @@ impl AppState {
         let tab = root.map(|root| TabKey::agent(root, &agent.id));
         let tab = tab.as_ref().and_then(|key| self.tabs.get(key));
         let live = tab.is_some_and(|tab| tab.session_is_live());
+        let next_start = self
+            .entity_agents(entity_id)
+            .ok()
+            .zip(self.entity_model_choice(entity_id).ok())
+            .map(|(roster, entity_choice)| roster.turn_choice(&agent.id, &entity_choice))
+            .unwrap_or_else(|| agent.choice.clone());
         let mut digest = json!({
             "id": agent.id,
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
-            "model": agent.choice.model,
-            "effort": agent.choice.effort,
+            "model": next_start.model.clone().unwrap_or_default(),
+            "effort": next_start.effort.clone().unwrap_or_default(),
+            "active_model": agent
+                .active_model
+                .clone()
+                .or(next_start.model)
+                .unwrap_or_default(),
             "state": if live {
                 crate::agent::AgentLifecycle::Live.as_str()
             } else {
@@ -11154,6 +11212,7 @@ impl AppState {
             .get("interrupt")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let posted_sequence;
         if let Some(active) = self.plans.get(&entity_id) {
             if active.plan.state.is_terminal() {
                 return Err(format!(
@@ -11206,7 +11265,7 @@ impl AppState {
                         })
                     });
             let mut active = self.take_plan(&entity_id)?;
-            append_reviewer_messages(
+            posted_sequence = append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
@@ -11276,7 +11335,7 @@ impl AppState {
                 let run_persisted = self.finish_run_mutation(run_id, run);
                 run_persisted?;
             }
-            return Ok(view);
+            return Ok(with_posted_sequence(view, posted_sequence));
         }
         if let Some(active) = self.runs.get(&entity_id) {
             if active.run.state.is_terminal() {
@@ -11327,7 +11386,7 @@ impl AppState {
                 .filter(|_| addresses_primary_agent)
             {
                 let mut issue = self.take_plan(&issue_id)?;
-                append_reviewer_messages(
+                posted_sequence = append_reviewer_messages(
                     issue.agents.sole_thread_mut(),
                     messages,
                     attachments,
@@ -11351,18 +11410,21 @@ impl AppState {
                     let (view, run_persisted) =
                         self.answer_run_mutation(entity_id, active, thread_detail(params));
                     run_persisted?;
-                    return Ok(view);
+                    return Ok(with_posted_sequence(view, posted_sequence));
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
-                return Ok(self.run_view(
-                    &entity_id,
-                    active,
-                    thread_detail(params),
-                    DigestScope::Detail,
+                return Ok(with_posted_sequence(
+                    self.run_view(
+                        &entity_id,
+                        active,
+                        thread_detail(params),
+                        DigestScope::Detail,
+                    ),
+                    posted_sequence,
                 ));
             }
             let mut active = self.take_run(&entity_id)?;
-            append_reviewer_messages(
+            posted_sequence = append_reviewer_messages(
                 &mut active.agents.resolve_mut(Some(&agent_id))?.thread,
                 messages,
                 attachments,
@@ -11386,7 +11448,7 @@ impl AppState {
             let (view, persisted) =
                 self.answer_run_mutation(entity_id, active, thread_detail(params));
             persisted?;
-            return Ok(view);
+            return Ok(with_posted_sequence(view, posted_sequence));
         }
         Err("unknown conversation owner".to_string())
     }
@@ -16834,20 +16896,24 @@ fn append_reviewer_messages(
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
     attachments: Vec<crate::thread::MessageAttachment>,
     choice: Option<&crate::thread::OptionChoice>,
-) {
+) -> Option<u64> {
     if let Some(choice) = choice {
         if thread.post_option_reply(choice, &now_rfc3339()).is_ok() {
-            return;
+            return last_appended_sequence(thread);
         }
     }
-    append_user_thread_messages_with_attachments(thread, messages, attachments);
+    append_user_thread_messages_with_attachments(thread, messages, attachments)
 }
 
 fn append_user_thread_messages(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
-) {
-    append_user_thread_messages_with_attachments(thread, messages, Vec::new());
+) -> Option<u64> {
+    append_user_thread_messages_with_attachments(thread, messages, Vec::new())
+}
+
+fn last_appended_sequence(thread: &crate::thread::Thread) -> Option<u64> {
+    thread.items.last().map(crate::thread::ThreadItem::sequence)
 }
 
 /// Append reviewer messages, hanging any attachments off the last of them.
@@ -16859,7 +16925,7 @@ fn append_user_thread_messages_with_attachments(
     thread: &mut crate::thread::Thread,
     messages: Vec<(String, Option<crate::thread::MessageAnchor>)>,
     attachments: Vec<crate::thread::MessageAttachment>,
-) {
+) -> Option<u64> {
     let now = now_rfc3339();
     let last = messages.len().saturating_sub(1);
     for (index, (body, anchor)) in messages.into_iter().enumerate() {
@@ -16869,6 +16935,15 @@ fn append_user_thread_messages_with_attachments(
             thread.post_user(body, anchor, &now);
         }
     }
+    last_appended_sequence(thread)
+}
+
+fn with_posted_sequence(view: Value, sequence: Option<u64>) -> Value {
+    let mut view = view;
+    if let (Some(map), Some(sequence)) = (view.as_object_mut(), sequence) {
+        map.insert("posted_sequence".to_string(), json!(sequence));
+    }
+    view
 }
 
 fn append_plan_stage_announcements(
@@ -18074,8 +18149,13 @@ fn ensure_agent_tab(
                     Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
                 }
             }
+            let running = tab
+                .session
+                .active_model()
+                .or_else(|| model_choice.model.clone());
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
+            s.record_agent_active_model(owner, agent_id, running);
         }
         spawn_tab_pumps(state, key, rx);
         return Ok((wire_id, Spawned::Fresh));
@@ -18344,7 +18424,7 @@ fn spawn_tab_pump(
                                 // would throw a good name away at every
                                 // restart. A name that no longer resolves is
                                 // caught at the reservation instead.
-                                note_named_conversation(&mut s, &key, &owner, &agent_id);
+                                note_session_self_report(&mut s, &key, &owner, &agent_id);
                                 // The process is what a session IS, so this is
                                 // where the conversation's lineage closes — and
                                 // where a turn the dead process was holding is
@@ -18440,7 +18520,7 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    note_named_conversation(&mut s, &key, &owner, &agent_id);
+                    note_session_self_report(&mut s, &key, &owner, &agent_id);
                     record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -18458,7 +18538,7 @@ fn spawn_activity_pump(
                     tab.live = false;
                     let unanswered_call_sequences = take_unanswered_call_sequences(tab);
                     match named_conversation(&s, &key) {
-                        Some(_) => note_named_conversation(&mut s, &key, &owner, &agent_id),
+                        Some(_) => note_session_self_report(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -18526,6 +18606,22 @@ fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agen
     state.record_agent_resume_id(owner, agent_id, Some(named));
 }
 
+fn announced_model(state: &AppState, key: &TabKey) -> Option<String> {
+    state.tabs.get(key)?.session.active_model()
+}
+
+fn note_announced_model(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    let Some(running) = announced_model(state, key) else {
+        return;
+    };
+    state.record_agent_active_model(owner, agent_id, Some(running));
+}
+
+fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
+    note_named_conversation(state, key, owner, agent_id);
+    note_announced_model(state, key, owner, agent_id);
+}
+
 /// The terminal carrier's capture point: ask every live agent session for the
 /// name its conversation has, and write down each answer that moved.
 ///
@@ -18549,6 +18645,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
         agent_id: String,
         session: Arc<dyn AgentSession>,
         recorded: Option<String>,
+        recorded_model: Option<String>,
     }
 
     let live: Vec<LiveAgent> = {
@@ -18565,6 +18662,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
                     agent_id: agent_id.clone(),
                     session: Arc::clone(&tab.session),
                     recorded: s.recorded_resume_id(owner, agent_id),
+                    recorded_model: s.recorded_active_model(owner, agent_id),
                 }),
                 TabRole::Shell => None,
             })
@@ -18573,12 +18671,11 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     let moved: Vec<(TabKey, String, String)> = live
         .into_iter()
         .filter_map(|agent| {
-            let named = agent.session.session_id()?;
-            (agent.recorded.as_deref() != Some(named.as_str())).then_some((
-                agent.key,
-                agent.owner,
-                agent.agent_id,
-            ))
+            let named = agent.session.session_id();
+            let running = agent.session.active_model();
+            let name_moved = named.is_some() && agent.recorded != named;
+            let model_moved = running.is_some() && agent.recorded_model != running;
+            (name_moved || model_moved).then_some((agent.key, agent.owner, agent.agent_id))
         })
         .collect();
     if moved.is_empty() {
@@ -18586,7 +18683,7 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     }
     let mut s = state.lock().unwrap();
     for (key, owner, agent_id) in moved {
-        note_named_conversation(&mut s, &key, &owner, &agent_id);
+        note_session_self_report(&mut s, &key, &owner, &agent_id);
     }
 }
 
@@ -28374,6 +28471,60 @@ mod tests {
         assert!(!posted.to_string().contains("turn 0\""), "{thread:?}");
     }
 
+    #[test]
+    fn thread_post_names_the_sequence_it_appended() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        run_with_long_conversation(&mut state, "run-post-named", 3);
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-named", "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let appended = items.last().unwrap();
+        assert_eq!(appended["data"]["body"], "one more word");
+        assert_eq!(
+            posted["result"]["posted_sequence"], appended["data"]["sequence"],
+            "{posted:?}"
+        );
+
+        let again = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": "run-post-named", "body": "and another" }),
+        ));
+        assert_eq!(again["ok"], true, "{again:?}");
+        assert!(
+            again["result"]["posted_sequence"].as_u64().unwrap()
+                > posted["result"]["posted_sequence"].as_u64().unwrap(),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn posting_to_an_implementation_names_the_sequence_in_its_issues_conversation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let (_issue_id, run_id) = planned_run_in_review(&mut state, "name the routed post");
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "one more word" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let items = posted["result"]["thread"]["items"].as_array().unwrap();
+        let appended = items
+            .iter()
+            .rev()
+            .find(|item| item["data"]["body"] == "one more word")
+            .unwrap();
+        assert_eq!(
+            posted["result"]["posted_sequence"], appended["data"]["sequence"],
+            "{posted:?}"
+        );
+    }
+
     /// And the same silence rule as the reads: a client that named no page is
     /// one that cannot page, so posting still answers it with the conversation
     /// entire.
@@ -32595,6 +32746,61 @@ mod tests {
         assert_eq!(unknown["ok"], false, "{unknown:?}");
     }
 
+    #[tokio::test]
+    async fn agent_choose_writes_on_the_named_agent_when_it_runs_another_harness() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
+        let run_id = {
+            let mut held = state.lock().unwrap();
+            adopted_run(&mut held, &repo, dir.path(), "feature-two-harnesses")
+        };
+        let claude_agent = {
+            let held = state.lock().unwrap();
+            primary_agent_id(&held, &run_id)
+        };
+
+        let added = call(
+            &handler,
+            "agent.add",
+            json!({ "entity_id": run_id, "provider": "codex" }),
+        );
+        assert_eq!(added["ok"], true, "{added:?}");
+        let codex_agent = added["result"]["agent"]["id"].as_str().unwrap().to_string();
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": run_id, "agent_id": codex_agent, "model": "gpt-5.6-sol" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+
+        let digests = state
+            .lock()
+            .unwrap()
+            .agent_digests(&run_id, DigestScope::List);
+        let codex_digest = digests
+            .iter()
+            .find(|digest| digest["id"] == json!(codex_agent.clone()))
+            .expect("the codex agent is on the roster");
+        assert_eq!(codex_digest["model"], "gpt-5.6-sol");
+        let claude_digest = digests
+            .iter()
+            .find(|digest| digest["id"] == json!(claude_agent.clone()))
+            .expect("the claude agent is on the roster");
+        assert_eq!(
+            claude_digest["model"], "",
+            "the other harness's agent keeps what it had"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs[&run_id]
+                .model_choice
+                .model
+                .as_deref(),
+            None,
+            "the entity's own choice is not spent on another harness's agent"
+        );
+    }
+
     /// Switching provider under a running harness would leave that process
     /// running the old provider while the record claimed the new one — a
     /// stranded agent nobody owns. The switch is refused and the running
@@ -34817,6 +35023,7 @@ mod tests {
         log: SessionLog,
         surfaces: Option<AgentSurfaces>,
         watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
+        active_model: Option<String>,
     }
 
     impl DictatedSession {
@@ -34828,6 +35035,7 @@ mod tests {
                 log: SessionLog::default(),
                 surfaces: None,
                 watched_surface_revision: None,
+                active_model: None,
             }
         }
 
@@ -34860,6 +35068,11 @@ mod tests {
             self.log = log.clone();
             self
         }
+
+        fn announcing_model(mut self, model: &str) -> DictatedSession {
+            self.active_model = Some(model.to_string());
+            self
+        }
     }
 
     impl AgentSession for DictatedSession {
@@ -34872,6 +35085,9 @@ mod tests {
         }
         fn quiet_for(&self) -> Duration {
             self.quiet
+        }
+        fn active_model(&self) -> Option<String> {
+            self.active_model.clone()
         }
         fn exited_within(&self, _timeout: Duration) -> bool {
             matches!(self.status, AgentStatus::Ended { .. })
@@ -37404,6 +37620,161 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_spawn_writes_down_the_model_it_spent() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        on_the_terminal_carrier(&state);
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-spent");
+        insert_run_without_agent(
+            &state,
+            &repo,
+            dir.path().join("other"),
+            "run-harness-default",
+        );
+        {
+            let agent = Agent::WarmBuilder(Arc::new(
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| warm_tui_spec(),
+            ));
+            let mut s = state.lock().unwrap();
+            let worktrees = s.worktrees_root.clone();
+            s.projects[0].orch =
+                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+        }
+
+        let chosen = call(
+            &handler,
+            "agent.choose",
+            json!({ "entity_id": "run-spent", "model": "claude-opus-5" }),
+        );
+        assert_eq!(chosen["ok"], true, "{chosen:?}");
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-spent", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .agent_digests("run-spent", DigestScope::List)[0]["active_model"],
+            "claude-opus-5",
+            "a carrier that announces nothing still says what Build handed it"
+        );
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-harness-default", "body": "start something" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .agent_digests("run-harness-default", DigestScope::List)[0]["active_model"],
+            "",
+            "a spawn left at the harness default knows nothing rather than lying"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_sweep_tick_writes_down_the_model_a_session_announced() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let agent_id = crate::agent::derived_agent_id("run-announced");
+        {
+            let mut s = state.lock().unwrap();
+            let root = insert_run(
+                &mut s,
+                &repo,
+                dir.path(),
+                "run-announced",
+                RunState::Building,
+            );
+            insert_dictated_agent_tab(
+                &mut s,
+                &root,
+                "run-announced",
+                DictatedSession::reporting(AgentStatus::Waiting)
+                    .announcing_model("claude-fable-5-1"),
+            );
+        }
+
+        capture_conversation_names(&state);
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_active_model("run-announced", &agent_id)
+                .as_deref(),
+            Some("claude-fable-5-1"),
+            "one tick puts the model the child announced on the agent's record"
+        );
+
+        state.lock().unwrap().changes().flush();
+        capture_conversation_names(&state);
+        assert!(
+            !state.lock().unwrap().changes().has_pending(),
+            "a tick with nothing moved writes nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_keeps_the_model_it_last_ran() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-outlives");
+        let agent_id = crate::agent::derived_agent_id("run-outlives");
+        run_on_a_headless_provider(
+            &state,
+            &repo,
+            "run-outlives",
+            HarnessSpec::new("sh").arg("-c").arg("exit 0"),
+        );
+        {
+            let mut s = state.lock().unwrap();
+            s.resume_id_probe = Arc::new(|_, _, _| true);
+            let run = s.runs.get_mut("run-outlives").expect("the run");
+            run.model_choice.model = Some("claude-opus-5".to_string());
+            let agent = run.agents.resolve_mut(None).expect("its agent");
+            agent.resume_session_id = Some("sess-gone".to_string());
+        }
+
+        let posted = call(
+            &handler,
+            "thread.post",
+            json!({ "entity_id": "run-outlives", "body": "carry on" }),
+        );
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let key = derived_agent_key(&root, "run-outlives");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            (!s.tabs.get(&key)?.live).then_some(())
+        })
+        .await
+        .expect("the child leaves on its own");
+        wait_for(Duration::from_secs(10), || {
+            let s = state.lock().unwrap();
+            s.recorded_resume_id("run-outlives", &agent_id)
+                .is_none()
+                .then_some(())
+        })
+        .await
+        .expect("a session that announced nothing sends the next spawn back to the probe");
+
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_active_model("run-outlives", &agent_id)
+                .as_deref(),
+            Some("claude-opus-5"),
+            "what an agent last ran on outlives the session that ran it"
+        );
+    }
+
     /// The close arm RECORDS; it never clears.
     ///
     /// The headless pump clears on a session that ended having announced
@@ -37937,6 +38308,157 @@ mod tests {
         assert_ne!(
             state.agent_digests("run-liveness", DigestScope::List)[0]["state"],
             "live"
+        );
+    }
+
+    #[test]
+    fn an_agents_digest_carries_the_model_it_is_actually_running() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-active-model",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-active-model");
+
+        assert_eq!(
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
+            "",
+            "an agent that has never run is running nothing Build knows of"
+        );
+
+        state.record_agent_active_model(
+            "run-active-model",
+            &agent_id,
+            Some("claude-fable-5-1".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
+            "claude-fable-5-1"
+        );
+
+        state.record_agent_active_model(
+            "run-active-model",
+            &agent_id,
+            Some("claude-opus-5".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
+            "claude-opus-5",
+            "the newer announcement wins"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_announced_nothing_reports_the_model_its_next_start_spends() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-projected-model",
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id("run-projected-model");
+
+        let digest = state.agent_digests("run-projected-model", DigestScope::List)[0].clone();
+        assert_eq!(digest["model"], "");
+        assert_eq!(digest["effort"], "");
+        assert_eq!(digest["active_model"], "");
+
+        state
+            .set_entity_model_choice(
+                "run-projected-model",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: None,
+                },
+            )
+            .expect("the choice persists");
+        let digest = state.agent_digests("run-projected-model", DigestScope::List)[0].clone();
+        assert_eq!(digest["model"], "claude-opus-5");
+        assert_eq!(digest["effort"], "");
+        assert_eq!(
+            digest["active_model"], "claude-opus-5",
+            "with nothing announced, what the next start spends is what it runs"
+        );
+
+        state.record_agent_active_model(
+            "run-projected-model",
+            &agent_id,
+            Some("claude-haiku-4-5".to_string()),
+        );
+        assert_eq!(
+            state.agent_digests("run-projected-model", DigestScope::List)[0]["active_model"],
+            "claude-haiku-4-5",
+            "the session's own announcement outranks the projection"
+        );
+    }
+
+    #[test]
+    fn the_digest_reports_the_model_the_next_start_will_spend() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-choose",
+            RunState::Building,
+        );
+        let provider_before =
+            state.agent_digests("run-choose", DigestScope::List)[0]["provider"].clone();
+
+        state
+            .set_entity_model_choice(
+                "run-choose",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: Some("high".to_string()),
+                },
+            )
+            .expect("the choice persists");
+
+        let digest = state.agent_digests("run-choose", DigestScope::List)[0].clone();
+        assert_eq!(digest["model"], "claude-opus-5");
+        assert_eq!(digest["effort"], "high");
+        assert_eq!(digest["provider"], provider_before);
+    }
+
+    #[test]
+    fn choosing_a_model_stales_the_entity_for_every_browser() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        insert_run(
+            &mut state,
+            &repo,
+            dir.path(),
+            "run-stale-choice",
+            RunState::Building,
+        );
+        state.changes().flush();
+        assert!(!state.changes().has_pending());
+
+        state
+            .set_entity_model_choice(
+                "run-stale-choice",
+                ModelChoice {
+                    provider: AgentProvider::default(),
+                    model: Some("claude-opus-5".to_string()),
+                    effort: None,
+                },
+            )
+            .expect("the choice persists");
+
+        assert!(
+            state.changes().has_pending(),
+            "another browser repaints instead of waiting for its own poll"
         );
     }
 

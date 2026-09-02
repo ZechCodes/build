@@ -19,6 +19,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from skrift.db.base import Base
 
+from buildapp.waitlist_address import MAX_WAITLIST_ADDRESS_LENGTH
+
 
 class Device(Base):
     """A bridge (device daemon) registered to a user account.
@@ -89,3 +91,11 @@ class AnnouncedAppVersion(Base):
     __tablename__ = "announced_app_versions"
 
     version: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+
+class WaitlistSignup(Base):
+    __tablename__ = "waitlist_signups"
+
+    email: Mapped[str] = mapped_column(
+        String(MAX_WAITLIST_ADDRESS_LENGTH), unique=True, nullable=False
+    )

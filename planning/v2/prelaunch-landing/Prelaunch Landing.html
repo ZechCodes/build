@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Build — the agentic coding IDE · early access</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--g:#00ff88;--bg:#030604;--bd:rgba(0,255,136,.16);--bd2:rgba(255,255,255,.08);--t1:#f2fff8;--t2:#8fa89a;--t3:#54655c}
+body{background:var(--bg);color:var(--t1);font-family:'JetBrains Mono',monospace;-webkit-font-smoothing:antialiased}
+body::after{content:"";position:fixed;inset:0;z-index:50;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);opacity:.45}
+a{color:var(--g);text-decoration:none}a:hover{color:#7dffc0}
+.wrap{max-width:1240px;margin:0 auto;padding:0 40px}
+nav{position:fixed;left:0;right:0;top:0;z-index:20;background:transparent;border-bottom:1px solid transparent;transition:background .3s,border-color .3s,backdrop-filter .3s}
+nav.solid{background:rgba(3,6,4,.82);backdrop-filter:blur(14px);border-bottom-color:var(--bd2)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+.brand{display:flex;align-items:center;gap:9px;font:600 15px 'JetBrains Mono',monospace;letter-spacing:.04em;color:var(--t1)}
+.navl{display:flex;gap:2px;font:500 13px 'JetBrains Mono',monospace}
+.navl a{color:var(--t2);padding:7px 13px;border:1px solid transparent}
+.navl a:hover{color:var(--g);border-color:var(--bd)}
+.navcta{font:600 13px 'JetBrains Mono',monospace;color:#02130a;background:var(--g);padding:9px 18px}
+.navcta:hover{color:#02130a;box-shadow:0 0 28px rgba(0,255,136,.35)}
+.hero{position:relative;border-bottom:1px solid var(--bd2);overflow:hidden}
+.hero{min-height:100vh;display:flex;align-items:center}
+.hero .wrap{position:relative;z-index:1;display:flex;flex-direction:column;align-items:center;text-align:center;padding-top:110px;padding-bottom:110px;width:100%}
+.hero .field{position:absolute;inset:0;z-index:0;pointer-events:none}
+.hero .field canvas{display:block}
+.hero .wait{justify-content:center;margin-left:auto;margin-right:auto}
+.hero .waitnote{text-align:center}
+.stat{font:500 12px 'JetBrains Mono',monospace;color:var(--g);letter-spacing:.12em;margin-bottom:30px}
+@keyframes blink{50%{opacity:0}}
+h1{font:700 76px/1.04 'JetBrains Mono',monospace;letter-spacing:-0.02em;text-transform:uppercase;color:var(--t1)}
+h1 span{color:var(--g);text-shadow:0 0 28px rgba(0,255,136,.45)}
+.sub{font:400 16px/1.85 'JetBrains Mono',monospace;color:var(--t2);max-width:620px;margin:28px auto 0}
+.ctas{display:flex;gap:12px;margin-top:40px}
+.btn1{font:600 14px 'JetBrains Mono',monospace;color:#02130a;background:var(--g);padding:14px 26px;box-shadow:0 0 32px rgba(0,255,136,.22);white-space:nowrap}
+.btn1:hover{color:#02130a;box-shadow:0 0 44px rgba(0,255,136,.4)}
+.btn2{font:500 14px 'JetBrains Mono',monospace;color:var(--g);border:1px solid var(--bd);padding:14px 26px;white-space:nowrap}
+.btn2 b{font-weight:500;color:var(--t2)}
+.btn2:hover{border-color:rgba(0,255,136,.4)}
+.shotsec{position:relative;padding:76px 0}
+.shotsec::before{content:"";position:absolute;left:0;right:0;top:0;bottom:0;background:radial-gradient(ellipse 55% 45% at 50% 55%,rgba(0,255,136,.05),transparent 70%)}
+.winframe{position:relative;background:#020503}
+.winbar{display:flex;align-items:center;justify-content:space-between;font:500 12px 'JetBrains Mono',monospace;color:var(--t2);border-bottom:1px solid var(--bd);padding:11px 16px;letter-spacing:.06em}
+.winbar b{color:var(--g);font-weight:500}
+.corner{position:absolute;width:14px;height:14px;border:2px solid var(--g)}
+.c1{top:-2px;left:-2px;border-right:0;border-bottom:0}.c2{top:-2px;right:-2px;border-left:0;border-bottom:0}.c3{bottom:-2px;left:-2px;border-right:0;border-top:0}.c4{bottom:-2px;right:-2px;border-left:0;border-top:0}
+.winframe img{width:100%;display:block}
+.agents{border-top:1px solid var(--bd2);border-bottom:1px solid var(--bd2)}
+.agents .wrap{display:grid;grid-template-columns:220px repeat(4,1fr);padding:0}
+.agents .cell{padding:26px 24px;border-left:1px solid var(--bd2);font:600 14px 'JetBrains Mono',monospace;color:var(--t1);text-transform:uppercase;letter-spacing:.04em}
+.agents .cell:last-child{border-right:1px solid var(--bd2)}
+.agents .cell i{display:block;font:400 12px 'JetBrains Mono',monospace;font-style:normal;color:var(--t3);margin-top:5px;text-transform:none;letter-spacing:0}
+.agents .lbl{display:flex;align-items:center;font:500 12px 'JetBrains Mono',monospace;letter-spacing:.12em;color:var(--t3);border-left:0;font-weight:500}
+section.feats{padding:110px 0 110px;border-bottom:1px solid var(--bd2)}
+.sechead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:44px}
+.sechead h2{font:700 36px/1.2 'JetBrains Mono',monospace;letter-spacing:-0.01em;text-transform:uppercase}
+.sechead h2 span{color:var(--g)}
+.sechead .k{font:500 12px 'JetBrains Mono',monospace;letter-spacing:.12em;color:var(--t3)}
+.bento{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.bcard{grid-column:span 3;background:rgba(255,255,255,.02);border:1px solid var(--bd2);padding:32px 30px 34px;transition:border-color .2s,background .2s}
+.bcard:hover{border-color:var(--bd);background:rgba(0,255,136,.025)}
+.bcard.w2{grid-column:span 2}.bcard.w4{grid-column:span 4}.bcard.w6{grid-column:span 6}
+.bcard .num{display:flex;justify-content:space-between;font:500 12px 'JetBrains Mono',monospace;letter-spacing:.12em;color:var(--g);margin-bottom:20px}
+.bcard .num i{font-style:normal;color:var(--t3)}
+.bcard h3{font:600 18px 'JetBrains Mono',monospace;color:var(--t1);text-transform:uppercase;letter-spacing:.02em;margin-bottom:12px}
+.bcard p{font:400 14.5px/1.8 'JetBrains Mono',monospace;color:var(--t2)}
+.cta2{text-align:center;padding:130px 40px;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center}
+.cta2 h2{font:700 48px/1.1 'JetBrains Mono',monospace;letter-spacing:-0.01em;text-transform:uppercase}
+.cta2 h2 span{color:var(--g);text-shadow:0 0 28px rgba(0,255,136,.45)}
+.cta2 .note{font:400 13px 'JetBrains Mono',monospace;color:var(--t2);margin-top:20px;letter-spacing:.04em}
+.cta2 .ctas{justify-content:center}
+footer{border-top:1px solid var(--bd2)}
+footer .wrap{display:flex;justify-content:space-between;padding:15px 40px;font:500 12px 'JetBrains Mono',monospace;color:var(--t3);letter-spacing:.08em}
+footer b{color:var(--g);font-weight:500}
+.wait{display:flex;gap:10px;margin-top:40px;max-width:520px;flex-wrap:wrap}
+.wait input{flex:1;min-width:240px;background:rgba(255,255,255,.03);border:1px solid var(--bd2);color:var(--t1);font:400 14px 'JetBrains Mono',monospace;padding:14px 16px;outline:none}
+.wait input::placeholder{color:var(--t3)}
+.wait input:focus{border-color:var(--bd)}
+.wait button{font:600 14px 'JetBrains Mono',monospace;color:#02130a;background:var(--g);border:0;padding:14px 26px;cursor:pointer;box-shadow:0 0 32px rgba(0,255,136,.22);white-space:nowrap}
+.wait button:hover{box-shadow:0 0 44px rgba(0,255,136,.4)}
+.waitnote{font:400 12px/1.7 'JetBrains Mono',monospace;color:var(--t3);margin-top:14px;letter-spacing:.04em}
+.cta2 .wait{justify-content:center;margin:40px auto 0}
+.cta2 .waitnote{text-align:center}
+.done{font:500 14px 'JetBrains Mono',monospace;color:var(--g);margin-top:40px;letter-spacing:.04em}
+</style>
+</head>
+<body>
+<nav><div class="wrap">
+<div class="brand"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#00ff88" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8.5 5v10L12 22l-8.5-5V7L12 2z"></path><path d="M3.5 7L12 12l8.5-5M12 12v10"></path></svg>build_</div>
+<div class="navl"><a href="#">[features]</a><a href="#">[agents]</a><a href="#">[docs]</a></div>
+<a class="navcta" href="#waitlist">REQUEST ACCESS</a>
+</div></nav>
+
+<div class="hero"><div class="field"><canvas id="cvL" data-gap="30"></canvas></div><div class="wrap">
+<div class="stat">PRIVATE BETA — INVITES GOING OUT WEEKLY</div>
+<h1>Ship more.<br><span>Babysit less.</span></h1>
+<p class="sub">Build is the agentic coding IDE for teams. It surfaces the work that needs you — reviews, decisions, direction — and dispatches everything else to your agents. Not public yet.</p>
+<form class="wait" id="w1" novalidate><input type="email" placeholder="you@company.com" required><button type="submit">REQUEST ACCESS</button></form>
+<p class="waitnote">One email when your invite is ready. Nothing else.</p>
+</div></div>
+
+<div class="shotsec"><div class="wrap">
+<div class="winframe">
+<img src="assets/build-ide-screenshot.png" alt="The Build IDE — commit history, diff review, and a live agent conversation">
+</div>
+</div></div>
+
+<div class="agents"><div class="wrap">
+<div class="cell lbl">RUNS YOUR AGENTS</div>
+<div class="cell">Claude Code<i>supported</i></div>
+<div class="cell">Codex<i>supported</i></div>
+<div class="cell">Pi<i>supported</i></div>
+<div class="cell">OpenCode<i>supported</i></div>
+</div></div>
+
+<section class="feats"><div class="wrap">
+<div class="sechead"><h2>Everything agents need.<br>Nothing <span>you don't.</span></h2><span class="k">FEATURES /05</span></div>
+<div class="bento">
+<div class="bcard"><div class="num">/01<i>ISSUES</i></div><h3>An inbox, not a backlog</h3><p>Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.</p></div>
+<div class="bcard"><div class="num">/02<i>VERSION CONTROL</i></div><h3>Worktrees that manage themselves</h3><p>Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.</p></div>
+<div class="bcard w2"><div class="num">/03<i>REVIEW</i></div><h3>Diff-first review</h3><p>Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.</p></div>
+<div class="bcard w4"><div class="num">/04<i>WORKFLOWS · RLM</i></div><h3>Workflows that reshape around the work</h3><p>The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.</p></div>
+<div class="bcard w6"><div class="num">/05<i>AGENTS</i></div><h3>Any agent, side by side</h3><p>Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, one shared history, one place to look.</p></div>
+</div>
+</div></section>
+
+<div class="cta2" id="waitlist">
+<h2>Get in <span>early.</span></h2>
+<p class="note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
+<form class="wait" id="w2" novalidate><input type="email" placeholder="you@company.com" required><button type="submit">REQUEST ACCESS</button></form>
+</div>
+
+<footer><div class="wrap"><span>LOCAL-FIRST // E2E ENCRYPTED</span><span>© 2026 BUILD · GETBUILD.ING</span></div></footer>
+
+<script>
+for(const f of [document.getElementById('w1'),document.getElementById('w2')]){
+ f.addEventListener('submit',e=>{e.preventDefault();const v=f.querySelector('input');if(!v.checkValidity())return;const d=document.createElement('p');d.className='done';d.textContent='✓ YOU’RE ON THE LIST — '+v.value;f.replaceWith(d)})}
+</script>
+<script>{const nv=document.querySelector("nav"),hr=document.querySelector(".hero");new IntersectionObserver(([e])=>nv.classList.toggle("solid",!e.isIntersecting),{rootMargin:"-60px 0px 0px 0px",threshold:0}).observe(hr)}</script>
+<script src="dotfield.js"></script>
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#030604"/><g transform="translate(50 50)" fill="none" stroke="#00ff88" stroke-width="2.4" stroke-linejoin="round"><path d="M0 -22L19 -11V11L0 22L-19 11V-11L0 -22Z"/><path d="M-19 -11L0 0L19 -11M0 0V22"/></g><text x="50" y="88" fill="#00ff88" font-family="monospace" font-size="9" text-anchor="middle">build_</text></svg></template>
+</body>
+</html>

@@ -38,6 +38,20 @@ import {
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
+import {
+  insertRecord,
+  isPending,
+  isProvisionalKey,
+  patchRecord,
+  projectOptimistic,
+  projectPending,
+  provisionalKey,
+  reconcileOptimistic,
+  removeRecord,
+  runOptimistic,
+  subscribeOptimistic,
+} from "./optimistic.js";
+import { patchList, rekeyEntry } from "./patchList.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -57,6 +71,7 @@ import {
   wireThreadAttachments,
   wireThreadOptions,
   wireThreadComposer,
+  threadItemKey,
   wireThreadLinks,
   wireThreadRevisionLinks,
   writeThreadKeepingComposer,
@@ -118,6 +133,8 @@ const unreadInk = () => {
  *  id and there is only ever one of it. */
 const faceKey = (type, agentId) => (type === "agent" ? `agent:${agentId || ""}` : type);
 
+const bubbleKey = (bubble) => faceKey(bubble.type, bubble.id);
+
 // What survives a remount. The rail is rebuilt whenever the view under it is
 // (a tab switch re-renders the surface), so the human's choices — which agent
 // is open, whether the panel is out, chat or TUI, and anything typed but not
@@ -162,67 +179,34 @@ const writeExpanded = (on) => {
   }
 };
 
-/** Pure: the strip's IDENTITY — bubbles top to bottom, the `+` last, carrying
- *  only what cannot change while a bubble lives: which agent it is and which
- *  face it wears. Everything that moves — which one is open, which is working,
- *  what it is waiting on — is written onto the live buttons by syncStripState,
- *  so this string changes only when the AGENTS do.
- *
- *  That is not a micro-optimisation. A bubble's pattern is painted by a renderer
- *  whose clock only runs while its agent works, and an idle bubble holds the
- *  frame it stopped on; replacing the element would take the renderer with it
- *  and start the pattern over every time the agent's news changed. (It is also
- *  what keeps a press that lands mid-repaint from being swallowed by a swapped
- *  button.) */
-export function stripHtml(bubbles) {
-  return bubbles
-    .map((bubble) => {
-      const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
-      // A pattern IS the bubble's face, so it takes the label's place: a canvas
-      // for core/agentCanvas.js to paint into, named by the ordinal it wears.
-      // The `+` and anything else that speaks in a glyph keeps a label.
-      const face = bubble.pattern
-        ? `<canvas class="rail-glyph" aria-hidden="true"></canvas><span class="rail-count" hidden></span>`
-        : `<span class="rail-bubble-label">${esc(bubble.label)}</span>`;
-      const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
-      return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
-        data-agent="${esc(bubble.id)}"${pattern}>${face}</button>`;
-    })
-    .join("");
+export function bubbleHtml(bubble) {
+  const classes = ["rail-bubble", `rail-bubble-${bubble.type}`];
+  if (bubble.active) classes.push("active");
+  if (bubble.working) classes.push("working");
+  // A pattern IS the bubble's face, so it takes the label's place: a canvas
+  // for core/agentCanvas.js to paint into, named by the ordinal it wears.
+  // The `+` and anything else that speaks in a glyph keeps a label.
+  const count = bubble.unread
+    ? `<span class="rail-count">${esc(String(bubble.unread))}</span>`
+    : `<span class="rail-count" hidden></span>`;
+  const face = bubble.pattern
+    ? `<canvas class="rail-glyph" aria-hidden="true"></canvas>${count}`
+    : `<span class="rail-bubble-label">${esc(bubble.label)}</span>`;
+  const pattern = bubble.pattern ? ` data-pattern="${esc(String(bubble.pattern))}"` : "";
+  return `<button type="button" class="${classes.join(" ")}" data-bubble="${esc(bubble.type)}"
+    data-agent="${esc(bubble.id)}"${pattern} title="${esc(bubble.title)}"
+    aria-label="${esc(bubble.title)}">${face}</button>`;
 }
 
-/**
- * Write the moving half onto a strip that is already painted: which bubble is
- * open, which is working, its unread count, and the tooltip that says why.
- * Positional — the strip's own HTML is rebuilt whenever the bubbles themselves
- * change, so index N here is always bubble N there.
- *
- * `faces` are the painters behind the patterns, keyed by `faceKey` — each held
- * with the ink and dimming it was last told, because setting either repaints the
- * held frame, and a poll saying nothing new must not repaint at all. Omitting
- * them syncs the markup alone.
- */
-export function syncStripState(strip, bubbles, faces = null) {
-  const buttons = strip.querySelectorAll("[data-bubble]");
+export function syncStripPainters(bubbles, painted, faces) {
   bubbles.forEach((bubble, index) => {
-    const button = buttons[index];
-    if (!button) return;
-    button.classList.toggle("active", !!bubble.active);
-    button.classList.toggle("working", !!bubble.working);
-    button.title = bubble.title;
-    button.setAttribute("aria-label", bubble.title);
-    const count = button.querySelector(".rail-count");
-    if (count) {
-      count.textContent = bubble.unread ? String(bubble.unread) : "";
-      count.hidden = !bubble.unread;
-    }
-    const face = faces && faces.get(faceKey(bubble.type, bubble.id));
+    const face = faces.get(bubbleKey(bubble));
     if (!face) return;
     face.renderer.setWorking(!!bubble.working);
     // An unread count sits centred on the face, so the face gets out of its
     // way: dimmed, and in the same amber the number is drawn in.
     const unread = bubble.unread > 0;
-    const ink = unread ? unreadInk() : restingInk(button);
+    const ink = unread ? unreadInk() : restingInk(painted[index]);
     if (face.ink !== ink) {
       face.ink = ink;
       face.renderer.setInk(ink);
@@ -381,11 +365,7 @@ export function mountAgentRail(host, context) {
   let threadOwner = null;
   let adopting = null;
   let catalog = null; // models.list, once it lands: the harnesses and their models
-  let sending = false; // a first message is adopting/starting — do not repaint over it
-  let paintedStrip = null; // the markup the bubble strip currently stands on
-  // The painter behind each bubble's face, keyed by `faceKey`, carrying the ink
-  // and dimming it was last told. Lives exactly as long as the canvas it paints
-  // into — see rebuildFaces.
+  let creating = null;
   const faces = new Map();
   let agentlessOnce = false; // an answer that lost the agents, waiting to be repeated
   let feedRow = null; // this work item's row off the shared feed, for the pinned status line
@@ -401,14 +381,25 @@ export function mountAgentRail(host, context) {
   let composerModelMenu = null;
   let surfacesBlock = null;
 
-  const agentOf = (id) => entity.agents.find((agent) => agent.id === id) || null;
+  const agentIdOf = (agent) => agent.id;
+
+  const openConversation = (agentId) => {
+    chooseAgent(agentId);
+    resetThreadCache();
+    threadAgentId = agentId;
+  };
+  const pendingAgentsScope = () => `agents:${key}`;
+  const pendingThreadScope = (agentId) => `thread:${key}:${agentId || ""}`;
+  const visibleAgents = () => projectOptimistic(pendingAgentsScope(), entity.agents, { keyOf: agentIdOf });
+
+  const agentOf = (id) => visibleAgents().find((agent) => agent.id === id) || null;
   /** Open this agent's conversation, and tell everything else on screen: the
    *  bubble strip is the selector for the whole work item, not just the rail. */
   const chooseAgent = (id) => {
     selectedId = id || null;
     if (selectedId) chosenAgent.set(key, selectedId);
     else chosenAgent.delete(key);
-    selection.set(selectedId);
+    if (!isProvisionalKey(selectedId)) selection.set(selectedId);
   };
   const conversationKey = () => `${entity.entityId || key}:${selectedId || AGENT_NOT_YET_BORN}`;
   const draftOf = () => drafts.get(conversationKey()) || { body: "", attachments: [] };
@@ -477,6 +468,8 @@ export function mountAgentRail(host, context) {
     slot.hidden = !html;
   };
 
+  const unsubscribePending = subscribeOptimistic(pendingAgentsScope(), () => paint());
+
   const unsubscribeFeed = subscribeFeed((feed) => {
     feedRow = toolbarIdentity(feedRoute(), { items: feed.items || [], projects: feed.projects || [] }).row;
     paintRailStatus();
@@ -495,7 +488,8 @@ export function mountAgentRail(host, context) {
     // The saved window first, so a revisit's first read is a forward delta
     // with the history already local. One try per conversation key.
     await trySeedThread();
-    const scope = { ...threadCache.cursorParam(), ...(selectedId ? { agent_id: selectedId } : {}) };
+    const askedAgentId = selectedId && !isProvisionalKey(selectedId) ? { agent_id: selectedId } : {};
+    const scope = { ...threadCache.cursorParam(), ...askedAgentId };
     if (context.kind === "issue") {
       return App.call("issue.get", { issue_id: context.issueId, ...scope });
     }
@@ -513,10 +507,8 @@ export function mountAgentRail(host, context) {
       // answering with somebody else's conversation, so let the choice go and
       // the next tick reopens on whichever agent is here now. Without this the
       // rail would ask the same refused question forever.
-      if (asked && /agent_id/.test((error && error.message) || "")) {
-        chooseAgent(null);
-        resetThreadCache();
-        threadAgentId = null;
+      if (asked && !isProvisionalKey(asked) && /agent_id/.test((error && error.message) || "")) {
+        openConversation(null);
       }
       // Anything else — a branch that stopped resolving (finished, renamed) —
       // leaves the rail as it was rather than blanking the conversation under
@@ -544,77 +536,65 @@ export function mountAgentRail(host, context) {
     // really gone (finished, abandoned) keeps saying it and the rail falls back
     // to the ghost as it always did, one tick later; a hiccup says it once and
     // is dropped.
-    if (!answered.agents.length && entity.agents.length && !agentlessOnce) {
+    if (!answered.agents.length && visibleAgents().length && !agentlessOnce) {
       agentlessOnce = true;
       return;
     }
     agentlessOnce = false;
     entity = answered;
-    chooseAgent(selectAgentId(entity.agents, selectedId));
+    reconcileOptimistic(pendingAgentsScope(), answered.agents, { keyOf: agentIdOf });
+    chooseAgent(selectAgentId(visibleAgents(), selectedId));
     // Whose conversation this payload carries: the agent we asked about, or —
     // when we asked about none, which is every first read — the entity's own,
     // which is the agent the selection just landed on (its first).
-    threadOwner = asked === null ? selectedId : asked;
-    if (!sending) paint();
+    if (!isProvisionalKey(selectedId)) threadOwner = asked === null ? selectedId : asked;
+    paint();
   };
 
   // ---- painting -------------------------------------------------------------
 
-  /// Paint the strip, and put the panel in or take it out.
-  ///
-  /// The strip is rewritten whenever what it SAYS changes — and only then.
-  /// Nearly every tick resolves the same agents, and rewriting the buttons
-  /// under a press swaps the element the pointer went down on for an identical
-  /// one, which swallows the press. The PANEL element is never rewritten by a
-  /// poll at all: it is where a live PTY hangs, and replacing it would tear a
-  /// terminal down and re-attach it every second and a half. So the panel is
-  /// created when the human opens it, removed when they shut it, and otherwise
-  /// left alone.
-  /// One painter per canvas on the strip that was just written, and none left
-  /// over from the one it replaced.
-  ///
-  /// The canvases are new elements, so the painters have to be new too — a
-  /// renderer holds the context of the canvas it was made for. That is why the
-  /// strip's markup is rewritten only when the AGENTS change: every rewrite is a
-  /// pattern starting over, and a poll must never cause one.
-  const rebuildFaces = (strip) => {
+  const releaseFaces = () => {
     faces.forEach((face) => face.renderer.destroy());
     faces.clear();
-    strip.querySelectorAll("[data-pattern]").forEach((button) => {
-      const canvas = button.querySelector("canvas.rail-glyph");
-      if (!canvas) return;
-      const renderer = createPatternRenderer({
+  };
+
+  const wireBubble = (button, bubble) => {
+    button.onclick = () => pressBubble(button.dataset.bubble, button.dataset.agent);
+    const canvas = bubble.pattern ? button.querySelector("canvas.rail-glyph") : null;
+    if (!canvas) return;
+    faces.set(bubbleKey(bubble), {
+      renderer: createPatternRenderer({
         canvas,
-        patternIndex: Number(button.dataset.pattern),
-        seed: patternSeed(button.dataset.agent || ""),
-      });
-      faces.set(faceKey(button.dataset.bubble, button.dataset.agent), {
-        renderer,
-        ink: null,
-        dimmed: false,
-      });
+        patternIndex: bubble.pattern,
+        seed: patternSeed(bubble.id || ""),
+      }),
+      ink: null,
+      dimmed: false,
     });
+  };
+
+  const releaseFacesLeftBehind = (keysPainted) => {
+    for (const [name, face] of [...faces]) {
+      if (keysPainted.has(name)) continue;
+      face.renderer.destroy();
+      faces.delete(name);
+    }
+  };
+
+  const paintStrip = (strip, bubbles) => {
+    const painted = patchList(strip, bubbles, { keyOf: bubbleKey, render: bubbleHtml, wire: wireBubble });
+    releaseFacesLeftBehind(new Set(bubbles.map(bubbleKey)));
+    syncStripPainters(bubbles, painted, faces);
   };
 
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".rail-strip")) {
+      releaseFaces();
       host.innerHTML = `<div class="rail-strip"></div>`;
-      paintedStrip = null;
     }
     const strip = host.querySelector(".rail-strip");
-    const bubbles = railBubbles({ agents: entity.agents, selectedId, kind: entity.kind });
-    const wantedStrip = stripHtml(bubbles);
-    if (paintedStrip !== wantedStrip) {
-      strip.innerHTML = wantedStrip;
-      paintedStrip = wantedStrip;
-      strip.querySelectorAll("[data-bubble]").forEach((bubble) => {
-        bubble.onclick = () => pressBubble(bubble.dataset.bubble, bubble.dataset.agent);
-      });
-      rebuildFaces(strip);
-    }
-    // The news goes onto the buttons that are there — see stripHtml.
-    syncStripState(strip, bubbles, faces);
+    paintStrip(strip, railBubbles({ agents: visibleAgents(), selectedId, kind: entity.kind }));
     let panel = host.querySelector("#rail-panel");
     if (expanded && !panel) {
       panel = document.createElement("div");
@@ -628,12 +608,26 @@ export function mountAgentRail(host, context) {
     if (expanded) paintPanel();
   };
 
+  const shownPanelMode = () => (agentHasTerminal(agentInFocus()) ? mode : "chat");
+
+  const wantedPanelBody = () => `${shownPanelMode()}:${addingAgent ? "new" : selectedId || AGENT_NOT_YET_BORN}`;
+
+  const adoptPanelBody = () => {
+    const panel = host.querySelector("#rail-panel");
+    if (panel) panel.dataset.body = wantedPanelBody();
+  };
+
   const paintPanel = () => {
     const panel = host.querySelector("#rail-panel");
     if (!panel) return;
     const agent = agentInFocus();
     const who = agent ? agentTitle(agent) : entity.kind === "issue" ? "Issue agent" : "New agent";
-    const removable = canRemoveAgent({ agents: entity.agents, agentId: addingAgent ? null : selectedId, kind: entity.kind });
+    const settled = settledAgentInFocus();
+    const removable = canRemoveAgent({
+      agents: visibleAgents(),
+      agentId: settled ? settled.id : null,
+      kind: entity.kind,
+    });
     const hasTerminal = agentHasTerminal(agent);
     // Which face this agent can actually wear. `mode` is remembered per work
     // item, so opening a terminal-less agent's bubble — or one whose digest
@@ -641,13 +635,13 @@ export function mountAgentRail(host, context) {
     // for a screen that does not exist. The remembered choice is kept rather
     // than rewritten, so the agent beside it that does have a terminal is still
     // where the human left it.
-    const shownMode = hasTerminal ? mode : "chat";
+    const shownMode = shownPanelMode();
     // The head is rewritten only when what it SAYS changed: the name, whether
     // this agent can be taken back off, and whether it has a basement.
     const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
-    const wantedBody = `${shownMode}:${addingAgent ? "new" : selectedId || AGENT_NOT_YET_BORN}`;
+    const wantedBody = wantedPanelBody();
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();
@@ -709,7 +703,7 @@ export function mountAgentRail(host, context) {
 
   // ---- chat -----------------------------------------------------------------
 
-  const threadFor = () => {
+  const threadWindow = () => {
     // The cache holds one conversation; switching bubbles switches which.
     if (threadAgentId !== selectedId) {
       resetThreadCache();
@@ -739,6 +733,16 @@ export function mountAgentRail(host, context) {
     const thread = threadCache.absorb(entity.thread);
     persistThreadWindow();
     return thread;
+  };
+
+  const threadFor = () => {
+    const scope = pendingThreadScope(selectedId);
+    const thread = threadWindow();
+    const held = (thread && thread.items) || [];
+    reconcileOptimistic(scope, held, { keyOf: threadItemKey });
+    const items = projectOptimistic(scope, held, { keyOf: threadItemKey });
+    if (thread) return { ...thread, items };
+    return items.length ? { items } : null;
   };
 
   /// Ask for the conversation above the window the reader is standing at the
@@ -802,7 +806,7 @@ export function mountAgentRail(host, context) {
   const paintChat = ({ olderItemsPrepended = false } = {}) => {
     const body = host.querySelector("#rail-body");
     if (!body) return;
-    if (!entity.agents.length || addingAgent) {
+    if (!visibleAgents().length || addingAgent) {
       paintNewAgent(body);
       syncComposer();
       syncSurfaces();
@@ -830,7 +834,7 @@ export function mountAgentRail(host, context) {
   };
 
   const composerPlaceholder = () =>
-    entity.agents.length && !addingAgent ? "Send a message to this agent…" : "Send a message to start an agent here…";
+    visibleAgents().length && !addingAgent ? "Send a message to this agent…" : "Send a message to start an agent here…";
 
   /// The box you write in, pinned below the conversation instead of sitting at
   /// the end of it. It is a SIBLING of the scroller, so reading back through a
@@ -861,11 +865,16 @@ export function mountAgentRail(host, context) {
    *  bubble is technically still selected behind it. */
   const agentInFocus = () => (addingAgent ? null : agentOf(selectedId));
 
+  const settledAgentInFocus = () => {
+    const agent = agentInFocus();
+    return agent && !isProvisionalKey(agent.id) ? agent : null;
+  };
+
   const syncComposer = () => {
     if (composerControl) composerControl.setCanInterrupt(agentCanInterrupt(agentInFocus()));
     if (!composerModelMenu) return;
     const choice = composerChoice();
-    composerModelMenu.set(catalog, choice.provider, choice);
+    composerModelMenu.set(catalog, choice.provider, choice, activeModelOf(agentInFocus()));
   };
 
   /** What the composer's model menu is editing: the open agent's own choice —
@@ -877,6 +886,8 @@ export function mountAgentRail(host, context) {
     return { provider: agent.provider, model: agent.model || "", effort: agent.effort || "" };
   };
 
+  const activeModelOf = (agent) => (agent && agent.active_model) || "";
+
   /** A model or effort picked from that menu.
    *
    *  With an agent it is the entity's persisted choice, which the NEXT start
@@ -884,15 +895,23 @@ export function mountAgentRail(host, context) {
    *  makes the menu safe to press mid-turn. With none there is nothing on the
    *  bridge to write to yet, so it waits for the send that creates one. */
   const chooseModel = async (next) => {
-    if (!agentInFocus()) {
+    const agent = settledAgentInFocus();
+    if (!agent) {
       writeNewAgentChoice(next);
       return;
     }
-    try {
-      await App.call("agent.choose", { entity_id: entity.entityId, model: next.model, effort: next.effort });
-    } catch (error) {
-      notifyError("Could not set the model", error.message);
-    }
+    await runOptimistic({
+      scope: pendingAgentsScope(),
+      records: [patchRecord(agent.id, { model: next.model, effort: next.effort })],
+      call: () =>
+        App.call("agent.choose", {
+          entity_id: entity.entityId,
+          agent_id: agent.id,
+          model: next.model,
+          effort: next.effort,
+        }),
+      failureSummary: "Could not set the model",
+    });
     await refresh();
   };
 
@@ -1003,52 +1022,191 @@ export function mountAgentRail(host, context) {
     return adopt.adopt();
   };
 
-  /** The agent a message on an agentless branch is for: the one the send
-   *  creates, on the harness the new-agent view has highlighted. An issue
-   *  dispatches its own planning agent on its first message, so it needs
-   *  none of this. */
-  const agentForMessage = async (entityId) => {
-    const open = agentInFocus();
-    if (open || entity.kind !== "branch" || (entity.agents.length && !addingAgent)) return open;
-    return addAgent({ entity_id: entityId, ...newAgentParams() });
+  const willCreateAgent = () =>
+    !agentInFocus() && entity.kind === "branch" && (!visibleAgents().length || addingAgent);
+
+  const repaintComposerFromDraft = () => {
+    const panel = host.querySelector("#rail-panel");
+    if (!panel) return;
+    panel.dataset.body = "";
+    paintPanel();
+    const input = panel.querySelector(`#${COMPOSER_IDS.input}`);
+    if (input) input.focus();
   };
 
-  /**
-   * Send, and make sure something is listening.
-   *
-   * A message is durable the moment it is posted; whether an agent hears it is
-   * a second question. On a branch with no live session — including one whose
-   * agent this send has just created — the start is what delivers it, and it
-   * answers with the agent that now owns this conversation. An issue needs none
-   * of that: the daemon dispatches its planning agent on the first message.
-   */
-  const post = async (message) => {
-    sending = true;
-    try {
+  const renameAgentIdentity = (fromAgentId, toAgentId) => {
+    if (!fromAgentId || !toAgentId || fromAgentId === toAgentId) return;
+    const entityKey = entity.entityId || key;
+    const draft = drafts.get(`${entityKey}:${fromAgentId}`);
+    if (draft) {
+      drafts.set(`${entityKey}:${toAgentId}`, draft);
+      drafts.delete(`${entityKey}:${fromAgentId}`);
+    }
+    if (threadAgentId === fromAgentId) threadAgentId = toAgentId;
+    if (threadOwner === fromAgentId) threadOwner = toAgentId;
+    const fromFaceKey = faceKey("agent", fromAgentId);
+    const toFaceKey = faceKey("agent", toAgentId);
+    const face = faces.get(fromFaceKey);
+    if (face) {
+      faces.set(toFaceKey, face);
+      faces.delete(fromFaceKey);
+    }
+    const strip = host.querySelector(".rail-strip");
+    if (strip) rekeyEntry(strip, fromFaceKey, toFaceKey);
+    if (selectedId === fromAgentId) chooseAgent(toAgentId);
+    adoptPanelBody();
+  };
+
+  const provisionalMessageEntry = (messageKey, message) => ({
+    type: "message",
+    data: {
+      role: "user",
+      sequence: messageKey,
+      body: message.body || "",
+      attachments: message.attachments || [],
+      created_at: new Date().toISOString(),
+    },
+  });
+
+  const rekeyPostedMessage = (handle, messageKey, provisional, posted) => {
+    const sequence = (posted && posted.posted_sequence) ?? null;
+    if (sequence === null) handle.drop(messageKey);
+    else handle.rekey(messageKey, String(sequence), { ...provisional, data: { ...provisional.data, sequence } });
+  };
+
+  const postMessage = async (handle, { entityId, addressed, message, messageKey, provisionalMessage }) => {
+    const posted = await App.call("thread.post", {
+      entity_id: entityId,
+      ...addressed,
+      ...message,
+      ...MUTATION_THREAD_PAGE,
+    });
+    rekeyPostedMessage(handle, messageKey, provisionalMessage, posted);
+  };
+
+  const wakeAgent = (entityId, addressed) => App.call("agent.start", { id: entityId, ...addressed });
+
+  const createAgentWithMessage = async (message) => {
+    const provisionalAgentId = provisionalKey("agent");
+    const provisionalMessageKey = provisionalKey("message");
+    const selectedBeforeCreate = selectedId;
+    const addingBeforeCreate = addingAgent;
+    const choice = newAgentChoice();
+    const provisionalAgent = {
+      id: provisionalAgentId,
+      ordinal: visibleAgents().length + 1,
+      provider: choice.provider,
+      model: choice.model || "",
+      effort: choice.effort || "",
+      state: "idle",
+      unread_count: 0,
+      unread_reason: null,
+      working: false,
+      has_terminal: false,
+    };
+    const provisionalMessage = provisionalMessageEntry(provisionalMessageKey, message);
+    writeDraft({ body: "", attachments: [] });
+    addingAgent = false;
+    openConversation(provisionalAgentId);
+    adoptPanelBody();
+    let messageDelivered = false;
+
+    const call = async (handle) => {
       const entityId = await ensureEntity();
-      const agent = await agentForMessage(entityId);
-      await App.call("thread.post", {
-        entity_id: entityId,
-        ...(agent ? { agent_id: agent.id } : {}),
-        ...message,
-        ...MUTATION_THREAD_PAGE,
+      const added = await App.call("agent.add", { entity_id: entityId, ...newAgentParams() });
+      const createdAgent = (added && added.agent) || null;
+      if (createdAgent) {
+        handle.moveScope(pendingThreadScope(provisionalAgentId), pendingThreadScope(createdAgent.id));
+        renameAgentIdentity(provisionalAgentId, createdAgent.id);
+        handle.rekey(provisionalAgentId, createdAgent.id, { ...provisionalAgent, id: createdAgent.id });
+      }
+      const addressed = createdAgent ? { agent_id: createdAgent.id } : {};
+      await postMessage(handle, {
+        entityId,
+        addressed,
+        message,
+        messageKey: provisionalMessageKey,
+        provisionalMessage,
       });
+      messageDelivered = true;
+      await wakeAgent(entityId, addressed);
+    };
+
+    const onRevert = () => {
+      if (isProvisionalKey(selectedId)) {
+        addingAgent = addingBeforeCreate;
+        openConversation(selectedBeforeCreate);
+      }
+      if (messageDelivered) return;
+      writeDraft({ body: message.body || "", attachments: message.attachments || [] });
+      repaintComposerFromDraft();
+    };
+
+    const settling = runOptimistic({
+      scope: pendingAgentsScope(),
+      records: [
+        insertRecord(provisionalAgentId, provisionalAgent),
+        insertRecord(provisionalMessageKey, provisionalMessage, {
+          scope: pendingThreadScope(provisionalAgentId),
+        }),
+      ],
+      call,
+      failureSummary: "Could not start the agent",
+      onRevert,
+    }).then(async () => {
+      await refreshFeed();
+      await refresh();
+    });
+    creating = settling;
+    settling.finally(() => {
+      if (creating === settling) creating = null;
+    });
+  };
+
+  const deliverMessage = async (message) => {
+    const messageKey = provisionalKey("message");
+    const provisionalMessage = provisionalMessageEntry(messageKey, message);
+    const addressedAgentId = selectedId;
+
+    let messageDelivered = false;
+
+    const call = async (handle) => {
+      const entityId = await ensureEntity();
+      const agent = agentInFocus();
+      const addressed = agent ? { agent_id: agent.id } : {};
+      await postMessage(handle, { entityId, addressed, message, messageKey, provisionalMessage });
+      messageDelivered = true;
       if (entity.kind === "branch" && (!agent || agent.state !== "live")) {
-        const started = await App.call("agent.start", {
-          id: entityId,
-          ...(agent ? { agent_id: agent.id } : {}),
-        });
+        const started = await wakeAgent(entityId, addressed);
         if (started && started.agent_id) {
-          chooseAgent(started.agent_id);
-          resetThreadCache();
-          threadAgentId = selectedId;
+          handle.moveScope(pendingThreadScope(addressedAgentId), pendingThreadScope(started.agent_id));
+          openConversation(started.agent_id);
         }
       }
-    } finally {
-      sending = false;
-    }
-    await refreshFeed();
-    await refresh();
+    };
+
+    runOptimistic({
+      scope: pendingThreadScope(addressedAgentId),
+      records: [insertRecord(messageKey, provisionalMessage)],
+      call,
+      failureSummary: "Message failed",
+      onRevert: () => {
+        if (messageDelivered) return;
+        writeDraft({ body: message.body || "", attachments: message.attachments || [] });
+        repaintComposerFromDraft();
+      },
+    }).then(async () => {
+      await refreshFeed();
+      await refresh();
+    });
+    writeDraft({ body: "", attachments: [] });
+    paintChat();
+  };
+
+  const post = async (message) => {
+    if (creating) await creating;
+    if (willCreateAgent()) return createAgentWithMessage(message);
+    return deliverMessage(message);
   };
 
   /** A typed message. `interrupt` rides on the post rather than travelling as a
@@ -1091,21 +1249,9 @@ export function mountAgentRail(host, context) {
   /** Open this agent's conversation in the panel, with the panel out. */
   const openAgent = (agentId) => {
     addingAgent = false; // opening a real conversation ends the chooser
-    chooseAgent(agentId);
-    resetThreadCache();
-    threadAgentId = agentId;
+    openConversation(agentId);
     expanded = true;
     writeExpanded(true);
-  };
-
-  /** Put an agent on this branch and open it. The `+` bubble and the
-   *  new-agent view's first send are the same act — a harness named, an agent
-   *  created, its conversation opened — so they compose it here. */
-  const addAgent = async (params) => {
-    const added = await App.call("agent.add", params);
-    const agent = (added && added.agent) || null;
-    if (agent) openAgent(agent.id);
-    return agent;
   };
 
   /** Another agent on this branch, beside the ones already here. It starts on
@@ -1150,21 +1296,23 @@ export function mountAgentRail(host, context) {
    * again with.
    */
   const removeAgent = async () => {
-    const agent = agentOf(selectedId);
+    const agent = settledAgentInFocus();
     if (!agent || !entity.entityId) return;
     if (!(await confirmAction(removeAgentConfirm(agent)))) return;
-    try {
-      await App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id });
-    } catch (error) {
-      notifyError("Could not remove the agent", error.message);
-      return;
-    }
-    // Let the choice go rather than naming the agent that just stopped
-    // existing: the next read opens the rail on whichever agent is left, and
-    // tells the surfaces beside it the same.
-    chooseAgent(null);
-    resetThreadCache();
-    threadAgentId = null;
+    if (isPending(pendingAgentsScope(), agent.id)) return;
+    const records = [removeRecord(agent.id)];
+    const remaining = projectPending(visibleAgents(), records, { keyOf: agentIdOf });
+    openConversation(selectAgentId(remaining, null));
+    await runOptimistic({
+      scope: pendingAgentsScope(),
+      records,
+      call: () => App.call("agent.remove", { entity_id: entity.entityId, agent_id: agent.id }),
+      failureSummary: "Could not remove the agent",
+      onRevert: () => {
+        openConversation(agent.id);
+        paint();
+      },
+    });
     await refreshFeed();
     await refresh();
   };
@@ -1195,17 +1343,30 @@ export function mountAgentRail(host, context) {
    *  locked to the one it was created on, and its conversation is waiting
    *  there. */
   const startAgent = async () => {
-    const entityId = await ensureEntity();
     const agent = agentOf(selectedId);
-    const started = await App.call("agent.start", {
-      id: entityId,
-      ...(agent ? { agent_id: agent.id } : {}),
+    let started = null;
+    let refusal = null;
+    const settled = await runOptimistic({
+      scope: pendingAgentsScope(),
+      records: agent ? [patchRecord(agent.id, { state: "live" })] : [],
+      call: async () => {
+        const entityId = await ensureEntity();
+        started = await App.call("agent.start", {
+          id: entityId,
+          ...(agent ? { agent_id: agent.id } : {}),
+        });
+      },
+      notify: false,
+      onRevert: (error) => {
+        refusal = error;
+      },
     });
     if (started && started.agent_id) {
       selectedId = started.agent_id;
       chosenAgent.set(key, selectedId);
     }
     await refresh();
+    if (!settled) throw refusal;
     return started;
   };
 
@@ -1225,13 +1386,14 @@ export function mountAgentRail(host, context) {
   // Chat rendering last, after a full round trip, was the reviewer's headline
   // complaint — this is what removes the round trip from the first paint.
   const feedSeedEntity = feedRow ? railEntity(feedRow, context.kind) : null;
-  if (feedSeedEntity && feedSeedEntity.agents.length && !entity.agents.length) {
+  if (feedSeedEntity && feedSeedEntity.agents.length && !visibleAgents().length) {
+    reconcileOptimistic(pendingAgentsScope(), feedSeedEntity.agents, { keyOf: agentIdOf });
     entity = feedSeedEntity;
     // The same selection the live path makes, so the seed and the read agree
     // on whose conversation the panel is showing. Only a row that names its
     // agents seeds: an agentless row has no selection to make, and making one
     // anyway would wipe the remembered choice the live read is about to honor.
-    chooseAgent(selectAgentId(entity.agents, selectedId));
+    chooseAgent(selectAgentId(visibleAgents(), selectedId));
     paint();
   }
   refresh();
@@ -1263,11 +1425,11 @@ export function mountAgentRail(host, context) {
       poll = null;
       clearInterval(statusTicker);
       statusTicker = null;
+      unsubscribePending();
       unsubscribeFeed();
       disposeTui();
       disposeSurfaces();
-      faces.forEach((face) => face.renderer.destroy());
-      faces.clear();
+      releaseFaces();
       host.innerHTML = "";
     },
   };

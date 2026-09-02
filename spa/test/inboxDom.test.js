@@ -278,6 +278,30 @@ describe("the inbox rail", () => {
     expect(rowFor("run-1")).toBeTruthy();
   });
 
+  it("takes the row off the list before branch.finish answers, and leaves its neighbours alone", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.finish") return new Promise(() => {});
+      return { ok: true };
+    });
+    const neighbour = rowFor("iss-1");
+    rowFor("run-1").querySelector("[data-done]").click();
+    await answerConfirm(true);
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBe(neighbour);
+  });
+
+  it("keeps the row off the list when a feed tick lands while Done is in flight", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "branch.finish") return new Promise(() => {});
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-done]").click();
+    await answerConfirm(true);
+    feed([branchRow(), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBeTruthy();
+  });
+
   it("restores the row and says why when Done fails", async () => {
     App.call = vi.fn(async (method) => {
       if (method === "branch.finish") throw new Error("worktree is dirty");
@@ -290,6 +314,10 @@ describe("the inbox rail", () => {
     const error = row.querySelector("[data-done-error]");
     expect(error.hidden).toBe(false);
     expect(error.textContent).toBe("worktree is dirty");
+    const notices = [...document.querySelectorAll("#notices .notice.error")];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toContain("Couldn't finish build/login");
+    expect(notices[0].textContent).toContain("worktree is dirty");
   });
 
   it("archives an issue through the plan verb, warning when nothing ever implemented it", async () => {
@@ -317,6 +345,44 @@ describe("the inbox rail", () => {
     rowFor("run-1").querySelector("[data-mute]").click();
     await flush();
     expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
+  });
+
+  it("mutes an entry the instant the menu item is pressed, before entity.mute answers", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.mute") return new Promise(() => {});
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-mute]").click();
+
+    expect(rowFor("run-1").className).toContain("inbox-muted");
+    await flush();
+    expect(rowFor("run-1").className).toContain("inbox-muted");
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    expect(rowFor("run-1").querySelector("[data-mute] .mt").textContent).toBe("Unmute");
+    expect(App.call).toHaveBeenCalledWith("entity.mute", { entity_id: "run-1", muted: true });
+  });
+
+  it("puts the mute back and says why when entity.mute is refused", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.mute") throw new Error("the relay is offline");
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-mute]").click();
+    await flush();
+
+    const row = rowFor("run-1");
+    expect(row.className).not.toContain("inbox-muted");
+    const error = row.querySelector("[data-done-error]");
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe("the relay is offline");
+    row.querySelector("[data-menu]").click();
+    await flush();
+    expect(rowFor("run-1").querySelector("[data-mute] .mt").textContent).toBe("Mute");
   });
 
   it("keeps Recent open across a repaint once the user has opened it", async () => {
@@ -391,6 +457,53 @@ describe("the inbox rail", () => {
     expect(error.textContent).toBe("the relay is offline");
   });
 
+  it("keeps the row cleared through a feed tick that still carries it", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.dismiss") return new Promise(() => {});
+      return { ok: true };
+    });
+    const neighbour = rowFor("iss-1");
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+
+    feed([branchRow(), issueRow()]);
+
+    expect(rowFor("run-1")).toBeNull();
+    expect(rowFor("iss-1")).toBe(neighbour);
+  });
+
+  it("refuses a second press on a row whose verb is still in flight", async () => {
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.dismiss") return new Promise(() => {});
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+
+    feed([branchRow(), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+    const dismissals = App.call.mock.calls.filter(([method]) => method === "entity.dismiss");
+    expect(dismissals).toHaveLength(1);
+  });
+
+  it("lets a cleared row come back when something new needs the user", async () => {
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-dismiss]").click();
+    await flush();
+    expect(rowFor("run-1")).toBeNull();
+
+    feed([branchRow({ dismissed: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeNull();
+
+    feed([branchRow({ dismissed: false, unread: true }), issueRow()]);
+    expect(rowFor("run-1")).toBeTruthy();
+  });
+
   // Gone until it speaks again: the row comes back by itself the moment the
   // bridge stops calling it cleared.
   it("paints no row the bridge calls cleared, and paints it again when it speaks", () => {
@@ -399,6 +512,22 @@ describe("the inbox rail", () => {
     expect(rowFor("iss-1")).toBeTruthy();
     feed([branchRow({ dismissed: false, unread: true }), issueRow()]);
     expect(rowFor("run-1")).toBeTruthy();
+  });
+
+  it("says which way the mute was going when it is refused", async () => {
+    feed([branchRow({ muted: true, unread: false })]);
+    App.call = vi.fn(async (method) => {
+      if (method === "entity.mute") throw new Error("the relay is offline");
+      return { ok: true };
+    });
+    rowFor("run-1").querySelector("[data-menu]").click();
+    await flush();
+    rowFor("run-1").querySelector("[data-mute]").click();
+    await flush();
+
+    const notices = [...document.querySelectorAll("#notices .notice.error")];
+    expect(notices).toHaveLength(1);
+    expect(notices[0].textContent).toContain("Couldn't unmute build/login");
   });
 
   it("offers to unmute a muted entry, and never navigates from the menu", async () => {
@@ -638,6 +767,30 @@ describe("captures on the rail", () => {
     captureRowFor("capture-1").click();
     await flush();
     expect(location.hash).toBe("#/capture/capture-1");
+  });
+
+  it("retries one failed route while another retry is still in flight", async () => {
+    const failed = (id) =>
+      captureFeedRow({
+        capture_id: id,
+        state: "failed",
+        unread: true,
+        unread_count: 1,
+        unread_reason: "routing_failed",
+      });
+    feed([failed("capture-1"), failed("capture-2")]);
+    App.call = vi.fn(async (method) => {
+      if (method === "capture.reroute") return new Promise(() => {});
+      return {};
+    });
+
+    captureRowFor("capture-1").querySelector("[data-capture-retry]").click();
+    await flush();
+    captureRowFor("capture-2").querySelector("[data-capture-retry]").click();
+    await flush();
+
+    const rerouted = App.call.mock.calls.filter(([method]) => method === "capture.reroute");
+    expect(rerouted.map(([, params]) => params.capture_id)).toEqual(["capture-1", "capture-2"]);
   });
 
   it("re-fires the router on a route that gave up", async () => {

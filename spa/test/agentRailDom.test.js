@@ -1959,6 +1959,8 @@ describe("the agent's surfaces, seeded from the local cache", () => {
   };
   const savedSurfaces = (sub) => readCached(surfacesAddress(sub));
   const savedDescription = async (sub) => (await savedSurfaces(sub)).value.surfaces.shells[0].description;
+  const menuKinds = () =>
+    [...railHost().querySelectorAll(".rail-surface-menu .mi")].map((item) => item.dataset.action);
   const pillKinds = () =>
     [...railStatusPills().querySelectorAll(".surface-pill")].map((pill) => pill.dataset.surfaceKind);
   const pillCount = (kind) =>
@@ -2005,6 +2007,13 @@ describe("the agent's surfaces, seeded from the local cache", () => {
     answerNothing();
     await mount();
     expect(pillKinds()).toEqual(["shells", "checklist"]);
+  });
+
+  it("offers the seeded kinds in the header menu before the first read answers", async () => {
+    await saveSurfaces("ag-1", { ...shellsRunning("cargo test"), ...aChecklist });
+    answerNothing();
+    await mount();
+    expect(menuKinds()).toEqual(["shells", "checklist"]);
   });
 
   it("opens the remembered kind's viewer on the saved snapshot", async () => {

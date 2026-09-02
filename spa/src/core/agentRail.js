@@ -380,7 +380,7 @@ export function mountAgentRail(host, context) {
     seededSurfaces = { surfaces: surfacesAfterGrace(seen.surfaces, seen.at, Date.now()), at: seen.at };
     surfacesOnDisk = surfacesFingerprint(seen.surfaces);
     syncSurfaces();
-    syncSurfaceOverlay();
+    paintSurfaceMenu();
   };
 
   /** Both saved records, once per conversation key, discarded whole if the
@@ -805,7 +805,7 @@ export function mountAgentRail(host, context) {
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
-    paintSurfaceMenu(panel);
+    paintSurfaceMenu();
     syncSurfaceOverlay();
     if (shownMode === "chat") {
       paintChat();
@@ -1141,8 +1141,8 @@ export function mountAgentRail(host, context) {
     surfacesBlock.set(seen.surfaces, seen.at);
   };
 
-  const paintSurfaceMenu = (panel) => {
-    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
+  const paintSurfaceMenu = () => {
+    const region = host.querySelector(SURFACE_MENU_SELECTOR);
     if (!region) return;
     closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
       onChoose: openSurfaceOverlayForKind,

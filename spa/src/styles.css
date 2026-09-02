@@ -989,6 +989,10 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .modal-surface h3 { margin:0 0 8px; font-size:15px; }
 .modal-surface .surface-overlay-body { flex:1 1 auto; min-height:0; overflow-y:auto; }
 .modal-surface .surface-viewer { padding:0; }
+/* The scrim and the dialog each set a display of their own, which would beat
+   the browser's own rule for [hidden] — the state the motion primitive leaves
+   them in before they reveal and after they hide. */
+.modal-scrim[hidden], .modal[hidden] { display:none; }
 .confirm-steps { margin:12px 0; padding-left:20px; font-size:13px; color:var(--ink2); display:flex; flex-direction:column; gap:6px; }
 /* What the verb is about to cost, read before the outline of what it will do:
    the bridge's own preflight, in amber, never a refusal. */

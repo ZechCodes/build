@@ -2303,6 +2303,14 @@ describe("the one status row", () => {
     expect(railHost().querySelector(".sdot")).toBe(null);
   });
 
+  it("keeps the clock's digits fixed in width so a tick never nudges the pills", () => {
+    const clockRule = shellCss.match(/\.rail-status-text \{[^}]*\}/);
+    expect(clockRule).not.toBe(null);
+    expect(clockRule[0]).toContain("font-variant-numeric:tabular-nums");
+    expect(clockRule[0]).toMatch(/min-width:\d+ch/);
+    expect(clockRule[0]).toContain("display:inline-block");
+  });
+
   it("reads Working and the clock while no pill is asking for the room", async () => {
     await aTurnInFlight();
     await mount();

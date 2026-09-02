@@ -523,6 +523,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-status-lead { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap; }
 .rail-status-lead[hidden] { display:none; }
+.rail-status-text { display:inline-block; min-width:7ch; font-variant-numeric:tabular-nums; }
 .rail-status-working { color:var(--accent); }
 .rail-status-starting { color:var(--dim); }
 /* The one word the row gives up when the pills want the room. It collapses

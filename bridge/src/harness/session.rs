@@ -301,16 +301,6 @@ impl AgentActivity {
     }
 }
 
-/// One reported activity, and the tool call whose agent reported it.
-///
-/// A subagent's reasoning is reasoning, so the parent rides BESIDE the five
-/// kinds rather than as a sixth field repeated on four of them: what makes a
-/// row a subagent's is which call it came out of, and nothing else.
-///
-/// `parent_call_id` is the harness's own id for that call — the same id its
-/// [`AgentActivity::ToolUse`] carried — so the layer that knows what a
-/// conversation row is can pair the two. The session layer holds the id and
-/// never a sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityReport {
     pub activity: AgentActivity,
@@ -318,7 +308,6 @@ pub struct ActivityReport {
 }
 
 impl ActivityReport {
-    /// What the session did itself, rather than through an agent it spawned.
     pub fn own_work(activity: AgentActivity) -> ActivityReport {
         ActivityReport {
             activity,

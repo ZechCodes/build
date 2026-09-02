@@ -849,9 +849,6 @@ pub struct ThreadEvent {
     pub revision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
-    /// The sequence of the tool-call row this row folds under — a subagent's
-    /// own work, shown inside the call that spawned it. Absent on every row
-    /// that stands on its own, which is every row a session's own turn mints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_sequence: Option<u64>,
     /// The agent's structured handoff, on the `Done` event that reports it.
@@ -866,13 +863,6 @@ pub struct ThreadEvent {
     pub metadata: ItemMetadata,
 }
 
-/// One event about to be minted, before the thread gives it an id, a sequence
-/// and its derived metadata.
-///
-/// The argument list [`Thread::push_event`] and
-/// [`Thread::push_event_with_links`] hand on, named as a value so the next
-/// field an event needs is added here rather than to every call site of the
-/// two constructors that keep their signatures over it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThreadEventDraft {
     pub event: ThreadEventKind,
@@ -1907,9 +1897,6 @@ impl Thread {
         )
     }
 
-    /// Mint the event `draft` describes. The one place an event is written, so
-    /// a field added to [`ThreadEventDraft`] is carried by every caller of the
-    /// two constructors above without one of them moving.
     pub fn push_drafted_event(&mut self, draft: ThreadEventDraft, now: impl Into<String>) -> u64 {
         let ThreadEventDraft {
             event,

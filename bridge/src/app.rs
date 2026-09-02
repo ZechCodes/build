@@ -689,14 +689,6 @@ struct Tab {
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
     live: bool,
-    /// The harness's id for every tool call this session minted a row for,
-    /// against that row's sequence and whether its answer ever came.
-    ///
-    /// Kept for the session's life rather than dropped on the answer: an agent
-    /// this session spawned reports its own work long after the call that
-    /// spawned it was answered, and every one of those rows folds under that
-    /// same row. `answered` is what lets the stream's close resolve the calls
-    /// that died open without re-resolving every call that ended properly.
     call_sequences: HashMap<String, MintedCallRow>,
     /// When Build last submitted a turn here.
     ///
@@ -708,8 +700,6 @@ struct Tab {
     last_delivered_at: Option<std::time::Instant>,
 }
 
-/// The conversation row one tool call minted, and whether the call has been
-/// answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MintedCallRow {
     sequence: u64,
@@ -18362,13 +18352,6 @@ fn spawn_tab_pump(
 /// background work — which are conversation, classed `Status`: they move no
 /// unread count, reach no Issue conversation and pull nobody in.
 ///
-/// A tool call is ONE row for its whole life: minted when the call is made and
-/// updated in place when its answer arrives, which is what the tab's
-/// `call_sequences` is for. The map is emptied when this pump sees the stream
-/// close, so it is per session by construction, and the protocol's call id
-/// never reaches the conversation: the pairing lives and dies with the
-/// session.
-///
 /// It owes the same death rites, minus the screen's half: on close the tab goes
 /// not live and the conversation's session lineage ends. There is no
 /// `term.closed` to push because there is no screen — the step-3 refusals
@@ -18572,21 +18555,6 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
 const NO_ANSWER_TURN_ENDED: &str = "no answer — turn ended";
 const NO_ANSWER_SESSION_ENDED: &str = "no answer — session ended";
 
-/// Put one reported activity into the conversation, keeping the tab's
-/// `call_sequences` — the session's record of which row each call minted — in
-/// step with it.
-///
-/// Three shapes, and the third is the one that keeps a stored row honest:
-/// a call mints a row and is remembered; its answer updates that row and marks
-/// it answered; and an answer to a call this session never minted a row for —
-/// one lost to broadcast lag, or minted by a session before this one — falls
-/// back to minting the standalone `tool_result` row every answer used to mint,
-/// so the answer reaches the human either way.
-///
-/// A report naming the call that spawned the agent making it lands folded
-/// under that call's row. A parent this session never minted a row for — one
-/// of Build's own MCP calls, which are silent by construction — leaves the row
-/// flat rather than dropping it.
 fn record_activity(
     state: &mut AppState,
     key: &TabKey,
@@ -18646,9 +18614,6 @@ fn record_activity(
     }
 }
 
-/// The row `parent_call_id`'s call minted, which is the row a report folds
-/// under. `None` for a report of the session's own work, and for a parent this
-/// session minted no row for.
 fn parent_row_sequence(
     state: &AppState,
     key: &TabKey,
@@ -18658,17 +18623,12 @@ fn parent_row_sequence(
     Some(state.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
 }
 
-/// Mark the call's row answered and hand back its sequence. The entry stays:
-/// an agent's work reaches the conversation long after the call that spawned
-/// it was answered, and it folds under that same row.
 fn mark_call_answered(state: &mut AppState, key: &TabKey, call_id: &str) -> Option<u64> {
     let row = state.tabs.get_mut(key)?.call_sequences.get_mut(call_id)?;
     row.answered = true;
     Some(row.sequence)
 }
 
-/// The thread sequences of the calls the session died over, oldest first, with
-/// the tab's whole pairing map emptied: it lives and dies with the session.
 fn take_unanswered_call_sequences(tab: &mut Tab) -> Vec<u64> {
     let mut unanswered: Vec<u64> = std::mem::take(&mut tab.call_sequences)
         .into_values()
@@ -34817,9 +34777,6 @@ mod tests {
         )
     }
 
-    /// A run with the live, terminal-free agent tab a reported activity pumps
-    /// into, already shared — the whole preamble an activity-pump test needs
-    /// before it opens a broadcast channel.
     fn a_run_with_a_reporting_tab(
         run_id: &str,
     ) -> (tempfile::TempDir, Arc<Mutex<AppState>>, TabKey) {
@@ -34879,7 +34836,6 @@ mod tests {
         }
     }
 
-    /// Every row a reporting session minted on a conversation, in order.
     fn activity_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
         thread
             .items
@@ -34903,7 +34859,6 @@ mod tests {
             .collect()
     }
 
-    /// The same rows as (kind, summary).
     fn activity_of(
         thread: &crate::thread::Thread,
     ) -> Vec<(crate::thread::ThreadEventKind, String)> {
@@ -35409,16 +35364,6 @@ mod tests {
         );
     }
 
-    /// A subagent's own work reaches the conversation folded under the row of
-    /// the call that spawned it, and stays folded there after that call is
-    /// answered.
-    ///
-    /// Replayed from `subagent.jsonl`, so the shape is the recorded one: the
-    /// Agent call on line 9 mints the row; its own answer lands on line 12,
-    /// BEFORE the subagent has said anything; and the subagent's reasoning
-    /// (17, 27), its Read call (24), that call's answer (26) and its final
-    /// answer (28) all arrive after. A pairing that forgot on the answer would
-    /// have nothing left to fold them under.
     #[tokio::test]
     async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
         let (_dir, state, key) = a_run_with_a_reporting_tab("run-folded");
@@ -35516,9 +35461,6 @@ mod tests {
         );
     }
 
-    /// A report naming a call this session minted no row for — Build's own MCP
-    /// calls, which are silent by construction, and a call lost to broadcast
-    /// lag — lands as a row of its own rather than being dropped.
     #[tokio::test]
     async fn a_report_naming_a_call_with_no_row_lands_flat() {
         let (_dir, state, key) = a_run_with_a_reporting_tab("run-orphan");

@@ -307,11 +307,6 @@ impl ProtocolState {
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer
 /// stays as silent as the call was.
-///
-/// `parent_call_id` names the call that spawned the agent whose call this is,
-/// and is what tells the session's own calls from a spawned agent's: only the
-/// session's feed its surfaces, and only the session's are closed by the
-/// session's turn boundary.
 #[derive(Debug, PartialEq, Eq)]
 enum RecordedCall {
     Minted {
@@ -374,11 +369,6 @@ fn spawn_shell_tail_poller(
     })
 }
 
-/// Every report one recorded stream mints, in the order the reader minted them.
-///
-/// The fixtures are the one account of what a real session says, so the
-/// app-layer pump replays its reports through this rather than through a
-/// hand-written imitation of them.
 #[cfg(test)]
 pub(crate) fn reports_minted_by(file_name: &str) -> Vec<ActivityReport> {
     let (sender, mut heard) = broadcast::channel(1024);
@@ -391,7 +381,6 @@ pub(crate) fn reports_minted_by(file_name: &str) -> Vec<ActivityReport> {
     reports_already_sent(&mut heard)
 }
 
-/// Everything a subscriber has been sent and not yet read, in order.
 #[cfg(test)]
 fn reports_already_sent(heard: &mut broadcast::Receiver<ActivityReport>) -> Vec<ActivityReport> {
     let mut reported = Vec::new();
@@ -1130,13 +1119,6 @@ impl ProtocolReader {
         }
     }
 
-    /// One tool call, minted as a row and recorded for its answer.
-    ///
-    /// The surfaces ledger is fed the SESSION's own calls and no others: a
-    /// checklist, a workflow or a shell is the session's, and a spawned agent
-    /// writing todos of its own would otherwise replace the session's whole
-    /// checklist surface with the agent's. The agent's row is reported either
-    /// way, folded under the call that spawned it.
     fn read_tool_use(&mut self, block: &Value, parent_call_id: Option<&str>) {
         let tool = block["name"].as_str().unwrap_or_default().to_string();
         let call_id = block["id"].as_str().unwrap_or_default().to_string();
@@ -1171,10 +1153,6 @@ impl ProtocolReader {
     /// The answer travels alone, without the tool's name in front of it: the row
     /// it lands on is the call, which said what tool this was when it was
     /// minted.
-    ///
-    /// The ledger is handed the answer only where it was handed the call — the
-    /// session's own — so a spawned agent's answer can no more write the
-    /// session's surfaces than its call could.
     fn read_tool_result(&mut self, event: &Value, block: &Value, parent_call_id: Option<&str>) {
         let call_id = block["tool_use_id"]
             .as_str()
@@ -1213,16 +1191,6 @@ impl ProtocolReader {
         );
     }
 
-    /// Close every call the turn just ended left open.
-    ///
-    /// A call whose answer never came must not go on claiming to run, so the
-    /// boundary that ended it says so: one `Unanswered` completion per call
-    /// still in the map, and Build's own calls dropped in the silence their
-    /// answers always kept.
-    ///
-    /// A call an agent this session spawned made is not this turn's to close:
-    /// that agent runs across the session's turn boundaries, so its record is
-    /// kept for the answer still coming rather than closed over.
     fn close_open_calls(&mut self) {
         let mut still_open_under_a_spawned_agent = HashMap::new();
         for (call_id, recorded) in std::mem::take(&mut self.calls) {
@@ -1250,11 +1218,6 @@ impl ProtocolReader {
         self.state.lock().unwrap().surfaces.close_pending_creates();
     }
 
-    /// Hand one event to whoever is listening, naming the call that spawned the
-    /// agent reporting it so the row lands folded under that call — `None` for
-    /// the session's own work. A send with no subscriber, or a backlog nobody
-    /// read, is not the child's problem: the protocol is read at the speed the
-    /// child speaks it either way.
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
         let reported = match parent_call_id {
             None => ActivityReport::own_work(activity),
@@ -1783,8 +1746,6 @@ mod tests {
         }
     }
 
-    /// The Agent call on line 9 of the subagent fixture — the row every one of
-    /// that subagent's own rows folds under.
     const SUBAGENT_SPAWNING_CALL: &str = "toolu_01P8eCnYQFMqdCaXBXSCcAVd";
 
     fn row_kind(reported: &ActivityReport) -> &'static str {
@@ -1801,8 +1762,6 @@ mod tests {
         rows.iter().map(row_kind).collect()
     }
 
-    /// Every row's kind beside the call it folds under — what a subagent's own
-    /// rows are told apart from the session's by.
     fn kinds_and_parents_of(rows: &[ActivityReport]) -> Vec<(&'static str, Option<&str>)> {
         rows.iter()
             .map(|reported| (row_kind(reported), reported.parent_call_id.as_deref()))
@@ -1843,11 +1802,6 @@ mod tests {
             ]);
     }
 
-    /// The Agent call on line 9 mints the row the subagent's own work folds
-    /// under, and every line the subagent spoke on — its reasoning on 17 and
-    /// 27, its Read call on 24, that call's answer on 26, its answer on 28 —
-    /// names that call. Line 12, the Agent call's own answer to the session
-    /// that made it, is the session's own row and names nothing.
     #[test]
     fn the_subagent_fixture_folds_the_subagents_own_rows_under_the_call_that_spawned_them() {
         let rows = reports_minted_by(SUBAGENT_FIXTURE);
@@ -1883,12 +1837,8 @@ mod tests {
         );
     }
 
-    /// The Agent call a synthetic parented line names, so the two tests below
-    /// speak of one spawning call.
     const SPAWNED_AGENT_CALL: &str = "toolu_01SpawningCallSynthetic";
 
-    /// One `TodoWrite` an agent this session spawned made — the checklist write
-    /// that would overwrite the session's own were the ledger fed by it.
     fn a_spawned_agents_todo_write_line() -> String {
         json!({
             "type": "assistant",
@@ -1907,9 +1857,6 @@ mod tests {
         .to_string()
     }
 
-    /// A spawned agent's tool call is the agent's, not the session's: the row
-    /// still reports, folded under the call that spawned the agent, and the
-    /// session's own surfaces are left exactly as they were.
     #[test]
     fn a_spawned_agents_tool_call_never_writes_the_sessions_surfaces() {
         let (mut reader, mut heard) = reader_and_what_it_reports();
@@ -1928,9 +1875,6 @@ mod tests {
         );
     }
 
-    /// The turn boundary is the session's, not a spawned agent's: a call the
-    /// agent still has open when the session's own turn ends is left running
-    /// rather than closed over an answer that is still coming.
     #[test]
     fn a_spawned_agents_open_call_outlives_the_sessions_turn() {
         let (mut reader, mut heard) = reader_and_what_it_reports();
@@ -3557,10 +3501,6 @@ mod tests {
         session.end();
     }
 
-    /// A subagent's chatter is reported under the call that spawned it rather
-    /// than beside it: one tool call the human can read, with the agent's own
-    /// work folded into it, not a second conversation interleaved with the
-    /// first.
     #[tokio::test]
     async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
         let session = open(&stream_json_harness(&[SUBAGENT_TEXT, NARRATION, RESULT]));

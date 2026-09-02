@@ -411,6 +411,14 @@ describe("the inbox rail", () => {
     expect(rowFor("run-old")).toBeTruthy();
   });
 
+  it("paints Recent's rows as one quiet line each, with no state dot", () => {
+    feed([branchRow(), branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
+    expect(rowFor("run-1").querySelector(".sdot")).toBeTruthy();
+    expect(rowFor("run-old").classList.contains("inbox-quiet")).toBe(true);
+    expect(rowFor("run-old").querySelector(".sdot")).toBeNull();
+    expect(rowFor("run-old").querySelector(".inbox-facts-float").textContent).toBe("2 files · +8 −1");
+  });
+
   it("opens a Recent row like any other", async () => {
     feed([branchRow({ branch: "build/old", run_id: "run-old", anchor: hoursAgo(300), last_activity: hoursAgo(40) })]);
     rowFor("run-old").click();

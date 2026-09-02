@@ -512,6 +512,24 @@ describe("what a row says", () => {
     expect(html).toContain('data-dismiss="run-1"');
   });
 
+  // Recent's rows are quiet: nothing about them needs a glance, so the state
+  // dot goes and the row is one line, with what it weighs at the right edge.
+  it("paints a quiet row as one line with no state dot and its weight floating at the right", () => {
+    const [entry] = listed([branch({ stat: { uncommitted: { files_changed: 3, insertions: 4, deletions: 1 }, ahead: 2 } })]);
+    const html = inboxRowHtml(entry, { quiet: true });
+    expect(html).toContain("inbox-quiet");
+    expect(html).not.toContain("sdot");
+    expect(html).not.toContain('class="inbox-facts"');
+    expect(html).toMatch(/inbox-facts-float">3 files · ↑2 · \+4 −1</);
+    expect(html).toContain('data-key="run-1"');
+    expect(html).toContain('data-menu="run-1"');
+    expect(html).toContain('class="inbox-tag">relaydb');
+    expect(inboxRowHtml(entry, { quiet: true, showProject: false })).not.toContain("inbox-tag");
+    // A quiet row with nothing to weigh floats nothing.
+    const [bare] = listed([branch({ stat: null })]);
+    expect(inboxRowHtml(bare, { quiet: true })).not.toContain("inbox-facts-float");
+  });
+
   it("escapes everything the repo named", () => {
     const [entry] = listed([branch({ branch: '<img src=x onerror="alert(1)">' })]);
     const html = inboxRowHtml(entry, {});

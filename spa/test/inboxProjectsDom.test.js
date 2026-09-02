@@ -223,7 +223,11 @@ describe("the projects face", () => {
     expect(rowsIn(blockFor("p1"))).toEqual(["branch:p1:main", "run-1"]);
     expect(rowsIn(blockFor("p2"))).toEqual(["iss-1"]);
     expect(rowsIn(blockFor("p3"))).toEqual([]);
-    expect(blockFor("p3").querySelector(".inbox-project-empty").textContent).toContain("Nothing here yet");
+    // Nothing in mascot at all: flat, no empty line, and nothing to fold.
+    expect(blockFor("p3").classList.contains("inbox-flat")).toBe(true);
+    expect(blockFor("p3").querySelector(".inbox-project-rows").children.length).toBe(0);
+    expect(blockFor("p3").querySelector("[data-project-fold]").disabled).toBe(true);
+    expect(blockFor("p1").classList.contains("inbox-flat")).toBe(false);
     expect(blockFor("p1").querySelector(".inbox-project-name").textContent).toBe("relaydb");
     expect(blockFor("p1").querySelector(".inbox-project-head .inbox-unread").textContent).toBe("1");
     // The block already says which project, so the row does not.
@@ -240,8 +244,16 @@ describe("the projects face", () => {
       captureRow(),
     ]);
     expect(blocks().map((block) => block.dataset.project)).toEqual(["p3", "p2", "p1"]);
-    expect(rowsIn(blockFor("p1"))).toEqual([]);
-    expect(blockFor("p1").querySelector("[data-recent-toggle]")).toBeTruthy();
+    // Its quiet rows stand straight under the head as one-line rows, with the
+    // block's own chevron as their fold and no Recent disclosure.
+    expect(blockFor("p1").classList.contains("inbox-flat")).toBe(true);
+    expect(rowsIn(blockFor("p1"))).toEqual(["run-1"]);
+    expect(rowFor("run-1").classList.contains("inbox-quiet")).toBe(true);
+    expect(rowFor("run-1").querySelector(".sdot")).toBeNull();
+    expect(blockFor("p1").querySelector("[data-recent-toggle]")).toBeNull();
+    expect(blockFor("p1").querySelector("[data-project-fold]").disabled).toBe(false);
+    blockFor("p1").querySelector("[data-project-fold]").click();
+    expect(blockFor("p1").classList.contains("inbox-folded")).toBe(true);
   });
 
   it("highlights the block holding the branch or issue the route stands on", () => {
@@ -327,6 +339,9 @@ describe("the projects face", () => {
     expect(rowFor("iss-old")).toBeTruthy();
     expect(rowFor("iss-old").parentElement.className).toBe("inbox-recent");
     expect(blockFor("p2").contains(rowFor("iss-old"))).toBe(true);
+    // Recent's rows are quiet rows: one line, no dot.
+    expect(rowFor("iss-old").classList.contains("inbox-quiet")).toBe(true);
+    expect(rowFor("iss-old").querySelector(".sdot")).toBeNull();
 
     toggleIn("p1").click();
     await flush();

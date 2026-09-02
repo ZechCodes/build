@@ -3,7 +3,7 @@
 Companion to the binding `planning/v2/Work Isolation Spec.md`, which absorbed every decision made here; where the two
 disagree the spec wins. **The rule:** two ways to materialize a checkout, one caller — everyone keeps
 talking to `WorktreeManager`, the variation lives behind `IsolationBackend`, and the only places naming a variant are
-the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
+the two impls, `Isolation::of` and the SPA table.
 
 ## `bridge/src/isolation/mod.rs` — the types, the marker, the trait
 - **`Isolation`**: the choice as a value — `ALL`, `wire`, `from_wire`, `of(&Path)`. `of` is the one authority on what an
@@ -15,25 +15,25 @@ the two impls, `Isolation::of`, the resolver, the two setters and the SPA table.
   neither.
 - **`IsolationAvailability`** `{ cow: Result<(), String> }` (§1.3): can a clone be made here, and if not, the sentence a
   control shows. One constructor, `of(project, worktrees_root)`, wrapping `cow_availability` — a checkout and a volume
-  are the only facts this module owns. Its hand-written `impl Serialize` emits §5.4's
-  `{"cow": bool, "reason": string|null}`.
+  are the only facts this module owns; its hand-written `impl Serialize` emits §5.4's
+  `{"cow": bool, "reason": string|null}`. Its one behavioral method, `lock_reason(&self, isolation) -> Option<&str>`
+  (`Worktree` never locked, `Cow` locked by `cow.as_ref().err()`), owns the fact that `cow` is the one isolation a
+  volume can lock — the ownership that keeps the variant out of `app.rs`, where the resolver and the refusal ask it.
 - **`IsolationBackend`**: `kind`, `materialize`, `verify`, `publish`, `sync_base`, `remove`, `discover`, `prune`,
   `holds_record`, each answering `Result<_, WorktreeError>`. Each is whole — no caller sequences two for one outcome,
   `materialize` leaves nothing behind on failure — and none knows of runs, plans, threads, settings or naming. Branch
   cutting and deletion are absent by design: project-repo work, identical for both, so the façade owns them.
-- **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive. Stale-record
-  cleanup is a per-isolation variation — a linked worktree leaves a record in `.git/worktrees`, a clone leaves none — so
-  it takes the shape of `publish`/`sync_base`: real work in `WorktreeBackend`, `Ok(())` in `CowBackend`, failure
-  reported like its seven siblings. §3's "best effort" is the façade's policy; no backend logs or swallows.
+- **`prune(&self, project: &Path) -> Result<(), WorktreeError>`** is the eighth primitive: stale-record cleanup is a
+  per-isolation variation — a linked worktree leaves a record in `.git/worktrees`, a clone leaves none — so it takes the
+  shape of `publish`/`sync_base`, real work in `WorktreeBackend` and `Ok(())` in `CowBackend`, failure reported like its
+  siblings. §3's "best effort" is the façade's policy; no backend logs or swallows.
 - **`holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError>`** is the ninth primitive: `prune`'s
-  question asked of one name — does this backend hold a record of a checkout called `name`? `WorktreeBackend` answers
-  `repo.find_worktree(name).is_ok()`, `CowBackend` answers `false`, because a clone's only trace is its directory and
-  the façade already tests that. It exists so the façade can keep uniqueness without querying git's linked-worktree
-  registry itself: that query is one backend's record store, a clone has no counterpart, and without a primitive the
-  variation would sit outside the trait and `find_worktree` would survive in `worktree.rs`.
-- `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and
-  `worktree.rs` re-exports it, so `orchestrator.rs`'s import is untouched and `isolation/` imports nothing from the
-  façade. It gains `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`.
+  question asked of one name. `WorktreeBackend` answers `repo.find_worktree(name).is_ok()`, `CowBackend` `false` — a
+  clone's only trace is its directory, which the façade already tests. Without it the uniqueness check would query git's
+  registry itself, leaving that variation outside the trait and `find_worktree` alive in `worktree.rs`.
+- `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and `worktree.rs`
+  re-exports it, so `orchestrator.rs`'s import is untouched and `isolation/` imports nothing from the façade. It gains
+  `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`.
 
 ## `run_git_with_deadline` — `bridge/src/git_process.rs`
 `fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`: one git child, no terminal prompt
@@ -62,55 +62,56 @@ volume, so that sentence is `app.rs`'s.
 ## `bridge/src/worktree.rs` — the façade
 **`describe_checkout(project_repo, path, base_branch, now)`** summarizes a checkout **from the checkout alone**, so a
 clone and a linked worktree are one function; `parse_worktree_block` shrinks to a path-only porcelain parser feeding the
-worktree backend's `discover`. What makes "alone" true is that `ExternalWorktree.name` is the checkout's directory
-basename in both isolations: `resolve_worktree_name`'s registry walk (worktree.rs:901) is deleted, so no per-isolation
-name resolution is left unnamed in the façade. Build's own checkouts always had the two equal (`worktrees_root/<name>`
-is the path `restore` insists on) and `git worktree add <dir>` names a hand-made one after its directory; where they
-part — a linked worktree whose directory was renamed after registration — `remove` finds no record, which it already
-treats as success, and the rename made that record stale, so `prune` clears it. That is the one behavior change stage 1
-carries, named in spec §0.6 and §4.1. `ExternalWorktree` gains `pub isolation: Isolation` from `Isolation::of(path)`,
-defaulted to `Worktree`; `external_worktrees_json` emits it as `"isolation"` (§4.1).
+worktree backend's `discover`. "Alone" holds because `ExternalWorktree.name` is the checkout's directory basename in
+both isolations, so `resolve_worktree_name`'s registry walk (worktree.rs:901) is deleted and no per-isolation name
+resolution is left unnamed in the façade: Build's own checkouts always had the two equal (`worktrees_root/<name>` is the
+path `restore` insists on), `git worktree add <dir>` names a hand-made one after its directory, and where they part — a
+directory renamed after registration — `remove` finds no record, which it already treats as success, while `prune`
+clears the record the rename made stale. That is the one behavior change stage 1 carries (spec §0.6, §4.1).
+`ExternalWorktree` gains `pub isolation: Isolation` from `Isolation::of(path)`, defaulted to `Worktree`;
+`external_worktrees_json` emits it as `"isolation"` (§4.1).
 **`WorktreeManager`** is the one seam, same name and callers as today, holding `repo_path`, `worktrees_root` and both
 backends. `create*`/`restore` take the resolved `Isolation`; everything else reads `Isolation::of(path)`. It owns naming
-and uniqueness — `name_taken` keeps its answer and its isolation-blindness but not its body: its `find_worktree` line
-(worktree.rs:249) and the same query in `create_on_branch`'s collision loop (worktree.rs:204) become `holds_record` over
-`Isolation::ALL`, and that fallible query makes `name_taken` return `Result<bool, WorktreeError>`. It owns branch
+and uniqueness — `name_taken` keeps its answer and its isolation-blindness but not its body. "Does some backend hold a
+record of this name" is one question the façade asks twice today (worktree.rs:249 and `create_on_branch`'s collision
+loop, worktree.rs:204), so one private `record_held(&self, name) -> Result<bool, WorktreeError>` owns the `holds_record`
+walk over `Isolation::ALL`, both callers ask it, and being fallible it makes `name_taken` fallible too. It owns branch
 cutting and deletion, the common `restore` checks, publish-before-read ordering, the union `discover`, `availability()`
-from `IsolationAvailability::of`, and `merge_into_base`, which absorbs `Orchestrator::merge_into_base` and
-`app::merge_external_branch`. No setting or record is read here. `backend(Isolation)` and `backend_of(&Path)` are the
-entire dispatch surface — nowhere else is there a `match Isolation` or a concrete backend field reached for.
-`pub fn prune(&self)` (§3) has no path to key on, so it asks every backend, `Isolation::ALL`, and is the one place that
-turns a backend's `Err` into a log line and carries on, which is why it alone returns nothing; the record clearing
-`restore` does before recreating a vanished checkout (worktree.rs:285) is that `prune`, and a record whose directory
-still stands is not stale, so `materialize`'s own error is then the honest answer. `backend_of` on a path whose
-`Isolation::of` is `None` is `WorktreeError::NotABuildCheckout(path)`: no git command ran, so the variant rendering
-"git command failed" would name the wrong cause.
+from `IsolationAvailability::of`, and `merge_into_base`, which absorbs
+`Orchestrator::merge_into_base` and `app::merge_external_branch`. No setting or record is read here.
+`backend(Isolation)` and `backend_of(&Path)` are the entire dispatch surface — nowhere else is there a `match Isolation`
+or a concrete backend field reached for. `pub fn prune(&self)` (§3) has no path to key on, so it asks every backend over
+`Isolation::ALL` and is the one place turning a backend's `Err` into a log line, which is why it alone returns nothing;
+the record clearing `restore` does before recreating a vanished checkout (worktree.rs:285) is that `prune`, and a record
+whose directory still stands is not stale, so `materialize`'s own error is then the honest answer. `backend_of` on a
+path whose `Isolation::of` is `None` is `WorktreeError::NotABuildCheckout(path)`: no git command ran, so the variant
+rendering "git command failed" would name the wrong cause.
 
 ## `AppState::resolved_isolation` — `bridge/src/app.rs`
-`fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` (§5.2) is
-`project.isolation.unwrap_or(self.isolation)`, and `(Worktree, Some(reason))` when that is `Cow` and the probe answers
-`Err`. One function decides the downgrade and hands back the sentence announcing it, so the probe runs once per create
-and a creation site makes one call. It is one of the two permitted decision sites outside the module; the other is the
-setter refusal, shared by `settings.set` and `project.set_isolation` through one private `accept_isolation` holding the
-wire-word parse and the refusal (§5.2). `settings.get` owns the one availability sentence about the registry
-rather than a volume: with no project registered it answers
-`IsolationAvailability { cow: Err("no project registered yet") }`, beside the registry it just read (§5.4). The
+`fn resolved_isolation(&self, project_id) -> (Isolation, Option<String>)` (§5.2) puts
+`project.isolation.unwrap_or(self.isolation)` to `availability.lock_reason`: `None` keeps the request, `Some(reason)` is
+`(Isolation::default(), Some(reason))`. One function decides the downgrade and hands back the sentence announcing it, so
+the probe runs once per create and a creation site makes one call. The refusal `settings.set` and
+`project.set_isolation` share is that question asked before the setting is stored: one private `accept_isolation` parses
+the wire word and is `availability.lock_reason(parsed).map_or(Ok(()), refuse)`. Neither spells a variant — which
+isolation a volume can lock is `IsolationAvailability`'s fact — so `Isolation::from_wire` is all §0.1 still carves out.
+`settings.get` owns the one availability sentence about a registry rather than a volume: with no project registered it
+answers `IsolationAvailability { cow: Err("no project registered yet") }`, beside the registry it just read (§5.4). The
 orchestrator holds no isolation state: creation entry points take the isolation as an argument, and the reason, when
 present, joins the events a create already writes.
 
 ## `spa/src/core/isolation.js`
 Mirrors `core/defaultHarness.js`: `ISOLATIONS` (the client's only naming table for the two words), `isolationOf`,
 `isolationLockReason`, `isolationOptionsHtml`, `isolationPanelHtml`, `mountIsolation`, plus `ACCOUNT_ISOLATION` and
-`projectIsolationTarget` (§7). Pure except `mountIsolation`, which owns the one save/refuse/repaint cycle —
-save, then repaint from the payload the bridge answered with, so a locked `cow` shows the bridge's refusal and the
-control lands on what the bridge holds. It is written once because `mountIsolation(host, {callRpc, target, settings})`
-takes an isolation target — an RPC name and its fixed params — and calls
-`callRpc(target.rpc, {...target.params, isolation})`, the wire word or `null` for inherit. `ACCOUNT_ISOLATION`
-(`settings.set`, no params, no inherit option) serves the settings page from `settings.get`.
-`projectIsolationTarget(project)` takes the `project.list` row the sheet already holds, keys `project.set_isolation` on
-its `project_id`, and builds `inheritLabel` from the row's `isolation_default` — the account default an override
-replaced — through `ISOLATIONS`, so §7's "Account default (Git worktree)" is composed once from a fact the bridge owns.
-Neither view learns a variant name, a label, an RPC shape or a locked look.
+`projectIsolationTarget` (§7). Pure except `mountIsolation`, which owns the one save/refuse/repaint cycle — save, then
+repaint from the payload the bridge answered with, so a locked `cow` shows the bridge's refusal and the control lands on
+what the bridge holds. It is written once because `mountIsolation(host, {callRpc, target, settings})` takes an isolation
+target — an RPC name and its fixed params — and calls `callRpc(target.rpc, {...target.params, isolation})`, the wire
+word or `null` for inherit. `ACCOUNT_ISOLATION` (`settings.set`, no params, no inherit option) serves the settings page
+from `settings.get`. `projectIsolationTarget(project)` takes the `project.list` row the sheet already holds, keys
+`project.set_isolation` on its `project_id`, and builds `inheritLabel` from the row's `isolation_default` — the account
+default an override replaced — through `ISOLATIONS`, so §7's "Account default (Git worktree)" is composed once from a
+fact the bridge owns. Neither view learns a variant name, a label, an RPC shape or a locked look.
 
 ## Boundaries and test seams
 Dependencies run one way: `app`/`orchestrator` → `worktree.rs` (façade) → `isolation/` → `git_process.rs` → nothing.

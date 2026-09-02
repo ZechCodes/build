@@ -28,9 +28,11 @@ type, setting, wire field, control label.
    the orchestrator and the app talk to about materializing, verifying, removing
    or enumerating a checkout. It gains two backends behind the `IsolationBackend`
    trait (§2) and routes to them. **No `match Isolation` outside
-   `bridge/src/isolation/`** except the two places that resolve the setting (§5)
-   and the SPA controls (§7). A grep for `Isolation::Cow` outside that module at
-   the end of stage 3 must find only the resolver and tests.
+   `bridge/src/isolation/`** except `accept_isolation`'s wire-word parse (§5.2)
+   and the SPA controls (§7). Which isolation a volume can lock is
+   `IsolationAvailability::lock_reason`'s fact (§1.3), so neither the resolver nor
+   the setter names a variant: a grep for `Isolation::Cow` outside the module at
+   the end of stage 4 must find only tests.
 2. **The setting decides what NEW checkouts are; never how existing ones are
    treated.** Every existing checkout self-describes from disk (§1.2,
    `Isolation::of`). Flipping the setting orphans nothing and migrates nothing.
@@ -110,6 +112,16 @@ pub struct IsolationAvailability {
     /// `Ok(())` when a clone can be made for this project on this volume;
     /// `Err(reason)` is the sentence the settings controls show.
     pub cow: Result<(), String>,
+}
+```
+
+```rust
+impl IsolationAvailability {
+    /// Why `isolation` cannot be used here, or `None` when it can. `Worktree` is
+    /// never locked; `Cow` is locked by the probe's reason. The one owner of
+    /// which isolation a volume can lock: `resolved_isolation`'s downgrade and
+    /// the setters' refusal (§5.2) are both this answer.
+    pub fn lock_reason(&self, isolation: Isolation) -> Option<&str>;
 }
 ```
 
@@ -250,7 +262,10 @@ Rules:
   `holds_record` under the name **or** directory exists, regardless of isolation —
   the answer `name_taken` gives today, asked of every backend instead of git's
   registry directly, which makes it `Result<bool, WorktreeError>`), then call
-  `backend(isolation).materialize`.
+  `backend(isolation).materialize`. One private
+  `record_held(&self, name) -> Result<bool, WorktreeError>` owns the `holds_record`
+  walk over `Isolation::ALL`; `name_taken` and `create_on_branch`'s collision loop
+  both ask it, and neither walks the backends itself.
 - `restore` of a checkout that still exists calls `backend(Isolation::of(path)).verify`,
   then `publish`, then the common checks that stay in the façade: HEAD is on the
   recorded branch, HEAD equals the project's branch tip, merge-base with the base
@@ -317,7 +332,7 @@ stale, so `prune` clears it.
 | `remove` | today's `remove`: `remove_dir_all` if present, then prune git's record, NotFound is success |
 | `discover` | `git worktree list --porcelain` paths, primary excluded |
 | `prune` | `git worktree prune` |
-| `holds_record` | `repo.find_worktree(name).is_ok()` |
+| `holds_record` | `repo.find_worktree(name).is_ok()` — the only `find_worktree` left, asked through the façade's `record_held` (§3) |
 
 ### 4.3 Probe: `cow_availability` (stage 3, `bridge/src/isolation/probe.rs`)
 
@@ -409,13 +424,17 @@ value logs and is treated as absent, like `default_harness` does.
 - `AppState.isolation: Isolation` (account default).
 - `Project.isolation: Option<Isolation>` (override).
 - `AppState::resolved_isolation(&self, project_id) -> (Isolation, Option<String>)`:
-  `project.isolation.unwrap_or(self.isolation)`, downgraded to `Worktree` with
-  the probe's reason when that is `Cow` and `orch.worktrees().availability().cow`
-  is `Err`. The downgrade and the sentence announcing it are one answer. This is
-  one of the two permitted decision sites on `Isolation` outside the module; the
-  other is the setter refusal, shared by `settings.set` and `project.set_isolation`
-  through one private `accept_isolation` holding the wire-word parse and the
-  refusal.
+  `project.isolation.unwrap_or(self.isolation)` put to
+  `orch.worktrees().availability().lock_reason(requested)` — `None` keeps the
+  request, `Some(reason)` is `(Isolation::default(), Some(reason))`. The downgrade
+  and the sentence announcing it are one answer.
+- The setter refusal is that same question asked before the setting is stored:
+  `settings.set` and `project.set_isolation` share one private
+  `accept_isolation`, which parses the wire word and is
+  `availability.lock_reason(parsed).map_or(Ok(()), refuse)`.
+- Neither names a variant. `IsolationAvailability::lock_reason` (§1.3) owns which
+  isolation a volume can lock, so `Isolation::from_wire` is the only `Isolation`
+  the app spells and §0.1's carve-out covers that parse alone.
 
 ### 5.3 Creation sites
 
@@ -492,7 +511,7 @@ one machine and one worktrees root; a mixed-volume setup surfaces per project in
 
 ## 8. Invariants a reviewer checks
 
-1. `grep -rn "Isolation::Cow\|Isolation::Worktree" bridge/src --include=*.rs | grep -v isolation/ | grep -v "#\[test\]"` finds only `resolved_isolation`, the two setters, and `Isolation::of`'s callers passing through.
+1. `grep -rn "Isolation::Cow\|Isolation::Worktree" bridge/src --include=*.rs | grep -v isolation/ | grep -v "#\[test\]"` finds nothing: `resolved_isolation` and `accept_isolation` go through `IsolationAvailability::lock_reason` and `Isolation::from_wire`, and every other caller passes an `Isolation` through.
 2. No `git worktree` invocation and no `find_worktree` outside `bridge/src/isolation/worktree.rs` after stage 2 (tests excepted).
 3. Every place that reads `refs/heads/<run branch>` in the **project** repo is preceded by `publish` through the façade.
 4. A checkout's isolation is never read from a record; only from `Isolation::of`.

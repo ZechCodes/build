@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { splitButtonMarkup, createSingleFlight } from "../src/core/splitButton.js";
+import { splitButtonMarkup, menuButtonMarkup, createSingleFlight } from "../src/core/splitButton.js";
 
 const MERGE = { id: "merge_prune", label: "Merge", menuLabel: "Merge & clean up", description: "commit, merge into main", busyLabel: "merging…" };
 const KEEP = { id: "merge_keep", menuLabel: "Merge & keep worktree", description: "merge into main, keep the worktree", busyLabel: "merging…" };
@@ -120,5 +120,24 @@ describe("createSingleFlight", () => {
     const b = createSingleFlight();
     a.begin();
     expect(b.begin()).toBe(true);
+  });
+});
+
+describe("menuButtonMarkup", () => {
+  it("opens with a labelled mini button and a caret glyph by default", () => {
+    const html = menuButtonMarkup("Ask", [MERGE, KEEP], { title: "Ask the agent" });
+    expect(html).toContain('class="btn mini caret"');
+    expect(html).toContain("Ask ▾");
+    expect(html).not.toContain("splitbtn-icon");
+  });
+
+  it("is one plain icon button, glyph alone, when asked for the icon shape", () => {
+    const html = menuButtonMarkup("⋯", [MERGE, KEEP], { title: "More", icon: true });
+    expect(html).toContain('class="splitbtn splitbtn-icon"');
+    expect(html).toContain('class="iconbtn caret"');
+    expect(html).toContain(">⋯</button>");
+    expect(html).not.toContain("▾");
+    expect(html).not.toContain("btn mini");
+    expect(html).toContain('data-action="merge_prune"');
   });
 });

@@ -3,7 +3,10 @@
 // once inlined in views/task.js. Pure markup + thin wiring; every user-supplied
 // string is escaped.
 
+import { hide, reveal } from "./motion.js";
 import { esc } from "./text.js";
+
+const MENU_MOVE = { axis: "height" };
 
 export const SPLIT_BUTTON_SELECTOR = ".splitbtn";
 const CARET_SELECTOR = ".caret";
@@ -37,9 +40,13 @@ function menuItemsHtml(options) {
  *  rows a split button's caret drops. For a menu that is a selection rather
  *  than a verb — there is no default action to press, so there is no primary
  *  button to press it with. Wire it with `mountSplitMenu`. */
-export function menuButtonMarkup(label, options, { title = "" } = {}) {
-  return `<div class="splitbtn">
-    <button type="button" class="btn mini caret"${title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : ""}>${esc(label)} ▾</button>
+export function menuButtonMarkup(label, options, { title = "", icon = false } = {}) {
+  const titled = title ? ` title="${esc(title)}" aria-label="${esc(title)}"` : "";
+  const opener = icon
+    ? `<button type="button" class="iconbtn caret"${titled}>${esc(label)}</button>`
+    : `<button type="button" class="btn mini caret"${titled}>${esc(label)} ▾</button>`;
+  return `<div class="splitbtn${icon ? " splitbtn-icon" : ""}">
+    ${opener}
     <div class="splitmenu" hidden>${menuItemsHtml(options)}</div>
   </div>`;
 }
@@ -94,16 +101,24 @@ function scrollingAncestorOf(element) {
   return null;
 }
 
-function placeMenuFromButtonBox(menu, buttonBox) {
-  const opensAbove = buttonBox.top - MENU_GAP_PX >= menu.offsetHeight;
+function placeMenuFromButtonBox(menu, buttonBox, menuHeight) {
+  const opensAbove = buttonBox.top - MENU_GAP_PX >= menuHeight;
   menu.style.position = "fixed";
   menu.style.right = `${window.innerWidth - buttonBox.right}px`;
   menu.style.top = opensAbove ? "" : `${buttonBox.bottom + MENU_GAP_PX}px`;
   menu.style.bottom = opensAbove ? `${window.innerHeight - buttonBox.top + MENU_GAP_PX}px` : "";
 }
 
+function menuHeightWhenShown(menu) {
+  if (!menu.hidden) return menu.offsetHeight;
+  menu.hidden = false;
+  const height = menu.offsetHeight;
+  menu.hidden = true;
+  return height;
+}
+
 function liftMenuOutOfScroll(container, menu, closeMenu) {
-  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect());
+  placeMenuFromButtonBox(menu, container.querySelector(SPLIT_BUTTON_SELECTOR).getBoundingClientRect(), menuHeightWhenShown(menu));
   const onViewportMoved = () => closeMenu();
   document.addEventListener("scroll", onViewportMoved, { capture: true });
   window.addEventListener("resize", onViewportMoved);
@@ -140,17 +155,21 @@ export function mountSplitMenu(container, { onChoose }) {
   // being reached for) is not outside.
   let stopWatchingOutsidePress = null;
   let settleLiftedMenu = null;
+  let menuIsOpen = false;
   const closeMenu = () => {
-    if (menu) menu.hidden = true;
+    if (!menu) return Promise.resolve();
+    menuIsOpen = false;
     if (stopWatchingOutsidePress) stopWatchingOutsidePress();
-    if (settleLiftedMenu) {
+    return hide(menu, MENU_MOVE).then(() => {
+      if (menuIsOpen || !settleLiftedMenu) return;
       settleLiftedMenu();
       settleLiftedMenu = null;
-    }
+    });
   };
   const openMenu = () => {
-    menu.hidden = false;
-    if (scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
+    menuIsOpen = true;
+    if (!settleLiftedMenu && scrollingAncestorOf(menu)) settleLiftedMenu = liftMenuOutOfScroll(container, menu, closeMenu);
+    reveal(menu, MENU_MOVE);
     if (stopWatchingOutsidePress) return;
     const onOutsidePress = (event) => {
       if (container.querySelector(SPLIT_BUTTON_SELECTOR)?.contains(event.target)) return;
@@ -167,8 +186,8 @@ export function mountSplitMenu(container, { onChoose }) {
     caret.onclick = (event) => {
       event.stopPropagation();
       if (caret.disabled) return;
-      if (menu.hidden) openMenu();
-      else closeMenu();
+      if (menuIsOpen) closeMenu();
+      else openMenu();
     };
     menu.querySelectorAll(".mi").forEach(
       (mi) =>

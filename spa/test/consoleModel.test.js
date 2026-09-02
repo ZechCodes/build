@@ -10,9 +10,11 @@ import {
   consoleTakesKey,
   grownConsoleSize,
   markConsoleTerminal,
+  readConsoleReopenSize,
   readConsoleSize,
   takeConsoleTerminal,
   toggledConsoleSize,
+  writeConsoleReopenSize,
   writeConsoleSize,
 } from "../src/core/consoleModel.js";
 import { memoryStorage, refusingStorage } from "./memoryStorage.js";
@@ -35,10 +37,43 @@ describe("the three sizes", () => {
     expect(toggledConsoleSize("full")).toBe("collapsed");
   });
 
+  it("opens a shut console at the size it was last open at", () => {
+    expect(toggledConsoleSize("collapsed", "full")).toBe("full");
+    expect(toggledConsoleSize("collapsed", "half")).toBe("half");
+    expect(toggledConsoleSize("full", "full")).toBe("collapsed");
+  });
+
+  it("takes neither shut nor a size that is not one as a size to open at", () => {
+    expect(toggledConsoleSize("collapsed", "collapsed")).toBe("half");
+    expect(toggledConsoleSize("collapsed", "sideways")).toBe("half");
+  });
+
   it("grows a bar or a half into the overlay, and the overlay back to half", () => {
     expect(grownConsoleSize("collapsed")).toBe("full");
     expect(grownConsoleSize("half")).toBe("full");
     expect(grownConsoleSize("full")).toBe("half");
+  });
+});
+
+describe("the size a console reopens at", () => {
+  const KEY = "branch:p1:build/login";
+
+  it("remembers the open size it was last drawn at, and never that it was shut", () => {
+    const storage = memoryStorage();
+    writeConsoleReopenSize(KEY, "full", storage);
+    expect(readConsoleReopenSize(KEY, storage)).toBe("full");
+
+    writeConsoleReopenSize(KEY, "collapsed", storage);
+
+    expect(readConsoleReopenSize(KEY, storage)).toBe("full");
+  });
+
+  it("opens at half where nothing was remembered, or nonsense was", () => {
+    const storage = memoryStorage();
+    expect(readConsoleReopenSize(KEY, storage)).toBe("half");
+    storage.setItem("build.console.reopen." + KEY, "sideways");
+    expect(readConsoleReopenSize(KEY, storage)).toBe("half");
+    expect(readConsoleReopenSize(KEY, refusingStorage())).toBe("half");
   });
 });
 

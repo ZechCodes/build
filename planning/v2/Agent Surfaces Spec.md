@@ -236,3 +236,46 @@ Locked after the first pass shipped. Bridge unchanged; all four are SPA.
   conversation is one of those events, the status line shows that event's
   title and age in the slot the Working ticker uses. The first Working tick
   replaces it.
+
+## Revision 2026-09-02b: motion, and one status row
+
+Locked after the first revision shipped. SPA only.
+
+### One status row
+
+- The pinned line above the composer is one row: the timer (or, before the
+  first tick, the startup line) on the left, the surface pills after it, the
+  git facts pinned to the right.
+- Pills scroll horizontally in the space between the timer and the git facts,
+  with no visible scrollbar, and fade out under the git facts on the right.
+- While any pill is shown the word "Working" collapses to nothing, leaving the
+  timer alone; when the last pill leaves it grows back.
+- No status dot of any kind. The working colour on the timer is the only
+  working signal.
+- The viewer a pill opens sits above the line that tops the composer block,
+  at the bottom of the conversation column, pushing the conversation up as it
+  reveals. Nothing is drawn between the conversation and the viewer: no
+  border, no divider.
+
+### Motion
+
+- One motion primitive owns every enter and exit: `reveal(element)` and
+  `hide(element)` animate width and opacity (a pill grows from nothing; a
+  count cap grows and shrinks at the end of its pill; "Working" collapses),
+  and a taller element (the viewer, the overlay, a menu) animates height and
+  opacity. Each takes about 180ms with an ease-out curve.
+- Enters and exits run through one queue: several elements arriving or
+  leaving in the same paint animate one after another, each starting a beat
+  after the previous, never all at once. An exit finishes before the element
+  is removed from the document.
+- `prefers-reduced-motion: reduce` turns every animation into an immediate
+  change through the same primitive; callers never branch on it.
+- The keyed reconciler gains enter and exit hooks so a row that arrives or
+  leaves a list goes through the primitive, and the same hooks serve the
+  pill row and the viewer lists.
+
+### Pills
+
+- A pill's count is a filled cap at the pill's right end with its own
+  background; when the count leaves, the cap shrinks away and the pill closes
+  up behind it; when it arrives, the cap grows into place.

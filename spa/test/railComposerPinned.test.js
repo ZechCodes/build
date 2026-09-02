@@ -95,11 +95,12 @@ describe("the conversation panel's column", () => {
     expect(scroller().parentElement).toBe(panel());
   });
 
-  it("lays the panel out head, thread, composer — in that order", async () => {
+  it("lays the panel out head, thread, surface viewer, composer — in that order", async () => {
     await mount();
     expect([...panel().children].map((child) => child.className)).toEqual([
       "rail-head",
       "rail-body",
+      "rail-surfaces-viewer",
       "rail-composer",
     ]);
   });

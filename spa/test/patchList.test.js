@@ -620,3 +620,158 @@ describe("renaming an entry to the identity the answer gave it", () => {
     expect(keysOf(list)).toEqual(["a"]);
   });
 });
+
+function deferred() {
+  let settle;
+  const promise = new Promise((resolve) => {
+    settle = resolve;
+  });
+  return { promise, settle };
+}
+
+const refused = () => {
+  let refuse;
+  const promise = new Promise((resolve, reject) => {
+    refuse = reject;
+  });
+  return { promise, refuse };
+};
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const liveKeysOf = (list) =>
+  [...list.children].filter((child) => !child.hasAttribute("data-exiting")).map((child) => child.getAttribute("data-key"));
+
+describe("entries arriving and leaving under the caller's own motion", () => {
+  it("calls onEnter for the entries that were not there before, and no others", () => {
+    const list = listIn(document);
+    const entered = [];
+    const withEnter = { ...plan, onEnter: (element) => entered.push(element.getAttribute("data-key")) };
+
+    patchList(list, entriesFor("a", "b"), withEnter);
+    expect(entered).toEqual(["a", "b"]);
+
+    entered.length = 0;
+    patchList(list, entriesFor("c", "a", "b"), withEnter);
+
+    expect(entered).toEqual(["c"]);
+    expect(keysOf(list)).toEqual(["c", "a", "b"]);
+  });
+
+  it("hands a departed entry to onExit and keeps it until the exit is over", async () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b", "c"), plan);
+    const leaving = deferred();
+    const exited = [];
+
+    patchList(list, entriesFor("a", "c"), {
+      ...plan,
+      onExit: (element) => {
+        exited.push(element.getAttribute("data-key"));
+        return leaving.promise;
+      },
+    });
+
+    expect(exited).toEqual(["b"]);
+    expect(keysOf(list)).toEqual(["a", "b", "c"]);
+    expect(liveKeysOf(list)).toEqual(["a", "c"]);
+
+    leaving.settle();
+    await flush();
+
+    expect(keysOf(list)).toEqual(["a", "c"]);
+  });
+
+  it("takes the entry out at once when onExit promises nothing", () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b"), plan);
+
+    patchList(list, entriesFor("a"), { ...plan, onExit: () => {} });
+
+    expect(keysOf(list)).toEqual(["a"]);
+  });
+
+  it("keeps the same element when a key comes back in the middle of its exit", async () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b", "c"), plan);
+    const leaving = deferred();
+    const entered = [];
+    const exited = [];
+    const hooks = {
+      ...plan,
+      onEnter: (element) => entered.push(element.getAttribute("data-key")),
+      onExit: (element) => {
+        exited.push(element.getAttribute("data-key"));
+        return leaving.promise;
+      },
+    };
+    patchList(list, entriesFor("a", "c"), hooks);
+    const b = list.children[1];
+
+    patchList(list, entriesFor("a", "b", "c"), hooks);
+
+    expect(list.children[1]).toBe(b);
+    expect(entered).toEqual([]);
+
+    leaving.settle();
+    await flush();
+
+    expect(keysOf(list)).toEqual(["a", "b", "c"]);
+    expect(list.children[1]).toBe(b);
+    expect(exited).toEqual(["b"]);
+  });
+
+  it("paints around an entry that is still leaving without moving the others", async () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b", "c"), plan);
+    const leaving = deferred();
+    const entered = [];
+    const hooks = {
+      ...plan,
+      onEnter: (element) => entered.push(element.getAttribute("data-key")),
+      onExit: () => leaving.promise,
+    };
+    patchList(list, entriesFor("a", "c"), hooks);
+    const a = list.children[0];
+
+    patchList(list, entriesFor("d", "a", "c"), hooks);
+
+    expect(liveKeysOf(list)).toEqual(["d", "a", "c"]);
+    expect(entered).toEqual(["d"]);
+    expect(list.querySelector('[data-key="a"]')).toBe(a);
+
+    leaving.settle();
+    await flush();
+
+    expect(keysOf(list)).toEqual(["d", "a", "c"]);
+  });
+
+  it("takes the entry out when its exit fell over, and lets the failure through", async () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b"), plan);
+    const exit = refused();
+    const failures = [];
+    const watchFailures = (error) => failures.push(error);
+    process.on("unhandledRejection", watchFailures);
+
+    patchList(list, entriesFor("a"), { ...plan, onExit: () => exit.promise });
+    expect(keysOf(list)).toEqual(["a", "b"]);
+
+    const fell = new Error("the exit fell over");
+    exit.refuse(fell);
+    await flush();
+    process.off("unhandledRejection", watchFailures);
+
+    expect(keysOf(list)).toEqual(["a"]);
+    expect(failures).toEqual([fell]);
+  });
+
+  it("leaves a departed entry out at once when the caller gave no onExit", () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b"), plan);
+
+    patchList(list, entriesFor("a"), plan);
+
+    expect(keysOf(list)).toEqual(["a"]);
+  });
+});

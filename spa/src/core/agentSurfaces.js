@@ -1,5 +1,6 @@
 import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
+import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { patchList } from "./patchList.js";
 import { SPLIT_BUTTON_SELECTOR, mountSplitMenu } from "./splitButton.js";
 import { notifyError } from "./notify.js";
@@ -27,6 +28,7 @@ import {
 import {
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
+  PILL_COUNT_SELECTOR,
   SURFACE_OVERLAY_BODY_SELECTOR,
   SURFACE_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
@@ -38,15 +40,15 @@ import {
   runningAndCompletedViewerHtml,
   shellRowHtml,
   surfaceOverlayHtml,
-  surfacePillsHtml,
+  surfacePillHtml,
   workflowChoiceHtml,
   workflowHeadHtml,
   workflowPhaseHtml,
   workflowViewerHtml,
 } from "./agentSurfacesRender.js";
 
-const VIEWER_ABOVE_PILLS_HTML = `<div class="rail-surfaces-viewer" data-surface-viewer></div>
-  <div class="rail-surfaces-pills" data-surface-pills></div>`;
+const PILL_MOTION = motionHooks({ axis: "width" });
+const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
@@ -203,6 +205,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       patchList(container, list.rows, {
         keyOf: (row) => row.key,
         render: list.render,
+        ...VIEWER_ROW_MOTION,
       });
     }
     closeMenusOfDiscardedElements();
@@ -247,10 +250,11 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 }
 
-export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null }) {
+export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null, host = document.body }) {
   let viewer = null;
   const { body, close } = openModal({
     dialogHtml: surfaceOverlayHtml(surfaceKindLabel(kind)),
+    host,
     onClose: () => {
       viewer.dispose();
       if (onClose) onClose();
@@ -269,39 +273,73 @@ export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onCl
   };
 }
 
-export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem }) {
-  host.innerHTML = VIEWER_ABOVE_PILLS_HTML;
-  const viewerRegion = host.querySelector("[data-surface-viewer]");
-  const pillRegion = host.querySelector("[data-surface-pills]");
-
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, onOpenThreadItem, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
   let viewer = null;
+  let closingFrame = null;
   let visibility = emptySurfaceVisibility();
   let hidingTimer = null;
 
   const openKind = () => visibility.openKind;
 
-  const paintViewer = () => {
-    if (viewer && viewer.kind !== openKind()) {
-      viewer.dispose();
+  const closeViewerFrame = () => {
+    if (!viewer) return;
+    const frame = { viewer };
+    closingFrame = frame;
+    hide(viewerHost, { axis: "height" }).then(() => {
+      if (closingFrame !== frame) return;
+      closingFrame = null;
       viewer = null;
+      frame.viewer.dispose();
+    });
+  };
+
+  const keepTheClosingFrame = () => {
+    if (!closingFrame) return;
+    closingFrame = null;
+    reveal(viewerHost, { axis: "height" });
+  };
+
+  const paintViewer = () => {
+    const kind = openKind();
+    if (viewer && viewer.kind === kind) {
+      keepTheClosingFrame();
+      viewer.set(surfaces);
+      return;
     }
-    if (!openKind()) return;
-    if (!viewer) viewer = mountSurfaceViewer(viewerRegion, openKind(), { onSendMessage, onOpenThreadItem });
+    if (!kind) {
+      closeViewerFrame();
+      return;
+    }
+    closingFrame = null;
+    if (viewer) viewer.dispose();
+    viewer = mountSurfaceViewer(viewerHost, kind, { onSendMessage, onOpenThreadItem });
+    reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };
 
+  const paintPillCount = (pillElement, count) => {
+    const cap = pillElement.querySelector(PILL_COUNT_SELECTOR);
+    if (count) reveal(cap, { axis: "width" });
+    else hide(cap, { axis: "width" });
+  };
+
+  const notifyPillsChanged = () => {
+    if (onPillsChanged) onPillsChanged();
+  };
+
   const paintPills = (nowMs) => {
-    const html = surfacePillsHtml(surfacePills(surfaces, visibility, nowMs), openKind());
-    const next = html ? el(html) : null;
-    const live = pillRegion.firstElementChild;
-    if (live && next && live.tagName === next.tagName) {
-      patchElement(live, next);
-      return;
-    }
-    pillRegion.innerHTML = html;
+    const pills = surfacePills(surfaces, visibility, nowMs);
+    const painted = patchList(pillHost, pills, {
+      keyOf: (pill) => pill.kind,
+      render: (pill) => surfacePillHtml(pill, openKind()),
+      ...PILL_MOTION,
+    });
+    painted.forEach((element, index) => paintPillCount(element, pills[index].count));
+    notifyPillsChanged();
+    motionSettled().then(notifyPillsChanged);
   };
 
   const armPillHidingTimer = (nowMs) => {
@@ -332,7 +370,7 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     paint();
   };
 
-  pillRegion.addEventListener("click", onPillPress);
+  pillHost.addEventListener("click", onPillPress);
 
   return {
     set(nextSurfaces) {
@@ -347,11 +385,14 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     dispose() {
       if (hidingTimer !== null) clearTimeout(hidingTimer);
       hidingTimer = null;
+      closingFrame = null;
       if (viewer) viewer.dispose();
       viewer = null;
-      pillRegion.removeEventListener("click", onPillPress);
+      settleHidden(viewerHost);
+      pillHost.removeEventListener("click", onPillPress);
       paintedSurfaces = null;
-      host.innerHTML = "";
+      pillHost.innerHTML = "";
+      notifyPillsChanged();
     },
   };
 }

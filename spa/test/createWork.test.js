@@ -3,6 +3,7 @@
 // by the toolbar's work menu and by the rail's project blocks alike.
 
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { motionBeat } from "./motionRecorder.js";
 
 const refreshFeed = vi.fn(async () => {});
 vi.mock("../src/core/taskFeed.js", () => ({
@@ -144,12 +145,14 @@ describe("the create modal", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("closes on Cancel and on Escape, creating nothing", () => {
+  it("closes on Cancel and on Escape, creating nothing", async () => {
     openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
     modal().querySelector("[data-create-cancel]").click();
+    await motionBeat();
     expect(modal()).toBeNull();
     openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await motionBeat();
     expect(modal()).toBeNull();
     expect(App.call).not.toHaveBeenCalled();
   });

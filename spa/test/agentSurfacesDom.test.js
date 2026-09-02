@@ -2,6 +2,8 @@
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
+import { motionSettled } from "../src/core/motion.js";
+import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
@@ -20,26 +22,45 @@ const SURFACES_KEY = "branch-1:agent-1";
 
 const snapshot = () => surfacesSnapshot();
 
-const composerBlock = () => {
-  document.body.innerHTML = `<div class="rail-composer">
-    <div class="rail-status" id="rail-status"></div>
-    <div class="rail-surfaces" id="rail-surfaces"></div>
-    <textarea id="railinput"></textarea>
+const conversationColumn = () => {
+  document.body.innerHTML = `<div class="rail-panel">
+    <div class="rail-body" id="rail-body"></div>
+    <div class="rail-surfaces-viewer" id="rail-surfaces-viewer" hidden></div>
+    <div class="rail-composer">
+      <div class="rail-status" id="rail-status">
+        <span class="rail-status-lead" id="rail-status-lead"></span>
+        <div class="rail-status-pills" id="rail-status-pills"></div>
+        <span class="rail-status-git" id="rail-status-git"></span>
+      </div>
+      <textarea id="railinput"></textarea>
+    </div>
   </div>`;
-  return document.getElementById("rail-surfaces");
+  return {
+    pillHost: document.getElementById("rail-status-pills"),
+    viewerHost: document.getElementById("rail-surfaces-viewer"),
+  };
 };
 
 const mount = (options = {}) =>
-  mountAgentSurfaces(composerBlock(), {
+  mountAgentSurfaces({
+    ...conversationColumn(),
     key: SURFACES_KEY,
     onSendMessage: options.onSendMessage || (async () => {}),
     onOpenThreadItem: options.onOpenThreadItem || (() => {}),
   });
 
 const pill = (kind) => document.querySelector(`[data-surface-kind="${kind}"]`);
-const pressPill = (kind) => pill(kind).click();
+const pressPill = async (kind) => {
+  pill(kind).click();
+  await motionSettled();
+};
+const pillCount = (kind) => {
+  const cap = pill(kind).querySelector(".surface-pill-count");
+  return cap.hidden ? null : cap.textContent;
+};
 const pressed = (kind) => pill(kind).getAttribute("aria-pressed");
-const viewerRows = (selector) => [...document.querySelectorAll(`${selector} > .surface-row`)];
+const standing = (selector) => [...document.querySelectorAll(`${selector}:not([${EXITING_ATTRIBUTE}])`)];
+const viewerRows = (selector) => standing(`${selector} > .surface-row`);
 const runningRows = () => viewerRows(".surface-running");
 const completedRows = () => viewerRows(".surface-completed-rows");
 const completedFold = () => document.querySelector(".surface-completed");
@@ -55,7 +76,7 @@ beforeEach(() => {
 });
 
 describe("the surface pills", () => {
-  it("paints one pill per kind with content, and toggles one viewer at a time", () => {
+  it("paints one pill per kind with content, and toggles one viewer at a time", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
 
@@ -67,16 +88,16 @@ describe("the surface pills", () => {
     ]);
     expect(document.querySelector(".surface-viewer")).toBe(null);
 
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("true");
     expect(document.querySelector(".surface-shells")).not.toBe(null);
 
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
     expect(document.querySelector(".surface-viewer")).toBe(null);
 
-    pressPill(SHELL_ENTRY_KIND);
-    pressPill(CHECKLIST_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
+    await pressPill(CHECKLIST_ENTRY_KIND);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("false");
     expect(pressed(CHECKLIST_ENTRY_KIND)).toBe("true");
     expect(document.querySelector(".surface-shells")).toBe(null);
@@ -85,10 +106,10 @@ describe("the surface pills", () => {
     surfaces.dispose();
   });
 
-  it("remembers the open kind through a remount, and opens nothing when it is gone", () => {
+  it("remembers the open kind through a remount, and opens nothing when it is gone", async () => {
     const first = mount();
     first.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     first.dispose();
 
     const second = mount();
@@ -115,67 +136,67 @@ describe("the pill that lingers after the work stops", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("counts the running shells and drops the pill when the grace it armed runs out", () => {
+  it("counts the running shells and drops the pill when the grace it armed runs out", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("1");
+    expect(pillCount(SHELL_ENTRY_KIND)).toBe("1");
 
     surfaces.set(finishedShells());
-    expect(pill(SHELL_ENTRY_KIND).querySelector(".surface-pill-count")).toBe(null);
+    expect(pillCount(SHELL_ENTRY_KIND)).toBe(null);
     expect(pill(SHELL_ENTRY_KIND).textContent.trim()).toBe("Shells");
 
-    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS - 1);
+    await vi.advanceTimersByTimeAsync(SURFACE_PILL_GRACE_MS - 1);
     expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
 
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(pill(SHELL_ENTRY_KIND)).toBe(null);
     surfaces.dispose();
   });
 
-  it("keeps the pill and the viewer while it is open, and closes both a grace after it is shut", () => {
+  it("keeps the pill and the viewer while it is open, and closes both a grace after it is shut", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     surfaces.set(finishedShells());
 
-    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS * 3);
+    await vi.advanceTimersByTimeAsync(SURFACE_PILL_GRACE_MS * 3);
     expect(pressed(SHELL_ENTRY_KIND)).toBe("true");
     expect(document.querySelector(".surface-shells")).not.toBe(null);
 
-    pressPill(SHELL_ENTRY_KIND);
-    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS - 1);
+    await pressPill(SHELL_ENTRY_KIND);
+    await vi.advanceTimersByTimeAsync(SURFACE_PILL_GRACE_MS - 1);
     expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
-    vi.advanceTimersByTime(1);
+    await vi.advanceTimersByTimeAsync(1);
     expect(pill(SHELL_ENTRY_KIND)).toBe(null);
     expect(document.querySelector(".surface-viewer")).toBe(null);
     surfaces.dispose();
   });
 
-  it("closes the viewer of a kind the grace stopped showing", () => {
+  it("closes the viewer of a kind the grace stopped showing", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     surfaces.set(finishedShells());
-    pressPill(CHECKLIST_ENTRY_KIND);
+    await pressPill(CHECKLIST_ENTRY_KIND);
 
-    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS);
+    await vi.advanceTimersByTimeAsync(SURFACE_PILL_GRACE_MS);
 
     expect(pill(SHELL_ENTRY_KIND)).toBe(null);
     expect(document.querySelector(".surface-checklist")).not.toBe(null);
     surfaces.dispose();
   });
 
-  it("keeps the pill of a kind still running, and arms no timer for it", () => {
+  it("keeps the pill of a kind still running, and arms no timer for it", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     expect(vi.getTimerCount()).toBe(0);
 
-    vi.advanceTimersByTime(SURFACE_PILL_GRACE_MS * 3);
+    await vi.advanceTimersByTimeAsync(SURFACE_PILL_GRACE_MS * 3);
     expect(pill(SHELL_ENTRY_KIND)).not.toBe(null);
     surfaces.dispose();
   });
 
-  it("arms one timer at a time and clears it on dispose", () => {
+  it("arms one timer at a time and clears it on dispose", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
     surfaces.set(finishedShells());
@@ -190,10 +211,10 @@ describe("the pill that lingers after the work stops", () => {
 });
 
 describe("painting the viewer", () => {
-  it("keeps the rows, the draft and the focus across a set that changes nothing", () => {
+  it("keeps the rows, the draft and the focus across a set that changes nothing", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     const input = document.getElementById("railinput");
     input.value = "half a sentence";
     input.focus();
@@ -207,10 +228,10 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
-  it("keeps the agent rows and the scroll when a workflow phase gains an agent", () => {
+  it("keeps the agent rows and the scroll when a workflow phase gains an agent", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
     const viewerRegion = document.querySelector(".rail-surfaces-viewer");
     viewerRegion.scrollTop = 40;
     const [firstAgentRow] = viewerRows(".surface-phase-agents");
@@ -227,10 +248,10 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
-  it("keeps the agent rows and the scroll when the workflow's own head moves", () => {
+  it("keeps the agent rows and the scroll when the workflow's own head moves", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
     const viewerRegion = document.querySelector(".rail-surfaces-viewer");
     viewerRegion.scrollTop = 40;
     const [firstAgentRow] = viewerRows(".surface-phase-agents");
@@ -248,10 +269,10 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
-  it("paints a phase's agents without rebuilding them when another phase is chosen", () => {
+  it("paints a phase's agents without rebuilding them when another phase is chosen", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
     const [firstPhase, secondPhase] = [...document.querySelectorAll(".surface-phase")];
 
     secondPhase.click();
@@ -263,17 +284,17 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
-  it("shows one workflow at a time, and offers no chooser while there is only one", () => {
+  it("shows one workflow at a time, and offers no chooser while there is only one", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
 
-    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    expect(standing(".surface-workflow-choice")).toHaveLength(0);
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
     surfaces.dispose();
   });
 
-  it("lets the reader reach the second workflow the pill counted", () => {
+  it("lets the reader reach the second workflow the pill counted", async () => {
     const surfaces = mount();
     const both = snapshot();
     both.workflows.push({
@@ -283,10 +304,10 @@ describe("painting the viewer", () => {
       phases: [{ title: "Write", agents: [{ id: "b1", label: "fixture writer", state: "running" }] }],
     });
     surfaces.set(both);
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
 
-    expect(pill(WORKFLOW_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("2");
-    expect(pill(CHECKLIST_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("1");
+    expect(pillCount(WORKFLOW_ENTRY_KIND)).toBe("2");
+    expect(pillCount(CHECKLIST_ENTRY_KIND)).toBe("1");
     const choices = [...document.querySelectorAll(".surface-workflow-choice")];
     expect(choices).toHaveLength(2);
     expect(choices[0].getAttribute("aria-pressed")).toBe("true");
@@ -300,22 +321,22 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
-  it("falls back to the first workflow when the chosen one leaves the snapshot", () => {
+  it("falls back to the first workflow when the chosen one leaves the snapshot", async () => {
     const surfaces = mount();
     const both = snapshot();
     both.workflows.push({ id: "wf-2", name: "Fixture sweep", state: "running", phases: [] });
     surfaces.set(both);
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
     [...document.querySelectorAll(".surface-workflow-choice")][1].click();
 
     surfaces.set(snapshot());
 
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
-    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    expect(standing(".surface-workflow-choice")).toHaveLength(0);
     surfaces.dispose();
   });
 
-  it("paints entries with missing or repeated ids rather than throwing", () => {
+  it("paints entries with missing or repeated ids rather than throwing", async () => {
     const surfaces = mount();
     surfaces.set({
       shells: [{ description: "first", state: "running" }, { description: "second", state: "running" }],
@@ -325,18 +346,18 @@ describe("painting the viewer", () => {
       ],
     });
 
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["shells-0", "shells-1"]);
 
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["same", "agent-1"]);
     surfaces.dispose();
   });
 
-  it("keeps a fold the reader opened across a repaint", () => {
+  it("keeps a fold the reader opened across a repaint", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     const fold = document.querySelector(".surface-shell-tail");
     fold.open = true;
 
@@ -355,7 +376,7 @@ describe("a row's action", () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     const [row] = completedRows();
     const [action] = rowActions(AGENT_ENTRY_KIND, surfaceRows(AGENT_ENTRY_KIND, snapshot())[0]);
 
@@ -371,7 +392,7 @@ describe("a row's action", () => {
     });
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(CHECKLIST_ENTRY_KIND);
+    await pressPill(CHECKLIST_ENTRY_KIND);
     const [row] = viewerRows(".surface-checklist");
     const [action] = rowActions(CHECKLIST_ENTRY_KIND, surfaceRows(CHECKLIST_ENTRY_KIND, snapshot())[0]);
 
@@ -384,11 +405,11 @@ describe("a row's action", () => {
     surfaces.dispose();
   });
 
-  it("leaves a menu the reader opened open across a repaint, still choosing the same action", () => {
+  it("leaves a menu the reader opened open across a repaint, still choosing the same action", async () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     const [row] = runningRows();
     row.querySelector(".caret").click();
 
@@ -401,11 +422,11 @@ describe("a row's action", () => {
     surfaces.dispose();
   });
 
-  it("says so when the row a menu was opened on has left the snapshot", () => {
+  it("says so when the row a menu was opened on has left the snapshot", async () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     const [row] = runningRows();
     row.querySelector(".caret").click();
 
@@ -419,7 +440,7 @@ describe("a row's action", () => {
     surfaces.dispose();
   });
 
-  it("never reaches the bridge itself", () => {
+  it("never reaches the bridge itself", async () => {
     const source = coreSourceOf("agentSurfaces.js");
 
     expect(source).not.toContain("App.call");
@@ -429,11 +450,11 @@ describe("a row's action", () => {
 });
 
 describe("a menu the paint had to rebuild", () => {
-  it("works on the workflow head from the very first paint", () => {
+  it("works on the workflow head from the very first paint", async () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(WORKFLOW_ENTRY_KIND);
+    await pressPill(WORKFLOW_ENTRY_KIND);
 
     const head = document.querySelector(".surface-workflow-head");
     const [action] = rowActions(WORKFLOW_ENTRY_KIND, snapshot().workflows[0]);
@@ -445,11 +466,11 @@ describe("a menu the paint had to rebuild", () => {
     surfaces.dispose();
   });
 
-  it("still chooses an action on the row a finished shell was redrawn as inside the fold", () => {
+  it("still chooses an action on the row a finished shell was redrawn as inside the fold", async () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     const [wasRunning] = runningRows();
 
     const finished = snapshot();
@@ -466,11 +487,11 @@ describe("a menu the paint had to rebuild", () => {
     surfaces.dispose();
   });
 
-  it("still chooses an action after a subagent's model gives the row a new trailing slot", () => {
+  it("still chooses an action after a subagent's model gives the row a new trailing slot", async () => {
     const onSendMessage = vi.fn(async () => {});
     const surfaces = mount({ onSendMessage });
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     const [row] = completedRows();
 
     const named = snapshot();
@@ -487,10 +508,10 @@ describe("a menu the paint had to rebuild", () => {
 });
 
 describe("a set that would change nothing", () => {
-  it("paints nothing at all", () => {
+  it("paints nothing at all", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
     const [row] = runningRows();
     const marker = document.createElement("span");
     marker.className = "paint-witness";
@@ -504,11 +525,11 @@ describe("a set that would change nothing", () => {
 });
 
 describe("pressing a subagent row", () => {
-  it("opens the thread item the row was spawned by, and only for a row that names one", () => {
+  it("opens the thread item the row was spawned by, and only for a row that names one", async () => {
     const onOpenThreadItem = vi.fn();
     const surfaces = mount({ onOpenThreadItem });
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     const [spawned] = completedRows();
     const [unspawned] = runningRows();
 
@@ -522,10 +543,10 @@ describe("pressing a subagent row", () => {
 });
 
 describe("the fold the finished rows sit under", () => {
-  it("holds every finished row and counts them, leaving the running ones above it", () => {
+  it("holds every finished row and counts them, leaving the running ones above it", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
 
     expect(runningRows().map((row) => row.dataset.key)).toEqual(["s2"]);
     expect(completedRows().map((row) => row.dataset.key)).toEqual(["s1"]);
@@ -533,20 +554,20 @@ describe("the fold the finished rows sit under", () => {
     surfaces.dispose();
   });
 
-  it("is not there at all while nothing has finished", () => {
+  it("is not there at all while nothing has finished", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
 
     expect(runningRows()).toHaveLength(1);
     expect(completedFold()).toBe(null);
     surfaces.dispose();
   });
 
-  it("appears when the first row finishes and goes when the last finished row leaves", () => {
+  it("appears when the first row finishes and goes when the last finished row leaves", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(SHELL_ENTRY_KIND);
+    await pressPill(SHELL_ENTRY_KIND);
 
     const finished = snapshot();
     finished.shells[0] = { ...finished.shells[0], state: "done" };
@@ -560,10 +581,10 @@ describe("the fold the finished rows sit under", () => {
     surfaces.dispose();
   });
 
-  it("keeps the fold the reader opened, and the rows under it, across a repaint", () => {
+  it("keeps the fold the reader opened, and the rows under it, across a repaint", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
     const fold = completedFold();
     fold.open = true;
     const [finishedRow] = completedRows();
@@ -578,10 +599,10 @@ describe("the fold the finished rows sit under", () => {
     surfaces.dispose();
   });
 
-  it("counts the fold again when another row finishes", () => {
+  it("counts the fold again when another row finishes", async () => {
     const surfaces = mount();
     surfaces.set(snapshot());
-    pressPill(AGENT_ENTRY_KIND);
+    await pressPill(AGENT_ENTRY_KIND);
 
     const both = snapshot();
     both.subagents[1] = { ...both.subagents[1], state: "done" };

@@ -12,6 +12,9 @@
 export const CONSOLE_SIZES = ["collapsed", "half", "full"];
 
 const SIZE_KEY_PREFIX = "build.console.size.";
+const REOPEN_KEY_PREFIX = "build.console.reopen.";
+
+export const DEFAULT_OPEN_SIZE = "half";
 
 /** A stored or passed-in size, or the shut bar — which is what an unreadable
  *  memory and a first visit both mean. */
@@ -35,18 +38,35 @@ export function readConsoleSize(key, storage = globalThis.localStorage) {
   }
 }
 
-export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
+function rememberSize(prefix, key, size, storage) {
   try {
-    storage.setItem(SIZE_KEY_PREFIX + key, consoleSize(size));
+    storage.setItem(prefix + key, consoleSize(size));
   } catch {
     /* private mode: the choice lasts the mount */
   }
 }
 
-/** The caret, and the backtick: shut it, or put it back at half. A full overlay
- *  shuts — the way out of covering the work is to stop covering it. */
-export function toggledConsoleSize(size) {
-  return consoleSize(size) === "collapsed" ? "half" : "collapsed";
+export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
+  rememberSize(SIZE_KEY_PREFIX, key, size, storage);
+}
+
+const openSizeOf = (value) => (consoleSize(value) === "collapsed" ? DEFAULT_OPEN_SIZE : consoleSize(value));
+
+export function toggledConsoleSize(size, openSize = DEFAULT_OPEN_SIZE) {
+  return consoleSize(size) === "collapsed" ? openSizeOf(openSize) : "collapsed";
+}
+
+export function readConsoleReopenSize(key, storage = globalThis.localStorage) {
+  try {
+    return openSizeOf(storage.getItem(REOPEN_KEY_PREFIX + key));
+  } catch {
+    return DEFAULT_OPEN_SIZE;
+  }
+}
+
+export function writeConsoleReopenSize(key, size, storage = globalThis.localStorage) {
+  if (consoleSize(size) === "collapsed") return;
+  rememberSize(REOPEN_KEY_PREFIX, key, size, storage);
 }
 
 /** The grow control: bigger, until there is no bigger, and then back. */

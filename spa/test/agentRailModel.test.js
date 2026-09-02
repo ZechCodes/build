@@ -11,6 +11,7 @@ import {
   providerLabel,
   railBubbles,
   railEntity,
+  railStatusShape,
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
@@ -277,6 +278,12 @@ describe("the pinned status line above the composer", () => {
     expect(railWorkStatus(row, NOW)).toEqual({ working: "12m 30s", starting: "", sync: "↑2", stat: "+42 −7" });
     expect(railWorkStatus({ working_time: null, stat: null }, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
     expect(railWorkStatus(null, NOW)).toEqual({ working: "", starting: "", sync: "", stat: "" });
+  });
+
+  it("names the lead's shape, the working clock winning over the startup line", () => {
+    expect(railStatusShape({ working: "5s", starting: "Run started · 2m ago" })).toBe("working");
+    expect(railStatusShape({ working: "", starting: "Run started · 2m ago" })).toBe("starting");
+    expect(railStatusShape({ working: "", starting: "" })).toBe("quiet");
   });
 });
 

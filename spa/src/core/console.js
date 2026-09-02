@@ -1,10 +1,6 @@
 // The console: the basement of every work surface.
 //
-// It sits at the bottom of the view column on the branch and issue surfaces,
-// shut by default — a bar that says what it is. Opening it puts the terminals
-// of the checkout the work item stands in (a branch's worktree; the primary
-// checkout for an issue and for main) at half the view, and the grow control
-// lays them over all of it. Each work item remembers the size it was left at.
+// It sits at the bottom of the view column on the branch and issue surfaces.
 //
 // Terminals are the human's own shells and nothing else: an agent is Build's,
 // lives in the agent rail, and is never one of these. The panes ride the ONE
@@ -13,17 +9,25 @@
 
 import { App } from "../app.js";
 import {
+  DEFAULT_OPEN_SIZE,
   consoleKey,
   consoleScope,
   consoleTakesKey,
   grownConsoleSize,
+  readConsoleReopenSize,
   readConsoleSize,
   takeConsoleTerminal,
   toggledConsoleSize,
+  writeConsoleReopenSize,
   writeConsoleSize,
 } from "./consoleModel.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
+import { el } from "../dom.js";
 import { esc } from "./text.js";
+import { hide, motionHooks, motionSettled, reveal } from "./motion.js";
+import { notifyError } from "./notify.js";
+import { patchElement } from "./domPatch.js";
+import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { cacheDeviceId } from "./cacheScope.js";
@@ -33,6 +37,8 @@ import { subscribeFeed } from "./taskFeed.js";
 import { isTerminalSocketLost } from "../terminal/session.js";
 import { mountTerminalPane } from "../terminal/pane.js";
 import "../styles/shell.css";
+
+const TAB_MOTION = motionHooks({ axis: "width" });
 
 /** Which terminal each work item was last looking at. The console is rebuilt
  *  whenever the surface under it is (a tab switch re-renders the view), so the
@@ -106,29 +112,34 @@ export function mountUserTerminalPane(host, termId, { onExit }) {
   });
 }
 
-/** Pure: the console's head — the way in and out, the terminals it holds, and
- *  the two controls that only mean something while it is open. */
-export function consoleHeadHtml({ size, tabs = [], selected = null, scoped = true }) {
+export function consoleToggleHtml(size) {
   const open = size !== "collapsed";
-  const toggle = `<button type="button" class="console-bar" id="console-toggle" aria-expanded="${open}"
+  return `<button type="button" class="console-bar" id="console-toggle" aria-expanded="${open}"
       title="${open ? "Shut the console" : "Open the console (`)"}">
-      <span class="console-caret">${open ? "▼" : "▲"}</span><span class="console-label">Console</span></button>`;
-  if (!open) return toggle;
-  const cells = tabs
-    .map(
-      (tab) =>
-        `<span class="console-tab${tab.id === selected ? " active" : ""}">` +
-        `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
-        `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`,
-    )
-    .join("");
-  const add = scoped
-    ? `<button type="button" class="iconbtn console-new" title="New terminal" aria-label="New terminal">+</button>`
-    : "";
-  const grow = `<button type="button" class="iconbtn console-grow"
-      title="${size === "full" ? "Half the view" : "Over the whole view"}"
-      aria-label="${size === "full" ? "Half the view" : "Over the whole view"}">${size === "full" ? "⤡" : "⤢"}</button>`;
-  return `${toggle}<div class="console-tabs">${cells}</div><div class="console-controls">${add}${grow}</div>`;
+      <span class="console-label">Console</span></button>`;
+}
+
+export function consoleTabHtml(tab, selected) {
+  return (
+    `<span class="console-tab${tab.id === selected ? " active" : ""}" data-motion>` +
+    `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
+    `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`
+  );
+}
+
+export function consoleNewTerminalHtml() {
+  return `<button type="button" class="iconbtn console-new" data-motion
+      title="New terminal" aria-label="New terminal">+</button>`;
+}
+
+export function consoleGrowHtml(size) {
+  const label = size === "full" ? "Half the view" : "Over the whole view";
+  return `<button type="button" class="iconbtn console-grow" data-motion
+      title="${label}" aria-label="${label}">${size === "full" ? "⤡" : "⤢"}</button>`;
+}
+
+export function consoleHeadHtml(size) {
+  return `${consoleToggleHtml(size)}<div class="console-tabs scrollstrip"></div><div class="console-controls"></div>`;
 }
 
 /**
@@ -148,7 +159,8 @@ export function mountConsole(host, context) {
   // this is, so a stale mark cannot open some later console on a stranger.
   const wanted = takeConsoleTerminal();
   const wantedHere = context && context.kind === "branch" ? wanted : null;
-  let size = wantedHere ? "half" : readConsoleSize(key);
+  let requestedSize = wantedHere ? DEFAULT_OPEN_SIZE : readConsoleSize(key);
+  let reopenSize = readConsoleReopenSize(key);
   let scope = null; // the checkout's terminal scope, once resolved
   let terms = null; // the controller, once there is a scope to list
   let selected = chosenTerminal.get(key) || null;
@@ -242,12 +254,6 @@ export function mountConsole(host, context) {
     writeCached(address, { scope, termIds: terms.ids() });
   };
 
-  /// List the checkout's terminals, once, the first time the console opens.
-  /// Nothing is ever created here: opening the console must not spawn a shell
-  /// on the user's machine, least of all on a size the last visit remembered.
-  ///
-  /// The saved tab list paints the head first, without a round trip; the live
-  /// list reconciles it the moment it lands.
   const ensureTerminals = async () => {
     if (terms || loading) return;
     loading = true;
@@ -313,11 +319,12 @@ export function mountConsole(host, context) {
       selected = await terms.create();
       remember();
     } catch (error) {
-      failInBody(`cannot open a terminal: ${(error && error.message) || "error"}`);
+      notifyError("Could not open a terminal", (error && error.message) || "error");
       return;
     }
     persistTabs();
-    paint();
+    openPanel();
+    scrollStripToNewest();
   };
 
   const closeTerminal = async (termId) => {
@@ -345,58 +352,110 @@ export function mountConsole(host, context) {
 
   // ---- painting --------------------------------------------------------------
 
-  /// The head is rewritten on every state change — it is a few buttons and its
-  /// whole job is to be current. The BODY is not: it is where a live PTY hangs,
-  /// so it is rebuilt only when the terminal in it changes.
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".console")) {
-      host.innerHTML = `<div class="console"><div class="console-head"></div><div class="console-body"></div></div>`;
+      host.innerHTML = `<div class="console"><div class="console-head"></div><div class="console-body" hidden></div></div>`;
     }
-    host.dataset.size = size;
-    const head = host.querySelector(".console-head");
-    head.innerHTML = consoleHeadHtml({
-      size,
-      tabs: terms ? terms.tabs() : [],
-      selected,
-      scoped: !!terms,
-    });
-    wireHead(head);
-    paintBody();
+    const drawn = drawnSize();
+    host.dataset.size = drawn;
+    paintHead(host.querySelector(".console-head"), drawn);
+    paintBody(drawn);
+  };
+
+  const paintHead = (head, drawn) => {
+    if (!head.querySelector(".console-tabs")) {
+      head.innerHTML = consoleHeadHtml(drawn);
+      wireHead(head);
+    }
+    patchElement(head.querySelector("#console-toggle"), el(consoleToggleHtml(drawn)));
+    paintTabs(head.querySelector(".console-tabs"));
+    paintGrowControl(head.querySelector(".console-controls"), drawn);
   };
 
   const wireHead = (head) => {
-    const toggle = head.querySelector("#console-toggle");
-    if (toggle) toggle.onclick = () => setSize(toggledConsoleSize(size));
-    const grow = head.querySelector(".console-grow");
-    if (grow) grow.onclick = () => setSize(grownConsoleSize(size));
-    const add = head.querySelector(".console-new");
-    if (add) add.onclick = () => newTerminal();
-    head.querySelectorAll("[data-term]").forEach((cell) => {
-      cell.onclick = () => {
-        if (cell.dataset.term === selected) return;
-        selected = cell.dataset.term;
-        remember();
-        paint();
-      };
-    });
-    head.querySelectorAll("[data-close]").forEach((cell) => {
-      cell.onclick = () => closeTerminal(cell.dataset.close);
-    });
+    head.querySelector("#console-toggle").onclick = () => toggleConsole();
   };
+
+  const paintTabs = (strip) => {
+    patchList(strip, terms ? terms.tabs() : [], {
+      keyOf: (tab) => tab.id,
+      render: (tab) => consoleTabHtml(tab, selected),
+      wire: (tab) => wireTab(tab),
+      ...TAB_MOTION,
+    });
+    paintNewTerminalControl(strip);
+  };
+
+  const wireTab = (tab) => {
+    tab.querySelector(".console-tab-name").onclick = () => selectTerminal(tab.dataset.key);
+    tab.querySelector(".tx").onclick = () => closeTerminal(tab.dataset.key);
+  };
+
+  const paintNewTerminalControl = (strip) => {
+    const standing = strip.querySelector(".console-new");
+    if (!terms) {
+      if (standing) hide(standing, { axis: "width" });
+      return;
+    }
+    if (!standing) {
+      const add = el(consoleNewTerminalHtml());
+      add.hidden = true;
+      add.onclick = () => newTerminal();
+      strip.appendChild(add);
+      reveal(add, { axis: "width" });
+      return;
+    }
+    if (standing.nextSibling) strip.appendChild(standing);
+    reveal(standing, { axis: "width" });
+  };
+
+  const paintGrowControl = (controls, drawn) => {
+    const standing = controls.querySelector(".console-grow");
+    if (drawn === "collapsed") {
+      if (standing) hide(standing, { axis: "width" });
+      return;
+    }
+    if (!standing) {
+      const grow = el(consoleGrowHtml(drawn));
+      grow.hidden = true;
+      grow.onclick = () => growPanel();
+      controls.appendChild(grow);
+      reveal(grow, { axis: "width" });
+      return;
+    }
+    patchElement(standing, el(consoleGrowHtml(drawn)));
+    reveal(standing, { axis: "width" });
+  };
+
+  const selectTerminal = (termId) => {
+    if (termId !== selected) {
+      selected = termId;
+      remember();
+    }
+    openPanel();
+  };
+
+  const scrollStripToNewest = () =>
+    motionSettled().then(() => {
+      const strip = host.querySelector(".console-tabs");
+      if (strip) strip.scrollLeft = strip.scrollWidth;
+    });
 
   const body = () => host.querySelector(".console-body");
 
-  const paintBody = () => {
+  const paintBody = (drawn) => {
     const region = body();
     if (!region) return;
-    if (size === "collapsed") {
-      // A shut console holds no screen: the PTY keeps running on the machine,
-      // the client stops rendering and streaming it.
-      disposePane();
-      region.innerHTML = "";
+    if (drawn === "collapsed") {
+      hide(region, { axis: "height" }).then(() => {
+        if (disposed || drawnSize() !== "collapsed") return;
+        disposePane();
+        region.innerHTML = "";
+      });
       return;
     }
+    reveal(region, { axis: "height" });
     // Only once the checkout has answered: a terminal remembered from an
     // earlier visit is not known to still exist until the list says so.
     if (terms && selected) {
@@ -404,25 +463,18 @@ export function mountConsole(host, context) {
       return;
     }
     disposePane();
-    region.innerHTML = `<div class="console-empty">${emptyHtml()}</div>`;
-    const start = region.querySelector(".console-start");
-    if (start) start.onclick = () => newTerminal();
+    region.innerHTML = `<div class="console-empty"><span class="dim">${esc(bodyMessage())}</span></div>`;
   };
 
-  const emptyHtml = () => {
-    if (loading) return `<span class="dim">Opening…</span>`;
-    // No offer to open a shell while the machine is out of reach — creating one
-    // needs the same socket the listing just failed on.
-    if (unreachable) return `<span class="dim">${esc(RECONNECTING_MESSAGE)}</span>`;
-    if (unresolved) return `<span class="dim">There is no checkout here to open a terminal in.</span>`;
-    return `<span class="dim">No terminals are open in this checkout.</span>
-      <button type="button" class="btn console-start">Open a terminal</button>`;
+  const bodyMessage = () => {
+    if (unreachable) return RECONNECTING_MESSAGE;
+    if (unresolved) return "There is no checkout here to open a terminal in.";
+    return "";
   };
 
-  const failInBody = (message) => {
-    const region = body();
-    if (region) region.innerHTML = `<div class="console-empty"><span class="dim">${esc(message)}</span></div>`;
-  };
+  const hasSomethingToShow = () => !!((terms && selected) || bodyMessage());
+
+  const drawnSize = () => (hasSomethingToShow() ? requestedSize : "collapsed");
 
   const mountPane = (region, termId) => {
     disposePane();
@@ -449,7 +501,7 @@ export function mountConsole(host, context) {
           retryWhenReconnected(() => {
             if (paneTermId !== termId) return; // the console is showing something else now
             paneTermId = null; // …otherwise mount this terminal afresh
-            paintBody();
+            paintBody(drawnSize());
           });
           return;
         }
@@ -475,11 +527,25 @@ export function mountConsole(host, context) {
   // ---- size ------------------------------------------------------------------
 
   const setSize = (next) => {
-    if (next === size) return;
-    size = next;
-    writeConsoleSize(key, size);
+    requestedSize = next;
+    writeConsoleSize(key, next);
+    if (next !== "collapsed") {
+      reopenSize = next;
+      writeConsoleReopenSize(key, next);
+    }
     paint();
-    if (size !== "collapsed") ensureTerminals();
+  };
+
+  const openPanel = () => {
+    if (requestedSize === "collapsed") setSize(reopenSize);
+    else paint();
+  };
+
+  const growPanel = () => setSize(grownConsoleSize(drawnSize()));
+
+  const toggleConsole = () => {
+    if (!hasSomethingToShow()) return;
+    setSize(toggledConsoleSize(drawnSize(), reopenSize));
   };
 
   // ---- the keyboard ----------------------------------------------------------
@@ -490,16 +556,16 @@ export function mountConsole(host, context) {
     if (event.key !== "`" || event.metaKey || event.ctrlKey || event.altKey) return;
     if (!consoleTakesKey(event.target)) return;
     event.preventDefault();
-    setSize(toggledConsoleSize(size));
+    toggleConsole();
   };
   document.addEventListener("keydown", onKeydown);
 
   paint();
-  if (size !== "collapsed") ensureTerminals();
+  ensureTerminals();
 
   return {
-    size: () => size,
-    toggle: () => setSize(toggledConsoleSize(size)),
+    size: () => drawnSize(),
+    toggle: () => toggleConsole(),
     dispose() {
       disposed = true;
       document.removeEventListener("keydown", onKeydown);

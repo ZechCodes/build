@@ -10,7 +10,6 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { motionBeat, recordAnimations, settleMotion, stopRecordingAnimations } from "./motionRecorder.js";
-import { motionSettled } from "../src/core/motion.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import { CHECKLIST_ENTRY_KIND, SHELL_ENTRY_KIND } from "../src/core/agentSurfacesModel.js";
 import { surfacesSnapshot } from "./surfacesFixture.js";
@@ -61,7 +60,7 @@ beforeEach(() => {
 afterEach(async () => {
   if (block) block.dispose();
   block = null;
-  await motionSettled();
+  await settleMotion(started);
   stopRecordingAnimations();
   started = [];
   document.body.innerHTML = "";
@@ -135,6 +134,46 @@ describe("the cap a pill's count rides in", () => {
   });
 });
 
+describe("the rows of an open viewer", () => {
+  const shells = (...descriptions) => ({
+    shells: descriptions.map((description, index) => ({
+      id: `sh${index + 1}`,
+      description,
+      state: "running",
+      tail: [],
+    })),
+  });
+
+  const shellRows = () => [...viewerHost().querySelectorAll(".surface-running > .surface-row")];
+
+  it("grows one that arrives and shrinks one that leaves before it is taken out", async () => {
+    const surfaces = mount();
+    surfaces.set(shells("cargo test"));
+    pillOf(SHELL_ENTRY_KIND).click();
+    await settleMotion(started);
+
+    started.length = 0;
+    surfaces.set(shells("cargo test", "cargo clippy"));
+    await motionBeat();
+
+    const arriving = shellRows()[1];
+    expect(arriving.textContent).toContain("cargo clippy");
+    expect(animationsOn(arriving)[0].keyframes[0]).toEqual({ height: "0px", opacity: 0 });
+    await settleMotion(started);
+    expect(arriving.hidden).toBe(false);
+
+    started.length = 0;
+    surfaces.set(shells("cargo test"));
+    await motionBeat();
+
+    expect(animationsOn(arriving)[0].keyframes[1]).toEqual({ height: "0px", opacity: 0 });
+    expect(viewerHost().contains(arriving)).toBe(true);
+
+    await settleMotion(started);
+    expect(viewerHost().contains(arriving)).toBe(false);
+  });
+});
+
 describe("the viewer at the bottom of the conversation", () => {
   it("grows by its height when a kind opens", async () => {
     const surfaces = mount();
@@ -165,6 +204,38 @@ describe("the viewer at the bottom of the conversation", () => {
     expect(viewerHost().querySelector(".surface-shells")).not.toBe(null);
 
     await settleMotion(started);
+    expect(viewerHost().hidden).toBe(true);
+    expect(viewerHost().innerHTML).toBe("");
+  });
+
+  it("takes the frame back when the same kind is pressed again mid-shrink", async () => {
+    const surfaces = mount();
+    surfaces.set(surfacesSnapshot());
+    pillOf(SHELL_ENTRY_KIND).click();
+    await settleMotion(started);
+
+    started.length = 0;
+    pillOf(SHELL_ENTRY_KIND).click();
+    await motionBeat();
+    pillOf(SHELL_ENTRY_KIND).click();
+    await settleMotion(started);
+
+    expect(viewerHost().hidden).toBe(false);
+    expect(viewerHost().querySelector(".surface-shells")).not.toBe(null);
+    expect(pillOf(SHELL_ENTRY_KIND).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("is hidden and empty when the panel is disposed mid-reveal", async () => {
+    const surfaces = mount();
+    surfaces.set(surfacesSnapshot());
+    await settleMotion(started);
+
+    pillOf(SHELL_ENTRY_KIND).click();
+    await motionBeat();
+    surfaces.dispose();
+    block = null;
+    await settleMotion(started);
+
     expect(viewerHost().hidden).toBe(true);
     expect(viewerHost().innerHTML).toBe("");
   });

@@ -1090,7 +1090,7 @@ export function mountAgentRail(host, context) {
       pillHost,
       viewerHost,
       key: conversationKey(),
-      onPillsPainted: syncRailStatusRow,
+      onPillsChanged: syncRailStatusRow,
       ...surfaceViewerCallbacks(),
     });
   };

@@ -1,6 +1,6 @@
 import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
-import { hide, motionSettled, reveal } from "./motion.js";
+import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
 import { patchList } from "./patchList.js";
 import { SPLIT_BUTTON_SELECTOR, mountSplitMenu } from "./splitButton.js";
 import { notifyError } from "./notify.js";
@@ -46,6 +46,9 @@ import {
   workflowPhaseHtml,
   workflowViewerHtml,
 } from "./agentSurfacesRender.js";
+
+const PILL_MOTION = motionHooks({ axis: "width" });
+const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
 
 const oneListOfKind = (kind, render) => ({
   frameHtmlWithEmptyLists: () => kindViewerHtml(kind, [], render),
@@ -202,6 +205,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       patchList(container, list.rows, {
         keyOf: (row) => row.key,
         render: list.render,
+        ...VIEWER_ROW_MOTION,
       });
     }
     closeMenusOfDiscardedElements();
@@ -269,42 +273,39 @@ export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onCl
   };
 }
 
-/// The pills in the status row, and the viewer they open under the conversation.
-///
-/// The two live in different places in the panel — the strip is one item of the
-/// row pinned above the composer, the viewer is the last thing in the
-/// conversation column — so the rail hands this both hosts rather than one
-/// region it would have to lay out itself.
-export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, onOpenThreadItem, onPillsPainted }) {
+export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, onOpenThreadItem, onPillsChanged }) {
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
   let viewer = null;
+  let closingFrame = null;
   let visibility = emptySurfaceVisibility();
   let hidingTimer = null;
 
   const openKind = () => visibility.openKind;
 
-  /// Let the viewer go once it has finished shrinking — never before, so the
-  /// reader watches the rows leave rather than an empty box.
-  ///
-  /// A kind opened while it was closing takes the frame back (`reveal`
-  /// countermands the `hide`) and disposes of what was in it there and then, so
-  /// the exit that lands afterwards finds a viewer that is not the one it was
-  /// closing and leaves it alone.
   const closeViewerFrame = () => {
     if (!viewer) return;
-    const closing = viewer;
+    const frame = { viewer };
+    closingFrame = frame;
     hide(viewerHost, { axis: "height" }).then(() => {
-      if (viewer !== closing) return;
+      if (closingFrame !== frame) return;
+      closingFrame = null;
       viewer = null;
-      closing.dispose();
+      frame.viewer.dispose();
     });
+  };
+
+  const keepTheClosingFrame = () => {
+    if (!closingFrame) return;
+    closingFrame = null;
+    reveal(viewerHost, { axis: "height" });
   };
 
   const paintViewer = () => {
     const kind = openKind();
     if (viewer && viewer.kind === kind) {
+      keepTheClosingFrame();
       viewer.set(surfaces);
       return;
     }
@@ -312,22 +313,21 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, o
       closeViewerFrame();
       return;
     }
+    closingFrame = null;
     if (viewer) viewer.dispose();
     viewer = mountSurfaceViewer(viewerHost, kind, { onSendMessage, onOpenThreadItem });
     reveal(viewerHost, { axis: "height" });
     viewer.set(surfaces);
   };
 
-  /// A cap the count has left keeps the room it holds until it has shrunk out
-  /// of it, so it stays in the pill hidden rather than being taken away.
   const paintPillCount = (pillElement, count) => {
     const cap = pillElement.querySelector(PILL_COUNT_SELECTOR);
     if (count) reveal(cap, { axis: "width" });
     else hide(cap, { axis: "width" });
   };
 
-  const reportPills = () => {
-    if (onPillsPainted) onPillsPainted();
+  const notifyPillsChanged = () => {
+    if (onPillsChanged) onPillsChanged();
   };
 
   const paintPills = (nowMs) => {
@@ -335,18 +335,11 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, o
     const painted = patchList(pillHost, pills, {
       keyOf: (pill) => pill.kind,
       render: (pill) => surfacePillHtml(pill, openKind()),
-      onEnter: (element) => {
-        element.hidden = true;
-        return reveal(element, { axis: "width" });
-      },
-      onExit: (element) => hide(element, { axis: "width" }),
+      ...PILL_MOTION,
     });
     painted.forEach((element, index) => paintPillCount(element, pills[index].count));
-    reportPills();
-    // The row above is hidden when it has nothing at all in it, and a pill on
-    // its way out is still something — so the row is asked again once the last
-    // of them has actually left.
-    motionSettled().then(reportPills);
+    notifyPillsChanged();
+    motionSettled().then(notifyPillsChanged);
   };
 
   const armPillHidingTimer = (nowMs) => {
@@ -392,13 +385,14 @@ export function mountAgentSurfaces({ pillHost, viewerHost, key, onSendMessage, o
     dispose() {
       if (hidingTimer !== null) clearTimeout(hidingTimer);
       hidingTimer = null;
+      closingFrame = null;
       if (viewer) viewer.dispose();
       viewer = null;
-      viewerHost.hidden = true;
+      settleHidden(viewerHost);
       pillHost.removeEventListener("click", onPillPress);
       paintedSurfaces = null;
       pillHost.innerHTML = "";
-      reportPills();
+      notifyPillsChanged();
     },
   };
 }

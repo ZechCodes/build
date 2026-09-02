@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { surfacesSnapshot } from "./surfacesFixture.js";
 import { motionBeat } from "./motionRecorder.js";
+import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -70,7 +71,8 @@ const menuItems = () => [...panel().querySelectorAll(".rail-surface-menu .mi")];
 const menuItem = (kind) => panel().querySelector(`.rail-surface-menu .mi[data-action="${kind}"]`);
 const openMenuElement = () => panel().querySelector(".rail-surface-menu .splitmenu");
 const overlay = () => document.querySelector(".modal-surface");
-const overlayRows = () => [...document.querySelectorAll(".modal-surface .surface-running > .surface-row")];
+const overlayRows = () =>
+  [...document.querySelectorAll(`.modal-surface .surface-running > .surface-row:not([${EXITING_ATTRIBUTE}])`)];
 const pressEscape = () =>
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 

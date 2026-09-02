@@ -3,6 +3,7 @@ import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { SPAWNING_CALL_SEQUENCE, surfacesSnapshot } from "./surfacesFixture.js";
 import { motionSettled } from "../src/core/motion.js";
+import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { mountAgentSurfaces } from "../src/core/agentSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
@@ -62,7 +63,8 @@ const pillCount = (kind) => {
   return cap.hidden ? null : cap.textContent;
 };
 const pressed = (kind) => pill(kind).getAttribute("aria-pressed");
-const viewerRows = (selector) => [...document.querySelectorAll(`${selector} > .surface-row`)];
+const standing = (selector) => [...document.querySelectorAll(`${selector}:not([${EXITING_ATTRIBUTE}])`)];
+const viewerRows = (selector) => standing(`${selector} > .surface-row`);
 const runningRows = () => viewerRows(".surface-running");
 const completedRows = () => viewerRows(".surface-completed-rows");
 const completedFold = () => document.querySelector(".surface-completed");
@@ -291,7 +293,7 @@ describe("painting the viewer", () => {
     surfaces.set(snapshot());
     await pressPill(WORKFLOW_ENTRY_KIND);
 
-    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    expect(standing(".surface-workflow-choice")).toHaveLength(0);
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
     surfaces.dispose();
   });
@@ -334,7 +336,7 @@ describe("painting the viewer", () => {
     surfaces.set(snapshot());
 
     expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
-    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    expect(standing(".surface-workflow-choice")).toHaveLength(0);
     surfaces.dispose();
   });
 

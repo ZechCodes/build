@@ -40,7 +40,10 @@
 import { patchElement } from "./domPatch.js";
 
 const KEY = "data-key";
+export const EXITING_ATTRIBUTE = "data-exiting";
 const ELEMENT_NODE = 1;
+
+let exitsStarted = 0;
 
 /** The one element the render described, ready to be patched in or inserted. */
 function elementFrom(rendered, page) {
@@ -108,18 +111,46 @@ function alreadyInOrder(positions) {
   return staying;
 }
 
+function startExit(container, element, onExit) {
+  const leaving = onExit(element);
+  if (!leaving || typeof leaving.then !== "function") {
+    container.removeChild(element);
+    return;
+  }
+  exitsStarted += 1;
+  const token = String(exitsStarted);
+  element.setAttribute(EXITING_ATTRIBUTE, token);
+  const takeOut = () => {
+    if (element.getAttribute(EXITING_ATTRIBUTE) !== token) return;
+    element.removeAttribute(EXITING_ATTRIBUTE);
+    if (element.parentNode === container) container.removeChild(element);
+  };
+  leaving.then(takeOut, (error) => {
+    takeOut();
+    throw error;
+  });
+}
+
 /// The keyed children `container` gets to keep, in the order they sit in.
 ///
 /// Everything else keyed goes: the entries that left, and any second element
 /// claiming a key already spoken for — a ghost the paint would otherwise never
 /// be able to reach again, since a key only ever finds the first of them.
-function keptEntries(container, wanted) {
+function keptEntries(container, wanted, onExit) {
   const live = new Map();
   for (const child of [...container.children]) {
     const key = child.getAttribute(KEY);
     if (key === null) continue;
-    if (!wanted.has(key) || live.has(key)) {
+    const leaving = child.hasAttribute(EXITING_ATTRIBUTE);
+    if (leaving && !wanted.has(key)) continue;
+    if (leaving) child.removeAttribute(EXITING_ATTRIBUTE);
+    if (live.has(key)) {
       container.removeChild(child);
+      continue;
+    }
+    if (!wanted.has(key)) {
+      if (onExit) startExit(container, child, onExit);
+      else container.removeChild(child);
       continue;
     }
     live.set(key, child);
@@ -164,10 +195,10 @@ export function rekeyEntry(container, fromKey, toKey) {
 /// Returns the entry elements, in order. See the contract at the top of this
 /// module: identical entries come out of a paint untouched, kept entries keep
 /// their element, and `wire` runs only for the ones that had to be made.
-export function patchList(container, entries, { keyOf, render, wire }) {
+export function patchList(container, entries, { keyOf, render, wire, onEnter, onExit }) {
   const page = container.ownerDocument;
   const keys = keysWanted(entries, keyOf);
-  const live = keptEntries(container, new Set(keys));
+  const live = keptEntries(container, new Set(keys), onExit);
 
   const positions = new Map([...live.keys()].map((key, index) => [key, index]));
   const staying = alreadyInOrder(keys.map((key) => (positions.has(key) ? positions.get(key) : -1)));
@@ -194,13 +225,16 @@ export function patchList(container, entries, { keyOf, render, wire }) {
     // the element is made, and wired, for the first time.
     if (standing) container.removeChild(standing);
     container.insertBefore(next, anchor);
-    made.unshift({ element: next, entry });
+    made.unshift({ element: next, entry, arrived: !standing });
     anchor = next;
     painted[index] = next;
   }
 
   // Once, in list order, with the list already saying what it will say — so a
   // handler can measure the row it is on or scroll it into view.
-  if (wire) for (const { element, entry } of made) wire(element, entry);
+  for (const { element, entry, arrived } of made) {
+    if (wire) wire(element, entry);
+    if (arrived && onEnter) onEnter(element);
+  }
   return painted;
 }

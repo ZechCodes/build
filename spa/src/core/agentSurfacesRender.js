@@ -16,6 +16,7 @@ const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
 const COMPLETED_FOLD_CLASS = "surface-completed";
 const COMPLETED_FOLD_HEAD_CLASS = "surface-completed-head";
+const PILL_COUNT_CLASS = "surface-pill-count";
 
 const VIEWER_CLASS = {
   viewer: "surface-viewer",
@@ -35,6 +36,7 @@ export const SURFACE_OVERLAY_BODY_SELECTOR = `.${SURFACE_OVERLAY_BODY_CLASS}`;
 export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
+export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
@@ -104,19 +106,15 @@ export function agentRowHtml(row) {
   });
 }
 
-function pillHtml(pill, openKind) {
-  return `<button type="button" class="surface-pill" data-surface-kind="${esc(pill.kind)}"
+const pillCountCapHtml = (count) =>
+  `<span class="${PILL_COUNT_CLASS}" data-motion${count ? "" : " hidden"}>${count ? esc(count) : ""}</span>`;
+
+export function surfacePillHtml(pill, openKind) {
+  return `<button type="button" class="surface-pill" data-motion data-surface-kind="${esc(pill.kind)}"
     aria-pressed="${pill.kind === openKind}">
     <span class="surface-pill-label">${esc(pill.label)}</span>
-    ${pill.count ? `<span class="surface-pill-count">${esc(pill.count)}</span>` : ""}
+    ${pillCountCapHtml(pill.count)}
   </button>`;
-}
-
-export function surfacePillsHtml(pills, openKind) {
-  if (!pills.length) return "";
-  return `<div class="surface-pills" role="group" aria-label="Agent surfaces">${pills
-    .map((pill) => pillHtml(pill, openKind))
-    .join("")}</div>`;
 }
 
 export function workflowPhaseHtml(phase) {

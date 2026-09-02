@@ -32,6 +32,7 @@
 // path returns quietly rather than throwing. A bubble in a test still keeps its
 // state; it just has nowhere to put pixels.
 
+import { prefersReducedMotion } from "./motion.js";
 import { TILINGS, tilingForPattern } from "./tilings.js";
 import {
   CELL_SCALE_BASE,
@@ -170,15 +171,6 @@ function joinLoop(renderer) {
 function leaveLoop(renderer) {
   if (!animatingRenderers.delete(renderer)) return;
   if (animatingRenderers.size === 0) cancelFrame();
-}
-
-/** Whether the reader has asked for less movement. matchMedia is missing in
- *  jsdom and in older embeddings, and an absent query is not a preference. */
-function prefersReducedMotion() {
-  const match = globalThis.matchMedia;
-  if (typeof match !== "function") return false;
-  const query = match("(prefers-reduced-motion: reduce)");
-  return !!(query && query.matches);
 }
 
 /** Which of the five tilings an ordinal draws, by name — the name is what the

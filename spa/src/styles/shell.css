@@ -453,7 +453,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    to the bottom edge: the thread runs under it rather than carrying it along,
    and a box grown by what is being typed takes its room from the thread above
    instead of pushing itself off the panel. */
-.rail-panel { flex:none; width:min(400px, calc(100vw - 120px));
+.rail-panel { flex:none; width:min(400px, calc(100vw - 120px)); position:relative;
   display:flex; flex-direction:column; min-height:0;
   border-left:1px solid var(--line); }
 .rail-head { flex:none; display:flex; align-items:center; gap:8px; padding:6px 8px 6px 12px;
@@ -464,7 +464,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:11px; color:var(--dim); padding:3px 8px; cursor:pointer; }
 .rail-mode.on { background:var(--accent-soft); color:var(--accent); border-color:var(--accent); }
 .rail-surface-menu { flex:none; display:inline-flex; }
-.rail-surface-menu .caret { border-left:0; border-radius:6px; padding:3px 7px; color:var(--dim); }
 .rail-surface-menu .splitmenu { top:calc(100% + 6px); bottom:auto; }
 .rail-remove { flex:none; }
 .rail-remove:hover { background:var(--red-bg); color:var(--red); }
@@ -508,34 +507,64 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    Specific enough to beat the shared box's own ceiling whichever order the two
    stylesheets land in. */
 .rail-composer .composer textarea { max-height:40vh; }
-/* The pinned status line: a pulsing dot and how long the turn has been
-   running while an agent works, plus how far the branch stands from
-   upstream and its diffstat — the same three facts the toolbar's right side
-   used to carry, read here instead beside the box they are about. Hidden
-   (not just empty) when the work item's row has none of them to report. */
+/* A row that scrolls sideways rather than wrapping or squeezing what is in it,
+   with no scrollbar to show for it. */
+.scrollstrip { overflow-x:auto; scrollbar-width:none; }
+.scrollstrip::-webkit-scrollbar { width:0; height:0; display:none; }
+
+/* The one row pinned above the composer: how long the turn has been running
+   while an agent works (or when the session began), the surface pills, and how
+   far the branch stands from upstream with its diffstat. Three items, left to
+   right, and the pills take whatever room the other two leave. Hidden (not just
+   empty) when none of the three has anything to say. */
 .rail-status { display:flex; align-items:center; gap:6px; padding-bottom:6px;
   font-size:11.5px; color:var(--dim); }
 .rail-status[hidden] { display:none; }
-.rail-status-lead { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.rail-status-lead { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
+.rail-status-lead[hidden] { display:none; }
 .rail-status-working { color:var(--accent); }
 .rail-status-starting { color:var(--dim); }
-/* Right-anchored, so the ticking timer never shoves the git facts around. */
-.rail-status-git { margin-left:auto; display:flex; align-items:center; gap:6px; }
+/* The one word the row gives up when the pills want the room. It collapses
+   along its width, so it needs a box of its own to have a width at all. */
+.rail-status-working-word { display:inline-block; }
+.rail-status-working-word[hidden] { display:none; }
+/* The pills scroll in the middle rather than wrapping the row onto a second
+   line. No scrollbar — the mask fading the strip out under the git facts is
+   what says there is more of it, and it leaves their text crisp. */
+.rail-status-pills { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:6px;
+  -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); }
+/* Pinned to the row's end, so the ticking timer never shoves the git facts
+   around. */
+.rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px; }
+.rail-status-git[hidden] { display:none; }
 .rail-status-sync, .rail-status-stat { color:var(--dim); }
 
-.rail-surfaces { display:flex; flex-direction:column; }
-.rail-surfaces-viewer:not(:empty) { max-height:34vh; overflow-y:auto; margin-bottom:6px;
-  border:1px solid var(--line); border-radius:8px; background:var(--panel2); }
-.rail-surfaces-pills:not(:empty) { padding-bottom:6px; }
-.surface-pills { display:flex; flex-wrap:wrap; gap:6px; }
-.surface-pill, .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
+/* The viewer a pill opens: the last thing in the conversation column, above the
+   line that tops the composer block. Nothing is drawn between it and the
+   conversation — it is the conversation's own bottom, not a panel bolted under
+   it — and it grows by its height, pushing the thread up as it arrives. */
+.rail-surfaces-viewer { flex:none; max-height:34vh; overflow-y:auto; margin:0 12px 8px;
+  border-radius:8px; background:var(--panel2); }
+.rail-surfaces-viewer[hidden] { display:none; }
+.surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
   padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
+/* A pill carries no padding of its own: the label wears it, so the count cap
+   can sit flush against the pill's end and the pill's own radius clips it. */
+.surface-pill { flex:0 0 auto; display:inline-flex; align-items:center; padding:0; overflow:hidden;
+  white-space:nowrap; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
+  color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
+.surface-pill[hidden] { display:none; }
 .surface-pill:hover, .surface-workflow-choice:hover { color:var(--ink2); }
 .surface-pill[aria-pressed="true"], .surface-workflow-choice[aria-pressed="true"] {
   border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
-.surface-pill-count { min-width:15px; padding:0 4px; border-radius:8px; background:var(--panel);
-  font-size:10px; font-weight:650; text-align:center; }
+.surface-pill-label { padding:2px 8px; }
+.surface-pill-count { align-self:stretch; display:inline-flex; align-items:center;
+  justify-content:center; min-width:15px; padding:0 6px; background:var(--panel);
+  font-size:10px; font-weight:650; }
+.surface-pill-count[hidden] { display:none; }
 
 .surface-viewer { display:flex; flex-direction:column; padding:6px; gap:2px; font-size:11.5px; }
 .surface-row { display:flex; flex-direction:column; gap:2px; padding:4px 6px; border-radius:6px; }
@@ -620,15 +649,20 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:12px; color:var(--dim);
   background:none; border:none; text-align:left; cursor:pointer; }
 .console-bar:hover { color:var(--ink2); }
-.console-bar .console-caret { font-size:10px; }
-#console-region[data-size="collapsed"] .console-bar { width:100%; }
-#console-region[data-size="collapsed"] .console-body { display:none; }
 
 /* One tab per terminal: an ordinal and the way to close it, in the same
-   vocabulary the retired tab rows used (.tx is the shared closer). */
-.console-tabs { display:flex; align-items:center; gap:2px; min-width:0;
-  overflow-x:auto; scrollbar-width:none; }
-.console-tabs::-webkit-scrollbar { display:none; }
+   vocabulary the retired tab rows used (.tx is the shared closer).
+
+   The strip is one row however many terminals are open: it scrolls sideways
+   rather than wrapping or squeezing the tabs, and the scrollbar is left out —
+   the tabs themselves say there is more of them. The + sticks to the strip's
+   right edge over the tabs that scroll under it, so the way to open another
+   shell is in the same place whatever the strip is showing. */
+.console-tabs { display:flex; align-items:center; gap:2px; min-width:0; flex:1 1 auto;
+  background:var(--bg); }
+.console-tabs .console-new { position:sticky; right:0; flex:none;
+  background:var(--bg); padding-left:6px; }
+.console-tabs .console-new:hover { color:var(--ink2); background:var(--line2); }
 .console-tab { display:flex; align-items:center; gap:2px; flex:none;
   border-radius:6px; padding-right:4px; }
 .console-tab:hover { background:var(--panel2); }

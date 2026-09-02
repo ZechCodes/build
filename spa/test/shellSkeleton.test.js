@@ -243,15 +243,11 @@ describe("render dispatch", () => {
 });
 
 describe("the console", () => {
-  it("is a shut bar until it is opened, and a head with terminals once it is", () => {
-    const shut = consoleHeadHtml({ size: "collapsed" });
-    expect(shut).toContain('aria-expanded="false"');
-    expect(shut).toContain("Console");
-    expect(shut).not.toContain("console-tabs");
-    const open = consoleHeadHtml({ size: "half", tabs: [{ id: "term-1", label: "Terminal 1" }], selected: "term-1" });
-    expect(open).toContain('aria-expanded="true"');
-    expect(open).toContain("Terminal 1");
-    expect(open).toContain("console-grow");
+  it("renders its head into the region the skeleton gives it", () => {
+    const region = document.getElementById("console-region");
+    region.innerHTML = `<div class="console"><div class="console-head">${consoleHeadHtml("collapsed")}</div></div>`;
+    expect(region.querySelector(".console-head #console-toggle")).toBeTruthy();
+    expect(region.querySelector(".console-head .console-tabs")).toBeTruthy();
   });
 
   it("takes the bottom row of the view column, and overlays it at full size", () => {

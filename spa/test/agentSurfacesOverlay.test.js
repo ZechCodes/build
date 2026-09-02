@@ -2,6 +2,8 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { surfacesSnapshot } from "./surfacesFixture.js";
+import { motionBeat } from "./motionRecorder.js";
+import { EXITING_ATTRIBUTE } from "../src/core/patchList.js";
 import { resolve } from "node:path";
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
@@ -69,7 +71,8 @@ const menuItems = () => [...panel().querySelectorAll(".rail-surface-menu .mi")];
 const menuItem = (kind) => panel().querySelector(`.rail-surface-menu .mi[data-action="${kind}"]`);
 const openMenuElement = () => panel().querySelector(".rail-surface-menu .splitmenu");
 const overlay = () => document.querySelector(".modal-surface");
-const overlayRows = () => [...document.querySelectorAll(".modal-surface .surface-running > .surface-row")];
+const overlayRows = () =>
+  [...document.querySelectorAll(`.modal-surface .surface-running > .surface-row:not([${EXITING_ATTRIBUTE}])`)];
 const pressEscape = () =>
   document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
 
@@ -181,7 +184,7 @@ describe("panelHeadHtml's surface menu", () => {
 });
 
 describe("openSurfaceOverlay", () => {
-  it("mounts the kind's viewer in a modal and keeps it current", () => {
+  it("mounts the kind's viewer in a modal and keeps it current", async () => {
     const held = openSurfaceOverlay(SHELL_ENTRY_KIND, { onSendMessage: async () => {}, onOpenThreadItem: () => {} });
     held.set(surfaces());
 
@@ -193,7 +196,7 @@ describe("openSurfaceOverlay", () => {
     held.set(grown);
     expect(overlayRows()).toHaveLength(2);
 
-    held.close();
+    await held.close();
     expect(overlay()).toBe(null);
   });
 
@@ -209,7 +212,7 @@ describe("openSurfaceOverlay", () => {
     held.close();
   });
 
-  it("tells its caller once when Escape takes it away", () => {
+  it("tells its caller once when Escape takes it away", async () => {
     const onClose = vi.fn();
     const held = openSurfaceOverlay(WORKFLOW_ENTRY_KIND, {
       onSendMessage: async () => {},
@@ -219,10 +222,11 @@ describe("openSurfaceOverlay", () => {
     held.set(surfaces());
 
     pressEscape();
+    await motionBeat();
 
     expect(overlay()).toBe(null);
     expect(onClose).toHaveBeenCalledTimes(1);
-    held.close();
+    await held.close();
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
@@ -233,6 +237,13 @@ describe("the conversation header's menu", () => {
     expect(menuItems().map((item) => item.dataset.action)).toEqual([WORKFLOW_ENTRY_KIND, SHELL_ENTRY_KIND]);
     expect(menuItem(SHELL_ENTRY_KIND).textContent).toContain("Shells");
     expect(menuItem(SHELL_ENTRY_KIND).textContent).toContain("1 running");
+  });
+
+  it("is one plain icon button carrying the three dots alone", async () => {
+    await mount();
+    expect(menuCaret().classList.contains("iconbtn")).toBe(true);
+    expect(menuCaret().textContent.trim()).toBe("⋯");
+    expect(menuCaret().closest(".splitbtn").classList.contains("splitbtn-icon")).toBe(true);
   });
 
   it("is absent while the agent has no surfaces at all", async () => {
@@ -285,6 +296,15 @@ describe("the surface a menu option opens", () => {
     menuCaret().click();
     menuItem(SHELL_ENTRY_KIND).click();
   };
+
+  it("lays over the chat panel alone, not the whole page", async () => {
+    await openShells();
+    const scrim = panel().querySelector(".modal-scrim");
+    expect(scrim).not.toBe(null);
+    expect(scrim.classList.contains("modal-scrim-local")).toBe(true);
+    expect(scrim.querySelector(".modal-surface")).toBe(overlay());
+    expect(document.body.querySelector(":scope > .modal-scrim")).toBe(null);
+  });
 
   it("shows the kind's rows over the panel", async () => {
     await openShells();
@@ -405,7 +425,7 @@ describe("the overlay's own height", () => {
     menuItem(SHELL_ENTRY_KIND).click();
 
     expect(overlay().closest(".rail-surfaces-viewer")).toBe(null);
-    expect(shellCss).toMatch(/\.rail-surfaces-viewer:not\(:empty\)\s*\{[^}]*max-height:34vh/);
+    expect(shellCss).toMatch(/\.rail-surfaces-viewer\s*\{[^}]*max-height:34vh/);
     expect(shellCss).not.toContain(".modal-surface");
     expect(appCss).toMatch(/\.modal\.modal-surface\s*\{[^}]*max-height/);
     expect(appCss).toMatch(/\.modal-surface\s+\.surface-overlay-body\s*\{[^}]*overflow-y:auto/);

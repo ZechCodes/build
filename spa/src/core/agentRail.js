@@ -24,6 +24,7 @@ import { watchChanges } from "./changeEvents.js";
 import { createAdoptingCall, createPrimaryAdoptingCall } from "./adoption.js";
 import { loadAgentDefaults } from "./agentDefaults.js";
 import {
+  QUIET_SHAPE,
   agentCanInterrupt,
   agentHasTerminal,
   agentTitle,
@@ -31,10 +32,12 @@ import {
   providerLabel,
   railBubbles,
   railEntity,
+  railStatusShape,
   railWorkStatus,
   removeAgentConfirm,
   selectAgentId,
 } from "./agentRailModel.js";
+import { railStatusGitHtml, railStatusLeadClass, railStatusLeadHtml } from "./agentRailRender.js";
 import { createAgentSelection } from "./agentSelection.js";
 import { NO_AGENT_CHOICE, chosenProviderId, reconcileAgentChoice } from "./agentChoice.js";
 import { confirmAction } from "./confirm.js";
@@ -51,7 +54,8 @@ import {
   runOptimistic,
   subscribeOptimistic,
 } from "./optimistic.js";
-import { patchList, rekeyEntry } from "./patchList.js";
+import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
+import { hide, motionSettled, reveal } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -95,7 +99,14 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
-const RAIL_SURFACES_ID = "rail-surfaces";
+const RAIL_STATUS_ID = "rail-status";
+const RAIL_STATUS_LEAD_ID = "rail-status-lead";
+const RAIL_STATUS_PILLS_ID = "rail-status-pills";
+const RAIL_STATUS_GIT_ID = "rail-status-git";
+const RAIL_VIEWER_ID = "rail-surfaces-viewer";
+const WORKING_WORD_SELECTOR = ".rail-status-working-word";
+const STATUS_TEXT_SELECTOR = ".rail-status-text";
+const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
 const SURFACE_MENU_CLASS = "rail-surface-menu";
 const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
 const SURFACE_MENU_LABEL = "⋯";
@@ -224,33 +235,37 @@ export function syncStripPainters(bubbles, painted, faces) {
   });
 }
 
-const workingLine = (status) =>
-  status.working
-    ? `<span class="sdot sdot-working"></span><span class="rail-status-lead rail-status-working">Working ${esc(status.working)}</span>`
-    : "";
-
-const startingLine = (status) =>
-  status.starting
-    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-lead rail-status-starting">${esc(status.starting)}</span>`
-    : "";
-
-/** Pure: the line pinned above the composer — a pulsing dot and how long the
- *  work item's turn has been running while one is in flight, how far it
- *  stands from upstream, and its diffstat. "" when the status has nothing to
- *  report, which the caller reads as "pin nothing." */
-export function railStatusHtml(status) {
-  if (!status.working && !status.starting && !status.sync && !status.stat) return "";
-  const lead = workingLine(status) || startingLine(status);
-  const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
-  const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  // The git facts ride one group anchored to the row's end, so the ticking
-  // timer widens into open space instead of shoving them along.
-  const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
-  return lead + git;
+function paintStatusLead(lead, status) {
+  const shape = railStatusShape(status);
+  if (lead.dataset.shape !== shape) {
+    lead.dataset.shape = shape;
+    lead.className = railStatusLeadClass(shape);
+    lead.innerHTML = railStatusLeadHtml(shape);
+  }
+  if (shape === QUIET_SHAPE) hide(lead, { axis: "width" });
+  else reveal(lead, { axis: "width" });
+  const text = lead.querySelector(STATUS_TEXT_SELECTOR);
+  if (text) text.textContent = status.working || status.starting;
 }
 
+function paintStatusGit(git, status) {
+  const html = railStatusGitHtml(status);
+  if (git.innerHTML !== html) git.innerHTML = html;
+  if (html) reveal(git, { axis: "width" });
+  else hide(git, { axis: "width" });
+}
+
+const railStatusRowHtml = () =>
+  `<div class="rail-status" id="${RAIL_STATUS_ID}" hidden>
+    <span class="rail-status-lead" id="${RAIL_STATUS_LEAD_ID}" hidden></span>
+    <div class="rail-status-pills scrollstrip" id="${RAIL_STATUS_PILLS_ID}" role="group" aria-label="Agent surfaces"></div>
+    <span class="rail-status-git" id="${RAIL_STATUS_GIT_ID}" hidden></span>
+  </div>`;
+
+const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
+
 function surfaceMenuHtml(options) {
-  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
+  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
 }
 
 function surfaceMenuRegionHtml(options) {
@@ -484,13 +499,45 @@ export function mountAgentRail(host, context) {
     return (window && window.items) || [];
   };
 
+  const statusRow = () => host.querySelector(`#${RAIL_STATUS_ID}`);
+
+  const showRowIfPopulated = () => {
+    const row = statusRow();
+    if (!row) return;
+    const lead = row.querySelector(`#${RAIL_STATUS_LEAD_ID}`);
+    const git = row.querySelector(`#${RAIL_STATUS_GIT_ID}`);
+    const pills = row.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
+    const populated = !lead.hidden || !git.hidden || !!pills.querySelector(STANDING_PILL_SELECTOR);
+    if (populated) reveal(row, { axis: "height" });
+    else hide(row, { axis: "height" });
+  };
+
+  const collapseWorkingUnderPills = () => {
+    const row = statusRow();
+    if (!row) return;
+    const word = row.querySelector(WORKING_WORD_SELECTOR);
+    if (!word) return;
+    if (row.querySelector(`#${RAIL_STATUS_PILLS_ID}`).querySelector(STANDING_PILL_SELECTOR)) {
+      hide(word, { axis: "width" });
+    } else {
+      reveal(word, { axis: "width" });
+    }
+  };
+
+  const syncRailStatusRow = () => {
+    showRowIfPopulated();
+    collapseWorkingUnderPills();
+  };
+
   const paintRailStatus = () => {
-    const slot = host.querySelector("#rail-status");
-    if (!slot) return;
+    const row = statusRow();
+    if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
-    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel));
-    slot.innerHTML = html;
-    slot.hidden = !html;
+    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel);
+    paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
+    paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status);
+    syncRailStatusRow();
+    motionSettled().then(syncRailStatusRow);
   };
 
   const unsubscribePending = subscribeOptimistic(pendingAgentsScope(), () => paint());
@@ -675,7 +722,7 @@ export function mountAgentRail(host, context) {
       closeSurfaceMenu?.();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
-        ${shownMode === "chat" ? composerRowHtml() : ""}`;
+        ${shownMode === "chat" ? `${railViewerHostHtml()}${composerRowHtml()}` : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
@@ -875,8 +922,7 @@ export function mountAgentRail(host, context) {
   /// bottom edge past the panel.
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
-      <div class="rail-status" id="rail-status" hidden></div>
-      <div class="rail-surfaces" id="${RAIL_SURFACES_ID}"></div>
+      ${railStatusRowHtml()}
       ${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
@@ -1005,9 +1051,16 @@ export function mountAgentRail(host, context) {
   const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
 
   const mountSurfaces = (panel) => {
-    const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
-    if (!region) return;
-    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerCallbacks() });
+    const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
+    const viewerHost = panel.querySelector(`#${RAIL_VIEWER_ID}`);
+    if (!pillHost || !viewerHost) return;
+    surfacesBlock = mountAgentSurfaces({
+      pillHost,
+      viewerHost,
+      key: conversationKey(),
+      onPillsChanged: syncRailStatusRow,
+      ...surfaceViewerCallbacks(),
+    });
   };
 
   const disposeSurfaces = () => {
@@ -1034,6 +1087,7 @@ export function mountAgentRail(host, context) {
     closeSurfaceOverlay();
     surfaceOverlay = openSurfaceOverlay(kind, {
       ...surfaceViewerCallbacks(),
+      host: host.querySelector("#rail-panel"),
       onClose: () => {
         surfaceOverlay = null;
       },

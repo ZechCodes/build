@@ -256,6 +256,16 @@ export function railWorkStatus(row, nowMs = Date.now(), conversationItems = [], 
   };
 }
 
+export const WORKING_SHAPE = "working";
+export const STARTING_SHAPE = "starting";
+export const QUIET_SHAPE = "quiet";
+
+export function railStatusShape(status) {
+  if (status.working) return WORKING_SHAPE;
+  if (status.starting) return STARTING_SHAPE;
+  return QUIET_SHAPE;
+}
+
 /**
  * What the rail is the rail OF, read off one detail payload.
  *

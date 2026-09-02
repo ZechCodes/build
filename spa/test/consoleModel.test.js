@@ -35,6 +35,15 @@ describe("the three sizes", () => {
     expect(toggledConsoleSize("full")).toBe("collapsed");
   });
 
+  it("opens a shut console at the size it was last open at", () => {
+    expect(toggledConsoleSize("collapsed", "full")).toBe("full");
+    expect(toggledConsoleSize("collapsed", "half")).toBe("half");
+    // Shut is not a size to open at, and neither is a size that is not one.
+    expect(toggledConsoleSize("collapsed", "collapsed")).toBe("half");
+    expect(toggledConsoleSize("collapsed", "sideways")).toBe("half");
+    expect(toggledConsoleSize("full", "full")).toBe("collapsed");
+  });
+
   it("grows a bar or a half into the overlay, and the overlay back to half", () => {
     expect(grownConsoleSize("collapsed")).toBe("full");
     expect(grownConsoleSize("half")).toBe("full");

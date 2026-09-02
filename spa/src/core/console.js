@@ -1,10 +1,17 @@
 // The console: the basement of every work surface.
 //
 // It sits at the bottom of the view column on the branch and issue surfaces,
-// shut by default — a bar that says what it is. Opening it puts the terminals
-// of the checkout the work item stands in (a branch's worktree; the primary
-// checkout for an issue and for main) at half the view, and the grow control
-// lays them over all of it. Each work item remembers the size it was left at.
+// shut by default — a label, and beside it a scrolling strip of one tab per
+// terminal open in the checkout the work item stands in (a branch's worktree;
+// the primary checkout for an issue and for main). The strip is the way in:
+// pressing a tab puts that terminal's screen at half the view, the + at the end
+// of the strip opens another shell, and the grow control lays the panel over
+// the whole view. Each work item remembers the size it was left at.
+//
+// The panel holds a screen or a line saying why there is none; it is never
+// shown empty. So a console with no terminals is a bar and a +, the label does
+// nothing, and closing the last terminal shuts the panel without spending the
+// size it was open at.
 //
 // Terminals are the human's own shells and nothing else: an agent is Build's,
 // lives in the agent rail, and is never one of these. The panes ride the ONE
@@ -169,13 +176,16 @@ export function mountConsole(host, context) {
   // this is, so a stale mark cannot open some later console on a stranger.
   const wanted = takeConsoleTerminal();
   const wantedHere = context && context.kind === "branch" ? wanted : null;
-  let size = wantedHere ? "half" : readConsoleSize(key);
+  const remembered = readConsoleSize(key);
+  let size = wantedHere ? "half" : remembered; // the size asked for, shown only when there is something to show
+  let openedSize = remembered === "full" ? "full" : "half"; // the size an open console takes
   let scope = null; // the checkout's terminal scope, once resolved
   let terms = null; // the controller, once there is a scope to list
   let selected = chosenTerminal.get(key) || null;
   let loading = false;
   let unresolved = false; // the branch named no directory to stand in
   let unreachable = false; // the machine did not answer — not the same as empty
+  let createFailure = null; // why the last + could not open a shell
   let pane = null;
   let paneTermId = null; // which terminal the mounted pane is showing
   let connection = null;
@@ -263,9 +273,11 @@ export function mountConsole(host, context) {
     writeCached(address, { scope, termIds: terms.ids() });
   };
 
-  /// List the checkout's terminals, once, the first time the console opens.
-  /// Nothing is ever created here: opening the console must not spawn a shell
-  /// on the user's machine, least of all on a size the last visit remembered.
+  /// List the checkout's terminals, once, as the console is stood up — the
+  /// strip says what is open there whether the panel is shut or not.
+  /// Nothing is ever created here: standing the console up must not spawn a
+  /// shell on the user's machine, least of all on a size the last visit
+  /// remembered.
   ///
   /// The saved tab list paints the head first, without a round trip; the live
   /// list reconciles it the moment it lands.
@@ -328,17 +340,21 @@ export function mountConsole(host, context) {
     if (address && scope && terms) writeCached(address, { scope, termIds: terms.ids() });
   };
 
+  /// The + opens a shell AND the panel: a terminal nobody can see is not what
+  /// was asked for. A create that failed opens it too — on the reason.
   const newTerminal = async () => {
     if (!terms) return;
     try {
       selected = await terms.create();
+      createFailure = null;
       remember();
     } catch (error) {
-      failInBody(`cannot open a terminal: ${(error && error.message) || "error"}`);
+      createFailure = `cannot open a terminal: ${(error && error.message) || "error"}`;
+      openPanel();
       return;
     }
     persistTabs();
-    paint();
+    openPanel();
     scrollStripToNewest();
   };
 
@@ -377,25 +393,26 @@ export function mountConsole(host, context) {
     if (!host.querySelector(".console")) {
       host.innerHTML = `<div class="console"><div class="console-head"></div><div class="console-body"></div></div>`;
     }
-    host.dataset.size = size;
-    paintHead(host.querySelector(".console-head"));
-    paintBody();
+    const shown = shownSize();
+    host.dataset.size = shown;
+    paintHead(host.querySelector(".console-head"), shown);
+    paintBody(shown);
   };
 
-  const paintHead = (head) => {
+  const paintHead = (head, shown) => {
     if (!head.querySelector(".console-tabs")) {
-      head.innerHTML = consoleHeadHtml({ size, tabs: [], selected, scoped: false });
+      head.innerHTML = consoleHeadHtml({ size: shown, tabs: [], selected, scoped: false });
       wireHead(head);
     }
-    patchElement(head.querySelector("#console-toggle"), el(consoleToggleHtml(size)));
+    patchElement(head.querySelector("#console-toggle"), el(consoleToggleHtml(shown)));
     paintTabs(head.querySelector(".console-tabs"));
-    paintGrowControl(head.querySelector(".console-controls"));
+    paintGrowControl(head.querySelector(".console-controls"), shown);
   };
 
   /// The toggle is the one control that is there whatever the console is doing,
   /// so it is the one wired to the element rather than to a paint.
   const wireHead = (head) => {
-    head.querySelector("#console-toggle").onclick = () => setSize(toggledConsoleSize(size));
+    head.querySelector("#console-toggle").onclick = () => toggleConsole();
   };
 
   const paintTabs = (strip) => {
@@ -439,29 +456,32 @@ export function mountConsole(host, context) {
     reveal(standing, { axis: "width" });
   };
 
-  const paintGrowControl = (controls) => {
+  const paintGrowControl = (controls, shown) => {
     const standing = controls.querySelector(".console-grow");
-    if (size === "collapsed") {
+    if (shown === "collapsed") {
       if (standing) hide(standing, { axis: "width" });
       return;
     }
     if (!standing) {
-      const grow = el(consoleGrowHtml(size));
+      const grow = el(consoleGrowHtml(shown));
       grow.hidden = true;
-      grow.onclick = () => setSize(grownConsoleSize(size));
+      grow.onclick = () => growPanel();
       controls.appendChild(grow);
       reveal(grow, { axis: "width" });
       return;
     }
-    patchElement(standing, el(consoleGrowHtml(size)));
+    patchElement(standing, el(consoleGrowHtml(shown)));
     reveal(standing, { axis: "width" });
   };
 
+  /// A tab is a way into the console as well as a choice of terminal: pressing
+  /// one on a shut console opens it on that terminal.
   const selectTerminal = (termId) => {
-    if (termId === selected) return;
-    selected = termId;
-    remember();
-    paint();
+    if (termId !== selected) {
+      selected = termId;
+      remember();
+    }
+    openPanel();
   };
 
   /// The newest tab and the + are what a create is about, so the strip is put
@@ -473,10 +493,10 @@ export function mountConsole(host, context) {
 
   const body = () => host.querySelector(".console-body");
 
-  const paintBody = () => {
+  const paintBody = (shown) => {
     const region = body();
     if (!region) return;
-    if (size === "collapsed") {
+    if (shown === "collapsed") {
       // A shut console holds no screen: the PTY keeps running on the machine,
       // the client stops rendering and streaming it.
       disposePane();
@@ -490,25 +510,30 @@ export function mountConsole(host, context) {
       return;
     }
     disposePane();
-    region.innerHTML = `<div class="console-empty">${emptyHtml()}</div>`;
-    const start = region.querySelector(".console-start");
-    if (start) start.onclick = () => newTerminal();
+    region.innerHTML = `<div class="console-empty"><span class="dim">${esc(bodyMessage())}</span></div>`;
   };
 
-  const emptyHtml = () => {
-    if (loading) return `<span class="dim">Opening…</span>`;
-    // No offer to open a shell while the machine is out of reach — creating one
-    // needs the same socket the listing just failed on.
-    if (unreachable) return `<span class="dim">${esc(RECONNECTING_MESSAGE)}</span>`;
-    if (unresolved) return `<span class="dim">There is no checkout here to open a terminal in.</span>`;
-    return `<span class="dim">No terminals are open in this checkout.</span>
-      <button type="button" class="btn console-start">Open a terminal</button>`;
+  /// What the body has to say when there is no screen in it, and "" when it has
+  /// nothing to say — which is the state the console is never shown in.
+  const bodyMessage = () => {
+    if (createFailure) return createFailure;
+    if (loading) return "Opening…";
+    // The machine being out of reach is not the same as it holding no
+    // terminals, and neither is a branch that names no directory at all.
+    if (unreachable) return RECONNECTING_MESSAGE;
+    if (unresolved) return "There is no checkout here to open a terminal in.";
+    return "";
   };
 
-  const failInBody = (message) => {
-    const region = body();
-    if (region) region.innerHTML = `<div class="console-empty"><span class="dim">${esc(message)}</span></div>`;
-  };
+  /** Whether the panel would hold anything: a terminal's screen, or a line
+   *  saying why there is none. */
+  const hasSomethingToShow = () => !!((terms && selected) || bodyMessage());
+
+  /// A panel with nothing in it says nothing, so it is not shown: the console is
+  /// drawn at the size it was asked for while it holds a screen or a message,
+  /// and shut whenever it holds neither. The size it was asked for is kept
+  /// through that, so the terminal that opens next opens the console with it.
+  const shownSize = () => (hasSomethingToShow() ? size : "collapsed");
 
   const mountPane = (region, termId) => {
     disposePane();
@@ -561,11 +586,27 @@ export function mountConsole(host, context) {
   // ---- size ------------------------------------------------------------------
 
   const setSize = (next) => {
-    if (next === size) return;
     size = next;
-    writeConsoleSize(key, size);
+    if (next !== "collapsed") openedSize = next;
+    writeConsoleSize(key, next);
     paint();
-    if (size !== "collapsed") ensureTerminals();
+  };
+
+  /// Show the panel on whatever the console is holding. A console already at a
+  /// size keeps it — the create or the tab press was about the terminal.
+  const openPanel = () => {
+    if (size === "collapsed") setSize(openedSize);
+    else paint();
+  };
+
+  const growPanel = () => setSize(grownConsoleSize(shownSize()));
+
+  /// The label, and the backtick. With nothing to show it is inert: there is no
+  /// empty panel to open, and the size the console is remembered at is left as
+  /// it is rather than being written over by a press that did nothing.
+  const toggleConsole = () => {
+    if (!hasSomethingToShow()) return;
+    setSize(toggledConsoleSize(shownSize(), openedSize));
   };
 
   // ---- the keyboard ----------------------------------------------------------
@@ -576,16 +617,19 @@ export function mountConsole(host, context) {
     if (event.key !== "`" || event.metaKey || event.ctrlKey || event.altKey) return;
     if (!consoleTakesKey(event.target)) return;
     event.preventDefault();
-    setSize(toggledConsoleSize(size));
+    toggleConsole();
   };
   document.addEventListener("keydown", onKeydown);
 
   paint();
-  if (size !== "collapsed") ensureTerminals();
+  // The strip says what is open in this checkout whether the panel is shut or
+  // not, so the listing is part of standing the console up. Listing only: a
+  // console has never created a shell it was not asked for.
+  ensureTerminals();
 
   return {
-    size: () => size,
-    toggle: () => setSize(toggledConsoleSize(size)),
+    size: () => shownSize(),
+    toggle: () => toggleConsole(),
     dispose() {
       disposed = true;
       document.removeEventListener("keydown", onKeydown);

@@ -89,13 +89,18 @@ afterEach(() => {
 });
 
 describe("the shut console", () => {
-  it("is a bar that says what it is, and asks the machine for nothing", async () => {
+  // The strip is the way in, so a shut console has to know what is open in the
+  // checkout it stands on. Listing is all it does: nothing is ever created.
+  it("is a bar with the checkout's terminals beside it, and creates none of them", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     await mount();
     expect(size()).toBe("collapsed");
     expect(bar().getAttribute("aria-expanded")).toBe("false");
     expect(bar().textContent).toContain("Console");
-    expect(manager.listTerminals).not.toHaveBeenCalled();
-    expect(callsTo("branch.get")).toEqual([]);
+    expect(tabs()).toEqual(["Terminal 1"]);
+    expect(region().querySelector(".console-new")).toBeTruthy();
+    expect(manager.createTerminal).not.toHaveBeenCalled();
+    expect(manager.attachTerminal).not.toHaveBeenCalled();
   });
 });
 
@@ -136,10 +141,10 @@ describe("opening it", () => {
   });
 
   it("never spawns a shell just because it was opened", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
     await mount();
     await open();
     expect(manager.createTerminal).not.toHaveBeenCalled();
-    expect(region().querySelector(".console-empty")).toBeTruthy();
   });
 
   it("says so when the branch names no directory to stand in", async () => {
@@ -206,13 +211,14 @@ describe("the terminals", () => {
     expect(region().querySelector(".console-tab.active .console-tab-name").textContent).toBe("Terminal 2");
   });
 
-  it("opens the first one from the empty state", async () => {
+  it("opens the first one from the + in the shut head", async () => {
     await mount();
-    await open();
-    region().querySelector(".console-start").click();
+    region().querySelector(".console-new").click();
     await flush();
     expect(manager.createTerminal).toHaveBeenCalled();
     expect(tabs()).toEqual(["Terminal 1"]);
+    expect(size()).toBe("half");
+    expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-9");
   });
 
   it("switches between them", async () => {
@@ -242,7 +248,68 @@ describe("the terminals", () => {
     await mount();
     await open();
     expect(tabs()).toEqual([]);
-    expect(region().querySelector(".console-empty")).toBeTruthy();
+    expect(size()).toBe("collapsed");
+    expect(region().querySelector(".console-pane")).toBeNull();
+  });
+});
+
+// The panel holds a screen or it holds nothing, and nothing is not a state it
+// is ever shown in: it opens on a terminal, and shuts the moment it has none.
+describe("a console with no terminals", () => {
+  const storedSize = () => localStorage.getItem("build.console.size.branch:p1:build/login");
+
+  it("opens on the tab that was pressed", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }, { term_id: "term-2" }]);
+    await mount();
+    expect(size()).toBe("collapsed");
+    [...region().querySelectorAll(".console-tab-name")][1].click();
+    await flush();
+    expect(size()).toBe("half");
+    expect(manager.attachTerminal.mock.calls[0][0]).toBe("term-2");
+  });
+
+  it("stays shut when the label is pressed with nothing to show", async () => {
+    await mount();
+    await open();
+    expect(size()).toBe("collapsed");
+    expect(region().querySelector(".console-body").textContent).toBe("");
+    expect(storedSize()).toBeNull();
+    // …and the backtick is the same control by another name.
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "`", bubbles: true, cancelable: true }));
+    await flush();
+    expect(size()).toBe("collapsed");
+  });
+
+  it("shuts when the last terminal is closed, and reopens at the size it was left", async () => {
+    manager.listTerminals.mockResolvedValue([{ term_id: "term-1" }]);
+    await mount();
+    await open();
+    region().querySelector(".console-grow").click();
+    await flush();
+    expect(size()).toBe("full");
+    region().querySelector('[data-close="term-1"]').click();
+    await flush();
+    expect(size()).toBe("collapsed");
+    expect(storedSize()).toBe("full");
+    region().querySelector(".console-new").click();
+    await flush();
+    expect(size()).toBe("full");
+  });
+
+  it("renders shut when the size it remembers is open and nothing is running", async () => {
+    localStorage.setItem("build.console.size.branch:p1:build/login", "half");
+    await mount();
+    expect(size()).toBe("collapsed");
+    expect(region().querySelector(".console-body").textContent).toBe("");
+  });
+
+  it("opens on the terminal that could not be created, to say why", async () => {
+    manager.createTerminal.mockRejectedValue(new Error("no such directory"));
+    await mount();
+    region().querySelector(".console-new").click();
+    await flush();
+    expect(size()).toBe("half");
+    expect(region().textContent).toContain("no such directory");
   });
 });
 

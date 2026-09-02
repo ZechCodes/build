@@ -43,10 +43,14 @@ export function writeConsoleSize(key, size, storage = globalThis.localStorage) {
   }
 }
 
-/** The caret, and the backtick: shut it, or put it back at half. A full overlay
- *  shuts — the way out of covering the work is to stop covering it. */
-export function toggledConsoleSize(size) {
-  return consoleSize(size) === "collapsed" ? "half" : "collapsed";
+/** The label, and the backtick: shut it, or put it back at the size it was last
+ *  open at. A full overlay shuts — the way out of covering the work is to stop
+ *  covering it — and a shut console is no size to reopen at, so a memory of one
+ *  reads as half. */
+export function toggledConsoleSize(size, openSize = "half") {
+  if (consoleSize(size) !== "collapsed") return "collapsed";
+  const opened = consoleSize(openSize);
+  return opened === "collapsed" ? "half" : opened;
 }
 
 /** The grow control: bigger, until there is no bigger, and then back. */

@@ -285,8 +285,8 @@ impl SurfaceLedger {
             "task_started" => {
                 let started = SurfaceWorkflow {
                     id: task_id.to_string(),
-                    name: read_text(event, "workflow_name").unwrap_or_default(),
-                    description: read_text(event, "description"),
+                    name: bounded_text(event, "workflow_name").unwrap_or_default(),
+                    description: bounded_text(event, "description"),
                     state: Some(RUNNING.to_string()),
                     phases: Vec::new(),
                 };
@@ -580,7 +580,7 @@ fn read_todo_list(todos: &[Value]) -> Vec<SurfaceChecklistItem> {
 fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> SurfaceAgent {
     SurfaceAgent {
         id: task_id.to_string(),
-        label: read_text(event, "description").unwrap_or_default(),
+        label: bounded_text(event, "description").unwrap_or_default(),
         state: Some(RUNNING.to_string()),
         spawning_call_id: read_text(event, "tool_use_id"),
         ..held.clone()
@@ -590,7 +590,7 @@ fn started_subagent(held: &SurfaceAgent, task_id: &str, event: &Value) -> Surfac
 fn progressed_subagent(held: &SurfaceAgent, event: &Value) -> SurfaceAgent {
     let usage = &event["usage"];
     SurfaceAgent {
-        last_tool: read_text(event, "last_tool_name")
+        last_tool: bounded_text(event, "last_tool_name")
             .map(|name| SurfaceTool {
                 name,
                 summary: bounded_text(event, "description"),
@@ -679,7 +679,7 @@ fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
             (
                 entry["index"].as_u64().unwrap_or(phase_ordinal as u64),
                 SurfacePhase {
-                    title: read_text(entry, "title").unwrap_or_default(),
+                    title: bounded_text(entry, "title").unwrap_or_default(),
                     agents: Vec::new(),
                 },
             )
@@ -692,7 +692,7 @@ fn read_workflow_phases(task_id: &str, entries: &[Value]) -> Vec<SurfacePhase> {
         .filter(|(_, entry)| is_progress_entry(entry, "workflow_agent"))
     {
         let phase_index = entry["phaseIndex"].as_u64();
-        let phase_title = read_text(entry, "phaseTitle");
+        let phase_title = bounded_text(entry, "phaseTitle");
         let landing = phase_index
             .and_then(|wanted| phases.iter().position(|(index, _)| *index == wanted))
             .or_else(|| {
@@ -724,8 +724,8 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
     let started_at = entry["startedAt"].as_u64();
     SurfaceAgent {
         id: read_text(entry, "agentId").unwrap_or_else(|| format!("{task_id}:{index}")),
-        label: read_text(entry, "label").unwrap_or_default(),
-        model: read_text(entry, "model"),
+        label: bounded_text(entry, "label").unwrap_or_default(),
+        model: bounded_text(entry, "model"),
         state: entry["state"]
             .as_str()
             .and_then(|token| wire_agent_state(token, started_at.is_some()))
@@ -734,12 +734,12 @@ fn read_workflow_agent(task_id: &str, position: u64, entry: &Value) -> SurfaceAg
         duration_ms: entry["durationMs"].as_u64(),
         tokens: entry["tokens"].as_u64(),
         tool_calls: entry["toolCalls"].as_u64(),
-        last_tool: read_text(entry, "lastToolName").map(|name| SurfaceTool {
+        last_tool: bounded_text(entry, "lastToolName").map(|name| SurfaceTool {
             name,
-            summary: read_text(entry, "lastToolSummary"),
+            summary: bounded_text(entry, "lastToolSummary"),
         }),
-        result: read_text(entry, "resultPreview"),
-        error: read_text(entry, "error"),
+        result: bounded_text(entry, "resultPreview"),
+        error: bounded_text(entry, "error"),
         attempt: entry["attempt"].as_u64().map(|attempt| attempt as u32),
         spawning_call_id: None,
     }
@@ -1167,6 +1167,79 @@ mod tests {
                 ),
             })
         );
+    }
+
+    #[test]
+    fn every_free_text_field_a_workflow_carries_reaches_the_snapshot_bounded() {
+        let mut ledger = ledger_through_the_final_progress_array();
+        let sprawl = "x".repeat(4_000);
+        let mut sprawling = fixture_line(WORKFLOW_FIXTURE, 63);
+        for entry in sprawling["workflow_progress"]
+            .as_array_mut()
+            .expect("the final progress line carries an array")
+        {
+            for field in [
+                "title",
+                "label",
+                "model",
+                "lastToolSummary",
+                "resultPreview",
+            ] {
+                if !entry[field].is_null() {
+                    entry[field] = json!(sprawl);
+                }
+            }
+            if entry["type"] == json!("workflow_agent") {
+                entry["error"] = json!(sprawl);
+            }
+        }
+
+        assert!(feed(&mut ledger, &sprawling));
+
+        for text in every_free_text_in(&written(&ledger)) {
+            assert!(
+                text.chars().count() <= TOOL_SUMMARY_LIMIT + 1,
+                "{text} is unbounded"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sprawling_workflow_name_and_subagent_label_reach_the_snapshot_bounded() {
+        let sprawl = "x".repeat(4_000);
+        let mut ledger = SurfaceLedger::default();
+        let mut started_workflow = fixture_line(WORKFLOW_FIXTURE, 37);
+        started_workflow["workflow_name"] = json!(sprawl);
+        started_workflow["description"] = json!(sprawl);
+        let mut started_subagent = fixture_line(SUBAGENT_FIXTURE, 11);
+        started_subagent["description"] = json!(sprawl);
+
+        assert!(feed(&mut ledger, &started_workflow));
+        assert!(feed(&mut ledger, &started_subagent));
+
+        for text in every_free_text_in(&written(&ledger)) {
+            assert!(
+                text.chars().count() <= TOOL_SUMMARY_LIMIT + 1,
+                "{text} is unbounded"
+            );
+        }
+    }
+
+    fn every_free_text_in(written: &str) -> Vec<String> {
+        fn walk(value: &Value, held: &mut Vec<String>) {
+            match value {
+                Value::String(text) => held.push(text.clone()),
+                Value::Array(entries) => entries.iter().for_each(|entry| walk(entry, held)),
+                Value::Object(fields) => fields.values().for_each(|field| walk(field, held)),
+                _ => {}
+            }
+        }
+        let mut held = Vec::new();
+        walk(
+            &serde_json::from_str::<Value>(written).expect("the snapshot is json"),
+            &mut held,
+        );
+        held
     }
 
     #[test]

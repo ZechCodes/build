@@ -42,9 +42,12 @@ changes later, and the wire fields the SPA needs. Spec:
 - `Project.isolation: Option<Isolation>`, persisted per project entry as
   `"isolation"` only when `Some`; loaded with the project.
 - `fn resolved_isolation(&self, project_id: &str) -> (Isolation, Option<String>)`
-  returning the isolation to create with and, when it downgraded a `Cow` choice,
-  the probe's reason. This is the one resolver; no other code reads
-  `self.isolation` or `project.isolation` to make a decision.
+  puts `project.isolation.unwrap_or(self.isolation)` to
+  `availability.lock_reason(requested)`: `None` keeps the request, `Some(reason)`
+  answers `(Isolation::default(), Some(reason))`. This is the one resolver; no
+  other code reads `self.isolation` or `project.isolation` to make a decision,
+  and it names no variant — which isolation a volume can lock is
+  `IsolationAvailability`'s fact.
 
 ### 2. Creation sites (§5.3)
 
@@ -59,10 +62,10 @@ worktree) and `eprintln!` the same line.
 - `settings.get`: add `"isolation"` and `"isolation_available"` (first registered
   project's `availability()`; none → `{"cow": false, "reason": "no project registered yet"}`).
 - `settings.set`: accept `"isolation"` through one private `accept_isolation`
-  (wire-word parse, unknown refused in the `default_harness` refusal shape,
-  `"cow"` refused when the given availability is `Err` with
+  (wire-word parse, unknown refused in the `default_harness` refusal shape, then
+  `availability.lock_reason(parsed).map_or(Ok(()), refuse)` with the refusal
   `"copy-on-write isolation is unavailable: <reason>; locked to worktrees"`) that
-  `project.set_isolation` shares. Keep the "nothing to set" refusal accurate (add
+  `project.set_isolation` shares. It names no variant either. Keep the "nothing to set" refusal accurate (add
   the field to its condition). With no project registered, `settings.get` answers
   `isolation_available` as `{"cow": false, "reason": "no project registered yet"}`;
   that sentence lives in `app.rs`, not in the probe.

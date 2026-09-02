@@ -43,9 +43,11 @@ today.
 Exactly §1.1, §1.2, §1.3 and §2 of the spec: `Isolation` (with `wire`,
 `from_wire`, `ALL`, `of`), `IsolationAvailability` (constructor `of`, hand-written
 `Serialize`; this stage its `cow` is always `Err("copy-on-write isolation is not
-available in this build")`), the `IsolationBackend` trait with its eight
-primitives, and `WorktreeError` moved here from `worktree.rs` (re-exported there)
-with the new `NotABuildCheckout(PathBuf)` variant. Register the module in `lib.rs`.
+available in this build")`, plus `lock_reason(isolation) -> Option<&str>`: the
+one owner of which isolation a volume can lock), the `IsolationBackend` trait
+with its nine primitives, and `WorktreeError` moved here from `worktree.rs`
+(re-exported there) with the new `NotABuildCheckout(PathBuf)` variant. Register
+the module in `lib.rs`.
 
 `Isolation::of` is two `stat`s: `.git` file → `Worktree`; `.git` directory holding
 the marker → `Cow`; else `None`. The marker's owner lives here now (spec §4.6):
@@ -71,6 +73,8 @@ Move, do not rewrite. Map today's code onto the primitives per spec §4.2:
   `describe_checkouts`.
 - `prune(project)`: `git worktree prune`, returning its failure like every other
   primitive; the façade decides to log.
+- `holds_record(project, name)`: `repo.find_worktree(name).is_ok()` — the registry
+  lookup `name_taken` and the collision loop make today, now behind the trait.
 
 ### 3. `bridge/src/worktree.rs` — the façade
 
@@ -82,8 +86,14 @@ spec **for one backend**: a private `fn backend(&self, isolation: Isolation) ->
 in this build"))` from every entry point (stage 3 replaces that arm). A private
 `fn backend_of(&self, path) -> Result<&dyn IsolationBackend, WorktreeError>` wraps
 `Isolation::of`; a path that is `None` is `WorktreeError::NotABuildCheckout(path)`.
-These two selectors are the entire dispatch surface: no other `match` on
-`Isolation` and no direct reach for a backend field anywhere in the façade.
+These two selectors are the whole of keyed dispatch. Three primitives have
+nothing to key on and each owns one walk over `Isolation::ALL` that no caller
+repeats: a private `record_held(name) -> Result<bool, WorktreeError>` walks
+`holds_record` (`name_taken` and `create_on_branch`'s collision loop both ask it,
+so `name_taken` becomes fallible), `remove_checkout(path, name)` walks every
+backend's `remove` (absence is success for each, so present and gone are one
+path), and `prune` walks `prune`. No other `match` on `Isolation` and no direct
+reach for a backend field anywhere in the façade.
 
 Public surface after this stage (signatures are binding):
 
@@ -136,8 +146,18 @@ Rules from spec §3 that must hold now:
 Split `parse_worktree_block` so the summary is computed by
 `describe_checkout(project, path, base_branch, now) -> Option<ExternalWorktree>`
 from the checkout alone. Add `pub isolation: Isolation` to `ExternalWorktree`
-(`Isolation::of(path).unwrap_or_default()`) and emit `"isolation"` in
-`external_worktrees_json` (`app.rs`). The SPA ignores unknown fields.
+from `Isolation::of(path)?` (a path that is not a Build checkout is described by
+nobody) and emit `"isolation"` in `external_worktrees_json` (`app.rs`). The SPA
+ignores unknown fields.
+
+"From the checkout alone" means `ExternalWorktree.name` becomes the checkout's
+directory basename in both isolations, and `resolve_worktree_name` (the walk of
+git's registry at `worktree.rs:901`) is deleted. This is the one behavior change
+this stage carries (spec §0.6, §4.1): for every checkout Build makes the two names
+are already equal, and `git worktree add <dir>` names a hand-made one after its
+directory; where a directory was renamed after registration, `remove` finds no
+record (success) and `prune` clears the stale one. Add a test for exactly that
+renamed case.
 
 ### 5. Orchestrator
 

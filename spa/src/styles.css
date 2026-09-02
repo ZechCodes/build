@@ -1082,6 +1082,8 @@ body.offline .live-claim::after { content:"last known state"; font-size:12px; co
 .thread-activity-outcome.blocked { color:var(--red); opacity:1; }
 .thread-activity[open] .thread-activity-preview { display:none; }
 .thread-activity .thread-event-detail { margin-top:2px; }
+.thread-activity-children { --activity-row:26px; margin-top:4px; padding-left:10px;
+  border-left:1px solid var(--line); max-height:calc(var(--activity-row) * 8); overflow-y:auto; }
 /* A whole run of activity — everything between two things somebody said — as
    one line: how many, and the newest one's own words, with no label in front of
    them. The quietest row on the timeline, because a run of work asks the reader

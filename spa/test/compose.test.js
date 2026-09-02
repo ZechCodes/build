@@ -20,19 +20,7 @@ import {
   saveCaptureQueue,
   withoutQueued,
 } from "../src/core/compose.js";
-
-/** A localStorage stand-in, including the one that refuses to keep anything. */
-function memoryStorage(seed = {}, { readonly = false } = {}) {
-  const values = { ...seed };
-  return {
-    getItem: (key) => (key in values ? values[key] : null),
-    setItem: (key, value) => {
-      if (readonly) throw new Error("private mode");
-      values[key] = value;
-    },
-    values,
-  };
-}
+import { memoryStorage, writeRefusingStorage } from "./memoryStorage.js";
 
 const capture = (over = {}) => ({
   id: "capture-1",
@@ -49,7 +37,7 @@ describe("the capture queue", () => {
     const storage = memoryStorage();
     const queue = [queuedCapture("ship the thing", { id: "local-1", createdAt: "2026-08-14T10:00:00Z" })];
     saveCaptureQueue(queue, storage);
-    expect(JSON.parse(storage.values[CAPTURE_QUEUE_KEY])).toEqual([
+    expect(JSON.parse(storage.entries.get(CAPTURE_QUEUE_KEY))).toEqual([
       { id: "local-1", text: "ship the thing", createdAt: "2026-08-14T10:00:00Z" },
     ]);
     expect(loadCaptureQueue(storage)).toEqual(queue);
@@ -62,7 +50,7 @@ describe("the capture queue", () => {
   });
 
   it("keeps working when the device refuses to store the queue", () => {
-    const readonly = memoryStorage({}, { readonly: true });
+    const readonly = writeRefusingStorage();
     expect(() => saveCaptureQueue([queuedCapture("x", { id: "l1", createdAt: "now" })], readonly)).not.toThrow();
   });
 

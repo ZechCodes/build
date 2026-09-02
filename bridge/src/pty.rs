@@ -1259,6 +1259,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_pty_session_offers_no_surfaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let capture = dir.path().join("stdin.txt");
+        let session: Box<dyn AgentSession> =
+            Box::new(PtySession::spawn(&stdin_capture_spec(&capture), None, small_pty()).unwrap());
+
+        assert!(session.surfaces().is_none());
+        assert!(session.surfaces_changed().is_none());
+        session.end();
+    }
+
+    #[tokio::test]
     async fn a_pty_session_answers_as_an_agent_session_that_has_a_terminal() {
         // The capability question has one answer, asked in one place: a CLI
         // wrapper is opaque, so it offers the escape hatch. Reached through the

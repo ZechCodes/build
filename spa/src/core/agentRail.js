@@ -66,6 +66,7 @@ import {
   MUTATION_THREAD_PAGE,
   createThreadCache,
   paintThreadKeepingPlace,
+  revealThreadSequence,
   threadHtml,
   wireThreadAttachments,
   wireThreadOptions,
@@ -75,6 +76,7 @@ import {
   wireThreadRevisionLinks,
   writeThreadKeepingComposer,
 } from "./thread.js";
+import { mountAgentSurfaces } from "./agentSurfaces.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
 
@@ -91,6 +93,8 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
+const RAIL_SURFACES_ID = "rail-surfaces";
+const AGENT_NOT_YET_BORN = "ghost";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
 // from its id, so without a salt every agent would move exactly the same way on
@@ -375,6 +379,7 @@ export function mountAgentRail(host, context) {
   // the row. Null whenever the panel is not showing the conversation.
   let composerControl = null;
   let composerModelMenu = null;
+  let surfacesBlock = null;
 
   const agentIdOf = (agent) => agent.id;
 
@@ -396,9 +401,9 @@ export function mountAgentRail(host, context) {
     else chosenAgent.delete(key);
     if (!isProvisionalKey(selectedId)) selection.set(selectedId);
   };
-  const draftKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
-  const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
-  const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
+  const conversationKey = () => `${entity.entityId || key}:${selectedId || AGENT_NOT_YET_BORN}`;
+  const draftOf = () => drafts.get(conversationKey()) || { body: "", attachments: [] };
+  const writeDraft = (next) => drafts.set(conversationKey(), { ...draftOf(), ...next });
 
   // ---- the agent that does not exist yet -------------------------------------
 
@@ -605,7 +610,7 @@ export function mountAgentRail(host, context) {
 
   const shownPanelMode = () => (agentHasTerminal(agentInFocus()) ? mode : "chat");
 
-  const wantedPanelBody = () => `${shownPanelMode()}:${addingAgent ? "new" : selectedId || "ghost"}`;
+  const wantedPanelBody = () => `${shownPanelMode()}:${addingAgent ? "new" : selectedId || AGENT_NOT_YET_BORN}`;
 
   const adoptPanelBody = () => {
     const panel = host.querySelector("#rail-panel");
@@ -639,6 +644,7 @@ export function mountAgentRail(host, context) {
     const wantedBody = wantedPanelBody();
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
+      disposeSurfaces();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat" ? composerRowHtml() : ""}`;
@@ -803,6 +809,7 @@ export function mountAgentRail(host, context) {
     if (!visibleAgents().length || addingAgent) {
       paintNewAgent(body);
       syncComposer();
+      syncSurfaces();
       return;
     }
     const thread = threadFor();
@@ -822,6 +829,7 @@ export function mountAgentRail(host, context) {
       if (body.scrollTop <= OLDER_ITEMS_TRIGGER_PX) readOlderItems();
     };
     syncComposer();
+    syncSurfaces();
     reportRead(body);
   };
 
@@ -836,6 +844,7 @@ export function mountAgentRail(host, context) {
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
       <div class="rail-status" id="rail-status" hidden></div>
+      <div class="rail-surfaces" id="${RAIL_SURFACES_ID}"></div>
       ${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
@@ -940,7 +949,37 @@ export function mountAgentRail(host, context) {
       onError: (error) => notifyError("Message failed", error.message),
     });
     composerModelMenu = mountComposerModelMenu(panel, { ids: COMPOSER_IDS, onChoose: chooseModel });
+    mountSurfaces(panel);
     syncComposer();
+    syncSurfaces();
+  };
+
+  const mountSurfaces = (panel) => {
+    const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
+    if (!region) return;
+    surfacesBlock = mountAgentSurfaces(region, {
+      key: conversationKey(),
+      onSendMessage: (message) => send(message, []),
+      onOpenThreadItem: (sequence) => {
+        if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+        notifyError(
+          "That call is not in the loaded conversation",
+          "Scroll back to load older items, then press the row again.",
+        );
+      },
+    });
+  };
+
+  const disposeSurfaces = () => {
+    if (!surfacesBlock) return;
+    surfacesBlock.dispose();
+    surfacesBlock = null;
+  };
+
+  const syncSurfaces = () => {
+    if (!surfacesBlock) return;
+    const agent = agentInFocus();
+    surfacesBlock.set((agent && agent.surfaces) || null);
   };
 
   /** A reference in the conversation goes where it points, as far as the two
@@ -1389,6 +1428,7 @@ export function mountAgentRail(host, context) {
       unsubscribePending();
       unsubscribeFeed();
       disposeTui();
+      disposeSurfaces();
       releaseFaces();
       host.innerHTML = "";
     },

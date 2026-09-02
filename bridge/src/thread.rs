@@ -849,6 +849,8 @@ pub struct ThreadEvent {
     pub revision_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<ThreadLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_sequence: Option<u64>,
     /// The agent's structured handoff, on the `Done` event that reports it.
     /// Only a completion carries one, and only when the agent wrote one — so
     /// every other event, and every record written before reports existed,
@@ -859,6 +861,16 @@ pub struct ThreadEvent {
     /// [`ThreadMessage::metadata`].
     #[serde(default, skip_serializing_if = "ItemMetadata::is_empty")]
     pub metadata: ItemMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThreadEventDraft {
+    pub event: ThreadEventKind,
+    pub summary: Option<String>,
+    pub session_id: Option<String>,
+    pub revision_id: Option<String>,
+    pub links: Vec<ThreadLink>,
+    pub parent_sequence: Option<u64>,
 }
 
 /// How a tool call ended, on the row the call minted.
@@ -1872,6 +1884,28 @@ impl Thread {
         links: Vec<ThreadLink>,
         now: impl Into<String>,
     ) -> u64 {
+        self.push_drafted_event(
+            ThreadEventDraft {
+                event,
+                summary,
+                session_id,
+                revision_id,
+                links,
+                parent_sequence: None,
+            },
+            now,
+        )
+    }
+
+    pub fn push_drafted_event(&mut self, draft: ThreadEventDraft, now: impl Into<String>) -> u64 {
+        let ThreadEventDraft {
+            event,
+            summary,
+            session_id,
+            revision_id,
+            links,
+            parent_sequence,
+        } = draft;
         let metadata = ItemMetadata::derive(
             summary.as_deref().unwrap_or_default(),
             &links,
@@ -1890,6 +1924,7 @@ impl Thread {
             session_id,
             revision_id,
             links,
+            parent_sequence,
             completion_report: None,
             metadata,
         }));

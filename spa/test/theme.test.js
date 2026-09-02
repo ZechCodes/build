@@ -10,43 +10,28 @@ import {
   resolveTheme,
   themeControlHtml,
 } from "../src/core/theme.js";
-
-const memory = (seed = {}) => {
-  const map = new Map(Object.entries(seed));
-  return {
-    getItem: (k) => (map.has(k) ? map.get(k) : null),
-    setItem: (k, v) => map.set(k, v),
-    removeItem: (k) => map.delete(k),
-  };
-};
+import { memoryStorage, refusingStorage } from "./memoryStorage.js";
 
 describe("loadThemePreference", () => {
   it("follows the OS until the user says otherwise", () => {
-    expect(loadThemePreference(memory())).toBe("system");
+    expect(loadThemePreference(memoryStorage())).toBe("system");
   });
 
   it("round-trips each choice", () => {
     for (const choice of THEME_CHOICES) {
-      const storage = memory();
+      const storage = memoryStorage();
       saveThemePreference(choice, storage);
       expect(loadThemePreference(storage)).toBe(choice);
     }
   });
 
   it("reads an unknown or corrupt value as 'system'", () => {
-    expect(loadThemePreference(memory({ [THEME_KEY]: "neon" }))).toBe("system");
-    expect(loadThemePreference(memory({ [THEME_KEY]: "" }))).toBe("system");
+    expect(loadThemePreference(memoryStorage({ [THEME_KEY]: "neon" }))).toBe("system");
+    expect(loadThemePreference(memoryStorage({ [THEME_KEY]: "" }))).toBe("system");
   });
 
   it("survives a storage that throws (private mode)", () => {
-    const hostile = {
-      getItem() {
-        throw new Error("denied");
-      },
-      setItem() {
-        throw new Error("denied");
-      },
-    };
+    const hostile = refusingStorage();
     expect(loadThemePreference(hostile)).toBe("system");
     expect(() => saveThemePreference("dark", hostile)).not.toThrow();
   });
@@ -54,7 +39,7 @@ describe("loadThemePreference", () => {
 
 describe("saveThemePreference", () => {
   it("stores an unknown choice as 'system' rather than a value nothing can read", () => {
-    const storage = memory();
+    const storage = memoryStorage();
     expect(saveThemePreference("chartreuse", storage)).toBe("system");
     expect(storage.getItem(THEME_KEY)).toBe("system");
   });

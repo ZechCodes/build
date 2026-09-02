@@ -13,6 +13,7 @@ import {
   sendControlHtml,
 } from "./composer.js";
 import { mountSplitMenu } from "./splitButton.js";
+import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
 
 const EVENT_META = {
@@ -783,9 +784,9 @@ function eventLabel(meta, agentLabel) {
 /// doesn't — the agent was told, and the agent calling the human is what a
 /// blocker is for.
 const TOOL_OUTCOME_MARKS = {
-  ok: { glyph: "✓", label: "The tool answered" },
-  error: { glyph: "✕", label: "The tool reported an error", tone: "blocked" },
-  unanswered: { glyph: "⊘", label: "No answer arrived" },
+  ok: { mark: "ok", label: "The tool answered" },
+  error: { mark: "error", label: "The tool reported an error" },
+  unanswered: { mark: "unanswered", label: "No answer arrived" },
 };
 
 /// The mark, or nothing at all.
@@ -796,10 +797,9 @@ const TOOL_OUTCOME_MARKS = {
 /// carries: the additive wire read in the client's direction, where the safe
 /// reading of a token from a newer daemon is the one that claims nothing.
 function toolOutcomeHtml(outcome) {
-  const mark = TOOL_OUTCOME_MARKS[outcome];
-  if (!mark) return "";
-  return `<span class="thread-activity-outcome ${mark.tone || ""}" data-outcome="${esc(outcome)}"
-    role="img" aria-label="${esc(mark.label)}">${mark.glyph}</span>`;
+  const entry = TOOL_OUTCOME_MARKS[outcome];
+  if (!entry) return "";
+  return outcomeMarkHtml(entry.mark, entry.label);
 }
 
 /// Activity, folded.
@@ -824,19 +824,24 @@ function toolOutcomeHtml(outcome) {
 /// IS its content — the same line the collapsed run shows, through the same
 /// `activityMeat` — with the kind on the icon for a reader who cannot see it,
 /// and the mark riding the content it is a fact about.
-function activityHtml(event, meta, agentLabel) {
+function activityHtml(event, meta, agentLabel, foldedChildrenHtml = "") {
   const summary = String(event.summary || "").trim();
+  const sequence = sequenceAttribute(event);
   const head = `<span class="thread-event-icon" role="img" aria-label="${esc(eventLabel(meta, agentLabel))}">${esc(meta.icon)}</span>
     <span class="thread-activity-preview">${esc(activityMeat(event, meta, agentLabel))}</span>
     ${toolOutcomeHtml(event.outcome)}
     ${timeHtml(event.created_at)}`;
   // renderMarkdown escapes all input before adding its fixed safe tag set.
-  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}`;
-  if (!body) return `<div class="thread-event thread-activity">${head}</div>`;
-  return `<details class="thread-event thread-activity">
+  const body = `${summary ? `<div class="thread-event-detail">${/* nosemgrep: javascript.express.security.injection.raw-html-format.raw-html-format */ renderMarkdown(summary)}</div>` : ""}${linksHtml(event.links)}${foldedChildrenHtml}`;
+  if (!body) return `<div class="thread-event thread-activity"${sequence}>${head}</div>`;
+  return `<details class="thread-event thread-activity"${sequence}>
     <summary class="thread-activity-head">${head}</summary>
     ${body}
   </details>`;
+}
+
+function sequenceAttribute(event) {
+  return Number.isFinite(event.sequence) ? ` data-sequence="${esc(event.sequence)}"` : "";
 }
 
 /// The activity meta for an event kind, or nothing for a kind that is not
@@ -916,9 +921,9 @@ function foldActivityRuns(entries) {
   return rows;
 }
 
-function eventHtml(event, agentLabel = "Agent") {
+function eventHtml(event, agentLabel = "Agent", foldedChildrenHtml = "") {
   const meta = EVENT_META[event.event] || { label: String(event.event || "event").replaceAll("_", " "), icon: "•" };
-  if (meta.activity) return activityHtml(event, meta, agentLabel);
+  if (meta.activity) return activityHtml(event, meta, agentLabel, foldedChildrenHtml);
   const label = eventLabel(meta, agentLabel);
   const detail = event.revision_id
     ? `<button class="thread-revision-link" data-revision="${esc(event.revision_id)}">${esc(event.revision_id)}</button>`
@@ -927,6 +932,46 @@ function eventHtml(event, agentLabel = "Agent") {
     <span class="thread-event-icon" aria-hidden="true">${esc(meta.icon)}</span>
     <div class="thread-event-content"><div><strong>${esc(label)}</strong> ${timeHtml(event.created_at)}</div>${detail ? `<div class="thread-event-detail">${detail}</div>` : ""}${completionReportHtml(event.completion_report)}${linksHtml(event.links)}</div>
   </div>`;
+}
+
+function threadFolding(items, agentLabel) {
+  const eventItems = items.filter((item) => item.type !== "message");
+  const sequenceOf = (item) => (item.data || {}).sequence;
+  const parentSequenceOf = (item) => (item.data || {}).parent_sequence;
+  const activitySequences = new Set(
+    eventItems
+      .filter((item) => activityMetaOf(item.data || {}))
+      .map(sequenceOf)
+      .filter((sequence) => Number.isFinite(sequence)),
+  );
+  const foldingChildren = eventItems.filter((item) => activitySequences.has(parentSequenceOf(item)));
+  const foldedItems = new Set(foldingChildren);
+  const childrenByParent = new Map();
+  for (const item of foldingChildren) {
+    const parent = parentSequenceOf(item);
+    childrenByParent.set(parent, [...(childrenByParent.get(parent) || []), item]);
+  }
+  const foldedChildrenHtmlOf = (sequence, alreadyDrawn = new Set()) => {
+    const children = childrenByParent.get(sequence);
+    if (!children || alreadyDrawn.has(sequence)) return "";
+    const drawn = new Set([...alreadyDrawn, sequence]);
+    return `<div class="thread-activity-children">${children
+      .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn)))
+      .join("")}</div>`;
+  };
+  return { foldedItems, foldedChildrenHtmlOf };
+}
+
+export function revealThreadSequence(scroller, sequence) {
+  const wanted = Number(sequence);
+  if (!scroller || !Number.isFinite(wanted)) return false;
+  const row = scroller.querySelector(`[data-sequence="${wanted}"]`);
+  if (!row) return false;
+  for (let node = row; node && node !== scroller; node = node.parentElement) {
+    if (node.tagName === "DETAILS") node.open = true;
+  }
+  if (row.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  return true;
 }
 
 /// The timeline: what was said, and what happened.
@@ -942,15 +987,17 @@ function eventHtml(event, agentLabel = "Agent") {
 /// many items and one row, and the count on the conversation's title counts
 /// what was said and done rather than how it fell into runs.
 function timelineHtml(items, agentLabel, threadId) {
+  const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
+  const topLevelItems = items.filter((item) => !foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and
   // only that one. An event between it and now changes nothing — a commit
   // landing is not somebody speaking.
-  const lastSpoken = items.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
-  const entries = items.flatMap((item, index) => {
+  const lastSpoken = topLevelItems.reduce((last, item, index) => (item.type === "message" ? index : last), -1);
+  const entries = topLevelItems.flatMap((item, index) => {
     if (item.type !== "message") {
       const event = item.data || {};
       const meta = activityMetaOf(event);
-      const html = eventHtml(event, agentLabel);
+      const html = eventHtml(event, agentLabel, foldedChildrenHtmlOf(event.sequence));
       if (!meta) return [{ html }];
       return [{
         html,

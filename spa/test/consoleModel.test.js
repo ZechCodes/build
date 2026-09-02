@@ -15,15 +15,7 @@ import {
   toggledConsoleSize,
   writeConsoleSize,
 } from "../src/core/consoleModel.js";
-
-const fakeStorage = () => {
-  const values = new Map();
-  return {
-    getItem: (key) => (values.has(key) ? values.get(key) : null),
-    setItem: (key, value) => values.set(key, String(value)),
-    values,
-  };
-};
+import { memoryStorage, refusingStorage } from "./memoryStorage.js";
 
 describe("the three sizes", () => {
   it("is a bar, a half and a full overlay — and nothing else", () => {
@@ -57,7 +49,7 @@ describe("the size a work item is remembered at", () => {
   });
 
   it("round-trips through the device's storage, shut until something is chosen", () => {
-    const storage = fakeStorage();
+    const storage = memoryStorage();
     const key = consoleKey({ kind: "branch", projectId: "p1", branch: "main" });
     expect(readConsoleSize(key, storage)).toBe("collapsed");
     writeConsoleSize(key, "half", storage);
@@ -67,14 +59,7 @@ describe("the size a work item is remembered at", () => {
   });
 
   it("survives a storage that refuses to answer", () => {
-    const broken = {
-      getItem() {
-        throw new Error("private mode");
-      },
-      setItem() {
-        throw new Error("private mode");
-      },
-    };
+    const broken = refusingStorage();
     expect(readConsoleSize("k", broken)).toBe("collapsed");
     expect(() => writeConsoleSize("k", "half", broken)).not.toThrow();
   });

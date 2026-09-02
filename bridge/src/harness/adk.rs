@@ -27,15 +27,18 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 use crate::harness::claude::ClaudeHarness;
+use crate::harness::shell_tail::ShellTail;
+use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
-    AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext, HarnessError,
-    SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
+    ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
+    HarnessError, SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -179,7 +182,7 @@ const BUILD_MCP_TOOL_PREFIX: &str = "mcp__build__";
 /// belongs in a conversation row whole. Reasoning and narration are NOT capped
 /// here — those are the agent's own words, and the conversation carries what an
 /// agent says whole.
-const TOOL_SUMMARY_LIMIT: usize = 240;
+pub(crate) const TOOL_SUMMARY_LIMIT: usize = 240;
 
 /// How large the activity backlog may grow before a slow subscriber loses the
 /// oldest events. Matches the byte pump's window: a turn that calls forty tools
@@ -250,6 +253,7 @@ struct ProtocolState {
     /// a human in the order they are minted, and a hash order would shuffle two
     /// tasks ending together from run to run.
     tasks: BTreeMap<String, String>,
+    surfaces: SurfaceLedger,
 }
 
 impl ProtocolState {
@@ -265,6 +269,7 @@ impl ProtocolState {
             reported_error: None,
             last_stderr_line: None,
             tasks: BTreeMap::new(),
+            surfaces: SurfaceLedger::default(),
         }
     }
 
@@ -304,11 +309,21 @@ impl ProtocolState {
 /// can be paired to it — or so it can be closed as unanswered when the turn
 /// ends first. A call that was Build's own is remembered too, so that its answer
 /// stays as silent as the call was.
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum RecordedCall {
-    Minted,
+    Minted {
+        tool: String,
+        parent_call_id: Option<String>,
+    },
     BuildsOwn,
 }
+
+const SURFACE_TASK_SUBTYPES: [&str; 4] = [
+    "task_started",
+    "task_progress",
+    "task_updated",
+    "task_notification",
+];
 
 /// The broadcast side of the activity stream, dropped when the child's stdout
 /// ends so every subscriber observes the close.
@@ -316,7 +331,92 @@ enum RecordedCall {
 /// The close is load-bearing: a no-terminal session's death rites hang off it
 /// exactly the way the byte pump's hang off PTY EOF, so a stream that never
 /// closed would leave a dead agent's tab reading as live.
-type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<AgentActivity>>>>;
+type ActivitySlot = Arc<Mutex<Option<broadcast::Sender<ActivityReport>>>>;
+
+const SHELL_TAIL_INTERVAL: Duration = Duration::from_secs(1);
+
+type ShellPollerSlot = Arc<Mutex<Option<JoinHandle<()>>>>;
+
+#[cfg(test)]
+fn running_shell_outputs(state: &Mutex<ProtocolState>) -> Vec<(String, PathBuf)> {
+    state.lock().unwrap().surfaces.running_shell_outputs()
+}
+
+fn shells_left_to_tail(
+    state: &Mutex<ProtocolState>,
+    activity: &ActivitySlot,
+    shell_poller: &ShellPollerSlot,
+) -> Option<Vec<(String, PathBuf)>> {
+    let session_ended = activity.lock().unwrap().is_none();
+    let held = state.lock().unwrap();
+    let running = held.surfaces.running_shell_outputs();
+    match session_ended || running.is_empty() {
+        true => {
+            *shell_poller.lock().unwrap() = None;
+            None
+        }
+        false => Some(running),
+    }
+}
+
+fn spawn_shell_tail_poller(
+    state: Arc<Mutex<ProtocolState>>,
+    activity: ActivitySlot,
+    revision: SurfaceRevision,
+    shell_poller: ShellPollerSlot,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(SHELL_TAIL_INTERVAL);
+        let Some(running) = shells_left_to_tail(&state, &activity, &shell_poller) else {
+            return;
+        };
+        for (shell_id, output_path) in running {
+            match ShellTail::read(&output_path) {
+                Ok(tailed) => {
+                    let moved = state
+                        .lock()
+                        .unwrap()
+                        .surfaces
+                        .read_shell_tail(&shell_id, tailed);
+                    if moved {
+                        revision.bump();
+                    }
+                }
+                Err(why) => eprintln!("shell tail {shell_id}: {why}"),
+            }
+        }
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reports_minted_by(file_name: &str) -> Vec<ActivityReport> {
+    let (sender, mut heard) = broadcast::channel(1024);
+    let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
+    let mut reader = reader_reporting_into(Arc::clone(&activity));
+    for line in crate::harness::stream_fixtures::fixture_lines(file_name) {
+        reader.read_line(&line);
+    }
+    activity.lock().unwrap().take();
+    reports_already_sent(&mut heard)
+}
+
+#[cfg(test)]
+fn reports_already_sent(heard: &mut broadcast::Receiver<ActivityReport>) -> Vec<ActivityReport> {
+    let mut reported = Vec::new();
+    while let Ok(one) = heard.try_recv() {
+        reported.push(one);
+    }
+    reported
+}
+
+#[cfg(test)]
+fn reader_reporting_into(activity: ActivitySlot) -> ProtocolReader {
+    ProtocolReader::new(
+        Arc::new(Mutex::new(ProtocolState::new())),
+        activity,
+        SurfaceRevision::default(),
+    )
+}
 
 /// A live headless session: a child with piped stdio, one reader per stream, and
 /// everything the protocol has said so far.
@@ -327,6 +427,7 @@ pub struct AdkSession {
     stdin: Mutex<Option<ChildStdin>>,
     state: Arc<Mutex<ProtocolState>>,
     activity: ActivitySlot,
+    revision: SurfaceRevision,
     /// The child's exit code, cached the first time it is observed: the status
     /// can be collected exactly once, and the crash message is written from it
     /// long after.
@@ -349,7 +450,7 @@ impl AdkSession {
     pub fn spawn(
         spec: &HarnessSpec,
         cwd: Option<PathBuf>,
-    ) -> Result<(AdkSession, broadcast::Receiver<AgentActivity>), HarnessError> {
+    ) -> Result<(AdkSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
         command.args(&spec.args);
         for key in &spec.unset {
@@ -370,13 +471,11 @@ impl AdkSession {
         let state = Arc::new(Mutex::new(ProtocolState::new()));
         let (sender, subscribed) = broadcast::channel(ACTIVITY_BACKLOG);
         let activity: ActivitySlot = Arc::new(Mutex::new(Some(sender)));
+        let revision = SurfaceRevision::default();
 
         if let Some(stdout) = child.stdout.take() {
-            let mut reader = ProtocolReader {
-                state: Arc::clone(&state),
-                activity: Arc::clone(&activity),
-                calls: HashMap::new(),
-            };
+            let mut reader =
+                ProtocolReader::new(Arc::clone(&state), Arc::clone(&activity), revision.clone());
             let slot = Arc::clone(&activity);
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
@@ -415,6 +514,7 @@ impl AdkSession {
                 stdin: Mutex::new(stdin),
                 state,
                 activity,
+                revision,
                 exit_code: Mutex::new(None),
             },
             subscribed,
@@ -570,6 +670,14 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().session_id.clone()
     }
 
+    fn surfaces(&self) -> Option<AgentSurfaces> {
+        self.state.lock().unwrap().surfaces.snapshot()
+    }
+
+    fn surfaces_changed(&self) -> Option<watch::Receiver<u64>> {
+        Some(self.revision.subscribe())
+    }
+
     fn active_model(&self) -> Option<String> {
         self.state.lock().unwrap().model.clone()
     }
@@ -643,7 +751,7 @@ impl AgentSession for AdkSession {
     /// Everything this session did, on its way to the conversation. It reports
     /// its own reasoning and tool calls, so this is the stream that stands in
     /// for the terminal it does not have.
-    fn activity(&self) -> Option<broadcast::Receiver<AgentActivity>> {
+    fn activity(&self) -> Option<broadcast::Receiver<ActivityReport>> {
         Some(match self.activity.lock().unwrap().as_ref() {
             Some(sender) => sender.subscribe(),
             None => {
@@ -680,9 +788,25 @@ struct ProtocolReader {
     state: Arc<Mutex<ProtocolState>>,
     activity: ActivitySlot,
     calls: HashMap<String, RecordedCall>,
+    revision: SurfaceRevision,
+    shell_poller: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl ProtocolReader {
+    fn new(
+        state: Arc<Mutex<ProtocolState>>,
+        activity: ActivitySlot,
+        revision: SurfaceRevision,
+    ) -> ProtocolReader {
+        ProtocolReader {
+            state,
+            activity,
+            calls: HashMap::new(),
+            revision,
+            shell_poller: Arc::new(Mutex::new(None)),
+        }
+    }
+
     fn read_line(&mut self, line: &str) {
         self.state.lock().unwrap().last_line = Instant::now();
         let Ok(event) = serde_json::from_str::<Value>(line) else {
@@ -704,14 +828,60 @@ impl ProtocolReader {
     /// The lifecycle line, and the background-task lines that ride the same
     /// subtype. Anything else on `system` is not this session's business.
     fn read_system(&mut self, event: &Value) {
-        match event["subtype"].as_str() {
-            Some("init") => self.read_init(event),
-            Some("background_tasks_changed") => self.read_task_roster(event),
-            Some("task_started") => self.read_task_started(event),
-            Some("task_updated") => self.read_task_updated(event),
-            Some("task_notification") => self.read_task_notification(event),
+        let Some(subtype) = event["subtype"].as_str() else {
+            return;
+        };
+        match subtype {
+            "init" => self.read_init(event),
+            "background_tasks_changed" => self.read_task_roster(event),
+            "task_started" => self.read_task_started(event),
+            "task_updated" => self.read_task_updated(event),
+            "task_notification" => self.read_task_notification(event),
             _ => {}
         }
+        if SURFACE_TASK_SUBTYPES.contains(&subtype) {
+            self.read_surface_task_event(subtype, event);
+        }
+    }
+
+    fn read_surface_task_event(&mut self, subtype: &str, event: &Value) {
+        let moved = self
+            .state
+            .lock()
+            .unwrap()
+            .surfaces
+            .read_task_event(subtype, event);
+        self.note_surfaces_moved(moved);
+    }
+
+    fn bump_revision_when(&self, moved: bool) {
+        if moved {
+            self.revision.bump();
+        }
+    }
+
+    fn note_surfaces_moved(&self, moved: bool) {
+        self.bump_revision_when(moved);
+        if moved {
+            self.ensure_shell_tail_poller();
+        }
+    }
+
+    fn ensure_shell_tail_poller(&self) {
+        let state = self.state.lock().unwrap();
+        if state.surfaces.running_shell_outputs().is_empty() {
+            return;
+        }
+        let mut poller = self.shell_poller.lock().unwrap();
+        if poller.is_some() {
+            return;
+        }
+        *poller = Some(spawn_shell_tail_poller(
+            Arc::clone(&self.state),
+            Arc::clone(&self.activity),
+            self.revision.clone(),
+            Arc::clone(&self.shell_poller),
+        ));
     }
 
     /// `init` is when the child can take a turn, and it carries the session id a
@@ -878,9 +1048,12 @@ impl ProtocolReader {
     /// work, not the agent speaking.
     fn mint_task_updates(&self, summaries: Vec<String>) {
         for summary in summaries {
-            self.emit(AgentActivity::TaskUpdate {
-                summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-            });
+            self.report(
+                AgentActivity::TaskUpdate {
+                    summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
+                },
+                None,
+            );
         }
     }
 
@@ -946,12 +1119,7 @@ impl ProtocolReader {
     /// message carrying text is Build's own turn echoed back, and minting that
     /// would put the human's words in the timeline a second time as narration.
     fn read_message(&mut self, event: &Value, voice: Voice) {
-        // A subagent's own reasoning is folded into the tool call that spawned
-        // it rather than minted beside it: the human reads one tool call, not
-        // two conversations interleaved.
-        if event["parent_tool_use_id"].as_str().is_some() {
-            return;
-        }
+        let parent_call_id = event["parent_tool_use_id"].as_str();
         let Some(blocks) = event["message"]["content"].as_array() else {
             return;
         };
@@ -959,22 +1127,24 @@ impl ProtocolReader {
             match (voice, block["type"].as_str()) {
                 (Voice::Assistant, Some("thinking")) => {
                     if let Some(summary) = spoken(block["thinking"].as_str()) {
-                        self.emit(AgentActivity::Reasoning { summary });
+                        self.report(AgentActivity::Reasoning { summary }, parent_call_id);
                     }
                 }
                 (Voice::Assistant, Some("text")) => {
                     if let Some(summary) = spoken(block["text"].as_str()) {
-                        self.emit(AgentActivity::Narration { summary });
+                        self.report(AgentActivity::Narration { summary }, parent_call_id);
                     }
                 }
-                (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block),
-                (Voice::User, Some("tool_result")) => self.read_tool_result(block),
+                (Voice::Assistant, Some("tool_use")) => self.read_tool_use(block, parent_call_id),
+                (Voice::User, Some("tool_result")) => {
+                    self.read_tool_result(event, block, parent_call_id)
+                }
                 _ => {}
             }
         }
     }
 
-    fn read_tool_use(&mut self, block: &Value) {
+    fn read_tool_use(&mut self, block: &Value, parent_call_id: Option<&str>) {
         let tool = block["name"].as_str().unwrap_or_default().to_string();
         let call_id = block["id"].as_str().unwrap_or_default().to_string();
         if tool.starts_with(BUILD_MCP_TOOL_PREFIX) {
@@ -982,8 +1152,23 @@ impl ProtocolReader {
             return;
         }
         let summary = tool_call_summary(&tool, &block["input"]);
-        self.calls.insert(call_id.clone(), RecordedCall::Minted);
-        self.emit(AgentActivity::ToolUse { call_id, summary });
+        if parent_call_id.is_none() {
+            let moved = self
+                .state
+                .lock()
+                .unwrap()
+                .surfaces
+                .read_tool_call(&tool, block);
+            self.bump_revision_when(moved);
+        }
+        self.calls.insert(
+            call_id.clone(),
+            RecordedCall::Minted {
+                tool,
+                parent_call_id: parent_call_id.map(str::to_string),
+            },
+        );
+        self.report(AgentActivity::ToolUse { call_id, summary }, parent_call_id);
     }
 
     /// One call's answer, reported as the completion of the call it names
@@ -993,53 +1178,82 @@ impl ProtocolReader {
     /// The answer travels alone, without the tool's name in front of it: the row
     /// it lands on is the call, which said what tool this was when it was
     /// minted.
-    fn read_tool_result(&mut self, block: &Value) {
+    fn read_tool_result(&mut self, event: &Value, block: &Value, parent_call_id: Option<&str>) {
         let call_id = block["tool_use_id"]
             .as_str()
             .unwrap_or_default()
             .to_string();
         // Taken, not read: a call is answered once, and a session that runs for
         // hours must not accumulate one entry per tool call it ever made.
-        if self.calls.remove(&call_id) == Some(RecordedCall::BuildsOwn) {
-            return;
+        let answered = self.calls.remove(&call_id);
+        let answered_text = tool_result_text(block);
+        match answered {
+            Some(RecordedCall::BuildsOwn) => return,
+            Some(RecordedCall::Minted {
+                tool,
+                parent_call_id: None,
+            }) => {
+                let moved = self.state.lock().unwrap().surfaces.read_tool_answer(
+                    &tool,
+                    &call_id,
+                    event,
+                    &answered_text,
+                );
+                self.note_surfaces_moved(moved);
+            }
+            Some(RecordedCall::Minted { .. }) | None => {}
         }
         let outcome = match block["is_error"].as_bool().unwrap_or(false) {
             true => ToolOutcome::Error,
             false => ToolOutcome::Ok,
         };
-        self.emit(AgentActivity::ToolResult {
-            call_id,
-            outcome,
-            summary: one_line(&tool_result_text(block), TOOL_SUMMARY_LIMIT),
-        });
-    }
-
-    /// Close every call the turn just ended left open.
-    ///
-    /// A call whose answer never came must not go on claiming to run, so the
-    /// boundary that ended it says so: one `Unanswered` completion per call
-    /// still in the map, and Build's own calls dropped in the silence their
-    /// answers always kept. Draining here is also what leaves the next turn
-    /// reading against an empty map.
-    fn close_open_calls(&mut self) {
-        for (call_id, recorded) in std::mem::take(&mut self.calls) {
-            if recorded == RecordedCall::BuildsOwn {
-                continue;
-            }
-            self.emit(AgentActivity::ToolResult {
+        self.report(
+            AgentActivity::ToolResult {
                 call_id,
-                outcome: ToolOutcome::Unanswered,
-                summary: String::new(),
-            });
-        }
+                outcome,
+                summary: one_line(&answered_text, TOOL_SUMMARY_LIMIT),
+            },
+            parent_call_id,
+        );
     }
 
-    /// Hand one event to whoever is listening. A send with no subscriber, or a
-    /// backlog nobody drained, is not the child's problem: the protocol is read
-    /// at the speed the child speaks it either way.
-    fn emit(&self, activity: AgentActivity) {
+    fn close_open_calls(&mut self) {
+        let mut still_open_under_a_spawned_agent = HashMap::new();
+        for (call_id, recorded) in std::mem::take(&mut self.calls) {
+            match recorded {
+                RecordedCall::BuildsOwn => {}
+                RecordedCall::Minted {
+                    parent_call_id: Some(_),
+                    ..
+                } => {
+                    still_open_under_a_spawned_agent.insert(call_id, recorded);
+                }
+                RecordedCall::Minted { .. } => {
+                    self.report(
+                        AgentActivity::ToolResult {
+                            call_id,
+                            outcome: ToolOutcome::Unanswered,
+                            summary: String::new(),
+                        },
+                        None,
+                    );
+                }
+            }
+        }
+        self.calls = still_open_under_a_spawned_agent;
+        self.state.lock().unwrap().surfaces.close_pending_creates();
+    }
+
+    fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
+        let reported = match parent_call_id {
+            None => ActivityReport::own_work(activity),
+            Some(spawning_call_id) => ActivityReport {
+                activity,
+                parent_call_id: Some(spawning_call_id.to_string()),
+            },
+        };
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
-            let _ = sender.send(activity);
+            let _ = sender.send(reported);
         }
     }
 }
@@ -1119,7 +1333,7 @@ fn tool_call_meat(tool: &str, input: &Value) -> String {
 
 /// What a tool answered. The protocol allows both shapes — a plain string, or
 /// the content blocks a richer tool returns — so both are read.
-fn tool_result_text(block: &Value) -> String {
+pub(crate) fn tool_result_text(block: &Value) -> String {
     match &block["content"] {
         Value::String(text) => text.clone(),
         Value::Array(blocks) => blocks
@@ -1152,7 +1366,7 @@ fn task_description(event: &Value, id: &str) -> String {
 /// turned up; the rest are the shapes their names imply, recognised so a task
 /// ending under one of them is not held open waiting for a roster that, for a
 /// foreground task, never comes.
-fn task_status_is_terminal(status: &str) -> bool {
+pub(crate) fn task_status_is_terminal(status: &str) -> bool {
     matches!(
         status,
         "completed"
@@ -1166,6 +1380,10 @@ fn task_status_is_terminal(status: &str) -> bool {
     )
 }
 
+pub(crate) fn task_status_failed(status: &str) -> bool {
+    matches!(status, "failed" | "error" | "timed_out")
+}
+
 /// The row a task's ending mints: `failed` when the event that ended it said
 /// so, with the error it named, and `finished` otherwise. A task that was
 /// cancelled, killed or stopped did not fail — something ended it, which is not
@@ -1175,7 +1393,7 @@ fn task_status_is_terminal(status: &str) -> bool {
 /// patch, or a `task_notification` itself, which carries its status at the top
 /// level and — as the probes recorded it — no error text at all.
 fn ended_summary(status: &str, description: &str, ending: &Value) -> String {
-    if !matches!(status, "failed" | "error" | "timed_out") {
+    if !task_status_failed(status) {
         return format!("{description} — finished");
     }
     let reported = ending["error"]
@@ -1209,7 +1427,7 @@ fn result_error_text(event: &Value) -> String {
 /// `text` collapsed onto one line and clipped to `limit` characters. Clipped by
 /// characters rather than bytes: tool output is arbitrary UTF-8, and a byte
 /// truncation would split one.
-fn one_line(text: &str, limit: usize) -> String {
+pub(crate) fn one_line(text: &str, limit: usize) -> String {
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= limit {
         return collapsed;
@@ -1533,6 +1751,775 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+    use crate::harness::shell_tail::SHELL_TAIL_LINES;
+    use crate::harness::stream_fixtures::{
+        fixture_line, fixture_lines, hundred_numbered_lines, shell_output_file_holding,
+        FIRST_CREATE_CALL_ID, SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE,
+        SHELL_LAUNCH_CALL_ID, SHELL_LAUNCH_CALL_LINE, SHELL_NOTIFICATION_LINE, SHELL_STARTED_LINE,
+        SHELL_TASK_ID, SUBAGENT_FIXTURE, SUBAGENT_SPAWNING_CALL_ID, WORKFLOW_FIXTURE,
+    };
+    use crate::harness::surfaces::SurfaceWorkflow;
+
+    #[test]
+    fn only_the_three_bad_endings_count_as_a_failure() {
+        for failed in ["failed", "error", "timed_out"] {
+            assert!(task_status_failed(failed), "{failed}");
+            assert!(task_status_is_terminal(failed), "{failed}");
+        }
+        for ended in ["completed", "killed", "stopped", "cancelled", "canceled"] {
+            assert!(!task_status_failed(ended), "{ended}");
+            assert!(task_status_is_terminal(ended), "{ended}");
+        }
+    }
+
+    fn row_kind(reported: &ActivityReport) -> &'static str {
+        match &reported.activity {
+            AgentActivity::Reasoning { .. } => "reasoning",
+            AgentActivity::ToolUse { .. } => "tool_use",
+            AgentActivity::ToolResult { .. } => "tool_result",
+            AgentActivity::Narration { .. } => "narration",
+            AgentActivity::TaskUpdate { .. } => "task_update",
+        }
+    }
+
+    fn kinds_of(rows: &[ActivityReport]) -> Vec<&'static str> {
+        rows.iter().map(row_kind).collect()
+    }
+
+    fn kinds_and_parents_of(rows: &[ActivityReport]) -> Vec<(&'static str, Option<&str>)> {
+        rows.iter()
+            .map(|reported| (row_kind(reported), reported.parent_call_id.as_deref()))
+            .collect()
+    }
+
+    fn task_rows_of(rows: &[ActivityReport]) -> Vec<String> {
+        rows.iter()
+            .filter(|reported| row_kind(reported) == "task_update")
+            .map(|reported| reported.activity.summary().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn the_workflow_fixture_mints_the_rows_it_always_minted() {
+        let rows = reports_minted_by(WORKFLOW_FIXTURE);
+
+        assert_eq!(
+            kinds_of(&rows),
+            vec![
+                "reasoning",
+                "tool_use",
+                "task_update",
+                "tool_result",
+                "reasoning",
+                "narration",
+                "task_update",
+                "task_update",
+                "reasoning",
+                "narration",
+            ]
+        );
+        assert_eq!(task_rows_of(&rows), vec![
+                "Count README.md lines and characters, then summarize — started".to_string(),
+                "Count README.md lines and characters, then summarize — finished".to_string(),
+                "Dynamic workflow \"Count README.md lines and characters, then summarize\" completed"
+                    .to_string(),
+            ]);
+    }
+
+    #[test]
+    fn the_subagent_fixture_folds_the_subagents_own_rows_under_the_call_that_spawned_them() {
+        let rows = reports_minted_by(SUBAGENT_FIXTURE);
+        let spawning_call = Some(SUBAGENT_SPAWNING_CALL_ID);
+
+        assert_eq!(
+            kinds_and_parents_of(&rows),
+            vec![
+                ("reasoning", None),
+                ("tool_use", None),
+                ("task_update", None),
+                ("tool_result", None),
+                ("reasoning", spawning_call),
+                ("reasoning", None),
+                ("narration", None),
+                ("tool_use", spawning_call),
+                ("tool_result", spawning_call),
+                ("reasoning", spawning_call),
+                ("narration", spawning_call),
+                ("task_update", None),
+                ("task_update", None),
+                ("reasoning", None),
+                ("narration", None),
+            ]
+        );
+        assert_eq!(
+            task_rows_of(&rows),
+            vec![
+                "Read README.md and report character count — started".to_string(),
+                "Read README.md and report character count — finished".to_string(),
+                "4".to_string(),
+            ]
+        );
+    }
+
+    const SPAWNED_AGENT_CALL: &str = "toolu_01SpawningCallSynthetic";
+
+    fn a_spawned_agents_todo_write_line() -> String {
+        json!({
+            "type": "assistant",
+            "parent_tool_use_id": SPAWNED_AGENT_CALL,
+            "message": { "content": [{
+                "type": "tool_use",
+                "id": "toolu_01TodoWriteBySpawnedAgent",
+                "name": "TodoWrite",
+                "input": { "todos": [{
+                    "content": "read the file",
+                    "status": "in_progress",
+                    "activeForm": "reading the file",
+                }] },
+            }] },
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn a_spawned_agents_tool_call_never_writes_the_sessions_surfaces() {
+        let (mut reader, mut heard) = reader_and_what_it_reports();
+
+        reader.read_line(&a_spawned_agents_todo_write_line());
+
+        assert!(
+            surfaces_of(&reader).is_none(),
+            "a spawned agent's todos are not the session's checklist: {:?}",
+            surfaces_of(&reader)
+        );
+        assert_eq!(
+            kinds_and_parents_of(&reports_already_sent(&mut heard)),
+            vec![("tool_use", Some(SPAWNED_AGENT_CALL))],
+            "and the row still folds under the call that spawned the agent"
+        );
+    }
+
+    #[test]
+    fn a_spawned_agents_open_call_outlives_the_sessions_turn() {
+        let (mut reader, mut heard) = reader_and_what_it_reports();
+
+        reader.read_line(&a_spawned_agents_todo_write_line());
+        reader.read_line(&json!({ "type": "result", "subtype": "success" }).to_string());
+
+        assert_eq!(
+            kinds_and_parents_of(&reports_already_sent(&mut heard)),
+            vec![("tool_use", Some(SPAWNED_AGENT_CALL))],
+            "the session's turn ending answers none of the spawned agent's calls"
+        );
+    }
+
+    fn reader_and_what_it_reports() -> (ProtocolReader, broadcast::Receiver<ActivityReport>) {
+        let (sender, heard) = broadcast::channel(ACTIVITY_BACKLOG);
+        (
+            reader_reporting_into(Arc::new(Mutex::new(Some(sender)))),
+            heard,
+        )
+    }
+
+    fn reader_over_a_silent_session() -> ProtocolReader {
+        reader_reporting_into(Arc::new(Mutex::new(None)))
+    }
+
+    fn reader_with_a_live_activity_slot() -> ProtocolReader {
+        let (sender, _heard) = broadcast::channel(ACTIVITY_BACKLOG);
+        reader_reporting_into(Arc::new(Mutex::new(Some(sender))))
+    }
+
+    fn read_lines_into(reader: &mut ProtocolReader, lines: &[String]) {
+        for line in lines {
+            reader.read_line(line);
+        }
+    }
+
+    fn fixture_lines_numbered(file_name: &str, line_numbers: &[usize]) -> Vec<String> {
+        let lines = fixture_lines(file_name);
+        line_numbers
+            .iter()
+            .map(|line_number| lines[line_number - 1].clone())
+            .collect()
+    }
+
+    fn reader_over_every_line_of(file_name: &str) -> ProtocolReader {
+        let mut reader = reader_over_a_silent_session();
+        read_lines_into(&mut reader, &fixture_lines(file_name));
+        reader
+    }
+
+    fn reader_over_the_workflow_lines(line_numbers: &[usize]) -> ProtocolReader {
+        let mut reader = reader_over_a_silent_session();
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(WORKFLOW_FIXTURE, line_numbers),
+        );
+        reader
+    }
+
+    const SHARED_WIRE_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_surfaces.json"
+    );
+    const SPAWNING_CALL_SEQUENCE: u64 = 12;
+
+    fn the_wire_every_recorded_stream_builds() -> serde_json::Value {
+        let mut reader = reader_over_a_silent_session();
+        for fixture in [
+            WORKFLOW_FIXTURE,
+            SUBAGENT_FIXTURE,
+            SHELL_AND_CHECKLIST_FIXTURE,
+        ] {
+            read_lines_into(&mut reader, &fixture_lines(fixture));
+        }
+        surfaces_of(&reader)
+            .expect("the recorded streams build a snapshot")
+            .wire_value(&|call_id| {
+                (call_id == SUBAGENT_SPAWNING_CALL_ID).then_some(SPAWNING_CALL_SEQUENCE)
+            })
+    }
+
+    #[test]
+    fn the_shared_wire_fixture_is_what_the_recorded_streams_build() {
+        let checked_in: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(SHARED_WIRE_FIXTURE)
+                .unwrap_or_else(|why| panic!("the shared surfaces fixture reads: {why}")),
+        )
+        .expect("the shared surfaces fixture is JSON");
+
+        assert_eq!(
+            checked_in,
+            the_wire_every_recorded_stream_builds(),
+            "re-record it with `cargo test the_shared_wire_fixture -- --ignored --nocapture`"
+        );
+    }
+
+    #[test]
+    #[ignore = "prints the shared surfaces fixture so it can be re-recorded"]
+    fn the_shared_wire_fixture_as_the_recorded_streams_build_it() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&the_wire_every_recorded_stream_builds())
+                .expect("the wire value writes")
+        );
+    }
+
+    fn surfaces_of(reader: &ProtocolReader) -> Option<AgentSurfaces> {
+        reader.state.lock().unwrap().surfaces.snapshot()
+    }
+
+    fn revision_counter_of(reader: &ProtocolReader) -> u64 {
+        *reader.revision.subscribe().borrow()
+    }
+
+    fn agent_states_of(workflow: &SurfaceWorkflow) -> Vec<Option<&str>> {
+        workflow
+            .phases
+            .iter()
+            .flat_map(|phase| phase.agents.iter())
+            .map(|agent| agent.state.as_deref())
+            .collect()
+    }
+
+    #[test]
+    fn the_workflow_fixture_leaves_one_finished_workflow_of_two_phases_and_three_agents() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(WORKFLOW_FIXTURE))
+            .expect("the workflow fixture leaves the session a snapshot");
+
+        assert_eq!(surfaces.workflows.len(), 1, "{surfaces:?}");
+        let workflow = &surfaces.workflows[0];
+        assert_eq!(workflow.state.as_deref(), Some("done"));
+        assert_eq!(
+            workflow
+                .phases
+                .iter()
+                .map(|phase| phase.title.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Read", "Summarize"]
+        );
+        assert_eq!(agent_states_of(workflow), vec![Some("done"); 3]);
+    }
+
+    #[test]
+    fn the_subagent_fixture_leaves_one_finished_subagent_carrying_its_answer() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(SUBAGENT_FIXTURE))
+            .expect("the subagent fixture leaves the session a snapshot");
+
+        assert_eq!(surfaces.subagents.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.subagents[0].state.as_deref(), Some("done"));
+        assert_eq!(surfaces.subagents[0].result.as_deref(), Some("4"));
+    }
+
+    #[test]
+    fn the_shell_and_checklist_fixture_leaves_three_finished_items_and_one_finished_shell() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(SHELL_AND_CHECKLIST_FIXTURE))
+            .expect("the shell and checklist fixture leaves the session a snapshot");
+
+        assert_eq!(
+            surfaces
+                .checklist
+                .iter()
+                .map(|item| item.state.as_deref())
+                .collect::<Vec<_>>(),
+            vec![Some("completed"); 3],
+            "{surfaces:?}"
+        );
+        assert_eq!(surfaces.shells.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.shells[0].state.as_deref(), Some("done"));
+        assert_eq!(surfaces.shells[0].exit_code, Some(0));
+    }
+
+    #[test]
+    fn a_session_that_read_only_the_workflow_fixture_writes_the_workflows_key_alone() {
+        let surfaces = surfaces_of(&reader_over_every_line_of(WORKFLOW_FIXTURE))
+            .expect("the workflow fixture leaves the session a snapshot");
+
+        let written = surfaces.wire_value(&|_| None);
+        let named: Vec<&str> = written
+            .as_object()
+            .expect("a snapshot writes an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+
+        assert_eq!(named, vec!["workflows"], "{written}");
+    }
+
+    #[test]
+    fn a_session_that_read_no_task_line_at_all_offers_no_surfaces() {
+        let mut reader = reader_over_a_silent_session();
+        for line in fixture_lines(WORKFLOW_FIXTURE) {
+            let event: Value = serde_json::from_str(&line).expect("the fixture is protocol");
+            let announces = event["type"] == "system" && event["subtype"] == "init";
+            if announces || event["type"] == "assistant" {
+                reader.read_line(&line);
+            }
+        }
+
+        assert!(surfaces_of(&reader).is_none());
+        assert_eq!(revision_counter_of(&reader), 0);
+    }
+
+    #[test]
+    fn the_counter_moves_once_per_line_that_moved_the_snapshot() {
+        let whole_workflow = revision_counter_of(&reader_over_every_line_of(WORKFLOW_FIXTURE));
+        let the_start_alone = revision_counter_of(&reader_over_the_workflow_lines(&[37]));
+
+        assert_eq!(the_start_alone, 1);
+        assert!(
+            whole_workflow > the_start_alone,
+            "the whole workflow moved the snapshot more than its first line: {whole_workflow} against {the_start_alone}"
+        );
+        assert_eq!(
+            revision_counter_of(&reader_over_the_workflow_lines(&[46])),
+            0,
+            "a usage tick carrying no progress array moves nothing"
+        );
+    }
+
+    #[test]
+    fn a_reader_nobody_is_watching_reads_the_stream_to_its_end() {
+        let mut reader = reader_over_a_silent_session();
+        drop(reader.revision.subscribe());
+
+        for line in fixture_lines(WORKFLOW_FIXTURE) {
+            reader.read_line(&line);
+        }
+
+        assert!(
+            revision_counter_of(&reader) > 0,
+            "a bump with nobody watching is not an error"
+        );
+        assert_eq!(
+            surfaces_of(&reader)
+                .expect("the whole stream was read")
+                .workflows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_task_roster_stays_the_one_authority_for_whether_the_agent_is_working() {
+        let reader = reader_over_every_line_of(WORKFLOW_FIXTURE);
+        let state = reader.state.lock().unwrap();
+
+        assert!(state.tasks.is_empty(), "{:?}", state.tasks);
+        assert_eq!(state.live_status(), AgentStatus::Waiting);
+        assert!(
+            state.surfaces.snapshot().is_some(),
+            "a finished workflow is still on the snapshot the rail paints"
+        );
+    }
+
+    #[test]
+    fn a_minted_call_records_the_tool_its_answer_will_be_routed_by() {
+        let lines = fixture_lines(SHELL_AND_CHECKLIST_FIXTURE);
+        let mut reader = reader_over_a_silent_session();
+
+        reader.read_line(&lines[26]);
+
+        assert_eq!(
+            reader.calls.get(FIRST_CREATE_CALL_ID),
+            Some(&RecordedCall::Minted {
+                tool: "TaskCreate".to_string(),
+                parent_call_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn an_answered_call_is_taken_from_the_map_not_read() {
+        let lines = fixture_lines(SHELL_AND_CHECKLIST_FIXTURE);
+        let mut reader = reader_over_a_silent_session();
+
+        reader.read_line(&lines[26]);
+        assert_eq!(
+            reader.calls.len(),
+            1,
+            "the call is held until its answer arrives"
+        );
+        reader.read_line(&lines[27]);
+        assert!(
+            reader.calls.is_empty(),
+            "the answer takes the entry it paired, mid-turn: {:?}",
+            reader.calls
+        );
+
+        for line in &lines {
+            reader.read_line(line);
+        }
+        let after_one_pass = reader.calls.len();
+        for line in &lines {
+            reader.read_line(line);
+        }
+
+        assert_eq!(after_one_pass, 0, "every call in the fixture was answered");
+        assert_eq!(reader.calls.len(), after_one_pass);
+    }
+
+    const TASK_CREATE_CALL_LINE: usize = 27;
+    const TURN_RESULT_LINE: usize = 81;
+
+    fn pending_create_count_of(reader: &ProtocolReader) -> usize {
+        reader.state.lock().unwrap().surfaces.pending_create_count()
+    }
+
+    #[test]
+    fn a_turn_that_ended_between_a_create_and_its_answer_leaves_the_ledger_nothing_pending() {
+        let mut reader = reader_over_a_silent_session();
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[TASK_CREATE_CALL_LINE]),
+        );
+        assert_eq!(pending_create_count_of(&reader), 1);
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[TURN_RESULT_LINE]),
+        );
+
+        assert_eq!(pending_create_count_of(&reader), 0);
+    }
+
+    fn a_background_shell_line_set(
+        task_id: &str,
+        call_id: &str,
+        output_path: &Path,
+    ) -> Vec<String> {
+        let mut call = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_CALL_LINE);
+        call["message"]["content"][0]["id"] = json!(call_id);
+        let mut started = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_STARTED_LINE);
+        started["task_id"] = json!(task_id);
+        started["tool_use_id"] = json!(call_id);
+        let mut answer = fixture_line(SHELL_AND_CHECKLIST_FIXTURE, SHELL_LAUNCH_ANSWER_LINE);
+        answer["message"]["content"][0]["tool_use_id"] = json!(call_id);
+        answer["message"]["content"][0]["content"] = json!(format!(
+            "Command running in background with ID: {task_id}. Output is being written to: {}. You will be notified when it completes.",
+            output_path.display()
+        ));
+        answer["tool_use_result"]["backgroundTaskId"] = json!(task_id);
+        [call, started, answer]
+            .iter()
+            .map(Value::to_string)
+            .collect()
+    }
+
+    struct ReaderEndingItsSessionWhenDropped {
+        reader: ProtocolReader,
+    }
+
+    impl std::ops::Deref for ReaderEndingItsSessionWhenDropped {
+        type Target = ProtocolReader;
+
+        fn deref(&self) -> &ProtocolReader {
+            &self.reader
+        }
+    }
+
+    impl std::ops::DerefMut for ReaderEndingItsSessionWhenDropped {
+        fn deref_mut(&mut self) -> &mut ProtocolReader {
+            &mut self.reader
+        }
+    }
+
+    impl Drop for ReaderEndingItsSessionWhenDropped {
+        fn drop(&mut self) {
+            self.reader.activity.lock().unwrap().take();
+            let polling = self.reader.shell_poller.lock().unwrap().take();
+            if let Some(polling) = polling {
+                polling.join().expect(
+                    "the shell tail poller ends cleanly before the temporary directory it reads is removed",
+                );
+            }
+        }
+    }
+
+    fn reader_tailing(task_id: &str, output_path: &Path) -> ReaderEndingItsSessionWhenDropped {
+        let mut reader = reader_with_a_live_activity_slot();
+        read_lines_into(
+            &mut reader,
+            &a_background_shell_line_set(task_id, SHELL_LAUNCH_CALL_ID, output_path),
+        );
+        ReaderEndingItsSessionWhenDropped { reader }
+    }
+
+    fn polling_thread_of(reader: &ProtocolReader) -> std::thread::ThreadId {
+        reader
+            .shell_poller
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("a shell tail poller is running")
+            .thread()
+            .id()
+    }
+
+    fn no_poller_is_running(reader: &ProtocolReader) -> bool {
+        reader.shell_poller.lock().unwrap().is_none()
+    }
+
+    fn tail_of_the_shell(reader: &ProtocolReader, shell_id: &str) -> Vec<String> {
+        surfaces_of(reader)
+            .into_iter()
+            .flat_map(|surfaces| surfaces.shells)
+            .find(|shell| shell.id == shell_id)
+            .map(|shell| shell.tail)
+            .unwrap_or_default()
+    }
+
+    fn becomes_true_within(limit: Duration, ready: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + limit;
+        while Instant::now() < deadline {
+            if ready() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ready()
+    }
+
+    #[test]
+    fn a_started_shell_that_has_named_no_output_file_starts_no_poller() {
+        let mut reader = reader_with_a_live_activity_slot();
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_STARTED_LINE]),
+        );
+
+        assert!(
+            running_shell_outputs(&reader.state).is_empty(),
+            "the start alone names no file to tail"
+        );
+        assert!(no_poller_is_running(&reader));
+    }
+
+    #[test]
+    fn the_answer_naming_the_output_file_starts_exactly_one_poller() {
+        let mut reader = ReaderEndingItsSessionWhenDropped {
+            reader: reader_with_a_live_activity_slot(),
+        };
+        let launched = fixture_lines_numbered(
+            SHELL_AND_CHECKLIST_FIXTURE,
+            &[
+                SHELL_LAUNCH_CALL_LINE,
+                SHELL_STARTED_LINE,
+                SHELL_LAUNCH_ANSWER_LINE,
+            ],
+        );
+
+        read_lines_into(&mut reader, &launched);
+        let started = polling_thread_of(&reader);
+
+        read_lines_into(&mut reader, &launched);
+        reader.ensure_shell_tail_poller();
+
+        assert_eq!(
+            polling_thread_of(&reader),
+            started,
+            "a running poller is never joined by a second"
+        );
+    }
+
+    #[test]
+    fn a_growing_output_file_reaches_the_snapshot_and_moves_the_revision() {
+        let (_directory, output_path) = shell_output_file_holding("");
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        let before_it_grew = revision_counter_of(&reader);
+
+        std::fs::write(&output_path, hundred_numbered_lines()).expect("the output file grows");
+
+        assert!(
+            becomes_true_within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, SHELL_TASK_ID).len() == SHELL_TAIL_LINES
+            }),
+            "the tail never reached the file: {:?}",
+            tail_of_the_shell(&reader, SHELL_TASK_ID)
+        );
+        let tailed = tail_of_the_shell(&reader, SHELL_TASK_ID);
+        assert_eq!(tailed.first().map(String::as_str), Some("line 81"));
+        assert_eq!(tailed.last().map(String::as_str), Some("line 100"));
+        assert!(
+            revision_counter_of(&reader) > before_it_grew,
+            "the poller said the snapshot moved"
+        );
+    }
+
+    #[test]
+    fn a_tail_that_has_not_changed_moves_the_revision_not_at_all() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        assert!(becomes_true_within(Duration::from_secs(3), || {
+            !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
+        }));
+        let once_the_tail_landed = revision_counter_of(&reader);
+        std::thread::sleep(Duration::from_millis(2_500));
+
+        assert_eq!(
+            revision_counter_of(&reader),
+            once_the_tail_landed,
+            "a file that did not change is not movement"
+        );
+    }
+
+    #[test]
+    fn the_notification_that_closes_the_shell_ends_the_poller() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let mut reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        assert!(!no_poller_is_running(&reader));
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+
+        assert!(
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
+            "the poller outlived the last running shell"
+        );
+    }
+
+    #[test]
+    fn a_poller_whose_session_ended_returns_though_the_shell_still_runs() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        reader.activity.lock().unwrap().take();
+
+        assert!(
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
+            "the poller outlived the stdout reader that started it"
+        );
+        assert!(
+            !running_shell_outputs(&reader.state).is_empty(),
+            "the ledger still holds the running shell the poller walked away from"
+        );
+    }
+
+    #[test]
+    fn a_deleted_output_file_is_skipped_and_the_next_read_replaces_the_tail() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let reader = reader_tailing(SHELL_TASK_ID, &output_path);
+        assert!(becomes_true_within(Duration::from_secs(3), || {
+            !tail_of_the_shell(&reader, SHELL_TASK_ID).is_empty()
+        }));
+        let last_tail_before_the_delete = tail_of_the_shell(&reader, SHELL_TASK_ID);
+
+        std::fs::remove_file(&output_path).expect("the output file is removed");
+        std::thread::sleep(Duration::from_millis(2_200));
+
+        assert!(
+            !no_poller_is_running(&reader),
+            "a file that went missing is not the end of the session"
+        );
+        assert_eq!(
+            tail_of_the_shell(&reader, SHELL_TASK_ID),
+            last_tail_before_the_delete,
+            "the last tail stands until a read succeeds"
+        );
+
+        std::fs::write(&output_path, "back again\n").expect("the output file returns");
+
+        assert!(
+            becomes_true_within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, SHELL_TASK_ID) == vec!["back again".to_string()]
+            }),
+            "the next successful read replaces the tail"
+        );
+    }
+
+    #[test]
+    fn a_poller_that_walked_away_leaves_the_slot_empty_for_the_next_shell() {
+        let (_directory, output_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let mut reader = reader_tailing(SHELL_TASK_ID, &output_path);
+
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+
+        assert!(
+            becomes_true_within(Duration::from_secs(2), || no_poller_is_running(&reader)),
+            "a poller with nothing left to tail clears its own slot before it returns"
+        );
+    }
+
+    #[test]
+    fn a_second_shell_started_after_the_poller_left_starts_a_fresh_one() {
+        let (_first_directory, first_path) = shell_output_file_holding(&hundred_numbered_lines());
+        let (_second_directory, second_path) = shell_output_file_holding("second shell\n");
+        let mut reader = reader_tailing(SHELL_TASK_ID, &first_path);
+        let the_poller_that_left = polling_thread_of(&reader);
+        read_lines_into(
+            &mut reader,
+            &fixture_lines_numbered(SHELL_AND_CHECKLIST_FIXTURE, &[SHELL_NOTIFICATION_LINE]),
+        );
+        assert!(becomes_true_within(Duration::from_secs(2), || {
+            no_poller_is_running(&reader)
+        }));
+
+        read_lines_into(
+            &mut reader,
+            &a_background_shell_line_set(
+                "s2ndshell",
+                "toolu_second_background_shell",
+                &second_path,
+            ),
+        );
+
+        assert_ne!(polling_thread_of(&reader), the_poller_that_left);
+        assert!(!no_poller_is_running(&reader));
+        assert!(
+            becomes_true_within(Duration::from_secs(3), || {
+                tail_of_the_shell(&reader, "s2ndshell") == vec!["second shell".to_string()]
+            }),
+            "the fresh poller tails the shell that started it"
+        );
+    }
 
     fn open(spec: &HarnessSpec) -> AdkSession {
         AdkSession::spawn(spec, None)
@@ -1544,12 +2531,8 @@ mod tests {
     /// instead. Statuses here are protocol-driven, so the wait is for a line to
     /// arrive rather than for a clock to run out.
     fn wait_for_status(session: &AdkSession, want: AgentStatus) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            if session.status() == want {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+        if becomes_true_within(Duration::from_secs(5), || session.status() == want) {
+            return;
         }
         panic!(
             "the session never reported {want:?} — it is {:?}",
@@ -1557,9 +2540,51 @@ mod tests {
         );
     }
 
-    async fn next_activity(rx: &mut broadcast::Receiver<AgentActivity>) -> AgentActivity {
+    #[test]
+    fn a_live_session_answers_with_the_snapshot_its_reader_built() {
+        let session = open(&stream_json_harness(&[
+            TASK_STARTED,
+            TASK_NOTIFICATION,
+            RESULT,
+        ]));
+        let mut moved = session
+            .surfaces_changed()
+            .expect("a session that reports its work watches its snapshot");
+        session.send_turn(&Turn::new("run the job")).unwrap();
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        let surfaces = session.surfaces().expect("the session read one shell");
+
+        assert_eq!(surfaces.shells.len(), 1, "{surfaces:?}");
+        assert_eq!(surfaces.shells[0].state.as_deref(), Some("done"));
+        assert!(
+            *moved.borrow_and_update() > 0,
+            "the reader said the snapshot moved"
+        );
+        session.end();
+    }
+
+    #[test]
+    fn a_live_session_that_read_no_task_line_answers_with_no_surfaces() {
+        let session = open(&stream_json_harness(&[THINKING, NARRATION, RESULT]));
+        session.send_turn(&Turn::new("say something")).unwrap();
+        wait_for_status(&session, AgentStatus::Waiting);
+
+        assert!(session.surfaces().is_none());
+        assert!(
+            session.surfaces_changed().is_some(),
+            "the channel is offered even before anything moves"
+        );
+        session.end();
+    }
+
+    async fn next_activity(rx: &mut broadcast::Receiver<ActivityReport>) -> AgentActivity {
+        next_report(rx).await.activity
+    }
+
+    async fn next_report(rx: &mut broadcast::Receiver<ActivityReport>) -> ActivityReport {
         match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
-            Ok(Ok(activity)) => activity,
+            Ok(Ok(report)) => report,
             Ok(Err(err)) => panic!("the activity stream ended before it reported: {err}"),
             Err(_) => panic!("no activity arrived within five seconds"),
         }
@@ -2571,22 +3596,29 @@ mod tests {
         session.end();
     }
 
-    /// A subagent's chatter is folded into the call that spawned it rather than
-    /// minted beside it: one tool call the human can read, not a second
-    /// conversation interleaved with the first.
     #[tokio::test]
-    async fn subagent_events_are_folded_into_the_call_that_spawned_them() {
+    async fn subagent_events_are_reported_under_the_call_that_spawned_them() {
         let session = open(&stream_json_harness(&[SUBAGENT_TEXT, NARRATION, RESULT]));
         let mut activity = session.activity().expect("a reporting session");
         wait_for_status(&session, AgentStatus::Waiting);
         session.send_turn(&Turn::new("delegate it")).unwrap();
 
         assert_eq!(
-            next_activity(&mut activity).await,
-            AgentActivity::Narration {
-                summary: "dropped the index".to_string()
+            next_report(&mut activity).await,
+            ActivityReport {
+                activity: AgentActivity::Narration {
+                    summary: "a subagent talking".to_string()
+                },
+                parent_call_id: Some("toolu_1".to_string()),
             },
-            "the subagent's own text is not a second voice in the conversation"
+            "the subagent's own text names the call it belongs under"
+        );
+        assert_eq!(
+            next_report(&mut activity).await,
+            ActivityReport::own_work(AgentActivity::Narration {
+                summary: "dropped the index".to_string()
+            }),
+            "and the session's own narration names nothing"
         );
         session.end();
     }
@@ -2614,10 +3646,7 @@ mod tests {
         session.send_turn(&Turn::new("try it")).unwrap();
         wait_for_status(&session, AgentStatus::Waiting);
 
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while session.epitaph().is_none() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        becomes_true_within(Duration::from_secs(5), || session.epitaph().is_some());
         assert_eq!(
             session.epitaph().as_deref(),
             Some("the tool call was refused")
@@ -3072,7 +4101,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {
@@ -3226,7 +4255,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {
@@ -3418,7 +4447,7 @@ mod tests {
             let seen = std::sync::Arc::clone(&seen);
             std::thread::spawn(move || {
                 while let Ok(event) = activity.blocking_recv() {
-                    let line = match &event {
+                    let line = match &event.activity {
                         AgentActivity::Reasoning { summary } => format!("reasoning: {summary}"),
                         AgentActivity::ToolUse { summary, .. } => format!("tool_use: {summary}"),
                         AgentActivity::ToolResult {

@@ -25,12 +25,9 @@ const sameAttachment = (live, next) =>
   live.tagName === "IMG" &&
   live.getAttribute("data-attachment-path") === next.getAttribute("data-attachment-path");
 
-/** Whether this attribute is the reader's rather than the render's.
- *
- *  A `<details>` is always rendered shut — folded activity is folded on
- *  arrival — so `open` is on the live element only because the reader opened
- *  it. Taking it back would shut every fold they had opened, once per poll. */
-const readerOpenedFold = (live, name) => name === "open" && live.tagName === "DETAILS";
+const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === "DETAILS";
+
+const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
 function patchAttributes(live, next) {
   // A picture the browser already loaded keeps the bytes it holds: the renderer
@@ -40,13 +37,14 @@ function patchAttributes(live, next) {
   const keepsItsBytes = sameAttachment(live, next);
   const keepsItsSurface = live.tagName === "CANVAS";
   for (const { name, value } of [...next.attributes]) {
+    if (menuTheReaderOpened(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
   for (const { name } of [...live.attributes]) {
     if (next.hasAttribute(name)) continue;
     if (name === "src" && keepsItsBytes) continue;
     if ((name === "width" || name === "height") && keepsItsSurface) continue;
-    if (readerOpenedFold(live, name)) continue;
+    if (foldTheReaderOpened(live, name)) continue;
     live.removeAttribute(name);
   }
 }

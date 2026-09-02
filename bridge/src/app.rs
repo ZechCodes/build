@@ -689,6 +689,7 @@ struct Tab {
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
     live: bool,
+    call_sequences: HashMap<String, MintedCallRow>,
     /// When Build last submitted a turn here.
     ///
     /// The quiescence rule ("silence is an anomaly, never completion") used to
@@ -697,6 +698,12 @@ struct Tab {
     /// life idle at a prompt, so silence only means something measured from the
     /// last thing Build asked of it.
     last_delivered_at: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MintedCallRow {
+    sequence: u64,
+    answered: bool,
 }
 
 impl Tab {
@@ -810,6 +817,7 @@ impl Tab {
                 screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
                 session,
                 live: true,
+                call_sequences: HashMap::new(),
                 last_delivered_at: None,
             },
             rx,
@@ -2884,46 +2892,12 @@ impl AppState {
     /// core, throttle a notify, put the plan back in the map, and prompt
     /// terminal closure + pump start.
     fn finish_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
-        self.stamp_plan_mutation(&plan_id, &active);
-        self.settle_plan_mutation(plan_id, active)
-    }
-
-    /// The same tail for a mutation whose answer IS the plan, with
-    /// `thread_detail` saying how much conversation that answer carries. A
-    /// write is the hottest call the SPA makes; answering a one-word post with
-    /// every item a long conversation ever held is the cost paging exists to
-    /// avoid, so a caller that named a `thread_limit` gets that page here too.
-    ///
-    /// The view is taken where it always was — after the stamps, before the
-    /// record goes back in the map — and returned beside the persistence
-    /// outcome so callers can order their errors.
-    fn answer_plan_mutation(
-        &mut self,
-        plan_id: String,
-        active: ActivePlan,
-        thread_detail: ThreadDetail,
-    ) -> (Value, Result<(), String>) {
-        self.stamp_plan_mutation(&plan_id, &active);
-        let view = self.plan_view(&plan_id, &active, thread_detail);
-        (view, self.settle_plan_mutation(plan_id, active))
-    }
-
-    /// First half of the tail: the stamps the response view must already see.
-    /// Split from the second so `answer_plan_mutation` can take its view
-    /// between them — where the view has always been taken.
-    fn stamp_plan_mutation(&mut self, plan_id: &str, active: &ActivePlan) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(plan_id.to_string())
+            .entry(plan_id.clone())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at
-            .insert(plan_id.to_string(), now.clone());
-        self.stamp_state_change(plan_id, plan_state_str(&active.plan.state), now);
-    }
-
-    /// Second half: persist, notify, put the record back, and tell the
-    /// browsers.
-    fn settle_plan_mutation(&mut self, plan_id: String, active: ActivePlan) -> Result<(), String> {
+        self.entity_updated_at.insert(plan_id.clone(), now.clone());
+        self.stamp_state_change(&plan_id, plan_state_str(&active.plan.state), now);
         let persisted = self.persist_plan_record(&plan_id, &active);
         let news = self.conversation_news(active.agents.sole_thread());
         let state_kind = crate::notify::kind_for_plan_state(&active.plan.state);
@@ -2941,43 +2915,31 @@ impl AppState {
         persisted
     }
 
+    fn answer_plan_mutation(
+        &mut self,
+        plan_id: String,
+        active: ActivePlan,
+        thread_detail: ThreadDetail,
+    ) -> (Value, Result<(), String>) {
+        let settled = self.finish_plan_mutation(plan_id.clone(), active);
+        let active = self.plans.get(&plan_id).expect("the finish put it back");
+        (
+            self.plan_view(&plan_id, active, thread_detail, DigestScope::Detail),
+            settled,
+        )
+    }
+
     /// The run-half twin of
     /// [`finish_plan_mutation`](Self::finish_plan_mutation).
     fn finish_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
-        self.stamp_run_mutation(&run_id, &active);
-        self.settle_run_mutation(run_id, active)
-    }
-
-    /// The run-half twin of
-    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
-    fn answer_run_mutation(
-        &mut self,
-        run_id: String,
-        active: ActiveRun,
-        thread_detail: ThreadDetail,
-    ) -> (Value, Result<(), String>) {
-        self.stamp_run_mutation(&run_id, &active);
-        let view = self.run_view(&run_id, &active, thread_detail);
-        (view, self.settle_run_mutation(run_id, active))
-    }
-
-    /// The run-half twin of
-    /// [`stamp_plan_mutation`](Self::stamp_plan_mutation).
-    fn stamp_run_mutation(&mut self, run_id: &str, active: &ActiveRun) {
         let now = now_rfc3339();
         self.entity_created_at
-            .entry(run_id.to_string())
+            .entry(run_id.clone())
             .or_insert_with(|| now.clone());
-        self.entity_updated_at
-            .insert(run_id.to_string(), now.clone());
-        self.stamp_state_change(run_id, run_state_str(&active.run.state), now);
+        self.entity_updated_at.insert(run_id.clone(), now.clone());
+        self.stamp_state_change(&run_id, run_state_str(&active.run.state), now);
         // The mutation likely changed the tree; drop the cached diffstat.
-        self.invalidate_run_stat(run_id);
-    }
-
-    /// The run-half twin of
-    /// [`settle_plan_mutation`](Self::settle_plan_mutation).
-    fn settle_run_mutation(&mut self, run_id: String, active: ActiveRun) -> Result<(), String> {
+        self.invalidate_run_stat(&run_id);
         let persisted = self.persist_run_record(&run_id, &active);
         let news = self
             .conversation_thread_for_run(&active)
@@ -2992,6 +2954,22 @@ impl AppState {
         self.reap_orphaned_terminals();
         self.note_entity_changed(&run_id);
         persisted
+    }
+
+    /// The run-half twin of
+    /// [`answer_plan_mutation`](Self::answer_plan_mutation).
+    fn answer_run_mutation(
+        &mut self,
+        run_id: String,
+        active: ActiveRun,
+        thread_detail: ThreadDetail,
+    ) -> (Value, Result<(), String>) {
+        let settled = self.finish_run_mutation(run_id.clone(), active);
+        let active = self.runs.get(&run_id).expect("the finish put it back");
+        (
+            self.run_view(&run_id, active, thread_detail, DigestScope::Detail),
+            settled,
+        )
     }
 
     /// A cold delivery started a new harness for `turn.owner`: open the
@@ -3261,12 +3239,14 @@ impl AppState {
         owner: &str,
         agent_id: &str,
         activity: &crate::harness::AgentActivity,
+        parent_sequence: Option<u64>,
     ) -> Option<u64> {
         self.record_activity_row(
             owner,
             agent_id,
             activity_event_kind(activity),
             activity.summary().to_string(),
+            parent_sequence,
         )
     }
 
@@ -3279,11 +3259,22 @@ impl AppState {
         agent_id: &str,
         event: crate::thread::ThreadEventKind,
         summary: String,
+        parent_sequence: Option<u64>,
     ) -> Option<u64> {
         let now = now_rfc3339();
         self.edit_agent_conversation(owner, agent_id, |thread, _artifact| {
             let session_id = open_session_id(thread);
-            Ok(thread.push_event(event, Some(summary), session_id, None, now))
+            Ok(thread.push_drafted_event(
+                crate::thread::ThreadEventDraft {
+                    event,
+                    summary: Some(summary),
+                    session_id,
+                    revision_id: None,
+                    links: Vec::new(),
+                    parent_sequence,
+                },
+                now,
+            ))
         })
         .ok()
     }
@@ -8193,7 +8184,7 @@ impl AppState {
         let root = self.entity_agent_root(&entity_id).ok();
         Ok(json!({
             "entity_id": entity_id,
-            "agent": self.agent_digest(&entity_id, &added, root.as_deref()),
+            "agent": self.agent_digest(&entity_id, &added, root.as_deref(), DigestScope::List),
         }))
     }
 
@@ -8319,7 +8310,7 @@ impl AppState {
         Ok(json!({
             "entity_id": entity_id,
             "agent_id": removed.id,
-            "agents": self.agent_digests(&entity_id),
+            "agents": self.agent_digests(&entity_id, DigestScope::List),
         }))
     }
 
@@ -8364,20 +8355,20 @@ impl AppState {
         let entity_id = require_str(params, "entity_id")?;
         Ok(json!({
             "entity_id": entity_id,
-            "agents": self.agent_digests(&entity_id),
+            "agents": self.agent_digests(&entity_id, DigestScope::List),
         }))
     }
 
     /// What the rail's bubble strip renders for one entity: one digest per
     /// agent, in rail order.
-    fn agent_digests(&self, entity_id: &str) -> Vec<Value> {
+    fn agent_digests(&self, entity_id: &str, scope: DigestScope) -> Vec<Value> {
         let Ok(roster) = self.entity_agents(entity_id) else {
             return Vec::new();
         };
         let root = self.entity_agent_root(entity_id).ok();
         roster
             .iter()
-            .map(|agent| self.agent_digest(entity_id, agent, root.as_deref()))
+            .map(|agent| self.agent_digest(entity_id, agent, root.as_deref(), scope))
             .collect()
     }
 
@@ -8391,6 +8382,7 @@ impl AppState {
         entity_id: &str,
         agent: &crate::agent::Agent,
         root: Option<&std::path::Path>,
+        scope: DigestScope,
     ) -> Value {
         let entity_thread = self.entity_conversation(entity_id);
         let is_first = self
@@ -8410,7 +8402,7 @@ impl AppState {
             .zip(self.entity_model_choice(entity_id).ok())
             .map(|(roster, entity_choice)| roster.turn_choice(&agent.id, &entity_choice))
             .unwrap_or_else(|| agent.choice.clone());
-        json!({
+        let mut digest = json!({
             "id": agent.id,
             "ordinal": agent.ordinal,
             "provider": agent.choice.provider,
@@ -8446,7 +8438,11 @@ impl AppState {
             // two versions of the same CLI. No session, no turn to stop.
             "can_interrupt": tab.is_some_and(|tab| tab.session.can_interrupt()),
             "created_at": agent.created_at,
-        })
+        });
+        if let Some(surfaces) = digest_surfaces(tab, scope) {
+            digest["surfaces"] = surfaces;
+        }
+        digest
     }
 
     fn worktree_diff(&mut self, params: &Value) -> Result<Value, String> {
@@ -9689,7 +9685,12 @@ impl AppState {
         // See `run_get`. An issue carries exactly one agent, so naming it is a
         // check rather than a choice — but the check still holds.
         let detail_thread = self.detail_thread_value(&plan_id, params)?;
-        let mut view = self.plan_view(&plan_id, active, view_thread_detail(&detail_thread, params));
+        let mut view = self.plan_view(
+            &plan_id,
+            active,
+            view_thread_detail(&detail_thread, params),
+            DigestScope::Detail,
+        );
         if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("plan_view returns an object")
@@ -9702,7 +9703,7 @@ impl AppState {
         let plans: Vec<Value> = self
             .plans
             .iter()
-            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest))
+            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest, DigestScope::List))
             .collect();
         json!({ "plans": plans })
     }
@@ -9711,7 +9712,7 @@ impl AppState {
         let issues: Vec<Value> = self
             .plans
             .iter()
-            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest))
+            .map(|(id, active)| self.plan_view(id, active, ThreadDetail::Digest, DigestScope::List))
             .collect();
         json!({ "issues": issues, "plans": issues })
     }
@@ -9802,7 +9803,7 @@ impl AppState {
         thread_detail: ThreadDetail,
     ) -> Result<Value, String> {
         let issue = self.plans.get(issue_id).ok_or("unknown issue_id")?;
-        Ok(self.plan_view(issue_id, issue, thread_detail))
+        Ok(self.plan_view(issue_id, issue, thread_detail, DigestScope::Detail))
     }
 
     fn issue_implement_all(&mut self, params: &Value) -> Result<Value, String> {
@@ -11014,7 +11015,7 @@ impl AppState {
         plan_persisted?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail))
+        Ok(self.run_view(&run_id, active, thread_detail, DigestScope::Detail))
     }
 
     fn run_get(&mut self, params: &Value) -> Result<Value, String> {
@@ -11024,7 +11025,12 @@ impl AppState {
         // the agent, and the client's cursor says what it already holds.
         // Neither → the thread the view builds itself, cut the same way.
         let detail_thread = self.detail_thread_value(&run_id, params)?;
-        let mut view = self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+        let mut view = self.run_view(
+            &run_id,
+            active,
+            view_thread_detail(&detail_thread, params),
+            DigestScope::Detail,
+        );
         if let Some(thread) = detail_thread {
             view.as_object_mut()
                 .expect("run_view returns an object")
@@ -11408,7 +11414,12 @@ impl AppState {
                 }
                 let active = self.runs.get(&entity_id).ok_or("unknown run_id")?;
                 return Ok(with_posted_sequence(
-                    self.run_view(&entity_id, active, thread_detail(params)),
+                    self.run_view(
+                        &entity_id,
+                        active,
+                        thread_detail(params),
+                        DigestScope::Detail,
+                    ),
                     posted_sequence,
                 ));
             }
@@ -11903,7 +11914,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params)))
+        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
     fn run_stage_fix(&mut self, params: &Value) -> Result<Value, String> {
@@ -11935,7 +11946,7 @@ impl AppState {
         self.record_issue_current_stage_started(&run_id, &plan_docs)?;
         self.auto_advance_run(&run_id);
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params)))
+        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
     /// Send a stage's open comments (persisted on the owning plan) to a fresh
@@ -11981,7 +11992,7 @@ impl AppState {
         }
         persisted?;
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params)))
+        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
     /// "Run all": arm/disarm auto-advance, then (armed) run every dispatchable
@@ -12004,7 +12015,7 @@ impl AppState {
             self.auto_advance_run(&run_id);
         }
         let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
-        Ok(self.run_view(&run_id, active, thread_detail(params)))
+        Ok(self.run_view(&run_id, active, thread_detail(params), DigestScope::Detail))
     }
 
     /// If a run is parked at the stage gate with run-all armed and a next
@@ -12511,7 +12522,12 @@ impl AppState {
         let (checkout, scope) = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, thread_detail(params)));
+                return Ok(self.run_view(
+                    &run_id,
+                    active,
+                    thread_detail(params),
+                    DigestScope::Detail,
+                ));
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
@@ -12523,7 +12539,12 @@ impl AppState {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
                 let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(&run_id, active, thread_detail(params)));
+                return Ok(self.run_view(
+                    &run_id,
+                    active,
+                    thread_detail(params),
+                    DigestScope::Detail,
+                ));
             }
             // Force a fresh scan: adoption must never act on a stale card.
             (
@@ -12767,7 +12788,7 @@ impl AppState {
                 .filter(|id| self.plans[id].plan.archived_at.is_none())
                 .map(|id| {
                     let active = self.plans.get(&id).expect("listed above");
-                    self.plan_view(&id, active, ThreadDetail::Digest)
+                    self.plan_view(&id, active, ThreadDetail::Digest, DigestScope::List)
                 })
                 .collect()
         };
@@ -12782,7 +12803,8 @@ impl AppState {
                 .map(|id| {
                     let stat = self.run_stat(&id);
                     let active = self.runs.get(&id).expect("listed above");
-                    let mut view = self.run_view(&id, active, ThreadDetail::Digest);
+                    let mut view =
+                        self.run_view(&id, active, ThreadDetail::Digest, DigestScope::List);
                     view.as_object_mut()
                         .expect("run_view returns an object")
                         .insert("stat".to_string(), stat);
@@ -12925,7 +12947,7 @@ impl AppState {
             "unread_reason": unread.reason,
             "working": active.run.state.is_working() || working_since.is_some(),
             "working_time": working_time_json(working_since.as_deref()),
-            "agents": self.agent_digests(run_id),
+            "agents": self.agent_digests(run_id, DigestScope::List),
             "stat": sync.to_json(),
             "resume_at": self.attention_json(run_id)["resume_at"],
             // Where this row sits in the inbox, and how long it has been quiet.
@@ -13140,7 +13162,7 @@ impl AppState {
             "unread_reason": unread.reason,
             "working": active.plan.state.is_working() || working_since.is_some(),
             "working_time": working_time_json(working_since.as_deref()),
-            "agents": self.agent_digests(issue_id),
+            "agents": self.agent_digests(issue_id, DigestScope::List),
             "stat": Value::Null,
             "resume_at": self.attention_json(issue_id)["resume_at"],
             "anchor": self.anchor_of(issue_id),
@@ -13292,15 +13314,19 @@ impl AppState {
             .ok_or_else(|| {
                 format!("branch.get: no branch {branch} is checked out in this project")
             })?;
-        row["run"] = match row["run_id"].as_str().map(str::to_string) {
+        let run = match row["run_id"].as_str().map(str::to_string) {
             Some(run_id) => {
                 let active = self.runs.get(&run_id).expect("the row named a live run");
                 // The branch surface sits under the rail: it reads the
                 // conversation of whichever agent's bubble is open. See
                 // `run_get`.
                 let detail_thread = self.detail_thread_value(&run_id, params)?;
-                let mut view =
-                    self.run_view(&run_id, active, view_thread_detail(&detail_thread, params));
+                let mut view = self.run_view(
+                    &run_id,
+                    active,
+                    view_thread_detail(&detail_thread, params),
+                    DigestScope::Detail,
+                );
                 if let Some(thread) = detail_thread {
                     view["thread"] = thread;
                 }
@@ -13312,6 +13338,10 @@ impl AppState {
                 None => Value::Null,
             },
         };
+        if let Some(run_agents) = run.get("agents") {
+            row["agents"] = run_agents.clone();
+        }
+        row["run"] = run;
         Ok(row)
     }
 
@@ -13725,7 +13755,9 @@ impl AppState {
             .filter(|(plan_id, active)| {
                 active.plan.archived_at.is_some() && self.project_path_for(plan_id) == project_path
             })
-            .map(|(plan_id, active)| self.plan_view(plan_id, active, ThreadDetail::Digest))
+            .map(|(plan_id, active)| {
+                self.plan_view(plan_id, active, ThreadDetail::Digest, DigestScope::List)
+            })
             .collect::<Vec<_>>();
         let worktrees = self
             .archived_worktrees
@@ -14205,7 +14237,13 @@ impl AppState {
             .or_else(|| implementations.last().copied())
     }
 
-    fn plan_view(&self, plan_id: &str, active: &ActivePlan, thread_detail: ThreadDetail) -> Value {
+    fn plan_view(
+        &self,
+        plan_id: &str,
+        active: &ActivePlan,
+        thread_detail: ThreadDetail,
+        scope: DigestScope,
+    ) -> Value {
         let project_id = self
             .entity_project
             .get(plan_id)
@@ -14282,7 +14320,7 @@ impl AppState {
             },
             // The rail's bubble strip: one entry per agent, on every surface
             // that renders an entity, so status stays legible fully collapsed.
-            "agents": self.agent_digests(plan_id),
+            "agents": self.agent_digests(plan_id, scope),
             "active_run_id": active_run_id,
             // Whether a branch is implementing this issue RIGHT NOW, and which
             // one. The same fact that hides the issue's row behind that
@@ -14363,7 +14401,13 @@ impl AppState {
     /// timestamps. The live diffstat rides along in `board.list`.
     /// `thread_detail` picks a bounded digest (list surfaces) or the full
     /// conversation (detail surfaces + mutation responses).
-    fn run_view(&self, run_id: &str, active: &ActiveRun, thread_detail: ThreadDetail) -> Value {
+    fn run_view(
+        &self,
+        run_id: &str,
+        active: &ActiveRun,
+        thread_detail: ThreadDetail,
+        scope: DigestScope,
+    ) -> Value {
         let project_id = self.entity_project.get(run_id).cloned().unwrap_or_default();
         let project = self
             .projects
@@ -14417,7 +14461,7 @@ impl AppState {
                 ThreadDetail::Page(limit) => conversation.wire_value_page(None, limit),
             },
             // The rail's bubble strip — see `plan_view`.
-            "agents": self.agent_digests(run_id),
+            "agents": self.agent_digests(run_id, scope),
             // Review prioritization: an overlay on the diff, never a gate.
             "triage": self.triage_json(active),
             "auto_advance": active.auto_advance,
@@ -15303,6 +15347,12 @@ fn view_thread_detail(replacement: &Option<Value>, params: &Value) -> ThreadDeta
         Some(_) => ThreadDetail::Digest,
         None => thread_detail(params),
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DigestScope {
+    List,
+    Detail,
 }
 
 /// How much of a conversation a `thread.page` call asked for. Absent means a
@@ -18411,12 +18461,6 @@ fn spawn_tab_pump(
 /// background work — which are conversation, classed `Status`: they move no
 /// unread count, reach no Issue conversation and pull nobody in.
 ///
-/// A tool call is ONE row for its whole life: minted when the call is made and
-/// updated in place when its answer arrives, which is what `open_calls` below
-/// is for. The map is task-local, so it is per session by construction — a new
-/// session is a new pump with an empty map — and the protocol's call id never
-/// reaches the conversation: the pairing lives and dies with the session.
-///
 /// It owes the same death rites, minus the screen's half: on close the tab goes
 /// not live and the conversation's session lineage ends. There is no
 /// `term.closed` to push because there is no screen — the step-3 refusals
@@ -18426,7 +18470,7 @@ fn spawn_tab_pump(
 fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
-    rx: Option<broadcast::Receiver<crate::harness::AgentActivity>>,
+    rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
 ) {
     let Some(mut rx) = rx else {
         return;
@@ -18436,20 +18480,48 @@ fn spawn_activity_pump(
         // nothing to spawn the pump onto.
         return;
     }
+    let mut surfaces_changed = state
+        .lock()
+        .unwrap()
+        .tabs
+        .get(&key)
+        .and_then(|tab| tab.session.surfaces_changed());
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        // The call id the protocol used, against the sequence of the row it
-        // minted here.
-        let mut open_calls: HashMap<String, u64> = HashMap::new();
         loop {
-            match rx.recv().await {
-                Ok(activity) => {
+            let woke = match surfaces_changed.as_mut() {
+                Some(revision) => tokio::select! {
+                    reported = rx.recv() => PumpWake::Reported(reported),
+                    noticed = revision.changed() => match noticed {
+                        Ok(()) => PumpWake::SurfacesMoved,
+                        Err(_) => PumpWake::SurfacesUnwatchable,
+                    },
+                },
+                None => PumpWake::Reported(rx.recv().await),
+            };
+            let reported = match woke {
+                PumpWake::SurfacesMoved => {
+                    let s = state.lock().unwrap();
+                    let Some((owner, _)) = agent_of_tab(&s, &key) else {
+                        return;
+                    };
+                    s.note_entity_changed(&owner);
+                    continue;
+                }
+                PumpWake::SurfacesUnwatchable => {
+                    surfaces_changed = None;
+                    continue;
+                }
+                PumpWake::Reported(reported) => reported,
+            };
+            match reported {
+                Ok(report) => {
                     let mut s = state.lock().unwrap();
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
                     note_session_self_report(&mut s, &key, &owner, &agent_id);
-                    record_activity(&mut s, &owner, &agent_id, &activity, &mut open_calls);
+                    record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
                 // A turn that called forty tools while the lock was busy is a
                 // reader problem, not a reason to stop reading: what is lost is
@@ -18460,9 +18532,11 @@ fn spawn_activity_pump(
                     let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
                         return;
                     };
-                    if let Some(tab) = s.tabs.get_mut(&key) {
-                        tab.live = false;
-                    }
+                    let Some(tab) = s.tabs.get_mut(&key) else {
+                        return;
+                    };
+                    tab.live = false;
+                    let unanswered_call_sequences = take_unanswered_call_sequences(tab);
                     match named_conversation(&s, &key) {
                         Some(_) => note_session_self_report(&mut s, &key, &owner, &agent_id),
                         // A session that ended having never announced a
@@ -18480,7 +18554,7 @@ fn spawn_activity_pump(
                     // BEFORE the session ends — so the timeline reads
                     // calls-closed-then-session-ended rather than a session
                     // ending over work that still claims to run.
-                    for (_, sequence) in std::mem::take(&mut open_calls) {
+                    for sequence in unanswered_call_sequences {
                         s.resolve_agent_tool_call(
                             &owner,
                             &agent_id,
@@ -18499,6 +18573,12 @@ fn spawn_activity_pump(
             }
         }
     });
+}
+
+enum PumpWake {
+    Reported(Result<crate::harness::ActivityReport, broadcast::error::RecvError>),
+    SurfacesMoved,
+    SurfacesUnwatchable,
 }
 
 /// The name the session in `key`'s tab has given its conversation, or `None`
@@ -18607,6 +18687,15 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     }
 }
 
+fn digest_surfaces(tab: Option<&Tab>, scope: DigestScope) -> Option<Value> {
+    let tab = match scope {
+        DigestScope::List => return None,
+        DigestScope::Detail => tab?,
+    };
+    let snapshot = tab.session.surfaces()?;
+    Some(snapshot.wire_value(&|call_id| tab.call_sequences.get(call_id).map(|row| row.sequence)))
+}
+
 /// Who the agent in `key`'s tab is — its owner and its own id — or `None` when
 /// the tab is gone or was never an agent's.
 fn agent_of_tab(state: &AppState, key: &TabKey) -> Option<(String, String)> {
@@ -18638,27 +18727,27 @@ fn activity_event_kind(activity: &crate::harness::AgentActivity) -> crate::threa
 const NO_ANSWER_TURN_ENDED: &str = "no answer — turn ended";
 const NO_ANSWER_SESSION_ENDED: &str = "no answer — session ended";
 
-/// Put one reported activity into the conversation, keeping `open_calls` — the
-/// pump's record of which row each live call minted — in step with it.
-///
-/// Three shapes, and the third is the one that keeps a stored row honest:
-/// a call mints a row and is remembered; its answer updates that row and is
-/// forgotten; and an answer to a call this pump never saw — one lost to
-/// broadcast lag, or minted by a session before this one — falls back to
-/// minting the standalone `tool_result` row every answer used to mint, so the
-/// answer reaches the human either way.
 fn record_activity(
     state: &mut AppState,
+    key: &TabKey,
     owner: &str,
     agent_id: &str,
-    activity: &crate::harness::AgentActivity,
-    open_calls: &mut HashMap<String, u64>,
+    report: &crate::harness::ActivityReport,
 ) {
     use crate::harness::AgentActivity;
-    match activity {
+    let parent_sequence = parent_row_sequence(state, key, report.parent_call_id.as_deref());
+    match &report.activity {
         AgentActivity::ToolUse { call_id, .. } => {
-            if let Some(sequence) = state.record_agent_activity(owner, agent_id, activity) {
-                open_calls.insert(call_id.clone(), sequence);
+            let minted =
+                state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
+            if let (Some(sequence), Some(tab)) = (minted, state.tabs.get_mut(key)) {
+                tab.call_sequences.insert(
+                    call_id.clone(),
+                    MintedCallRow {
+                        sequence,
+                        answered: false,
+                    },
+                );
             }
         }
         AgentActivity::ToolResult {
@@ -18670,7 +18759,7 @@ fn record_activity(
                 crate::harness::ToolOutcome::Unanswered => NO_ANSWER_TURN_ENDED,
                 _ => summary.as_str(),
             };
-            let landed = open_calls.remove(call_id).is_some_and(|sequence| {
+            let landed = mark_call_answered(state, key, call_id).is_some_and(|sequence| {
                 state.resolve_agent_tool_call(
                     owner,
                     agent_id,
@@ -18687,13 +18776,39 @@ fn record_activity(
                     agent_id,
                     crate::thread::ThreadEventKind::ToolResult,
                     answer.to_string(),
+                    parent_sequence,
                 );
             }
         }
         _ => {
-            state.record_agent_activity(owner, agent_id, activity);
+            state.record_agent_activity(owner, agent_id, &report.activity, parent_sequence);
         }
     }
+}
+
+fn parent_row_sequence(
+    state: &AppState,
+    key: &TabKey,
+    parent_call_id: Option<&str>,
+) -> Option<u64> {
+    let call_id = parent_call_id?;
+    Some(state.tabs.get(key)?.call_sequences.get(call_id)?.sequence)
+}
+
+fn mark_call_answered(state: &mut AppState, key: &TabKey, call_id: &str) -> Option<u64> {
+    let row = state.tabs.get_mut(key)?.call_sequences.get_mut(call_id)?;
+    row.answered = true;
+    Some(row.sequence)
+}
+
+fn take_unanswered_call_sequences(tab: &mut Tab) -> Vec<u64> {
+    let mut unanswered: Vec<u64> = std::mem::take(&mut tab.call_sequences)
+        .into_values()
+        .filter(|row| !row.answered)
+        .map(|row| row.sequence)
+        .collect();
+    unanswered.sort_unstable();
+    unanswered
 }
 
 /// The conversation's word for what the harness saw.
@@ -18809,6 +18924,10 @@ mod tests {
     use std::process::Command;
 
     use crate::harness::claude;
+    use crate::harness::stream_fixtures::{
+        recorded_workflow_surfaces, SUBAGENT_SPAWNING_CALL_ID, SUBAGENT_TASK_ID, WORKFLOW_TASK_ID,
+    };
+    use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
 
@@ -28429,6 +28548,55 @@ mod tests {
         assert!(thread.get("thread_total").is_none(), "{thread:?}");
     }
 
+    #[test]
+    fn a_mutation_answers_with_the_attention_its_own_tail_settled() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let settled_fields = [
+            "needs_attention",
+            "unread",
+            "unread_count",
+            "unread_reason",
+            "agents",
+        ];
+
+        let created = state.handle(req(
+            "issue.create",
+            json!({ "goal": "settle the attention", "dispatch": false }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let issue_id = created["result"]["issue_id"].as_str().unwrap().to_string();
+        let read_back = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            created["result"]["attention"], read_back["result"]["attention"],
+            "the create answer already carries the anchor its own tail seeded: {created:?}"
+        );
+        for field in settled_fields {
+            assert_eq!(
+                created["result"][field], read_back["result"][field],
+                "{field} on the create answer: {created:?}"
+            );
+        }
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start planning it" }),
+        ));
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        let after_the_post = state.handle(req("issue.get", json!({ "issue_id": issue_id })));
+        assert_eq!(
+            posted["result"]["attention"]["anchor"],
+            after_the_post["result"]["attention"]["anchor"],
+            "a post never moves the anchor the tail already settled: {posted:?}"
+        );
+        for field in settled_fields {
+            assert_eq!(
+                posted["result"][field], after_the_post["result"][field],
+                "{field} on the post answer: {posted:?}"
+            );
+        }
+    }
+
     /// The routed post: an implementation's first agent speaks in its Issue's
     /// conversation, so the branch view that answers the post carries the
     /// Issue's items. That answer is bounded by the same limit.
@@ -32606,7 +32774,10 @@ mod tests {
         );
         assert_eq!(chosen["ok"], true, "{chosen:?}");
 
-        let digests = state.lock().unwrap().agent_digests(&run_id);
+        let digests = state
+            .lock()
+            .unwrap()
+            .agent_digests(&run_id, DigestScope::List);
         let codex_digest = digests
             .iter()
             .find(|digest| digest["id"] == json!(codex_agent.clone()))
@@ -34850,6 +35021,8 @@ mod tests {
         status: AgentStatus,
         quiet: Duration,
         log: SessionLog,
+        surfaces: Option<AgentSurfaces>,
+        watched_surface_revision: Option<tokio::sync::watch::Receiver<u64>>,
         active_model: Option<String>,
     }
 
@@ -34860,8 +35033,27 @@ mod tests {
                 status,
                 quiet: Duration::ZERO,
                 log: SessionLog::default(),
+                surfaces: None,
+                watched_surface_revision: None,
                 active_model: None,
             }
+        }
+
+        fn showing_surfaces(mut self, surfaces: AgentSurfaces) -> DictatedSession {
+            self.surfaces = Some(surfaces);
+            self
+        }
+
+        fn moving_surfaces_on(self, revision: SurfaceRevision) -> DictatedSession {
+            self.watching_a_revision_the_caller_can_close(revision.subscribe())
+        }
+
+        fn watching_a_revision_the_caller_can_close(
+            mut self,
+            watched: tokio::sync::watch::Receiver<u64>,
+        ) -> DictatedSession {
+            self.watched_surface_revision = Some(watched);
+            self
         }
 
         /// The same session, with nothing heard from it for `quiet` — the
@@ -34906,6 +35098,12 @@ mod tests {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         fn backdate_last_output(&self, _ago: Duration) {}
+        fn surfaces(&self) -> Option<AgentSurfaces> {
+            self.surfaces.clone()
+        }
+        fn surfaces_changed(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+            self.watched_surface_revision.clone()
+        }
     }
 
     /// A live tab whose session reports `status`.
@@ -34927,6 +35125,7 @@ mod tests {
             // reality.
             screen: None,
             live: true,
+            call_sequences: HashMap::new(),
             last_delivered_at: None,
         }
     }
@@ -34947,6 +35146,23 @@ mod tests {
             agent_id,
             DictatedSession::reporting(AgentStatus::Working),
         )
+    }
+
+    fn a_run_with_a_reporting_tab(
+        run_id: &str,
+    ) -> (tempfile::TempDir, Arc<Mutex<AppState>>, TabKey) {
+        a_run_with_a_dictated_tab(run_id, DictatedSession::reporting(AgentStatus::Working))
+    }
+
+    fn a_run_with_a_dictated_tab(
+        run_id: &str,
+        session: DictatedSession,
+    ) -> (tempfile::TempDir, Arc<Mutex<AppState>>, TabKey) {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let root = insert_run(&mut app, &repo, dir.path(), run_id, RunState::Building);
+        let key = insert_dictated_agent_tab(&mut app, &root, run_id, session);
+        (dir, app.shared(), key)
     }
 
     /// A live agent tab at `root` carrying a session that reports exactly what
@@ -34970,6 +35186,7 @@ mod tests {
             session: Arc::new(session),
             screen: None,
             live: true,
+            call_sequences: HashMap::new(),
             last_delivered_at: None,
         }
     }
@@ -34992,31 +35209,35 @@ mod tests {
         }
     }
 
-    /// Every activity event on a conversation, as (kind, summary).
-    fn activity_of(
-        thread: &crate::thread::Thread,
-    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+    fn activity_rows(thread: &crate::thread::Thread) -> Vec<crate::thread::ThreadEvent> {
         thread
             .items
             .iter()
             .filter_map(|item| match item {
                 crate::thread::ThreadItem::Event(event)
-                    if event.event.class() == crate::thread::EventClass::Status =>
+                    if event.event.class() == crate::thread::EventClass::Status
+                        && matches!(
+                            event.event,
+                            crate::thread::ThreadEventKind::Reasoning
+                                | crate::thread::ThreadEventKind::ToolUse
+                                | crate::thread::ThreadEventKind::ToolResult
+                                | crate::thread::ThreadEventKind::Narration
+                                | crate::thread::ThreadEventKind::TaskUpdate
+                        ) =>
                 {
-                    Some((event.event, event.summary.clone().unwrap_or_default()))
+                    Some(event.clone())
                 }
                 _ => None,
             })
-            .filter(|(kind, _)| {
-                matches!(
-                    kind,
-                    crate::thread::ThreadEventKind::Reasoning
-                        | crate::thread::ThreadEventKind::ToolUse
-                        | crate::thread::ThreadEventKind::ToolResult
-                        | crate::thread::ThreadEventKind::Narration
-                        | crate::thread::ThreadEventKind::TaskUpdate
-                )
-            })
+            .collect()
+    }
+
+    fn activity_of(
+        thread: &crate::thread::Thread,
+    ) -> Vec<(crate::thread::ThreadEventKind, String)> {
+        activity_rows(thread)
+            .into_iter()
+            .map(|event| (event.event, event.summary.unwrap_or_default()))
             .collect()
     }
 
@@ -35071,7 +35292,9 @@ mod tests {
                 summary: "reindex the archive — started".into(),
             },
         ] {
-            activity.send(reported).expect("the pump is listening");
+            activity
+                .send(crate::harness::ActivityReport::own_work(reported))
+                .expect("the pump is listening");
         }
 
         // Four rows for five reports: the answer completes the call's row
@@ -35514,6 +35737,134 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_subagents_rows_fold_under_the_call_that_spawned_them() {
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-folded");
+
+        let reported = crate::harness::adk::reports_minted_by(
+            crate::harness::stream_fixtures::SUBAGENT_FIXTURE,
+        );
+        let (activity, subscribed) = broadcast::channel(reported.len());
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        for report in reported {
+            activity.send(report).expect("the pump is listening");
+        }
+
+        let folded = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-folded"].agents));
+            let folded: Vec<crate::thread::ThreadEvent> = rows
+                .iter()
+                .filter(|row| row.parent_sequence.is_some())
+                .cloned()
+                .collect();
+            (folded.len() == 4).then_some(folded)
+        })
+        .await
+        .expect("the subagent's four rows reach the conversation");
+
+        let spawning_call_row = {
+            let s = state.lock().unwrap();
+            let thread = primary_thread(&s.runs["run-folded"].agents);
+            tool_call_rows(thread)
+                .into_iter()
+                .find(|row| {
+                    row.summary
+                        .as_deref()
+                        .unwrap_or_default()
+                        .starts_with("Agent")
+                })
+                .expect("the Agent call minted a row")
+        };
+        assert_eq!(
+            folded
+                .iter()
+                .map(|row| (row.event, row.parent_sequence))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    Some(spawning_call_row.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::ToolUse,
+                    Some(spawning_call_row.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::Reasoning,
+                    Some(spawning_call_row.sequence)
+                ),
+                (
+                    crate::thread::ThreadEventKind::Narration,
+                    Some(spawning_call_row.sequence)
+                ),
+            ],
+            "every row the subagent minted names the call that spawned it"
+        );
+        assert_eq!(
+            folded[1].outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "and the subagent's own call is answered on its own folded row"
+        );
+        assert_eq!(
+            spawning_call_row.outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "the Agent call was answered on line 12: {spawning_call_row:?}"
+        );
+
+        drop(activity);
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the stream closing ends the session");
+        let s = state.lock().unwrap();
+        let after_close = tool_call_rows(primary_thread(&s.runs["run-folded"].agents))
+            .into_iter()
+            .find(|row| row.sequence == spawning_call_row.sequence)
+            .expect("the Agent call's row is still there");
+        assert_eq!(
+            after_close.outcome,
+            Some(crate::thread::ToolCallOutcome::Ok),
+            "a call answered while the session ran is not re-resolved when it ends: {after_close:?}"
+        );
+        assert!(
+            s.tabs[&key].call_sequences.is_empty(),
+            "and the session's pairing dies with it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_report_naming_a_call_with_no_row_lands_flat() {
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-orphan");
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        activity
+            .send(crate::harness::ActivityReport {
+                activity: crate::harness::AgentActivity::Reasoning {
+                    summary: "counting the characters".into(),
+                },
+                parent_call_id: Some("toolu_done".into()),
+            })
+            .expect("the pump is listening");
+
+        let rows = wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-orphan"].agents));
+            (!rows.is_empty()).then_some(rows)
+        })
+        .await
+        .expect("the row is minted rather than dropped");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].summary.as_deref(), Some("counting the characters"));
+        assert_eq!(
+            rows[0].parent_sequence, None,
+            "a call with no row of its own can never be a parent: {:?}",
+            rows[0]
+        );
+    }
+
     /// The death rites close what the turn boundary never saw. A session that
     /// dies over an open call leaves a row claiming to run, and no later event
     /// would ever contradict it — so the pump closes it, and closes it BEFORE
@@ -35521,31 +35872,27 @@ mod tests {
     /// ended rather than a session ending over work that still claims to run.
     #[tokio::test]
     async fn the_death_rites_close_the_calls_the_session_died_over() {
-        let (dir, repo) = init_repo();
-        let mut app = qa_state(&repo, dir.path());
-        let root = insert_run(&mut app, &repo, dir.path(), "run-died", RunState::Building);
-        let agent_id = crate::agent::derived_agent_id("run-died");
-        let key = derived_agent_key(&root, "run-died");
-        app.tabs.insert(
-            key.clone(),
-            terminal_free_agent_tab(&root, "run-died", &agent_id),
-        );
-        primary_thread_mut(&mut app.runs.get_mut("run-died").unwrap().agents).start_session(
-            "claude",
-            None,
-            None,
-            "build",
-            &now_rfc3339(),
-        );
-        let state = app.shared();
+        let (_dir, state, key) = a_run_with_a_reporting_tab("run-died");
+        primary_thread_mut(
+            &mut state
+                .lock()
+                .unwrap()
+                .runs
+                .get_mut("run-died")
+                .unwrap()
+                .agents,
+        )
+        .start_session("claude", None, None, "build", &now_rfc3339());
 
         let (activity, subscribed) = broadcast::channel(4);
         spawn_activity_pump(&state, key.clone(), Some(subscribed));
         activity
-            .send(crate::harness::AgentActivity::ToolUse {
-                call_id: "toolu_1".into(),
-                summary: "Bash npm test".into(),
-            })
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::ToolUse {
+                    call_id: "toolu_1".into(),
+                    summary: "Bash npm test".into(),
+                },
+            ))
             .expect("the pump is listening");
         wait_for(Duration::from_secs(5), || {
             let s = state.lock().unwrap();
@@ -35594,6 +35941,547 @@ mod tests {
             closed.updated_sequence < ended,
             "the calls close before the session does: {closed:?} then {ended}"
         );
+        assert!(
+            s.tabs[&key].call_sequences.is_empty(),
+            "and the pairing is cleared beside the tab going not live"
+        );
+    }
+
+    fn a_branch_whose_agent_runs(
+        branch: &str,
+        session: DictatedSession,
+    ) -> (tempfile::TempDir, AppState, String) {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), branch);
+        let agent_id = primary_agent_id(&state, &run_id);
+        let root = state
+            .entity_agent_root(&run_id)
+            .expect("the branch has a checkout");
+        insert_agent_tab(&mut state, &root, &run_id, &agent_id, session);
+        (dir, state, run_id)
+    }
+
+    fn agent_digests_within(payload: &Value) -> Vec<Value> {
+        match payload {
+            Value::Object(fields) => fields
+                .iter()
+                .flat_map(|(name, value)| match name.as_str() {
+                    "agents" => value.as_array().cloned().unwrap_or_default(),
+                    "agent" if value.is_object() => vec![value.clone()],
+                    _ => agent_digests_within(value),
+                })
+                .collect(),
+            Value::Array(entries) => entries.iter().flat_map(agent_digests_within).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn assert_no_digest_carries_surfaces(verb: &str, payload: &Value) {
+        let digests = agent_digests_within(payload);
+        assert!(
+            !digests.is_empty(),
+            "{verb} answered with no agent digest at all, so it pins nothing: {payload:?}"
+        );
+        for digest in digests {
+            assert!(
+                digest.get("surfaces").is_none(),
+                "{verb} carried surfaces on a list-shaped answer: {digest:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn branch_get_carries_the_open_agents_surfaces() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-surfaced",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        let agent_id = primary_agent_id(&state, &run_id);
+        let project_id = state.projects[0].id.clone();
+
+        let answered = state.handle(req(
+            "branch.get",
+            json!({
+                "project_id": project_id,
+                "branch": "feature-surfaced",
+                "agent_id": agent_id,
+                "thread_after_sequence": 0
+            }),
+        ));
+
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        let row = &answered["result"];
+        assert_eq!(
+            row["run"]["agents"][0]["surfaces"]["workflows"][0]["name"], "readme-analysis",
+            "{row:?}"
+        );
+        assert_eq!(
+            row["agents"][0]["surfaces"]["subagents"][0]["id"], SUBAGENT_TASK_ID,
+            "the rail reads a branch's agents off the row: {row:?}"
+        );
+
+        let repo_path = state.projects[0].repo_path.clone();
+        add_external_worktree(&repo_path, dir.path(), "bare-checkout", "feature-bare");
+        state
+            .external_worktrees(&project_id, true)
+            .expect("the new checkout is discoverable");
+
+        let bare = state.handle(req(
+            "branch.get",
+            json!({ "project_id": project_id, "branch": "feature-bare" }),
+        ));
+        assert_eq!(bare["ok"], true, "{bare:?}");
+        let bare = &bare["result"];
+        assert!(bare["run"].is_null(), "{bare:?}");
+        assert_eq!(
+            bare["agents"],
+            json!([]),
+            "a bare checkout has no run view to take agents from, so the rail still reads the candidate row's own array: {bare:?}"
+        );
+        drop(dir);
+    }
+
+    fn the_only_digest_carrying_surfaces(verb: &str, payload: &Value) -> Value {
+        let surfaced: Vec<Value> = agent_digests_within(payload)
+            .into_iter()
+            .filter_map(|digest| digest.get("surfaces").cloned())
+            .collect();
+        assert_eq!(
+            surfaced.len(),
+            1,
+            "{verb} answered with {} surfaced digests: {payload:?}",
+            surfaced.len()
+        );
+        surfaced[0].clone()
+    }
+
+    #[test]
+    fn every_detail_verb_carries_the_open_agents_surfaces() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-detailed",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        let issue_id = plan_id_of(&state.handle(req(
+            "plan.create",
+            json!({ "goal": "an issue with a surfaced agent" }),
+        )));
+        let started = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start" }),
+        ));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let issue_agent = primary_agent_id(&state, &issue_id);
+        let issue_root = state
+            .entity_agent_root(&issue_id)
+            .expect("the issue's agent works in the primary checkout");
+        insert_agent_tab(
+            &mut state,
+            &issue_root,
+            &issue_id,
+            &issue_agent,
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+
+        for (verb, params) in [
+            ("run.get", json!({ "run_id": run_id })),
+            ("issue.get", json!({ "issue_id": issue_id })),
+            ("plan.get", json!({ "plan_id": issue_id })),
+        ] {
+            let answered = state.handle(req(verb, params));
+            assert_eq!(answered["ok"], true, "{verb}: {answered:?}");
+            let surfaces = the_only_digest_carrying_surfaces(verb, &answered["result"]);
+            assert_eq!(
+                surfaces["workflows"][0]["id"], WORKFLOW_TASK_ID,
+                "{verb}: {surfaces:?}"
+            );
+        }
+        drop(dir);
+    }
+
+    #[test]
+    fn an_entity_no_roster_knows_answers_with_no_digests_at_all() {
+        let (dir, repo) = init_repo();
+        let state = qa_state(&repo, dir.path());
+
+        assert!(state
+            .agent_digests("no-such-entity", DigestScope::Detail)
+            .is_empty());
+        drop(dir);
+    }
+
+    #[test]
+    fn no_list_shaped_answer_carries_surfaces() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-listed",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        let issue_id = plan_id_of(&state.handle(req(
+            "plan.create",
+            json!({ "goal": "an issue with a surfaced agent" }),
+        )));
+        let started = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": issue_id, "body": "start" }),
+        ));
+        assert_eq!(started["ok"], true, "{started:?}");
+        let issue_agent = primary_agent_id(&state, &issue_id);
+        let issue_root = state
+            .entity_agent_root(&issue_id)
+            .expect("the issue's agent works in the primary checkout");
+        insert_agent_tab(
+            &mut state,
+            &issue_root,
+            &issue_id,
+            &issue_agent,
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        state
+            .plans
+            .get_mut(&issue_id)
+            .expect("the issue is on the board")
+            .plan
+            .archived_at = Some(now_rfc3339());
+        let project_id = state.projects[0].id.clone();
+
+        for (verb, params) in [
+            ("board.list", json!({})),
+            ("plan.list", json!({})),
+            ("issue.list", json!({})),
+            ("archive.list", json!({ "project_id": project_id })),
+            ("agent.list", json!({ "entity_id": run_id })),
+        ] {
+            let answered = state.handle(req(verb, params));
+            assert_eq!(answered["ok"], true, "{verb}: {answered:?}");
+            assert_no_digest_carries_surfaces(verb, &answered["result"]);
+        }
+
+        let added = state.handle(req("agent.add", json!({ "entity_id": run_id })));
+        assert_eq!(added["ok"], true, "{added:?}");
+        assert_no_digest_carries_surfaces("agent.add", &added["result"]);
+        let second_agent = added["result"]["agent"]["id"]
+            .as_str()
+            .expect("the added agent has an id")
+            .to_string();
+
+        let removed = state.handle(req(
+            "agent.remove",
+            json!({ "entity_id": run_id, "agent_id": second_agent }),
+        ));
+        assert_eq!(removed["ok"], true, "{removed:?}");
+        assert_no_digest_carries_surfaces("agent.remove", &removed["result"]);
+        drop(dir);
+    }
+
+    #[test]
+    fn thread_post_answers_with_the_surfaces_the_rail_repaints_from() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-posted",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+
+        let posted = state.handle(req(
+            "thread.post",
+            json!({ "entity_id": run_id, "body": "how is the workflow going?", "thread_limit": 20 }),
+        ));
+
+        assert_eq!(posted["ok"], true, "{posted:?}");
+        assert_eq!(
+            posted["result"]["agents"][0]["surfaces"]["workflows"][0]["id"], WORKFLOW_TASK_ID,
+            "{posted:?}"
+        );
+        drop(dir);
+    }
+
+    #[test]
+    fn an_agent_whose_session_reports_no_surfaces_carries_no_key() {
+        let (dir, mut state, run_id) = a_branch_whose_agent_runs(
+            "feature-silent",
+            DictatedSession::reporting(AgentStatus::Working),
+        );
+
+        let got = state.handle(req(
+            "branch.get",
+            json!({
+                "project_id": state.projects[0].id.clone(),
+                "branch": "feature-silent"
+            }),
+        ));
+
+        assert_eq!(got["ok"], true, "{got:?}");
+        let digest = &got["result"]["run"]["agents"][0];
+        assert_eq!(digest["id"], primary_agent_id(&state, &run_id), "{got:?}");
+        assert!(
+            digest.get("surfaces").is_none(),
+            "not even an empty object: {digest:?}"
+        );
+        drop(dir);
+    }
+
+    #[tokio::test]
+    async fn a_subagents_call_sequence_names_the_row_of_the_call_that_spawned_it() {
+        let (_dir, state, key) = a_run_with_a_dictated_tab(
+            "run-spawning",
+            DictatedSession::reporting(AgentStatus::Working)
+                .showing_surfaces(recorded_workflow_surfaces()),
+        );
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        activity
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::ToolUse {
+                    call_id: SUBAGENT_SPAWNING_CALL_ID.to_string(),
+                    summary: "Agent Read README.md and report character count".to_string(),
+                },
+            ))
+            .expect("the pump is listening");
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            (!tool_call_rows(primary_thread(&s.runs["run-spawning"].agents)).is_empty())
+                .then_some(())
+        })
+        .await
+        .expect("the Agent call mints a row");
+
+        let while_running = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-spawning" })));
+        assert_eq!(
+            while_running["result"]["agents"][0]["surfaces"]["subagents"][0]["call_sequence"],
+            json!(spawning_call_sequence(&while_running["result"])),
+            "{while_running:?}"
+        );
+
+        activity
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::ToolResult {
+                    call_id: SUBAGENT_SPAWNING_CALL_ID.to_string(),
+                    outcome: crate::harness::ToolOutcome::Ok,
+                    summary: "4".to_string(),
+                },
+            ))
+            .expect("the pump is listening");
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            tool_call_rows(primary_thread(&s.runs["run-spawning"].agents))
+                .first()
+                .filter(|row| row.outcome.is_some())
+                .cloned()
+        })
+        .await
+        .expect("the answer lands on the call's own row");
+
+        let after_answer = state
+            .lock()
+            .unwrap()
+            .handle(req("run.get", json!({ "run_id": "run-spawning" })));
+        assert_eq!(
+            after_answer["result"]["agents"][0]["surfaces"]["subagents"][0]["call_sequence"],
+            json!(spawning_call_sequence(&after_answer["result"])),
+            "the pairing outlives the answer it was minted for: {after_answer:?}"
+        );
+    }
+
+    fn note_the_board_then_bump_each_revision_once(
+        state: &Arc<Mutex<AppState>>,
+        revisions: &[SurfaceRevision],
+    ) {
+        let state = state.lock().unwrap();
+        state.note_board_changed();
+        for revision in revisions {
+            revision.bump();
+        }
+    }
+
+    fn spawning_call_sequence(view: &Value) -> u64 {
+        view["thread"]["items"]
+            .as_array()
+            .expect("the view carries its conversation")
+            .iter()
+            .find(|item| {
+                item["data"]["summary"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .starts_with("Agent ")
+            })
+            .expect("the Agent call has a row in this payload")["data"]["sequence"]
+            .as_u64()
+            .expect("a row carries its sequence")
+    }
+
+    #[tokio::test]
+    async fn a_revision_bump_that_mints_no_row_stales_the_owning_entity() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, _sender, mut rx, session_key) =
+            greeted_push_session(&repo, dir.path());
+        let root = {
+            let mut s = state.lock().unwrap();
+            insert_run(
+                &mut s,
+                &repo,
+                dir.path(),
+                "run-invalidated",
+                RunState::Building,
+            )
+        };
+        let revisions: Vec<SurfaceRevision> = (0..5).map(|_| SurfaceRevision::default()).collect();
+        let activity_senders: Vec<_> = revisions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, revision)| {
+                let key = {
+                    let mut s = state.lock().unwrap();
+                    insert_agent_tab(
+                        &mut s,
+                        &root,
+                        "run-invalidated",
+                        &format!("agent-{ordinal}"),
+                        DictatedSession::reporting(AgentStatus::Working)
+                            .moving_surfaces_on(revision.clone()),
+                    )
+                };
+                let (activity, subscribed) = broadcast::channel(4);
+                spawn_activity_pump(&state, key, Some(subscribed));
+                activity
+            })
+            .collect();
+        settled_pushes(&mut rx, &session_key).await;
+
+        note_the_board_then_bump_each_revision_once(&state, &revisions);
+
+        let events = change_events(&settled_pushes(&mut rx, &session_key).await);
+        assert_eq!(
+            events
+                .iter()
+                .filter(
+                    |event| **event == json!({ "type": "entity.changed", "id": "run-invalidated" })
+                )
+                .count(),
+            1,
+            "five separately watched bumps inside one window are one stale-detail event: {events:?}"
+        );
+        let s = state.lock().unwrap();
+        assert!(
+            activity_rows(primary_thread(&s.runs["run-invalidated"].agents)).is_empty(),
+            "and they minted no conversation row on the way"
+        );
+        drop(s);
+        drop(activity_senders);
+    }
+
+    #[tokio::test]
+    async fn the_pump_ends_with_the_activity_stream_though_the_revision_stays_open() {
+        let revision = SurfaceRevision::default();
+        let (_dir, state, key) = a_run_with_a_dictated_tab(
+            "run-outlived",
+            DictatedSession::reporting(AgentStatus::Working).moving_surfaces_on(revision.clone()),
+        );
+        let before_pump = Arc::strong_count(&state);
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        assert_eq!(
+            Arc::strong_count(&state),
+            before_pump + 1,
+            "the pump holds the state for as long as it runs"
+        );
+
+        drop(activity);
+
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the stream closing ends the session with the revision channel still open");
+        revision.bump();
+        wait_for(Duration::from_secs(5), || {
+            (Arc::strong_count(&state) == before_pump).then_some(())
+        })
+        .await
+        .expect("and the task is gone rather than parked on a channel nobody will close");
+    }
+
+    #[tokio::test]
+    async fn a_revision_channel_that_closes_leaves_the_pump_reading_activity() {
+        let (revision_sender, watched) = tokio::sync::watch::channel(0u64);
+        let (_dir, state, key) = a_run_with_a_dictated_tab(
+            "run-unwatchable",
+            DictatedSession::reporting(AgentStatus::Working)
+                .watching_a_revision_the_caller_can_close(watched),
+        );
+        let before_pump = Arc::strong_count(&state);
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+
+        drop(revision_sender);
+        activity
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::Narration {
+                    summary: "still reading".to_string(),
+                },
+            ))
+            .expect("the pump is listening");
+
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-unwatchable"].agents));
+            (!rows.is_empty()).then_some(())
+        })
+        .await
+        .expect(
+            "a revision channel nobody can watch drops to activity-only, it does not end the pump",
+        );
+        assert_eq!(
+            Arc::strong_count(&state),
+            before_pump + 1,
+            "and the pump is still holding the state it reads into"
+        );
+        drop(activity);
+    }
+
+    #[tokio::test]
+    async fn a_carrier_with_no_revision_channel_pumps_exactly_as_it_did() {
+        let (_dir, state, key) = a_run_with_a_dictated_tab(
+            "run-unrevised",
+            DictatedSession::reporting(AgentStatus::Working),
+        );
+        assert!(
+            state.lock().unwrap().tabs[&key]
+                .session
+                .surfaces_changed()
+                .is_none(),
+            "this carrier says nothing about surfaces"
+        );
+
+        let (activity, subscribed) = broadcast::channel(4);
+        spawn_activity_pump(&state, key.clone(), Some(subscribed));
+        activity
+            .send(crate::harness::ActivityReport::own_work(
+                crate::harness::AgentActivity::Narration {
+                    summary: "dropped the index".to_string(),
+                },
+            ))
+            .expect("the pump is listening");
+        wait_for(Duration::from_secs(5), || {
+            let s = state.lock().unwrap();
+            let rows = activity_rows(primary_thread(&s.runs["run-unrevised"].agents));
+            (!rows.is_empty()).then_some(rows)
+        })
+        .await
+        .expect("the report still reaches the conversation");
+
+        drop(activity);
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("and the stream closing still ends the session");
     }
 
     /// Step 12's live claim, end to end on the real wire: a real haiku turn
@@ -36767,7 +37655,10 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
         assert_eq!(
-            state.lock().unwrap().agent_digests("run-spent")[0]["active_model"],
+            state
+                .lock()
+                .unwrap()
+                .agent_digests("run-spent", DigestScope::List)[0]["active_model"],
             "claude-opus-5",
             "a carrier that announces nothing still says what Build handed it"
         );
@@ -36779,7 +37670,10 @@ mod tests {
         );
         assert_eq!(posted["ok"], true, "{posted:?}");
         assert_eq!(
-            state.lock().unwrap().agent_digests("run-harness-default")[0]["active_model"],
+            state
+                .lock()
+                .unwrap()
+                .agent_digests("run-harness-default", DigestScope::List)[0]["active_model"],
             "",
             "a spawn left at the harness default knows nothing rather than lying"
         );
@@ -37348,18 +38242,21 @@ mod tests {
         session: DictatedSession,
     ) -> TabKey {
         let agent_id = crate::agent::derived_agent_id(owner);
-        let key = TabKey::agent(root, &agent_id);
-        let mut tab = tab_running(
-            TabRole::Agent {
-                owner: owner.to_string(),
-                agent_id,
-                provider: AgentProvider::default(),
-            },
-            session,
+        insert_agent_tab(state, root, owner, &agent_id, session)
+    }
+
+    fn insert_agent_tab(
+        state: &mut AppState,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        session: DictatedSession,
+    ) -> TabKey {
+        let key = TabKey::agent(root, agent_id);
+        state.tabs.insert(
+            key.clone(),
+            dictated_agent_tab(root, owner, agent_id, session),
         );
-        tab.root = root.to_path_buf();
-        tab.tab_id = key.tab_id.clone();
-        state.tabs.insert(key.clone(), tab);
         key
     }
 
@@ -37393,7 +38290,10 @@ mod tests {
             state.agent_is_live(&root, &agent_id),
             "a session waiting at its prompt is live"
         );
-        assert_eq!(state.agent_digests("run-liveness")[0]["state"], "live");
+        assert_eq!(
+            state.agent_digests("run-liveness", DigestScope::List)[0]["state"],
+            "live"
+        );
 
         insert_dictated_agent_tab(
             &mut state,
@@ -37405,7 +38305,10 @@ mod tests {
             !state.agent_is_live(&root, &agent_id),
             "a session that reports it is over is not live"
         );
-        assert_ne!(state.agent_digests("run-liveness")[0]["state"], "live");
+        assert_ne!(
+            state.agent_digests("run-liveness", DigestScope::List)[0]["state"],
+            "live"
+        );
     }
 
     #[test]
@@ -37422,7 +38325,7 @@ mod tests {
         let agent_id = crate::agent::derived_agent_id("run-active-model");
 
         assert_eq!(
-            state.agent_digests("run-active-model")[0]["active_model"],
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
             "",
             "an agent that has never run is running nothing Build knows of"
         );
@@ -37433,7 +38336,7 @@ mod tests {
             Some("claude-fable-5-1".to_string()),
         );
         assert_eq!(
-            state.agent_digests("run-active-model")[0]["active_model"],
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
             "claude-fable-5-1"
         );
 
@@ -37443,7 +38346,7 @@ mod tests {
             Some("claude-opus-5".to_string()),
         );
         assert_eq!(
-            state.agent_digests("run-active-model")[0]["active_model"],
+            state.agent_digests("run-active-model", DigestScope::List)[0]["active_model"],
             "claude-opus-5",
             "the newer announcement wins"
         );
@@ -37462,7 +38365,7 @@ mod tests {
         );
         let agent_id = crate::agent::derived_agent_id("run-projected-model");
 
-        let digest = state.agent_digests("run-projected-model")[0].clone();
+        let digest = state.agent_digests("run-projected-model", DigestScope::List)[0].clone();
         assert_eq!(digest["model"], "");
         assert_eq!(digest["effort"], "");
         assert_eq!(digest["active_model"], "");
@@ -37477,7 +38380,7 @@ mod tests {
                 },
             )
             .expect("the choice persists");
-        let digest = state.agent_digests("run-projected-model")[0].clone();
+        let digest = state.agent_digests("run-projected-model", DigestScope::List)[0].clone();
         assert_eq!(digest["model"], "claude-opus-5");
         assert_eq!(digest["effort"], "");
         assert_eq!(
@@ -37491,7 +38394,7 @@ mod tests {
             Some("claude-haiku-4-5".to_string()),
         );
         assert_eq!(
-            state.agent_digests("run-projected-model")[0]["active_model"],
+            state.agent_digests("run-projected-model", DigestScope::List)[0]["active_model"],
             "claude-haiku-4-5",
             "the session's own announcement outranks the projection"
         );
@@ -37508,7 +38411,8 @@ mod tests {
             "run-choose",
             RunState::Building,
         );
-        let provider_before = state.agent_digests("run-choose")[0]["provider"].clone();
+        let provider_before =
+            state.agent_digests("run-choose", DigestScope::List)[0]["provider"].clone();
 
         state
             .set_entity_model_choice(
@@ -37521,7 +38425,7 @@ mod tests {
             )
             .expect("the choice persists");
 
-        let digest = state.agent_digests("run-choose")[0].clone();
+        let digest = state.agent_digests("run-choose", DigestScope::List)[0].clone();
         assert_eq!(digest["model"], "claude-opus-5");
         assert_eq!(digest["effort"], "high");
         assert_eq!(digest["provider"], provider_before);

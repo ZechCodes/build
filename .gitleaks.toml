@@ -10,6 +10,8 @@
 #     fixtures for the masker, not real credentials
 #   - themes libsodium-wrappers.js: minified libsodium symbol names
 #     (crypto_kdf_blake2b_BYTES_MAX, ...) misread as generic API keys
+#   - bridge/target: gitignored Cargo build output; the `pem` crate bakes its
+#     own doc-example RSA key into the rmeta it compiles
 # Real leaks anywhere else still fail the scan.
 
 [extend]
@@ -20,9 +22,11 @@ description = "Documented example secrets and vendored-library false positives"
 paths = [
   '''v1/docs/.*\.md''',
   '''v1/planning/.*\.md''',
+  '''planning/v1/.*\.md''',
   '''v1/snapshot-manager/docs/.*\.md''',
   '''v1/frontend/src/components/Terminal/__tests__/Terminal\.advanced\.test\.tsx''',
   '''spa/test/secrets\.test\.js''',
   '''spa/test/diffRender\.test\.js''',
   '''themes/build/static/js/libsodium-wrappers\.js''',
+  '''bridge/target/''',
 ]

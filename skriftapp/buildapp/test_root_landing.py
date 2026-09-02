@@ -50,7 +50,7 @@ RETIRED_SCRIPT_NAME = "landing.js"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 SMOKE_CHECK_ASSET_PATTERN = r"getbuild\.ing/landing/([^\s\"']+)"
-SMOKE_CHECK_PAGE_PHRASE = "agentic coding IDE"
+SMOKE_CHECK_PAGE_PHRASE = "Ship confidence"
 
 APP_LINK = 'href="/app/"'
 BRAND_LINK_MARKUP = (
@@ -153,6 +153,20 @@ DESIGN_TOKENS = (
     "--dotfield-gap",
     "--hero-padding-block-start",
     "--space-screenshot-top",
+    "--flow-max-width",
+    "--flow-lane-you",
+    "--flow-lane-agents",
+    "--flow-lane-width",
+    "--flow-line-width",
+    "--flow-arrow-head",
+    "--flow-arrow-length",
+    "--flow-text-padding",
+    "--flow-step-gap",
+    "--flow-card-padding",
+    "--space-flow-actors-bottom",
+    "--space-flow-arrow-top",
+    "--font-size-flow-step",
+    "--line-height-flow-step",
     "--screenshot-crop-aspect",
     "--screenshot-side-height",
     "--hero-side-copy-width",
@@ -273,12 +287,14 @@ HERO_SIDE_RULES = (
 SCREENSHOT_FADE_TOKEN = "--fade-screenshot:linear-gradient(to bottom,transparent 50%,#030604)"
 HERO_TITLE_MARKUP = (
     '<h1 class="section-title section-title--hero">Ship more.<br>'
-    '<span class="title-accent title-accent--glow">Babysit less.</span></h1>'
+    '<span class="title-accent title-accent--glow">Ship confidence.</span></h1>'
+)
+HERO_LEAD_COPY = (
+    "Build turns an issue into shipped code. An agent plans and builds it on your machi"
+    "ne, and a review agent lays the changes out so you know exactly what went out and why."
 )
 HERO_LEAD_MARKUP = (
-    '<p class="lead">Build is the agentic coding IDE for teams. It surfaces the work '
-    "that needs you — reviews, decisions, direction — and dispatches everything else "
-    "to your agents. Not public yet.</p>"
+    '<p class="lead">' + HERO_LEAD_COPY + "</p>"
 )
 HERO_NOTE_MARKUP = (
     '<p class="note">One email to confirm, one when your invite is ready. '
@@ -326,48 +342,42 @@ HERO_FONT_SIZE_INTERMEDIATE_TOKEN = "--font-size-hero:clamp(44px,6vw,76px)"
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
 
 FEATURES_TITLE_MARKUP = (
-    '<h2 class="section-title">Everything agents need.<br>'
-    "Nothing <span class=\"title-accent\">you don't.</span></h2>"
+    '<h2 class="section-title">From issue<br>'
+    '<span class="title-accent">to merge.</span></h2>'
 )
 FEATURES_LABEL_MARKUP = (
-    '<span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>'
+    '<span class="eyebrow eyebrow--muted section-label">HOW IT WORKS /05</span>'
 )
 FEATURE_CARDS = (
     (
         "/01",
-        "ISSUES",
-        "An inbox, not a backlog",
-        "Issues live next to the code. Agents pick them up on their own — your inbox "
-        "shows only the work waiting on a human. When it's empty, you're done.",
+        "ISSUE",
+        "Start with the issue",
+        "Write what you want. Workshop it with an agent until it's clear enough to build. That conversation is the spec.",
     ),
     (
         "/02",
-        "VERSION CONTROL",
-        "Worktrees that manage themselves",
-        "Every agent works in its own worktree. Fetch, commit, review, merge — "
-        "without leaving the conversation.",
+        "WORKFLOW",
+        "The agent plans the work",
+        "From the issue, the agent builds a workflow and runs it. Every change lands on one branch in its own worktree, so nothing touches main until you say so.",
     ),
     (
         "/03",
         "REVIEW",
-        "Diff-first review",
-        "Inline comments on any line, threaded with your team and your agents. "
-        "Approve, redirect, or take over.",
+        "Spot checks, not archaeology",
+        "A review agent organizes the diff: what changed, why, and where to look first. Comment on any line. Your notes go back as one instruction.",
     ),
     (
         "/04",
-        "WORKFLOWS · RLM",
-        "Workflows that reshape around the work",
-        "The RLM routes tasks, retries failures, and re-plans as the work changes — "
-        "escalating only when it genuinely needs a human. Your team sees the same "
-        "board, live.",
+        "MERGE",
+        "Approve and merge from the same screen",
+        "Git is the source of truth, so what you review is exactly what the agent did. Merge, and the branch cleans itself up.",
     ),
     (
         "/05",
-        "AGENTS",
-        "Any agent, side by side",
-        "Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, "
-        "one shared history, one place to look.",
+        "YOUR MACHINE",
+        "Your code stays on your hardware",
+        "Agents run locally in your own harness. Check in from your phone. Nothing in the middle can read your repo.",
     ),
 )
 CARD_SPAN_MODIFIERS = ("", "", "--span-2", "--span-4", "--span-6")
@@ -378,12 +388,52 @@ ACTIVE_RAIL_DASH_MARKUP = '<i class="rail-dash is-active" data-rail-dash></i>'
 IDLE_RAIL_DASH_MARKUP = '<i class="rail-dash" data-rail-dash></i>'
 IDLE_RAIL_DASH_COUNT = len(FEATURE_CARDS) - 1
 
+FLOW_SECTION_OPENER = '<section class="flow-section rule-bottom" id="flow">'
+FLOW_TITLE_MARKUP = (
+    '<h2 class="section-title">A run,<br>'
+    '<span class="title-accent">start to finish.</span></h2>'
+)
+FLOW_LABEL_MARKUP = '<span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN</span>'
+FLOW_ACTORS_MARKUP = (
+    '<div class="flow-actors eyebrow"><span class="flow-actor">YOU</span>'
+    '<span class="flow-actor">YOUR AGENTS</span></div>'
+)
+FLOW_STEPS = (
+    ("to-agents", "Open an issue. Say what you want, in your words."),
+    ("to-you", "The agent asks what's unclear."),
+    ("to-agents", "You answer. The issue is now the spec."),
+    ("agents", "Builds a workflow and runs it. Every change lands on one branch in its own worktree."),
+    ("agents", "A review agent organizes the diff: what changed, why, where to look first."),
+    ("to-you", "“Ready for review” lands in your inbox."),
+    ("to-agents", "Comment on a line, or approve."),
+    ("you", "Merge. The branch cleans itself up."),
+)
+FLOW_RULES = (
+    ".flow{max-width:var(--flow-max-width);margin-inline:auto}",
+    '.flow-steps::before,.flow-steps::after{content:"";position:absolute;top:0;bottom:0;'
+    "width:var(--flow-line-width);background:var(--hairline-neutral)}",
+    ".flow-steps::before{left:var(--flow-lane-you)}",
+    ".flow-steps::after{left:var(--flow-lane-agents)}",
+    ".flow-step--to-agents::after{left:var(--flow-lane-agents);"
+    "border-left:var(--flow-arrow-length) solid var(--color-text-muted);transform:translate(-100%,50%)}",
+    ".flow-step--to-you::after{left:var(--flow-lane-you);"
+    "border-right:var(--flow-arrow-length) solid var(--color-text-muted);transform:translateY(50%)}",
+    ".flow-step--agents,.flow-step--you{width:var(--flow-lane-width);"
+    "padding:var(--flow-card-padding);background:var(--color-background);border:var(--hairline)}",
+    ".flow-step--agents{justify-self:end}",
+    ".flow-step--you{justify-self:start}",
+    ".flow-step-text{display:inline-block;background:var(--color-background);"
+    "padding-inline:var(--flow-text-padding)}",
+)
+FLOW_STEP_GAP_DESKTOP_TOKEN = "--flow-step-gap:30px"
+FLOW_STEP_GAP_MOBILE_TOKEN = "--flow-step-gap:22px"
+
 CTA_TITLE_MARKUP = (
     '<h2 class="section-title section-title--cta">Get in '
     '<span class="title-accent title-accent--glow">early.</span></h2>'
 )
 CTA_NOTE_MARKUP = (
-    '<p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>'
+    '<p class="note cta-note">PRIVATE BETA · RUNS ON YOUR MACHINE</p>'
 )
 CTA_NOTE_RULE = (
     ".cta-note{color:var(--color-text-secondary);"
@@ -748,6 +798,26 @@ def test_rail_has_five_dashes_with_the_first_active():
     assert html.count(ACTIVE_RAIL_DASH_MARKUP) == 1
     assert html.count(IDLE_RAIL_DASH_MARKUP) == IDLE_RAIL_DASH_COUNT
     assert html.index(ACTIVE_RAIL_DASH_MARKUP) < html.index(IDLE_RAIL_DASH_MARKUP)
+
+
+def test_flow_section_walks_one_run_between_you_and_your_agents():
+    html = _landing_html()
+    assert html.index(FEATURES_TITLE_MARKUP) < html.index(FLOW_SECTION_OPENER) < html.index(CTA_TITLE_MARKUP)
+    for markup in (FLOW_TITLE_MARKUP, FLOW_LABEL_MARKUP, FLOW_ACTORS_MARKUP):
+        assert markup in html
+    for kind, text in FLOW_STEPS:
+        inner = f'<span class="flow-step-text">{text}</span>' if kind.startswith("to-") else text
+        assert f'<li class="flow-step flow-step--{kind}">{inner}</li>' in html
+    assert html.count('<li class="flow-step ') == len(FLOW_STEPS)
+
+
+def test_flow_lifelines_arrows_and_activity_boxes_are_styled_from_tokens():
+    css = _landing_text(STYLESHEET_NAME)
+    for rule in FLOW_RULES:
+        assert rule in _rules_outside_media_blocks(css)
+    assert FLOW_STEP_GAP_DESKTOP_TOKEN in _rules_outside_media_blocks(css)
+    assert FLOW_STEP_GAP_MOBILE_TOKEN in css
+    assert FLOW_STEP_GAP_MOBILE_TOKEN not in _rules_outside_media_blocks(css)
 
 
 def test_cta_section_copy_is_verbatim():

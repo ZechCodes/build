@@ -17,8 +17,8 @@
   <div class="content-container hero-stage">
   <div class="hero-content">
     <p class="eyebrow hero-eyebrow">PRIVATE BETA</p>
-    <h1 class="section-title section-title--hero">Ship more.<br><span class="title-accent title-accent--glow">Babysit less.</span></h1>
-    <p class="lead">Build is the agentic coding IDE for teams. It surfaces the work that needs you — reviews, decisions, direction — and dispatches everything else to your agents. Not public yet.</p>
+    <h1 class="section-title section-title--hero">Ship more.<br><span class="title-accent title-accent--glow">Ship confidence.</span></h1>
+    <p class="lead">Build turns an issue into shipped code. An agent plans and builds it on your machine, and a review agent lays the changes out so you know exactly what went out and why.</p>
 {{waitlist}}
     <p class="note">One email to confirm, one when your invite is ready. Nothing else.</p>
   </div>
@@ -39,40 +39,59 @@
 </section>
 <section class="features-section rule-bottom" id="features"><div class="content-container features-body">
   <div class="section-header">
-    <h2 class="section-title">Everything agents need.<br>Nothing <span class="title-accent">you don't.</span></h2>
-    <span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>
+    <h2 class="section-title">From issue<br><span class="title-accent">to merge.</span></h2>
+    <span class="eyebrow eyebrow--muted section-label">HOW IT WORKS /05</span>
   </div>
   <div class="feature-cards" data-feature-rail>
     <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">ISSUES</span></div>
-      <h3 class="card-title">An inbox, not a backlog</h3>
-      <p class="card-body">Issues live next to the code. Agents pick them up on their own — your inbox shows only the work waiting on a human. When it's empty, you're done.</p>
+      <div class="card-header eyebrow"><span class="card-number">/01</span><span class="eyebrow--muted">ISSUE</span></div>
+      <h3 class="card-title">Start with the issue</h3>
+      <p class="card-body">Write what you want. Workshop it with an agent until it's clear enough to build. That conversation is the spec.</p>
     </article>
     <article class="feature-card" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">VERSION CONTROL</span></div>
-      <h3 class="card-title">Worktrees that manage themselves</h3>
-      <p class="card-body">Every agent works in its own worktree. Fetch, commit, review, merge — without leaving the conversation.</p>
+      <div class="card-header eyebrow"><span class="card-number">/02</span><span class="eyebrow--muted">WORKFLOW</span></div>
+      <h3 class="card-title">The agent plans the work</h3>
+      <p class="card-body">From the issue, the agent builds a workflow and runs it. Every change lands on one branch in its own worktree, so nothing touches main until you say so.</p>
     </article>
     <article class="feature-card feature-card--span-2" data-feature-card>
       <div class="card-header eyebrow"><span class="card-number">/03</span><span class="eyebrow--muted">REVIEW</span></div>
-      <h3 class="card-title">Diff-first review</h3>
-      <p class="card-body">Inline comments on any line, threaded with your team and your agents. Approve, redirect, or take over.</p>
+      <h3 class="card-title">Spot checks, not archaeology</h3>
+      <p class="card-body">A review agent organizes the diff: what changed, why, and where to look first. Comment on any line. Your notes go back as one instruction.</p>
     </article>
     <article class="feature-card feature-card--span-4" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">WORKFLOWS · RLM</span></div>
-      <h3 class="card-title">Workflows that reshape around the work</h3>
-      <p class="card-body">The RLM routes tasks, retries failures, and re-plans as the work changes — escalating only when it genuinely needs a human. Your team sees the same board, live.</p>
+      <div class="card-header eyebrow"><span class="card-number">/04</span><span class="eyebrow--muted">MERGE</span></div>
+      <h3 class="card-title">Approve and merge from the same screen</h3>
+      <p class="card-body">Git is the source of truth, so what you review is exactly what the agent did. Merge, and the branch cleans itself up.</p>
     </article>
     <article class="feature-card feature-card--span-6" data-feature-card>
-      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">AGENTS</span></div>
-      <h3 class="card-title">Any agent, side by side</h3>
-      <p class="card-body">Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, one shared history, one place to look.</p>
+      <div class="card-header eyebrow"><span class="card-number">/05</span><span class="eyebrow--muted">YOUR MACHINE</span></div>
+      <h3 class="card-title">Your code stays on your hardware</h3>
+      <p class="card-body">Agents run locally in your own harness. Check in from your phone. Nothing in the middle can read your repo.</p>
     </article>
   </div>
   <div class="rail-dashes"><i class="rail-dash is-active" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i><i class="rail-dash" data-rail-dash></i></div>
 </div></section>
+<section class="flow-section rule-bottom" id="flow"><div class="content-container">
+  <div class="section-header">
+    <h2 class="section-title">A run,<br><span class="title-accent">start to finish.</span></h2>
+    <span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN</span>
+  </div>
+  <div class="flow">
+    <div class="flow-actors eyebrow"><span class="flow-actor">YOU</span><span class="flow-actor">YOUR AGENTS</span></div>
+    <ol class="flow-steps">
+      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">Open an issue. Say what you want, in your words.</span></li>
+      <li class="flow-step flow-step--to-you"><span class="flow-step-text">The agent asks what's unclear.</span></li>
+      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">You answer. The issue is now the spec.</span></li>
+      <li class="flow-step flow-step--agents">Builds a workflow and runs it. Every change lands on one branch in its own worktree.</li>
+      <li class="flow-step flow-step--agents">A review agent organizes the diff: what changed, why, where to look first.</li>
+      <li class="flow-step flow-step--to-you"><span class="flow-step-text">“Ready for review” lands in your inbox.</span></li>
+      <li class="flow-step flow-step--to-agents"><span class="flow-step-text">Comment on a line, or approve.</span></li>
+      <li class="flow-step flow-step--you">Merge. The branch cleans itself up.</li>
+    </ol>
+  </div>
+</div></section>
 <section class="cta-section viewport-section" id="waitlist"><div class="content-container">
     <h2 class="section-title section-title--cta">Get in <span class="title-accent title-accent--glow">early.</span></h2>
-    <p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>
+    <p class="note cta-note">PRIVATE BETA · RUNS ON YOUR MACHINE</p>
 {{waitlist}}
 </div></section>

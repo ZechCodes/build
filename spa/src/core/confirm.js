@@ -4,6 +4,7 @@
 // DOM promise wrapper. Every user-supplied string is escaped.
 
 import { esc } from "./text.js";
+import { modalDialogHtml, openModal } from "./modal.js";
 
 const CONFIRM_SCRIM_ID = "confirm-scrim";
 
@@ -29,16 +30,15 @@ export function confirmModalHtml({
     ? `<ol class="confirm-steps">${actions.map((action) => `<li>${esc(action)}</li>`).join("")}</ol>`
     : "";
   const okClass = danger ? "btn primary danger" : "btn primary";
-  return (
-    `<div class="modal" role="dialog" aria-modal="true">` +
+  return modalDialogHtml(
     `<h3>${esc(title)}</h3>` +
-    introHtml +
-    warningsHtml +
-    stepsHtml +
-    `<div class="row">` +
-    `<button class="btn" data-confirm-cancel>${esc(cancelLabel)}</button>` +
-    `<button class="${okClass}" data-confirm-ok>${esc(confirmLabel)}</button>` +
-    `</div></div>`
+      introHtml +
+      warningsHtml +
+      stepsHtml +
+      `<div class="row">` +
+      `<button class="btn" data-confirm-cancel>${esc(cancelLabel)}</button>` +
+      `<button class="${okClass}" data-confirm-ok>${esc(confirmLabel)}</button>` +
+      `</div>`,
   );
 }
 
@@ -53,32 +53,21 @@ export function isConfirmOpen() {
  *  destructive verbs); Enter confirms only when focus is on the ok button. */
 export function confirmAction(opts) {
   return new Promise((resolve) => {
-    const scrim = document.createElement("div");
-    scrim.className = "modal-scrim";
-    scrim.id = CONFIRM_SCRIM_ID;
-    scrim.innerHTML = confirmModalHtml(opts);
-    document.body.appendChild(scrim);
-
+    // The modal's own ways out — Escape, the scrim — are a cancel, so the
+    // answer starts at false and only a press on Confirm moves it.
+    let answer = false;
+    const { body, close } = openModal({
+      dialogHtml: confirmModalHtml(opts),
+      scrimId: CONFIRM_SCRIM_ID,
+      onClose: () => resolve(answer),
+    });
     const settle = (confirmed) => {
-      document.removeEventListener("keydown", onKeydown, { capture: true });
-      scrim.remove();
-      resolve(confirmed);
+      answer = confirmed;
+      close();
     };
-    const onKeydown = (event) => {
-      if (event.key === "Escape") {
-        // Capture-phase + stopPropagation so an underlying sheet's Escape
-        // handler never sees this press.
-        event.stopPropagation();
-        settle(false);
-      }
-    };
-    document.addEventListener("keydown", onKeydown, { capture: true });
-
-    scrim.querySelector("[data-confirm-ok]").onclick = () => settle(true);
-    scrim.querySelector("[data-confirm-cancel]").onclick = () => settle(false);
-    scrim.onclick = (event) => {
-      if (event.target === scrim) settle(false);
-    };
-    scrim.querySelector("[data-confirm-cancel]").focus();
+    body.querySelector("[data-confirm-ok]").onclick = () => settle(true);
+    const cancel = body.querySelector("[data-confirm-cancel]");
+    cancel.onclick = () => settle(false);
+    cancel.focus();
   });
 }

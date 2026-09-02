@@ -292,3 +292,32 @@ Locked after the first revision shipped. SPA only.
   it runs, and holds its width with tabular figures.
 - **Shells carry `started_at`.** The bridge records the launch time on the
   shell entry so its row can tick. Fixture and wire shape updated together.
+
+## Revision 2026-09-02d: the workflow viewer for a narrow column
+
+The two-column workflow viewer (phases left, agents right) assumed width the
+rail never has. It becomes a vertical stack.
+
+- **Head**: one line with the workflow's name and state; the description
+  beneath it, clipped to two lines.
+- **Phases are collapsible sections**, stacked in order. A phase header is
+  one row: title, done/total count, and an aggregate clock at the right. The
+  clock is the phase's wall-clock span from its earliest agent's `started_at`:
+  ticking while any agent in it runs, frozen at its last agent's end once
+  none does, empty before it starts. It is styled like the row clocks (grey,
+  tabular, shimmer while ticking).
+- **Default open state**: the running phase is open; finished and pending
+  phases start collapsed. The reader's toggles are their own and survive
+  repaints (the fold is a `details` element the painter never rewrites).
+- **Agent rows inside a phase are two lines.** Line one: state mark, label,
+  and the row clock at the right. Line two: the model's display name (the
+  catalog's label for the id, "Opus 5 · 1m" for `claude-opus-5[1m]`, falling
+  back to the raw id), then the last tool or the result, clipped to one line.
+  Tokens and calls leave the rail's rows; the overlay, which has width, keeps
+  them on a third line.
+- **Primitives.** One phase-section renderer and one phase-clock model
+  function serve both the rail viewer and the overlay; the row renderer stays
+  the single agent-row renderer, with a `compact` flag deciding the third
+  line. Phase clocks tick through the same interval the row clocks use. No
+  new painter: the phase list is one keyed list of `details` elements, each
+  holding one keyed list of agent rows.

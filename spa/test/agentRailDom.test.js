@@ -1511,4 +1511,23 @@ describe("the agent's surfaces, pinned between the status line and the box", () 
     expect(document.activeElement).toBe(input);
     expect(railHost().querySelector(".surface-shells")).not.toBe(null);
   });
+
+  it("says so when the call a subagent row points at is outside the loaded conversation", async () => {
+    payload = branchRow({
+      agents: [
+        agent({
+          surfaces: {
+            subagents: [{ id: "s1", label: "parser reviewer", state: "running", call_sequence: 9999 }],
+          },
+        }),
+      ],
+    });
+    await mount();
+
+    railHost().querySelector('[data-surface-kind="subagents"]').click();
+    railHost().querySelector(".surface-subagents .surface-row").click();
+
+    expect(notifyError).toHaveBeenCalledTimes(1);
+    expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");
+  });
 });

@@ -34,7 +34,7 @@ import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
@@ -1090,112 +1090,129 @@ export function mountGitPane(
     else render();
   };
 
+  // What a press in the pane can mean. Each claim answers whether the press was
+  // its own; the first that answers owns it, and the order below is the whole
+  // of the arbitration — a control that sits inside another's target (the ⋯
+  // inside a file header, the offer inside a capped file) is claimed above it.
+  const claimSecret = (event) => toggleSecretSpoiler(event.target);
+
+  const claimFetch = (event) => {
+    if (!event.target.closest(".gtfetch")) return false;
+    runFetch();
+    return true;
+  };
+
+  // The Pull/Push/Stash split buttons wire their own behavior (including the
+  // force-push inline confirm inside runSyncOption). Their menu-item presses
+  // bubble here, so the claim is made and nothing done — otherwise the
+  // "disarm on any other press" fallthrough would clear the confirm the press
+  // just armed.
+  const claimSyncButton = (event) => Boolean(event.target.closest(".gtsync") || event.target.closest(".gtstash"));
+
+  const claimAbort = (event) => {
+    if (!event.target.closest(".gitabort")) return false;
+    confirmThen("abort", runAbort);
+    return true;
+  };
+
+  const claimDiscard = (event) => {
+    const button = event.target.closest(".gitdiscard");
+    if (!button) return false;
+    confirmThen(`discard:${button.dataset.path}`, () => runDiscard(button.dataset.path));
+    return true;
+  };
+
+  // The file header's ⋯ — where the per-file verbs live now that the stage
+  // checkboxes are gone. One menu is open at a time; a second press shuts it.
+  const claimFileMenu = (event) => {
+    const button = event.target.closest(".fmenu");
+    if (!button) return false;
+    const path = button.dataset.path;
+    fileMenuPath = fileMenuPath === path ? null : path;
+    clearConfirm();
+    render();
+    return true;
+  };
+
+  // Disagreeing with where the pass put a hunk. While the review plug owns the
+  // detail pane it owns its overlay too — this layer must not also claim it, or
+  // one press would post two disagreements.
+  const claimOverride = (event) => Boolean(!reviewMounted && overrides && overrides.handleClick(event));
+
+  // The trust dial: the reviewer says how much of the pass's reading they want.
+  // Remembered per project, so the answer is asked once.
+  const claimTrustDial = (event) => {
+    if (!event.target.closest(".tdial")) return false;
+    trustDial = !trustDial;
+    saveTrustDial(triageProject, trustDial);
+    render();
+    return true;
+  };
+
+  // A collapsed triage group: a press opens it, per changeset, across repaints —
+  // the same discipline the noise group is opened with.
+  const claimTriageGroup = (event) => {
+    const head = event.target.closest(".tgrouphead");
+    if (!head) return false;
+    const key = String(selected);
+    if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
+    const opened = expandedGroups.get(key);
+    const name = head.dataset.group;
+    if (opened.has(name)) opened.delete(name);
+    else opened.add(name);
+    render();
+    return true;
+  };
+
+  // The collapsed noise group at the bottom of a stack, opened per changeset.
+  const claimNoiseGroup = (event) => {
+    if (!event.target.closest(".noisehead")) return false;
+    const key = String(selected);
+    if (noiseExpanded.has(key)) noiseExpanded.delete(key);
+    else noiseExpanded.add(key);
+    render();
+    return true;
+  };
+
+  // Rail selection: the pinned entries and the commit rows. selectRail clears
+  // any armed confirm itself.
+  const claimRailRow = (event) => {
+    const pinned = event.target.closest(".rrow[data-sel]");
+    const commit = event.target.closest(".crow[data-hash]");
+    if (!pinned && !commit) return false;
+    selectRail(pinned ? pinned.dataset.sel : commit.dataset.hash);
+    return true;
+  };
+
+  // The stack's own presses, in the order both surfaces claim them. While the
+  // review plug owns the detail pane it owns its comments and its folds, so
+  // this layer offers neither — one tap must not write two comments.
+  const claims = [
+    claimSecret,
+    claimFetch,
+    claimSyncButton,
+    claimAbort,
+    claimDiscard,
+    claimFileMenu,
+    claimOverride,
+    claimTrustDial,
+    claimTriageGroup,
+    claimNoiseGroup,
+    claimRailRow,
+    ...stackClaims({
+      comments: () => (reviewMounted ? null : commentLayer),
+      openFile: () => openFile,
+      folds: () => (reviewMounted ? null : foldsHere()),
+      repaint: render,
+    }),
+  ];
+
   const handleClick = (event) => {
-    const target = event.target;
-    if (toggleSecretSpoiler(target)) return; // reveal/hide a masked dotenv value in a diff
-    if (target.closest(".gtfetch")) {
-      runFetch();
-      return;
-    }
-    // The Pull/Push/Stash split buttons wire their own behavior (including the
-    // force-push inline confirm inside runSyncOption). Their menu-item clicks
-    // bubble here, so bail before the "disarm on any other click" fallthrough —
-    // otherwise a click would clear the very confirm it just armed.
-    if (target.closest(".gtsync") || target.closest(".gtstash")) return;
-    const abortButton = target.closest(".gitabort");
-    if (abortButton) {
-      confirmThen("abort", runAbort);
-      return;
-    }
-    const discardButton = target.closest(".gitdiscard");
-    if (discardButton) {
-      confirmThen(`discard:${discardButton.dataset.path}`, () => runDiscard(discardButton.dataset.path));
-      return;
-    }
-    // The file header's ⋯ — where the per-file verbs live now that the stage
-    // checkboxes are gone. One menu is open at a time; a second click shuts it.
-    const menuButton = target.closest(".fmenu");
-    if (menuButton) {
-      const path = menuButton.dataset.path;
-      fileMenuPath = fileMenuPath === path ? null : path;
-      clearConfirm();
-      render();
-      return;
-    }
-    // Disagreeing with where the pass put a hunk. This runs BEFORE the comment
-    // and fold handling: the offer sits on a hunk row inside a capped file, and
-    // either would otherwise eat the press as "expand me" or "comment here".
-    // While the review plug owns the detail pane it owns its overlay too — this
-    // layer must not also claim it, or one press would post two disagreements.
-    if (!reviewMounted && overrides && overrides.handleClick(event)) return;
-    // The trust dial: the reviewer says how much of the pass's reading they
-    // want. Remembered per project, so the answer is asked once.
-    if (target.closest(".tdial")) {
-      trustDial = !trustDial;
-      saveTrustDial(triageProject, trustDial);
-      render();
-      return;
-    }
-    // A collapsed triage group: a click opens it, per changeset, across
-    // repaints — the same discipline the noise group is opened with.
-    const groupHead = target.closest(".tgrouphead");
-    if (groupHead) {
-      const key = String(selected);
-      if (!expandedGroups.has(key)) expandedGroups.set(key, new Set());
-      const opened = expandedGroups.get(key);
-      const name = groupHead.dataset.group;
-      if (opened.has(name)) opened.delete(name);
-      else opened.add(name);
-      render();
-      return;
-    }
-    // The collapsed noise group at the bottom of a stack: a click opens it (and
-    // the choice sticks per changeset across repaints).
-    if (target.closest(".noisehead")) {
-      const key = String(selected);
-      if (noiseExpanded.has(key)) noiseExpanded.delete(key);
-      else noiseExpanded.add(key);
-      render();
-      return;
-    }
-    // Rail selection: the pinned entries and the commit rows. selectRail
-    // clears any armed confirm itself.
-    const railRow = target.closest(".rrow[data-sel]");
-    if (railRow) {
-      selectRail(railRow.dataset.sel);
-      return;
-    }
-    const commitRow = target.closest(".crow[data-hash]");
-    if (commitRow) {
-      selectRail(commitRow.dataset.hash);
-      return;
-    }
-    // The comment affordances every changeset carries: ✎ on a file header, the
-    // tray's remove control, and a tap on a line of an expanded file. This runs
-    // BEFORE the fold handling: ✎ sits inside a capped file's header, and the
-    // fold handler would otherwise eat the click as "expand me". While the
-    // review plug owns the detail pane it owns its comments too — this layer
-    // must not also claim them, or one tap would write two comments.
-    if (!reviewMounted && commentLayer && commentLayer.handleClick(event)) return;
-    // Out of the diff and into the file: claimed before the folds, since the
-    // control sits in a capped file's header and the fold would otherwise eat
-    // the press as "expand me".
-    if (pressedOpenFile(target, openFile)) return;
-    // Diff folding for the changesets this pane draws: the filename bar shuts
-    // the file (and shows a shut one again), a press on a capped body opens
-    // it. Controls in the bar (⋯, ✎) keep their jobs. The fold is state, so
-    // the press moves the file's key and the changeset repaints from it —
-    // which is why the review plug, whose stack it does not own, does its own.
-    if (!reviewMounted && pressedFold(target, foldsHere())) {
-      render();
-      return;
-    }
-    // Any other click disarms a stale confirm before doing its own job.
+    for (const claim of claims) if (claim(event)) return;
+    // Nothing claimed it: a stale confirm is disarmed before the press does its
+    // own job.
     if (disarmConfirm()) render();
-    if (target.closest(".gitmore")) {
-      showMore();
-      return;
-    }
+    if (event.target.closest(".gitmore")) showMore();
   };
 
   /** A permanent scope rejection replaces the pane body (there is nothing to

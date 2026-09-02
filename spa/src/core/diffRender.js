@@ -193,7 +193,7 @@ export function pressedOpenFile(target, openFile) {
  *  capped body asks for the whole file. Returns whether the press was a fold —
  *  the caller repaints, since nothing else says what a file is wearing. */
 export function pressedFold(target, folds, viewed = null) {
-  const file = target.closest(FILE_ELEMENT);
+  const file = folds ? target.closest(FILE_ELEMENT) : null;
   if (!file) return false;
   const key = file.dataset.key;
   if (target.closest(".fhead") && !target.closest("button, input, label")) {
@@ -355,4 +355,29 @@ function sectionEntries(section, { opened, fileEntries, fileOptions }) {
 function sectionHeadHtml(section) {
   if (section.kind === "group") return triageGroupHeadHtml(section, true);
   return section.kind === "critical" ? `<div class="tsectionhead">Needs review first</div>` : "";
+}
+
+/** The presses the stack itself answers, in the one order both surfaces claim
+ *  them in: a comment first — the ✎ and the tray's × sit inside a file the fold
+ *  would otherwise eat the press for — then the way out into the file itself,
+ *  then the folds.
+ *
+ *  Each part of the stack's state is asked for rather than handed over: which
+ *  changeset is open, whether this surface may claim a press at all, and where
+ *  it can send a reader all move under the controller. A getter that answers
+ *  null is a claim this surface is not making.
+ */
+export function stackClaims({ comments, openFile, folds, viewed = () => null, repaint }) {
+  return [
+    (event) => {
+      const layer = comments();
+      return Boolean(layer && layer.handleClick(event));
+    },
+    (event) => pressedOpenFile(event.target, openFile()),
+    (event) => {
+      if (!pressedFold(event.target, folds(), viewed())) return false;
+      repaint();
+      return true;
+    },
+  ];
 }

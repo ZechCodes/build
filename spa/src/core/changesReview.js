@@ -19,7 +19,7 @@ import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
+import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
@@ -213,6 +213,57 @@ export function createReviewPlug({
     wire();
   }
 
+  // What a press in this stack can mean. Each claim answers whether the press
+  // was its own; the first that answers owns it.
+  const claimSecret = (event) => toggleSecretSpoiler(event.target);
+
+  const claimNoiseGroup = (event) => {
+    if (!event.target.closest(".noisehead")) return false;
+    noiseExpanded = !noiseExpanded;
+    render();
+    return true;
+  };
+
+  // The trust dial: the reviewer's own reading of how much of the pass's
+  // reading to take, remembered per project.
+  const claimTrustDial = (event) => {
+    if (!event.target.closest(".tdial")) return false;
+    trustDial = !trustDial;
+    saveTrustDial(triageProject, trustDial);
+    render();
+    return true;
+  };
+
+  // Disagreeing with where the pass put a hunk, before the comment layer sees
+  // the press: the offer sits on a hunk row, and a line tap there would
+  // otherwise open a comment on it.
+  const claimOverride = (event) => Boolean(overrides && overrides.handleClick(event));
+
+  const claimTriageGroup = (event) => {
+    const head = event.target.closest(".tgrouphead");
+    if (!head) return false;
+    const name = head.dataset.group;
+    if (expandedGroups.has(name)) expandedGroups.delete(name);
+    else expandedGroups.add(name);
+    render();
+    return true;
+  };
+
+  const claims = [
+    claimSecret,
+    claimNoiseGroup,
+    claimTrustDial,
+    claimOverride,
+    claimTriageGroup,
+    ...stackClaims({
+      comments: () => (trayMounted ? commentLayer : null),
+      openFile: () => openFile,
+      folds: () => folds,
+      viewed: () => viewedFiles,
+      repaint: render,
+    }),
+  ];
+
   /** The filter and the per-file Viewed box. Both are the reviewer's state and
    *  both repaint from it — the choice survives the poll because the stack is
    *  drawn from what they chose, not from what a press left in the DOM. */
@@ -232,45 +283,8 @@ export function createReviewPlug({
       else viewedFiles.delete(path);
       render();
     };
-    // What this plug answers for: revealing a masked secret, the noise group,
-    // the triage overlay's controls, the comment affordances (✎, a line tap,
-    // the tray's remove control), and the folds of the stack it draws.
     host.onclick = (event) => {
-      if (toggleSecretSpoiler(event.target)) return;
-      if (event.target.closest(".noisehead")) {
-        noiseExpanded = !noiseExpanded;
-        render();
-        return;
-      }
-      // The trust dial and the triage groups: the reviewer's own reading of how
-      // much of the pass's reading to take. The dial is remembered per project.
-      if (event.target.closest(".tdial")) {
-        trustDial = !trustDial;
-        saveTrustDial(triageProject, trustDial);
-        render();
-        return;
-      }
-      // Disagreeing with where the pass put a hunk, before the comment layer
-      // sees the press: the offer sits on a hunk row, and a line tap there
-      // would otherwise open a comment on it.
-      if (overrides && overrides.handleClick(event)) return;
-      const groupHead = event.target.closest(".tgrouphead");
-      if (groupHead) {
-        const name = groupHead.dataset.group;
-        if (expandedGroups.has(name)) expandedGroups.delete(name);
-        else expandedGroups.add(name);
-        render();
-        return;
-      }
-      // Out of the diff and into the file: claimed before the folds, since the
-      // control sits in a capped file's header and the fold would otherwise
-      // eat the press as "expand me".
-      if (pressedOpenFile(event.target, openFile)) return;
-      if (trayMounted && commentLayer && commentLayer.handleClick(event)) return;
-      // Folding, which this plug owns because it owns this stack: a press on
-      // the filename bar shuts the file, a press on a capped body opens it,
-      // and the repaint that follows draws both from the state.
-      if (pressedFold(event.target, folds, viewedFiles)) render();
+      for (const claim of claims) if (claim(event)) return;
     };
   }
 

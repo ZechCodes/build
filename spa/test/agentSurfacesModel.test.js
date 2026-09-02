@@ -104,6 +104,34 @@ describe("surfaceRows", () => {
     expect(rows.map((row) => row.key)).toEqual(["same", "shells-1"]);
   });
 
+  it("never lets a real id collide with the fallback namespace it hands out", () => {
+    const rows = surfaceRows("workflows", { workflows: [{ id: "workflows-1" }, {}] });
+    expect(rows.map((row) => row.key)).toEqual(["workflows-1", "workflows-2"]);
+    expect(agentRows([{ id: "agent-1" }, {}]).map((row) => row.key)).toEqual(["agent-1", "agent-2"]);
+  });
+
+  it("draws a workflow row without handing it a raw phases array", () => {
+    const rows = surfaceRows("workflows", {
+      workflows: [
+        {
+          id: "w1",
+          name: "Review",
+          state: "running",
+          phases: [{ title: "Read", agents: [{ label: "Reader" }] }, { title: "Write", agents: [] }],
+        },
+      ],
+    });
+    expect(rows[0]).toEqual({
+      key: "w1",
+      id: "w1",
+      name: "Review",
+      description: "",
+      state: "running",
+      stateMark: surfaceStateMark("workflows", "running"),
+      phaseCount: 2,
+    });
+  });
+
   it("delegates the subagents arm to agentRows rather than keying them a second way", () => {
     const subagents = [{ id: "a1", label: "Reader", state: "running" }];
     expect(surfaceRows("subagents", { subagents })).toEqual(agentRows(subagents));
@@ -209,6 +237,11 @@ describe("workflowPhases", () => {
 
   it("keys two id-less agents of a phase apart, so patchList never sees a duplicate", () => {
     expect(workflowPhases(workflow, 1).agents.map((row) => row.key)).toEqual(["agent-0", "agent-1"]);
+  });
+
+  it("keys a phase through the one keying function rather than a rule of its own", () => {
+    const named = workflowPhases({ phases: [{ id: "read", title: "Read" }, { title: "Write" }] }, 0);
+    expect(named.phases.map((phase) => phase.key)).toEqual(["read", "phase-1"]);
   });
 
   it("clamps a selection the workflow no longer has", () => {

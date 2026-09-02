@@ -9,27 +9,30 @@ const KIND_LABELS = {
   checklist: "Checklist",
 };
 
-const AGENT_STATE_MARKS = {
-  queued: { mark: "pending", label: "Queued" },
-  running: { mark: "running", label: "Running" },
-  done: { mark: "ok", label: "Done" },
+const AGENT_ENTRY_KIND = "subagents";
+
+const RUNNING_MARK = "running";
+const DONE_MARK = "ok";
+
+const RUN_STATE_MARKS = {
+  running: { mark: RUNNING_MARK, label: "Running" },
+  done: { mark: DONE_MARK, label: "Done" },
   failed: { mark: "error", label: "Failed" },
 };
 
-const RUN_STATE_MARKS = {
-  running: { mark: "running", label: "Running" },
-  done: { mark: "ok", label: "Done" },
-  failed: { mark: "error", label: "Failed" },
+const AGENT_STATE_MARKS = {
+  queued: { mark: "pending", label: "Queued" },
+  ...RUN_STATE_MARKS,
 };
 
 const STATE_MARKS_BY_KIND = {
   workflows: RUN_STATE_MARKS,
-  subagents: AGENT_STATE_MARKS,
+  [AGENT_ENTRY_KIND]: AGENT_STATE_MARKS,
   shells: RUN_STATE_MARKS,
   checklist: {
     pending: { mark: "pending", label: "Pending" },
-    in_progress: { mark: "running", label: "In progress" },
-    completed: { mark: "ok", label: "Completed" },
+    in_progress: { mark: RUNNING_MARK, label: "In progress" },
+    completed: { mark: DONE_MARK, label: "Completed" },
     blocked: { mark: "blocked", label: "Blocked" },
   },
 };
@@ -48,9 +51,9 @@ function entriesOfKind(surfaces, kind) {
   return Array.isArray(entries) ? entries : [];
 }
 
-function isLive(kind, entry) {
+function stateMarkIs(kind, entry, mark) {
   const stateMark = surfaceStateMark(kind, entry && entry.state);
-  return !!stateMark && stateMark.mark === "running";
+  return !!stateMark && stateMark.mark === mark;
 }
 
 export function surfacePills(surfaces) {
@@ -60,7 +63,7 @@ export function surfacePills(surfaces) {
       kind,
       label: KIND_LABELS[kind],
       count: entries.length,
-      live: entries.some((entry) => isLive(kind, entry)),
+      live: entries.some((entry) => stateMarkIs(kind, entry, RUNNING_MARK)),
     }));
 }
 
@@ -68,14 +71,29 @@ export function openSurfaceKind(surfaces, wanted) {
   return surfacePills(surfaces).some((pill) => pill.kind === wanted) ? wanted : null;
 }
 
+function claimKey(kind, id, index, claimed) {
+  if (id && !claimed.has(id)) return id;
+  let fallbackIndex = index;
+  while (claimed.has(`${kind}-${fallbackIndex}`)) fallbackIndex += 1;
+  return `${kind}-${fallbackIndex}`;
+}
+
 function keyedRows(kind, entries, normalise) {
   const claimed = new Set();
   return entries.map((entry, index) => {
     const id = entry && entry.id ? String(entry.id) : "";
-    const key = id && !claimed.has(id) ? id : `${kind}-${index}`;
+    const key = claimKey(kind, id, index, claimed);
     claimed.add(key);
-    return { key, ...normalise(entry || {}) };
+    return { key, ...normalise(entry || {}, index) };
   });
+}
+
+function phasesOf(workflow) {
+  return workflow && Array.isArray(workflow.phases) ? workflow.phases : [];
+}
+
+function agentsOf(phase) {
+  return phase && Array.isArray(phase.agents) ? phase.agents : [];
 }
 
 function lastToolText(lastTool) {
@@ -89,7 +107,7 @@ function agentRow(entry) {
     label: entry.label || "",
     model: entry.model || "",
     state: entry.state || "",
-    stateMark: surfaceStateMark("subagents", entry.state),
+    stateMark: surfaceStateMark(AGENT_ENTRY_KIND, entry.state),
     duration: Number.isFinite(entry.duration_ms) ? workingClock(entry.duration_ms / 1000) : "",
     tokens: Number.isFinite(entry.tokens) ? entry.tokens : null,
     toolCalls: Number.isFinite(entry.tool_calls) ? entry.tool_calls : null,
@@ -112,7 +130,7 @@ const ROW_NORMALISERS = {
     description: entry.description || "",
     state: entry.state || "",
     stateMark: surfaceStateMark("workflows", entry.state),
-    phases: Array.isArray(entry.phases) ? entry.phases : [],
+    phaseCount: phasesOf(entry).length,
   }),
   shells: (entry) => ({
     id: entry.id || null,
@@ -133,23 +151,21 @@ const ROW_NORMALISERS = {
 
 export function surfaceRows(kind, surfaces) {
   const entries = entriesOfKind(surfaces, kind);
-  if (kind === "subagents") return agentRows(entries);
+  if (kind === AGENT_ENTRY_KIND) return agentRows(entries);
   const normalise = ROW_NORMALISERS[kind];
   return normalise ? keyedRows(kind, entries, normalise) : [];
 }
 
 export function workflowPhases(workflow, selectedIndex) {
-  const phases = workflow && Array.isArray(workflow.phases) ? workflow.phases : [];
+  const phases = phasesOf(workflow);
   if (!phases.length) return { phases: [], agents: [] };
   const selected = selectedIndex >= 0 && selectedIndex < phases.length ? selectedIndex : 0;
-  const agentsOf = (phase) => (phase && Array.isArray(phase.agents) ? phase.agents : []);
   return {
-    phases: phases.map((phase, index) => ({
-      key: `phase-${index}`,
+    phases: keyedRows("phase", phases, (phase, index) => ({
       index,
-      title: (phase && phase.title) || "",
+      title: phase.title || "",
       total: agentsOf(phase).length,
-      done: agentsOf(phase).filter((agent) => agent && agent.state === "done").length,
+      done: agentsOf(phase).filter((agent) => stateMarkIs(AGENT_ENTRY_KIND, agent, DONE_MARK)).length,
       selected: index === selected,
     })),
     agents: agentRows(agentsOf(phases[selected])),

@@ -630,6 +630,14 @@ function deferred() {
   return { promise, settle };
 }
 
+const refused = () => {
+  let refuse;
+  const promise = new Promise((resolve, reject) => {
+    refuse = reject;
+  });
+  return { promise, refuse };
+};
+
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 /** The keys of the entries the list is showing — the ones on their way out are
@@ -739,6 +747,26 @@ describe("entries arriving and leaving under the caller's own motion", () => {
     await flush();
 
     expect(keysOf(list)).toEqual(["d", "a", "c"]);
+  });
+
+  it("takes the entry out when its exit fell over, and lets the failure through", async () => {
+    const list = listIn(document);
+    patchList(list, entriesFor("a", "b"), plan);
+    const exit = refused();
+    const failures = [];
+    const watchFailures = (error) => failures.push(error);
+    process.on("unhandledRejection", watchFailures);
+
+    patchList(list, entriesFor("a"), { ...plan, onExit: () => exit.promise });
+    expect(keysOf(list)).toEqual(["a", "b"]);
+
+    const fell = new Error("the exit fell over");
+    exit.refuse(fell);
+    await flush();
+    process.off("unhandledRejection", watchFailures);
+
+    expect(keysOf(list)).toEqual(["a"]);
+    expect(failures).toEqual([fell]);
   });
 
   it("leaves a departed entry out at once when the caller gave no onExit", () => {

@@ -496,7 +496,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .rail-status { display:flex; align-items:center; gap:6px; padding-bottom:6px;
   font-size:11.5px; color:var(--dim); }
 .rail-status[hidden] { display:none; }
+.rail-status-lead { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .rail-status-working { color:var(--accent); }
+.rail-status-starting { color:var(--dim); }
 /* Right-anchored, so the ticking timer never shoves the git facts around. */
 .rail-status-git { margin-left:auto; display:flex; align-items:center; gap:6px; }
 .rail-status-sync, .rail-status-stat { color:var(--dim); }

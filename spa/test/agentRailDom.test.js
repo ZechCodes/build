@@ -1271,7 +1271,7 @@ describe("the pinned status line above the composer", () => {
     expect(git).toBeTruthy();
     expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
     expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
-    expect(git.previousElementSibling.className).toBe("rail-status-working");
+    expect(git.previousElementSibling.className).toBe("rail-status-lead rail-status-working");
   });
 
   it("shows the startup event in the working slot while no turn is in flight", async () => {
@@ -1302,11 +1302,28 @@ describe("the pinned status line above the composer", () => {
     expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
   });
 
-  it("renders the startup line in the working slot, never beside a working clock", () => {
+  it("names the session's start in the harness that raised it", async () => {
+    payload = branchRow({
+      agents: [agent({ provider: "codex" })],
+      run: {
+        run_id: "run-3",
+        thread: {
+          sessions: [],
+          items: [{ type: "event", data: { event: "session_started", created_at: new Date(Date.now() - 120000).toISOString(), sequence: 1 } }],
+        },
+      },
+    });
+    await mount();
+    expect(railStatus().textContent).toContain("Codex session started");
+  });
+
+  it("renders the startup line in the lead slot, never beside a working clock", () => {
     const starting = railStatusHtml({ working: "", starting: "Run started · 2m ago", sync: "", stat: "" });
     expect(starting).toContain("sdot-inactive");
     expect(starting).toContain("Run started · 2m ago");
+    expect(starting).toContain('class="rail-status-lead rail-status-starting"');
     expect(starting).not.toContain("sdot-working");
+    expect(starting).not.toContain("rail-status-working");
 
     const working = railStatusHtml({ working: "5s", starting: "Run started · 2m ago", sync: "", stat: "" });
     expect(working).toContain("Working 5s");

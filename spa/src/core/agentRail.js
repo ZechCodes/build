@@ -226,6 +226,16 @@ export function syncStripPainters(bubbles, painted, faces) {
   });
 }
 
+const workingLine = (status) =>
+  status.working
+    ? `<span class="sdot sdot-working"></span><span class="rail-status-lead rail-status-working">Working ${esc(status.working)}</span>`
+    : "";
+
+const startingLine = (status) =>
+  status.starting
+    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-lead rail-status-starting">${esc(status.starting)}</span>`
+    : "";
+
 /** Pure: the line pinned above the composer — a pulsing dot and how long the
  *  work item's turn has been running while one is in flight, how far it
  *  stands from upstream, and its diffstat. "" when the status has nothing to
@@ -236,18 +246,13 @@ export function syncStripPainters(bubbles, painted, faces) {
  *  nothing is running yet, so nothing pulses. */
 export function railStatusHtml(status) {
   if (!status.working && !status.starting && !status.sync && !status.stat) return "";
-  const startingDot = status.starting
-    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-working">${esc(status.starting)}</span>`
-    : "";
-  const working = status.working
-    ? `<span class="sdot sdot-working"></span><span class="rail-status-working">Working ${esc(status.working)}</span>`
-    : startingDot;
+  const lead = workingLine(status) || startingLine(status);
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
   // The git facts ride one group anchored to the row's end, so the ticking
   // timer widens into open space instead of shoving them along.
   const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
-  return working + git;
+  return lead + git;
 }
 
 /** Pure: the ⋯ that lists the surfaces this agent has something in, in the
@@ -501,7 +506,8 @@ export function mountAgentRail(host, context) {
   const paintRailStatus = () => {
     const slot = host.querySelector("#rail-status");
     if (!slot) return;
-    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems()));
+    const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
+    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel));
     slot.innerHTML = html;
     slot.hidden = !html;
   };

@@ -316,6 +316,12 @@ describe("the startup line the status slot borrows from the conversation", () =>
     });
   });
 
+  it("names the session's start in the harness's own words", () => {
+    const items = [startup("session_started", 120)];
+    expect(startupStatusLine(items, "Codex")).toEqual({ title: "Codex session started", at: NOW - 120000 });
+    expect(railWorkStatus(null, NOW, items, "Codex").starting).toBe("Codex session started · 2m ago");
+  });
+
   it("says the title alone when the event carried no stamp", () => {
     const items = [{ type: "event", data: { event: "run_started" } }];
     expect(railWorkStatus(null, NOW, items).starting).toBe("Run started");

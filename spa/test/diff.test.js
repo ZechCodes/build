@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createFileFolds, fileKey, firstLineOf, parseDiff } from "../src/core/diff.js";
+import { createFileFolds, fileKey, firstLineOf, parseDiff, pathOf } from "../src/core/diff.js";
 
 const SAMPLE_PATCH = `diff --git a/greeting.py b/greeting.py
 new file mode 100644
@@ -81,34 +81,54 @@ describe("fileKey", () => {
 });
 
 describe("createFileFolds", () => {
-  it("starts with every file capped — neither opened nor shut", () => {
+  it("caps every file until the reader moves one", () => {
     const folds = createFileFolds();
-    expect(folds.expanded.size).toBe(0);
-    expect(folds.collapsed.size).toBe(0);
+    expect(folds.foldOf("EDIT:a.js")).toBe("capped");
+  });
+
+  it("shuts a file the reader ticked off as read, until they open it themselves", () => {
+    const folds = createFileFolds();
+    const viewed = new Set(["a.js"]);
+    expect(folds.foldOf("EDIT:a.js", { viewed })).toBe("shut");
+    folds.press("EDIT:a.js", { viewed });
+    expect(folds.foldOf("EDIT:a.js", { viewed })).toBe("open");
   });
 
   it("opens a file the reader pressed the body of", () => {
     const folds = createFileFolds();
-    folds.open("EDIT:a.js");
-    expect(folds.expanded.has("EDIT:a.js")).toBe(true);
-    expect(folds.collapsed.has("EDIT:a.js")).toBe(false);
+    folds.openBody("EDIT:a.js");
+    expect(folds.foldOf("EDIT:a.js")).toBe("open");
   });
 
   it("shuts an open file on the head press, and opens a shut one", () => {
     const folds = createFileFolds();
-    folds.open("EDIT:a.js");
-    folds.pressedHead("EDIT:a.js");
-    expect(folds.collapsed.has("EDIT:a.js")).toBe(true);
-    expect(folds.expanded.has("EDIT:a.js")).toBe(false);
-    folds.pressedHead("EDIT:a.js");
-    expect(folds.expanded.has("EDIT:a.js")).toBe(true);
-    expect(folds.collapsed.has("EDIT:a.js")).toBe(false);
+    folds.openBody("EDIT:a.js");
+    folds.press("EDIT:a.js");
+    expect(folds.foldOf("EDIT:a.js")).toBe("shut");
+    folds.press("EDIT:a.js");
+    expect(folds.foldOf("EDIT:a.js")).toBe("open");
   });
 
   it("shuts a capped file on the head press", () => {
     const folds = createFileFolds();
-    folds.pressedHead("EDIT:a.js");
-    expect(folds.collapsed.has("EDIT:a.js")).toBe(true);
+    folds.press("EDIT:a.js");
+    expect(folds.foldOf("EDIT:a.js")).toBe("shut");
+  });
+
+  it("keeps one changeset's folds out of another's", () => {
+    const folds = createFileFolds();
+    folds.openBody("EDIT:a.js");
+    expect(folds.foldOf("EDIT:b.js")).toBe("capped");
+  });
+});
+
+describe("pathOf", () => {
+  it("gives back the path a file key was made from", () => {
+    expect(pathOf(fileKey({ status: "EDIT", path: "src/a.js" }))).toBe("src/a.js");
+  });
+
+  it("keeps a path with a colon in it whole", () => {
+    expect(pathOf(fileKey({ status: "ADD", path: "docs/a:b.md" }))).toBe("docs/a:b.md");
   });
 });
 

@@ -163,4 +163,22 @@ describe("the review plug's folds", () => {
     expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
     plug.unmount();
   });
+
+  it("opens a file the reader ticked off and then asked to read again", async () => {
+    vi.useFakeTimers();
+    const { host, plug } = mountPlug({ submit: async () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const box = () => host.querySelector(".fviewed-box");
+    box().checked = true;
+    box().dispatchEvent(new window.Event("change", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(true);
+
+    host.querySelector(".fpath").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fileOf(host, "src/a.js").classList.contains("collapsed")).toBe(false);
+    expect(fileOf(host, "src/a.js").classList.contains("capped")).toBe(false);
+    expect(box().checked).toBe(true);
+    plug.unmount();
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { diffFilesHtml, diffRowsHtml, diffStackEntries, diffStackHtml } from "../src/core/diffRender.js";
-import { fileKey } from "../src/core/diff.js";
+import { createFileFolds, fileKey } from "../src/core/diff.js";
 
 const files = [
   {
@@ -279,21 +279,32 @@ describe("folds the reader owns", () => {
   });
 
   it("expands the file whose key the reader opened, and marks it for the patch guard", () => {
-    const html = diffFilesHtml(files, { expanded: new Set([keyA]) });
+    const folds = createFileFolds();
+    folds.openBody(keyA);
+    const html = diffFilesHtml(files, { folds });
     expect(html).toContain('class="file" data-file="a.js"');
     expect(html).toContain("data-expanded");
     expect(html).toContain('class="file capped" data-file="b.js"');
   });
 
   it("collapses the file the reader shut", () => {
-    const html = diffFilesHtml(files, { collapsed: new Set([keyA]) });
+    const folds = createFileFolds();
+    folds.press(keyA);
+    expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-file="a.js"');
+  });
+
+  it("collapses a viewed file the reader has not moved", () => {
+    const html = diffFilesHtml(files, { folds: createFileFolds(), viewed: new Set(["a.js"]) });
     expect(html).toContain('class="file collapsed" data-file="a.js"');
   });
 
-  it("keeps a viewed file collapsed even once it has been opened", () => {
-    const html = diffFilesHtml(files, { viewed: new Set(["a.js"]), expanded: new Set([keyA]) });
-    expect(html).toContain('class="file collapsed" data-file="a.js"');
-    expect(html).not.toContain("data-expanded");
+  it("opens a viewed file the reader asked to see again", () => {
+    const viewed = new Set(["a.js"]);
+    const folds = createFileFolds();
+    folds.press(keyA, { viewed });
+    const html = diffFilesHtml(files, { folds, viewed, withViewedToggle: true });
+    expect(html).toContain('class="file" data-file="a.js"');
+    expect(html).toContain('data-file="a.js" checked');
   });
 });
 

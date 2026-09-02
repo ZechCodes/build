@@ -34,7 +34,7 @@ import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { DIFF_PLACE_KEEPING, diffStackEntries } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
 import { mountSplitButton } from "./splitButton.js";
 import { toggleSecretSpoiler } from "./secrets.js";
@@ -604,8 +604,7 @@ export function mountGitPane(
       commentable,
       openable: Boolean(openFile),
       noiseExpanded: noiseExpanded.has(String(selected)),
-      expanded: folds.expanded,
-      collapsed: folds.collapsed,
+      folds,
       changedSince: changedSinceChangeset(reviewStamps, selected, files),
       // Review prioritization, on the changeset the reviewer has open — the
       // rail is never reordered, only the stack under it. A surface with no run
@@ -1190,13 +1189,13 @@ export function mountGitPane(
     // Out of the diff and into the file: claimed before the folds, since the
     // control sits in a capped file's header and the fold would otherwise eat
     // the press as "expand me".
-    if (openFilePressed(target)) return;
+    if (pressedOpenFile(target, openFile)) return;
     // Diff folding for the changesets this pane draws: the filename bar shuts
     // the file (and shows a shut one again), a press on a capped body opens
     // it. Controls in the bar (⋯, ✎) keep their jobs. The fold is state, so
     // the press moves the file's key and the changeset repaints from it —
     // which is why the review plug, whose stack it does not own, does its own.
-    if (!reviewMounted && foldPressed(target)) {
+    if (!reviewMounted && pressedFold(target, foldsHere())) {
       render();
       return;
     }
@@ -1206,31 +1205,6 @@ export function mountGitPane(
       showMore();
       return;
     }
-  };
-
-  /** Take the reader to the file itself when they press the way out. Returns
-   *  whether the press was that. */
-  const openFilePressed = (target) => {
-    const control = target.closest("[data-open-file]");
-    if (!control || !openFile) return false;
-    openFile({ path: control.dataset.openFile, line: Number(control.dataset.line) || null });
-    return true;
-  };
-
-  /** Answer a press on a file's fold affordance by moving its key in the open
-   *  changeset's folds. Returns whether the press was one — the caller
-   *  repaints, since nothing else drives what a file is wearing. */
-  const foldPressed = (target) => {
-    const fhead = target.closest(".fhead");
-    const file = target.closest(".file[data-key]");
-    if (!file) return false;
-    if (fhead && !target.closest("button, input, label")) {
-      foldsHere().pressedHead(file.dataset.key);
-      return true;
-    }
-    if (!file.classList.contains("capped")) return false;
-    foldsHere().open(file.dataset.key);
-    return true;
   };
 
   /** A permanent scope rejection replaces the pane body (there is nothing to

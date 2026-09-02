@@ -43,6 +43,13 @@ export function fileKey(file) {
   return `${file.status}:${file.path}`;
 }
 
+/** The path a file key was made from — the one string a comment, a discard and
+ *  a Viewed tick all speak in. */
+export function pathOf(key) {
+  const text = String(key);
+  return text.slice(text.indexOf(":") + 1);
+}
+
 /** The line a reader lands on when they leave the diff for the file itself:
  *  the first line the patch touches, or the top of the file when it names
  *  none (a pure deletion). */
@@ -51,31 +58,31 @@ export function firstLineOf(file) {
   return row ? row.n : 1;
 }
 
+const OPEN = "open";
+const SHUT = "shut";
+const CAPPED = "capped";
+
+/** The fold a file the reader has not touched wears: shut once they have
+ *  ticked it off as read, and otherwise the capped peek every file starts at. */
+function untouchedFold(key, viewed) {
+  return viewed && viewed.has(pathOf(key)) ? SHUT : CAPPED;
+}
+
 /** The folds of one changeset, as the reader left them.
  *
- *  Three states, two sets: a file the reader opened is in `expanded`, one they
- *  shut is in `collapsed`, and one they have not touched is in neither — the
- *  capped peek every file starts at. The render reads the sets; nothing reads
- *  the class list back. */
+ *  One state per file they moved — open or shut — and nothing at all for a file
+ *  they have not touched, which is what lets a Viewed tick shut a file without
+ *  standing in the way of the reader opening it again. The render asks
+ *  `foldOf`; the handlers ask `press` (the header, one control that shuts what
+ *  is showing and shows what is shut) and `openBody` (a press on the capped
+ *  peek). Nothing anywhere reads a class list back. */
 export function createFileFolds() {
-  const expanded = new Set();
-  const collapsed = new Set();
-  const open = (key) => {
-    expanded.add(key);
-    collapsed.delete(key);
-  };
-  const shut = (key) => {
-    collapsed.add(key);
-    expanded.delete(key);
-  };
+  const moved = new Map();
+  const foldOf = (key, { viewed = null } = {}) => moved.get(key) || untouchedFold(key, viewed);
   return {
-    expanded,
-    collapsed,
-    /** A press on the capped body: the reader asked for the whole file. */
-    open,
-    /** The file's header is one control: it shuts what is showing and shows
-     *  what is shut. */
-    pressedHead: (key) => (collapsed.has(key) ? open(key) : shut(key)),
+    foldOf,
+    press: (key, where) => moved.set(key, foldOf(key, where) === SHUT ? OPEN : SHUT),
+    openBody: (key) => moved.set(key, OPEN),
   };
 }
 

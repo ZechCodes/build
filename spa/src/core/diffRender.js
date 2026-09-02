@@ -6,7 +6,7 @@
 import { esc } from "./text.js";
 import { highlightCode, langForPath } from "./highlight.js";
 import { isDotenvPath, maskedDiffCellHtml } from "./secrets.js";
-import { fileKey, firstLineOf } from "./diff.js";
+import { createFileFolds, fileKey, firstLineOf } from "./diff.js";
 import { anchorTop } from "./paintKeepingPlace.js";
 import { groupNoiseFiles, noiseGroupLabel } from "./changesModel.js";
 import { planChangesetTriage, triageSummaryLine, overrideDirectionFor } from "./triageModel.js";
@@ -115,10 +115,11 @@ function overrideButtonHtml(mark) {
  *  files render `collapsed` instead of `capped` — collapsed wins); and
  *  `withViewedToggle` adds the per-file "Viewed" checkbox to each header.
  *
- *  Folds are the reader's, and they arrive as state: `expanded` and
- *  `collapsed` are sets of file keys (core/diff.js fileKey) the reader opened
- *  and shut, and `viewed` shuts a file besides ticking its box. Nothing here
- *  reads a class list back — the render is a function of those sets.
+ *  Folds are the reader's, and they arrive as state: `folds` is the changeset's
+ *  core/diff.js createFileFolds, and `viewed` is the set of paths ticked off as
+ *  read, which shuts a file the reader has not moved besides ticking its box.
+ *  Nothing here reads a class list back — the render is a function of that
+ *  state.
  *
  *  `fileMenu` puts the file's own destructive verbs behind a ⋯ in the header —
  *  where per-file discard lives now that the stage checkboxes are gone (commit
@@ -129,13 +130,16 @@ export function diffFilesHtml(files, options = {}) {
   return files.map((file) => diffFileHtml(file, options)).join("");
 }
 
-/** The fold one file wears, from the reader's state alone: what they shut (or
- *  ticked off as read) is collapsed, what they opened is whole, and everything
- *  else is the capped peek a file starts at. */
-function foldClassOf(file, { expanded, collapsed, viewed }) {
-  const key = fileKey(file);
-  if ((collapsed && collapsed.has(key)) || (viewed && viewed.has(file.path))) return "collapsed";
-  return expanded && expanded.has(key) ? "" : "capped";
+const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
+
+// A stack drawn without any reader behind it — a markup test, a surface that
+// never folds — asks the same question of the same module, so there is one
+// answer to it and no second rule about what an untouched file wears.
+const NOTHING_MOVED = createFileFolds();
+
+/** The fold one file wears, from the reader's state alone. */
+function foldClassOf(file, { folds, viewed }) {
+  return FOLD_CLASS[(folds || NOTHING_MOVED).foldOf(fileKey(file), { viewed })];
 }
 
 /** One file of a changeset: its header, its rows, and the fold the reader left
@@ -171,6 +175,35 @@ export function diffFileHtml(file, options = {}) {
 function openFileButtonHtml(file, openable) {
   if (!openable) return "";
   return `<button class="fopen" data-open-file="${esc(file.path)}" data-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
+}
+
+/** One file of a stack, wherever it is standing. */
+export const FILE_ELEMENT = ".file[data-key]";
+
+/** Take the reader to the file itself when they press the way out. Returns
+ *  whether the press was that. */
+export function pressedOpenFile(target, openFile) {
+  const control = target.closest("[data-open-file]");
+  if (!control || !openFile) return false;
+  openFile({ path: control.dataset.openFile, line: Number(control.dataset.line) || null });
+  return true;
+}
+
+/** Answer a press on a file's fold affordance by moving its key in `folds`: the
+ *  header is one control that shuts what is showing, and a press anywhere in a
+ *  capped body asks for the whole file. Returns whether the press was a fold —
+ *  the caller repaints, since nothing else says what a file is wearing. */
+export function pressedFold(target, folds, viewed = null) {
+  const file = target.closest(FILE_ELEMENT);
+  if (!file) return false;
+  const key = file.dataset.key;
+  if (target.closest(".fhead") && !target.closest("button, input, label")) {
+    folds.press(key, { viewed });
+    return true;
+  }
+  if (folds.foldOf(key, { viewed }) !== "capped") return false;
+  folds.openBody(key);
+  return true;
 }
 
 /** The file header's ⋯ and, when this file's menu is the open one, its verbs.

@@ -19,7 +19,7 @@ import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
 import { createFileFolds, parseDiff } from "./diff.js";
-import { DIFF_PLACE_KEEPING, diffStackEntries } from "./diffRender.js";
+import { DIFF_PLACE_KEEPING, diffStackEntries, pressedFold, pressedOpenFile } from "./diffRender.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
@@ -199,8 +199,7 @@ export function createReviewPlug({
           openable: Boolean(openFile),
           changedSince: changed,
           viewed: viewedFiles,
-          expanded: folds.expanded,
-          collapsed: folds.collapsed,
+          folds,
           withViewedToggle: editable,
           noiseExpanded,
           review:
@@ -283,32 +282,13 @@ export function createReviewPlug({
       // Out of the diff and into the file: claimed before the folds, since the
       // control sits in a capped file's header and the fold would otherwise
       // eat the press as "expand me".
-      const openControl = event.target.closest("[data-open-file]");
-      if (openControl && openFile) {
-        openFile({ path: openControl.dataset.openFile, line: Number(openControl.dataset.line) || null });
-        return;
-      }
+      if (pressedOpenFile(event.target, openFile)) return;
       if (trayMounted && commentLayer && commentLayer.handleClick(event)) return;
       // Folding, which this plug owns because it owns this stack: a press on
       // the filename bar shuts the file, a press on a capped body opens it,
-      // and the repaint that follows draws both from the sets.
-      if (foldPressed(event.target)) render();
+      // and the repaint that follows draws both from the state.
+      if (pressedFold(event.target, folds, viewedFiles)) render();
     };
-  }
-
-  /** Move the pressed file's key in the folds. Returns whether the press was a
-   *  fold at all — the caller repaints, since nothing else says what a file is
-   *  wearing. */
-  function foldPressed(target) {
-    const file = target.closest(".file[data-key]");
-    if (!file) return false;
-    if (target.closest(".fhead") && !target.closest("button, input, label")) {
-      folds.pressedHead(file.dataset.key);
-      return true;
-    }
-    if (!file.classList.contains("capped")) return false;
-    folds.open(file.dataset.key);
-    return true;
   }
 
   // The local cache's slot for this surface's aggregate diff, keyed by the

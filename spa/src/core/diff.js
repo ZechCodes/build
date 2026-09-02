@@ -71,8 +71,8 @@ export function createFileFolds() {
   return {
     expanded,
     collapsed,
+    /** A press on the capped body: the reader asked for the whole file. */
     open,
-    shut,
     /** The file's header is one control: it shuts what is showing and shows
      *  what is shut. */
     pressedHead: (key) => (collapsed.has(key) ? open(key) : shut(key)),

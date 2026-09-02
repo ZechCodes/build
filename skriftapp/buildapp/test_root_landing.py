@@ -35,6 +35,8 @@ BRAND_MARK_NAME = "brand-mark.svg"
 SCREENSHOT_NAMES = (
     "assets/build-ide-screenshot-1240.png",
     "assets/build-ide-screenshot-1860.png",
+    "assets/build-ide-screenshot-mobile-640.png",
+    "assets/build-ide-screenshot-mobile-921.png",
 )
 SCREENSHOT_BYTE_BUDGET = 400_000
 ASSET_MEDIA_TYPES = (
@@ -107,6 +109,7 @@ DESIGN_TOKENS = (
     "--color-accent-hover",
     "--color-background",
     "--color-screenshot-frame",
+    "--mask-screenshot-fade",
     "--color-on-accent",
     "--color-alert",
     "--color-text-primary",
@@ -151,6 +154,8 @@ DESIGN_TOKENS = (
     "--hero-padding-block-start",
     "--hero-padding-block-end",
     "--screenshot-padding-block",
+    "--screenshot-bleed",
+    "--screenshot-crop-aspect",
     "--features-padding-block",
     "--cta-padding-block",
     "--footer-padding",
@@ -260,13 +265,34 @@ HERO_NOTE_MARKUP = (
 )
 
 SCREENSHOT_MARKUP = (
-    '<img src="/landing/assets/build-ide-screenshot-1240.png" '
+    "<picture>\n"
+    '    <source media="(max-width: 640px)" '
+    'srcset="/landing/assets/build-ide-screenshot-mobile-640.png 640w, '
+    '/landing/assets/build-ide-screenshot-mobile-921.png 921w" '
+    'sizes="100vw" width="921" height="1880">\n'
+    '    <img src="/landing/assets/build-ide-screenshot-1240.png" '
     'srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, '
     '/landing/assets/build-ide-screenshot-1860.png 1860w" '
-    'sizes="(max-width: 640px) 100vw, (max-width: 1280px) calc(100vw - 80px), 1160px" '
-    'width="1860" height="1629" loading="lazy" decoding="async" '
-    'alt="The Build IDE — commit history, diff review, and a live agent conversation">'
+    'sizes="(max-width: 1280px) calc(100vw - 80px), 1160px" '
+    'width="1860" height="1081" decoding="async" '
+    'alt="The Build IDE — commit history, diff review, and a live agent conversation">\n'
+    "  </picture>"
 )
+HERO_SECTION_CLOSE_THEN_SCREENSHOT = '</section>\n<section class="screenshot-section">'
+SCREENSHOT_BLEED_RULE = (
+    ".screenshot-section{position:relative;z-index:1;"
+    "margin-top:calc(var(--screenshot-bleed) * -1);"
+    "padding-block:0 var(--screenshot-padding-block)}"
+)
+SCREENSHOT_FRAME_RULE = (
+    ".screenshot-frame{position:relative;background:var(--color-screenshot-frame);"
+    "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden;"
+    "mask-image:var(--mask-screenshot-fade)}"
+)
+SCREENSHOT_BLEED_DESKTOP_TOKEN = "--screenshot-bleed:80px"
+SCREENSHOT_BLEED_MOBILE_TOKEN = "--screenshot-bleed:24px"
+SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:2000 / 900"
+SCREENSHOT_CROP_MOBILE_TOKEN = "--screenshot-crop-aspect:921 / 900"
 
 AGENTS_LABEL_MARKUP = (
     '<p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>'
@@ -623,8 +649,28 @@ def test_hero_hosts_the_dot_field_canvas():
     assert DOT_FIELD_MARKUP in _landing_html()
 
 
-def test_screenshot_uses_both_renditions_with_the_designed_alt_text():
+def test_screenshot_serves_the_phone_capture_below_the_mobile_breakpoint():
     assert SCREENSHOT_MARKUP in _landing_html()
+
+
+def test_screenshot_bleeds_up_into_the_hero_and_fades_out_at_the_bottom():
+    html = _landing_html()
+    assert HERO_SECTION_CLOSE_THEN_SCREENSHOT in html
+    assert html.index(HERO_NOTE_MARKUP) < html.index(HERO_SECTION_CLOSE_THEN_SCREENSHOT)
+    css = _landing_text(STYLESHEET_NAME)
+    assert SCREENSHOT_BLEED_RULE in _rules_outside_media_blocks(css)
+    assert SCREENSHOT_FRAME_RULE in _rules_outside_media_blocks(css)
+
+
+def test_screenshot_bleed_and_crop_are_retuned_for_the_phone_capture():
+    css = _landing_text(STYLESHEET_NAME)
+    for desktop_token, mobile_token in (
+        (SCREENSHOT_BLEED_DESKTOP_TOKEN, SCREENSHOT_BLEED_MOBILE_TOKEN),
+        (SCREENSHOT_CROP_DESKTOP_TOKEN, SCREENSHOT_CROP_MOBILE_TOKEN),
+    ):
+        assert desktop_token in _rules_outside_media_blocks(css)
+        assert mobile_token in css
+        assert mobile_token not in _rules_outside_media_blocks(css)
 
 
 def test_every_agent_name_is_listed_with_supported():

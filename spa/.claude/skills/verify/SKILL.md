@@ -39,6 +39,25 @@ export default defineConfig({
 
 `npx vite --config vite.verify.config.js`
 
+A harness that imports the real `src/app.js` (to drive the shell — rail,
+toolbar, feed — with a fake `App.call`) drags the scanner into the transport
+anyway. Merge the main config (its libsodium shim serves the module in dev)
+and keep the transport out of the scan; prismjs is CommonJS, so the optimizer
+itself must stay on:
+
+```js
+import { mergeConfig } from "vite";
+import base from "./vite.config.js";
+export default mergeConfig(base, {
+  base: "/",
+  optimizeDeps: { entries: ["your-harness.html"], exclude: ["@build/secure-transport", "libsodium-wrappers", "libsodium"] },
+  server: { port: 5199, strictPort: true },
+});
+```
+
+Start the server as a background task, not with `&` — a shell-backgrounded
+process dies with the tool call.
+
 ## Driving
 
 Python Playwright is installed (pyenv 3.13.7, browsers cached):

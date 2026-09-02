@@ -14,6 +14,7 @@ globalThis.indexedDB = new IDBFactory();
 globalThis.IDBKeyRange = IDBKeyRange;
 
 const bodyHtml = readFileSync(resolve("index.html"), "utf8").match(/<body>([\s\S]*)<\/body>/)[1];
+const shellCss = readFileSync(resolve("src/styles/shell.css"), "utf8");
 
 const refreshFeed = vi.fn(async () => {});
 // A Set, matching the real module (core/taskFeed.js) — more than one
@@ -79,7 +80,9 @@ vi.mock("../src/core/agentCanvas.js", () => ({
 const { App } = await import("../src/app.js");
 const { setCacheDevice } = await import("../src/core/cacheScope.js");
 const { readCached, writeCached, wipeCache } = await import("../src/core/localCache.js");
-const { mountAgentRail, railStatusHtml, resetAgentRailMemory } = await import("../src/core/agentRail.js");
+const { mountAgentRail, railStatusGitHtml, railStatusLeadHtml, railStatusShape, resetAgentRailMemory } =
+  await import("../src/core/agentRail.js");
+const { motionSettled } = await import("../src/core/motion.js");
 const { insertRecord, resetOptimistic, runOptimistic } = await import("../src/core/optimistic.js");
 const { createAgentSelection } = await import("../src/core/agentSelection.js");
 const { createAdoptingCall } = await import("../src/core/adoption.js");
@@ -136,6 +139,9 @@ const panel = () => railHost().querySelector(".rail-panel");
 const tuiToggle = () => panel().querySelector(".rail-tui");
 const callsTo = (method) => calls.filter((call) => call.method === method);
 const railStatus = () => railHost().querySelector("#rail-status");
+const railStatusLead = () => railHost().querySelector("#rail-status-lead");
+const railStatusPills = () => railHost().querySelector("#rail-status-pills");
+const workingWord = () => railHost().querySelector(".rail-status-working-word");
 
 const pushFeed = async (snapshot) => {
   feedSnapshot = snapshot;
@@ -1218,7 +1224,7 @@ describe("the pinned status line above the composer", () => {
   it("pins nothing when the feed row has nothing to report", async () => {
     await mount();
     expect(railStatus().hidden).toBe(true);
-    expect(railStatus().textContent).toBe("");
+    expect(railStatus().textContent.trim()).toBe("");
   });
 
   it("pulses and clocks the turn while the branch is working", async () => {
@@ -1231,8 +1237,8 @@ describe("the pinned status line above the composer", () => {
     });
     await mount();
     expect(railStatus().hidden).toBe(false);
-    expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
-    expect(railStatus().textContent).toContain("Working 12m 30s");
+    expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
+    expect(railStatusLead().textContent).toBe("Working 12m 30s");
   });
 
   it("shows the diffstat and ahead/behind alongside, only when nonzero", async () => {
@@ -1244,7 +1250,7 @@ describe("the pinned status line above the composer", () => {
       projects: [],
     });
     await mount();
-    expect(railStatus().querySelector(".sdot-working")).toBeNull();
+    expect(railStatusLead().hidden).toBe(true);
     expect(railStatus().textContent).toContain("+4 −1");
     expect(railStatus().textContent).toContain("↑2");
     expect(railStatus().textContent).not.toContain("↓");
@@ -1267,7 +1273,8 @@ describe("the pinned status line above the composer", () => {
     expect(git).toBeTruthy();
     expect(git.querySelector(".rail-status-sync").textContent).toBe("↓1");
     expect(git.querySelector(".rail-status-stat").textContent).toBe("+104 −38");
-    expect(git.previousElementSibling.className).toBe("rail-status-lead rail-status-working");
+    expect(railStatus().lastElementChild).toBe(git);
+    expect(railStatus().firstElementChild).toBe(railStatusLead());
   });
 
   it("shows the startup event in the working slot while no turn is in flight", async () => {
@@ -1283,8 +1290,7 @@ describe("the pinned status line above the composer", () => {
     await mount();
     expect(railStatus().hidden).toBe(false);
     expect(railStatus().textContent).toContain("Run started · 2m ago");
-    expect(railStatus().querySelector(".sdot-working")).toBeNull();
-    expect(railStatus().querySelector(".sdot-inactive")).toBeTruthy();
+    expect(railStatusLead().className).toBe("rail-status-lead rail-status-starting");
 
     await pushFeed({
       items: [{
@@ -1295,7 +1301,7 @@ describe("the pinned status line above the composer", () => {
     });
     expect(railStatus().textContent).toContain("Working 5s");
     expect(railStatus().textContent).not.toContain("Run started");
-    expect(railStatus().querySelector(".sdot-working")).toBeTruthy();
+    expect(railStatusLead().className).toBe("rail-status-lead rail-status-working");
   });
 
   it("names the session's start in the harness that raised it", async () => {
@@ -1313,18 +1319,24 @@ describe("the pinned status line above the composer", () => {
     expect(railStatus().textContent).toContain("Codex session started");
   });
 
-  it("renders the startup line in the lead slot, never beside a working clock", () => {
-    const starting = railStatusHtml({ working: "", starting: "Run started · 2m ago", sync: "", stat: "" });
-    expect(starting).toContain("sdot-inactive");
-    expect(starting).toContain("Run started · 2m ago");
-    expect(starting).toContain('class="rail-status-lead rail-status-starting"');
-    expect(starting).not.toContain("sdot-working");
-    expect(starting).not.toContain("rail-status-working");
+  it("names the lead's shape, the working clock winning over the startup line", () => {
+    expect(railStatusShape({ working: "5s", starting: "Run started · 2m ago" })).toBe("working");
+    expect(railStatusShape({ working: "", starting: "Run started · 2m ago" })).toBe("starting");
+    expect(railStatusShape({ working: "", starting: "" })).toBe("quiet");
+  });
 
-    const working = railStatusHtml({ working: "5s", starting: "Run started · 2m ago", sync: "", stat: "" });
-    expect(working).toContain("Working 5s");
-    expect(working).not.toContain("Run started");
-    expect(railStatusHtml({ working: "", starting: "", sync: "", stat: "" })).toBe("");
+  it("gives the working shape a word of its own to collapse and a slot for the clock", () => {
+    expect(railStatusLeadHtml("working")).toContain('class="rail-status-working-word"');
+    expect(railStatusLeadHtml("working")).toContain('class="rail-status-text"');
+    expect(railStatusLeadHtml("starting")).not.toContain("rail-status-working-word");
+    expect(railStatusLeadHtml("starting")).toContain('class="rail-status-text"');
+    expect(railStatusLeadHtml("quiet")).toBe("");
+  });
+
+  it("says only the git facts it has, and nothing at all without them", () => {
+    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("↑2");
+    expect(railStatusGitHtml({ sync: "↑2", stat: "+4 −1" })).toContain("+4 −1");
+    expect(railStatusGitHtml({ sync: "", stat: "" })).toBe("");
   });
 
   it("ticks the elapsed time between feed reads", async () => {
@@ -1890,7 +1902,7 @@ describe("revisiting a conversation", () => {
   });
 });
 
-describe("the agent's surfaces, pinned between the status line and the box", () => {
+describe("the agent's surfaces, carried by the status row", () => {
   const shellSurfaces = {
     shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
   };
@@ -1900,12 +1912,12 @@ describe("the agent's surfaces, pinned between the status line and the box", () 
     await mount();
   };
 
-  it("mounts the pills between the status line and the box", async () => {
+  it("mounts the pills in the scroller between the lead and the git facts", async () => {
     await openPanelWithSurfaces();
 
     const block = railHost().querySelector(".rail-composer");
-    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", "rail-surfaces", ""]);
-    expect(block.querySelector('#rail-surfaces [data-surface-kind="shells"]')).not.toBe(null);
+    expect([...block.children].map((child) => child.id)).toEqual(["rail-status", ""]);
+    expect(block.querySelector('#rail-status-pills [data-surface-kind="shells"]')).not.toBe(null);
     expect(block.lastElementChild.querySelector("#railinput")).not.toBe(null);
   });
 
@@ -2278,5 +2290,95 @@ describe("sending to an agent that is already there", () => {
     expect(document.activeElement).toBe(composer());
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError).toHaveBeenCalledWith("Message failed", "the conversation is gone");
+  });
+});
+
+describe("the one status row", () => {
+  const checklistSurfaces = (state = "in_progress") => ({
+    checklist: [{ id: "c1", subject: "Land the fold", state }],
+  });
+
+  const aTurnInFlight = () =>
+    pushFeed({
+      items: [{
+        kind: "branch", project_id: "p1", branch: "build/login",
+        working: true, working_time: { since: new Date(Date.now() - 85000).toISOString(), seconds: 85 },
+        stat: { insertions: 4, deletions: 1, ahead: 2, behind: 0 },
+      }],
+      projects: [],
+    });
+
+  it("lays the row out lead, pills, git — and wears no dot anywhere", async () => {
+    payload = branchRow({ agents: [agent({ surfaces: checklistSurfaces() })] });
+    await aTurnInFlight();
+    await mount();
+
+    expect([...railStatus().children].map((child) => child.id)).toEqual([
+      "rail-status-lead",
+      "rail-status-pills",
+      "rail-status-git",
+    ]);
+    expect(railStatusPills().querySelector('[data-surface-kind="checklist"]')).toBeTruthy();
+    expect(railHost().querySelector(".sdot")).toBe(null);
+  });
+
+  it("reads Working and the clock while no pill is asking for the room", async () => {
+    await aTurnInFlight();
+    await mount();
+    await motionSettled();
+
+    expect(railStatusLead().textContent).toBe("Working 1m 25s");
+    expect(workingWord().hidden).toBe(false);
+  });
+
+  it("collapses the word Working under a pill and grows it back when the last one goes", async () => {
+    payload = branchRow({ agents: [agent({ surfaces: checklistSurfaces() })] });
+    await aTurnInFlight();
+    await mount();
+    await motionSettled();
+
+    expect(workingWord().hidden).toBe(true);
+    expect(railStatusLead().textContent).toContain("1m 25s");
+
+    payload = branchRow({ agents: [agent({ surfaces: {} })] });
+    vi.advanceTimersByTime(2000);
+    await flush();
+    await motionSettled();
+
+    expect(railStatusPills().querySelector(".surface-pill")).toBe(null);
+    expect(workingWord().hidden).toBe(false);
+  });
+
+  it("scrolls the pills in the room between the lead and the git facts, with no bar to show for it", () => {
+    const pillsRule = shellCss.match(/\.rail-status-pills \{[^}]*\}/)[0];
+    expect(pillsRule).toMatch(/overflow-x:auto/);
+    expect(pillsRule).toMatch(/scrollbar-width:none/);
+    expect(pillsRule).toMatch(/mask-image:linear-gradient/);
+    expect(shellCss).toMatch(/\.rail-status-pills::-webkit-scrollbar \{[^}]*display:none/);
+  });
+});
+
+describe("the viewer at the bottom of the conversation column", () => {
+  it("stands between the conversation and the composer, with nothing drawn between", async () => {
+    payload = branchRow({
+      agents: [agent({ surfaces: { shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: [] }] } })],
+    });
+    await mount();
+
+    expect([...panel().children].map((child) => child.className)).toEqual([
+      "rail-head",
+      "rail-body",
+      "rail-surfaces-viewer",
+      "rail-composer",
+    ]);
+    expect(railHost().querySelector("#rail-surfaces-viewer").hidden).toBe(true);
+  });
+
+  it("is drawn with no border and no divider of its own", () => {
+    const viewerRule = shellCss.match(/\.rail-surfaces-viewer \{[^}]*\}/)[0];
+    expect(viewerRule).toMatch(/max-height:34vh/);
+    expect(viewerRule).toMatch(/overflow-y:auto/);
+    expect(viewerRule).not.toMatch(/border:/);
+    expect(viewerRule).not.toMatch(/border-top/);
   });
 });

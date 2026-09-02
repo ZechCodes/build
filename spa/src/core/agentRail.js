@@ -51,7 +51,8 @@ import {
   runOptimistic,
   subscribeOptimistic,
 } from "./optimistic.js";
-import { patchList, rekeyEntry } from "./patchList.js";
+import { EXITING_ATTRIBUTE, patchList, rekeyEntry } from "./patchList.js";
+import { hide, reveal } from "./motion.js";
 import { composerHtml, mountComposerModelMenu } from "./composer.js";
 import { catalogForProvider, creatableCatalog, modelParams, providerCardsHtml } from "./modelPicker.js";
 import { markSeen } from "./inboxView.js";
@@ -95,7 +96,15 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
-const RAIL_SURFACES_ID = "rail-surfaces";
+const RAIL_STATUS_ID = "rail-status";
+const RAIL_STATUS_LEAD_ID = "rail-status-lead";
+const RAIL_STATUS_PILLS_ID = "rail-status-pills";
+const RAIL_STATUS_GIT_ID = "rail-status-git";
+const RAIL_VIEWER_ID = "rail-surfaces-viewer";
+const WORKING_WORD_SELECTOR = ".rail-status-working-word";
+const STATUS_TEXT_SELECTOR = ".rail-status-text";
+/** A pill that is in the row rather than on its way out of it. */
+const STANDING_PILL_SELECTOR = `.surface-pill:not([${EXITING_ATTRIBUTE}])`;
 const SURFACE_MENU_CLASS = "rail-surface-menu";
 const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
 const SURFACE_MENU_LABEL = "⋯";
@@ -224,30 +233,80 @@ export function syncStripPainters(bubbles, painted, faces) {
   });
 }
 
-const workingLine = (status) =>
-  status.working
-    ? `<span class="sdot sdot-working"></span><span class="rail-status-lead rail-status-working">Working ${esc(status.working)}</span>`
-    : "";
+const WORKING_SHAPE = "working";
+const STARTING_SHAPE = "starting";
+const QUIET_SHAPE = "quiet";
 
-const startingLine = (status) =>
-  status.starting
-    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-lead rail-status-starting">${esc(status.starting)}</span>`
-    : "";
+const RAIL_STATUS_LEAD_CLASS = {
+  [WORKING_SHAPE]: "rail-status-lead rail-status-working",
+  [STARTING_SHAPE]: "rail-status-lead rail-status-starting",
+  [QUIET_SHAPE]: "rail-status-lead",
+};
 
-/** Pure: the line pinned above the composer — a pulsing dot and how long the
- *  work item's turn has been running while one is in flight, how far it
- *  stands from upstream, and its diffstat. "" when the status has nothing to
- *  report, which the caller reads as "pin nothing." */
-export function railStatusHtml(status) {
-  if (!status.working && !status.starting && !status.sync && !status.stat) return "";
-  const lead = workingLine(status) || startingLine(status);
+/** Pure: which of the two things the row's lead is saying — how long the turn
+ *  in flight has been running, or when the session began — or that it has
+ *  nothing to say. */
+export function railStatusShape(status) {
+  if (status.working) return WORKING_SHAPE;
+  if (status.starting) return STARTING_SHAPE;
+  return QUIET_SHAPE;
+}
+
+/// Pure: the markup each shape of the lead is made of, written once when the
+/// shape changes and never again — the clock inside it is set as text.
+///
+/// "Working" is a span of its own because it is the one word the row gives up
+/// when the pills want the room, and a tick that rebuilt it would take the
+/// collapse with it.
+export function railStatusLeadHtml(shape) {
+  if (shape === WORKING_SHAPE) {
+    return `<span class="rail-status-working-word">Working</span> <span class="rail-status-text"></span>`;
+  }
+  if (shape === STARTING_SHAPE) return `<span class="rail-status-text"></span>`;
+  return "";
+}
+
+/** Pure: how far the work item stands from upstream and its diffstat, in one
+ *  group pinned to the row's end so the ticking clock widens into the pills'
+ *  room rather than shoving the facts along. */
+export function railStatusGitHtml(status) {
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
-  // The git facts ride one group anchored to the row's end, so the ticking
-  // timer widens into open space instead of shoving them along.
-  const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
-  return lead + git;
+  return sync + stat;
 }
+
+function paintStatusLead(lead, status) {
+  const shape = railStatusShape(status);
+  if (lead.dataset.shape !== shape) {
+    lead.dataset.shape = shape;
+    lead.className = RAIL_STATUS_LEAD_CLASS[shape];
+    lead.innerHTML = railStatusLeadHtml(shape);
+  }
+  lead.hidden = shape === QUIET_SHAPE;
+  const text = lead.querySelector(STATUS_TEXT_SELECTOR);
+  if (text) text.textContent = status.working || status.starting;
+}
+
+function paintStatusGit(git, status) {
+  const html = railStatusGitHtml(status);
+  if (git.innerHTML !== html) git.innerHTML = html;
+  git.hidden = !html;
+}
+
+/// The one row pinned above the composer: what the turn is doing, the pills the
+/// agent's surfaces put up, and the git facts — in that order, the pills
+/// scrolling in whatever room the other two leave them.
+const railStatusRowHtml = () =>
+  `<div class="rail-status" id="${RAIL_STATUS_ID}" hidden>
+    <span class="rail-status-lead" id="${RAIL_STATUS_LEAD_ID}" hidden></span>
+    <div class="rail-status-pills" id="${RAIL_STATUS_PILLS_ID}" role="group" aria-label="Agent surfaces"></div>
+    <span class="rail-status-git" id="${RAIL_STATUS_GIT_ID}" hidden></span>
+  </div>`;
+
+/// Where a pill's viewer opens: the last thing in the conversation column,
+/// above the line that tops the composer block, so it pushes the conversation
+/// up as it grows rather than covering it.
+const railViewerHostHtml = () => `<div class="rail-surfaces-viewer" id="${RAIL_VIEWER_ID}" hidden></div>`;
 
 function surfaceMenuHtml(options) {
   return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE, icon: true }) : "";
@@ -484,13 +543,33 @@ export function mountAgentRail(host, context) {
     return (window && window.items) || [];
   };
 
+  /// What the row says about itself once the lead, the pills and the git facts
+  /// have each had their say: whether there is anything in it to show, and
+  /// whether the word "Working" still has room to stand in.
+  ///
+  /// A pill on its way out has already given the word its room back, so the two
+  /// cross rather than queue.
+  const syncRailStatusRow = () => {
+    const row = host.querySelector(`#${RAIL_STATUS_ID}`);
+    if (!row) return;
+    const lead = row.querySelector(`#${RAIL_STATUS_LEAD_ID}`);
+    const pills = row.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
+    const git = row.querySelector(`#${RAIL_STATUS_GIT_ID}`);
+    row.hidden = lead.hidden && git.hidden && !pills.children.length;
+    const word = lead.querySelector(WORKING_WORD_SELECTOR);
+    if (!word) return;
+    if (pills.querySelector(STANDING_PILL_SELECTOR)) hide(word, { axis: "width" });
+    else reveal(word, { axis: "width" });
+  };
+
   const paintRailStatus = () => {
-    const slot = host.querySelector("#rail-status");
-    if (!slot) return;
+    const row = host.querySelector(`#${RAIL_STATUS_ID}`);
+    if (!row) return;
     const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
-    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel));
-    slot.innerHTML = html;
-    slot.hidden = !html;
+    const status = railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel);
+    paintStatusLead(row.querySelector(`#${RAIL_STATUS_LEAD_ID}`), status);
+    paintStatusGit(row.querySelector(`#${RAIL_STATUS_GIT_ID}`), status);
+    syncRailStatusRow();
   };
 
   const unsubscribePending = subscribeOptimistic(pendingAgentsScope(), () => paint());
@@ -675,7 +754,7 @@ export function mountAgentRail(host, context) {
       closeSurfaceMenu?.();
       panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
-        ${shownMode === "chat" ? composerRowHtml() : ""}`;
+        ${shownMode === "chat" ? `${railViewerHostHtml()}${composerRowHtml()}` : ""}`;
       panel.dataset.head = wantedHead;
       panel.dataset.body = wantedBody;
       wireHead(panel);
@@ -875,8 +954,7 @@ export function mountAgentRail(host, context) {
   /// bottom edge past the panel.
   const composerRowHtml = () =>
     `<div class="rail-composer" id="rail-composer">
-      <div class="rail-status" id="rail-status" hidden></div>
-      <div class="rail-surfaces" id="${RAIL_SURFACES_ID}"></div>
+      ${railStatusRowHtml()}
       ${composerHtml({
         inputId: COMPOSER_IDS.input,
         sendId: COMPOSER_IDS.send,
@@ -1005,9 +1083,16 @@ export function mountAgentRail(host, context) {
   const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
 
   const mountSurfaces = (panel) => {
-    const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
-    if (!region) return;
-    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerCallbacks() });
+    const pillHost = panel.querySelector(`#${RAIL_STATUS_PILLS_ID}`);
+    const viewerHost = panel.querySelector(`#${RAIL_VIEWER_ID}`);
+    if (!pillHost || !viewerHost) return;
+    surfacesBlock = mountAgentSurfaces({
+      pillHost,
+      viewerHost,
+      key: conversationKey(),
+      onPillsPainted: syncRailStatusRow,
+      ...surfaceViewerCallbacks(),
+    });
   };
 
   const disposeSurfaces = () => {

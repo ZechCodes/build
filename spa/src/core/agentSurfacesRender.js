@@ -16,6 +16,7 @@ const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
 const COMPLETED_FOLD_CLASS = "surface-completed";
 const COMPLETED_FOLD_HEAD_CLASS = "surface-completed-head";
+const PILL_COUNT_CLASS = "surface-pill-count";
 
 const VIEWER_CLASS = {
   viewer: "surface-viewer",
@@ -35,6 +36,7 @@ export const SURFACE_OVERLAY_BODY_SELECTOR = `.${SURFACE_OVERLAY_BODY_CLASS}`;
 export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
+export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
@@ -104,19 +106,18 @@ export function agentRowHtml(row) {
   });
 }
 
-function pillHtml(pill, openKind) {
-  return `<button type="button" class="surface-pill" data-surface-kind="${esc(pill.kind)}"
+/// One pill, and the cap its count rides in at the pill's end.
+///
+/// The cap is always in the markup and never taken out: `data-motion` says its
+/// shown-ness belongs to `core/motion.js`, which grows it into place when a
+/// count arrives and shrinks it away when the last of the work finishes — the
+/// pill closing up behind it rather than jumping a cap's width.
+export function surfacePillHtml(pill, openKind) {
+  return `<button type="button" class="surface-pill" data-motion data-surface-kind="${esc(pill.kind)}"
     aria-pressed="${pill.kind === openKind}">
     <span class="surface-pill-label">${esc(pill.label)}</span>
-    ${pill.count ? `<span class="surface-pill-count">${esc(pill.count)}</span>` : ""}
+    <span class="${PILL_COUNT_CLASS}" data-motion${pill.count ? "" : " hidden"}>${pill.count ? esc(pill.count) : ""}</span>
   </button>`;
-}
-
-export function surfacePillsHtml(pills, openKind) {
-  if (!pills.length) return "";
-  return `<div class="surface-pills" role="group" aria-label="Agent surfaces">${pills
-    .map((pill) => pillHtml(pill, openKind))
-    .join("")}</div>`;
 }
 
 export function workflowPhaseHtml(phase) {

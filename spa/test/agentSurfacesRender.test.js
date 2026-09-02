@@ -12,7 +12,7 @@ import {
   kindViewerHtml,
   runningAndCompletedViewerHtml,
   shellRowHtml,
-  surfacePillsHtml,
+  surfacePillHtml,
   workflowChoiceHtml,
   workflowPhaseHtml,
   workflowViewerHtml,
@@ -218,64 +218,62 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
   });
 });
 
-describe("surfacePillsHtml", () => {
-  const pills = surfacePills({
+describe("surfacePillHtml", () => {
+  const [busyPill, settledPill] = surfacePills({
     shells: [{ id: "s1", state: "running" }],
     checklist: [{ id: "t1", state: "completed" }],
   });
+  const rendered = (pill, openKind) => parseHtml(surfacePillHtml(pill, openKind)).firstElementChild;
 
   it("presses exactly the open kind and no other", () => {
-    const row = parseHtml(surfacePillsHtml(pills, "shells"));
-    const pressed = [...row.querySelectorAll("button")].map((button) => [
-      button.dataset.surfaceKind,
-      button.getAttribute("aria-pressed"),
-    ]);
-    expect(pressed).toEqual([
-      ["shells", "true"],
-      ["checklist", "false"],
-    ]);
+    expect(rendered(busyPill, "shells").getAttribute("aria-pressed")).toBe("true");
+    expect(rendered(settledPill, "shells").getAttribute("aria-pressed")).toBe("false");
   });
 
   it("presses nothing when no pill is open", () => {
-    const row = parseHtml(surfacePillsHtml(pills, null));
-    expect([...row.querySelectorAll("button")].map((button) => button.getAttribute("aria-pressed"))).toEqual([
-      "false",
-      "false",
-    ]);
+    expect(rendered(busyPill, null).getAttribute("aria-pressed")).toBe("false");
+    expect(rendered(settledPill, null).getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("counts the running work of a pill and says nothing at all for a pill with none", () => {
-    const row = parseHtml(surfacePillsHtml(pills, null));
-    const [busy, settled] = [...row.querySelectorAll("button")];
+  it("counts the running work in a cap at the pill's end, kept empty and out of the layout with none", () => {
+    const busy = rendered(busyPill, null);
+    expect([...busy.children].map((child) => child.className)).toEqual([
+      "surface-pill-label",
+      "surface-pill-count",
+    ]);
     expect(busy.querySelector(".surface-pill-count").textContent).toBe("1");
-    expect(settled.querySelector(".surface-pill-count")).toBe(null);
+
+    const settled = rendered(settledPill, null);
+    expect(settled.querySelector(".surface-pill-count").hidden).toBe(true);
     expect(settled.textContent.trim()).toBe("Checklist");
   });
 
+  // The cap grows and shrinks through core/motion.js, so whether it is in the
+  // layout is not the render's to say on any paint after the first.
+  it("hands the cap and the pill itself to the motion primitive", () => {
+    expect(rendered(busyPill, null).hasAttribute("data-motion")).toBe(true);
+    expect(rendered(busyPill, null).querySelector(".surface-pill-count").hasAttribute("data-motion")).toBe(true);
+  });
+
   it("renders a workflows pill whose only workflow has finished as the label alone", () => {
-    const finished = surfacePills({ workflows: [{ id: "w1", name: "Review", state: "done" }] });
-    const button = parseHtml(surfacePillsHtml(finished, null)).querySelector("button");
+    const [finished] = surfacePills({ workflows: [{ id: "w1", name: "Review", state: "done" }] });
+    const button = rendered(finished, null);
     expect(button.textContent.trim()).toBe("Workflows");
-    expect(button.querySelector(".surface-pill-count")).toBe(null);
+    expect(button.querySelector(".surface-pill-count").hidden).toBe(true);
   });
 
   it("wears no dot, the count being what says work is running", () => {
-    expect(surfacePillsHtml(pills, null)).not.toContain("sdot");
+    expect(surfacePillHtml(busyPill, null)).not.toContain("sdot");
   });
 
-  it("says the label and the count of each pill", () => {
-    const row = parseHtml(surfacePillsHtml(pills, "shells"));
-    expect(row.textContent).toContain("Shells");
-    expect(row.textContent).toContain("1");
-  });
-
-  it("draws nothing at all when no kind has content", () => {
-    expect(surfacePillsHtml([], null)).toBe("");
+  it("says the label and the count of the pill", () => {
+    const busy = rendered(busyPill, "shells");
+    expect(busy.textContent).toContain("Shells");
+    expect(busy.textContent).toContain("1");
   });
 
   it("escapes a pill label", () => {
-    const html = surfacePillsHtml([{ kind: "shells", label: HOSTILE_MARKUP, count: 1 }], null);
-    expectEscaped(html);
+    expectEscaped(surfacePillHtml({ kind: "shells", label: HOSTILE_MARKUP, count: 1 }, null));
   });
 });
 

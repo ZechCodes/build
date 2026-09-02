@@ -76,7 +76,9 @@ import {
   wireThreadRevisionLinks,
   writeThreadKeepingComposer,
 } from "./thread.js";
-import { mountAgentSurfaces } from "./agentSurfaces.js";
+import { mountAgentSurfaces, openSurfaceOverlay } from "./agentSurfaces.js";
+import { surfaceMenuOptions } from "./agentSurfacesModel.js";
+import { menuButtonMarkup, mountMenuIfChanged } from "./splitButton.js";
 import { mountAgentTab } from "./surfaceTabs.js";
 import "../styles/shell.css";
 
@@ -94,6 +96,10 @@ const OLDER_ITEMS_TRIGGER_PX = 120;
 const EXPANDED_KEY = "build.rail.expanded";
 const COMPOSER_IDS = { input: "railinput", send: "railsend", hint: "railhint" };
 const RAIL_SURFACES_ID = "rail-surfaces";
+const SURFACE_MENU_CLASS = "rail-surface-menu";
+const SURFACE_MENU_SELECTOR = `.${SURFACE_MENU_CLASS}`;
+const SURFACE_MENU_LABEL = "⋯";
+const SURFACE_MENU_TITLE = "Open a surface";
 const AGENT_NOT_YET_BORN = "ghost";
 
 // What makes this page's faces this page's own. An agent's pattern is drawn
@@ -218,45 +224,55 @@ export function syncStripPainters(bubbles, painted, faces) {
   });
 }
 
+const workingLine = (status) =>
+  status.working
+    ? `<span class="sdot sdot-working"></span><span class="rail-status-lead rail-status-working">Working ${esc(status.working)}</span>`
+    : "";
+
+const startingLine = (status) =>
+  status.starting
+    ? `<span class="sdot sdot-inactive"></span><span class="rail-status-lead rail-status-starting">${esc(status.starting)}</span>`
+    : "";
+
 /** Pure: the line pinned above the composer — a pulsing dot and how long the
  *  work item's turn has been running while one is in flight, how far it
  *  stands from upstream, and its diffstat. "" when the status has nothing to
  *  report, which the caller reads as "pin nothing." */
 export function railStatusHtml(status) {
-  if (!status.working && !status.sync && !status.stat) return "";
-  const working = status.working
-    ? `<span class="sdot sdot-working"></span><span class="rail-status-working">Working ${esc(status.working)}</span>`
-    : "";
+  if (!status.working && !status.starting && !status.sync && !status.stat) return "";
+  const lead = workingLine(status) || startingLine(status);
   const sync = status.sync ? `<span class="rail-status-sync mono">${esc(status.sync)}</span>` : "";
   const stat = status.stat ? `<span class="rail-status-stat mono">${esc(status.stat)}</span>` : "";
   // The git facts ride one group anchored to the row's end, so the ticking
   // timer widens into open space instead of shoving them along.
   const git = sync || stat ? `<span class="rail-status-git">${sync}${stat}</span>` : "";
-  return working + git;
+  return lead + git;
 }
 
-/** Pure: the panel's header — who you are talking to, the controls that go with
- *  it (which face of the agent you are looking at, and the way out), and, on an
- *  agent that can be taken back off, the `−` that mirrors the strip's `+`.
- *
- *  `hasTerminal` false drops the TUI button rather than dimming it: an agent
- *  that reports its own work has no basement, so there is nothing behind that
- *  control to offer. The switch is then one button, which still says which face
- *  you are on. */
-export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true } = {}) {
+function surfaceMenuHtml(options) {
+  return options.length ? menuButtonMarkup(SURFACE_MENU_LABEL, options, { title: SURFACE_MENU_TITLE }) : "";
+}
+
+function surfaceMenuRegionHtml(options) {
+  return `<span class="${SURFACE_MENU_CLASS}">${surfaceMenuHtml(options)}</span>`;
+}
+
+export function panelHeadHtml(who, mode, { removable = false, hasTerminal = true, surfaceOptions = [] } = {}) {
   const removeTitle = `Remove ${who} from this branch`;
   const remove = removable
     ? `<button type="button" class="iconbtn rail-remove" title="${esc(removeTitle)}"
         aria-label="${esc(removeTitle)}">−</button>`
     : "";
+  const showingTui = mode === "tui";
+  const tuiTitle = showingTui ? "Back to the conversation" : "Show the terminal";
   const tui = hasTerminal
-    ? `<button type="button" class="rail-mode${mode === "tui" ? " on" : ""}" data-mode="tui">TUI</button>`
+    ? `<button type="button" class="rail-mode rail-tui${showingTui ? " on" : ""}"
+        aria-pressed="${showingTui}" title="${tuiTitle}">TUI</button>`
     : "";
   return `<div class="rail-head">
     <span class="rail-who">${esc(who)}</span>
-    <div class="rail-modes" role="group" aria-label="Conversation or terminal">
-      <button type="button" class="rail-mode${mode === "chat" ? " on" : ""}" data-mode="chat">Chat</button>
-      ${tui}</div>
+    ${tui}
+    ${surfaceMenuRegionHtml(surfaceOptions)}
     ${remove}<button type="button" class="iconbtn rail-collapse" title="Collapse the conversation"
       aria-label="Collapse the conversation">›</button>
   </div>`;
@@ -337,7 +353,7 @@ export function mountAgentRail(host, context) {
    *  a repaint that absorbed nothing new writes nothing. */
   const persistThreadWindow = () => {
     const address = threadCacheAddress();
-    const window = threadCache.exportWindow();
+    const window = threadCache.readWindow();
     if (!address || !window || window.deliveredSequence === lastPersistedSequence) return;
     lastPersistedSequence = window.deliveredSequence;
     writeCached(address, window);
@@ -380,6 +396,9 @@ export function mountAgentRail(host, context) {
   let composerControl = null;
   let composerModelMenu = null;
   let surfacesBlock = null;
+  let surfaceOverlay = null; // the surface a menu option opened, over the panel
+  let closeSurfaceMenu = null; // shuts the head's ⋯, and with it its outside-press watch
+
 
   const agentIdOf = (agent) => agent.id;
 
@@ -460,10 +479,16 @@ export function mountAgentRail(host, context) {
       ? { name: "issue", projectId: context.projectId, id: context.issueId }
       : { name: "branch", projectId: context.projectId, branch: context.branch };
 
+  const loadedConversationItems = () => {
+    const window = threadCache.readWindow();
+    return (window && window.items) || [];
+  };
+
   const paintRailStatus = () => {
     const slot = host.querySelector("#rail-status");
     if (!slot) return;
-    const html = railStatusHtml(railWorkStatus(feedRow, Date.now()));
+    const openAgentLabel = providerLabel((agentOf(selectedId) || {}).provider);
+    const html = railStatusHtml(railWorkStatus(feedRow, Date.now(), loadedConversationItems(), openAgentLabel));
     slot.innerHTML = html;
     slot.hidden = !html;
   };
@@ -603,6 +628,8 @@ export function mountAgentRail(host, context) {
       host.insertBefore(panel, strip);
     } else if (!expanded && panel) {
       disposeTui();
+      disposeSurfaces();
+      closeSurfaceMenu?.();
       panel.remove();
     }
     if (expanded) paintPanel();
@@ -645,7 +672,8 @@ export function mountAgentRail(host, context) {
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();
-      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal })}
+      closeSurfaceMenu?.();
+      panel.innerHTML = `${panelHeadHtml(who, shownMode, { removable, hasTerminal, surfaceOptions: surfaceMenuOptionsInFocus() })}
         <div class="rail-body" id="rail-body"></div>
         ${shownMode === "chat" ? composerRowHtml() : ""}`;
       panel.dataset.head = wantedHead;
@@ -666,10 +694,17 @@ export function mountAgentRail(host, context) {
       // after the fact), or the last agent beside this one went away. Nothing
       // else in the head can move on a poll, and rewriting it every tick would
       // eat a press that landed mid-repaint.
-      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, { removable, hasTerminal });
+      closeSurfaceMenu?.();
+      panel.querySelector(".rail-head").outerHTML = panelHeadHtml(who, shownMode, {
+        removable,
+        hasTerminal,
+        surfaceOptions: surfaceMenuOptionsInFocus(),
+      });
       panel.dataset.head = wantedHead;
       wireHead(panel);
     }
+    paintSurfaceMenu(panel);
+    syncSurfaceOverlay();
     if (shownMode === "chat") {
       paintChat();
       paintRailStatus();
@@ -677,17 +712,14 @@ export function mountAgentRail(host, context) {
   };
 
   const wireHead = (panel) => {
-    panel.querySelectorAll("[data-mode]").forEach((control) => {
-      control.onclick = () => {
-        // The terminal is asked for through a button the head only draws for an
-        // agent that has one, so a press cannot name a face this agent cannot
-        // wear — paintPanel decides that, and this only records the choice.
-        if (mode === control.dataset.mode) return;
-        mode = control.dataset.mode;
+    const tuiToggle = panel.querySelector(".rail-tui");
+    if (tuiToggle) {
+      tuiToggle.onclick = () => {
+        mode = mode === "tui" ? "chat" : "tui";
         panelModes.set(key, mode);
         paintPanel();
       };
-    });
+    }
     const remove = panel.querySelector(".rail-remove");
     if (remove) remove.onclick = () => removeAgent();
     const collapse = panel.querySelector(".rail-collapse");
@@ -718,7 +750,7 @@ export function mountAgentRail(host, context) {
     // history the cache holds for this very agent — is what paints: a reader
     // in an active branch is never shown an empty frame the disk can fill.
     if (threadOwner !== selectedId) {
-      const saved = threadCache.exportWindow();
+      const saved = threadCache.readWindow();
       return saved ? { items: saved.items } : null;
     }
     if (!entity.thread) return null;
@@ -726,7 +758,7 @@ export function mountAgentRail(host, context) {
     // renders the window the cache holds (what absorb would answer anyway).
     // Only a delta that never seated a window re-renders itself as it came.
     if (entity.thread === absorbedThreadPayload) {
-      const held = threadCache.exportWindow();
+      const held = threadCache.readWindow();
       return held ? { ...entity.thread, items: held.items } : { ...entity.thread };
     }
     absorbedThreadPayload = entity.thread;
@@ -954,23 +986,32 @@ export function mountAgentRail(host, context) {
     syncSurfaces();
   };
 
+  const surfaceViewerCallbacks = () => ({
+    onSendMessage: (message) => send(message, []),
+    onOpenThreadItem: (sequence) => {
+      if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
+      notifyError(
+        "That call is not in the loaded conversation",
+        "Scroll back to load older items, then press the row again.",
+      );
+    },
+  });
+
+  const surfacesInFocus = () => {
+    const agent = agentInFocus();
+    return (agent && agent.surfaces) || null;
+  };
+
+  const surfaceMenuOptionsInFocus = () => surfaceMenuOptions(surfacesInFocus());
+
   const mountSurfaces = (panel) => {
     const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
     if (!region) return;
-    surfacesBlock = mountAgentSurfaces(region, {
-      key: conversationKey(),
-      onSendMessage: (message) => send(message, []),
-      onOpenThreadItem: (sequence) => {
-        if (revealThreadSequence(host.querySelector("#rail-body"), sequence)) return;
-        notifyError(
-          "That call is not in the loaded conversation",
-          "Scroll back to load older items, then press the row again.",
-        );
-      },
-    });
+    surfacesBlock = mountAgentSurfaces(region, { key: conversationKey(), ...surfaceViewerCallbacks() });
   };
 
   const disposeSurfaces = () => {
+    closeSurfaceOverlay();
     if (!surfacesBlock) return;
     surfacesBlock.dispose();
     surfacesBlock = null;
@@ -978,8 +1019,37 @@ export function mountAgentRail(host, context) {
 
   const syncSurfaces = () => {
     if (!surfacesBlock) return;
-    const agent = agentInFocus();
-    surfacesBlock.set((agent && agent.surfaces) || null);
+    surfacesBlock.set(surfacesInFocus());
+  };
+
+  const paintSurfaceMenu = (panel) => {
+    const region = panel.querySelector(SURFACE_MENU_SELECTOR);
+    if (!region) return;
+    closeSurfaceMenu = mountMenuIfChanged(region, surfaceMenuHtml(surfaceMenuOptionsInFocus()), {
+      onChoose: openSurfaceOverlayForKind,
+    });
+  };
+
+  const openSurfaceOverlayForKind = (kind) => {
+    closeSurfaceOverlay();
+    surfaceOverlay = openSurfaceOverlay(kind, {
+      ...surfaceViewerCallbacks(),
+      onClose: () => {
+        surfaceOverlay = null;
+      },
+    });
+    syncSurfaceOverlay();
+  };
+
+  const syncSurfaceOverlay = () => {
+    if (!surfaceOverlay) return;
+    surfaceOverlay.set(surfacesInFocus());
+  };
+
+  const closeSurfaceOverlay = () => {
+    if (!surfaceOverlay) return;
+    surfaceOverlay.close();
+    surfaceOverlay = null;
   };
 
   /** A reference in the conversation goes where it points, as far as the two
@@ -1429,6 +1499,7 @@ export function mountAgentRail(host, context) {
       unsubscribeFeed();
       disposeTui();
       disposeSurfaces();
+      closeSurfaceMenu?.();
       releaseFaces();
       host.innerHTML = "";
     },

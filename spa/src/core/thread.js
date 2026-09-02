@@ -1,7 +1,7 @@
 import { esc } from "./text.js";
 import { renderMarkdown } from "./markdown.js";
 import { patchElement } from "./domPatch.js";
-import { completionReportSections } from "./agentRailModel.js";
+import { EVENT_META, completionReportSections, eventLabel, isStartupEvent } from "./threadEvents.js";
 import {
   INTERRUPT_SEND_OPTION,
   autoGrow,
@@ -15,63 +15,6 @@ import {
 import { mountSplitMenu } from "./splitButton.js";
 import { outcomeMarkHtml } from "./outcomeMark.js";
 import { providerLabel } from "./modelPicker.js";
-
-const EVENT_META = {
-  session_started: { label: "Agent session started", icon: "▶" },
-  session_ended: { label: "Agent session ended", icon: "■" },
-  run_started: { label: "Run started", icon: "▶" },
-  run_failed: { label: "Agent reported failure", icon: "×", tone: "blocked" },
-  blocked: { label: "Agent reported a blocker", icon: "!", tone: "blocked" },
-  review_blocked: { label: "Review blocked", icon: "!", tone: "blocked" },
-  idle_unreported: { label: "Agent went idle without reporting", icon: "…", tone: "blocked" },
-  done: { label: "Agent reported done", icon: "✓", tone: "success" },
-  revision_created: { label: "Revision created", icon: "↻" },
-  approved: { label: "Issue ready", icon: "✓", tone: "success" },
-  stage_approved: { label: "Stage approved", icon: "✓", tone: "success" },
-  stage_started: { label: "Stage implementation started", icon: "▶" },
-  implementation_started: { label: "Implementation started", icon: "▶" },
-  worktree_reused: { label: "Implementation worktree reused", icon: "↻", tone: "success" },
-  worktree_recreated: { label: "Implementation worktree recreated", icon: "↻", tone: "success" },
-  worktree_deleted: { label: "Implementation worktree deleted", icon: "×", tone: "blocked" },
-  recovery_started: { label: "Verified recovery started", icon: "▶" },
-  recovery_succeeded: { label: "Verified recovery succeeded", icon: "✓", tone: "success" },
-  recovery_failed: { label: "Verified recovery failed", icon: "×", tone: "blocked" },
-  stage_completed: { label: "Stage completed", icon: "✓", tone: "success" },
-  stage_invalidated: { label: "Stage marked incomplete", icon: "!", tone: "blocked" },
-  implementation_archived: { label: "Implementation archived", icon: "■" },
-  // A pass that only orders the diff for review: it carries no tone, because
-  // it asks the reviewer for nothing.
-  triaged: { label: "Diff ordered for review", icon: "≡" },
-  // The reviewer disagreed with where the pass put something. Also toneless:
-  // it is a note to the agent, not a call on anybody.
-  triage_overridden: { label: "Review order corrected", icon: "≠" },
-  committed: { label: "Changes committed", icon: "◆", tone: "success" },
-  pushed: { label: "Changes pushed", icon: "↑", tone: "success" },
-  merged: { label: "Changes merged", icon: "⌁", tone: "success" },
-  abandoned: { label: "Abandoned", icon: "×", tone: "blocked" },
-  // Activity: the agent working, rather than the agent speaking. A harness that
-  // reports its own reasoning and tool calls has no terminal for them to scroll
-  // past in, so they ride the conversation — and they arrive hundreds to a
-  // session, which is why `activity` folds them (see activityHtml). None of
-  // them carries a tone: not one of them is asking the reader for anything.
-  //
-  // Their labels are never printed. An activity row is its content, so the
-  // label has exactly two jobs left: what the icon says to a screen reader, and
-  // the line a row with no summary of its own falls back to.
-  reasoning: { label: "Agent thought", icon: "◌", activity: true },
-  // A call and its answer are one row: the call mints it, and the answer
-  // completes it in place (see `toolOutcomeHtml`).
-  tool_use: { label: "Agent called a tool", icon: "▸", activity: true },
-  // A row of its own, still minted for an answer whose call the daemon could
-  // not pair — and the kind every conversation recorded before the two became
-  // one row is full of. Stored rows render forever.
-  tool_result: { label: "Tool answered", icon: "◂", activity: true },
-  narration: { label: "Agent narrated", icon: "◦", activity: true },
-  // Work the agent left running behind its own turn. The label names the task
-  // rather than the harness, because the row says what a task is doing and the
-  // provider's name in front of it would carry nothing.
-  task_update: { label: "Background task", icon: "⧉", activity: true },
-};
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -471,7 +414,7 @@ export function createThreadCache() {
     },
     // The window as a value the local cache can hold across sessions, or null
     // while none is open. What seedWindow takes back.
-    exportWindow() {
+    readWindow() {
       if (!accumulatedItems.length) return null;
       return { items: accumulatedItems, olderItemsRemain, deliveredSequence, knownTotalItems };
     },
@@ -765,16 +708,6 @@ function firstLine(summary) {
   return summary.split("\n").find((line) => line.trim()) || "";
 }
 
-/// An event kind's label, spoken in the name of the harness that raised it —
-/// "Claude Code called a tool" rather than "Agent called a tool".
-///
-/// On a lifecycle row this is the row's own text. On an activity row it is not
-/// text at all: it is what the icon says to a screen reader, and what a row
-/// with no summary of its own falls back to.
-function eventLabel(meta, agentLabel) {
-  return meta.label.replace(/^Agent\b/, agentLabel);
-}
-
 /// What a tool call's answer reported, as a mark on the call's own row.
 ///
 /// The call and the answer are one row, so the row has three states to say and
@@ -986,7 +919,8 @@ export function revealThreadSequence(scroller, sequence) {
 /// rendered from — which is not the same number any more: a run of activity is
 /// many items and one row, and the count on the conversation's title counts
 /// what was said and done rather than how it fell into runs.
-function timelineHtml(items, agentLabel, threadId) {
+function timelineHtml(sourceItems, agentLabel, threadId) {
+  const items = sourceItems.filter((item) => !isStartupEvent(item));
   const { foldedItems, foldedChildrenHtmlOf } = threadFolding(items, agentLabel);
   const topLevelItems = items.filter((item) => !foldedItems.has(item));
   // Which message may still be answered with a chip: the last one said, and

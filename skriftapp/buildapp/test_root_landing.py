@@ -34,7 +34,7 @@ FONT_NAME = "fonts/JetBrainsMono-latin.woff2"
 BRAND_MARK_NAME = "brand-mark.svg"
 SCREENSHOT_NAMES = (
     "assets/build-ide-screenshot-1240.png",
-    "assets/build-ide-screenshot-1860.png",
+    "assets/build-ide-screenshot-1744.png",
     "assets/build-ide-screenshot-mobile-640.png",
     "assets/build-ide-screenshot-mobile-921.png",
 )
@@ -50,7 +50,8 @@ RETIRED_SCRIPT_NAME = "landing.js"
 
 CI_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github/workflows/ci.yml"
 SMOKE_CHECK_ASSET_PATTERN = r"getbuild\.ing/landing/([^\s\"']+)"
-SMOKE_CHECK_PAGE_PHRASE = "agentic coding IDE"
+SMOKE_CHECK_PAGE_PHRASE = "Ship confidence"
+LANDING_TITLE_MARKUP = "<title>Build — Ship more. Ship confidence.</title>"
 
 APP_LINK = 'href="/app/"'
 BRAND_LINK_MARKUP = (
@@ -109,7 +110,7 @@ DESIGN_TOKENS = (
     "--color-accent-hover",
     "--color-background",
     "--color-screenshot-frame",
-    "--mask-screenshot-fade",
+    "--fade-screenshot",
     "--color-on-accent",
     "--color-alert",
     "--color-text-primary",
@@ -152,9 +153,22 @@ DESIGN_TOKENS = (
     "--letter-spacing-brand",
     "--dotfield-gap",
     "--hero-padding-block-start",
-    "--hero-padding-block-end",
     "--space-screenshot-top",
+    "--flow-columns",
+    "--flow-col-gap",
+    "--flow-row-gap",
+    "--flow-line-width",
+    "--flow-link",
+    "--flow-node-padding",
+    "--font-size-flow-title",
+    "--line-height-flow-title",
+    "--font-size-flow-body",
+    "--line-height-flow-body",
+    "--space-flow-header-bottom",
+    "--space-flow-title-bottom",
     "--screenshot-crop-aspect",
+    "--screenshot-side-height",
+    "--hero-side-copy-width",
     "--features-padding-block",
     "--cta-padding-block",
     "--footer-padding",
@@ -196,7 +210,6 @@ DESIGN_TOKENS = (
     "--space-cta-form-top",
     "--space-card-header-bottom",
     "--space-card-title-bottom",
-    "--space-agent-support-top",
     "--space-dashes-top",
     "--space-footer-gap",
     "--font-size-hero",
@@ -234,8 +247,6 @@ DESIGN_TOKENS = (
     "--line-height-success",
     "--font-size-agent-name",
     "--letter-spacing-agent-name",
-    "--font-size-agent-support",
-    "--letter-spacing-agent-support",
     "--font-size-footer",
     "--letter-spacing-footer",
     "--opacity-disabled",
@@ -246,17 +257,44 @@ DOT_FIELD_MARKUP = '<div class="dot-field"><canvas data-dot-field></canvas></div
 HERO_EYEBROW_MARKUP = '<p class="eyebrow hero-eyebrow">PRIVATE BETA</p>'
 HERO_SECTION_OPENER = '<section class="hero rule-bottom" data-hero>'
 HERO_RULE = (
-    ".hero{position:relative;overflow:hidden;text-align:center;"
-    "padding-block:var(--hero-padding-block-start) var(--hero-padding-block-end)}"
+    ".hero{position:relative;overflow:hidden;display:flex;flex-direction:column;"
+    "text-align:center;padding-top:var(--hero-padding-block-start)}"
 )
+HERO_VIEWPORT_LOCK_RULE = ".hero{min-height:var(--viewport-height)}"
+HERO_STAGE_RULE = (
+    ".hero-stage{flex:1;display:flex;flex-direction:column;align-items:center}"
+)
+HERO_COPY_CENTERED_RULE = ".hero-content{margin-block:auto}"
+HERO_LAYERS_RULE = ".hero-stage,.agents-rail{position:relative;z-index:1}"
+AGENTS_RAIL_MARKUP = '<section class="agents-rail rule-top" id="agents">'
+AGENTS_RAIL_RULE = ".agents-rail{background:var(--color-background)}"
+SCREENSHOT_FADE_RULE = (
+    '.screenshot-frame::after{content:"";position:absolute;inset:0;'
+    "background:var(--fade-screenshot);pointer-events:none}"
+)
+HERO_SIDE_MEDIA_PRELUDE = "@media (min-width:1024px) and (max-height:1199px){"
+HERO_SIDE_RULES = (
+    ".hero-stage{flex-direction:row;align-items:flex-end;text-align:left;max-width:none}",
+    ".hero-content,.hero-screenshot{flex:1 1 0;min-width:0}",
+    ".hero-content{display:grid;justify-content:center;"
+    "grid-template-columns:minmax(0,var(--hero-side-copy-width))}",
+    ".hero-content .lead,.hero-content .waitlist{margin-inline:0}",
+    ".hero-screenshot{align-self:flex-end;margin-top:0}",
+    ".screenshot-frame{width:max-content;aspect-ratio:auto;height:var(--screenshot-side-height)}",
+    ".screenshot-frame img{width:auto;height:100%}",
+)
+SCREENSHOT_FADE_TOKEN = "--fade-screenshot:linear-gradient(to bottom,transparent 50%,#030604)"
 HERO_TITLE_MARKUP = (
     '<h1 class="section-title section-title--hero">Ship more.<br>'
-    '<span class="title-accent title-accent--glow">Babysit less.</span></h1>'
+    '<span class="title-accent title-accent--glow">Ship confidence.</span></h1>'
 )
+HERO_LEAD_COPY = (
+    "Build turns an issue into shipped code. An agent plans and builds it on your machi"
+    "ne, and a review agent lays the changes out so you know exactly what went out and why."
+)
+LANDING_DESCRIPTION_MARKUP = '<meta name="description" content="' + HERO_LEAD_COPY + '">'
 HERO_LEAD_MARKUP = (
-    '<p class="lead">Build is the agentic coding IDE for teams. It surfaces the work '
-    "that needs you — reviews, decisions, direction — and dispatches everything else "
-    "to your agents. Not public yet.</p>"
+    '<p class="lead">' + HERO_LEAD_COPY + "</p>"
 )
 HERO_NOTE_MARKUP = (
     '<p class="note">One email to confirm, one when your invite is ready. '
@@ -271,28 +309,26 @@ SCREENSHOT_MARKUP = (
     'sizes="100vw" width="921" height="1880">\n'
     '    <img src="/landing/assets/build-ide-screenshot-1240.png" '
     'srcset="/landing/assets/build-ide-screenshot-1240.png 1240w, '
-    '/landing/assets/build-ide-screenshot-1860.png 1860w" '
+    '/landing/assets/build-ide-screenshot-1744.png 1744w" '
     'sizes="(max-width: 1280px) calc(100vw - 80px), 1160px" '
-    'width="1860" height="1081" decoding="async" '
+    'width="1744" height="965" decoding="async" '
     'alt="The Build IDE — commit history, diff review, and a live agent conversation">\n'
     "  </picture>"
 )
-HERO_SCREENSHOT_OPENER = '<div class="content-container hero-screenshot">'
-HERO_LAYERS_RULE = ".hero-content,.hero-screenshot{position:relative;z-index:1}"
-HERO_SCREENSHOT_RULE = ".hero-screenshot{margin-top:var(--space-screenshot-top)}"
-HERO_SCREENSHOT_MOBILE_RULE = ".hero-screenshot{--content-padding-inline:0}"
+HERO_SCREENSHOT_OPENER = '<div class="hero-screenshot">'
+HERO_SCREENSHOT_RULE = ".hero-screenshot{align-self:stretch;margin-top:var(--space-screenshot-top)}"
+HERO_SCREENSHOT_MOBILE_RULE = ".hero-screenshot{margin-inline:calc(var(--content-padding-inline) * -1)}"
 SCREENSHOT_FRAME_RULE = (
     ".screenshot-frame{position:relative;background:var(--color-screenshot-frame);"
-    "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden;"
-    "mask-image:var(--mask-screenshot-fade)}"
+    "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden}"
 )
 SCREENSHOT_GAP_DESKTOP_TOKEN = "--space-screenshot-top:64px"
 SCREENSHOT_GAP_MOBILE_TOKEN = "--space-screenshot-top:28px"
-SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:2000 / 900"
+SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:1744 / 800"
 SCREENSHOT_CROP_MOBILE_TOKEN = "--screenshot-crop-aspect:921 / 900"
 
 AGENTS_LABEL_MARKUP = (
-    '<p class="eyebrow eyebrow--muted agents-label">RUNS YOUR AGENTS</p>'
+    '<p class="eyebrow eyebrow--muted agents-label">USE YOUR HARNESS</p>'
 )
 AGENTS_LABEL_RULE = (
     ".agents-label{display:flex;align-items:center;padding:var(--agent-cell-padding)}"
@@ -304,51 +340,44 @@ AGENTS_GRID_INTERMEDIATE_RULE = (
 HERO_FONT_SIZE_DESKTOP_TOKEN = "--font-size-hero:76px"
 HERO_FONT_SIZE_INTERMEDIATE_TOKEN = "--font-size-hero:clamp(44px,6vw,76px)"
 AGENT_NAMES = ("Claude Code", "Codex", "Pi", "OpenCode")
-AGENT_SUPPORT_LABEL = '<span class="agent-support">supported</span>'
 
 FEATURES_TITLE_MARKUP = (
-    '<h2 class="section-title">Everything agents need.<br>'
-    "Nothing <span class=\"title-accent\">you don't.</span></h2>"
+    '<h2 class="section-title">From issue<br>'
+    '<span class="title-accent">to merge.</span></h2>'
 )
 FEATURES_LABEL_MARKUP = (
-    '<span class="eyebrow eyebrow--muted section-label">FEATURES /05</span>'
+    '<span class="eyebrow eyebrow--muted section-label">HOW IT WORKS /05</span>'
 )
 FEATURE_CARDS = (
     (
         "/01",
-        "ISSUES",
-        "An inbox, not a backlog",
-        "Issues live next to the code. Agents pick them up on their own — your inbox "
-        "shows only the work waiting on a human. When it's empty, you're done.",
+        "ISSUE",
+        "Start with the issue",
+        "Write what you want. Workshop it with an agent until it's clear enough to build. That conversation is the spec.",
     ),
     (
         "/02",
-        "VERSION CONTROL",
-        "Worktrees that manage themselves",
-        "Every agent works in its own worktree. Fetch, commit, review, merge — "
-        "without leaving the conversation.",
+        "WORKFLOW",
+        "The agent plans the work",
+        "From the issue, the agent builds a workflow and runs it. Every change lands on one branch in its own worktree, so nothing touches main until you say so.",
     ),
     (
         "/03",
         "REVIEW",
-        "Diff-first review",
-        "Inline comments on any line, threaded with your team and your agents. "
-        "Approve, redirect, or take over.",
+        "Spot checks, not archaeology",
+        "A review agent organizes the diff: what changed, why, and where to look first. Comment on any line. Your notes go back as one instruction.",
     ),
     (
         "/04",
-        "WORKFLOWS · RLM",
-        "Workflows that reshape around the work",
-        "The RLM routes tasks, retries failures, and re-plans as the work changes — "
-        "escalating only when it genuinely needs a human. Your team sees the same "
-        "board, live.",
+        "MERGE",
+        "Approve and merge from the same screen",
+        "Git is the source of truth, so what you review is exactly what the agent did. Merge, and the branch cleans itself up.",
     ),
     (
         "/05",
-        "AGENTS",
-        "Any agent, side by side",
-        "Claude Code, Codex, Pi, and OpenCode run in parallel sessions — one surface, "
-        "one shared history, one place to look.",
+        "YOUR MACHINE",
+        "Your code stays on your hardware",
+        "Agents run locally in your own harness. Check in from your phone. Nothing in the middle can read your repo.",
     ),
 )
 CARD_SPAN_MODIFIERS = ("", "", "--span-2", "--span-4", "--span-6")
@@ -359,12 +388,57 @@ ACTIVE_RAIL_DASH_MARKUP = '<i class="rail-dash is-active" data-rail-dash></i>'
 IDLE_RAIL_DASH_MARKUP = '<i class="rail-dash" data-rail-dash></i>'
 IDLE_RAIL_DASH_COUNT = len(FEATURE_CARDS) - 1
 
+FLOW_SECTION_OPENER = '<section class="flow-section rule-bottom" id="flow">'
+FLOW_TITLE_MARKUP = (
+    '<h2 class="section-title">A run,<br>'
+    '<span class="title-accent">start to finish.</span></h2>'
+)
+FLOW_LABEL_MARKUP = '<span class="eyebrow eyebrow--muted section-label">EXAMPLE RUN /06</span>'
+FLOW_STEPS = (
+    ("/01", "YOU", "you", "to-agents", "Open an issue", "Say what you want, in your words."),
+    ("/02", "AGENTS", "agents", "", "Workshop it", "The agent asks what's unclear. You answer. The issue is now the spec."),
+    ("/03", "AGENTS", "agents", "", "Plan and build", "A workflow runs. Every change lands on one branch in its own worktree."),
+    ("/04", "AGENTS", "agents", "to-you", "Organize the diff", "A review agent sorts what changed, why, and where to look first."),
+    ("/05", "YOU", "you", "", "Spot-check", "“Ready for review” hits your inbox. Comment on a line, or approve."),
+    ("/06", "YOU", "you", "", "Merge", "The branch cleans itself up."),
+)
+FLOW_STEP_RULES = (
+    ".flow-steps{list-style:none;display:grid;gap:var(--flow-row-gap)}",
+    ".flow-step{position:relative;background:var(--surface-card);border:var(--hairline);"
+    "padding:var(--flow-node-padding);--font-size-card-title:var(--font-size-flow-title);"
+    "--line-height-card-title:var(--line-height-flow-title);"
+    "--font-size-card-body:var(--font-size-flow-body);"
+    "--line-height-card-body:var(--line-height-flow-body);"
+    "--space-card-header-bottom:var(--space-flow-header-bottom);"
+    "--space-card-title-bottom:var(--space-flow-title-bottom)}",
+    '.flow-step::before{content:"";position:absolute;pointer-events:none;'
+    "top:100%;left:50%;height:var(--flow-row-gap);border-left:var(--flow-link)}",
+    ".flow-step:last-child::before{content:none}",
+)
+FLOW_DESKTOP_MEDIA_PRELUDE = "@media (min-width:1024px){"
+FLOW_DESKTOP_RULES = (
+    ".flow-steps{grid-template-columns:repeat(var(--flow-columns),1fr);grid-auto-rows:1fr;"
+    "column-gap:var(--flow-col-gap)}",
+    ".flow-step--you{grid-row:1}",
+    ".flow-step--agents{grid-row:2}",
+    ".flow-step::before{top:50%;left:100%;width:var(--flow-col-gap);"
+    "height:auto;border-left:0;border-top:var(--flow-link)}",
+    ".flow-step--to-agents::before,.flow-step--to-you::before{"
+    "width:calc(var(--flow-col-gap) / 2);height:calc(100% + var(--flow-row-gap));"
+    "border-right:var(--flow-link)}",
+    ".flow-step--to-you::before{top:auto;bottom:50%;border-top:0;border-bottom:var(--flow-link)}",
+    ".flow-step--to-agents::after{top:calc(150% + var(--flow-row-gap))}",
+    ".flow-step--to-you::after{top:calc(-50% - var(--flow-row-gap))}",
+)
+FLOW_ROW_GAP_DESKTOP_TOKEN = "--flow-row-gap:28px"
+FLOW_ROW_GAP_MOBILE_TOKEN = "--flow-row-gap:18px"
+
 CTA_TITLE_MARKUP = (
     '<h2 class="section-title section-title--cta">Get in '
     '<span class="title-accent title-accent--glow">early.</span></h2>'
 )
 CTA_NOTE_MARKUP = (
-    '<p class="note cta-note">PRIVATE BETA · LOCAL-FIRST · E2E ENCRYPTED</p>'
+    '<p class="note cta-note">PRIVATE BETA · RUNS ON YOUR MACHINE</p>'
 )
 CTA_NOTE_RULE = (
     ".cta-note{color:var(--color-text-secondary);"
@@ -453,7 +527,6 @@ COMPONENT_LAYER_SELECTORS = (
     ".agents-grid",
     ".agents-label",
     ".agent-cell",
-    ".agent-support",
     ".nav-bar",
     ".nav-links",
     ".nav-actions",
@@ -629,15 +702,37 @@ def test_index_is_a_body_fragment_and_the_shell_owns_the_document():
 
 def test_hero_copy_is_verbatim():
     html = _landing_html()
+    assert LANDING_TITLE_MARKUP in html
+    assert LANDING_DESCRIPTION_MARKUP in html
     assert HERO_EYEBROW_MARKUP in html
     assert HERO_TITLE_MARKUP in html
     assert HERO_LEAD_MARKUP in html
     assert HERO_NOTE_MARKUP in html
 
 
-def test_hero_top_aligns_its_copy_instead_of_filling_the_viewport():
+def test_hero_is_a_column_that_only_locks_to_the_viewport_on_desktop():
     assert HERO_SECTION_OPENER in _landing_html()
-    assert HERO_RULE in _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+    css = _landing_text(STYLESHEET_NAME)
+    for rule in (HERO_RULE, HERO_STAGE_RULE, HERO_COPY_CENTERED_RULE, HERO_LAYERS_RULE):
+        assert rule in _rules_outside_media_blocks(css)
+    assert HERO_VIEWPORT_LOCK_RULE in css
+    assert HERO_VIEWPORT_LOCK_RULE not in _rules_outside_media_blocks(css)
+
+
+def test_agents_rail_pins_to_the_bottom_of_the_hero_over_a_solid_background():
+    html = _landing_html()
+    hero_end = html.index("</section>\n<section", html.index(AGENTS_RAIL_MARKUP))
+    assert html.index(HERO_SCREENSHOT_OPENER) < html.index(AGENTS_RAIL_MARKUP) < hero_end
+    assert AGENTS_RAIL_RULE in _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
+
+
+def test_short_desktop_viewports_put_the_copy_beside_the_screenshot():
+    css = _landing_text(STYLESHEET_NAME)
+    side_block = css[css.index(HERO_SIDE_MEDIA_PRELUDE):]
+    side_block = side_block[: side_block.index("\n}")]
+    for rule in HERO_SIDE_RULES:
+        assert rule in side_block
+        assert rule not in _rules_outside_media_blocks(css)
 
 
 def test_hero_hosts_the_dot_field_canvas():
@@ -653,8 +748,9 @@ def test_screenshot_closes_the_hero_below_the_copy_and_fades_out_at_the_bottom()
     hero_end = html.index("</section>", html.index(HERO_SECTION_OPENER))
     assert html.index(HERO_NOTE_MARKUP) < html.index(HERO_SCREENSHOT_OPENER) < hero_end
     css = _landing_text(STYLESHEET_NAME)
-    for rule in (HERO_LAYERS_RULE, HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE):
+    for rule in (HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE, SCREENSHOT_FADE_RULE):
         assert rule in _rules_outside_media_blocks(css)
+    assert SCREENSHOT_FADE_TOKEN in css
     assert HERO_SCREENSHOT_MOBILE_RULE in css
     assert HERO_SCREENSHOT_MOBILE_RULE not in _rules_outside_media_blocks(css)
 
@@ -670,11 +766,12 @@ def test_screenshot_gap_and_crop_are_retuned_for_the_phone_capture():
         assert mobile_token not in _rules_outside_media_blocks(css)
 
 
-def test_every_agent_name_is_listed_with_supported():
+def test_every_harness_is_listed_by_name_alone():
     html = _landing_html()
     assert AGENTS_LABEL_MARKUP in html
     for agent_name in AGENT_NAMES:
-        assert f'<div class="agent-cell">{agent_name}{AGENT_SUPPORT_LABEL}</div>' in html
+        assert f'<div class="agent-cell">{agent_name}</div>' in html
+    assert "agent-support" not in html
 
 
 def test_features_header_copy_is_verbatim():
@@ -708,6 +805,37 @@ def test_rail_has_five_dashes_with_the_first_active():
     assert html.count(ACTIVE_RAIL_DASH_MARKUP) == 1
     assert html.count(IDLE_RAIL_DASH_MARKUP) == IDLE_RAIL_DASH_COUNT
     assert html.index(ACTIVE_RAIL_DASH_MARKUP) < html.index(IDLE_RAIL_DASH_MARKUP)
+
+
+def test_flow_section_walks_one_run_between_you_and_your_agents():
+    html = _landing_html()
+    assert html.index(FEATURES_TITLE_MARKUP) < html.index(FLOW_SECTION_OPENER) < html.index(CTA_TITLE_MARKUP)
+    assert FLOW_TITLE_MARKUP in html
+    assert FLOW_LABEL_MARKUP in html
+    for number, actor, lane, link, title, body in FLOW_STEPS:
+        classes = f"flow-step flow-step--{lane}" + (f" flow-step--{link}" if link else "")
+        assert (
+            f'<li class="{classes}">\n'
+            f'      <div class="card-header eyebrow"><span class="card-number">{number}</span>'
+            f'<span class="eyebrow--muted">{actor}</span></div>\n'
+            f'      <h3 class="card-title">{title}</h3>\n'
+            f'      <p class="card-body">{body}</p>' in html
+        )
+    assert html.count('<li class="flow-step ') == len(FLOW_STEPS)
+
+
+def test_flow_nodes_stack_on_phones_and_form_two_lanes_on_desktop():
+    css = _landing_text(STYLESHEET_NAME)
+    for rule in FLOW_STEP_RULES:
+        assert rule in _rules_outside_media_blocks(css)
+    desktop_block = css[css.index(FLOW_DESKTOP_MEDIA_PRELUDE):]
+    desktop_block = desktop_block[: desktop_block.index("\n}")]
+    for rule in FLOW_DESKTOP_RULES:
+        assert rule in desktop_block
+        assert rule not in _rules_outside_media_blocks(css)
+    assert FLOW_ROW_GAP_DESKTOP_TOKEN in _rules_outside_media_blocks(css)
+    assert FLOW_ROW_GAP_MOBILE_TOKEN in css
+    assert FLOW_ROW_GAP_MOBILE_TOKEN not in _rules_outside_media_blocks(css)
 
 
 def test_cta_section_copy_is_verbatim():

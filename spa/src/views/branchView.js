@@ -91,8 +91,6 @@ export async function renderBranch() {
   // focus back to the composer.
   const autofocusComposer = App.focusComposerOnMount;
   App.focusComposerOnMount = false;
-  // Where Changes sent the reader, consumed by the mount it was set for: a
-  // later revisit to the same branch opens the Files tab where it left it.
   let openFileOnMount = App.openFileOnMount;
   App.openFileOnMount = null;
   root.className = "surface";

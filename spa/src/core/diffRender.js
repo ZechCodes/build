@@ -104,8 +104,7 @@ function overrideButtonHtml(mark) {
  *  Folding contract: every file starts `capped` (max-height + fade); the
  *  mounting view's handler answers a press on the capped body by opening the
  *  file and a press on the .fhead by shutting it, both by moving its key in
- *  the sets below. `commentable` adds the whole-file comment control to the
- *  header.
+ *  the folds. `commentable` adds the whole-file comment control to the header.
  *
  *  Re-review options (all opt-in; omitting them keeps the output byte-identical
  *  so the poll-repaint freeze contract holds): `changedSince` is a Set of paths
@@ -131,9 +130,8 @@ export function diffFilesHtml(files, options = {}) {
 
 const FOLD_CLASS = { open: "", shut: "collapsed", capped: "capped" };
 
-// A stack drawn without any reader behind it — a markup test, a surface that
-// never folds — asks the same question of the same module, so there is one
-// answer to it and no second rule about what an untouched file wears.
+// A stack drawn with no reader behind it asks the same module the same
+// question, rather than a second rule about what an untouched file wears.
 const NOTHING_MOVED = createFileFolds();
 
 /** The fold one file wears, from the reader's state alone. */

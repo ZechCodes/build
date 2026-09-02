@@ -1950,6 +1950,53 @@ mod tests {
         reader
     }
 
+    const SHARED_WIRE_FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/agent_surfaces.json"
+    );
+    const SPAWNING_CALL_SEQUENCE: u64 = 12;
+
+    fn the_wire_every_recorded_stream_builds() -> serde_json::Value {
+        let mut reader = reader_over_a_silent_session();
+        for fixture in [
+            WORKFLOW_FIXTURE,
+            SUBAGENT_FIXTURE,
+            SHELL_AND_CHECKLIST_FIXTURE,
+        ] {
+            read_lines_into(&mut reader, &fixture_lines(fixture));
+        }
+        surfaces_of(&reader)
+            .expect("the recorded streams build a snapshot")
+            .wire_value(&|call_id| {
+                (call_id == SUBAGENT_SPAWNING_CALL_ID).then_some(SPAWNING_CALL_SEQUENCE)
+            })
+    }
+
+    #[test]
+    fn the_shared_wire_fixture_is_what_the_recorded_streams_build() {
+        let checked_in: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(SHARED_WIRE_FIXTURE)
+                .unwrap_or_else(|why| panic!("the shared surfaces fixture reads: {why}")),
+        )
+        .expect("the shared surfaces fixture is JSON");
+
+        assert_eq!(
+            checked_in,
+            the_wire_every_recorded_stream_builds(),
+            "re-record it with `cargo test the_shared_wire_fixture -- --ignored --nocapture`"
+        );
+    }
+
+    #[test]
+    #[ignore = "prints the shared surfaces fixture so it can be re-recorded"]
+    fn the_shared_wire_fixture_as_the_recorded_streams_build_it() {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&the_wire_every_recorded_stream_builds())
+                .expect("the wire value writes")
+        );
+    }
+
     fn surfaces_of(reader: &ProtocolReader) -> Option<AgentSurfaces> {
         reader.state.lock().unwrap().surfaces.snapshot()
     }

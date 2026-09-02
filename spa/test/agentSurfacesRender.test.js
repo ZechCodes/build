@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
+import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
   agentRowHtml,
   checklistItemHtml,
@@ -430,6 +431,47 @@ describe("checklistViewerHtml", () => {
     expectEscaped(checklistViewerHtml(rows([{ id: "t1", subject: HOSTILE_MARKUP, state: "pending" }])));
     expectEscaped(
       checklistViewerHtml(rows([{ id: "t1", subject: "one", description: HOSTILE_MARKUP, state: "pending" }])),
+    );
+  });
+});
+
+describe("the wire the bridge actually builds", () => {
+  const recorded = recordedSurfaces();
+
+  it("paints the recorded subagent's label, model-less head, stats and result", () => {
+    const [row] = surfaceRows(AGENT_ENTRY_KIND, recorded);
+    const painted = parseHtml(agentRowHtml(row));
+    expect(painted.querySelector(".surface-row-label").textContent).toBe(recorded.subagents[0].label);
+    expect(painted.querySelector("[data-call-sequence]").dataset.callSequence).toBe(
+      String(recorded.subagents[0].call_sequence),
+    );
+    expect(painted.textContent).toContain(`${recorded.subagents[0].tokens} tokens`);
+    expect(painted.textContent).toContain(`${recorded.subagents[0].tool_calls} calls`);
+    expect(painted.querySelector(".surface-row-result").textContent).toBe(recorded.subagents[0].result);
+  });
+
+  it("paints the recorded shell's exit code and the recorded checklist's notes", () => {
+    const painted = parseHtml(shellViewerHtml(surfaceRows(SHELL_ENTRY_KIND, recorded)));
+    expect(painted.textContent).toContain("exit 0");
+    expect(painted.querySelectorAll("[data-outcome]").length).toBe(1);
+    const items = parseHtml(checklistViewerHtml(surfaceRows(CHECKLIST_ENTRY_KIND, recorded)));
+    expect([...items.querySelectorAll(".surface-row-note")].map((note) => note.textContent)).toEqual(
+      recorded.checklist.map((item) => item.description),
+    );
+  });
+
+  it("paints the recorded workflow's head, phases and agents", () => {
+    const { phases, agents } = workflowPhases(recorded, 0, 0);
+    const painted = parseHtml(
+      workflowViewerHtml(surfaceRows(WORKFLOW_ENTRY_KIND, recorded)[0], [], phases, agents),
+    );
+    expect(painted.querySelector(".surface-workflow-head").textContent).toContain("readme-analysis");
+    expect([...painted.querySelectorAll(".surface-phase-count")].map((count) => count.textContent)).toEqual([
+      "2/2",
+      "1/1",
+    ]);
+    expect([...painted.querySelectorAll(".surface-phase-agents .surface-row-label")].map((label) => label.textContent)).toEqual(
+      ["line-counter", "char-counter"],
     );
   });
 });

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import { memoryStorage, refusingStorage } from "./memoryStorage.js";
+import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
   AGENT_ENTRY_KIND,
   WORKFLOW_ENTRY_KIND,
@@ -407,6 +408,57 @@ describe("the remembered open pill", () => {
     const storage = memoryStorage();
     writeOpenSurface("issue-1:agent-1", "shells", storage);
     expect([...storage.entries.keys()].length).toBe(1);
+  });
+});
+
+describe("the wire the bridge actually builds", () => {
+  const recorded = recordedSurfaces();
+
+  it("counts a pill for every kind the recorded streams carry", () => {
+    expect(surfacePills(recorded).map((pill) => [pill.kind, pill.count])).toEqual([
+      ["workflows", 1],
+      ["subagents", 1],
+      ["shells", 1],
+      ["checklist", 3],
+    ]);
+    expect(surfacePills(recorded).every((pill) => pill.live === false)).toBe(true);
+  });
+
+  it("reads every field name the bridge writes on a subagent", () => {
+    const [row] = surfaceRows(AGENT_ENTRY_KIND, recorded);
+    expect(row.label).toBe(recorded.subagents[0].label);
+    expect(row.state).toBe("done");
+    expect(row.stateMark).toEqual(surfaceStateMark(AGENT_ENTRY_KIND, "done"));
+    expect(row.tokens).toBe(recorded.subagents[0].tokens);
+    expect(row.toolCalls).toBe(recorded.subagents[0].tool_calls);
+    expect(row.callSequence).toBe(recorded.subagents[0].call_sequence);
+    expect(row.lastTool).toBe("Read Reading README.md");
+    expect(row.duration).not.toBe("");
+  });
+
+  it("reads every field name the bridge writes on a shell and on a checklist item", () => {
+    const [shell] = surfaceRows("shells", recorded);
+    expect(shell.description).toBe(recorded.shells[0].description);
+    expect(shell.exitCode).toBe(0);
+    expect(shell.stateMark).toEqual(surfaceStateMark("shells", "done"));
+    const items = surfaceRows("checklist", recorded);
+    expect(items.map((item) => item.subject)).toEqual(recorded.checklist.map((item) => item.subject));
+    expect(items.map((item) => item.description)).toEqual(recorded.checklist.map((item) => item.description));
+    expect(items.every((item) => item.stateMark !== null)).toBe(true);
+  });
+
+  it("reads a workflow's phases and its agents' field names", () => {
+    const [workflow] = surfaceRows(WORKFLOW_ENTRY_KIND, recorded);
+    expect(workflow.name).toBe("readme-analysis");
+    expect(workflow.phaseCount).toBe(2);
+    const { phases, agents } = workflowPhases(recorded, 0, 0);
+    expect(phases.map((phase) => [phase.title, phase.done, phase.total])).toEqual([
+      ["Read", 2, 2],
+      ["Summarize", 1, 1],
+    ]);
+    expect(agents.map((agent) => agent.label)).toEqual(["line-counter", "char-counter"]);
+    expect(agents[0].model).toBe(recorded.workflows[0].phases[0].agents[0].model);
+    expect(agents[0].tokens).toBe(recorded.workflows[0].phases[0].agents[0].tokens);
   });
 });
 

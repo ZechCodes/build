@@ -10,6 +10,7 @@ import {
 const ACTION_MENU_LABEL = "Ask";
 const ACTION_MENU_TITLE = "Ask the agent about this";
 
+const ROW_HEAD_CLASS = "surface-row-head";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
 const KEYED_LIST_CLASS_THIS_MODULE_EMITS = {
@@ -45,14 +46,18 @@ function noteHtml(description, subject) {
   return `<span class="surface-row-note">${esc(description)}</span>`;
 }
 
-function surfaceRowHtml(rowClass, row, { attributes = "", trailing = "", body = "" } = {}) {
-  return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}"${attributes}>
-    <div class="surface-row-head">
+function rowHeadHtml(row, { headClass = ROW_HEAD_CLASS, trailing = "" } = {}) {
+  return `<div class="${headClass}">
       ${stateMarkHtml(row.stateMark)}
       <span class="surface-row-label">${esc(row.subject)}</span>
       ${trailing}
       ${actionMenuHtml(row.actions)}
-    </div>
+    </div>`;
+}
+
+function surfaceRowHtml(rowClass, row, { attributes = "", trailing = "", body = "" } = {}) {
+  return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}"${attributes}>
+    ${rowHeadHtml(row, { trailing })}
     ${body}
   </div>`;
 }
@@ -120,13 +125,10 @@ export function workflowChoiceHtml(choice) {
 }
 
 export function workflowHeadHtml(workflow) {
-  const subject = workflow.subject || "";
-  return `<div class="${WORKFLOW_HEAD_CLASS}">
-      ${stateMarkHtml(workflow.stateMark)}
-      <span class="surface-row-label">${esc(subject)}</span>
-      ${noteHtml(workflow.description, subject)}
-      ${actionMenuHtml(workflow.actions)}
-    </div>`;
+  return rowHeadHtml(workflow, {
+    headClass: WORKFLOW_HEAD_CLASS,
+    trailing: noteHtml(workflow.description, workflow.subject),
+  });
 }
 
 export function workflowViewerHtml(workflow, choices, phases, agents) {

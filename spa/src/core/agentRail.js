@@ -647,7 +647,7 @@ export function mountAgentRail(host, context) {
     const wantedHead = `${who}:${removable ? "removable" : "kept"}:${hasTerminal ? "tui" : "chatonly"}`;
     // The body is rebuilt only when what it is showing changed — which face of
     // the agent, and which agent. Same reason as the panel itself.
-    const wantedBody = `${shownMode}:${addingAgent ? "new" : selectedId || "ghost"}`;
+    const wantedBody = `${shownMode}:${addingAgent ? "new" : selectedId || AGENT_NOT_YET_BORN}`;
     if (panel.dataset.body !== wantedBody) {
       disposeTui();
       disposeSurfaces();

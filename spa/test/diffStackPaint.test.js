@@ -206,6 +206,19 @@ describe("the review plug's stack", () => {
     plug.unmount();
   });
 
+  it("writes nothing at all when a tick finds the same patch", async () => {
+    vi.useFakeTimers();
+    const { host, plug } = mountPlug();
+    await vi.advanceTimersByTimeAsync(0);
+    const writes = watchScrollTop(host);
+    const records = await churn(host, async () => {
+      await vi.advanceTimersByTimeAsync(REVIEW_POLL_MS + 10);
+    });
+    expect(records).toEqual([]);
+    expect(writes).toEqual([]);
+    plug.unmount();
+  });
+
   it("keeps the file the reader is on when another one changes under the poll", async () => {
     vi.useFakeTimers();
     let patch = TWO_FILES;

@@ -168,6 +168,14 @@ describe("paintKeepingPlace", () => {
       expect(scroller.scrollTop).toBe(1000);
     });
 
+    it("touches nothing when a paint that would have carried history wrote none", () => {
+      const scroller = tallScroller();
+      paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });
+      const writes = watchScrollTop(scroller);
+      paintKeepingPlace(scroller, () => {}, { opening, policy: pinToBottom({ olderItemsPrepended: true }) });
+      expect(writes).toEqual([]);
+    });
+
     it("leaves a reader who scrolled up where they were", () => {
       const scroller = tallScroller();
       paintKeepingPlace(scroller, paintThread(scroller), { opening, policy: pinToBottom() });

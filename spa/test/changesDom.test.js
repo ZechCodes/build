@@ -133,6 +133,20 @@ describe("the Changes rail", () => {
 // The aggregate review is a plug that owns the detail pane while it is
 // selected, and every other changeset is painted into the same host. Whoever
 // wrote there last, the next painter finds the parts it owns or makes them.
+describe("the file menu a repaint finds open", () => {
+  it("is the same menu afterwards, opened over the same file", async () => {
+    const { container, pane } = await mount();
+    await click(container.querySelector('.file[data-key$=":src/a.js"] .fmenu'));
+    const pop = container.querySelector(".fmenu-pop");
+    expect(pop).toBeTruthy();
+
+    await click(container.querySelector(".noisehead"));
+    expect(container.querySelector(".noisefiles")).toBeTruthy();
+    expect(container.querySelector(".fmenu-pop")).toBe(pop);
+    pane.dispose();
+  });
+});
+
 describe("the detail pane the review plug and the changesets share", () => {
   /** A plug with the shape the real one has: it writes its own bar, its own
    *  keyed stack and its own tray into the host it is handed. */

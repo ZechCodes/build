@@ -74,11 +74,11 @@ export function pinToBottom({ olderItemsPrepended = false } = {}) {
       atBottom: scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop <= AT_BOTTOM_SLACK_PX,
     }),
     restore: (scroller, held, changed) => {
+      if (!held.opening && !changed) return;
       if (olderItemsPrepended) {
         scroller.scrollTop = held.scrollTop + (scroller.scrollHeight - held.scrollHeight);
         return;
       }
-      if (!held.opening && !changed) return;
       if (!held.opening && !held.atBottom) {
         scroller.scrollTop = held.scrollTop;
         return;

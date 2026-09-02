@@ -25,7 +25,7 @@ import {
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
-  CLIP_SELECTOR,
+  PRESSABLE_CLIP_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   PILL_COUNT_SELECTOR,
@@ -116,12 +116,14 @@ const VIEWER_PLANS = {
 /// A press on clipped text opens it out, and the next one clips it back. The
 /// mark is the reader's: the patch leaves it alone, and no render writes it.
 function expandClippedText(event) {
-  const clipped = event.target.closest(CLIP_SELECTOR);
+  const clipped = event.target.closest(PRESSABLE_CLIP_SELECTOR);
   if (!clipped) return false;
   event.preventDefault();
-  clipped.toggleAttribute(EXPANDED_ATTRIBUTE);
+  clipped.setAttribute("aria-expanded", String(clipped.toggleAttribute(EXPANDED_ATTRIBUTE)));
   return true;
 }
+
+const CLIP_KEYS = ["Enter", " "];
 
 export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = false, modelLabel }) {
   const plan = VIEWER_PLANS[kind];
@@ -214,8 +216,13 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     if (spawned && onOpenThreadItem) onOpenThreadItem(Number(spawned.dataset.callSequence));
   };
 
+  const onViewerKey = (event) => {
+    if (CLIP_KEYS.includes(event.key)) expandClippedText(event);
+  };
+
   host.innerHTML = plan.frameHtmlWithEmptyLists();
   host.addEventListener("click", onViewerPress);
+  host.addEventListener("keydown", onViewerKey);
 
   return {
     kind,
@@ -226,6 +233,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem, compact = fal
     dispose() {
       stopTicking();
       host.removeEventListener("click", onViewerPress);
+      host.removeEventListener("keydown", onViewerKey);
       host.innerHTML = "";
     },
   };

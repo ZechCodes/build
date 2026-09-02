@@ -107,6 +107,20 @@ describe("mountSurfaceViewer", () => {
     viewer.dispose();
   });
 
+  it("gives a press on a phase title to the fold, the whole of the title reading on hover", () => {
+    const viewer = mount(WORKFLOW_ENTRY_KIND);
+    viewer.set(snapshot());
+    const [, pending] = phaseSections();
+    const title = pending.querySelector(".surface-phase-title");
+
+    title.click();
+
+    expect(pending.open).toBe(true);
+    expect(title.hasAttribute("data-expanded")).toBe(false);
+    expect(title.getAttribute("title")).toBe("Judge");
+    viewer.dispose();
+  });
+
   it("names a model through the label its caller hands it, and by its id without one", () => {
     const named = mount(WORKFLOW_ENTRY_KIND, { modelLabel: (id) => `Opus 5 · ${id}` });
     named.set(withModel("claude-opus-5"));
@@ -132,12 +146,18 @@ describe("mountSurfaceViewer", () => {
     roomy.dispose();
   });
 
-  it("opens the thread item a subagent row was spawned by", () => {
+  it("opens the thread item a subagent row was spawned by from the row's own control", () => {
     const onOpenThreadItem = vi.fn();
     const viewer = mount(AGENT_ENTRY_KIND, { onOpenThreadItem });
     viewer.set(snapshot());
+    const row = document.querySelector(".surface-completed-rows > .surface-row");
 
-    document.querySelector(".surface-completed-rows > .surface-row").click();
+    row.querySelector(".surface-row-label").click();
+
+    expect(onOpenThreadItem).not.toHaveBeenCalled();
+    expect(row.querySelector(".surface-row-label").hasAttribute("data-expanded")).toBe(true);
+
+    row.querySelector("[data-call-sequence]").click();
 
     expect(onOpenThreadItem.mock.calls).toEqual([[SPAWNING_CALL_SEQUENCE]]);
     viewer.dispose();
@@ -154,7 +174,7 @@ describe("mountSurfaceViewer", () => {
 
     expect(mountedHost.innerHTML).toBe("");
     mountedHost.appendChild(row);
-    row.click();
+    row.querySelector("[data-call-sequence]").click();
     expect(onOpenThreadItem).not.toHaveBeenCalled();
   });
 });
@@ -174,6 +194,25 @@ describe("the text a viewer clips", () => {
 
     clipped().click();
     expect(clipped().hasAttribute("data-expanded")).toBe(false);
+    viewer.dispose();
+  });
+
+  it("opens from the keyboard as it does from a press, its aria saying which way it stands", () => {
+    const viewer = mount(SHELL_ENTRY_KIND);
+    viewer.set(surfacesSnapshot({ shells: [{ id: "sh1", description: "cargo test", state: "running" }] }));
+    const press = (key) => clipped().dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+
+    expect(clipped().getAttribute("role")).toBe("button");
+    expect(clipped().tabIndex).toBe(0);
+    expect(clipped().getAttribute("aria-expanded")).toBe("false");
+
+    press("Enter");
+    expect(clipped().hasAttribute("data-expanded")).toBe(true);
+    expect(clipped().getAttribute("aria-expanded")).toBe("true");
+
+    press(" ");
+    expect(clipped().hasAttribute("data-expanded")).toBe(false);
+    expect(clipped().getAttribute("aria-expanded")).toBe("false");
     viewer.dispose();
   });
 

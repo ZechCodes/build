@@ -4,6 +4,7 @@ import { coreSourceOf } from "./coreSource.js";
 import { recordedSurfaces } from "./recordedSurfaces.js";
 import {
   CLIP_SELECTOR,
+  PRESSABLE_CLIP_SELECTOR,
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   SURFACE_SELECTOR,
@@ -183,9 +184,13 @@ describe("agentRowHtml", () => {
     expect(row.querySelector(".splitmenu")).toBe(null);
   });
 
-  it("emits data-call-sequence for a row that carries one and no such attribute for a row that does not", () => {
-    const spawned = agentRowHtml(agentRows([{ ...readerEntry, call_sequence: 12 }])[0]);
-    expect(parseHtml(spawned).querySelector("[data-call-sequence]").dataset.callSequence).toBe("12");
+  it("hangs the jump to the spawning call on one control of its own, never on the whole row", () => {
+    const spawned = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, call_sequence: 12 }])[0]));
+    const jump = spawned.querySelector("[data-call-sequence]");
+    expect(jump.tagName).toBe("BUTTON");
+    expect(jump.dataset.callSequence).toBe("12");
+    expect(jump.getAttribute("aria-label")).toBe(jump.getAttribute("title"));
+    expect(spawned.firstElementChild.hasAttribute("data-call-sequence")).toBe(false);
     expect(agentRowHtml(agentRows([readerEntry])[0])).not.toContain("data-call-sequence");
   });
 
@@ -433,6 +438,32 @@ describe("the text a viewer clips", () => {
     expect(span.className).toBe("surface-clip surface-row-note");
     expect(span.textContent).toBe("a long line");
     expect(span.matches(CLIP_SELECTOR)).toBe(true);
+  });
+
+  it("is a press target the keyboard can reach, unless its caller says the clip is for hovering", () => {
+    const pressable = parseHtml(clippedTextHtml("a long line")).firstElementChild;
+    expect(pressable.getAttribute("role")).toBe("button");
+    expect(pressable.getAttribute("tabindex")).toBe("0");
+    expect(pressable.getAttribute("aria-expanded")).toBe("false");
+    expect(pressable.matches(PRESSABLE_CLIP_SELECTOR)).toBe(true);
+
+    const hovered = parseHtml(clippedTextHtml("a long line", { pressable: false })).firstElementChild;
+    expect(hovered.hasAttribute("role")).toBe(false);
+    expect(hovered.hasAttribute("tabindex")).toBe(false);
+    expect(hovered.hasAttribute("aria-expanded")).toBe(false);
+    expect(hovered.matches(PRESSABLE_CLIP_SELECTOR)).toBe(false);
+  });
+
+  it("leaves the press to the fold and to the button that hold these two clips", () => {
+    const title = parseHtml(phaseSectionHtml(phasesOf(stagedWorkflow)[0])).querySelector(".surface-phase-title");
+    expect(title.matches(CLIP_SELECTOR)).toBe(true);
+    expect(title.matches(PRESSABLE_CLIP_SELECTOR)).toBe(false);
+
+    const [choice] = workflowChoicesWorthOffering({ workflows: [freshWorkflow, freshWorkflow] }, 0);
+    const name = parseHtml(workflowChoiceHtml(choice)).querySelector(".surface-choice-name");
+    expect(name.matches(CLIP_SELECTOR)).toBe(true);
+    expect(name.matches(PRESSABLE_CLIP_SELECTOR)).toBe(false);
+    expect(name.textContent).toBe("Review");
   });
 
   it("shows one line unless it is asked for more, and escapes what it is given", () => {

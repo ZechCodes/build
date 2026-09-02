@@ -605,8 +605,6 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 .surface-row-detail { flex:1 1 auto; min-width:0; }
 .surface-row-stats { display:flex; flex-wrap:wrap; gap:8px; }
 .surface-row-error { color:var(--red); }
-/* Text the column has no room for, and the press that opens it out. The mark
-   the press leaves is the reader's: no paint writes it, and none takes it. */
 .surface-clip { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1;
   overflow:hidden; overflow-wrap:anywhere; cursor:pointer; }
 .surface-clip[data-clip-lines="2"] { -webkit-line-clamp:2; }
@@ -614,7 +612,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   white-space:normal; }
 .surface-row-clock { --clock-ink:var(--dim); flex:none; display:inline-block; min-width:4ch;
   font-size:10.5px; font-variant-numeric:tabular-nums; text-align:right; }
-.surface-agent[data-call-sequence] { cursor:pointer; }
+.surface-row-jump { flex:none; padding:0 2px; border:0; background:none; color:var(--dim);
+  font:inherit; font-size:10.5px; line-height:1; cursor:pointer; }
+.surface-row-jump:hover { color:var(--accent); }
 .surface-running, .surface-completed-rows { display:flex; flex-direction:column; gap:2px; }
 .surface-completed { border-top:1px solid var(--line); margin-top:4px; padding-top:4px; }
 .surface-completed-head { padding:2px 6px; cursor:pointer; color:var(--dim); font-size:10.5px;
@@ -629,10 +629,9 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
 
 .surface-workflows:not(:empty) { display:flex; flex-wrap:wrap; gap:4px; padding:0 6px 4px; }
 .surface-workflow-choice { align-items:baseline; max-width:100%; }
+.surface-choice-name { min-width:0; }
 .surface-workflow-head { display:flex; flex-direction:column; gap:2px; padding:0 6px 4px; }
 .surface-phases { display:flex; flex-direction:column; gap:2px; min-width:0; }
-/* One phase, one fold. The summary is the row: title, its done count, and the
-   phase's own clock at the end. */
 .surface-phase { min-width:0; border-radius:6px; }
 .surface-phase-head { display:flex; align-items:baseline; gap:6px; min-width:0;
   padding:4px 6px; border-radius:6px; color:var(--dim); cursor:pointer; list-style:none; }

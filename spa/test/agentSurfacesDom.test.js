@@ -445,7 +445,7 @@ describe("a set that would change nothing", () => {
   });
 });
 
-describe("pressing a subagent row", () => {
+describe("the control a subagent row jumps from", () => {
   it("opens the thread item the row was spawned by, and only for a row that names one", async () => {
     const onOpenThreadItem = vi.fn();
     const surfaces = mount({ onOpenThreadItem });
@@ -454,9 +454,10 @@ describe("pressing a subagent row", () => {
     const [spawned] = completedRows();
     const [unspawned] = runningRows();
 
-    spawned.click();
+    spawned.querySelector("[data-call-sequence]").click();
     expect(onOpenThreadItem.mock.calls).toEqual([[SPAWNING_CALL_SEQUENCE]]);
 
+    expect(unspawned.querySelector("[data-call-sequence]")).toBe(null);
     unspawned.click();
     expect(onOpenThreadItem).toHaveBeenCalledTimes(1);
     surfaces.dispose();

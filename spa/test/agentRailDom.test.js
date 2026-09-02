@@ -1931,7 +1931,7 @@ describe("the agent's surfaces, carried by the status row", () => {
     await mount();
 
     railHost().querySelector('[data-surface-kind="subagents"]').click();
-    railHost().querySelector(".surface-subagents .surface-row").click();
+    railHost().querySelector(".surface-subagents [data-call-sequence]").click();
 
     expect(notifyError).toHaveBeenCalledTimes(1);
     expect(notifyError.mock.calls[0][0]).toContain("not in the loaded conversation");

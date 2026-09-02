@@ -14,6 +14,7 @@ const ROW_LABEL_CLASS = "surface-row-label";
 const ROW_DETAIL_CLASS = "surface-row-detail";
 const ROW_ERROR_CLASS = "surface-row-error";
 const ROW_NOTE_CLASS = "surface-row-note";
+const ROW_JUMP_CLASS = "surface-row-jump";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 const PHASE_CLASS = "surface-phase";
 const PHASE_HEAD_CLASS = "surface-phase-head";
@@ -46,6 +47,7 @@ export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
 export const CLIP_SELECTOR = `[${CLIP_LINES_ATTRIBUTE}]`;
+export const PRESSABLE_CLIP_SELECTOR = `${CLIP_SELECTOR}[role="button"]`;
 export const TICKING_CLOCK_SELECTOR = `[${RUNNING_SINCE_ATTRIBUTE}]`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
@@ -54,10 +56,13 @@ export const SURFACE_SELECTOR = Object.fromEntries(
 
 /** Text the viewer shows a few lines of. The whole of it rides in the title, so
  *  a hover reads it, and a press opens it out — which is why every clipped
- *  thing in every viewer is built here and nowhere else. */
-export function clippedTextHtml(text, { className = "", lines = 1 } = {}) {
+ *  thing in every viewer is built here and nowhere else. A clip inside a fold
+ *  or a button is for hovering alone: the press there belongs to what holds
+ *  it, and only a press target says so in its role. */
+export function clippedTextHtml(text, { className = "", lines = 1, pressable = true } = {}) {
   const classes = className ? `${CLIP_CLASS} ${className}` : CLIP_CLASS;
-  return `<span class="${classes}" ${CLIP_LINES_ATTRIBUTE}="${esc(lines)}" title="${esc(text)}">${esc(text)}</span>`;
+  const press = pressable ? ` role="button" tabindex="0" aria-expanded="false"` : "";
+  return `<span class="${classes}" ${CLIP_LINES_ATTRIBUTE}="${esc(lines)}" title="${esc(text)}"${press}>${esc(text)}</span>`;
 }
 
 function stateMarkHtml(stateMark) {
@@ -88,8 +93,8 @@ function rowHeadHtml(row, { trailing = "" } = {}) {
     </div>`;
 }
 
-function surfaceRowHtml(rowClass, row, { attributes = "", trailing = "", body = "" } = {}) {
-  return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}"${attributes}>
+function surfaceRowHtml(rowClass, row, { trailing = "", body = "" } = {}) {
+  return `<div class="surface-row ${rowClass}" data-key="${esc(row.key)}">
     ${rowHeadHtml(row, { trailing })}
     ${body}
   </div>`;
@@ -114,14 +119,18 @@ function agentLineHtml(row) {
     </div>`;
 }
 
-function callSequenceAttribute(row) {
-  return Number.isFinite(row.callSequence) ? ` data-call-sequence="${esc(row.callSequence)}"` : "";
+const SPAWNING_CALL_TITLE = "Open the call that spawned this";
+
+function spawningCallHtml(row) {
+  if (!Number.isFinite(row.callSequence)) return "";
+  return `<button type="button" class="${ROW_JUMP_CLASS}" data-call-sequence="${esc(row.callSequence)}"
+    title="${SPAWNING_CALL_TITLE}" aria-label="${SPAWNING_CALL_TITLE}">↗</button>`;
 }
 
 /** One agent, two lines — three where there is width for the counts. */
 export function agentRowHtml(row, { compact = false } = {}) {
   return surfaceRowHtml("surface-agent", row, {
-    attributes: callSequenceAttribute(row),
+    trailing: spawningCallHtml(row),
     body: `${agentLineHtml(row)}
     ${compact ? "" : agentStatsHtml(row)}`,
   });
@@ -144,7 +153,7 @@ export function surfacePillHtml(pill, openKind) {
 export function phaseSectionHtml(phase, { compact = false } = {}) {
   return `<details class="${PHASE_CLASS}" data-key="${esc(phase.key)}" data-state="${esc(phase.state)}">
     <summary class="${PHASE_HEAD_CLASS}">
-      ${clippedTextHtml(phase.title, { className: "surface-phase-title" })}
+      ${clippedTextHtml(phase.title, { className: "surface-phase-title", pressable: false })}
       <span class="surface-phase-count">${esc(phase.done)}/${esc(phase.total)}</span>
       ${clockHtml(phase.clock, phase.runningSince)}
     </summary>
@@ -158,7 +167,7 @@ export function workflowChoiceHtml(choice) {
   return `<button type="button" class="surface-workflow-choice" data-key="${esc(choice.key)}"
     data-workflow-index="${esc(choice.index)}" aria-pressed="${choice.selected}">
     ${stateMarkHtml(choice.stateMark)}
-    <span class="surface-phase-title">${esc(choice.subject)}</span>
+    ${clippedTextHtml(choice.subject, { className: "surface-choice-name", pressable: false })}
   </button>`;
 }
 

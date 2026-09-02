@@ -153,7 +153,6 @@ DESIGN_TOKENS = (
     "--dotfield-gap",
     "--hero-padding-block-start",
     "--space-screenshot-top",
-    "--space-screenshot-left",
     "--screenshot-crop-aspect",
     "--screenshot-side-height",
     "--hero-side-copy-width",
@@ -265,13 +264,16 @@ SCREENSHOT_FADE_RULE = (
 )
 HERO_SIDE_MEDIA_PRELUDE = "@media (min-width:1024px) and (max-height:1199px){"
 HERO_SIDE_RULES = (
-    ".hero-stage{flex-direction:row;align-items:flex-end;text-align:left}",
-    ".hero-content{flex:0 0 var(--hero-side-copy-width)}",
+    ".hero-stage{flex-direction:row;align-items:flex-end;text-align:left;max-width:none}",
+    ".hero-content,.hero-screenshot{flex:1 1 0;min-width:0}",
+    ".hero-content{display:grid;justify-content:center;"
+    "grid-template-columns:minmax(0,var(--hero-side-copy-width))}",
     ".hero-content .lead,.hero-content .waitlist{margin-inline:0}",
-    ".hero-screenshot{flex:none;align-self:flex-end;margin-top:0;margin-left:var(--space-screenshot-left)}",
-    ".screenshot-frame{aspect-ratio:auto;height:var(--screenshot-side-height)}",
+    ".hero-screenshot{align-self:flex-end;margin-top:0}",
+    ".screenshot-frame{width:max-content;aspect-ratio:auto;height:var(--screenshot-side-height)}",
     ".screenshot-frame img{width:auto;height:100%}",
 )
+SCREENSHOT_FADE_TOKEN = "--fade-screenshot:linear-gradient(to bottom,transparent 50%,#030604)"
 HERO_TITLE_MARKUP = (
     '<h1 class="section-title section-title--hero">Ship more.<br>'
     '<span class="title-accent title-accent--glow">Babysit less.</span></h1>'
@@ -696,6 +698,7 @@ def test_screenshot_closes_the_hero_below_the_copy_and_fades_out_at_the_bottom()
     css = _landing_text(STYLESHEET_NAME)
     for rule in (HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE, SCREENSHOT_FADE_RULE):
         assert rule in _rules_outside_media_blocks(css)
+    assert SCREENSHOT_FADE_TOKEN in css
     assert HERO_SCREENSHOT_MOBILE_RULE in css
     assert HERO_SCREENSHOT_MOBILE_RULE not in _rules_outside_media_blocks(css)
 

@@ -153,8 +153,7 @@ DESIGN_TOKENS = (
     "--dotfield-gap",
     "--hero-padding-block-start",
     "--hero-padding-block-end",
-    "--screenshot-padding-block",
-    "--screenshot-bleed",
+    "--space-screenshot-top",
     "--screenshot-crop-aspect",
     "--features-padding-block",
     "--cta-padding-block",
@@ -212,7 +211,6 @@ DESIGN_TOKENS = (
     "--line-height-lead",
     "--font-size-eyebrow",
     "--letter-spacing-eyebrow",
-    "--line-height-hero-eyebrow",
     "--font-size-card-title",
     "--line-height-card-title",
     "--letter-spacing-card-title",
@@ -245,11 +243,12 @@ DESIGN_TOKENS = (
 
 
 DOT_FIELD_MARKUP = '<div class="dot-field"><canvas data-dot-field></canvas></div>'
-HERO_EYEBROW_MARKUP = (
-    '<p class="eyebrow hero-eyebrow">PRIVATE BETA — INVITES <br>GOING OUT WEEKLY</p>'
+HERO_EYEBROW_MARKUP = '<p class="eyebrow hero-eyebrow">PRIVATE BETA</p>'
+HERO_SECTION_OPENER = '<section class="hero rule-bottom" data-hero>'
+HERO_RULE = (
+    ".hero{position:relative;overflow:hidden;text-align:center;"
+    "padding-block:var(--hero-padding-block-start) var(--hero-padding-block-end)}"
 )
-HERO_EYEBROW_BREAK_HIDDEN_RULE = ".hero-eyebrow br{display:none}"
-HERO_EYEBROW_BREAK_SHOWN_RULE = ".hero-eyebrow br{display:inline}"
 HERO_TITLE_MARKUP = (
     '<h1 class="section-title section-title--hero">Ship more.<br>'
     '<span class="title-accent title-accent--glow">Babysit less.</span></h1>'
@@ -278,19 +277,17 @@ SCREENSHOT_MARKUP = (
     'alt="The Build IDE — commit history, diff review, and a live agent conversation">\n'
     "  </picture>"
 )
-HERO_SECTION_CLOSE_THEN_SCREENSHOT = '</section>\n<section class="screenshot-section">'
-SCREENSHOT_BLEED_RULE = (
-    ".screenshot-section{position:relative;z-index:1;"
-    "margin-top:calc(var(--screenshot-bleed) * -1);"
-    "padding-block:0 var(--screenshot-padding-block)}"
-)
+HERO_SCREENSHOT_OPENER = '<div class="content-container hero-screenshot">'
+HERO_LAYERS_RULE = ".hero-content,.hero-screenshot{position:relative;z-index:1}"
+HERO_SCREENSHOT_RULE = ".hero-screenshot{margin-top:var(--space-screenshot-top)}"
+HERO_SCREENSHOT_MOBILE_RULE = ".hero-screenshot{--content-padding-inline:0}"
 SCREENSHOT_FRAME_RULE = (
     ".screenshot-frame{position:relative;background:var(--color-screenshot-frame);"
     "aspect-ratio:var(--screenshot-crop-aspect);overflow:hidden;"
     "mask-image:var(--mask-screenshot-fade)}"
 )
-SCREENSHOT_BLEED_DESKTOP_TOKEN = "--screenshot-bleed:80px"
-SCREENSHOT_BLEED_MOBILE_TOKEN = "--screenshot-bleed:24px"
+SCREENSHOT_GAP_DESKTOP_TOKEN = "--space-screenshot-top:64px"
+SCREENSHOT_GAP_MOBILE_TOKEN = "--space-screenshot-top:28px"
 SCREENSHOT_CROP_DESKTOP_TOKEN = "--screenshot-crop-aspect:2000 / 900"
 SCREENSHOT_CROP_MOBILE_TOKEN = "--screenshot-crop-aspect:921 / 900"
 
@@ -638,11 +635,9 @@ def test_hero_copy_is_verbatim():
     assert HERO_NOTE_MARKUP in html
 
 
-def test_hero_eyebrow_carries_the_mobile_line_break():
-    css = _landing_text(STYLESHEET_NAME)
-    assert HERO_EYEBROW_BREAK_HIDDEN_RULE in css
-    assert HERO_EYEBROW_BREAK_SHOWN_RULE in css
-    assert HERO_EYEBROW_BREAK_SHOWN_RULE not in _rules_outside_media_blocks(css)
+def test_hero_top_aligns_its_copy_instead_of_filling_the_viewport():
+    assert HERO_SECTION_OPENER in _landing_html()
+    assert HERO_RULE in _rules_outside_media_blocks(_landing_text(STYLESHEET_NAME))
 
 
 def test_hero_hosts_the_dot_field_canvas():
@@ -653,19 +648,21 @@ def test_screenshot_serves_the_phone_capture_below_the_mobile_breakpoint():
     assert SCREENSHOT_MARKUP in _landing_html()
 
 
-def test_screenshot_bleeds_up_into_the_hero_and_fades_out_at_the_bottom():
+def test_screenshot_closes_the_hero_below_the_copy_and_fades_out_at_the_bottom():
     html = _landing_html()
-    assert HERO_SECTION_CLOSE_THEN_SCREENSHOT in html
-    assert html.index(HERO_NOTE_MARKUP) < html.index(HERO_SECTION_CLOSE_THEN_SCREENSHOT)
+    hero_end = html.index("</section>", html.index(HERO_SECTION_OPENER))
+    assert html.index(HERO_NOTE_MARKUP) < html.index(HERO_SCREENSHOT_OPENER) < hero_end
     css = _landing_text(STYLESHEET_NAME)
-    assert SCREENSHOT_BLEED_RULE in _rules_outside_media_blocks(css)
-    assert SCREENSHOT_FRAME_RULE in _rules_outside_media_blocks(css)
+    for rule in (HERO_LAYERS_RULE, HERO_SCREENSHOT_RULE, SCREENSHOT_FRAME_RULE):
+        assert rule in _rules_outside_media_blocks(css)
+    assert HERO_SCREENSHOT_MOBILE_RULE in css
+    assert HERO_SCREENSHOT_MOBILE_RULE not in _rules_outside_media_blocks(css)
 
 
-def test_screenshot_bleed_and_crop_are_retuned_for_the_phone_capture():
+def test_screenshot_gap_and_crop_are_retuned_for_the_phone_capture():
     css = _landing_text(STYLESHEET_NAME)
     for desktop_token, mobile_token in (
-        (SCREENSHOT_BLEED_DESKTOP_TOKEN, SCREENSHOT_BLEED_MOBILE_TOKEN),
+        (SCREENSHOT_GAP_DESKTOP_TOKEN, SCREENSHOT_GAP_MOBILE_TOKEN),
         (SCREENSHOT_CROP_DESKTOP_TOKEN, SCREENSHOT_CROP_MOBILE_TOKEN),
     ):
         assert desktop_token in _rules_outside_media_blocks(css)

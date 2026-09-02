@@ -1,3 +1,5 @@
+# Dev config plus real FastMail SMTP credentials from skriftapp/.env, for sending
+# actual mail from a local server. Selected with SKRIFT_ENV=mail.
 controllers:
   - buildapp.root_controller:RootController
   - buildapp.controllers:BuildController
@@ -20,9 +22,15 @@ auth:
 rate_limit:
   enabled: false
 email:
-  backend: skrift.lib.email_backends:ConsoleEmailBackend
-  from_address: Build <hello@localhost>
+  backend: skrift.lib.email_backends:SMTPEmailBackend
+  from_address: $SMTP_FROM_ADDRESS
+  reply_to: $SMTP_FROM_ADDRESS
   public_base_url: http://localhost:8090
+  smtp_host: smtp.fastmail.com
+  smtp_port: 587
+  smtp_starttls: true
+  smtp_username: $SMTP_USERNAME
+  smtp_password: $SMTP_PASSWORD
 # Dev-only: the local relay may call /internal/* without X-Internal-Secret as long
 # as it connects from localhost. Production requires INTERNAL_API_SECRET.
 internal_api:

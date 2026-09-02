@@ -10,8 +10,14 @@
 # Creates:
 #   build-postgres  POSTGRES_PASSWORD
 #   build-app       SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL,
-#                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push)
+#                   VAPID_PRIVATE_KEY, VAPID_PUBLIC_KEY, VAPID_SUBJECT (web push),
+#                   SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS,
+#                   WAITLIST_NOTIFY_ADDRESS (outbound email)
 #   build-relay     RELAY_INTERNAL_SECRET (same value as INTERNAL_API_SECRET)
+#
+# The four email keys are credentials this script cannot invent: export
+# SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS and WAITLIST_NOTIFY_ADDRESS in
+# the environment before running, or the SMTP step aborts.
 set -euo pipefail
 
 NAMESPACE=8ly
@@ -29,6 +35,8 @@ secret_value() { # secret_value <secret> <key>
 }
 
 random_secret() { openssl rand -hex 32; }
+
+require_env() { [[ -n "${!1:-}" ]] || { echo "bootstrap-secrets: $1 must be set in the environment (never generated)" >&2; exit 1; }; }
 
 b64url() { base64 | tr -d '=\n' | tr '/+' '_-'; }
 
@@ -86,6 +94,22 @@ if [[ -z "$(kc get secret build-app -o 'jsonpath={.data.VAPID_PUBLIC_KEY}')" ]];
     \"VAPID_PUBLIC_KEY\":\"$VAPID_PUBLIC_KEY\",
     \"VAPID_SUBJECT\":\"$VAPID_SUBJECT\"}}"
   echo "secret build-app: VAPID keys added"
+fi
+
+# --- build-app smtp (add-if-missing) -----------------------------------------
+# The FastMail credentials and the owner notification address the waitlist mail
+# needs. They are never generated — the operator exports them before running.
+if [[ -z "$(kc get secret build-app -o 'jsonpath={.data.SMTP_USERNAME}')" ]]; then
+  require_env SMTP_USERNAME
+  require_env SMTP_PASSWORD
+  require_env SMTP_FROM_ADDRESS
+  require_env WAITLIST_NOTIFY_ADDRESS
+  kc patch secret build-app --type merge -p "{\"stringData\":{
+    \"SMTP_USERNAME\":\"${SMTP_USERNAME}\",
+    \"SMTP_PASSWORD\":\"${SMTP_PASSWORD}\",
+    \"SMTP_FROM_ADDRESS\":\"${SMTP_FROM_ADDRESS}\",
+    \"WAITLIST_NOTIFY_ADDRESS\":\"${WAITLIST_NOTIFY_ADDRESS}\"}}"
+  echo "secret build-app: SMTP keys added"
 fi
 
 # --- build-relay ---------------------------------------------------------------

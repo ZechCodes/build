@@ -1,5 +1,6 @@
 # The Skrift app: auth, device registry, gateway tokens, web push, SPA host.
-# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*)
+# Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*,
+# SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS, WAITLIST_NOTIFY_ADDRESS)
 # come from deploy/k8s/bootstrap-secrets.sh — never from git.
 apiVersion: apps/v1
 kind: Deployment
@@ -78,6 +79,32 @@ spec:
                   name: build-app
                   key: VAPID_SUBJECT
                   optional: true
+            # Outbound email (waitlist confirmation + owner notification) over
+            # FastMail SMTP. NOT optional: app.yaml interpolates $SMTP_USERNAME,
+            # $SMTP_PASSWORD and $SMTP_FROM_ADDRESS at config load and the app
+            # refuses to boot when one is unset, so a partially-populated Secret
+            # must fail loudly here instead. bootstrap-secrets.sh adds all four
+            # together from the operator's environment.
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_USERNAME
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_PASSWORD
+            - name: SMTP_FROM_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: SMTP_FROM_ADDRESS
+            - name: WAITLIST_NOTIFY_ADDRESS
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: WAITLIST_NOTIFY_ADDRESS
           # NOT `/`: that's Skrift's CMS home page, which 404s on a fresh site
           # (post-setup, pre-content) — failing readiness drops every traefik
           # route and liveness crash-loops the pod. /healthz always exists.

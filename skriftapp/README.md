@@ -74,9 +74,33 @@ podman run -e SECRET_KEY=... -e INTERNAL_API_SECRET=... \
   -p 8080:8080 ghcr.io/8ly-dev/build-app
 ```
 
-Required env: `SECRET_KEY`, `DATABASE_URL`, and `INTERNAL_API_SECRET` — the
-shared secret the relay must present as `X-Internal-Secret` on `/internal/*`
-(see `buildapp/internal_auth.py`).
+Required env: `SECRET_KEY`, `DATABASE_URL`, `INTERNAL_API_SECRET` — the shared
+secret the relay must present as `X-Internal-Secret` on `/internal/*` (see
+`buildapp/internal_auth.py`) — plus the four outbound-email variables:
+`SMTP_USERNAME` (the FastMail login address), `SMTP_PASSWORD` (a FastMail
+app password), `SMTP_FROM_ADDRESS` (the address mail is sent from, e.g.
+`Build <hello@getbuild.ing>`), and `WAITLIST_NOTIFY_ADDRESS` (where a new-signup
+notification goes; empty disables it). `app.yaml` interpolates the three `SMTP_*`
+variables and the app refuses to boot without them.
+
+### Email
+
+`SKRIFT_ENV=dev` uses the console backend: outbound mail is logged instead of
+sent, so dev needs no credentials at all. To send real mail from a local server,
+put `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_ADDRESS` and
+`WAITLIST_NOTIFY_ADDRESS` in `skriftapp/.env` (gitignored) and run:
+
+```bash
+SKRIFT_ENV=mail uv run --project /path/to/Skrift skrift serve --port 8090
+```
+
+`app.mail.yaml` is the dev config plus the production SMTP block, with the
+public base URL pointed at `http://localhost:8090` so unsubscribe links in the
+mail land back on the local server that signed them.
+
+FastMail: `smtp.fastmail.com:587` with STARTTLS; the username is the login
+address, the password is an app password (not the account password), and the
+from address must be an address or alias on that account.
 
 The one-time setup is normally the Skrift web wizard (a fresh deploy serves
 `/setup` until completed); the steps above seed it non-interactively.

@@ -9,7 +9,7 @@ use tokio::sync::watch;
 use super::adk::{
     one_line, task_status_failed, task_status_is_terminal, tool_result_text, TOOL_SUMMARY_LIMIT,
 };
-use super::shell_tail::ShellTail;
+use super::shell_tail::{exit_code_stated_in, ShellTail};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct AgentSurfaces {
@@ -179,6 +179,9 @@ enum ShellReport {
     Closed {
         state: &'static str,
         exit_code: Option<i32>,
+    },
+    StatusChanged {
+        state: &'static str,
     },
     Tailed(ShellTail),
 }
@@ -421,6 +424,10 @@ impl SurfaceLedger {
                     None => false,
                 }
             }
+            ShellReport::StatusChanged { state } => match held_named(&mut self.shells, shell_id) {
+                Some(held) => replace_when_changed(&mut held.state, Some(state.to_string())),
+                None => false,
+            },
             ShellReport::Tailed(tail) => match held_named(&mut self.shells, shell_id) {
                 Some(held) => {
                     let marked = match held.closed_by_notification {
@@ -524,10 +531,15 @@ fn status_reported_by<'event>(subtype: &str, event: &'event Value) -> Option<&'e
 
 fn shell_close_reported_by(subtype: &str, event: &Value) -> Option<ShellReport> {
     let state = status_reported_by(subtype, event).and_then(wire_task_state)?;
-    Some(ShellReport::Closed {
-        state,
-        exit_code: event["summary"].as_str().and_then(exit_code_reported_in),
-    })
+    match subtype {
+        "task_notification" => Some(ShellReport::Closed {
+            state,
+            exit_code: event["summary"]
+                .as_str()
+                .and_then(|summary| exit_code_stated_in(summary, EXIT_CODE_PREAMBLE)),
+        }),
+        _ => Some(ShellReport::StatusChanged { state }),
+    }
 }
 
 fn answered_text(event: &Value, call_id: &str) -> String {
@@ -552,15 +564,6 @@ fn output_path_named_in(answered: &str) -> Option<PathBuf> {
         true => None,
         false => Some(PathBuf::from(named)),
     }
-}
-
-fn exit_code_reported_in(summary: &str) -> Option<i32> {
-    let (_, after_the_preamble) = summary.split_once(EXIT_CODE_PREAMBLE)?;
-    let stated: String = after_the_preamble
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    stated.parse().ok()
 }
 
 fn read_todo_list(todos: &[Value]) -> Vec<SurfaceChecklistItem> {
@@ -1774,6 +1777,38 @@ mod tests {
         );
         assert_eq!(closed.exit_code, None);
         assert_eq!(closed.tail, vec!["tick 9", "[exited with code 137]"]);
+    }
+
+    #[test]
+    fn a_status_line_carrying_no_summary_leaves_the_exit_code_the_marker_wrote() {
+        let mut ledger = ledger_through_the_launched_shell();
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["finished", "[exited with code 3]"], Some(3))
+        ));
+
+        assert!(!feed_shell_line(&mut ledger, SHELL_UPDATED_LINE));
+
+        let closed = the_only_shell(&ledger);
+        assert_eq!(
+            closed.exit_code,
+            Some(3),
+            "a task_updated line carries no summary, so it claims no exit code"
+        );
+        assert_eq!(closed.state.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_marker_after_a_status_line_still_records_the_code_no_notification_named() {
+        let mut ledger = ledger_through_the_launched_shell();
+        feed_shell_line(&mut ledger, SHELL_UPDATED_LINE);
+
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["finished", "[exited with code 3]"], Some(3))
+        ));
+
+        assert_eq!(the_only_shell(&ledger).exit_code, Some(3));
     }
 
     #[test]

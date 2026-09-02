@@ -66,7 +66,10 @@ fn tail_of(read_back: &str, reached_the_start: bool) -> ShellTail {
     if lines.len() > SHELL_TAIL_LINES {
         lines = lines.split_off(lines.len() - SHELL_TAIL_LINES);
     }
-    let exit_code = lines.last().and_then(|last| exit_code_marked_by(last));
+    let exit_code = lines
+        .last()
+        .and_then(|last| last.trim_end().strip_suffix(EXIT_MARKER_CLOSING))
+        .and_then(|up_to_the_close| exit_code_stated_in(up_to_the_close, EXIT_MARKER_OPENING));
     ShellTail {
         lines: lines.iter().map(|line| clipped(line)).collect(),
         exit_code,
@@ -84,9 +87,12 @@ fn clipped(line: &str) -> String {
     }
 }
 
-fn exit_code_marked_by(line: &str) -> Option<i32> {
-    let up_to_the_close = line.trim_end().strip_suffix(EXIT_MARKER_CLOSING)?;
-    let (_, stated) = up_to_the_close.rsplit_once(EXIT_MARKER_OPENING)?;
+pub(crate) fn exit_code_stated_in(text: &str, opening: &str) -> Option<i32> {
+    let (_, after_the_opening) = text.rsplit_once(opening)?;
+    let stated: String = after_the_opening
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
     stated.parse().ok()
 }
 
@@ -246,6 +252,29 @@ mod tests {
         let tailed = ShellTail::read(&path).expect("the output file reads");
 
         assert_eq!(tailed.exit_code, Some(4));
+    }
+
+    #[test]
+    fn one_scraper_reads_the_code_after_the_marker_opening_and_after_the_summary_preamble() {
+        assert_eq!(
+            exit_code_stated_in("[exited with code 7", EXIT_MARKER_OPENING),
+            Some(7)
+        );
+        assert_eq!(
+            exit_code_stated_in(
+                "Background command \"run the suite\" completed (exit code 137)",
+                "exit code "
+            ),
+            Some(137)
+        );
+        assert_eq!(
+            exit_code_stated_in("Background command was killed", "exit code "),
+            None
+        );
+        assert_eq!(
+            exit_code_stated_in("[exited with code ]", EXIT_MARKER_OPENING),
+            None
+        );
     }
 
     #[test]

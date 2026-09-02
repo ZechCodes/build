@@ -101,8 +101,7 @@ function runningEntryCount(surfaces, kind) {
   return entriesOfKind(surfaces, kind).filter((entry) => stateMarkIs(kind, entry, RUNNING_MARK)).length;
 }
 
-/** When the last grace this kind is holding runs out, or null once none is. */
-function graceEnd(visibility, kind, nowMs) {
+function graceExpiryFor(visibility, kind, nowMs) {
   const { lastRunningSeenAt, closedAt } = kindVisibility(visibility, kind);
   const ends = [lastRunningSeenAt, closedAt]
     .filter((at) => Number.isFinite(at))
@@ -115,16 +114,13 @@ function pillIsShown(kind, runningCount, visibility, nowMs) {
   if (!KINDS_THAT_LINGER.includes(kind)) return true;
   if (runningCount > 0) return true;
   if (visibility && visibility.openKind === kind) return true;
-  return graceEnd(visibility, kind, nowMs) !== null;
+  return graceExpiryFor(visibility, kind, nowMs) !== null;
 }
 
 export function surfaceKindLabel(kind) {
   return KIND_LABELS[kind] || "";
 }
 
-/** The kinds this snapshot has something in, each with what is running in it.
- *  The one count in the client: the pills filter this by their grace rule, the
- *  conversation menu lists all of it. */
 function kindsWithContent(surfaces) {
   return SURFACE_KINDS.filter((kind) => entriesOfKind(surfaces, kind).length > 0).map((kind) => ({
     kind,
@@ -137,9 +133,6 @@ export function surfacePills(surfaces, visibility = null, nowMs = 0) {
   return kindsWithContent(surfaces).filter(({ kind, count }) => pillIsShown(kind, count, visibility, nowMs));
 }
 
-/** The conversation menu's options, shaped for `menuButtonMarkup`: every kind
- *  with content, whatever the pills' grace would say about it, since a reader
- *  asking for a surface by name is asking for the one they remember. */
 export function surfaceMenuOptions(surfaces) {
   return kindsWithContent(surfaces).map(({ kind, label, count }) => ({
     id: kind,
@@ -155,7 +148,7 @@ export function nextSurfacePillExpiry(surfaces, visibility, nowMs) {
       !runningEntryCount(surfaces, kind) &&
       !(visibility && visibility.openKind === kind),
   )
-    .map((kind) => graceEnd(visibility, kind, nowMs))
+    .map((kind) => graceExpiryFor(visibility, kind, nowMs))
     .filter((end) => end !== null);
   return expiries.length ? Math.min(...expiries) : null;
 }
@@ -171,23 +164,29 @@ function claimKey(kind, id, index, claimed) {
   return `${kind}-${fallbackIndex}`;
 }
 
-function keyedRows(keyPrefix, markKind, entries, normalise) {
+function keyedBy(keyPrefix, entries, shape) {
   const claimed = new Set();
   return entries.map((given, index) => {
     const entry = given || {};
     const key = claimKey(keyPrefix, entry.id ? String(entry.id) : "", index, claimed);
     claimed.add(key);
-    if (!markKind) return { key, ...normalise(entry, index) };
-    return {
-      key,
-      id: entry.id || null,
-      state: entry.state || "",
-      stateMark: surfaceStateMark(markKind, entry.state),
-      subject: rowSubject(markKind, entry),
-      actions: rowActions(markKind, entry),
-      ...normalise(entry, index),
-    };
+    return { key, ...shape(entry, index) };
   });
+}
+
+function keyedRows(keyPrefix, entryKind, entries, normalise) {
+  return keyedBy(keyPrefix, entries, (entry, index) => ({
+    id: entry.id || null,
+    state: entry.state || "",
+    stateMark: surfaceStateMark(entryKind, entry.state),
+    subject: rowSubject(entryKind, entry),
+    actions: rowActions(entryKind, entry),
+    ...normalise(entry, index),
+  }));
+}
+
+function keyedPhaseRows(phases, shapePhase) {
+  return keyedBy("phase", phases, shapePhase);
 }
 
 function phasesOf(workflow) {
@@ -284,7 +283,7 @@ export function workflowPhases(surfaces, selectedWorkflowIndex = 0, selectedPhas
   if (!phases.length) return { phases: [], agents: [] };
   const selected = chosenIndex(phases.length, selectedPhaseIndex);
   return {
-    phases: keyedRows("phase", null, phases, (phase, index) => ({
+    phases: keyedPhaseRows(phases, (phase, index) => ({
       index,
       title: phase.title || "",
       total: agentsOf(phase).length,

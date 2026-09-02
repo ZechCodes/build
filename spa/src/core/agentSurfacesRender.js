@@ -17,7 +17,7 @@ const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 const COMPLETED_FOLD_CLASS = "surface-completed";
 const COMPLETED_FOLD_HEAD_CLASS = "surface-completed-head";
 
-const CLASS_THIS_MODULE_EMITS = {
+const VIEWER_CLASS = {
   viewer: "surface-viewer",
   workflowChoices: "surface-workflows",
   workflowPhases: "surface-phases",
@@ -37,7 +37,7 @@ export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
-  Object.entries(CLASS_THIS_MODULE_EMITS).map(([name, className]) => [name, `.${className}`]),
+  Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
 );
 
 function stateMarkHtml(stateMark) {
@@ -143,18 +143,18 @@ export function workflowHeadHtml(workflow) {
 }
 
 export function workflowViewerHtml(workflow, choices, phases, agents) {
-  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} surface-workflow">
-    <div class="${CLASS_THIS_MODULE_EMITS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
+  return `<div class="${VIEWER_CLASS.viewer} surface-workflow">
+    <div class="${VIEWER_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
     <div class="surface-workflow-body">
-      <div class="${CLASS_THIS_MODULE_EMITS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
-      <div class="${CLASS_THIS_MODULE_EMITS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
+      <div class="${VIEWER_CLASS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
+      <div class="${VIEWER_CLASS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
     </div>
   </div>`;
 }
 
 export function kindViewerHtml(kind, rows, renderRow) {
-  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} ${CLASS_THIS_MODULE_EMITS[kind]}">${rows
+  return `<div class="${VIEWER_CLASS.viewer} ${VIEWER_CLASS[kind]}">${rows
     .map(renderRow)
     .join("")}</div>`;
 }
@@ -166,14 +166,14 @@ export function completedFoldHeadHtml(count) {
 export function completedFoldHtml(count, rowsHtml = "") {
   return `<details class="${COMPLETED_FOLD_CLASS}">
     ${completedFoldHeadHtml(count)}
-    <div class="${CLASS_THIS_MODULE_EMITS.completed}">${rowsHtml}</div>
+    <div class="${VIEWER_CLASS.completed}">${rowsHtml}</div>
   </details>`;
 }
 
 export function runningAndCompletedViewerHtml(kind, { running, completed }, renderRow) {
   const fold = completed.length ? completedFoldHtml(completed.length, completed.map(renderRow).join("")) : "";
-  return `<div class="${CLASS_THIS_MODULE_EMITS.viewer} ${CLASS_THIS_MODULE_EMITS[kind]}">
-    <div class="${CLASS_THIS_MODULE_EMITS.running}">${running.map(renderRow).join("")}</div>
+  return `<div class="${VIEWER_CLASS.viewer} ${VIEWER_CLASS[kind]}">
+    <div class="${VIEWER_CLASS.running}">${running.map(renderRow).join("")}</div>
     ${fold}
   </div>`;
 }
@@ -199,8 +199,6 @@ export function checklistItemHtml(row) {
   });
 }
 
-/** The dialog a surface is read in when the conversation menu opens it: the
- *  kind's name, and an empty body for its viewer to mount into. */
 export function surfaceOverlayHtml(label) {
   return modalDialogHtml(`<h3>${esc(label)}</h3><div class="${SURFACE_OVERLAY_BODY_CLASS}"></div>`, {
     className: "modal-surface",

@@ -94,11 +94,6 @@ const VIEWER_PLANS = {
   [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml),
 };
 
-/** One kind's viewer, painted into `host` and kept current by `set`. It owns
- *  the frame, the keyed lists inside it, the row-action menus, and the presses
- *  that choose a workflow, a phase or a spawned call. Nothing about the pills
- *  is in here, which is what lets the conversation header open the same viewer
- *  in a modal over the panel. */
 export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem }) {
   const plan = VIEWER_PLANS[kind];
   if (!plan) throw new Error(`agentSurfaces: no viewer for kind "${kind}"`);
@@ -158,7 +153,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
     return null;
   };
 
-  const wireMenusThePaintLeftBare = () => {
+  const wireUnwiredMenus = () => {
     for (const menuElement of host.querySelectorAll(SPLIT_BUTTON_SELECTOR)) {
       if (menuClosersByElement.has(menuElement)) continue;
       const chooseAction = actionChooserFor(menuElement);
@@ -176,9 +171,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
     }
   };
 
-  /** The container the finished rows are painted into, made when the first row
-   *  finishes and taken away when the last one leaves. */
-  const foldTheFinishedRowsSitUnder = (count) => {
+  const completedFoldContainer = (count) => {
     const standing = host.querySelector(COMPLETED_FOLD_SELECTOR);
     if (!count) {
       if (standing) standing.remove();
@@ -204,7 +197,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       patchElement(host.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
     }
     for (const list of plan.lists(paintContext)) {
-      const container = list.folded ? foldTheFinishedRowsSitUnder(list.rows.length) : host.querySelector(list.selector);
+      const container = list.folded ? completedFoldContainer(list.rows.length) : host.querySelector(list.selector);
       if (!container) continue;
       paintedLists.set(list.selector, list);
       patchList(container, list.rows, {
@@ -213,7 +206,7 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
       });
     }
     closeMenusOfDiscardedElements();
-    wireMenusThePaintLeftBare();
+    wireUnwiredMenus();
   };
 
   const onViewerPress = (event) => {
@@ -254,11 +247,6 @@ export function mountSurfaceViewer(host, kind, { onSendMessage, onOpenThreadItem
   };
 }
 
-/** One kind's viewer as a modal over the panel, at whatever height it needs.
- *  The caller keeps handing it snapshots through `set` for as long as it is up,
- *  so the overlay and the pills under it show the same picture, and a kind that
- *  loses everything shows its empty viewer rather than closing under the
- *  reader. */
 export function openSurfaceOverlay(kind, { onSendMessage, onOpenThreadItem, onClose = null }) {
   let viewer = null;
   const { body, close } = openModal({
@@ -289,23 +277,24 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   let surfaces = null;
   let paintedSurfaces = null;
   let chosenKind = readOpenSurface(key);
-  let openKind = null;
   let viewer = null;
   let visibility = emptySurfaceVisibility();
   let hidingTimer = null;
 
+  const openKind = () => visibility.openKind;
+
   const paintViewer = () => {
-    if (viewer && viewer.kind !== openKind) {
+    if (viewer && viewer.kind !== openKind()) {
       viewer.dispose();
       viewer = null;
     }
-    if (!openKind) return;
-    if (!viewer) viewer = mountSurfaceViewer(viewerRegion, openKind, { onSendMessage, onOpenThreadItem });
+    if (!openKind()) return;
+    if (!viewer) viewer = mountSurfaceViewer(viewerRegion, openKind(), { onSendMessage, onOpenThreadItem });
     viewer.set(surfaces);
   };
 
   const paintPills = (nowMs) => {
-    const html = surfacePillsHtml(surfacePills(surfaces, visibility, nowMs), openKind);
+    const html = surfacePillsHtml(surfacePills(surfaces, visibility, nowMs), openKind());
     const next = html ? el(html) : null;
     const live = pillRegion.firstElementChild;
     if (live && next && live.tagName === next.tagName) {
@@ -315,7 +304,7 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     pillRegion.innerHTML = html;
   };
 
-  const armTheNextHiding = (nowMs) => {
+  const armPillHidingTimer = (nowMs) => {
     if (hidingTimer !== null) clearTimeout(hidingTimer);
     hidingTimer = null;
     const expiry = nextSurfacePillExpiry(surfaces, visibility, nowMs);
@@ -328,18 +317,17 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
 
   const paint = () => {
     const nowMs = Date.now();
-    openKind = openSurfaceKind(surfaces, chosenKind, visibility, nowMs);
-    if (visibility.openKind !== openKind) visibility = openedSurfaceVisibility(visibility, openKind, nowMs);
+    visibility = openedSurfaceVisibility(visibility, openSurfaceKind(surfaces, chosenKind, visibility, nowMs), nowMs);
     paintViewer();
     paintPills(nowMs);
-    armTheNextHiding(nowMs);
+    armPillHidingTimer(nowMs);
   };
 
   const onPillPress = (event) => {
     const button = event.target.closest("[data-surface-kind]");
     if (!button) return;
     const kind = button.dataset.surfaceKind;
-    chosenKind = kind === openKind ? null : kind;
+    chosenKind = kind === openKind() ? null : kind;
     writeOpenSurface(key, chosenKind);
     paint();
   };
@@ -349,11 +337,11 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   return {
     set(nextSurfaces) {
       const arriving = JSON.stringify(nextSurfaces || null);
-      const saysWhatIsPainted = arriving === paintedSurfaces;
+      const unchangedSinceLastPaint = arriving === paintedSurfaces;
       paintedSurfaces = arriving;
       surfaces = nextSurfaces || null;
       visibility = advanceSurfaceVisibility(visibility, surfaces, Date.now());
-      if (saysWhatIsPainted) return;
+      if (unchangedSinceLastPaint) return;
       paint();
     },
     dispose() {

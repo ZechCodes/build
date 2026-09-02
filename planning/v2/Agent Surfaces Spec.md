@@ -203,8 +203,10 @@ Locked after the first pass shipped. Bridge unchanged; all four are SPA.
   fewer than 60 seconds have passed since an entry was last seen running; the
   kind's viewer is open; fewer than 60 seconds have passed since that viewer
   was closed. Otherwise the pill is hidden. The grace is one named constant.
-- `workflows` and `checklist` keep today's rule: shown while they have content,
-  count is the number of entries.
+- `workflows` and `checklist` are shown while they have content.
+- Every pill's count is its number of running entries, and a pill with none
+  running shows its label alone. No pill carries a live dot: a count means
+  running, no count means nothing is.
 - The viewer for `shells` and `subagents` lists running entries first and puts
   finished ones under a collapsed "Completed (n)" fold. The fold's open state
   belongs to the reader and survives repaints.

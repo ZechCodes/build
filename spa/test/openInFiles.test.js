@@ -66,12 +66,12 @@ describe("the control in a file's head", () => {
       openFile: (where) => opened.push(where),
     });
     await settle();
-    const file = container.querySelector('.file[data-file="src/a.js"]');
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
     expect(file.classList.contains("capped")).toBe(true);
     await click(file.querySelector(".fopen"));
     expect(opened).toEqual([{ path: "src/a.js", line: 12 }]);
     // The press was the control's, not the fold's.
-    expect(container.querySelector('.file[data-file="src/a.js"]').classList.contains("capped")).toBe(true);
+    expect(container.querySelector('.file[data-key$=":src/a.js"]').classList.contains("capped")).toBe(true);
     pane.dispose();
   });
 
@@ -115,7 +115,7 @@ describe("the Files view, opened at a line", () => {
     const scrolled = [];
     const original = Element.prototype.scrollIntoView;
     Element.prototype.scrollIntoView = function (options) {
-      scrolled.push({ line: this.dataset.line, options });
+      scrolled.push({ line: this.dataset.newLine, options });
     };
     const host = document.createElement("div");
     document.body.appendChild(host);
@@ -146,7 +146,7 @@ describe("the Files view, opened at a line", () => {
   it("marks every source row with its line", async () => {
     const { host, files, restore } = mountFiles({ path: "src/a.js", line: null });
     await vi.waitFor(() => expect(host.querySelector(".fsrc")).toBeTruthy());
-    expect([...host.querySelectorAll(".fsrc tr")].map((row) => row.dataset.line)).toEqual(["1", "2", "3", "4"]);
+    expect([...host.querySelectorAll(".fsrc tr")].map((row) => row.dataset.newLine)).toEqual(["1", "2", "3", "4"]);
     files.dispose();
     restore();
   });

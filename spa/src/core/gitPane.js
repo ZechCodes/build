@@ -33,7 +33,7 @@ import { createCommentLayer } from "./changesComments.js";
 import { changedSinceChangeset, stampChangeset } from "./reviewMemory.js";
 import { loadTrustDial, saveTrustDial, triageFingerprint } from "./triageModel.js";
 import { createTriageOverrides } from "./triageOverride.js";
-import { createFileFolds, parseDiff } from "./diff.js";
+import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { initPaneDrawer, paneDrawerHtml } from "./paneDrawer.js";
@@ -1118,7 +1118,8 @@ export function mountGitPane(
   const claimDiscard = (event) => {
     const button = event.target.closest(".gitdiscard");
     if (!button) return false;
-    confirmThen(`discard:${button.dataset.path}`, () => runDiscard(button.dataset.path));
+    const path = pathOf(button.dataset.key);
+    confirmThen(`discard:${path}`, () => runDiscard(path));
     return true;
   };
 
@@ -1127,7 +1128,7 @@ export function mountGitPane(
   const claimFileMenu = (event) => {
     const button = event.target.closest(".fmenu");
     if (!button) return false;
-    const path = button.dataset.path;
+    const path = pathOf(button.dataset.key);
     fileMenuPath = fileMenuPath === path ? null : path;
     clearConfirm();
     render();

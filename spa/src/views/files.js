@@ -83,13 +83,14 @@ export function filesTreeHtml(dir, entries) {
 /** Pure: the syntax-highlighted source view for a file. Code is highlighted by
  *  the path's extension (langForPath) and, for an unknown extension, falls back
  *  to escaped plain text — highlightCode never emits a live tag either way.
- *  Every row states its line, so a reader arriving from a diff can be taken to
- *  the line the diff was about. */
+ *  Every row states its line the way a diff row states it — `data-new-line`,
+ *  the line in the file as it stands — so a reader arriving from a diff can be
+ *  taken to the line the diff was about. */
 export function sourcePreviewHtml(path, text) {
   const lang = langForPath(path);
   const rows = text
     .split("\n")
-    .map((line, index) => `<tr data-line="${index + 1}"><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
+    .map((line, index) => `<tr data-new-line="${index + 1}"><td class="fsrc-ln">${index + 1}</td><td class="fsrc-code"><code>${highlightCode(line, lang) || " "}</code></td></tr>`)
     .join("");
   return `<div class="fsrc"><table>${rows}</table></div>`;
 }
@@ -298,7 +299,7 @@ export function renderFilesTab(body, { scope, callRpc, initialPath = null }) {
    *  keeps the request until one is drawn. */
   const scrollRequestedLineIntoView = () => {
     if (!scrollToLine) return;
-    const row = previewEl.querySelector(`.fsrc tr[data-line="${scrollToLine}"]`);
+    const row = previewEl.querySelector(`.fsrc tr[data-new-line="${scrollToLine}"]`);
     if (!row || typeof row.scrollIntoView !== "function") return;
     scrollToLine = null;
     row.scrollIntoView({ block: "center" });

@@ -18,7 +18,7 @@ import { cacheDeviceId } from "./cacheScope.js";
 import { readCached, writeCached } from "./localCache.js";
 import { changesActionbarHtml } from "./changesRender.js";
 import { createCommentLayer } from "./changesComments.js";
-import { createFileFolds, parseDiff } from "./diff.js";
+import { createFileFolds, parseDiff, pathOf } from "./diff.js";
 import { diffStackEntries, stackClaims } from "./diffRender.js";
 import { DIFF_PLACE_KEEPING, createChangesetPaint } from "./diffPlace.js";
 import { changedSinceReview, stampReview } from "./reviewMemory.js";
@@ -278,7 +278,7 @@ export function createReviewPlug({
         return;
       }
       if (!target.classList.contains("fviewed-box")) return;
-      const path = target.dataset.file;
+      const path = pathOf(target.dataset.key);
       if (target.checked) viewedFiles.add(path);
       else viewedFiles.delete(path);
       render();

@@ -156,11 +156,11 @@ export function diffFileHtml(file, options = {}) {
   const commentButton = commentable ? `<button class="fcmt" title="Comment on this file">✎</button>` : "";
   const changedChip = changedSince && changedSince.has(file.path) ? `<span class="fchanged">changed since your review</span>` : "";
   const viewedToggle = withViewedToggle
-    ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-file="${esc(file.path)}"${isViewed ? " checked" : ""}/> Viewed</label>`
+    ? `<label class="fviewed"><input type="checkbox" class="fviewed-box" data-key="${esc(key)}"${isViewed ? " checked" : ""}/> Viewed</label>`
     : "";
   return `
-      <div class="${classes}" data-file="${esc(file.path)}" data-key="${esc(key)}"${openMark}><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
-        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file.path, fileMenu)}</div>
+      <div class="${classes}" data-key="${esc(key)}"${openMark}><div class="fhead"><span class="fpath">${esc(file.path)}</span><span class="fb ${file.status}">${file.status}</span>
+        <span class="pm"><span class="a">+${file.add}</span> <span class="d">−${file.del}</span></span>${changedChip}${viewedToggle}${openFileButtonHtml(file, openable)}${commentButton}${fileMenuHtml(file, fileMenu)}</div>
         <div class="dscroll"><table>${diffRowsHtml(file.rows, lang, {
           maskDotenv: isDotenvPath(file.path),
           hunkMarks: file.triageHunks || null,
@@ -173,7 +173,7 @@ export function diffFileHtml(file, options = {}) {
  *  about. Drawn only where the surface has somewhere to send the reader. */
 function openFileButtonHtml(file, openable) {
   if (!openable) return "";
-  return `<button class="fopen" data-open-file="${esc(file.path)}" data-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
+  return `<button class="fopen" data-open-file="${esc(file.path)}" data-new-line="${firstLineOf(file)}" title="Open this file in Files">↗</button>`;
 }
 
 /** One file of a stack, wherever it is standing. */
@@ -184,7 +184,7 @@ export const FILE_ELEMENT = ".file[data-key]";
 export function pressedOpenFile(target, openFile) {
   const control = target.closest("[data-open-file]");
   if (!control || !openFile) return false;
-  openFile({ path: control.dataset.openFile, line: Number(control.dataset.line) || null });
+  openFile({ path: control.dataset.openFile, line: Number(control.dataset.newLine) || null });
   return true;
 }
 
@@ -206,15 +206,18 @@ export function pressedFold(target, folds, viewed = null) {
 }
 
 /** The file header's ⋯ and, when this file's menu is the open one, its verbs.
- *  Today that is one verb — discard — carrying the shared inline confirm. */
-function fileMenuHtml(path, fileMenu) {
+ *  Today that is one verb — discard — carrying the shared inline confirm. Both
+ *  controls name the file the way the element does, and the handler reads the
+ *  path back out of that one name. */
+function fileMenuHtml(file, fileMenu) {
   if (!fileMenu) return "";
-  const open = fileMenu.openPath === path;
-  const armed = fileMenu.pendingConfirm === `discard:${path}`;
+  const key = fileKey(file);
+  const open = fileMenu.openPath === file.path;
+  const armed = fileMenu.pendingConfirm === `discard:${file.path}`;
   const menu = open
-    ? `<div class="fmenu-pop"><button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-path="${esc(path)}">${armed ? "Discard changes?" : "Discard changes"}</button></div>`
+    ? `<div class="fmenu-pop"><button class="btn mini danger gitdiscard${armed ? " armed" : ""}" data-key="${esc(key)}">${armed ? "Discard changes?" : "Discard changes"}</button></div>`
     : "";
-  return `<span class="fmenu-host"><button class="fmenu" data-path="${esc(path)}" title="File actions" aria-expanded="${open}">⋯</button>${menu}</span>`;
+  return `<span class="fmenu-host"><button class="fmenu" data-key="${esc(key)}" title="File actions" aria-expanded="${open}">⋯</button>${menu}</span>`;
 }
 
 /** One changeset, stacked: every readable file as a full diff, then whatever is

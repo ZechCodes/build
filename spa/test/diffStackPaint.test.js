@@ -66,7 +66,7 @@ function watchScrollTop(element) {
   return writes;
 }
 
-const fileOf = (root, path) => root.querySelector(`.file[data-file="${path}"]`);
+const fileOf = (root, path) => root.querySelector(`.file[data-key$=":${path}"]`);
 
 beforeEach(() => {
   document.body.innerHTML = "";
@@ -95,7 +95,7 @@ describe("the Changes pane's stack", () => {
     const { container, pane } = await mount({ status: status() });
     const stack = container.querySelector(".dstack");
     expect(stack.hasAttribute("data-keyed-list")).toBe(true);
-    expect([...stack.children].map((child) => child.dataset.file)).toEqual(["src/a.js", "src/b.js"]);
+    expect([...stack.children].map((child) => child.dataset.key)).toEqual(["EDIT:src/a.js", "EDIT:src/b.js"]);
     pane.dispose();
   });
 
@@ -202,7 +202,7 @@ describe("the review plug's stack", () => {
     await vi.advanceTimersByTimeAsync(0);
     const stack = host.querySelector(".dstack");
     expect(stack.hasAttribute("data-keyed-list")).toBe(true);
-    expect([...stack.children].map((child) => child.dataset.file)).toEqual(["src/a.js", "src/b.js"]);
+    expect([...stack.children].map((child) => child.dataset.key)).toEqual(["EDIT:src/a.js", "EDIT:src/b.js"]);
     plug.unmount();
   });
 

@@ -42,8 +42,10 @@ describe("diffFilesHtml", () => {
     expect(html).toContain("src/&lt;x&gt;.rs");
   });
 
-  it("uses data-file on the file block for comment anchoring", () => {
-    expect(diffFilesHtml(files)).toContain('data-file="src/&lt;x&gt;.rs"');
+  it("names the file block with its key, and nothing else, for the anchoring to read", () => {
+    const html = diffFilesHtml(files);
+    expect(html).toContain('data-key="EDIT:src/&lt;x&gt;.rs"');
+    expect(html).not.toContain("data-file=");
   });
 
   it("syntax-highlights code by the file's extension (never leaves raw markup)", () => {
@@ -127,9 +129,9 @@ describe("diffFilesHtml re-review options", () => {
 
   it("collapses (not caps) a viewed file and checks its box", () => {
     const html = diffFilesHtml(files, { withViewedToggle: true, viewed: new Set(["a.js"]) });
-    expect(html).toMatch(/<div class="file collapsed" data-file="a\.js"/);
-    expect(html).toMatch(/<div class="file capped" data-file="b\.js"/);
-    expect(html).toContain('data-file="a.js" checked');
+    expect(html).toMatch(/<div class="file collapsed" data-key="EDIT:a\.js"/);
+    expect(html).toMatch(/<div class="file capped" data-key="EDIT:b\.js"/);
+    expect(html).toContain('data-key="EDIT:a.js" checked');
   });
 });
 
@@ -197,7 +199,7 @@ describe("per-file ⋯ menu (staging is gone; discard moved here)", () => {
     const html = diffFilesHtml(files, { fileMenu: { openPath: "src/a.js" } });
     expect(html).toContain('class="fmenu"');
     expect(html).toContain("gitdiscard");
-    expect(html).toContain('data-path="src/a.js"');
+    expect(html).toContain('data-key="EDIT:src/a.js"');
   });
 
   it("keeps the menu shut until its own file's ⋯ is open", () => {
@@ -225,7 +227,7 @@ describe("diffStackHtml — collapse, never hide", () => {
 
   it("renders source files as full stacked diffs", () => {
     const html = diffStackHtml([source]);
-    expect(html).toContain('data-file="src/main.py"');
+    expect(html).toContain('data-key="EDIT:src/main.py"');
     expect(html).not.toContain("noisegroup");
   });
 
@@ -234,13 +236,13 @@ describe("diffStackHtml — collapse, never hide", () => {
     expect(html).toContain("noisegroup");
     expect(html).toContain("2 generated files");
     // the group sits below the source stack, and its diffs are not rendered yet
-    expect(html.indexOf("noisegroup")).toBeGreaterThan(html.indexOf('data-file="src/main.py"'));
-    expect(html).not.toContain('data-file="uv.lock"');
+    expect(html.indexOf("noisegroup")).toBeGreaterThan(html.indexOf('data-key="EDIT:src/main.py"'));
+    expect(html).not.toContain('data-key="EDIT:uv.lock"');
   });
 
   it("renders the noise diffs once the group is expanded", () => {
     const html = diffStackHtml([source, lock], { noiseExpanded: true });
-    expect(html).toContain('data-file="uv.lock"');
+    expect(html).toContain('data-key="EDIT:uv.lock"');
     expect(html).toContain("noisegroup open");
   });
 
@@ -271,31 +273,31 @@ describe("folds the reader owns", () => {
 
   it("names every file with its key, beside the path the comments anchor to", () => {
     const html = diffFilesHtml(files);
-    expect(html).toContain(`data-file="a.js" data-key="${keyA}"`);
+    expect(html).toContain(`data-key="${keyA}"`);
   });
 
   it("caps a file the reader has not opened", () => {
-    expect(diffFilesHtml(files)).toContain('class="file capped" data-file="a.js"');
+    expect(diffFilesHtml(files)).toContain('class="file capped" data-key="EDIT:a.js"');
   });
 
   it("expands the file whose key the reader opened, and marks it for the patch guard", () => {
     const folds = createFileFolds();
     folds.openBody(keyA);
     const html = diffFilesHtml(files, { folds });
-    expect(html).toContain('class="file" data-file="a.js"');
+    expect(html).toContain('class="file" data-key="EDIT:a.js"');
     expect(html).toContain("data-expanded");
-    expect(html).toContain('class="file capped" data-file="b.js"');
+    expect(html).toContain('class="file capped" data-key="EDIT:b.js"');
   });
 
   it("collapses the file the reader shut", () => {
     const folds = createFileFolds();
     folds.press(keyA);
-    expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-file="a.js"');
+    expect(diffFilesHtml(files, { folds })).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });
 
   it("collapses a viewed file the reader has not moved", () => {
     const html = diffFilesHtml(files, { folds: createFileFolds(), viewed: new Set(["a.js"]) });
-    expect(html).toContain('class="file collapsed" data-file="a.js"');
+    expect(html).toContain('class="file collapsed" data-key="EDIT:a.js"');
   });
 
   it("opens a viewed file the reader asked to see again", () => {
@@ -303,8 +305,8 @@ describe("folds the reader owns", () => {
     const folds = createFileFolds();
     folds.press(keyA, { viewed });
     const html = diffFilesHtml(files, { folds, viewed, withViewedToggle: true });
-    expect(html).toContain('class="file" data-file="a.js"');
-    expect(html).toContain('data-file="a.js" checked');
+    expect(html).toContain('class="file" data-key="EDIT:a.js"');
+    expect(html).toContain('data-key="EDIT:a.js" checked');
   });
 });
 
@@ -371,7 +373,7 @@ describe("the way into the Files view", () => {
   it("carries the path and the first line the diff touches", () => {
     const html = diffFilesHtml(files, { openable: true });
     expect(html).toContain('data-open-file="src/a.js"');
-    expect(html).toContain('data-line="12"');
+    expect(html).toContain('data-new-line="12"');
   });
 
   it("escapes the path it carries", () => {

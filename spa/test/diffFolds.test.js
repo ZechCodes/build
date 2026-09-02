@@ -55,7 +55,7 @@ const click = async (element) => {
   await settle();
 };
 
-const fileOf = (root, path) => root.querySelector(`.file[data-file="${path}"]`);
+const fileOf = (root, path) => root.querySelector(`.file[data-key$=":${path}"]`);
 
 beforeEach(() => {
   document.body.innerHTML = "";

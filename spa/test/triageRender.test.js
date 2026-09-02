@@ -60,7 +60,7 @@ describe("diffStackHtml with a triage overlay", () => {
   it("keeps a collapsed group's diffs in the DOM — collapsed, never dropped", () => {
     const html = stack({ triage: triage() });
     const group = html.slice(html.indexOf('class="tgroup"'));
-    expect(group).toContain('data-file="Cargo.toml"');
+    expect(group).toContain('data-key="EDIT:Cargo.toml"');
   });
 
   it("opens the group the reviewer expanded", () => {
@@ -121,7 +121,7 @@ describe("diffStackHtml with a triage overlay", () => {
     const html = stack({ triage: triage() });
     expect(html).toContain("noisegroup");
     expect(html.lastIndexOf("noisegroup")).toBeGreaterThan(html.lastIndexOf("tgroup"));
-    expect(html).not.toContain('data-file="uv.lock"'); // collapsed, as before
+    expect(html).not.toContain('data-key="EDIT:uv.lock"'); // collapsed, as before
   });
 });
 
@@ -180,7 +180,7 @@ describe("the override controls on an ordered stack", () => {
   const overridable = (review) => stack({ overridable: true, ...review });
 
   const controlsIn = (html, path) => {
-    const file = html.slice(html.indexOf(`data-file="${path}"`));
+    const file = html.slice(html.indexOf(`data-key="EDIT:${path}"`));
     return file.slice(0, file.indexOf("</table>"));
   };
 

@@ -93,7 +93,7 @@ describe("the triage overlay in the Changes pane", () => {
   it("surfaces the critical file above the collapsed group", async () => {
     const container = await open();
     const critical = container.querySelector(".file.tcritical");
-    expect(critical.dataset.file).toBe("src/crypto.rs");
+    expect(critical.dataset.key).toBe("EDIT:src/crypto.rs");
     const group = container.querySelector(".tgrouphead");
     expect(group.querySelector(".tgname").textContent).toBe("Version bumps");
     expect(group.querySelector(".tgcount").textContent).toBe("1 file · 1 hunk");
@@ -110,7 +110,7 @@ describe("the triage overlay in the Changes pane", () => {
 
   it("keeps the collapsed group's diff in the page and opens it on a click", async () => {
     const container = await open();
-    expect(container.querySelector('.tgroup .file[data-file="Cargo.toml"]')).toBeTruthy();
+    expect(container.querySelector('.tgroup .file[data-key$=":Cargo.toml"]')).toBeTruthy();
     expect(container.querySelector(".tgrouphead").classList.contains("open")).toBe(false);
     container.querySelector(".tgrouphead").click();
     await settle();
@@ -174,7 +174,7 @@ describe("the triage overlay in the Changes pane", () => {
     pass = TRIAGE;
     await vi.advanceTimersByTimeAsync(GIT_PANE_POLL_MS + 50);
     await settle();
-    expect(container.querySelector(".file.tcritical").dataset.file).toBe("src/crypto.rs");
+    expect(container.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
   });
 
   it("leaves a surface with no triage to read exactly as it was", async () => {
@@ -247,7 +247,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
       },
     ]);
     expect(container.querySelector(".file.tcritical")).toBeNull();
-    const collapsed = container.querySelector('.tgroup .file[data-file="src/crypto.rs"]');
+    const collapsed = container.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]');
     expect(collapsed).toBeTruthy();
     const chip = collapsed.querySelector(".hchip.overridden");
     expect(chip.textContent).toContain("your call: collapsed");
@@ -267,7 +267,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
     expect(calls).toEqual([
       { run_id: "run-1", hunk_id: ids["Cargo.toml"], direction: "surface", note: "" },
     ]);
-    const surfaced = container.querySelector('.file.tnormal[data-file="Cargo.toml"]');
+    const surfaced = container.querySelector('.file.tnormal[data-key$=":Cargo.toml"]');
     expect(surfaced).toBeTruthy();
     expect(surfaced.querySelector(".hchip.overridden").textContent).toContain("your call: surfaced");
     // And the way back is what it now offers.
@@ -300,7 +300,7 @@ describe("disagreeing with the pass in the Changes pane", () => {
     });
     await disagree(container.querySelector('.file.tcritical .toverride[data-direction="collapse"]'));
 
-    expect(container.querySelector('.file.tcritical').dataset.file).toBe("src/crypto.rs");
+    expect(container.querySelector('.file.tcritical').dataset.key).toBe("EDIT:src/crypto.rs");
     expect(container.querySelector(".hchip.overridden")).toBeNull();
     expect(document.querySelector("#notices .notice")).toBeTruthy();
   });
@@ -370,7 +370,7 @@ describe("the triage overlay on the aggregate review stack", () => {
 
   it("orders the run's own diff and remembers the dial for its project", async () => {
     const { host, plug } = await mountPlug({ triage: TRIAGE, projectId: "proj-1" });
-    expect(host.querySelector(".file.tcritical").dataset.file).toBe("src/crypto.rs");
+    expect(host.querySelector(".file.tcritical").dataset.key).toBe("EDIT:src/crypto.rs");
     expect(host.querySelector(".tgname").textContent).toBe("Version bumps");
 
     host.querySelector(".tgrouphead").click();
@@ -422,7 +422,7 @@ describe("the triage overlay on the aggregate review stack", () => {
       note: "",
     });
     expect(host.querySelector(".file.tcritical")).toBeNull();
-    expect(host.querySelector('.tgroup .file[data-file="src/crypto.rs"]')).toBeTruthy();
+    expect(host.querySelector('.tgroup .file[data-key$=":src/crypto.rs"]')).toBeTruthy();
     plug.unmount();
   });
 });

@@ -159,7 +159,7 @@ describe("the detail pane the review plug and the changesets share", () => {
       await click(container.querySelector('.rrow[data-sel="uncommitted"]'));
       const detail = container.querySelector(".cdetail-host");
       expect(detail.textContent, `round ${round}`).not.toContain("aggregate");
-      expect(detail.querySelector('.file[data-file="src/a.js"]'), `round ${round}`).toBeTruthy();
+      expect(detail.querySelector('.file[data-key$=":src/a.js"]'), `round ${round}`).toBeTruthy();
       expect(detail.querySelector(".csheader"), `round ${round}`).toBeTruthy();
       await click(container.querySelector('.rrow[data-sel="review"]'));
     }
@@ -250,7 +250,7 @@ describe("the rail's paint", () => {
 describe("one renderer for every changeset", () => {
   it("stacks the uncommitted files as full diffs with a ✎ per file — and no stage checkbox", async () => {
     const { container, pane } = await mount();
-    const file = container.querySelector('.file[data-file="src/a.js"]');
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
     expect(file).toBeTruthy();
     expect(file.querySelector("td.ln")).toBeTruthy();
     expect(file.querySelector(".fcmt")).toBeTruthy();
@@ -261,7 +261,7 @@ describe("one renderer for every changeset", () => {
   it("renders a selected commit through the same stack, ✎ and all", async () => {
     const { container, pane } = await mount();
     await click(container.querySelector(".crow"));
-    const file = container.querySelector('.file[data-file="src/b.js"]');
+    const file = container.querySelector('.file[data-key$=":src/b.js"]');
     expect(file).toBeTruthy();
     expect(file.querySelector(".fcmt")).toBeTruthy();
     expect(container.querySelector(".cdetail-host").textContent).toContain("why it happened");
@@ -272,11 +272,11 @@ describe("one renderer for every changeset", () => {
 describe("noise is collapsed, never hidden", () => {
   it("groups generated files under one count line and opens on request", async () => {
     const { container, pane } = await mount();
-    expect(container.querySelector('.file[data-file="uv.lock"]')).toBe(null);
+    expect(container.querySelector('.file[data-key$=":uv.lock"]')).toBe(null);
     const head = container.querySelector(".noisehead");
     expect(head.textContent).toContain("1 generated file");
     await click(head);
-    expect(container.querySelector('.file[data-file="uv.lock"]')).toBeTruthy();
+    expect(container.querySelector('.file[data-key$=":uv.lock"]')).toBeTruthy();
     pane.dispose();
   });
 });
@@ -306,14 +306,14 @@ describe("commit is commit-all", () => {
 describe("per-file discard lives behind the header ⋯", () => {
   it("takes two clicks to fire, the second one carrying the path", async () => {
     const { container, pane, calls } = await mount();
-    const file = container.querySelector('.file[data-file="src/a.js"]');
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
     expect(file.querySelector(".gitdiscard")).toBe(null); // shut until asked for
     await click(file.querySelector(".fmenu"));
-    const discard = container.querySelector('.file[data-file="src/a.js"] .gitdiscard');
+    const discard = container.querySelector('.file[data-key$=":src/a.js"] .gitdiscard');
     expect(discard).toBeTruthy();
     await click(discard);
     expect(calls.some((c) => c.method === "git.discard")).toBe(false); // armed only
-    const armed = container.querySelector('.file[data-file="src/a.js"] .gitdiscard');
+    const armed = container.querySelector('.file[data-key$=":src/a.js"] .gitdiscard');
     expect(armed.textContent).toContain("Discard changes?");
     await click(armed);
     const call = calls.find((c) => c.method === "git.discard");
@@ -332,7 +332,7 @@ describe("comments on any changeset", () => {
 
   it("sends a whole-file comment as an anchored post naming the file and no line", async () => {
     const { container, pane, calls } = await mount();
-    await addCommentViaPop(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
+    await addCommentViaPop(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
     expect(container.querySelector(".pcomment").textContent).toContain("rename this");
     await click(container.querySelector(".cssend"));
     const post = calls.find((c) => c.method === "run.request_changes");
@@ -349,7 +349,7 @@ describe("comments on any changeset", () => {
 
   it("comments a line once the file is expanded, anchoring to that line", async () => {
     const { container, pane, calls } = await mount();
-    const file = container.querySelector('.file[data-file="src/a.js"]');
+    const file = container.querySelector('.file[data-key$=":src/a.js"]');
     file.classList.remove("capped");
     await addCommentViaPop(file.querySelector('tr[data-ln="1"] td.code'));
     await click(container.querySelector(".cssend"));
@@ -381,7 +381,7 @@ describe("the poll freeze holds a review in progress", () => {
       });
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
-      await click(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
+      await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "hold this thought";
       await click(document.querySelector(".cp-save"));
@@ -456,7 +456,7 @@ describe("re-review memory on every stack", () => {
       });
       const pane = mountGitPane(container, { scope: { run_id: "run-1" }, callRpc });
       await settle();
-      await click(container.querySelector('.file[data-file="src/a.js"] .fcmt'));
+      await click(container.querySelector('.file[data-key$=":src/a.js"] .fcmt'));
       await click(document.querySelector(".cp-add"));
       document.querySelector(".cp-input").value = "rename this";
       await click(document.querySelector(".cp-save"));
@@ -466,7 +466,7 @@ describe("re-review memory on every stack", () => {
       served = dirtyStatus({ patch: patchFor("src/a.js", "the agent moved on") + patchFor("uv.lock", "locked") });
       await vi.advanceTimersByTimeAsync(2000);
       await settle();
-      const changed = container.querySelector('.file[data-file="src/a.js"] .fchanged');
+      const changed = container.querySelector('.file[data-key$=":src/a.js"] .fchanged');
       expect(changed.textContent).toContain("changed since your review");
 
       // The stamp belongs to the changeset it was taken on: a commit's stack

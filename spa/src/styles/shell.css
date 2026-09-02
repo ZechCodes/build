@@ -503,12 +503,12 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   border:1px solid var(--line); border-radius:8px; background:var(--panel2); }
 .rail-surfaces-pills:not(:empty) { padding-bottom:6px; }
 .surface-pills { display:flex; flex-wrap:wrap; gap:6px; }
-.surface-pill { display:inline-flex; align-items:center; gap:5px; padding:2px 8px;
-  border:1px solid var(--line); border-radius:11px; background:var(--panel2);
+.surface-pill, .surface-workflow-choice { display:inline-flex; align-items:center; gap:5px;
+  padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
   color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
-.surface-pill:hover { color:var(--ink2); }
-.surface-pill[aria-pressed="true"] { border-color:var(--accent); color:var(--accent);
-  background:var(--accent-soft); }
+.surface-pill:hover, .surface-workflow-choice:hover { color:var(--ink2); }
+.surface-pill[aria-pressed="true"], .surface-workflow-choice[aria-pressed="true"] {
+  border-color:var(--accent); color:var(--accent); background:var(--accent-soft); }
 .surface-pill-count { min-width:15px; padding:0 4px; border-radius:8px; background:var(--panel);
   font-size:10px; font-weight:650; text-align:center; }
 
@@ -533,12 +533,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font-family:var(--mono); font-size:10.5px; }
 
 .surface-workflows:not(:empty) { display:flex; flex-wrap:wrap; gap:4px; padding:0 6px 4px; }
-.surface-workflow-choice { display:inline-flex; align-items:baseline; gap:5px; max-width:100%;
-  padding:2px 8px; border:1px solid var(--line); border-radius:11px; background:var(--panel2);
-  color:var(--dim); font:inherit; font-size:11px; cursor:pointer; }
-.surface-workflow-choice:hover { color:var(--ink2); }
-.surface-workflow-choice[aria-pressed="true"] { border-color:var(--accent); color:var(--accent);
-  background:var(--accent-soft); }
+.surface-workflow-choice { align-items:baseline; max-width:100%; }
 .surface-workflow-head { display:flex; align-items:baseline; gap:6px; padding:0 6px 4px; }
 .surface-workflow-body { display:flex; gap:8px; min-width:0; }
 .surface-phases { display:flex; flex-direction:column; gap:2px; flex:0 0 38%; min-width:0; }

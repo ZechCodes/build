@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { coreSourceOf } from "./coreSource.js";
 import { outcomeMarkHtml } from "../src/core/outcomeMark.js";
 
 const okMarkHtml = `<span class="thread-activity-outcome " data-outcome="ok"
@@ -32,7 +32,7 @@ describe("the one glyph table", () => {
   });
 
   it("owns no vocabulary of its own — no tool tokens, no state tokens, no labels", () => {
-    const source = readFileSync(new URL("../src/core/outcomeMark.js", import.meta.url), "utf8");
+    const source = coreSourceOf("outcomeMark.js");
     expect(source).not.toContain("The tool answered");
     expect(source).not.toContain("in_progress");
     expect(source).not.toContain("checklist");

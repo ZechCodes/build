@@ -1,12 +1,4 @@
 // @vitest-environment jsdom
-// A subagent's rows fold under the tool call that spawned them.
-//
-// The agent that spawned them is one row in this conversation — the Agent call
-// — and everything it said belongs inside that row rather than beside it. The
-// window the reader is standing in decides: a row whose parent has not been
-// fetched yet is a row of its own, and joins its parent the moment the parent
-// arrives.
-
 import { describe, expect, it } from "vitest";
 import { revealThreadSequence, threadHtml } from "../src/core/thread.js";
 

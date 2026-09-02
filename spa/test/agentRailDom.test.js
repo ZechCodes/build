@@ -1475,11 +1475,7 @@ describe("revisiting a conversation", () => {
   });
 });
 
-// The agent's surfaces ride the digest the rail already reads, so the pills go
-// where the reader is already looking: inside the pinned composer block,
-// between the status line and the box. A row's action is an ordinary message
-// out of the rail's one send path.
-describe("the agent's surfaces", () => {
+describe("the agent's surfaces, pinned between the status line and the box", () => {
   const shellSurfaces = {
     shells: [{ id: "sh-1", description: "cargo test", state: "running", tail: ["running 12 tests"] }],
   };

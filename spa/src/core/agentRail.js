@@ -409,9 +409,13 @@ export function mountAgentRail(host, context) {
     else chosenAgent.delete(key);
     selection.set(selectedId);
   };
-  const draftKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
-  const draftOf = () => drafts.get(draftKey()) || { body: "", attachments: [] };
-  const writeDraft = (next) => drafts.set(draftKey(), { ...draftOf(), ...next });
+  /** What this panel is standing in front of: the work item, and the agent
+   *  chosen on it — or the one that does not exist yet. One spelling, so the
+   *  draft the composer holds and the surface pill the reader left open are
+   *  remembered against the same conversation. */
+  const conversationKey = () => `${entity.entityId || key}:${selectedId || "ghost"}`;
+  const draftOf = () => drafts.get(conversationKey()) || { body: "", attachments: [] };
+  const writeDraft = (next) => drafts.set(conversationKey(), { ...draftOf(), ...next });
 
   // ---- the agent that does not exist yet -------------------------------------
 
@@ -938,7 +942,7 @@ export function mountAgentRail(host, context) {
     const region = panel.querySelector(`#${RAIL_SURFACES_ID}`);
     if (!region) return;
     surfacesBlock = mountAgentSurfaces(region, {
-      key: `${entity.entityId || key}:${selectedId || ""}`,
+      key: conversationKey(),
       onSendMessage: (message) => send(message, []),
       onOpenThreadItem: (sequence) => revealThreadSequence(host.querySelector("#rail-body"), sequence),
     });

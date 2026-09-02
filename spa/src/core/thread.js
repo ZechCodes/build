@@ -942,28 +942,28 @@ function threadFolding(items, agentLabel) {
       .map(sequenceOf)
       .filter((sequence) => Number.isFinite(sequence)),
   );
-  const parentedItems = eventItems.filter((item) => activitySequences.has(parentSequenceOf(item)));
-  const childSequences = new Set(parentedItems.map(sequenceOf).filter((sequence) => Number.isFinite(sequence)));
-  const foldingChildren = parentedItems.filter((item) => !childSequences.has(parentSequenceOf(item)));
+  const foldingChildren = eventItems.filter((item) => activitySequences.has(parentSequenceOf(item)));
   const foldedItems = new Set(foldingChildren);
   const childrenByParent = new Map();
   for (const item of foldingChildren) {
     const parent = parentSequenceOf(item);
     childrenByParent.set(parent, [...(childrenByParent.get(parent) || []), item]);
   }
-  const foldedChildrenHtmlOf = (sequence) => {
+  const foldedChildrenHtmlOf = (sequence, alreadyDrawn = new Set()) => {
     const children = childrenByParent.get(sequence);
-    if (!children) return "";
+    if (!children || alreadyDrawn.has(sequence)) return "";
+    const drawn = new Set([...alreadyDrawn, sequence]);
     return `<div class="thread-activity-children">${children
-      .map((child) => eventHtml(child.data || {}, agentLabel))
+      .map((child) => eventHtml(child.data || {}, agentLabel, foldedChildrenHtmlOf(sequenceOf(child), drawn)))
       .join("")}</div>`;
   };
   return { foldedItems, foldedChildrenHtmlOf };
 }
 
 export function revealThreadSequence(scroller, sequence) {
-  if (!scroller) return false;
-  const row = scroller.querySelector(`[data-sequence="${esc(sequence)}"]`);
+  const wanted = Number(sequence);
+  if (!scroller || !Number.isFinite(wanted)) return false;
+  const row = scroller.querySelector(`[data-sequence="${wanted}"]`);
   if (!row) return false;
   for (let node = row; node && node !== scroller; node = node.parentElement) {
     if (node.tagName === "DETAILS") node.open = true;

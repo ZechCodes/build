@@ -9,6 +9,7 @@ import {
   shellViewerHtml,
   subagentViewerHtml,
   surfacePillsHtml,
+  workflowChoiceHtml,
   workflowPhaseHtml,
   workflowViewerHtml,
 } from "../src/core/agentSurfacesRender.js";
@@ -24,6 +25,7 @@ import {
   surfacePills,
   surfaceRows,
   surfaceStateMark,
+  workflowChoices,
   workflowPhases,
 } from "../src/core/agentSurfacesModel.js";
 import { patchList } from "../src/core/patchList.js";
@@ -162,7 +164,7 @@ describe("one row renderer per kind, exported for the keyed paint", () => {
     expect(shellViewerHtml([shellRow])).toContain(shellRowHtml(shellRow));
     expect(checklistViewerHtml([checklistRow])).toContain(checklistItemHtml(checklistRow));
     const { phases, agents } = workflowPhases(freshWorkflow, 0);
-    const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), phases, agents);
+    const workflowHtml = workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents);
     expect(workflowHtml).toContain(workflowPhaseHtml(phases[0]));
     expect(workflowHtml).toContain(agentRowHtml(agents[0]));
   });
@@ -254,9 +256,9 @@ describe("surfacePillsHtml", () => {
 });
 
 describe("workflowViewerHtml", () => {
-  const view = (workflow, selectedIndex) => {
+  const view = (workflow, selectedIndex, choices = []) => {
     const { phases, agents } = workflowPhases(workflow, selectedIndex);
-    return workflowViewerHtml(workflowRow(workflow), phases, agents);
+    return workflowViewerHtml(workflowRow(workflow), choices, phases, agents);
   };
 
   it("paints both of the id-less queued agents a fresh workflow carries, each marked queued", () => {
@@ -292,7 +294,7 @@ describe("workflowViewerHtml", () => {
 
   it("draws each agent through the one agent row renderer", () => {
     const { phases, agents } = workflowPhases(freshWorkflow, 0);
-    expect(workflowViewerHtml(workflowRow(freshWorkflow), phases, agents)).toContain(agentRowHtml(agents[0]));
+    expect(workflowViewerHtml(workflowRow(freshWorkflow), [], phases, agents)).toContain(agentRowHtml(agents[0]));
   });
 
   it("names the workflow, marks its state and offers its actions", () => {
@@ -302,9 +304,19 @@ describe("workflowViewerHtml", () => {
     expect(painted.querySelectorAll(".surface-workflow-head .splitmenu .mi").length).toBeGreaterThan(0);
   });
 
+  it("names each workflow the reader may choose between, pressing the one on show", () => {
+    const twoWorkflows = { workflows: [freshWorkflow, { id: "w2", name: "Fixtures", state: "running" }] };
+    const choices = workflowChoices(twoWorkflows, 1);
+    const html = view(freshWorkflow, 0, choices);
+    const buttons = [...parseHtml(html).querySelectorAll(".surface-workflow-choice")];
+    expect(buttons.map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "true"]);
+    expect(buttons[1].textContent).toContain("Fixtures");
+    expect(html).toContain(workflowChoiceHtml(choices[0]));
+  });
+
   it("escapes the workflow's own name and its agents' labels", () => {
     const poisoned = { id: "w1", name: HOSTILE_MARKUP, state: "running", phases: [{ title: HOSTILE_MARKUP, agents: [{ label: HOSTILE_MARKUP }] }] };
-    const html = view(poisoned, 0);
+    const html = view(poisoned, 0, workflowChoices({ workflows: [poisoned, poisoned] }, 0));
     expectEscaped(html);
   });
 });

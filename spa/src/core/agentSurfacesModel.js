@@ -164,17 +164,32 @@ export function surfaceRows(kind, surfaces) {
   return normalise ? keyedRows(kind, entries, normalise) : [];
 }
 
-export function openWorkflow(surfaces) {
-  const [entry] = entriesOfKind(surfaces, WORKFLOW_ENTRY_KIND);
-  if (!entry) return null;
-  const [row] = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
-  return { ...row, phases: phasesOf(entry) };
+function chosenIndex(count, wantedIndex) {
+  return wantedIndex >= 0 && wantedIndex < count ? wantedIndex : 0;
+}
+
+export function openWorkflow(surfaces, selectedIndex = 0) {
+  const entries = entriesOfKind(surfaces, WORKFLOW_ENTRY_KIND);
+  if (!entries.length) return null;
+  const selected = chosenIndex(entries.length, selectedIndex);
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+  return { ...rows[selected], phases: phasesOf(entries[selected]) };
+}
+
+/// The workflows the reader may choose between, or nothing at all while there
+/// is only one to look at — the viewer's head already names that one, and a
+/// chooser with a single answer in it is a row of chrome saying nothing.
+export function workflowChoices(surfaces, selectedIndex) {
+  const rows = surfaceRows(WORKFLOW_ENTRY_KIND, surfaces);
+  if (rows.length < 2) return [];
+  const selected = chosenIndex(rows.length, selectedIndex);
+  return rows.map((row, index) => ({ ...row, index, selected: index === selected }));
 }
 
 export function workflowPhases(workflow, selectedIndex) {
   const phases = phasesOf(workflow);
   if (!phases.length) return { phases: [], agents: [] };
-  const selected = selectedIndex >= 0 && selectedIndex < phases.length ? selectedIndex : 0;
+  const selected = chosenIndex(phases.length, selectedIndex);
   return {
     phases: keyedRows("phase", phases, (phase, index) => ({
       index,

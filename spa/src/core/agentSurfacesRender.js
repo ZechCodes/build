@@ -13,6 +13,26 @@ import {
 const ACTION_MENU_LABEL = "Ask";
 const ACTION_MENU_TITLE = "Ask the agent about this";
 
+const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
+
+/** The container class of every keyed list a viewer paints, named where the
+ *  markup that carries it is written — so the painter queries the name this
+ *  module emits rather than a second copy of it. */
+const SURFACE_LIST_CLASS = {
+  workflowChoices: "surface-workflows",
+  workflowPhases: "surface-phases",
+  workflowAgents: "surface-phase-agents",
+  [AGENT_ENTRY_KIND]: "surface-subagents",
+  [SHELL_ENTRY_KIND]: "surface-shells",
+  [CHECKLIST_ENTRY_KIND]: "surface-checklist",
+};
+
+export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
+
+export const SURFACE_LIST_SELECTOR = Object.fromEntries(
+  Object.entries(SURFACE_LIST_CLASS).map(([name, className]) => [name, `.${className}`]),
+);
+
 function stateMarkHtml(stateMark) {
   return stateMark ? outcomeMarkHtml(stateMark.mark, stateMark.label) : "";
 }
@@ -98,9 +118,17 @@ export function workflowPhaseHtml(phase) {
   </button>`;
 }
 
+export function workflowChoiceHtml(choice) {
+  return `<button type="button" class="surface-workflow-choice" data-key="${esc(choice.key)}"
+    data-workflow-index="${esc(choice.index)}" aria-pressed="${choice.selected}">
+    ${stateMarkHtml(choice.stateMark)}
+    <span class="surface-phase-title">${esc(rowSubject(WORKFLOW_ENTRY_KIND, choice))}</span>
+  </button>`;
+}
+
 export function workflowHeadHtml(workflow) {
   const subject = rowSubject(WORKFLOW_ENTRY_KIND, workflow);
-  return `<div class="surface-workflow-head">
+  return `<div class="${WORKFLOW_HEAD_CLASS}">
       ${stateMarkHtml(workflow.stateMark)}
       <span class="surface-row-label">${esc(subject)}</span>
       ${noteHtml(workflow.description, subject)}
@@ -108,18 +136,19 @@ export function workflowHeadHtml(workflow) {
     </div>`;
 }
 
-export function workflowViewerHtml(workflow, phases, agents) {
+export function workflowViewerHtml(workflow, choices, phases, agents) {
   return `<div class="surface-viewer surface-workflow">
+    <div class="${SURFACE_LIST_CLASS.workflowChoices}">${choices.map(workflowChoiceHtml).join("")}</div>
     ${workflowHeadHtml(workflow)}
     <div class="surface-workflow-body">
-      <div class="surface-phases">${phases.map(workflowPhaseHtml).join("")}</div>
-      <div class="surface-phase-agents">${agents.map(agentRowHtml).join("")}</div>
+      <div class="${SURFACE_LIST_CLASS.workflowPhases}">${phases.map(workflowPhaseHtml).join("")}</div>
+      <div class="${SURFACE_LIST_CLASS.workflowAgents}">${agents.map(agentRowHtml).join("")}</div>
     </div>
   </div>`;
 }
 
 export function subagentViewerHtml(rows) {
-  return `<div class="surface-viewer surface-subagents">${rows.map(agentRowHtml).join("")}</div>`;
+  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[AGENT_ENTRY_KIND]}">${rows.map(agentRowHtml).join("")}</div>`;
 }
 
 function shellTailHtml(tail) {
@@ -138,7 +167,7 @@ export function shellRowHtml(row) {
 }
 
 export function shellViewerHtml(rows) {
-  return `<div class="surface-viewer surface-shells">${rows.map(shellRowHtml).join("")}</div>`;
+  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[SHELL_ENTRY_KIND]}">${rows.map(shellRowHtml).join("")}</div>`;
 }
 
 export function checklistItemHtml(row) {
@@ -148,5 +177,7 @@ export function checklistItemHtml(row) {
 }
 
 export function checklistViewerHtml(rows) {
-  return `<div class="surface-viewer surface-checklist">${rows.map(checklistItemHtml).join("")}</div>`;
+  return `<div class="surface-viewer ${SURFACE_LIST_CLASS[CHECKLIST_ENTRY_KIND]}">${rows
+    .map(checklistItemHtml)
+    .join("")}</div>`;
 }

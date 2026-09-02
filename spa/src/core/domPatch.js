@@ -25,12 +25,20 @@ const sameAttachment = (live, next) =>
   live.tagName === "IMG" &&
   live.getAttribute("data-attachment-path") === next.getAttribute("data-attachment-path");
 
-/** Whether this attribute is the reader's rather than the render's.
- *
- *  A `<details>` is always rendered shut — folded activity is folded on
- *  arrival — so `open` is on the live element only because the reader opened
- *  it. Taking it back would shut every fold they had opened, once per poll. */
+// What is open on the page is the reader's answer, not the render's, and a
+// poll tick must never shut it under the pointer reaching into it. The two
+// things that open carry that fact in opposite directions, so the patch leaves
+// each alone in the direction that would shut it.
+
+/** `open` on a `<details>`: rendered shut — folded activity is folded on
+ *  arrival — so taking the attribute back would shut every fold the reader had
+ *  opened, once per poll. A render that says `open` still opens it. */
 const readerOpenedFold = (live, name) => name === "open" && live.tagName === "DETAILS";
+
+/** `hidden` on a `.splitmenu`: rendered shut too, and `mountSplitMenu` opens it
+ *  by taking that attribute OFF — so re-applying what the render says is what
+ *  would shut it. */
+const readerOpenedMenu = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
 function patchAttributes(live, next) {
   // A picture the browser already loaded keeps the bytes it holds: the renderer
@@ -39,6 +47,7 @@ function patchAttributes(live, next) {
   // pointed at a new file must not go on showing the old one.
   const keepsItsBytes = sameAttachment(live, next);
   for (const { name, value } of [...next.attributes]) {
+    if (readerOpenedMenu(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
   for (const { name } of [...live.attributes]) {

@@ -61,6 +61,13 @@ describe("patching a live tree to say what a rendered one says", () => {
     expect(live.querySelector("div").hasAttribute("hidden")).toBe(false);
   });
 
+  it("leaves the fold and the menu the reader opened open", () => {
+    const live = tree(`<details open><summary>a</summary></details><div class="splitmenu"></div>`);
+    patchElement(live, tree(`<details><summary>a</summary></details><div class="splitmenu" hidden></div>`));
+    expect(live.querySelector("details").open).toBe(true);
+    expect(live.querySelector(".splitmenu").hasAttribute("hidden")).toBe(false);
+  });
+
   it("replaces a node the render made a different kind of thing", () => {
     const live = tree(`<p>a</p>`);
     patchElement(live, tree(`<section>a</section>`));

@@ -2,13 +2,16 @@ import { describe, it, expect } from "vitest";
 import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_ENTRY_KIND,
+  WORKFLOW_ENTRY_KIND,
   agentRows,
   openSurfaceKind,
+  openWorkflow,
   readOpenSurface,
   rowActions,
   surfacePills,
   surfaceRows,
   surfaceStateMark,
+  workflowChoices,
   workflowPhases,
   writeOpenSurface,
 } from "../src/core/agentSurfacesModel.js";
@@ -253,6 +256,39 @@ describe("workflowPhases", () => {
   it("gives nothing for a workflow carrying no phases", () => {
     expect(workflowPhases(null, 0)).toEqual({ phases: [], agents: [] });
     expect(workflowPhases({ id: "w1" }, 0)).toEqual({ phases: [], agents: [] });
+  });
+});
+
+describe("the workflow the viewer shows", () => {
+  const reviewSweep = { id: "w1", name: "Review", state: "running", phases: [{ title: "Read", agents: [] }] };
+  const fixtureSweep = { id: "w2", name: "Fixtures", state: "done", phases: [{ title: "Write", agents: [] }] };
+  const both = { workflows: [reviewSweep, fixtureSweep] };
+
+  it("is the one the reader chose, with its own phases", () => {
+    expect(openWorkflow(both, 1).name).toBe("Fixtures");
+    expect(openWorkflow(both, 1).phases).toEqual(fixtureSweep.phases);
+  });
+
+  it("falls back to the first when the choice is out of range", () => {
+    expect(openWorkflow(both, 9).name).toBe("Review");
+    expect(openWorkflow(both).name).toBe("Review");
+  });
+
+  it("is nothing at all when no workflow is running", () => {
+    expect(openWorkflow({ shells: [] }, 0)).toBe(null);
+  });
+
+  it("offers a choice per workflow, pressing the chosen one", () => {
+    expect(workflowChoices(both, 1)).toEqual([
+      { ...surfaceRows(WORKFLOW_ENTRY_KIND, both)[0], index: 0, selected: false },
+      { ...surfaceRows(WORKFLOW_ENTRY_KIND, both)[1], index: 1, selected: true },
+    ]);
+    expect(workflowChoices(both, 9)[0].selected).toBe(true);
+  });
+
+  it("offers no choice at all while there is only one workflow to look at", () => {
+    expect(workflowChoices({ workflows: [reviewSweep] }, 0)).toEqual([]);
+    expect(workflowChoices({}, 0)).toEqual([]);
   });
 });
 

@@ -200,6 +200,57 @@ describe("painting the viewer", () => {
     surfaces.dispose();
   });
 
+  it("shows one workflow at a time, and offers no chooser while there is only one", () => {
+    const surfaces = mount();
+    surfaces.set(snapshot());
+    pressPill(WORKFLOW_ENTRY_KIND);
+
+    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
+    surfaces.dispose();
+  });
+
+  it("lets the reader reach the second workflow the pill counted", () => {
+    const surfaces = mount();
+    const both = snapshot();
+    both.workflows.push({
+      id: "wf-2",
+      name: "Fixture sweep",
+      state: "running",
+      phases: [{ title: "Write", agents: [{ id: "b1", label: "fixture writer", state: "running" }] }],
+    });
+    surfaces.set(both);
+    pressPill(WORKFLOW_ENTRY_KIND);
+
+    expect(pill(WORKFLOW_ENTRY_KIND).querySelector(".surface-pill-count").textContent).toBe("2");
+    const choices = [...document.querySelectorAll(".surface-workflow-choice")];
+    expect(choices).toHaveLength(2);
+    expect(choices[0].getAttribute("aria-pressed")).toBe("true");
+
+    choices[1].click();
+
+    expect(choices[1].getAttribute("aria-pressed")).toBe("true");
+    expect(choices[0].getAttribute("aria-pressed")).toBe("false");
+    expect(document.querySelector(".surface-workflow-head").textContent).toContain("Fixture sweep");
+    expect(document.querySelector(".surface-phase-agents").textContent).toContain("fixture writer");
+    surfaces.dispose();
+  });
+
+  it("falls back to the first workflow when the chosen one leaves the snapshot", () => {
+    const surfaces = mount();
+    const both = snapshot();
+    both.workflows.push({ id: "wf-2", name: "Fixture sweep", state: "running", phases: [] });
+    surfaces.set(both);
+    pressPill(WORKFLOW_ENTRY_KIND);
+    [...document.querySelectorAll(".surface-workflow-choice")][1].click();
+
+    surfaces.set(snapshot());
+
+    expect(document.querySelector(".surface-workflow-head").textContent).toContain("Review sweep");
+    expect(document.querySelectorAll(".surface-workflow-choice")).toHaveLength(0);
+    surfaces.dispose();
+  });
+
   it("paints entries with missing or repeated ids rather than throwing", () => {
     const surfaces = mount();
     surfaces.set({
@@ -263,6 +314,41 @@ describe("a row's action", () => {
     expect(notifyError.mock.calls[0][1]).toBe("no agent is listening");
     expect(pressed(CHECKLIST_ENTRY_KIND)).toBe("true");
     expect(document.querySelector(".surface-checklist")).not.toBe(null);
+    surfaces.dispose();
+  });
+
+  it("leaves a menu the reader opened open across a repaint, still choosing the same action", () => {
+    const onSendMessage = vi.fn(async () => {});
+    const surfaces = mount({ onSendMessage });
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    const [row] = viewerRows(".surface-shells");
+    row.querySelector(".caret").click();
+
+    surfaces.set(snapshot());
+
+    expect(row.querySelector(".splitmenu").hidden).toBe(false);
+    const [action] = rowActions(SHELL_ENTRY_KIND, surfaceRows(SHELL_ENTRY_KIND, snapshot())[0]);
+    row.querySelector(`.mi[data-action="${action.id}"]`).click();
+    expect(onSendMessage.mock.calls).toEqual([[action.message]]);
+    surfaces.dispose();
+  });
+
+  it("says so when the row a menu was opened on has left the snapshot", () => {
+    const onSendMessage = vi.fn(async () => {});
+    const surfaces = mount({ onSendMessage });
+    surfaces.set(snapshot());
+    pressPill(SHELL_ENTRY_KIND);
+    const [row] = viewerRows(".surface-shells");
+    row.querySelector(".caret").click();
+
+    const replaced = snapshot();
+    replaced.shells = [{ id: "sh2", description: "cargo clippy", state: "running", tail: [] }];
+    surfaces.set(replaced);
+    row.querySelector(".mi").click();
+
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(notifyError).toHaveBeenCalledTimes(1);
     surfaces.dispose();
   });
 

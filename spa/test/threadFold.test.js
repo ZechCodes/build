@@ -78,9 +78,9 @@ describe("rows that fold under the call that spawned them", () => {
 
     const runs = [...document.querySelectorAll(".thread-activity-group")];
     expect(runs).toHaveLength(1);
-    // Two rows the reader can see, so the ticker counts two.
-    expect(runs[0].querySelector(".thread-activity-group-list").children).toHaveLength(2);
-    expect(runs[0].querySelector(".thread-activity-count").textContent).toBe("2");
+    const rowsTheReaderCanSee = 2;
+    expect(runs[0].querySelector(".thread-activity-group-list").children).toHaveLength(rowsTheReaderCanSee);
+    expect(runs[0].querySelector(".thread-activity-count").textContent).toBe(String(rowsTheReaderCanSee));
 
     const parent = rowOfSequence(SPAWNING_CALL_SEQUENCE);
     expect(parent.tagName).toBe("DETAILS");
@@ -89,17 +89,32 @@ describe("rows that fold under the call that spawned them", () => {
     expect(document.querySelectorAll(".thread-activity-children")).toHaveLength(1);
   });
 
-  it("draws every row the window holds exactly once when a spawned agent spawned one", () => {
+  it("folds a spawned agent's own spawn under it, at every depth", () => {
     paint([spawningCall, subagentCall, grandchildCall, laterCall]);
 
     for (const sequence of [SPAWNING_CALL_SEQUENCE, 11, 20, 12]) {
       expect(document.querySelectorAll(`[data-sequence="${sequence}"]`)).toHaveLength(1);
     }
-    const parent = rowOfSequence(SPAWNING_CALL_SEQUENCE);
-    expect(parent.querySelector(".thread-activity-children").children).toHaveLength(1);
-    expect(document.querySelectorAll(".thread-activity-children")).toHaveLength(1);
-    expect(rowOfSequence(20).closest(".thread-activity-children")).toBe(null);
-    expect(document.querySelector(".thread-activity-count").textContent).toBe("3");
+    expect(rowOfSequence(11).closest(".thread-activity-children").parentElement).toBe(
+      rowOfSequence(SPAWNING_CALL_SEQUENCE),
+    );
+    expect(rowOfSequence(20).closest(".thread-activity-children").parentElement).toBe(rowOfSequence(11));
+
+    const rowsTheReaderCanSee = 2;
+    expect(document.querySelector(".thread-activity-group-list").children).toHaveLength(rowsTheReaderCanSee);
+    expect(document.querySelector(".thread-activity-count").textContent).toBe(String(rowsTheReaderCanSee));
+  });
+
+  it("draws a row once and stops when two rows name each other as parent", () => {
+    const first = { type: "event", data: { event: "tool_use", sequence: 30, parent_sequence: 31, summary: "first" } };
+    const second = { type: "event", data: { event: "tool_use", sequence: 31, parent_sequence: 30, summary: "second" } };
+
+    paint([first, second, laterCall]);
+
+    for (const sequence of [30, 31]) {
+      expect(document.querySelectorAll(`[data-sequence="${sequence}"]`).length).toBeLessThanOrEqual(1);
+    }
+    expect(rowOfSequence(12)).not.toBe(null);
   });
 
   it("draws a row whose parent is above the window flat, exactly once, until the parent arrives", () => {
@@ -124,10 +139,11 @@ describe("rows that fold under the call that spawned them", () => {
     expect(document.querySelector(".thread-activity-group").open).toBe(true);
   });
 
-  it("does nothing for a sequence no row carries", () => {
+  it("does nothing for a sequence no row carries, or for one that is not a number", () => {
     const scroller = paint([spawningCall, laterCall]);
 
     expect(revealThreadSequence(scroller, 4242)).toBe(false);
+    expect(revealThreadSequence(scroller, '"] , [data-sequence')).toBe(false);
     expect(document.querySelector(".thread-activity-group").open).toBe(false);
   });
 });

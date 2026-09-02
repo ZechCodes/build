@@ -14,10 +14,13 @@ import {
   rowActions,
   surfacePills,
   surfaceRows,
+  workflowChoices,
   workflowPhases,
   writeOpenSurface,
 } from "./agentSurfacesModel.js";
 import {
+  SURFACE_LIST_SELECTOR,
+  WORKFLOW_HEAD_SELECTOR,
   agentRowHtml,
   checklistItemHtml,
   checklistViewerHtml,
@@ -25,6 +28,7 @@ import {
   shellViewerHtml,
   subagentViewerHtml,
   surfacePillsHtml,
+  workflowChoiceHtml,
   workflowHeadHtml,
   workflowPhaseHtml,
   workflowViewerHtml,
@@ -34,55 +38,41 @@ const VIEWER_ABOVE_PILLS_HTML = `<div class="rail-surfaces-viewer" data-surface-
   <div class="rail-surfaces-pills" data-surface-pills></div>`;
 
 const NO_KIND_REMEMBERED = "";
-const WORKFLOW_HEAD_SELECTOR = ".surface-workflow-head";
+
+const oneListOfKind = (kind, render, viewerHtml) => ({
+  frameHtmlWithEmptyLists: () => viewerHtml([]),
+  lists: ({ surfaces }) => [
+    { selector: SURFACE_LIST_SELECTOR[kind], rows: surfaceRows(kind, surfaces), render, actionKind: kind },
+  ],
+});
 
 const VIEWER_PLANS = {
   [WORKFLOW_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, [], []),
+    frameHtmlWithEmptyLists: () => workflowViewerHtml({}, [], [], []),
     headSelector: WORKFLOW_HEAD_SELECTOR,
     headHtml: ({ workflow }) => workflowHeadHtml(workflow || {}),
     headActionKind: WORKFLOW_ENTRY_KIND,
-    lists: ({ workflow, selectedPhaseIndex }) => {
+    lists: ({ surfaces, workflow, selectedWorkflowIndex, selectedPhaseIndex }) => {
       const { phases, agents } = workflowPhases(workflow, selectedPhaseIndex);
       return [
-        { selector: ".surface-phases", rows: phases, render: workflowPhaseHtml },
-        { selector: ".surface-phase-agents", rows: agents, render: agentRowHtml, actionKind: AGENT_ENTRY_KIND },
+        {
+          selector: SURFACE_LIST_SELECTOR.workflowChoices,
+          rows: workflowChoices(surfaces, selectedWorkflowIndex),
+          render: workflowChoiceHtml,
+        },
+        { selector: SURFACE_LIST_SELECTOR.workflowPhases, rows: phases, render: workflowPhaseHtml },
+        {
+          selector: SURFACE_LIST_SELECTOR.workflowAgents,
+          rows: agents,
+          render: agentRowHtml,
+          actionKind: AGENT_ENTRY_KIND,
+        },
       ];
     },
   },
-  [AGENT_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => subagentViewerHtml([]),
-    lists: ({ surfaces }) => [
-      {
-        selector: ".surface-subagents",
-        rows: surfaceRows(AGENT_ENTRY_KIND, surfaces),
-        render: agentRowHtml,
-        actionKind: AGENT_ENTRY_KIND,
-      },
-    ],
-  },
-  [SHELL_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => shellViewerHtml([]),
-    lists: ({ surfaces }) => [
-      {
-        selector: ".surface-shells",
-        rows: surfaceRows(SHELL_ENTRY_KIND, surfaces),
-        render: shellRowHtml,
-        actionKind: SHELL_ENTRY_KIND,
-      },
-    ],
-  },
-  [CHECKLIST_ENTRY_KIND]: {
-    frameHtmlWithEmptyLists: () => checklistViewerHtml([]),
-    lists: ({ surfaces }) => [
-      {
-        selector: ".surface-checklist",
-        rows: surfaceRows(CHECKLIST_ENTRY_KIND, surfaces),
-        render: checklistItemHtml,
-        actionKind: CHECKLIST_ENTRY_KIND,
-      },
-    ],
-  },
+  [AGENT_ENTRY_KIND]: oneListOfKind(AGENT_ENTRY_KIND, agentRowHtml, subagentViewerHtml),
+  [SHELL_ENTRY_KIND]: oneListOfKind(SHELL_ENTRY_KIND, shellRowHtml, shellViewerHtml),
+  [CHECKLIST_ENTRY_KIND]: oneListOfKind(CHECKLIST_ENTRY_KIND, checklistItemHtml, checklistViewerHtml),
 };
 
 export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem }) {
@@ -94,6 +84,7 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   let chosenKind = readOpenSurface(key);
   let openKind = null;
   let paintedKind = null;
+  let selectedWorkflowIndex = 0;
   let selectedPhaseIndex = 0;
   const paintedLists = new Map();
   const menuClosersByElement = new Map();
@@ -125,7 +116,11 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
   const wireRowMenu = (element, selector, actionKind) => {
     wireMenu(element, (actionId) => {
       const row = rowUnderMenu(element, selector);
-      if (row) chooseRowAction(actionKind, row, actionId);
+      if (!row) {
+        notifyError("Could not ask the agent", "that row is gone");
+        return;
+      }
+      chooseRowAction(actionKind, row, actionId);
     });
   };
 
@@ -143,7 +138,7 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     closeMenusOfDiscardedElements();
     if (!plan.headSelector) return;
     wireMenu(viewerRegion.querySelector(plan.headSelector), (actionId) =>
-      chooseRowAction(plan.headActionKind, openWorkflow(surfaces), actionId),
+      chooseRowAction(plan.headActionKind, openWorkflow(surfaces, selectedWorkflowIndex), actionId),
     );
   };
 
@@ -157,7 +152,12 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
     }
     const plan = VIEWER_PLANS[openKind];
     if (paintedKind !== openKind) writeFrame(plan);
-    const paintContext = { surfaces, workflow: openWorkflow(surfaces), selectedPhaseIndex };
+    const paintContext = {
+      surfaces,
+      workflow: openWorkflow(surfaces, selectedWorkflowIndex),
+      selectedWorkflowIndex,
+      selectedPhaseIndex,
+    };
     if (plan.headSelector) {
       patchElement(viewerRegion.querySelector(plan.headSelector), el(plan.headHtml(paintContext)));
     }
@@ -200,6 +200,13 @@ export function mountAgentSurfaces(host, { key, onSendMessage, onOpenThreadItem 
 
   const onViewerPress = (event) => {
     if (event.target.closest(".splitbtn")) return;
+    const workflow = event.target.closest("[data-workflow-index]");
+    if (workflow) {
+      selectedWorkflowIndex = Number(workflow.dataset.workflowIndex);
+      selectedPhaseIndex = 0;
+      paintViewer();
+      return;
+    }
     const phase = event.target.closest("[data-phase-index]");
     if (phase) {
       selectedPhaseIndex = Number(phase.dataset.phaseIndex);

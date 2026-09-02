@@ -14,9 +14,6 @@ const ELEMENT_NODE = 1;
 
 const MOVED_PROPERTIES = ["hidden", "style"];
 
-/** What the reader chose to see in full, and what another painter keys. Both
- *  are marks on the live page that no render describes, so the patch reads
- *  them off the live element and leaves what they cover alone. */
 export const EXPANDED_ATTRIBUTE = "data-expanded";
 export const KEYED_LIST_ATTRIBUTE = "data-keyed-list";
 
@@ -35,7 +32,12 @@ const sameAttachment = (live, next) =>
 
 const foldTheReaderOpened = (live, name) => name === "open" && live.tagName === "DETAILS";
 
-const textTheReaderExpanded = (live, name) => name === EXPANDED_ATTRIBUTE;
+const EXPANSION_MARKS = [EXPANDED_ATTRIBUTE, "aria-expanded"];
+
+const expansionTheReaderOwns = (live, name) =>
+  EXPANSION_MARKS.includes(name) && live.hasAttribute(EXPANDED_ATTRIBUTE);
+
+const keyedByAnotherPainter = (live) => live.hasAttribute(KEYED_LIST_ATTRIBUTE);
 
 const menuTheReaderOpened = (live, name) => name === "hidden" && live.classList.contains("splitmenu");
 
@@ -50,6 +52,7 @@ function patchAttributes(live, next) {
   const keepsItsSurface = live.tagName === "CANVAS";
   for (const { name, value } of [...next.attributes]) {
     if (menuTheReaderOpened(live, name)) continue;
+    if (expansionTheReaderOwns(live, name)) continue;
     if (shownByAMove(live, name)) continue;
     if (live.getAttribute(name) !== value) live.setAttribute(name, value);
   }
@@ -58,7 +61,7 @@ function patchAttributes(live, next) {
     if (name === "src" && keepsItsBytes) continue;
     if ((name === "width" || name === "height") && keepsItsSurface) continue;
     if (foldTheReaderOpened(live, name)) continue;
-    if (textTheReaderExpanded(live, name)) continue;
+    if (expansionTheReaderOwns(live, name)) continue;
     if (shownByAMove(live, name)) continue;
     live.removeAttribute(name);
   }
@@ -73,9 +76,7 @@ function patchAttributes(live, next) {
 /// resolved the same conversation a true no-op.
 export function patchElement(live, next) {
   patchAttributes(live, next);
-  // A keyed list's children answer to patchList, which knows their names; this
-  // patch would read the render's empty container as "they all left".
-  if (live.hasAttribute(KEYED_LIST_ATTRIBUTE)) return;
+  if (keyedByAnotherPainter(live)) return;
   const liveChildren = [...live.childNodes];
   const nextChildren = [...next.childNodes];
   nextChildren.forEach((source, index) => {

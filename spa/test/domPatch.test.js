@@ -75,6 +75,16 @@ describe("patching a live tree to say what a rendered one says", () => {
     expect(live.querySelector("span").textContent).toBe("a longer line");
   });
 
+  it("keeps the aria on expanded text saying what the reader made it, and hands it back on the way in", () => {
+    const expanded = tree(`<span role="button" aria-expanded="true" ${EXPANDED_ATTRIBUTE}>a long line</span>`);
+    patchElement(expanded, tree(`<span role="button" aria-expanded="false">a long line</span>`));
+    expect(expanded.querySelector("span").getAttribute("aria-expanded")).toBe("true");
+
+    const clipped = tree(`<span role="button" aria-expanded="true">a long line</span>`);
+    patchElement(clipped, tree(`<span role="button" aria-expanded="false">a long line</span>`));
+    expect(clipped.querySelector("span").getAttribute("aria-expanded")).toBe("false");
+  });
+
   it("leaves the children of a list another painter keys alone", () => {
     const live = tree(`<div ${KEYED_LIST_ATTRIBUTE} class="one"><p data-key="a">row</p></div>`);
     const row = live.querySelector("p");

@@ -2309,14 +2309,26 @@ describe("the one status row", () => {
     expect(clockRule[0]).toContain("display:inline-block");
   });
 
-  it("shimmers the running clock, and holds still under reduced motion", () => {
-    expect(shellCss).toMatch(/@keyframes clock-shimmer/);
-    const shimmerRule = shellCss.match(/\n\.rail-status-working \{ color:transparent;[^}]*\}/);
+  it("shimmers the status clock and every row clock through one rule, and holds still under reduced motion", () => {
+    expect(shellCss.match(/@keyframes clock-shimmer/g)).toHaveLength(1);
+    expect(shellCss.match(/linear-gradient\(100deg/g)).toHaveLength(1);
+    const shimmerRule = shellCss.match(/\n\.rail-status-working, \.surface-row-clock \{ color:transparent;[^}]*\}/);
     expect(shimmerRule[0]).toContain("animation:clock-shimmer");
     expect(shimmerRule[0]).toContain("background-clip:text");
-    const stillRule = shellCss.match(/@media \(prefers-reduced-motion: reduce\) \{ \.rail-status-working \{[^}]*\}/);
+    expect(shimmerRule[0]).toContain("var(--clock-ink)");
+    const stillRule = shellCss.match(
+      /@media \(prefers-reduced-motion: reduce\) \{\n?\s*\.rail-status-working, \.surface-row-clock \{[^}]*\}/,
+    );
     expect(stillRule).not.toBe(null);
     expect(stillRule[0]).toContain("animation:none");
+  });
+
+  it("wears the working colour on the status clock and grey on a row clock, holding its digits still", () => {
+    expect(shellCss.match(/\.rail-status-working \{ --clock-ink:var\(--accent\); \}/)).not.toBe(null);
+    const rowClockRule = shellCss.match(/\n\.surface-row-clock \{[^}]*\}/);
+    expect(rowClockRule[0]).toContain("--clock-ink:var(--dim)");
+    expect(rowClockRule[0]).toContain("font-variant-numeric:tabular-nums");
+    expect(rowClockRule[0]).toContain("min-width:4ch");
   });
 
   it("reads Working and the clock while no pill is asking for the room", async () => {

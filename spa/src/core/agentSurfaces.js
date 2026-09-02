@@ -1,7 +1,8 @@
 import { el } from "../dom.js";
 import { patchElement } from "./domPatch.js";
 import { hide, motionHooks, motionSettled, reveal, settleHidden } from "./motion.js";
-import { patchList } from "./patchList.js";
+import { EXITING_ATTRIBUTE, patchList } from "./patchList.js";
+import { runningClock } from "./agentRailModel.js";
 import { openModal } from "./modal.js";
 import {
   AGENT_ENTRY_KIND,
@@ -27,6 +28,7 @@ import {
   COMPLETED_FOLD_HEAD_SELECTOR,
   COMPLETED_FOLD_SELECTOR,
   PILL_COUNT_SELECTOR,
+  ROW_CLOCK_SELECTOR,
   SURFACE_OVERLAY_BODY_SELECTOR,
   SURFACE_SELECTOR,
   WORKFLOW_HEAD_SELECTOR,
@@ -44,6 +46,8 @@ import {
   workflowPhaseHtml,
   workflowViewerHtml,
 } from "./agentSurfacesRender.js";
+
+const ROW_CLOCK_TICK_MS = 1000;
 
 const PILL_MOTION = motionHooks({ axis: "width" });
 const VIEWER_ROW_MOTION = motionHooks({ axis: "height" });
@@ -94,6 +98,33 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
   let surfaces = null;
   let selectedWorkflowIndex = 0;
   let selectedPhaseIndex = 0;
+  let ticker = null;
+
+  /// The one tick every row clock in this viewer runs on. It writes text into
+  /// the span the row already carries, the way the status row writes its own
+  /// clock, so a second passing never rebuilds a row or shuts a fold.
+  const paintRowClocks = () => {
+    const nowMs = Date.now();
+    const spans = [...host.querySelectorAll(ROW_CLOCK_SELECTOR)].filter(
+      (span) => !span.closest(`[${EXITING_ATTRIBUTE}]`),
+    );
+    for (const span of spans) {
+      span.textContent = runningClock((nowMs - Number(span.dataset.runningSince)) / 1000);
+    }
+    return spans.length;
+  };
+
+  const stopTicking = () => {
+    if (ticker === null) return;
+    clearInterval(ticker);
+    ticker = null;
+  };
+
+  const tickWhileAnyRowIsRunning = () => {
+    if (!paintRowClocks()) return stopTicking();
+    if (ticker === null) ticker = setInterval(paintRowClocks, ROW_CLOCK_TICK_MS);
+  };
+
   const completedFoldContainer = (count) => {
     const standing = host.querySelector(COMPLETED_FOLD_SELECTOR);
     if (!count) {
@@ -127,6 +158,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
         ...VIEWER_ROW_MOTION,
       });
     }
+    tickWhileAnyRowIsRunning();
   };
 
   const onViewerPress = (event) => {
@@ -157,6 +189,7 @@ export function mountSurfaceViewer(host, kind, { onOpenThreadItem }) {
       paint();
     },
     dispose() {
+      stopTicking();
       host.removeEventListener("click", onViewerPress);
       host.innerHTML = "";
     },

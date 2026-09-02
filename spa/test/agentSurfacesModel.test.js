@@ -327,6 +327,7 @@ describe("surfaceRows", () => {
       state: "running",
       stateMark: surfaceStateMark("workflows", "running"),
       subject: "Review",
+      runningSince: null,
       phaseCount: 2,
     });
   });
@@ -337,6 +338,24 @@ describe("surfaceRows", () => {
     expect(row.subject).toBe("npm test");
     const nameless = { id: "s2", state: "running" };
     expect(surfaceRows("shells", { shells: [nameless] })[0].subject).toBe("s2");
+  });
+
+  it("stamps a running row with the time it is ticking from, and every other row with none", () => {
+    const running = { id: "s1", description: "cargo test", state: "running", started_at: 1788291725678 };
+    expect(surfaceRows("shells", { shells: [running] })[0].runningSince).toBe(1788291725678);
+
+    const finished = { ...running, state: "done" };
+    expect(surfaceRows("shells", { shells: [finished] })[0].runningSince).toBe(null);
+
+    const untimed = { id: "s2", description: "cargo fmt", state: "running" };
+    expect(surfaceRows("shells", { shells: [untimed] })[0].runningSince).toBe(null);
+  });
+
+  it("stamps an agent row from the same one place, whichever viewer it is bound for", () => {
+    const agent = { id: "a1", label: "Reader", state: "running", started_at: 1788291725678 };
+    expect(agentRows([agent])[0].runningSince).toBe(1788291725678);
+    expect(workflowPhases({ workflows: [{ id: "w1", phases: [{ title: "Read", agents: [agent] }] }] }).agents[0]
+      .runningSince).toBe(1788291725678);
   });
 
   it("delegates the subagents arm to agentRows rather than keying them a second way", () => {

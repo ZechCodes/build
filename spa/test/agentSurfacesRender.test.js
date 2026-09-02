@@ -115,6 +115,31 @@ describe("agentRowHtml", () => {
     );
   });
 
+  it("gives a running row a clock span to tick in, and every other row none", () => {
+    const ticking = parseHtml(agentRowHtml(agentRows([{ ...readerEntry, started_at: 1788291725678 }])[0]));
+    const clock = ticking.querySelector(".surface-row-clock");
+    expect(clock.dataset.runningSince).toBe("1788291725678");
+    expect(clock.textContent).toBe("");
+
+    expect(agentRowHtml(agentRows([readerEntry])[0])).not.toContain("surface-row-clock");
+    const finished = { ...readerEntry, state: "done", started_at: 1788291725678 };
+    expect(agentRowHtml(agentRows([finished])[0])).not.toContain("surface-row-clock");
+  });
+
+  it("still reads a finished agent's duration through the stats it always wrote it in", () => {
+    const finished = agentRows([{ ...readerEntry, state: "done" }])[0];
+    expect(parseHtml(agentRowHtml(finished)).querySelector(".surface-row-stats").textContent).toContain("1m 05s");
+  });
+
+  it("gives a running shell the same clock span through the same head", () => {
+    const [row] = surfaceRows(SHELL_ENTRY_KIND, {
+      shells: [{ id: "s1", description: "cargo test", state: "running", started_at: 1788291725678 }],
+    });
+    expect(parseHtml(shellRowHtml(row)).querySelector(".surface-row-clock").dataset.runningSince).toBe(
+      "1788291725678",
+    );
+  });
+
   it("draws no menu of any kind on a row", () => {
     const row = parseHtml(agentRowHtml(agentRows([readerEntry])[0]));
     expect(row.querySelector(".splitbtn")).toBe(null);

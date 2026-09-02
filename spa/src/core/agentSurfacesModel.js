@@ -174,12 +174,18 @@ function keyedBy(keyPrefix, entries, shape) {
   });
 }
 
+function runningSinceOf(kind, entry) {
+  if (!stateMarkIs(kind, entry, RUNNING_MARK)) return null;
+  return Number.isFinite(entry.started_at) ? entry.started_at : null;
+}
+
 function keyedRows(keyPrefix, entryKind, entries, normalise) {
   return keyedBy(keyPrefix, entries, (entry, index) => ({
     id: entry.id || null,
     state: entry.state || "",
     stateMark: surfaceStateMark(entryKind, entry.state),
     subject: rowSubject(entryKind, entry),
+    runningSince: runningSinceOf(entryKind, entry),
     ...normalise(entry, index),
   }));
 }

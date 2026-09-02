@@ -8,6 +8,7 @@ import {
 } from "./agentSurfacesModel.js";
 
 const ROW_HEAD_CLASS = "surface-row-head";
+const ROW_CLOCK_CLASS = "surface-row-clock";
 const WORKFLOW_HEAD_CLASS = "surface-workflow-head";
 
 const COMPLETED_FOLD_CLASS = "surface-completed";
@@ -33,6 +34,7 @@ export const WORKFLOW_HEAD_SELECTOR = `.${WORKFLOW_HEAD_CLASS}`;
 export const COMPLETED_FOLD_SELECTOR = `.${COMPLETED_FOLD_CLASS}`;
 export const COMPLETED_FOLD_HEAD_SELECTOR = `.${COMPLETED_FOLD_HEAD_CLASS}`;
 export const PILL_COUNT_SELECTOR = `.${PILL_COUNT_CLASS}`;
+export const ROW_CLOCK_SELECTOR = `.${ROW_CLOCK_CLASS}`;
 
 export const SURFACE_SELECTOR = Object.fromEntries(
   Object.entries(VIEWER_CLASS).map(([name, className]) => [name, `.${className}`]),
@@ -51,11 +53,20 @@ function noteHtml(description, subject) {
   return `<span class="surface-row-note">${esc(description)}</span>`;
 }
 
+/** The span a running row's clock is ticked into, empty until the mount that
+ *  owns the tick writes the first reading. A row that is not running, or one
+ *  whose entry never said when it started, has no clock and no span. */
+function rowClockHtml(row) {
+  if (!Number.isFinite(row.runningSince)) return "";
+  return `<span class="${ROW_CLOCK_CLASS}" data-running-since="${esc(row.runningSince)}"></span>`;
+}
+
 function rowHeadHtml(row, { headClass = ROW_HEAD_CLASS, trailing = "" } = {}) {
   return `<div class="${headClass}">
       ${stateMarkHtml(row.stateMark)}
       <span class="surface-row-label">${esc(row.subject)}</span>
       ${trailing}
+      ${rowClockHtml(row)}
     </div>`;
 }
 

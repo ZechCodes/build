@@ -1256,9 +1256,12 @@ impl ProtocolReader {
     /// read, is not the child's problem: the protocol is read at the speed the
     /// child speaks it either way.
     fn report(&self, activity: AgentActivity, parent_call_id: Option<&str>) {
-        let reported = ActivityReport {
-            activity,
-            parent_call_id: parent_call_id.map(str::to_string),
+        let reported = match parent_call_id {
+            None => ActivityReport::own_work(activity),
+            Some(spawning_call_id) => ActivityReport {
+                activity,
+                parent_call_id: Some(spawning_call_id.to_string()),
+            },
         };
         if let Some(sender) = self.activity.lock().unwrap().as_ref() {
             let _ = sender.send(reported);
@@ -2092,7 +2095,7 @@ mod tests {
         assert_eq!(the_start_alone, 1);
         assert!(
             whole_workflow > the_start_alone,
-            "the whole workflow moved the snapshot more than its first line:              {whole_workflow} against {the_start_alone}"
+            "the whole workflow moved the snapshot more than its first line: {whole_workflow} against {the_start_alone}"
         );
         assert_eq!(
             revision_counter_of(&reader_over_the_workflow_lines(&[46])),

@@ -23,7 +23,11 @@ import {
   writeConsoleSize,
 } from "./consoleModel.js";
 import { RECONNECTING_MESSAGE, attachConnectionOverlay, whenTerminalReconnects } from "./surfaceTabs.js";
+import { el } from "../dom.js";
 import { esc } from "./text.js";
+import { hide, reveal } from "./motion.js";
+import { patchElement } from "./domPatch.js";
+import { patchList } from "./patchList.js";
 import { SMALLEST_THREAD_PAGE } from "./thread.js";
 import { terminalManager } from "../terminal/manager.js";
 import { cacheDeviceId } from "./cacheScope.js";
@@ -106,29 +110,46 @@ export function mountUserTerminalPane(host, termId, { onExit }) {
   });
 }
 
-/** Pure: the console's head — the way in and out, the terminals it holds, and
- *  the two controls that only mean something while it is open. */
-export function consoleHeadHtml({ size, tabs = [], selected = null, scoped = true }) {
+/** Pure: the way in and out. The label is the whole control — a caret beside it
+ *  would say a second time what the panel under it already says. */
+export function consoleToggleHtml(size) {
   const open = size !== "collapsed";
-  const toggle = `<button type="button" class="console-bar" id="console-toggle" aria-expanded="${open}"
+  return `<button type="button" class="console-bar" id="console-toggle" aria-expanded="${open}"
       title="${open ? "Shut the console" : "Open the console (`)"}">
-      <span class="console-caret">${open ? "▼" : "▲"}</span><span class="console-label">Console</span></button>`;
-  if (!open) return toggle;
-  const cells = tabs
-    .map(
-      (tab) =>
-        `<span class="console-tab${tab.id === selected ? " active" : ""}">` +
-        `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
-        `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`,
-    )
-    .join("");
-  const add = scoped
-    ? `<button type="button" class="iconbtn console-new" title="New terminal" aria-label="New terminal">+</button>`
-    : "";
-  const grow = `<button type="button" class="iconbtn console-grow"
-      title="${size === "full" ? "Half the view" : "Over the whole view"}"
-      aria-label="${size === "full" ? "Half the view" : "Over the whole view"}">${size === "full" ? "⤡" : "⤢"}</button>`;
-  return `${toggle}<div class="console-tabs">${cells}</div><div class="console-controls">${add}${grow}</div>`;
+      <span class="console-label">Console</span></button>`;
+}
+
+/** Pure: one terminal's tab — its ordinal, and the way to close it. */
+export function consoleTabHtml(tab, selected) {
+  return (
+    `<span class="console-tab${tab.id === selected ? " active" : ""}" data-motion>` +
+    `<button type="button" class="console-tab-name" data-term="${esc(tab.id)}">${esc(tab.label)}</button>` +
+    `<span class="tx" data-close="${esc(tab.id)}" title="Close this terminal">×</span></span>`
+  );
+}
+
+/** Pure: the + that opens another shell. It rides at the end of the strip and
+ *  sticks to its right edge, so a strip scrolled off the end still offers it. */
+export function consoleNewTerminalHtml() {
+  return `<button type="button" class="iconbtn console-new" data-motion
+      title="New terminal" aria-label="New terminal">+</button>`;
+}
+
+/** Pure: the control that lays the console over the whole view, and takes it
+ *  back to half. It means nothing while the console is shut. */
+export function consoleGrowHtml(size) {
+  const label = size === "full" ? "Half the view" : "Over the whole view";
+  return `<button type="button" class="iconbtn console-grow" data-motion
+      title="${label}" aria-label="${label}">${size === "full" ? "⤡" : "⤢"}</button>`;
+}
+
+/** Pure: the console's head — the way in and out, the strip of terminals it
+ *  holds with the + at the end of it, and the grow control on the far right. */
+export function consoleHeadHtml({ size, tabs = [], selected = null, scoped = true }) {
+  const cells = tabs.map((tab) => consoleTabHtml(tab, selected)).join("");
+  const add = scoped ? consoleNewTerminalHtml() : "";
+  const grow = size === "collapsed" ? "" : consoleGrowHtml(size);
+  return `${consoleToggleHtml(size)}<div class="console-tabs">${cells}${add}</div><div class="console-controls">${grow}</div>`;
 }
 
 /**
@@ -318,6 +339,7 @@ export function mountConsole(host, context) {
     }
     persistTabs();
     paint();
+    scrollStripToNewest();
   };
 
   const closeTerminal = async (termId) => {
@@ -345,44 +367,108 @@ export function mountConsole(host, context) {
 
   // ---- painting --------------------------------------------------------------
 
-  /// The head is rewritten on every state change — it is a few buttons and its
-  /// whole job is to be current. The BODY is not: it is where a live PTY hangs,
-  /// so it is rebuilt only when the terminal in it changes.
+  /// The head is stood up once and then kept: its terminals are a keyed list,
+  /// so a tab grows into the strip when it arrives and shrinks out of it when
+  /// it goes, and a selection or a size patches the tabs already standing. The
+  /// BODY is where a live PTY hangs, so it is rebuilt only when the terminal in
+  /// it changes.
   const paint = () => {
     if (disposed) return;
     if (!host.querySelector(".console")) {
       host.innerHTML = `<div class="console"><div class="console-head"></div><div class="console-body"></div></div>`;
     }
     host.dataset.size = size;
-    const head = host.querySelector(".console-head");
-    head.innerHTML = consoleHeadHtml({
-      size,
-      tabs: terms ? terms.tabs() : [],
-      selected,
-      scoped: !!terms,
-    });
-    wireHead(head);
+    paintHead(host.querySelector(".console-head"));
     paintBody();
   };
 
+  const paintHead = (head) => {
+    if (!head.querySelector(".console-tabs")) {
+      head.innerHTML = consoleHeadHtml({ size, tabs: [], selected, scoped: false });
+      wireHead(head);
+    }
+    patchElement(head.querySelector("#console-toggle"), el(consoleToggleHtml(size)));
+    paintTabs(head.querySelector(".console-tabs"));
+    paintGrowControl(head.querySelector(".console-controls"));
+  };
+
+  /// The toggle is the one control that is there whatever the console is doing,
+  /// so it is the one wired to the element rather than to a paint.
   const wireHead = (head) => {
-    const toggle = head.querySelector("#console-toggle");
-    if (toggle) toggle.onclick = () => setSize(toggledConsoleSize(size));
-    const grow = head.querySelector(".console-grow");
-    if (grow) grow.onclick = () => setSize(grownConsoleSize(size));
-    const add = head.querySelector(".console-new");
-    if (add) add.onclick = () => newTerminal();
-    head.querySelectorAll("[data-term]").forEach((cell) => {
-      cell.onclick = () => {
-        if (cell.dataset.term === selected) return;
-        selected = cell.dataset.term;
-        remember();
-        paint();
-      };
+    head.querySelector("#console-toggle").onclick = () => setSize(toggledConsoleSize(size));
+  };
+
+  const paintTabs = (strip) => {
+    patchList(strip, terms ? terms.tabs() : [], {
+      keyOf: (tab) => tab.id,
+      render: (tab) => consoleTabHtml(tab, selected),
+      wire: (tab) => wireTab(tab),
+      onEnter: (tab) => {
+        tab.hidden = true;
+        return reveal(tab, { axis: "width" });
+      },
+      onExit: (tab) => hide(tab, { axis: "width" }),
     });
-    head.querySelectorAll("[data-close]").forEach((cell) => {
-      cell.onclick = () => closeTerminal(cell.dataset.close);
-    });
+    paintNewTerminalControl(strip);
+  };
+
+  /// A tab answers for whichever terminal it is keyed to at the time it is
+  /// clicked — the element outlives every list it was painted from.
+  const wireTab = (tab) => {
+    tab.querySelector(".console-tab-name").onclick = () => selectTerminal(tab.dataset.key);
+    tab.querySelector(".tx").onclick = () => closeTerminal(tab.dataset.key);
+  };
+
+  /// The + is the strip's last cell, and only where there is a checkout to open
+  /// a shell in.
+  const paintNewTerminalControl = (strip) => {
+    const standing = strip.querySelector(".console-new");
+    if (!terms) {
+      if (standing) hide(standing, { axis: "width" });
+      return;
+    }
+    if (!standing) {
+      const add = el(consoleNewTerminalHtml());
+      add.hidden = true;
+      add.onclick = () => newTerminal();
+      strip.appendChild(add);
+      reveal(add, { axis: "width" });
+      return;
+    }
+    if (standing.nextSibling) strip.appendChild(standing);
+    reveal(standing, { axis: "width" });
+  };
+
+  const paintGrowControl = (controls) => {
+    const standing = controls.querySelector(".console-grow");
+    if (size === "collapsed") {
+      if (standing) hide(standing, { axis: "width" });
+      return;
+    }
+    if (!standing) {
+      const grow = el(consoleGrowHtml(size));
+      grow.hidden = true;
+      grow.onclick = () => setSize(grownConsoleSize(size));
+      controls.appendChild(grow);
+      reveal(grow, { axis: "width" });
+      return;
+    }
+    patchElement(standing, el(consoleGrowHtml(size)));
+    reveal(standing, { axis: "width" });
+  };
+
+  const selectTerminal = (termId) => {
+    if (termId === selected) return;
+    selected = termId;
+    remember();
+    paint();
+  };
+
+  /// The newest tab and the + are what a create is about, so the strip is put
+  /// where they are rather than where it was left.
+  const scrollStripToNewest = () => {
+    const strip = host.querySelector(".console-tabs");
+    if (strip) strip.scrollLeft = strip.scrollWidth;
   };
 
   const body = () => host.querySelector(".console-body");

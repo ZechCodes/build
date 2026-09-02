@@ -624,15 +624,22 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
   font:inherit; font-size:12px; color:var(--dim);
   background:none; border:none; text-align:left; cursor:pointer; }
 .console-bar:hover { color:var(--ink2); }
-.console-bar .console-caret { font-size:10px; }
-#console-region[data-size="collapsed"] .console-bar { width:100%; }
 #console-region[data-size="collapsed"] .console-body { display:none; }
 
 /* One tab per terminal: an ordinal and the way to close it, in the same
-   vocabulary the retired tab rows used (.tx is the shared closer). */
-.console-tabs { display:flex; align-items:center; gap:2px; min-width:0;
-  overflow-x:auto; scrollbar-width:none; }
+   vocabulary the retired tab rows used (.tx is the shared closer).
+
+   The strip is one row however many terminals are open: it scrolls sideways
+   rather than wrapping or squeezing the tabs, and the scrollbar is left out —
+   the tabs themselves say there is more of them. The + sticks to the strip's
+   right edge over the tabs that scroll under it, so the way to open another
+   shell is in the same place whatever the strip is showing. */
+.console-tabs { display:flex; align-items:center; gap:2px; min-width:0; flex:1 1 auto;
+  overflow-x:auto; scrollbar-width:none; background:var(--bg); }
 .console-tabs::-webkit-scrollbar { display:none; }
+.console-tabs .console-new { position:sticky; right:0; flex:none;
+  background:var(--bg); padding-left:6px; }
+.console-tabs .console-new:hover { color:var(--ink2); background:var(--line2); }
 .console-tab { display:flex; align-items:center; gap:2px; flex:none;
   border-radius:6px; padding-right:4px; }
 .console-tab:hover { background:var(--panel2); }

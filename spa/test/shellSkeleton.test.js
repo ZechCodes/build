@@ -243,11 +243,14 @@ describe("render dispatch", () => {
 });
 
 describe("the console", () => {
-  it("is a shut bar until it is opened, and a head with terminals once it is", () => {
+  it("keeps its strip of terminals shut or open, and grows only once it is open", () => {
     const shut = consoleHeadHtml({ size: "collapsed" });
     expect(shut).toContain('aria-expanded="false"');
     expect(shut).toContain("Console");
-    expect(shut).not.toContain("console-tabs");
+    // The way in is the strip and the +, so both stand whatever the size is.
+    expect(shut).toContain("console-tabs");
+    expect(shut).toContain("console-new");
+    expect(shut).not.toContain("console-grow");
     const open = consoleHeadHtml({ size: "half", tabs: [{ id: "term-1", label: "Terminal 1" }], selected: "term-1" });
     expect(open).toContain('aria-expanded="true"');
     expect(open).toContain("Terminal 1");

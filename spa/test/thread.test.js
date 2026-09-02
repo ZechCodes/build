@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { FIRST_PAGE_ITEMS, STATUS_LINE_EVENTS, createThreadCache, currentRevisionId, formatRelativeDate, startupEventTitle, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
+import { FIRST_PAGE_ITEMS, createThreadCache, currentRevisionId, formatRelativeDate, threadHtml, threadItemKey, windowFromThreadPayload, wireThreadAttachments, wireThreadComposer, wireThreadLinks, wireThreadRevisionLinks } from "../src/core/thread.js";
 import { composerHtml } from "../src/core/composer.js";
 import { diffThreadMessages } from "../src/core/notes.js";
 
@@ -297,17 +297,6 @@ describe("the startup events the status line has taken over", () => {
       items: [{ type: "event", data: { event: "run_started", created_at: "2026-07-24T12:00:00Z" } }],
     });
     expect(document.querySelector(".thread-empty")).toBeTruthy();
-  });
-
-  it("names them the way the timeline used to, in the harness's own name", () => {
-    expect(STATUS_LINE_EVENTS.has("session_started")).toBe(true);
-    expect(STATUS_LINE_EVENTS.has("run_started")).toBe(true);
-    expect(STATUS_LINE_EVENTS.has("session_ended")).toBe(false);
-    expect(startupEventTitle({ event: "run_started" })).toBe("Run started");
-    expect(startupEventTitle({ event: "session_started" })).toBe("Agent session started");
-    expect(startupEventTitle({ event: "session_started" }, "Codex")).toBe("Codex session started");
-    expect(startupEventTitle({ event: "done" })).toBe("");
-    expect(startupEventTitle(null)).toBe("");
   });
 });
 

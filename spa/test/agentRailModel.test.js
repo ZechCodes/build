@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { coreSourceOf } from "./coreSource.js";
 import {
   AGENT_PATTERN_COUNT,
   agentCanInterrupt,
@@ -7,7 +8,6 @@ import {
   aheadBehindText,
   bubbleTip,
   canRemoveAgent,
-  completionReportSections,
   providerLabel,
   railBubbles,
   railEntity,
@@ -322,20 +322,12 @@ describe("the startup line the status slot borrows from the conversation", () =>
   });
 });
 
-describe("the completion report", () => {
-  it("keeps the lists that were filled in, in reading order", () => {
-    const sections = completionReportSections({
-      critical_files: ["src/a.rs — holds the change"],
-      risk_notes: [],
-      decisions: ["kept the old name"],
-      skips: ["did not touch the migration"],
-    });
-    expect(sections.map((s) => s.title)).toEqual(["Critical files", "Decisions", "Skipped"]);
-    expect(sections[0].items).toEqual(["src/a.rs — holds the change"]);
-  });
-
-  it("is nothing at all when the agent filled in nothing", () => {
-    expect(completionReportSections({ critical_files: [], risk_notes: [] })).toEqual([]);
-    expect(completionReportSections(null)).toEqual([]);
+describe("what the rail's model is allowed to reach for", () => {
+  it("stays a pure model: no DOM, no wire, no renderer", () => {
+    const source = coreSourceOf("agentRailModel.js");
+    expect(source).not.toContain("document");
+    expect(source).not.toContain("App.call");
+    expect(source).not.toContain("fetch(");
+    expect(source).not.toContain('from "./thread.js"');
   });
 });

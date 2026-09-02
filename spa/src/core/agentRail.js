@@ -262,7 +262,7 @@ function paintStatusGit(git, status) {
 const railStatusRowHtml = () =>
   `<div class="rail-status" id="${RAIL_STATUS_ID}" hidden>
     <span class="rail-status-lead" id="${RAIL_STATUS_LEAD_ID}" hidden></span>
-    <div class="rail-status-pills" id="${RAIL_STATUS_PILLS_ID}" role="group" aria-label="Agent surfaces"></div>
+    <div class="rail-status-pills scrollstrip" id="${RAIL_STATUS_PILLS_ID}" role="group" aria-label="Agent surfaces"></div>
     <span class="rail-status-git" id="${RAIL_STATUS_GIT_ID}" hidden></span>
   </div>`;
 

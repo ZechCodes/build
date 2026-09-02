@@ -130,12 +130,14 @@ describe("the head's markup", () => {
 });
 
 describe("the head's rules", () => {
-  it("scrolls the strip sideways with no scrollbar to show for it", () => {
-    const rule = shellCss.match(/\.console-tabs \{[^}]*\}/)[0];
-    expect(rule).toMatch(/overflow-x:auto/);
-    expect(rule).toMatch(/scrollbar-width:none/);
-    expect(rule).toMatch(/flex:1/);
-    expect(shellCss).toMatch(/\.console-tabs::-webkit-scrollbar \{[^}]*display:none/);
+  it("scrolls the strip sideways with no scrollbar to show for it", async () => {
+    await openConsole([]);
+    expect(strip().className).toContain("scrollstrip");
+    const stripRule = shellCss.match(/\.scrollstrip \{[^}]*\}/)[0];
+    expect(stripRule).toMatch(/overflow-x:auto/);
+    expect(stripRule).toMatch(/scrollbar-width:none/);
+    expect(shellCss).toMatch(/\.scrollstrip::-webkit-scrollbar \{[^}]*display:none/);
+    expect(shellCss.match(/\.console-tabs \{[^}]*\}/)[0]).toMatch(/flex:1/);
   });
 
   it("keeps the + at the strip's right edge, over the tabs that scroll under it", () => {

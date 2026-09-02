@@ -2356,12 +2356,14 @@ describe("the one status row", () => {
     }
   });
 
-  it("scrolls the pills in the room between the lead and the git facts, with no bar to show for it", () => {
-    const pillsRule = shellCss.match(/\.rail-status-pills \{[^}]*\}/)[0];
-    expect(pillsRule).toMatch(/overflow-x:auto/);
-    expect(pillsRule).toMatch(/scrollbar-width:none/);
-    expect(pillsRule).toMatch(/mask-image:linear-gradient/);
-    expect(shellCss).toMatch(/\.rail-status-pills::-webkit-scrollbar \{[^}]*display:none/);
+  it("scrolls the pills in the room between the lead and the git facts, with no bar to show for it", async () => {
+    await mount();
+    expect(railStatusPills().className).toContain("scrollstrip");
+    const stripRule = shellCss.match(/\.scrollstrip \{[^}]*\}/)[0];
+    expect(stripRule).toMatch(/overflow-x:auto/);
+    expect(stripRule).toMatch(/scrollbar-width:none/);
+    expect(shellCss).toMatch(/\.scrollstrip::-webkit-scrollbar \{[^}]*display:none/);
+    expect(shellCss.match(/\.rail-status-pills \{[^}]*\}/)[0]).toMatch(/mask-image:linear-gradient/);
   });
 });
 

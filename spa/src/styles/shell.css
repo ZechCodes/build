@@ -485,6 +485,11 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    Specific enough to beat the shared box's own ceiling whichever order the two
    stylesheets land in. */
 .rail-composer .composer textarea { max-height:40vh; }
+/* A row that scrolls sideways rather than wrapping or squeezing what is in it,
+   with no scrollbar to show for it. */
+.scrollstrip { overflow-x:auto; scrollbar-width:none; }
+.scrollstrip::-webkit-scrollbar { width:0; height:0; display:none; }
+
 /* The one row pinned above the composer: how long the turn has been running
    while an agent works (or when the session began), the surface pills, and how
    far the branch stands from upstream with its diffstat. Three items, left to
@@ -506,10 +511,8 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    line. No scrollbar — the mask fading the strip out under the git facts is
    what says there is more of it, and it leaves their text crisp. */
 .rail-status-pills { flex:1 1 auto; min-width:0; display:flex; align-items:center; gap:6px;
-  overflow-x:auto; scrollbar-width:none;
   -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent);
   mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); }
-.rail-status-pills::-webkit-scrollbar { width:0; height:0; display:none; }
 /* Pinned to the row's end, so the ticking timer never shoves the git facts
    around. */
 .rail-status-git { flex:0 0 auto; margin-left:auto; display:flex; align-items:center; gap:6px; }
@@ -635,8 +638,7 @@ body.inbox-collapsed .toolbar { padding-left:var(--inbox-open-clear); }
    right edge over the tabs that scroll under it, so the way to open another
    shell is in the same place whatever the strip is showing. */
 .console-tabs { display:flex; align-items:center; gap:2px; min-width:0; flex:1 1 auto;
-  overflow-x:auto; scrollbar-width:none; background:var(--bg); }
-.console-tabs::-webkit-scrollbar { display:none; }
+  background:var(--bg); }
 .console-tabs .console-new { position:sticky; right:0; flex:none;
   background:var(--bg); padding-left:6px; }
 .console-tabs .console-new:hover { color:var(--ink2); background:var(--line2); }

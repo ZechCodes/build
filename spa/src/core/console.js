@@ -156,7 +156,7 @@ export function consoleHeadHtml({ size, tabs = [], selected = null, scoped = tru
   const cells = tabs.map((tab) => consoleTabHtml(tab, selected)).join("");
   const add = scoped ? consoleNewTerminalHtml() : "";
   const grow = size === "collapsed" ? "" : consoleGrowHtml(size);
-  return `${consoleToggleHtml(size)}<div class="console-tabs">${cells}${add}</div><div class="console-controls">${grow}</div>`;
+  return `${consoleToggleHtml(size)}<div class="console-tabs scrollstrip">${cells}${add}</div><div class="console-controls">${grow}</div>`;
 }
 
 /**

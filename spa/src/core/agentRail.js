@@ -1048,16 +1048,15 @@ export function mountAgentRail(host, context) {
     if (!region) return;
     const html = surfaceMenuHtml(surfaceMenuOptionsInFocus());
     if (html === paintedSurfaceMenu) return;
-    paintedSurfaceMenu = html;
     patchElement(region, el(html));
-    wireSurfaceMenu(panel);
+    wireSurfaceMenu(panel, html);
   };
 
-  const wireSurfaceMenu = (panel) => {
+  const wireSurfaceMenu = (panel, html = surfaceMenuHtml(surfaceMenuOptionsInFocus())) => {
+    paintedSurfaceMenu = html;
     const region = panel.querySelector(SURFACE_MENU_SELECTOR);
-    paintedSurfaceMenu = region ? surfaceMenuHtml(surfaceMenuOptionsInFocus()) : "";
     if (!region || !region.querySelector(".caret")) return;
-    mountSplitMenu(region, { onChoose: (kind) => openSurface(kind) });
+    mountSplitMenu(region, { onChoose: openSurface });
   };
 
   /** One surface, read as a modal over the panel. It is fed every snapshot the

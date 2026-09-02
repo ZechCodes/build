@@ -279,3 +279,16 @@ Locked after the first revision shipped. SPA only.
 - A pill's count is a filled cap at the pill's right end with its own
   background; when the count leaves, the cap shrinks away and the pill closes
   up behind it; when it arrives, the cap grows into place.
+
+## Revision 2026-09-02c: row tickers, no Ask
+
+- **No row actions.** The Ask menu on rows and on the workflow head is removed,
+  along with the canned messages. The reader asks in the chat. The ⋯ menu in
+  the conversation header and its overlays stay.
+- **Row tickers.** A running entry shows a live elapsed clock in the same
+  `M:SS` / `H:MM` form as the status clock, ticking once a second from its
+  `started_at`; a finished entry shows its `duration_ms` as before. The row
+  clock is grey, not the working colour, with the same shimmer in grey while
+  it runs, and holds its width with tabular figures.
+- **Shells carry `started_at`.** The bridge records the launch time on the
+  shell entry so its row can tick. Fixture and wire shape updated together.

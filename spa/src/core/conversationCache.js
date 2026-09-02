@@ -1,11 +1,3 @@
-// One agent's conversation, as the local cache holds it: the thread window its
-// history is seeded from and the surfaces snapshot its pills stand up from,
-// read together on the way in and written back through on the way out.
-//
-// Nothing here paints. What a seed means on screen is the rail's answer, given
-// back through onThreadSeeded / onSurfacesSeeded — so this module runs without
-// a document, and the rail keeps no record shapes of its own.
-
 import { readCached, writeCached } from "./localCache.js";
 import { THREAD_RECORD_KIND } from "./thread.js";
 import {
@@ -22,15 +14,6 @@ const threadCacheAddress = ({ deviceId, entityId, agentId }) => ({
   sub: agentId || "",
 });
 
-/**
- * `addressOf()` says whose records these are — `{ deviceId, entityId, agentId }`
- * — or null while the entity is not yet known or no session device is live.
- * `threadCache` is the window a seed fills and a persist reads.
- *
- * The seed reports through `onThreadSeeded(agentId)` and
- * `onSurfacesSeeded({ surfaces, at })`, and only for the agent the read was
- * made for: a reader who opened another bubble mid-read is told nothing.
- */
 export function createConversationCache({ addressOf, threadCache, onThreadSeeded, onSurfacesSeeded }) {
   let seedTried = false;
   let persistedSequence = 0;
@@ -51,8 +34,6 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
   };
 
   return {
-    /** Both saved records, once per conversation, dropped whole if the reader
-     *  opened another bubble while the read was in flight. */
     async seed() {
       const identity = addressOf();
       if (!identity || seedTried) return;
@@ -62,14 +43,12 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
         readCached(threadCacheAddress(identity)),
         readCached(surfacesCacheAddress(identity)),
       ]);
-      const standing = addressOf();
-      if (!standing || standing.agentId !== seededFor) return;
+      const stillOpen = addressOf();
+      if (!stillOpen || stillOpen.agentId !== seededFor) return;
       seedSurfaces(surfaces);
       seedThreadWindow(thread, seededFor);
     },
 
-    /** Write the window through when it has moved. Fire-and-forget,
-     *  sequence-guarded: a repaint that absorbed nothing new writes nothing. */
     persistThread() {
       const identity = addressOf();
       const window = threadCache.readWindow();
@@ -78,10 +57,6 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       writeCached(threadCacheAddress(identity), window);
     },
 
-    /** A payload has answered about this agent's surfaces, so the seed's turn
-     *  is over whatever the answer says. A snapshot that moved is written
-     *  through for the next visit; one that stands still, or an answer with
-     *  nothing to say, leaves the record where it is. */
     absorbSurfaces(surfaces) {
       surfacesAnswered = true;
       const identity = addressOf();
@@ -91,8 +66,6 @@ export function createConversationCache({ addressOf, threadCache, onThreadSeeded
       writeCached(surfacesCacheAddress(identity), surfacesRecord(surfaces));
     },
 
-    /** Let this conversation go — with it the seed's one-shot flag, so the
-     *  next one seeds from its own records. */
     reset() {
       threadCache.reset();
       seedTried = false;

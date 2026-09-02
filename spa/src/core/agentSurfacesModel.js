@@ -121,9 +121,6 @@ function pillIsShown(kind, runningCount, visibility, nowMs) {
   return graceExpiryFor(visibility, kind, nowMs) !== null;
 }
 
-/** A snapshot read back off disk: the kinds that linger describe a live tab
- *  the harness may no longer have, so once their grace has run out they are
- *  dropped rather than painted and taken away again a moment later. */
 export function surfacesAfterGrace(surfaces, seenAtMs, nowMs) {
   if (!surfaces || seenAtMs + SURFACE_PILL_GRACE_MS >= nowMs) return surfaces;
   const kept = { ...surfaces };

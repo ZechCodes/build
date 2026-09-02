@@ -329,9 +329,6 @@ export function mountAgentRail(host, context) {
   let loadingOlderItems = false; // a page of history is in flight
   let seededSurfaces = null;
 
-  /** Who the open conversation's records belong to, or null while the entity is
-   *  not yet known (no feed row) or no session device is live. One identity, so
-   *  the conversation and its surfaces can never drift apart. */
   const cacheIdentity = () => {
     const deviceId = cacheDeviceId();
     const entityId = context.kind === "issue" ? context.issueId : feedRow ? entityIdOf(feedRow) : null;
@@ -339,19 +336,6 @@ export function mountAgentRail(host, context) {
     return { deviceId, entityId, agentId: selectedId || "" };
   };
 
-  /** What the local cache holds for the open conversation.
-   *
-   *  A seeded window claims the cache for the agent it was read for
-   *  (threadAgentId): the rail remembers which bubble was open across
-   *  remounts, so without the claim the first threadFor of a revisit reads
-   *  "different agent" and wipes the window the seed just opened — after its
-   *  delta cursor was already sent, which is a conversation that paints empty
-   *  until the safety poll. And it paints: the reader is owed the history in
-   *  hand, not a loading frame until the wire answers.
-   *
-   *  A seeded snapshot stands the pills up — and the viewer of whichever kind
-   *  is remembered open, and the head's menu — so an agent's workflows and
-   *  shells arrive with its conversation rather than one wire answer later. */
   const conversationCache = createConversationCache({
     addressOf: cacheIdentity,
     threadCache,
@@ -368,16 +352,12 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  /** The payload has answered about this agent's surfaces, so the seed's turn
-   *  is over — an answer carrying none clears the pills as it always did. */
   const absorbSurfaces = () => {
     seededSurfaces = null;
     const agent = agentInFocus();
     conversationCache.absorbSurfaces(agent ? agent.surfaces : null);
   };
 
-  /** Drop what the cache holds for this conversation, and the payload folded
-   *  through it, so the next conversation stands on its own records. */
   const resetConversationCache = () => {
     conversationCache.reset();
     absorbedThreadPayload = null;
@@ -558,8 +538,6 @@ export function mountAgentRail(host, context) {
   /// surface before the rail asked for; the param is here so the panel follows
   /// the bubble as soon as the daemon can tell them apart.
   const detail = async () => {
-    // The saved records first, so a revisit's first read is a forward delta
-    // with the history already local. One try per conversation key.
     await conversationCache.seed();
     const askedAgentId = selectedId && !isProvisionalKey(selectedId) ? { agent_id: selectedId } : {};
     const scope = { ...threadCache.cursorParam(), ...askedAgentId };
@@ -569,31 +547,12 @@ export function mountAgentRail(host, context) {
     return App.call("branch.get", { project_id: context.projectId, branch: context.branch, ...scope });
   };
 
-  /// The agent we asked about is not on this work item any more — its run was
-  /// replaced, or it was retired. The daemon refuses rather than answering with
-  /// somebody else's conversation, so let the choice go and the next tick
-  /// reopens on whichever agent is here now. Without this the rail would ask
-  /// the same refused question forever.
   const letGoOfRefusedAgent = (error, asked) => {
     if (!asked || isProvisionalKey(asked)) return;
     if (!/agent_id/.test((error && error.message) || "")) return;
     openConversation(null);
   };
 
-  /// A branch is read off whichever source knows most about it, and the only
-  /// source that knows about agents is the run behind it. A tick that cannot
-  /// resolve the run answers off the bare checkout instead — no run, no
-  /// conversation, no agents — and the next tick has all three back. Believing
-  /// the first of those closes the conversation that is open: the strip drops
-  /// to a ghost, the head renames itself, and the panel is rebuilt around a
-  /// NEW textarea, which takes the words, the caret and, on a phone, the
-  /// keyboard with them. At a poll every 1.6 seconds that is a message that
-  /// cannot be typed at all.
-  ///
-  /// So an answer that loses the agents has to say it twice. A run that is
-  /// really gone (finished, abandoned) keeps saying it and the rail falls back
-  /// to the ghost as it always did, one tick later; a hiccup says it once and
-  /// is dropped.
   const answerLostTheAgents = (answered) => {
     if (answered.agents.length || !visibleAgents().length || agentlessOnce) return false;
     agentlessOnce = true;
@@ -1057,8 +1016,6 @@ export function mountAgentRail(host, context) {
     },
   });
 
-  /** The snapshot the panel is showing and when it was seen: now for a live
-   *  payload, the record's own stamp for one still standing on the disk. */
   const surfacesSeen = () => {
     const agent = agentInFocus();
     const live = agent && agent.surfaces;

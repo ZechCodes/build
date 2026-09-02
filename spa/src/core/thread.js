@@ -85,8 +85,6 @@ function timeHtml(createdAt) {
 // answer a client written before paging could reconcile.
 export const FIRST_PAGE_ITEMS = 60;
 
-// The local cache's kind for a saved conversation window, named where the
-// window helpers are so no reader or writer spells it.
 export const THREAD_RECORD_KIND = "thread";
 
 // What a MUTATION asks its answer to carry. Every mutation RPC answers with
@@ -1102,22 +1100,6 @@ export function writeThreadKeepingComposer(container, html) {
   return false;
 }
 
-/// Paint a conversation with the reader's place kept.
-///
-/// The newest message is the one the human came for and it sits at the END, so
-/// opening a thread lands at the bottom. Every surface then re-renders the whole
-/// timeline on its poll, and writing innerHTML resets scrollTop — which is the
-/// same lever, so both halves are one call: a reader already at the end is
-/// carried along with new messages, and a reader who scrolled up is left
-/// exactly where they were rather than yanked back down mid-sentence.
-///
-/// `scroller` is the element that scrolls (the surfaces' `#tabbody`), which is
-/// not always the element `paint` writes into — the issue surface paints a
-/// wrapper inside it. With no scroller this is `paint()` and nothing else.
-///
-/// `olderItemsPrepended` says this paint grew the timeline at the TOP: the page
-/// of history the reader asked for by scrolling back past the start of the
-/// window (core/paintKeepingPlace.js holds them on the message they were on).
 export function paintThreadKeepingPlace(scroller, paint, { olderItemsPrepended = false } = {}) {
   paintKeepingPlace(scroller, paint, {
     opening: (element) => !element.querySelector(".review-thread"),

@@ -45,11 +45,6 @@ function gitScopeOf(row) {
   return null;
 }
 
-/** The surfaces snapshot each agent in a detail payload carries, stored where
- *  the rail seeds its pills from — once per entity, however many conversations
- *  were read to get here. An agent whose harness offers nothing here writes
- *  nothing and keeps whatever it last had; one whose snapshot has not moved
- *  since the last pass is left where it is. */
 async function writeSurfaces(deviceId, entityId, agents) {
   for (const agent of agents) {
     if (!agent.id || !agent.surfaces) continue;
@@ -66,7 +61,7 @@ async function writeSurfaces(deviceId, entityId, agents) {
 async function refreshThreads(deviceId, entityId, row) {
   const isIssue = row.kind === "issue";
   const detailParams = isIssue ? { issue_id: entityId } : { project_id: row.project_id, branch: row.branch };
-  let agentsRead = [];
+  let agentsOnEntity = [];
   for (const agentSub of await cachedSubKeys(deviceId, entityId, THREAD_RECORD_KIND)) {
     try {
       const payload = await App.call(isIssue ? "issue.get" : "branch.get", {
@@ -75,17 +70,14 @@ async function refreshThreads(deviceId, entityId, row) {
         thread_limit: FIRST_PAGE_ITEMS,
       });
       const detail = railEntity(payload, isIssue ? "issue" : "branch");
-      agentsRead = detail.agents;
+      agentsOnEntity = detail.agents;
       const shaped = windowFromThreadPayload(detail.thread);
       if (shaped) await writeCached({ deviceId, entityId, kind: THREAD_RECORD_KIND, sub: agentSub }, shaped);
     } catch {
       /* transient, or the agent left — the next event tries again */
     }
   }
-  // Every answer names every agent on the entity, so the last one to land
-  // speaks for all of them — including the agents whose own conversation was
-  // never warmed here.
-  await writeSurfaces(deviceId, entityId, agentsRead);
+  await writeSurfaces(deviceId, entityId, agentsOnEntity);
 }
 
 /** Keep a branch's file listings warm: the top-level directory always — the

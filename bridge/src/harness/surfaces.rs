@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -88,6 +88,8 @@ pub struct SurfaceShell {
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tail: Vec<String>,
+    #[serde(skip)]
+    pub closed_by_notification: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -157,7 +159,6 @@ pub struct SurfaceLedger {
     shells: Vec<SurfaceShell>,
     checklist: Vec<SurfaceChecklistItem>,
     shell_outputs: HashMap<String, PathBuf>,
-    shells_closed_by_notification: HashSet<String>,
     pending_checklist_creates: HashMap<String, PendingChecklistCreate>,
 }
 
@@ -425,6 +426,7 @@ impl SurfaceLedger {
                     state: Some(RUNNING.to_string()),
                     exit_code: None,
                     tail: Vec::new(),
+                    closed_by_notification: false,
                 };
                 match self.shell_named(shell_id) {
                     Some(held) => replace_when_changed(held, started),
@@ -443,45 +445,37 @@ impl SurfaceLedger {
                 }
                 false => false,
             },
-            ShellReport::Closed { state, exit_code } => {
-                if self.holds_shell(shell_id) {
-                    self.shells_closed_by_notification
-                        .insert(shell_id.to_string());
+            ShellReport::Closed { state, exit_code } => match self.shell_named(shell_id) {
+                Some(held) => {
+                    let closed = SurfaceShell {
+                        state: Some(state.to_string()),
+                        exit_code,
+                        closed_by_notification: true,
+                        ..held.clone()
+                    };
+                    replace_when_changed(held, closed)
                 }
-                match self.shell_named(shell_id) {
-                    Some(held) => {
-                        let closed = SurfaceShell {
-                            state: Some(state.to_string()),
-                            exit_code,
-                            ..held.clone()
-                        };
-                        replace_when_changed(held, closed)
-                    }
-                    None => false,
+                None => false,
+            },
+            ShellReport::Tailed(tail) => match self.shell_named(shell_id) {
+                Some(held) => {
+                    let marked = match held.closed_by_notification {
+                        true => None,
+                        false => tail.exit_code,
+                    };
+                    let tailed = SurfaceShell {
+                        tail: tail.lines,
+                        exit_code: marked.or(held.exit_code),
+                        state: match marked {
+                            Some(_) => Some(DONE.to_string()),
+                            None => held.state.clone(),
+                        },
+                        ..held.clone()
+                    };
+                    replace_when_changed(held, tailed)
                 }
-            }
-            ShellReport::Tailed(tail) => {
-                let closed_by_notification = self.shells_closed_by_notification.contains(shell_id);
-                match self.shell_named(shell_id) {
-                    Some(held) => {
-                        let marked = match closed_by_notification {
-                            true => None,
-                            false => tail.exit_code,
-                        };
-                        let tailed = SurfaceShell {
-                            tail: tail.lines,
-                            exit_code: marked.or(held.exit_code),
-                            state: match marked {
-                                Some(_) => Some(DONE.to_string()),
-                                None => held.state.clone(),
-                            },
-                            ..held.clone()
-                        };
-                        replace_when_changed(held, tailed)
-                    }
-                    None => false,
-                }
-            }
+                None => false,
+            },
         }
     }
 
@@ -868,6 +862,7 @@ mod tests {
             state: Some(RUNNING.to_string()),
             exit_code: None,
             tail: vec!["test one ... ok".to_string()],
+            closed_by_notification: false,
         }
     }
 
@@ -1581,6 +1576,7 @@ mod tests {
                 state: Some(RUNNING.to_string()),
                 exit_code: None,
                 tail: Vec::new(),
+                closed_by_notification: false,
             }
         );
         assert!(
@@ -1749,6 +1745,22 @@ mod tests {
             "the notification is authoritative"
         );
         assert_eq!(closed.tail, vec!["finished", "[exited with code 3]"]);
+    }
+
+    #[test]
+    fn a_shell_restarted_under_the_same_id_reads_its_own_marker_again() {
+        let mut ledger = ledger_through_the_launched_shell();
+        feed_shell_line(&mut ledger, SHELL_NOTIFICATION_LINE);
+
+        assert!(feed_shell_line(&mut ledger, SHELL_STARTED_LINE));
+        assert!(ledger.read_shell_tail(
+            SHELL_TASK_ID,
+            tail_reading(&["[exited with code 3]"], Some(3))
+        ));
+
+        let restarted = the_only_shell(&ledger);
+        assert_eq!(restarted.state.as_deref(), Some("done"));
+        assert_eq!(restarted.exit_code, Some(3));
     }
 
     #[test]

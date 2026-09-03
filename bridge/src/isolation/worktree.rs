@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{checkout_name, Isolation, IsolationBackend, WorktreeError};
+use super::{checkout_name, local_branch_ref, Isolation, IsolationBackend, WorktreeError};
 use crate::git_process::run_git;
 
 /// Materializes a checkout as a git linked worktree of the project repository.
@@ -19,7 +19,7 @@ impl IsolationBackend for WorktreeBackend {
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError> {
         let name = registered_name(path)?;
         let repo = git2::Repository::open(project)?;
-        let reference = repo.find_reference(&format!("refs/heads/{branch}"))?;
+        let reference = repo.find_reference(&local_branch_ref(branch))?;
         let mut options = git2::WorktreeAddOptions::new();
         options.reference(Some(&reference));
         repo.worktree(&name, path, Some(&options))?;

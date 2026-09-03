@@ -60,7 +60,7 @@ pub enum Isolation {
 }
 
 impl Isolation {
-    /// Every isolation there is, in the order the façade keeps its backends in.
+    /// Every isolation there is.
     pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Cow];
 
     /// The word the wire, the settings file and the controls all use.
@@ -103,6 +103,13 @@ impl Isolation {
 pub fn checkout_name(path: &Path) -> Option<String> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// The ref a repository keeps a local branch under: `refs/heads/<branch>`.
+/// The façade finds, cuts and deletes branches by it in the project repo and
+/// a backend checks them out by it, so both sides of the seam spell it here.
+pub fn local_branch_ref(branch: &str) -> String {
+    format!("refs/heads/{branch}")
 }
 
 /// The file inside a clone's `.git` that says the clone is Build's and which
@@ -237,6 +244,12 @@ pub trait IsolationBackend: Send + Sync {
 mod tests {
     use super::*;
     use crate::git_fixture::{git_in, init_repo};
+
+    #[test]
+    fn a_local_branch_ref_lives_under_refs_heads() {
+        assert_eq!(local_branch_ref("main"), "refs/heads/main");
+        assert_eq!(local_branch_ref("build/slug"), "refs/heads/build/slug");
+    }
 
     #[test]
     fn a_checkout_says_how_it_is_isolated() {

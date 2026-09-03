@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use crate::git_process::run_git;
 use crate::isolation::{
-    checkout_name, Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend,
+    checkout_name, local_branch_ref, Isolation, IsolationAvailability, IsolationBackend,
+    WorktreeBackend,
 };
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
@@ -113,7 +114,7 @@ pub fn is_usable_branch_name(name: &str) -> bool {
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
     segments.iter().all(segment_is_usable)
-        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+        && git2::Reference::is_valid_name(&local_branch_ref(name))
 }
 
 /// A checkout added for a branch named in full, and whether that branch is one
@@ -213,7 +214,7 @@ impl WorktreeManager {
             self.checkout_name_taken(candidate)
         })?;
 
-        let branch_ref = format!("refs/heads/{branch}");
+        let branch_ref = local_branch_ref(branch);
         let branch_was_cut = repo.find_reference(&branch_ref).is_err();
         if branch_was_cut {
             let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
@@ -354,11 +355,10 @@ impl WorktreeManager {
         base_branch: &str,
         excluded: &HashSet<PathBuf>,
     ) -> Result<Vec<ExternalWorktree>, WorktreeError> {
-        let primary = std::fs::canonicalize(&self.repo_path)?;
         let mut paths: Vec<PathBuf> = Vec::new();
         for backend in self.every_backend() {
             for path in backend.discover(&self.repo_path, &self.worktrees_root)? {
-                if path != primary && !excluded.contains(&path) && !paths.contains(&path) {
+                if !excluded.contains(&path) && !paths.contains(&path) {
                     paths.push(path);
                 }
             }
@@ -423,12 +423,7 @@ impl WorktreeManager {
     pub fn delete_branch_at(&self, branch: &str, expected_head: &str) -> Result<(), WorktreeError> {
         run_git(
             &self.repo_path,
-            &[
-                "update-ref",
-                "-d",
-                &format!("refs/heads/{branch}"),
-                expected_head,
-            ],
+            &["update-ref", "-d", &local_branch_ref(branch), expected_head],
         )?;
         Ok(())
     }
@@ -438,7 +433,7 @@ impl WorktreeManager {
     pub fn restore_branch(&self, branch: &str, sha: &str) -> Result<(), WorktreeError> {
         run_git(
             &self.repo_path,
-            &["update-ref", &format!("refs/heads/{branch}"), sha],
+            &["update-ref", &local_branch_ref(branch), sha],
         )?;
         Ok(())
     }
@@ -592,7 +587,7 @@ impl WorktreeManager {
         repo: &git2::Repository,
         branch: &str,
     ) -> Result<(), WorktreeError> {
-        let local_ref = format!("refs/heads/{branch}");
+        let local_ref = local_branch_ref(branch);
         if !git2::Reference::is_valid_name(&local_ref) {
             return Err(WorktreeError::Refused(format!(
                 "invalid persisted branch: {branch:?}"
@@ -683,7 +678,7 @@ fn head_matches_project_tip(
     worktree: &Worktree,
 ) -> Result<(), WorktreeError> {
     let tip = project
-        .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
+        .find_reference(&local_branch_ref(&worktree.recorded_branch))?
         .target()
         .ok_or_else(|| WorktreeError::Refused("persisted branch has no commit".to_string()))?;
     if head != tip {

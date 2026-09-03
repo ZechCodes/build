@@ -233,41 +233,17 @@ pub trait IsolationBackend: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-    use std::process::Command;
-
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap();
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "test@build.ing"]);
-        git(&["config", "user.name", "Test"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        (dir, repo)
-    }
+    use crate::git_fixture::{git_in, init_repo};
 
     #[test]
     fn a_checkout_says_how_it_is_isolated() {
         let (dir, repo) = init_repo();
 
         let linked = dir.path().join("linked");
-        let status = Command::new("git")
-            .args(["worktree", "add", linked.to_str().unwrap(), "-b", "side"])
-            .current_dir(&repo)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        git_in(
+            &repo,
+            &["worktree", "add", linked.to_str().unwrap(), "-b", "side"],
+        );
         assert_eq!(Isolation::of(&linked), Some(Isolation::Worktree));
 
         // A standalone repository is nobody's checkout until it carries the marker.

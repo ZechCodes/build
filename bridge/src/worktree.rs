@@ -1092,30 +1092,9 @@ fn worktree_status_line_count(worktree_path: &Path) -> Result<usize, WorktreeErr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_fixture::{git_in, init_repo};
     use std::path::Path;
     use std::process::Command;
-
-    /// Init a repo on `main` with one commit, returning (tempdir, repo_path).
-    pub(super) fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap();
-            assert!(status.success(), "git {args:?} failed");
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "test@build.ing"]);
-        git(&["config", "user.name", "Test"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        (dir, repo)
-    }
 
     fn manager(dir: &tempfile::TempDir, repo: &Path) -> WorktreeManager {
         WorktreeManager::new(repo, dir.path().join("worktrees"))
@@ -1523,15 +1502,6 @@ mod tests {
                 .is_err(),
             "branch deleted"
         );
-    }
-
-    fn git_in(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap();
-        assert!(status.success(), "git {args:?} failed");
     }
 
     #[test]
@@ -2098,6 +2068,7 @@ mod tests {
 #[cfg(test)]
 mod vanished_worktree_removal {
     use super::*;
+    use crate::git_fixture::init_repo;
 
     /// The state an outside cleanup leaves behind: directory removed,
     /// bookkeeping pruned, branch deleted.
@@ -2123,7 +2094,7 @@ mod vanished_worktree_removal {
         // baffling "could not find '.git/shallow' to stat" from find_worktree,
         // which blocked the plan approve that only wanted the worktree gone.
         // Removal's goal is absence; finding absence is success.
-        let (dir, repo) = tests::init_repo();
+        let (dir, repo) = init_repo();
         let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
         let wt = manager
             .create("gone-slug", "main", Isolation::Worktree)
@@ -2137,7 +2108,7 @@ mod vanished_worktree_removal {
     fn removing_a_vanished_worktree_still_deletes_a_surviving_branch() {
         // Partial carcass: dir and bookkeeping gone, branch still there — the
         // branch must still be deleted, not skipped along with the rest.
-        let (dir, repo) = tests::init_repo();
+        let (dir, repo) = init_repo();
         let manager = WorktreeManager::new(&repo, dir.path().join("wts"));
         let wt = manager
             .create("half-gone", "main", Isolation::Worktree)

@@ -3030,11 +3030,16 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        discover_external_worktrees(repo, "main", &std::collections::HashSet::new())
-            .unwrap()
-            .into_iter()
-            .find(|w| w.branch.as_deref() == Some(branch))
-            .expect("the new worktree is discoverable")
+        discover_external_worktrees(
+            repo,
+            &dir.path().join("worktrees"),
+            "main",
+            &std::collections::HashSet::new(),
+        )
+        .unwrap()
+        .into_iter()
+        .find(|w| w.branch.as_deref() == Some(branch))
+        .expect("the new worktree is discoverable")
     }
 
     fn worktree_head(worktree: &Path) -> String {

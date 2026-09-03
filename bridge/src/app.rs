@@ -1351,6 +1351,7 @@ enum DiffCacheRefresh {
     ExternalScan {
         project_id: String,
         repo_path: std::path::PathBuf,
+        worktrees_root: std::path::PathBuf,
         base_branch: String,
         excluded: std::collections::HashSet<std::path::PathBuf>,
     },
@@ -1527,18 +1528,22 @@ impl DiffCacheRefresh {
             Self::ExternalScan {
                 project_id,
                 repo_path,
+                worktrees_root,
                 base_branch,
                 excluded,
-            } => match discover_external_worktrees(repo_path, base_branch, excluded) {
-                Ok(worktrees) => Some(DiffCacheEntry::ExternalScan {
-                    project_id: project_id.clone(),
-                    worktrees,
-                }),
-                Err(e) => {
-                    eprintln!("external_worktrees {project_id}: {e}");
-                    None
+            } => {
+                match discover_external_worktrees(repo_path, worktrees_root, base_branch, excluded)
+                {
+                    Ok(worktrees) => Some(DiffCacheEntry::ExternalScan {
+                        project_id: project_id.clone(),
+                        worktrees,
+                    }),
+                    Err(e) => {
+                        eprintln!("external_worktrees {project_id}: {e}");
+                        None
+                    }
                 }
-            },
+            }
             Self::PrimarySummary {
                 project_id,
                 repo_path,
@@ -1696,9 +1701,9 @@ fn spawn_diff_refresh(
     state: Arc<Mutex<AppState>>,
     refresh: DiffCacheRefresh,
     observer: Option<DiffComputeObserver>,
-) -> Result<(), DiffCacheRefresh> {
+) -> Result<(), Box<DiffCacheRefresh>> {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-        return Err(refresh);
+        return Err(Box::new(refresh));
     };
     runtime.spawn(async move {
         let key = refresh.key();
@@ -1748,7 +1753,7 @@ fn warm_diff_caches(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) 
                 Ok(()) => continue,
                 // No runtime to refresh on: compute it here instead — still off
                 // the lock.
-                Err(refresh) => refresh,
+                Err(refresh) => *refresh,
             }
         };
         let entry = waited_for.compute(observer.as_ref());
@@ -3624,10 +3629,9 @@ impl AppState {
             .and_then(|s| s.to_str())
             .unwrap_or("project")
             .to_string();
-        let worktrees = self.worktrees_root.join(&id);
         let orch = Orchestrator::new(
             repo_path.clone(),
-            worktrees,
+            self.project_worktrees_root(&id),
             self.agent.clone(),
             Templates::default(),
         );
@@ -3949,12 +3953,19 @@ impl AppState {
         })
     }
 
+    /// Where one project's checkouts are materialized: its own directory under
+    /// the bridge's worktrees root, the root its orchestrator was given.
+    fn project_worktrees_root(&self, project_id: &str) -> std::path::PathBuf {
+        self.worktrees_root.join(project_id)
+    }
+
     /// The refresh that rescans one project's external worktrees.
     fn external_scan_refresh(&self, project_id: &str) -> Option<DiffCacheRefresh> {
         let project = self.projects.iter().find(|p| p.id == project_id)?;
         Some(DiffCacheRefresh::ExternalScan {
             project_id: project.id.clone(),
             repo_path: project.repo_path.clone(),
+            worktrees_root: self.project_worktrees_root(&project.id),
             base_branch: project.base_branch.clone(),
             excluded: self.bound_worktree_paths(),
         })
@@ -4250,7 +4261,12 @@ impl AppState {
         // Never scanned, or the caller demands the truth now (adoption resolves
         // an id against it). On the dispatch path `warm_diff_caches` has already
         // filled this in with the lock free.
-        match discover_external_worktrees(&repo_path, &base, &excluded) {
+        match discover_external_worktrees(
+            &repo_path,
+            &self.project_worktrees_root(project_id),
+            &base,
+            &excluded,
+        ) {
             Ok(worktrees) => {
                 self.store_diff_entry(DiffCacheEntry::ExternalScan {
                     project_id: project_id.to_string(),
@@ -7612,6 +7628,7 @@ impl AppState {
             ));
         }
         Ok(PlannedFinish::Deferred(Box::new(WorktreeFinishJob {
+            worktrees_root: self.project_worktrees_root(&project_id),
             project_id,
             project_path,
             base_branch,
@@ -12534,8 +12551,12 @@ impl AppState {
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
-                crate::worktree::describe_primary_checkout(&repo_path, &base)
-                    .map_err(|e| e.to_string())?,
+                crate::worktree::describe_primary_checkout(
+                    &repo_path,
+                    &self.project_worktrees_root(&project_id),
+                    &base,
+                )
+                .map_err(|e| e.to_string())?,
                 AdoptionScope::PrimaryCheckout,
             )
         } else {
@@ -15678,6 +15699,7 @@ enum PlannedRunFinish {
 struct WorktreeFinishJob {
     project_id: String,
     project_path: std::path::PathBuf,
+    worktrees_root: std::path::PathBuf,
     base_branch: String,
     worktree_id: String,
     action: WorktreeFinishAction,
@@ -16027,6 +16049,7 @@ impl WorktreeFinishJob {
             None => {
                 let scanned = match crate::worktree::discover_external_worktrees(
                     &self.project_path,
+                    &self.worktrees_root,
                     &self.base_branch,
                     &self.excluded,
                 ) {

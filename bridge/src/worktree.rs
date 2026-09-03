@@ -1855,6 +1855,40 @@ mod tests {
         );
     }
 
+    /// One broken stray must not fail the scan. A checkout git still lists but
+    /// that is no Build checkout any more is refused a base sync and described
+    /// by nobody; one git itself gives up on is never listed; and the healthy
+    /// one beside them is found all the same.
+    #[test]
+    fn discover_skips_a_broken_stray_and_keeps_the_rest() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let healthy = dir.path().join("wt-healthy");
+        let hollowed = dir.path().join("wt-hollowed");
+        let pointerless = dir.path().join("wt-pointerless");
+        for (path, branch) in [
+            (&healthy, "healthy"),
+            (&hollowed, "hollowed"),
+            (&pointerless, "pointerless"),
+        ] {
+            git_in(
+                &repo,
+                &["worktree", "add", path.to_str().unwrap(), "-b", branch],
+            );
+        }
+        std::fs::remove_file(hollowed.join(".git")).unwrap();
+        std::fs::create_dir(hollowed.join(".git")).unwrap();
+        std::fs::remove_file(pointerless.join(".git")).unwrap();
+
+        let found = mgr.discover("main", &HashSet::new()).unwrap();
+
+        assert_eq!(
+            found.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            vec!["wt-healthy"],
+            "{found:?}"
+        );
+    }
+
     /// A checkout describes itself, branch and all — and a directory that is no
     /// Build checkout is described by nobody.
     #[test]

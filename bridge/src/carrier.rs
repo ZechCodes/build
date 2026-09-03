@@ -220,25 +220,36 @@ impl SessionRegistry {
     }
 
     /// Take one envelope off a carrier: decrypt it with the session's key and
-    /// hand back the frame with a sender that pushes to this carrier. Recording
-    /// the ride here is what makes a session reachable from whichever wire its
-    /// frames arrive on.
+    /// hand back the frame with a sender that pushes to this carrier. The ride
+    /// is recorded only once the frame decrypts — the envelope is authenticated,
+    /// so a frame that does not is the one thing that must never bind a session
+    /// to a wire — and recording it is what makes a session reachable from
+    /// whichever wire its frames arrive on.
     pub fn admit(
         &self,
         envelope: &Envelope,
         carrier: &CarrierHandle,
     ) -> Result<(Frame, SessionSender), CarrierError> {
-        let session_key = {
+        let session_key = self.key_of(&envelope.session_id)?;
+        let frame = transport::decrypt_envelope(&session_key, envelope)?;
+        {
             let mut sessions = self.sessions.lock().unwrap();
             let open = sessions
                 .get_mut(&envelope.session_id)
                 .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
             open.carriers.insert(carrier.id);
-            open.key.clone()
-        };
-        let frame = transport::decrypt_envelope(&session_key, envelope)?;
+        }
         let sender = SessionSender::keyed(&envelope.session_id, session_key, carrier.out.clone());
         Ok((frame, sender))
+    }
+
+    fn key_of(&self, session_id: &str) -> Result<String, CarrierError> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|open| open.key.clone())
+            .ok_or_else(|| CarrierError::UnknownSession(session_id.to_string()))
     }
 
     /// One carrier stops carrying one session.
@@ -965,6 +976,27 @@ mod registry_tests {
                 .admit(&client_envelope(&key, "s-1", "data"), &first)
                 .is_ok(),
             "the session keeps the key it was opened with"
+        );
+    }
+
+    #[test]
+    fn a_frame_that_does_not_decrypt_records_no_ride() {
+        let registry = SessionRegistry::new();
+        let (relay, _relay_out) = test_carrier();
+        let (forged, _forged_out) = test_carrier();
+        let key = transport::generate_session_key();
+        registry.open("s-1", key.clone(), &relay).unwrap();
+
+        let refused = registry.admit(
+            &client_envelope(&transport::generate_session_key(), "s-1", "data"),
+            &forged,
+        );
+
+        assert!(matches!(refused, Err(CarrierError::Transport(_))));
+        assert_eq!(
+            registry.release_session("s-1", relay.id()),
+            vec!["s-1".to_string()],
+            "a frame that proves no key possession puts the session on no carrier"
         );
     }
 

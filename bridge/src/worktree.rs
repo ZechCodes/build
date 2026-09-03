@@ -135,6 +135,7 @@ pub struct NamedBranchCheckout {
 /// made the checkout, publish-before-read ordering — and routes the rest to a
 /// backend. Creation takes the isolation the caller resolved; everything else
 /// asks the checkout on disk what it is.
+#[derive(Clone, Debug)]
 pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
@@ -436,6 +437,14 @@ impl WorktreeManager {
             &["update-ref", &local_branch_ref(branch), sha],
         )?;
         Ok(())
+    }
+
+    /// The project repository every checkout here is cut from — what a caller
+    /// reading the project's own refs, or naming the project a record belongs
+    /// to, opens. Identity rather than variation: both isolations answer to
+    /// the same repository.
+    pub fn repo_path(&self) -> &Path {
+        &self.repo_path
     }
 
     /// Which isolations this project can be checked out with on this volume.
@@ -899,31 +908,6 @@ fn strip_trailing_digit_run(segment: &str) -> String {
         end -= 1;
     }
     chars[..end].iter().collect()
-}
-
-/// Enumerate every checkout of `repo_path` that is neither the project's own
-/// nor in `excluded_paths`, with a review summary each — the project's
-/// [`WorktreeManager::discover`] for a caller that holds the project's paths
-/// rather than its manager. A seam kept until the app holds a manager of its
-/// own; stage 2 retires it.
-pub fn discover_external_worktrees(
-    repo_path: &Path,
-    worktrees_root: &Path,
-    base_branch: &str,
-    excluded_paths: &HashSet<PathBuf>,
-) -> Result<Vec<ExternalWorktree>, WorktreeError> {
-    WorktreeManager::new(repo_path, worktrees_root).discover(base_branch, excluded_paths)
-}
-
-/// The primary checkout described in the shape adoption takes for an external
-/// worktree — the project's [`WorktreeManager::describe_primary`] through the
-/// same seam as [`discover_external_worktrees`].
-pub fn describe_primary_checkout(
-    repo_path: &Path,
-    worktrees_root: &Path,
-    base_branch: &str,
-) -> Result<ExternalWorktree, WorktreeError> {
-    WorktreeManager::new(repo_path, worktrees_root).describe_primary(base_branch)
 }
 
 /// Summarize the Build checkout at `path` from the checkout alone, so a clone
@@ -1555,9 +1539,7 @@ mod tests {
         std::fs::write(wt_path.join("dirty.txt"), "dirty\n").unwrap();
 
         let excluded = std::collections::HashSet::new();
-        let found =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
+        let found = manager(&dir, &repo).discover("main", &excluded).unwrap();
 
         assert_eq!(found.len(), 1);
         let entry = &found[0];
@@ -1585,13 +1567,9 @@ mod tests {
         git_in(&wt_path, &["commit", "-m", "committed work"]);
         std::fs::write(wt_path.join("dirty.txt"), "two\nthree\n").unwrap();
 
-        let found = discover_external_worktrees(
-            &repo,
-            &dir.path().join("worktrees"),
-            "main",
-            &HashSet::new(),
-        )
-        .unwrap();
+        let found = manager(&dir, &repo)
+            .discover("main", &HashSet::new())
+            .unwrap();
 
         let entry = &found[0];
         // The branch delta carries both; the uncommitted stat only what is
@@ -1667,13 +1645,9 @@ mod tests {
         commit_file(&repo, "on-main");
         commit_file(&repo, "on-main-again");
 
-        let found = discover_external_worktrees(
-            &repo,
-            &dir.path().join("worktrees"),
-            "main",
-            &HashSet::new(),
-        )
-        .unwrap();
+        let found = manager(&dir, &repo)
+            .discover("main", &HashSet::new())
+            .unwrap();
 
         let entry = &found[0];
         assert_eq!(entry.upstream.as_deref(), Some("origin/tracked"));
@@ -1699,13 +1673,9 @@ mod tests {
         commit_file(&wt_path, "a");
         commit_file(&repo, "on-main");
 
-        let found = discover_external_worktrees(
-            &repo,
-            &dir.path().join("worktrees"),
-            "main",
-            &HashSet::new(),
-        )
-        .unwrap();
+        let found = manager(&dir, &repo)
+            .discover("main", &HashSet::new())
+            .unwrap();
 
         let entry = &found[0];
         assert_eq!(entry.upstream, None);
@@ -1725,13 +1695,9 @@ mod tests {
             &["worktree", "add", wt_path.to_str().unwrap(), "-b", "level"],
         );
 
-        let found = discover_external_worktrees(
-            &repo,
-            &dir.path().join("worktrees"),
-            "main",
-            &HashSet::new(),
-        )
-        .unwrap();
+        let found = manager(&dir, &repo)
+            .discover("main", &HashSet::new())
+            .unwrap();
 
         let entry = &found[0];
         assert_eq!(entry.comparison_ref.as_deref(), Some("main"));
@@ -1757,9 +1723,7 @@ mod tests {
 
         let mut excluded = std::collections::HashSet::new();
         excluded.insert(std::fs::canonicalize(&wt_path).unwrap());
-        let found =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
+        let found = manager(&dir, &repo).discover("main", &excluded).unwrap();
 
         assert!(found.is_empty());
     }
@@ -1774,9 +1738,7 @@ mod tests {
         );
 
         let excluded = std::collections::HashSet::new();
-        let found =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
+        let found = manager(&dir, &repo).discover("main", &excluded).unwrap();
 
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].branch, None);
@@ -1800,18 +1762,14 @@ mod tests {
             ],
         );
         let excluded = std::collections::HashSet::new();
-        let before =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
+        let before = manager(&dir, &repo).discover("main", &excluded).unwrap();
         let sha_before = before[0].head_sha.clone();
 
         std::fs::write(wt_path.join("more.txt"), "more\n").unwrap();
         git_in(&wt_path, &["add", "more.txt"]);
         git_in(&wt_path, &["commit", "-m", "more work"]);
 
-        let after =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
+        let after = manager(&dir, &repo).discover("main", &excluded).unwrap();
         assert_ne!(before[0].head_sha, after[0].head_sha);
         assert_ne!(sha_before, after[0].head_sha);
     }
@@ -1867,17 +1825,6 @@ mod tests {
         assert_eq!(found[0].name, "wt-listed");
         assert_eq!(found[0].branch.as_deref(), Some("listed"));
         assert_eq!(found[0].isolation, Isolation::Worktree);
-        let through_the_free_seam =
-            discover_external_worktrees(&repo, &dir.path().join("worktrees"), "main", &excluded)
-                .unwrap();
-        assert_eq!(
-            found.iter().map(|w| &w.path).collect::<Vec<_>>(),
-            through_the_free_seam
-                .iter()
-                .map(|w| &w.path)
-                .collect::<Vec<_>>(),
-            "the free seam is the manager"
-        );
     }
 
     /// One broken stray must not fail the scan. A checkout git still lists but

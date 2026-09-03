@@ -2995,8 +2995,6 @@ mod tests {
 
     // ---- Worktree adoption ----
 
-    use crate::worktree::discover_external_worktrees;
-
     /// Create a user worktree at `dir/<name>` on a new `branch` (cut from the
     /// primary HEAD) and return its discovered summary — the same shape the
     /// app layer resolves a `worktree_id` to.
@@ -3013,16 +3011,12 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        discover_external_worktrees(
-            repo,
-            &dir.path().join("worktrees"),
-            "main",
-            &std::collections::HashSet::new(),
-        )
-        .unwrap()
-        .into_iter()
-        .find(|w| w.branch.as_deref() == Some(branch))
-        .expect("the new worktree is discoverable")
+        WorktreeManager::new(repo, dir.path().join("worktrees"))
+            .discover("main", &std::collections::HashSet::new())
+            .unwrap()
+            .into_iter()
+            .find(|w| w.branch.as_deref() == Some(branch))
+            .expect("the new worktree is discoverable")
     }
 
     fn worktree_head(worktree: &Path) -> String {

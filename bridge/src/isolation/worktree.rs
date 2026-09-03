@@ -9,6 +9,7 @@ use crate::git_process::run_git;
 /// Materializes a checkout as a git linked worktree of the project repository.
 /// The project repo already holds every ref, so publishing and base-syncing are
 /// nothing at all.
+#[derive(Clone, Debug)]
 pub struct WorktreeBackend;
 
 impl IsolationBackend for WorktreeBackend {

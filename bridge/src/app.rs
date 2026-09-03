@@ -58,8 +58,7 @@ use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
 use crate::transport::Frame;
 use crate::worktree::{
-    bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
-    Worktree,
+    bounded_git_fetch, configured_remote_for_branch, ExternalWorktree, Worktree, WorktreeManager,
 };
 
 /// A single event in a stream's authoritative log. `seq` is 1-based and dense.
@@ -1350,8 +1349,9 @@ enum DiffCacheRefresh {
     },
     ExternalScan {
         project_id: String,
-        repo_path: std::path::PathBuf,
-        worktrees_root: std::path::PathBuf,
+        /// The project's own checkout seam, cloned off the app mutex so the
+        /// scan that walks every checkout runs without it.
+        worktrees: WorktreeManager,
         base_branch: String,
         excluded: std::collections::HashSet<std::path::PathBuf>,
     },
@@ -1527,23 +1527,19 @@ impl DiffCacheRefresh {
             }),
             Self::ExternalScan {
                 project_id,
-                repo_path,
-                worktrees_root,
+                worktrees,
                 base_branch,
                 excluded,
-            } => {
-                match discover_external_worktrees(repo_path, worktrees_root, base_branch, excluded)
-                {
-                    Ok(worktrees) => Some(DiffCacheEntry::ExternalScan {
-                        project_id: project_id.clone(),
-                        worktrees,
-                    }),
-                    Err(e) => {
-                        eprintln!("external_worktrees {project_id}: {e}");
-                        None
-                    }
+            } => match worktrees.discover(base_branch, excluded) {
+                Ok(scanned) => Some(DiffCacheEntry::ExternalScan {
+                    project_id: project_id.clone(),
+                    worktrees: scanned,
+                }),
+                Err(e) => {
+                    eprintln!("external_worktrees {project_id}: {e}");
+                    None
                 }
-            }
+            },
             Self::PrimarySummary {
                 project_id,
                 repo_path,
@@ -3964,8 +3960,7 @@ impl AppState {
         let project = self.projects.iter().find(|p| p.id == project_id)?;
         Some(DiffCacheRefresh::ExternalScan {
             project_id: project.id.clone(),
-            repo_path: project.repo_path.clone(),
-            worktrees_root: self.project_worktrees_root(&project.id),
+            worktrees: project.orch.worktrees().clone(),
             base_branch: project.base_branch.clone(),
             excluded: self.bound_worktree_paths(),
         })
@@ -4238,7 +4233,7 @@ impl AppState {
     ) -> Result<Vec<ExternalWorktree>, String> {
         let excluded = self.bound_worktree_paths();
         let base = self.base_for(project_id)?;
-        let repo_path = self.repo_path_for(project_id)?;
+        let worktrees = self.orch_for(project_id)?.worktrees().clone();
         let cached = self
             .projects
             .iter()
@@ -4261,18 +4256,13 @@ impl AppState {
         // Never scanned, or the caller demands the truth now (adoption resolves
         // an id against it). On the dispatch path `warm_diff_caches` has already
         // filled this in with the lock free.
-        match discover_external_worktrees(
-            &repo_path,
-            &self.project_worktrees_root(project_id),
-            &base,
-            &excluded,
-        ) {
-            Ok(worktrees) => {
+        match worktrees.discover(&base, &excluded) {
+            Ok(scanned) => {
                 self.store_diff_entry(DiffCacheEntry::ExternalScan {
                     project_id: project_id.to_string(),
-                    worktrees: worktrees.clone(),
+                    worktrees: scanned.clone(),
                 });
-                Ok(worktrees)
+                Ok(scanned)
             }
             Err(e) => {
                 eprintln!("external_worktrees {project_id}: {e}");
@@ -6854,16 +6844,6 @@ impl AppState {
             .ok_or_else(|| format!("unknown project: {project_id}"))
     }
 
-    /// A project's primary checkout — the repo root, the same directory
-    /// `TermScope::Primary` resolves to.
-    fn repo_path_for(&self, project_id: &str) -> Result<std::path::PathBuf, String> {
-        self.projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.repo_path.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))
-    }
-
     /// Whether a run was adopted around its project's primary checkout rather
     /// than a worktree beside it.
     ///
@@ -7628,9 +7608,8 @@ impl AppState {
             ));
         }
         Ok(PlannedFinish::Deferred(Box::new(WorktreeFinishJob {
-            worktrees_root: self.project_worktrees_root(&project_id),
+            worktrees: self.orch_for(&project_id)?.worktrees().clone(),
             project_id,
-            project_path,
             base_branch,
             worktree_id,
             action,
@@ -12549,14 +12528,11 @@ impl AppState {
                     DigestScope::Detail,
                 ));
             }
-            let repo_path = self.repo_path_for(&project_id)?;
             (
-                crate::worktree::describe_primary_checkout(
-                    &repo_path,
-                    &self.project_worktrees_root(&project_id),
-                    &base,
-                )
-                .map_err(|e| e.to_string())?,
+                self.orch_for(&project_id)?
+                    .worktrees()
+                    .describe_primary(&base)
+                    .map_err(|e| e.to_string())?,
                 AdoptionScope::PrimaryCheckout,
             )
         } else {
@@ -15698,8 +15674,10 @@ enum PlannedRunFinish {
 /// to minutes on a large checkout, and none of it touching [`AppState`].
 struct WorktreeFinishJob {
     project_id: String,
-    project_path: std::path::PathBuf,
-    worktrees_root: std::path::PathBuf,
+    /// The project's checkout seam, cloned off its orchestrator: every
+    /// checkout, branch and scan this job touches goes through it, with the
+    /// app mutex released.
+    worktrees: WorktreeManager,
     base_branch: String,
     worktree_id: String,
     action: WorktreeFinishAction,
@@ -16047,12 +16025,7 @@ impl WorktreeFinishJob {
         let (mut record, scan) = match self.resume.take() {
             Some(record) => (record, None),
             None => {
-                let scanned = match crate::worktree::discover_external_worktrees(
-                    &self.project_path,
-                    &self.worktrees_root,
-                    &self.base_branch,
-                    &self.excluded,
-                ) {
+                let scanned = match self.worktrees.discover(&self.base_branch, &self.excluded) {
                     Ok(scanned) => scanned,
                     Err(error) => {
                         return WorktreeFinishOutcome {
@@ -16085,7 +16058,9 @@ impl WorktreeFinishJob {
                 result: Err(format!("worktree finish intent store: {error}")),
             };
         }
-        if let Err(error) = run_finish_git_steps(&self.project_path, &self.base_branch, &record) {
+        if let Err(error) =
+            run_finish_git_steps(self.worktrees.repo_path(), &self.base_branch, &record)
+        {
             return WorktreeFinishOutcome {
                 scan,
                 record: Some(record),
@@ -16137,7 +16112,7 @@ impl WorktreeFinishJob {
 
         Ok(PersistedArchivedWorktree {
             status: WorktreeFinishStatus::Pending,
-            project_path: self.project_path.display().to_string(),
+            project_path: self.worktrees.repo_path().display().to_string(),
             worktree_id: external.id,
             worktree_name: external.name,
             worktree_path: external.path.display().to_string(),
@@ -39699,6 +39674,23 @@ mod tests {
             .find(|worktree| worktree.branch.as_deref() == branch)
             .expect("external worktree is discoverable")
             .id
+    }
+
+    /// Every scanned row says how its checkout is isolated, so a client can
+    /// tell a clone from a linked worktree without asking a second question.
+    #[test]
+    fn every_scanned_worktree_row_says_how_it_is_isolated() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        add_external_worktree(&repo, dir.path(), "labelled", "labelled");
+
+        let rows = state.external_worktrees_json();
+
+        let row = rows
+            .iter()
+            .find(|row| row["branch"] == json!("labelled"))
+            .expect("the scan finds the checkout");
+        assert_eq!(row["isolation"], "worktree", "{row:?}");
     }
 
     #[test]

@@ -700,16 +700,9 @@ fn head_tree_if_born(repo: &git2::Repository) -> Result<Option<git2::Tree<'_>>, 
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::process::Command;
 
-    fn run_git(repo: &Path, args: &[&str]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .status()
-            .unwrap()
-            .success());
-    }
+    use crate::git_fixture::{git_in, init_repo_with_readme};
+    use crate::git_process::run_git;
 
     /// Everything the cheap stat and the rendered patch must agree on: a
     /// tracked modification, a tracked deletion, a staged addition, untracked
@@ -719,13 +712,13 @@ mod tests {
         let (dir, repo) = init_repo();
         std::fs::write(repo.join("tracked-delete.txt"), "gone\nlines\n").unwrap();
         std::fs::write(repo.join("tracked-modify.txt"), "one\ntwo\n").unwrap();
-        run_git(&repo, &["add", "."]);
-        run_git(&repo, &["commit", "-m", "fixture"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "fixture"]);
 
         std::fs::write(repo.join("tracked-modify.txt"), "one\ntwo\nthree\n").unwrap();
         std::fs::remove_file(repo.join("tracked-delete.txt")).unwrap();
         std::fs::write(repo.join("staged-add.txt"), "staged\n").unwrap();
-        run_git(&repo, &["add", "staged-add.txt"]);
+        git_in(&repo, &["add", "staged-add.txt"]);
         std::fs::write(repo.join("untracked.txt"), "alpha\nbeta\nno-newline").unwrap();
         std::fs::write(repo.join("untracked.bin"), [0u8, 1, 2, 0, 255, b'\n']).unwrap();
         std::fs::write(
@@ -800,8 +793,8 @@ mod tests {
         let (_dir, repo) = init_repo();
         std::fs::create_dir_all(repo.join(".build")).unwrap();
         std::fs::write(repo.join(".build/mcp.json"), "{\n}\n").unwrap();
-        run_git(&repo, &["add", "."]);
-        run_git(&repo, &["commit", "-m", "mcp"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "mcp"]);
 
         // A tracked change to the config contributes to neither count.
         std::fs::write(repo.join(".build/mcp.json"), "{\n\"a\": 1\n}\n").unwrap();
@@ -814,25 +807,17 @@ mod tests {
         assert_eq!(stat, diff_uncommitted(&repo).unwrap().stat());
     }
 
-    /// A repo on `main` with one commit; returns (tempdir, repo_path).
+    /// The shared fixture with a two-line README, so every diff below is
+    /// read against the same first commit.
     fn init_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\nline\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
+        let repo = init_repo_with_readme(
+            dir.path(),
+            "repo",
+            "# project
+line
+",
+        );
         (dir, repo)
     }
 
@@ -886,14 +871,7 @@ mod tests {
     #[test]
     fn committed_changes_on_the_branch_are_included() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         git(&["checkout", "-b", "build/x"]);
         std::fs::write(repo.join("feature.rs"), "fn main() {}\n").unwrap();
         git(&["add", "."]);
@@ -927,14 +905,7 @@ mod tests {
     #[test]
     fn stat_branch_against_base_reads_a_branch_that_is_not_checked_out() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         git(&["checkout", "-b", "build/x"]);
         std::fs::write(repo.join("feature.rs"), "one\ntwo\nthree\n").unwrap();
         git(&["add", "."]);
@@ -956,14 +927,7 @@ mod tests {
     #[test]
     fn merge_base_diff_sees_committed_staged_unstaged_and_untracked() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         git(&["checkout", "-b", "build/x"]);
         std::fs::write(repo.join("committed.txt"), "committed\n").unwrap();
         git(&["add", "committed.txt"]);
@@ -985,14 +949,7 @@ mod tests {
     #[test]
     fn merge_base_diff_ignores_base_movement() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         git(&["checkout", "-b", "build/x"]);
         std::fs::write(repo.join("feature.rs"), "fn main() {}\n").unwrap();
         git(&["add", "feature.rs"]);
@@ -1013,25 +970,11 @@ mod tests {
     #[test]
     fn merge_base_diff_on_detached_head_works() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        let head_sha = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(&repo)
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_string();
+        let git = |args: &[&str]| git_in(&repo, args);
+        let head_sha = run_git(&repo, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
         git(&["checkout", "--detach", &head_sha]);
         std::fs::write(repo.join("dirty.txt"), "dirty\n").unwrap();
 
@@ -1043,15 +986,7 @@ mod tests {
     #[test]
     fn commit_range_diff_is_stable_after_later_commits_and_dirty_changes() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| -> String {
-            let output = Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{:?}", output.status);
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        };
+        let git = |args: &[&str]| run_git(&repo, args).unwrap().trim().to_string();
         let start = git(&["rev-parse", "HEAD"]);
         std::fs::write(repo.join("stage-one.txt"), "one\n").unwrap();
         git(&["add", "."]);
@@ -1083,14 +1018,7 @@ mod tests {
     #[test]
     fn diff_against_head_counts_staged_unstaged_and_untracked() {
         let (_dir, repo) = init_repo();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
+        let git = |args: &[&str]| git_in(&repo, args);
         // Unstaged modification.
         std::fs::write(repo.join("README.md"), "# project\nline\nmodified\n").unwrap();
         // Staged new file.

@@ -18950,6 +18950,7 @@ fn b64decode(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_fixture::{git_in, init_repo, init_repo_named};
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -18969,35 +18970,6 @@ mod tests {
 
     // ---- git GUI v2: repo management (fetch/pull/push, branches, stash,
     // discard, merge-abort) ------------------------------------------------
-
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = init_repo_named(dir.path(), "repo");
-        (dir, repo)
-    }
-
-    /// A repository under `parent`, named. A project is named after its
-    /// repository directory, so a test about telling two projects apart needs
-    /// to say what each one is called.
-    fn init_repo_named(parent: &std::path::Path, name: &str) -> PathBuf {
-        let repo = parent.join(name);
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        repo
-    }
 
     #[test]
     fn resolve_term_shell_yields_an_absolute_shell_path() {
@@ -22048,24 +22020,15 @@ mod tests {
         assert_eq!(unknown["ok"], false, "{unknown:?}");
         assert_eq!(unknown["error"], "unknown project_id");
     }
-    /// Run a git command inside `dir`, asserting success (fixture plumbing).
-    fn git_in_dir(dir: &std::path::Path, args: &[&str]) {
-        assert!(Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap()
-            .success());
-    }
 
     /// A repo initialized on `main` but with no commits yet (unborn HEAD).
     fn init_unborn_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
-        git_in_dir(&repo, &["init", "-b", "main"]);
-        git_in_dir(&repo, &["config", "user.email", "t@build.ing"]);
-        git_in_dir(&repo, &["config", "user.name", "T"]);
+        git_in(&repo, &["init", "-b", "main"]);
+        git_in(&repo, &["config", "user.email", "t@build.ing"]);
+        git_in(&repo, &["config", "user.name", "T"]);
         (dir, repo)
     }
 
@@ -22114,8 +22077,8 @@ mod tests {
     fn git_show_shapes_a_commit_and_its_root_parent() {
         let (dir, repo) = init_repo();
         std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
-        git_in_dir(&repo, &["add", "a.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
+        git_in(&repo, &["add", "a.txt"]);
+        git_in(&repo, &["commit", "-m", "subject line", "-m", "body text"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -22133,8 +22096,8 @@ mod tests {
         assert_eq!(shown["result"]["short"], top_hash[..7]);
         assert_eq!(shown["result"]["subject"], "subject line");
         assert_eq!(shown["result"]["body"], "body text");
-        assert_eq!(shown["result"]["author"], "T");
-        assert_eq!(shown["result"]["email"], "t@build.ing");
+        assert_eq!(shown["result"]["author"], "Test");
+        assert_eq!(shown["result"]["email"], "test@build.ing");
         assert!(shown["result"]["time"].as_i64().unwrap() > 0);
         assert_eq!(shown["result"]["stat"]["files_changed"], 1);
         assert_eq!(shown["result"]["stat"]["insertions"], 1);
@@ -22191,8 +22154,8 @@ mod tests {
         let line_count = 80_000; // ~1.36 MiB of "+…" patch lines, over the 1 MiB cap
         let big: String = "0123456789abcdef\n".repeat(line_count);
         std::fs::write(repo.join("big.txt"), &big).unwrap();
-        git_in_dir(&repo, &["add", "big.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "big"]);
+        git_in(&repo, &["add", "big.txt"]);
+        git_in(&repo, &["commit", "-m", "big"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -22227,8 +22190,8 @@ mod tests {
         let msg_file = dir.path().join("msg.txt");
         std::fs::write(&msg_file, format!("{subject}\n\n{body}")).unwrap();
         std::fs::write(repo.join("x.txt"), "x\n").unwrap();
-        git_in_dir(&repo, &["add", "x.txt"]);
-        git_in_dir(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
+        git_in(&repo, &["add", "x.txt"]);
+        git_in(&repo, &["commit", "-q", "-F", msg_file.to_str().unwrap()]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -22258,10 +22221,10 @@ mod tests {
 
         // full: a new file, staged, with no further worktree edits.
         std::fs::write(repo.join("full.txt"), "staged\n").unwrap();
-        git_in_dir(&repo, &["add", "full.txt"]);
+        git_in(&repo, &["add", "full.txt"]);
         // partial: staged edits AND later worktree edits on the same path.
         std::fs::write(repo.join("README.md"), "# project\nstaged edit\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
+        git_in(&repo, &["add", "README.md"]);
         std::fs::write(
             repo.join("README.md"),
             "# project\nstaged edit\nunstaged edit\n",
@@ -22305,14 +22268,14 @@ mod tests {
     fn git_status_surfaces_merge_conflicts_as_u_entries() {
         let (dir, repo) = init_repo();
         // A real content conflict: two branches editing the same line.
-        git_in_dir(&repo, &["checkout", "-q", "-b", "side"]);
+        git_in(&repo, &["checkout", "-q", "-b", "side"]);
         std::fs::write(repo.join("README.md"), "# side\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
-        git_in_dir(&repo, &["commit", "-q", "-m", "side edit"]);
-        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        git_in(&repo, &["add", "README.md"]);
+        git_in(&repo, &["commit", "-q", "-m", "side edit"]);
+        git_in(&repo, &["checkout", "-q", "main"]);
         std::fs::write(repo.join("README.md"), "# main\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
-        git_in_dir(&repo, &["commit", "-q", "-m", "main edit"]);
+        git_in(&repo, &["add", "README.md"]);
+        git_in(&repo, &["commit", "-q", "-m", "main edit"]);
         let merge = Command::new("git")
             .args(["merge", "side"])
             .current_dir(&repo)
@@ -22343,7 +22306,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
-        git_in_dir(&repo, &["mv", "README.md", "RENAMED.md"]);
+        git_in(&repo, &["mv", "README.md", "RENAMED.md"]);
 
         // Both sides of the rename appear, matching the patch (which has no
         // rename detection): a staged delete at the old path, a staged add at
@@ -22641,7 +22604,7 @@ mod tests {
     fn init_repo_with_origin() -> (tempfile::TempDir, PathBuf, PathBuf) {
         let (dir, repo) = init_repo();
         let origin = dir.path().join("origin.git");
-        git_in_dir(
+        git_in(
             dir.path(),
             &[
                 "clone",
@@ -22650,23 +22613,23 @@ mod tests {
                 origin.to_str().unwrap(),
             ],
         );
-        git_in_dir(
+        git_in(
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
-        git_in_dir(&repo, &["fetch", "origin"]);
-        git_in_dir(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
+        git_in(&repo, &["fetch", "origin"]);
+        git_in(&repo, &["branch", "--set-upstream-to=origin/main", "main"]);
         (dir, repo, origin)
     }
 
     /// A second working checkout of `origin`, standing in for another dev.
     fn clone_working(origin: &std::path::Path, dest: &std::path::Path) {
-        git_in_dir(
+        git_in(
             dest.parent().unwrap(),
             &["clone", origin.to_str().unwrap(), dest.to_str().unwrap()],
         );
-        git_in_dir(dest, &["config", "user.email", "o@build.ing"]);
-        git_in_dir(dest, &["config", "user.name", "O"]);
+        git_in(dest, &["config", "user.email", "o@build.ing"]);
+        git_in(dest, &["config", "user.name", "O"]);
     }
 
     #[test]
@@ -22696,9 +22659,9 @@ mod tests {
 
         // Another dev pushes a commit to origin.
         std::fs::write(other.join("remote.txt"), "remote\n").unwrap();
-        git_in_dir(&other, &["add", "remote.txt"]);
-        git_in_dir(&other, &["commit", "-m", "remote work"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["add", "remote.txt"]);
+        git_in(&other, &["commit", "-m", "remote work"]);
+        git_in(&other, &["push", "origin", "main"]);
 
         // git.fetch updates the tracking ref: we are now behind by one.
         let fetched = state.handle(req("git.fetch", json!({ "project_id": project_id })));
@@ -22715,8 +22678,8 @@ mod tests {
 
         // A local commit, then git.push publishes it to origin.
         std::fs::write(repo.join("local.txt"), "local\n").unwrap();
-        git_in_dir(&repo, &["add", "local.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "local work"]);
+        git_in(&repo, &["add", "local.txt"]);
+        git_in(&repo, &["commit", "-m", "local work"]);
         let ahead = state.handle(req("git.status", json!({ "project_id": project_id })));
         assert_eq!(ahead["result"]["ahead"], 1);
 
@@ -22726,7 +22689,7 @@ mod tests {
         assert_eq!(pushed["result"]["behind"], 0);
 
         // The other checkout can now fetch our commit — proof it reached origin.
-        git_in_dir(&other, &["fetch", "origin"]);
+        git_in(&other, &["fetch", "origin"]);
         let log = Command::new("git")
             .args(["log", "--oneline", "origin/main"])
             .current_dir(&other)
@@ -22739,11 +22702,11 @@ mod tests {
     fn git_push_sets_the_upstream_on_the_first_push() {
         let (dir, repo) = init_repo();
         let origin = dir.path().join("origin.git");
-        git_in_dir(
+        git_in(
             dir.path(),
             &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
         );
-        git_in_dir(
+        git_in(
             &repo,
             &["remote", "add", "origin", origin.to_str().unwrap()],
         );
@@ -22768,14 +22731,14 @@ mod tests {
 
         // Publish a commit, then rewrite it so local diverges from origin.
         std::fs::write(repo.join("x.txt"), "one\n").unwrap();
-        git_in_dir(&repo, &["add", "x.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "first"]);
+        git_in(&repo, &["add", "x.txt"]);
+        git_in(&repo, &["commit", "-m", "first"]);
         assert_eq!(
             state.handle(req("git.push", json!({ "project_id": project_id })))["ok"],
             true
         );
         std::fs::write(repo.join("x.txt"), "two\n").unwrap();
-        git_in_dir(&repo, &["commit", "-a", "--amend", "-m", "rewritten"]);
+        git_in(&repo, &["commit", "-a", "--amend", "-m", "rewritten"]);
 
         // A plain push is rejected (non-fast-forward); force-with-lease wins.
         let plain = state.handle(req("git.push", json!({ "project_id": project_id })));
@@ -22790,7 +22753,7 @@ mod tests {
     #[test]
     fn git_push_refuses_a_detached_head() {
         let (dir, repo, _origin) = init_repo_with_origin();
-        git_in_dir(&repo, &["checkout", "--detach", "HEAD"]);
+        git_in(&repo, &["checkout", "--detach", "HEAD"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -22808,13 +22771,13 @@ mod tests {
         let project_id = state.projects[0].id.clone();
 
         std::fs::write(other.join("theirs.txt"), "theirs\n").unwrap();
-        git_in_dir(&other, &["add", "theirs.txt"]);
-        git_in_dir(&other, &["commit", "-m", "theirs"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["add", "theirs.txt"]);
+        git_in(&other, &["commit", "-m", "theirs"]);
+        git_in(&other, &["push", "origin", "main"]);
 
         std::fs::write(repo.join("mine.txt"), "mine\n").unwrap();
-        git_in_dir(&repo, &["add", "mine.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "mine"]);
+        git_in(&repo, &["add", "mine.txt"]);
+        git_in(&repo, &["commit", "-m", "mine"]);
 
         assert_eq!(
             state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
@@ -22839,10 +22802,10 @@ mod tests {
 
         // Both sides edit README differently; the other side lands first.
         std::fs::write(other.join("README.md"), "# theirs\n").unwrap();
-        git_in_dir(&other, &["commit", "-am", "theirs"]);
-        git_in_dir(&other, &["push", "origin", "main"]);
+        git_in(&other, &["commit", "-am", "theirs"]);
+        git_in(&other, &["push", "origin", "main"]);
         std::fs::write(repo.join("README.md"), "# mine\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mine"]);
+        git_in(&repo, &["commit", "-am", "mine"]);
         assert_eq!(
             state.handle(req("git.fetch", json!({ "project_id": project_id })))["ok"],
             true
@@ -22865,8 +22828,8 @@ mod tests {
     #[test]
     fn git_branches_lists_locals_current_first() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "feature-a"]);
-        git_in_dir(&repo, &["branch", "feature-b"]);
+        git_in(&repo, &["branch", "feature-a"]);
+        git_in(&repo, &["branch", "feature-b"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -22893,11 +22856,11 @@ mod tests {
     #[test]
     fn git_branches_carries_each_branchs_own_diffstat_against_base() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["checkout", "-b", "feature-a"]);
+        git_in(&repo, &["checkout", "-b", "feature-a"]);
         std::fs::write(repo.join("feature.rs"), "one\ntwo\nthree\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "feature work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "feature work"]);
+        git_in(&repo, &["checkout", "main"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -23014,12 +22977,12 @@ mod tests {
     fn git_checkout_refuses_while_a_merge_is_in_progress() {
         let (dir, repo) = init_repo();
         // Manufacture a conflicting merge so the repo is left mid-merge.
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "topic"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["commit", "-am", "topic"]);
+        git_in(&repo, &["checkout", "main"]);
         std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         git_try(&repo, &["merge", "topic"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
@@ -23035,13 +22998,13 @@ mod tests {
     #[test]
     fn git_branch_delete_removes_and_force_deletes() {
         let (dir, repo) = init_repo();
-        git_in_dir(&repo, &["branch", "merged-branch"]);
+        git_in(&repo, &["branch", "merged-branch"]);
         // An unmerged branch: a commit main cannot reach.
-        git_in_dir(&repo, &["checkout", "-b", "unmerged"]);
+        git_in(&repo, &["checkout", "-b", "unmerged"]);
         std::fs::write(repo.join("u.txt"), "u\n").unwrap();
-        git_in_dir(&repo, &["add", "u.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "unmerged work"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["add", "u.txt"]);
+        git_in(&repo, &["commit", "-m", "unmerged work"]);
+        git_in(&repo, &["checkout", "main"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
 
@@ -23112,7 +23075,7 @@ mod tests {
 
         // A tracked edit (staged) and a fresh untracked file.
         std::fs::write(repo.join("README.md"), "# tampered\n").unwrap();
-        git_in_dir(&repo, &["add", "README.md"]);
+        git_in(&repo, &["add", "README.md"]);
         std::fs::write(repo.join("junk.txt"), "junk\n").unwrap();
 
         let res = state.handle(req(
@@ -23173,19 +23136,19 @@ mod tests {
         assert_eq!(clean["error"], "no abortable operation in progress");
 
         // Merging: abort returns to a clean state.
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("README.md"), "# topic\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "topic"]);
-        git_in_dir(&repo, &["checkout", "main"]);
+        git_in(&repo, &["commit", "-am", "topic"]);
+        git_in(&repo, &["checkout", "main"]);
         std::fs::write(repo.join("README.md"), "# mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         git_try(&repo, &["merge", "topic"]);
         let aborted = state.handle(req("git.merge_abort", json!({ "project_id": project_id })));
         assert_eq!(aborted["ok"], true, "{aborted:?}");
         assert_eq!(aborted["result"]["repo_state"], "clean");
 
         // Rebasing: a conflicting rebase leaves a rebasing state to abort.
-        git_in_dir(&repo, &["checkout", "topic"]);
+        git_in(&repo, &["checkout", "topic"]);
         git_try(&repo, &["rebase", "main"]);
         let status = state.handle(req("git.status", json!({ "project_id": project_id })));
         assert_eq!(status["result"]["repo_state"], "rebasing");
@@ -23733,7 +23696,7 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "quick change");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
         let branch = state.runs[&run_id].worktree.branch();
-        git_in_dir(&worktree_path, &["push", "-u", "origin", &branch]);
+        git_in(&worktree_path, &["push", "-u", "origin", &branch]);
         std::fs::write(worktree_path.join("uncommitted.txt"), "one\ntwo\n").unwrap();
         let res = state.handle(req("run.get", json!({ "run_id": run_id })));
         assert_eq!(res["result"]["state"], "review", "{res:?}");
@@ -23814,12 +23777,12 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "renamed branch");
         let worktree_path = state.runs[&run_id].worktree.path.clone();
         let original_branch = state.runs[&run_id].worktree.branch();
-        git_in_dir(&worktree_path, &["push", "-u", "origin", &original_branch]);
-        git_in_dir(
+        git_in(&worktree_path, &["push", "-u", "origin", &original_branch]);
+        git_in(
             &worktree_path,
             &["branch", "-m", "build/actually-checked-out"],
         );
-        git_in_dir(
+        git_in(
             &worktree_path,
             &["push", "-u", "origin", "build/actually-checked-out"],
         );
@@ -24584,7 +24547,7 @@ mod tests {
             run_id = run_id_of(&run);
             let branch = state.runs[&run_id].worktree.branch();
             let worktree = state.runs[&run_id].worktree.path.clone();
-            git_in_dir(
+            git_in(
                 &repo,
                 &[
                     "worktree",
@@ -24594,7 +24557,7 @@ mod tests {
                     worktree.to_str().unwrap(),
                 ],
             );
-            git_in_dir(&repo, &["branch", "-D", "--", &branch]);
+            git_in(&repo, &["branch", "-D", "--", &branch]);
             let requested = state.handle(req(
                 "issue.implement_stage",
                 json!({ "issue_id": issue_id, "stage_id": "second-half" }),
@@ -31025,23 +30988,23 @@ mod tests {
     fn boot_recovers_journaled_push_from_configured_remote_evidence() {
         let (dir, repo) = init_repo();
         let remote = dir.path().join("mirror.git");
-        git_in_dir(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
-        git_in_dir(
+        git_in(dir.path(), &["init", "--bare", remote.to_str().unwrap()]);
+        git_in(
             &repo,
             &["remote", "add", "mirror", remote.to_str().unwrap()],
         );
-        git_in_dir(&repo, &["checkout", "-b", "build/journaled"]);
+        git_in(&repo, &["checkout", "-b", "build/journaled"]);
         std::fs::write(repo.join("published.txt"), "published\n").unwrap();
-        git_in_dir(&repo, &["add", "published.txt"]);
-        git_in_dir(&repo, &["commit", "-m", "published candidate"]);
+        git_in(&repo, &["add", "published.txt"]);
+        git_in(&repo, &["commit", "-m", "published candidate"]);
         let candidate = git_stdout(&repo, &["rev-parse", "HEAD"])
             .unwrap()
             .trim()
             .to_string();
-        git_in_dir(&repo, &["push", "-u", "mirror", "build/journaled"]);
+        git_in(&repo, &["push", "-u", "mirror", "build/journaled"]);
         // Force recovery to refresh remote evidence rather than trusting a
         // convenient local remote-tracking ref left by setup.
-        git_in_dir(
+        git_in(
             &repo,
             &["update-ref", "-d", "refs/remotes/mirror/build/journaled"],
         );
@@ -31750,9 +31713,9 @@ mod tests {
     fn a_primary_runs_branch_follows_the_checkout() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        git_in(&repo, &["checkout", "-b", "feature-era"]).unwrap();
+        git_in(&repo, &["checkout", "-b", "feature-era"]);
         let run_id = adopted_primary_run(&mut state);
-        git_in(&repo, &["checkout", "main"]).unwrap();
+        git_in(&repo, &["checkout", "main"]);
 
         assert_eq!(state.runs[&run_id].worktree.branch(), "main");
 
@@ -31916,8 +31879,8 @@ mod tests {
         let run_id = adopted_run(&mut state, &repo, dir.path(), "archive-finished-run");
         let project_id = state.projects[0].id.clone();
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "Finish adopted work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "Finish adopted work"]);
 
         let finished = state.handle(req(
             "run.finish",
@@ -31943,10 +31906,10 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (plan_id, run_id) = planned_run_in_review(&mut state, "archive planned run");
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["add", "-A"]);
         let staged = git_stdout(&worktree, &["diff", "--cached", "--name-only"]).unwrap();
         if !staged.trim().is_empty() {
-            git_in_dir(&worktree, &["commit", "-m", "Finish planned work"]);
+            git_in(&worktree, &["commit", "-m", "Finish planned work"]);
         }
 
         let finished = state.handle(req(
@@ -34281,8 +34244,8 @@ mod tests {
 
         // A local commit that origin has not seen: ahead 1, behind 0.
         std::fs::write(repo.join("ahead.txt"), "local\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "local only"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "local only"]);
         // …and an uncommitted edit, so both halves are non-zero at once.
         std::fs::write(repo.join("dirty.txt"), "wip\n").unwrap();
 
@@ -34304,10 +34267,10 @@ mod tests {
     fn primary_changes_compares_an_untracked_branch_with_local_main() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        git_in_dir(&repo, &["checkout", "-b", "topic"]);
+        git_in(&repo, &["checkout", "-b", "topic"]);
         std::fs::write(repo.join("topic.txt"), "topic\n").unwrap();
-        git_in_dir(&repo, &["add", "."]);
-        git_in_dir(&repo, &["commit", "-m", "topic"]);
+        git_in(&repo, &["add", "."]);
+        git_in(&repo, &["commit", "-m", "topic"]);
 
         let board = state.handle(req("board.list", json!({})));
         let entry = board["result"]["primary_changes"]
@@ -39341,8 +39304,8 @@ mod tests {
     /// something new.
     fn commit_in(checkout: &std::path::Path, message: &str) {
         std::fs::write(checkout.join("worked.txt"), message).unwrap();
-        git_in_dir(checkout, &["add", "."]);
-        git_in_dir(checkout, &["commit", "-m", message]);
+        git_in(checkout, &["add", "."]);
+        git_in(checkout, &["commit", "-m", message]);
     }
 
     /// The primary checkout's row is entity-less — a different dismissal path
@@ -39849,7 +39812,7 @@ mod tests {
         assert_eq!(rejected["ok"], false, "{rejected:?}");
         assert!(rejected["error"].as_str().unwrap().contains("upstream"));
 
-        git_in_dir(&path, &["push", "-u", "origin", "push-me"]);
+        git_in(&path, &["push", "-u", "origin", "push-me"]);
         std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
         let finished = state.handle(req(
             "worktree.finish",
@@ -39876,7 +39839,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "detached", "detached-source");
-        git_in_dir(&path, &["checkout", "--detach"]);
+        git_in(&path, &["checkout", "--detach"]);
         std::fs::write(path.join("discarded.txt"), "discard me\n").unwrap();
         let worktree_id = external_id(&mut state, &project_id, None);
 
@@ -39958,9 +39921,9 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let path = add_external_worktree(&repo, dir.path(), "conflict", "conflict");
         std::fs::write(path.join("README.md"), "feature\n").unwrap();
-        git_in_dir(&path, &["commit", "-am", "feature"]);
+        git_in(&path, &["commit", "-am", "feature"]);
         std::fs::write(repo.join("README.md"), "mainline\n").unwrap();
-        git_in_dir(&repo, &["commit", "-am", "mainline"]);
+        git_in(&repo, &["commit", "-am", "mainline"]);
         let worktree_id = external_id(&mut state, &project_id, Some("conflict"));
 
         let forged = state.handle(req(
@@ -40257,7 +40220,7 @@ mod tests {
         let (issue_id, run_id) = planned_run_in_review(&mut state, "finished work");
         let branch = state.runs[&run_id].worktree.branch();
         let worktree = state.runs[&run_id].worktree.path.clone();
-        git_in_dir(&worktree, &["push", "-u", "origin", &branch]);
+        git_in(&worktree, &["push", "-u", "origin", &branch]);
         let finished = state.handle(req(
             "branch.finish",
             json!({ "project_id": project_id, "branch": branch, "action": "delete" }),
@@ -40472,7 +40435,7 @@ mod tests {
             let mut state = qa_state(&repo, dir.path());
             let project_id = state.projects[0].id.clone();
             let path = add_external_worktree(&repo, dir.path(), "durable-push", "durable-push");
-            git_in_dir(&path, &["push", "-u", "origin", "durable-push"]);
+            git_in(&path, &["push", "-u", "origin", "durable-push"]);
             std::fs::write(path.join("pushed.txt"), "published\n").unwrap();
             worktree_id = external_id(&mut state, &project_id, Some("durable-push"));
             let finished = state.handle(req(
@@ -42068,8 +42031,8 @@ mod tests {
 
         std::fs::write(worktree.join("one.txt"), "a\nb\n").unwrap();
         std::fs::write(worktree.join("two.txt"), "c\n").unwrap();
-        git_in_dir(&worktree, &["add", "."]);
-        git_in_dir(&worktree, &["commit", "-m", "two files"]);
+        git_in(&worktree, &["add", "."]);
+        git_in(&worktree, &["commit", "-m", "two files"]);
 
         // No upstream yet: ahead/behind are measured against the base branch,
         // and `upstream: null` is what says so. That distinction is what Done
@@ -42085,7 +42048,7 @@ mod tests {
         assert_eq!(stat["ahead"], 1, "{stat:?}");
         assert_eq!(stat["behind"], 0, "{stat:?}");
 
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-counted"]);
+        git_in(&worktree, &["push", "-u", "origin", "feature-counted"]);
         let published = branch_row(&mut state, "feature-counted");
         let stat = &published["stat"];
         assert_eq!(stat["upstream"], "origin/feature-counted", "{stat:?}");
@@ -42355,8 +42318,8 @@ mod tests {
         // Committed, with no remote: the base branch is the only place the
         // work could survive Done, and it is not there.
         std::fs::write(worktree.join("work.txt"), "one\n").unwrap();
-        git_in_dir(&worktree, &["add", "-A"]);
-        git_in_dir(&worktree, &["commit", "-m", "work"]);
+        git_in(&worktree, &["add", "-A"]);
+        git_in(&worktree, &["commit", "-m", "work"]);
         let unmerged = branch_row(&mut state, "feature-done");
         assert_eq!(unmerged["can_finish"], true, "{unmerged:?}");
         assert_eq!(warning_codes(&unmerged), vec!["unmerged"], "{unmerged:?}");
@@ -42369,7 +42332,7 @@ mod tests {
             "{unmerged:?}"
         );
 
-        git_in_dir(&worktree, &["push", "-u", "origin", "feature-done"]);
+        git_in(&worktree, &["push", "-u", "origin", "feature-done"]);
         let pushed = branch_row(&mut state, "feature-done");
         assert!(
             warning_codes(&pushed).is_empty(),
@@ -42382,7 +42345,7 @@ mod tests {
         assert_eq!(warning_codes(&dirty), vec!["uncommitted"], "{dirty:?}");
 
         // Committed, and now the remote is the one behind.
-        git_in_dir(&worktree, &["commit", "-am", "more"]);
+        git_in(&worktree, &["commit", "-am", "more"]);
         let ahead = branch_row(&mut state, "feature-done");
         assert_eq!(warning_codes(&ahead), vec!["unpushed"], "{ahead:?}");
         assert_eq!(

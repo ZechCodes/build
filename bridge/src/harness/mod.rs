@@ -124,7 +124,7 @@ pub trait Harness: Send + Sync {
     /// The provider answers because it is the only authority that exists BOTH
     /// before and after a spawn: the rail decides whether to offer an agent a
     /// basement while that agent is still idle, and the spawn decides which
-    /// carrier to open. One authority, one answer, so the rail never offers a
+    /// io to open. One authority, one answer, so the rail never offers a
     /// TUI button the spawn would then refuse.
     ///
     /// True by default, and true for every provider today: a CLI wrapper is
@@ -164,7 +164,7 @@ pub trait Harness: Send + Sync {
     /// `~/.codex`. Built BEFORE the child exists, so what is already in the
     /// tree can be told from what the child writes.
     ///
-    /// `None` by default, which is the answer for a carrier that announces its
+    /// `None` by default, which is the answer for an io that announces its
     /// own id: a locator standing beside that announcement would be two records
     /// of one answer, free to disagree.
     fn session_locator(&self, home: &Path, cwd: &Path) -> Option<Box<dyn SessionLocator>> {
@@ -191,7 +191,7 @@ pub trait Harness: Send + Sync {
 /// watching the harness's own transcript tree — the durable records the resume
 /// probe has always read, never the screen.
 ///
-/// The terminal carrier's answer to [`AgentSession::session_id`]: a CLI wrapper
+/// The terminal io's answer to [`AgentSession::session_id`]: a CLI wrapper
 /// announces nothing to Build, but it writes down what it is doing, and where
 /// it writes is the same place the resume it performs reads from.
 pub trait SessionLocator: Send + Sync {
@@ -229,7 +229,7 @@ pub enum AgentIo {
     /// (the human's own shell): waiting on a login shell for a signal it may
     /// never send would stall the caller for the whole grace.
     ///
-    /// `locator` is how this carrier answers
+    /// `locator` is how this io answers
     /// [`AgentSession::session_id`] — the provider's watcher over its own
     /// transcript tree, built by the caller BEFORE the child exists so the
     /// child's own record can be told from what was already there. `None` for
@@ -244,7 +244,7 @@ pub enum AgentIo {
     Protocol,
 }
 
-/// Open a live session for `spec`, rooted at `root`, on the carrier the
+/// Open a live session for `spec`, rooted at `root`, on the io the
 /// provider chose. Returns the session and its output, subscribed before its
 /// first word can be missed.
 ///
@@ -255,13 +255,13 @@ pub enum AgentIo {
 /// turn.
 ///
 /// The one place a launch description becomes a running agent, and the only
-/// place the two carriers are told apart: above here a session is a session.
+/// place the two ios are told apart: above here a session is a session.
 ///
 /// The readiness wait is the PTY arm's alone, because readiness is how a
 /// *terminal* opens: an interactive TUI paints a banner — or a modal
 /// workspace-trust dialog — long before its line editor will accept a turn, so
-/// a prompt written on first byte lands in whatever owns the keyboard. A
-/// carrier that takes a turn as a value has nothing to wait for.
+/// a prompt written on first byte lands in whatever owns the keyboard. An
+/// io that takes a turn as a value has nothing to wait for.
 ///
 /// The subscribe happens BEFORE that wait, and the order is not incidental: a
 /// harness paints its entire startup while readiness is being waited out — and
@@ -300,7 +300,7 @@ pub fn open_session(
 
 /// Refuse a session that offers neither a terminal nor an activity stream.
 ///
-/// The two capabilities are alternatives, not extras, and a carrier with
+/// The two capabilities are alternatives, not extras, and an io with
 /// neither is worse than one Build cannot see working: the death rites hang off
 /// a stream CLOSING — the tab going not live, the conversation's session
 /// lineage ending — so a session with no stream would leave a dead agent's tab
@@ -389,7 +389,7 @@ mod tests {
 
     /// The terminal is a capability, and exactly the opaque CLI wrappers have
     /// it: Build sees what it launched and what they reported, and nothing in
-    /// between, so the human needs the escape hatch. The headless carrier
+    /// between, so the human needs the escape hatch. The headless provider
     /// reports its own reasoning and tool calls, so it has nothing to escape
     /// to — and this is the answer the rail and the spawn BOTH read, which is
     /// what keeps the rail from offering a button the spawn would refuse.
@@ -401,7 +401,7 @@ mod tests {
         assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
     }
 
-    /// The alternatives hold their shape: a carrier Build can only see the
+    /// The alternatives hold their shape: an io Build can only see the
     /// outside of has its conversation named FOR it, off the harness's own
     /// transcript tree, and one that announces its own id needs no locator —
     /// two records of one answer, free to disagree, is the shape this spec
@@ -434,7 +434,7 @@ mod tests {
             );
         }
 
-        // Both claude carriers write and read the ONE tree, so an id captured
+        // Both claude providers write and read the ONE tree, so an id captured
         // under either verifies under both.
         let project = home
             .path()
@@ -481,7 +481,7 @@ mod tests {
     /// — long before its line editor will take a turn, so a prompt written on
     /// first byte lands in whatever owns the keyboard and the submit key
     /// answers it. Waiting that out is how a terminal opens, so it happens
-    /// where the carrier is chosen rather than at the caller.
+    /// where the io is chosen rather than at the caller.
     #[test]
     fn a_session_that_will_be_handed_a_turn_opens_ready() {
         let root = tempfile::tempdir().expect("temp worktree");
@@ -532,9 +532,9 @@ mod tests {
         );
     }
 
-    /// The locator travels with the carrier that has a use for it: a terminal
+    /// The locator travels with the io that has a use for it: a terminal
     /// hands its answers back as its own, and a session Build opens with none
-    /// — the human's shell, and every carrier that names its conversation
+    /// — the human's shell, and every io that names its conversation
     /// itself — names nothing.
     #[tokio::test]
     async fn only_a_terminal_opened_with_a_locator_names_its_conversation() {
@@ -582,7 +582,7 @@ mod tests {
         )
     }
 
-    /// The carrier choice, made in the one place it is made: a harness with no
+    /// The io choice, made in the one place it is made: a harness with no
     /// terminal opens a session protocol, and what comes back offers the
     /// alternative capability instead of an empty one.
     #[test]
@@ -649,7 +649,7 @@ mod tests {
             root.path().to_path_buf(),
             AgentIo::Protocol,
         )
-        .expect("a carrier that reports itself opens");
+        .expect("an io that reports itself opens");
         assert!(refuse_a_session_nobody_can_watch(session.as_ref()).is_ok());
         session.end();
     }

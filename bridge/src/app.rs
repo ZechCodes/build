@@ -667,7 +667,7 @@ enum TabRole {
 /// rather than a byte replay.
 ///
 /// The session is held behind [`AgentSession`], so nothing a tab does knows
-/// which harness — or which kind of carrier — is on the other end.
+/// which harness — or which kind of io — is on the other end.
 struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
@@ -726,7 +726,7 @@ impl Tab {
     /// so `live` is the tab's own answer; and a session that reports `Ended` is
     /// over whatever the tab still holds. `has_exited` was how a terminal asked
     /// the second — a process poll — and [`AgentStatus::Ended`] is how every
-    /// carrier does.
+    /// io does.
     fn session_is_live(&self) -> bool {
         self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
     }
@@ -784,7 +784,7 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         };
-        // Which carrier opens is the PROVIDER's answer, asked here and asked by
+        // Which io opens is the PROVIDER's answer, asked here and asked by
         // the rail before there is a session — one authority, so the rail never
         // offers a basement this spawn would refuse. The human's own shell is
         // always a terminal, and is the one session never handed a turn: it is
@@ -2237,7 +2237,7 @@ impl AppState {
                         }
                     }
                 } else if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
-                    match models::carrier_of_claude_mode(named) {
+                    match models::provider_of_claude_mode(named) {
                         Some(harness) => self.default_harness = harness,
                         None => {
                             eprintln!("config claude_mode: unknown {named:?}; using the default")
@@ -6602,7 +6602,7 @@ impl AppState {
         let harness_named_as_a_claude_mode = match params.get("claude_mode") {
             Some(named) => {
                 let named = named.as_str().unwrap_or_default();
-                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
+                Some(models::provider_of_claude_mode(named).ok_or_else(|| {
                     format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
                 })?)
             }
@@ -8424,7 +8424,7 @@ impl AppState {
             // Whether the rail offers this agent a basement. The live session
             // answers for an agent that is running, since it is the only thing
             // that can; before there is one the PROVIDER answers, because it
-            // knows which carrier its spawn will open. Same authority either
+            // knows which io its spawn will open. Same authority either
             // side of the spawn, so the rail never offers a TUI button that the
             // spawn then refuses.
             "has_terminal": match tab {
@@ -9071,7 +9071,7 @@ impl AppState {
     ///
     /// Pinned rather than read off the account: routing is a headless-shaped
     /// job — one decision long, with no terminal for anyone to watch — and
-    /// there is exactly one headless carrier. A human whose default harness is
+    /// there is exactly one headless provider. A human whose default harness is
     /// a TUI must not have every capture stranded on it.
     fn default_agent_provider(&self) -> AgentProvider {
         AgentProvider::ClaudeAdk
@@ -14198,7 +14198,7 @@ impl AppState {
     /// When the agent working in this checkout was last heard from, or `None`
     /// when no agent has ever run there. Read off the session's own quiet
     /// clock, which is the only record of it — bytes painted for a terminal,
-    /// protocol events read for a carrier that has none.
+    /// protocol events read for an io that has none.
     fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
         let root = Self::canonical_root(root);
         let quiet = self
@@ -16787,7 +16787,7 @@ fn parse_message_anchor(
 ///
 /// Unlike [`deliver`], this speaks from under the app-wide state lock — it
 /// reads the caller's own tab registry — which is why
-/// [`AgentSession::send_turn`] must return promptly. A carrier that blocked
+/// [`AgentSession::send_turn`] must return promptly. An io that blocked
 /// there would stall every RPC and every terminal pump behind one nudge.
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
@@ -16808,7 +16808,7 @@ fn nudge_live_agent_tab(
     // `done`. Both calls return promptly by contract, which is what lets them
     // speak from under the state lock.
     //
-    // A refusal is not a failed post. Where the carrier cannot stop a turn —
+    // A refusal is not a failed post. Where the io cannot stop a turn —
     // a capability lost between the digest the client read and the post it sent
     // — the message is delivered as an ordinary queued turn, which reaches the
     // running turn at its next step boundary anyway. The alternative is an
@@ -16820,10 +16820,10 @@ fn nudge_live_agent_tab(
         }
     }
     // As a turn, not a raw write with a hardcoded Enter: the nudge is one of
-    // Build's turns, so it travels the way every other one does and the carrier
+    // Build's turns, so it travels the way every other one does and the io
     // decides what that means. Hardcoding \r submits into a SubmitKey::None
     // harness that never asked for it, leaves the notification unframed — and
-    // says nothing at all to a carrier with no keyboard.
+    // says nothing at all to an io with no keyboard.
     if let Err(error) = tab
         .session
         .send_turn(&Turn::new(NEW_THREAD_MESSAGES_PROMPT))
@@ -18010,7 +18010,7 @@ fn ensure_agent_tab(
                 //    agent continuing its own conversation, which `--continue`
                 //    guesses at as the newest one in the checkout, still gated
                 //    on the transcript probe.
-                // 3. Otherwise fresh, on every carrier. A brand-new agent
+                // 3. Otherwise fresh, on every io. A brand-new agent
                 //    record has no conversation to pick up, and the checkout's
                 //    old one belongs to whoever had it — adoption included:
                 //    Build cannot show a history it never heard.
@@ -18185,7 +18185,7 @@ fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
 /// The one pipe from Build to a worktree's agent.
 ///
 /// Ensures the tab exists, then hands the agent exactly one turn — a value the
-/// carrier decides how to say, which for a PTY is the harness's own submit key
+/// io decides how to say, which for a PTY is the harness's own submit key
 /// and bracketed paste framing and never a raw write with a hardcoded `\r`.
 /// Which text travels
 /// is decided by whether the tab had to be spawned: `cold` for an agent with no
@@ -18212,7 +18212,7 @@ fn deliver(
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
     // The handle comes out of the registry so the turn travels with the
     // app-wide state lock RELEASED: every RPC, every terminal pump and the idle
-    // sweep wait on that lock, and how long a carrier takes to accept a turn is
+    // sweep wait on that lock, and how long an io takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
     let session = {
@@ -18455,7 +18455,7 @@ fn spawn_tab_pump(
 
 /// Pump one session's reported activity into the conversation it speaks in.
 ///
-/// The mirror of [`spawn_tab_pump`] for a carrier that has no bytes. Where the
+/// The mirror of [`spawn_tab_pump`] for an io that has no bytes. Where the
 /// byte pump paints a stream into a grid, this one posts what the agent
 /// reported doing as the activity kinds — reasoning, tool calls, narration and
 /// background work — which are conversation, classed `Status`: they move no
@@ -18582,7 +18582,7 @@ enum PumpWake {
 }
 
 /// The name the session in `key`'s tab has given its conversation, or `None`
-/// for a carrier that names none and for one that has not named one yet.
+/// for an io that names none and for one that has not named one yet.
 fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
     state.tabs.get(key)?.session.session_id()
 }
@@ -18594,7 +18594,7 @@ fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
 /// the record alone: what it carries is the last session's, which is exactly
 /// what a resume should use if this one dies before naming its own.
 ///
-/// Both carriers' capture points come through here, so a name a child announced
+/// Terminal and protocol capture points come through here, so a name a child announced
 /// and a name a locator found are the same record written by the same hand.
 fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
     let Some(named) = named_conversation(state, key) else {
@@ -18622,11 +18622,11 @@ fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, age
     note_announced_model(state, key, owner, agent_id);
 }
 
-/// The terminal carrier's capture point: ask every live agent session for the
+/// The terminal io's capture point: ask every live agent session for the
 /// name its conversation has, and write down each answer that moved.
 ///
 /// A terminal announces nothing, so no task wakes on its behalf the way the
-/// activity pump wakes on a protocol carrier's events — which is why the sweep
+/// activity pump wakes on a protocol io's events — which is why the sweep
 /// is daemon-owned and fixed-cadence rather than hung off the status poll. The
 /// poll is client-driven: with no browser open nothing would ever be captured,
 /// and every attached client would multiply this filesystem read by its own
@@ -19365,7 +19365,7 @@ mod tests {
         );
     }
 
-    /// A bridge upgraded in place keeps the carrier its human chose, with no
+    /// A bridge upgraded in place keeps the provider its human chose, with no
     /// migration step: the old key is read when the new one is absent, and
     /// never written again.
     #[test]
@@ -19463,20 +19463,20 @@ mod tests {
 
     /// Naming no provider means "the account's default harness"; naming one
     /// means that harness, concretely, whatever the account prefers. `"claude"`
-    /// is the terminal carrier and nothing else — an agent is locked to what it
+    /// is the terminal provider and nothing else — an agent is locked to what it
     /// was created on, so no token is left to be re-read later.
     #[test]
     fn silence_follows_the_default_harness_and_every_token_is_concrete() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let carrier_of = |state: &mut AppState, params: Value| {
+        let provider_of = |state: &mut AppState, params: Value| {
             let filed = state.handle(req("plan.create", params));
             assert_eq!(filed["ok"], true, "{filed:?}");
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
         assert_eq!(
-            carrier_of(
+            provider_of(
                 &mut state,
                 json!({ "goal": "silence takes the default", "dispatch": false })
             ),
@@ -19486,7 +19486,7 @@ mod tests {
         let set = state.handle(req("settings.set", json!({ "default_harness": "codex" })));
         assert_eq!(set["ok"], true, "{set:?}");
         assert_eq!(
-            carrier_of(
+            provider_of(
                 &mut state,
                 json!({ "goal": "and follows it when it moves", "dispatch": false })
             ),
@@ -19499,7 +19499,7 @@ mod tests {
             ("codex", AgentProvider::Codex),
         ] {
             assert_eq!(
-                carrier_of(
+                provider_of(
                     &mut state,
                     json!({ "goal": format!("named {token}"), "dispatch": false, "provider": token })
                 ),
@@ -19509,14 +19509,14 @@ mod tests {
         }
     }
 
-    /// A client that names a concrete carrier gets that carrier. The setting
+    /// A client that names a concrete provider gets that provider. The setting
     /// answers the generic question only — it is not a veto over a caller who
     /// already knows what it wants.
     #[test]
     fn a_concretely_named_provider_is_honored_whatever_the_setting_says() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        let carrier_of = |state: &mut AppState, goal: &str, provider: &str| {
+        let provider_of = |state: &mut AppState, goal: &str, provider: &str| {
             let filed = state.handle(req(
                 "plan.create",
                 json!({ "goal": goal, "dispatch": false, "provider": provider }),
@@ -19529,11 +19529,11 @@ mod tests {
             let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
-                carrier_of(&mut state, &format!("adk under {default}"), "claude_adk"),
+                provider_of(&mut state, &format!("adk under {default}"), "claude_adk"),
                 AgentProvider::ClaudeAdk
             );
             assert_eq!(
-                carrier_of(&mut state, &format!("codex under {default}"), "codex"),
+                provider_of(&mut state, &format!("codex under {default}"), "codex"),
                 AgentProvider::Codex
             );
         }
@@ -19541,7 +19541,7 @@ mod tests {
 
     /// Resolution happens when a choice is minted and never again, so changing
     /// the account setting moves no work that already exists: every entity
-    /// keeps the concrete carrier its record names.
+    /// keeps the concrete provider its record names.
     #[test]
     fn changing_the_setting_migrates_no_entity_that_already_exists() {
         let (dir, repo) = init_repo();
@@ -19565,11 +19565,11 @@ mod tests {
     }
 
     /// Routing is a headless-shaped job — one decision long, no terminal for
-    /// anyone to watch — and there is exactly one headless carrier. So it pins
+    /// anyone to watch — and there is exactly one headless provider. So it pins
     /// that one: a human who makes Codex their default must not strand every
     /// capture on a harness the router cannot drive.
     #[test]
-    fn the_router_pins_the_headless_carrier_under_every_default() {
+    fn the_router_pins_the_headless_provider_under_every_default() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
@@ -19650,11 +19650,11 @@ mod tests {
 
     /// Shared state + handler for the keyed-terminal tests: the handler drives
     /// the RPC surface while the state handle lets tests inspect internals.
-    /// Point a fixture's account at the carrier with a terminal. A test that
+    /// Point a fixture's account at the provider with a terminal. A test that
     /// reaches for an agent's pid, or spawns the warm TUI spec, is a test about
-    /// a PTY session — so it says which carrier it means instead of riding
+    /// a PTY session — so it says which provider it means instead of riding
     /// whatever the account's Claude Code mode happens to be.
-    fn on_the_terminal_carrier(state: &Arc<Mutex<AppState>>) {
+    fn on_the_terminal_provider(state: &Arc<Mutex<AppState>>) {
         state.lock().unwrap().default_harness = AgentProvider::Claude;
     }
 
@@ -20518,7 +20518,7 @@ mod tests {
     /// The turn travels with the app-wide state lock RELEASED.
     ///
     /// Every RPC, every terminal pump and the idle sweep wait on that lock, so
-    /// a carrier that takes its time accepting a turn — a protocol write to a
+    /// an io that takes its time accepting a turn — a protocol write to a
     /// full pipe, an ack the harness answers late — would stall the whole
     /// daemon if the turn were handed over under it. `AgentSession::send_turn`
     /// promises callers they may take that time; this is where the promise is
@@ -23219,7 +23219,7 @@ mod tests {
     }
 
     /// The OS process behind a tab, asked through the terminal that owns it —
-    /// a process id is the basement's, and no other carrier has one to give.
+    /// a process id is the basement's, and no other io has one to give.
     fn agent_pid(tab: &Tab) -> Option<u32> {
         tab.session.terminal().and_then(TerminalView::pid)
     }
@@ -23344,7 +23344,7 @@ mod tests {
 
     /// The harness an agent's session was actually opened on. The tab records
     /// what it spawned, so this is what a start really spent — and unlike the
-    /// attach's answer it holds for a carrier with no terminal.
+    /// attach's answer it holds for an io with no terminal.
     fn spawned_provider(
         state: &Arc<Mutex<AppState>>,
         root: &std::path::Path,
@@ -26014,7 +26014,7 @@ mod tests {
     async fn run_all_delivers_the_next_stages_prompt_to_the_same_agent_process() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         let (run_id, root) = {
             let mut s = state.lock().unwrap();
             run_at_the_stage_gate_after_a_real_first_stage(&mut s, "run them all", true)
@@ -26068,7 +26068,7 @@ mod tests {
     async fn a_multi_stage_run_drives_one_agent_process_through_every_phase() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         let plan = call(&handler, "plan.create", json!({ "goal": "one agent" }));
         let plan_id = plan_id_of(&plan);
         for stage_id in ["first-half", "second-half"] {
@@ -26134,7 +26134,7 @@ mod tests {
     async fn a_second_request_changes_reaches_the_same_agent_process() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         // The fixture only needs state, so it goes through the synchronous
         // path; the change requests below go through the frame handler, which
         // is what actually delivers a queued turn.
@@ -26981,7 +26981,7 @@ mod tests {
     async fn a_done_over_the_socket_delivers_the_validation_turn_to_the_same_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         let (run_id, root) = {
             // The fixture only needs state; the frame handler below is what
             // delivered the dispatch turn that opened the agent.
@@ -27226,7 +27226,7 @@ mod tests {
     async fn every_plan_verb_reaches_the_issues_one_agent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_qa_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         let plan = call(&handler, "plan.create", json!({ "goal": "one plan agent" }));
         assert_eq!(plan["ok"], true, "{plan:?}");
         let plan_id = plan_id_of(&plan);
@@ -30368,7 +30368,7 @@ mod tests {
         );
     }
 
-    /// A carrier that knows when its turn began is never demoted mid-turn.
+    /// An io that knows when its turn began is never demoted mid-turn.
     ///
     /// The sweep's whole instrument used to be silence, and silence is exactly
     /// what a model reasoning for forty minutes produces. A PTY could only
@@ -31269,7 +31269,7 @@ mod tests {
     /// A branch running two harnesses: the entity carries one choice and the
     /// agents carry their own. A start that names the second agent respawns
     /// THAT agent's harness — spending the branch's would hand its conversation
-    /// to a different carrier.
+    /// to a different provider.
     #[tokio::test]
     async fn a_start_respawns_the_named_agents_harness_on_a_mixed_branch() {
         let (dir, repo) = init_repo();
@@ -32821,7 +32821,7 @@ mod tests {
         assert!(error.contains("stop the current session"), "{error}");
         assert!(
             !error.to_lowercase().contains("headless"),
-            "the refusal prints provider labels, and no label names a carrier \
+            "the refusal prints provider labels, and no label names a provider \
              the way the code does: {error}"
         );
         let s = state.lock().unwrap();
@@ -32844,7 +32844,7 @@ mod tests {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let _ = insert_live_run(&state, &repo, dir.path().join("side"), "run-same");
-        // The live run is on the TUI carrier, which is what "claude" names.
+        // The live run is on the TUI provider, which is what "claude" names.
         let again = call(
             &handler,
             "agent.start",
@@ -33239,7 +33239,7 @@ mod tests {
     /// hand back the model choice that opens it.
     ///
     /// The provider on the choice is the whole launch config — it is what
-    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
+    /// `Tab::spawn` asks which io to open — so a test that swaps the spec
     /// without swapping the provider would run a stream-json child inside a
     /// PTY and prove nothing.
     fn a_headless_provider_running(
@@ -33337,15 +33337,15 @@ mod tests {
     #[tokio::test]
     async fn a_headless_respawn_closes_the_grid_the_terminal_left_behind() {
         let (dir, repo) = init_repo();
-        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-carrier-swap");
-        let agent_id = crate::agent::derived_agent_id("run-carrier-swap");
-        let key = derived_agent_key(&AppState::canonical_root(&root), "run-carrier-swap");
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-io-swap");
+        let agent_id = crate::agent::derived_agent_id("run-io-swap");
+        let key = derived_agent_key(&AppState::canonical_root(&root), "run-io-swap");
 
         // A terminal session, watched by a client, that then dies.
         deliver(
             &state,
             &root,
-            "run-carrier-swap",
+            "run-io-swap",
             &agent_id,
             &ModelChoice::default(),
             "FIRST-SESSION",
@@ -33375,7 +33375,7 @@ mod tests {
         deliver(
             &state,
             &root,
-            "run-carrier-swap",
+            "run-io-swap",
             &agent_id,
             &choice,
             "SECOND-SESSION",
@@ -35166,7 +35166,7 @@ mod tests {
     }
 
     /// A live agent tab at `root` carrying a session that reports exactly what
-    /// it was told — the only way a test can put a turn-boundary carrier where
+    /// it was told — the only way a test can put a turn-boundary io where
     /// the daemon expects one, since a PTY can only be asked about paint.
     fn dictated_agent_tab(
         root: &std::path::Path,
@@ -35337,7 +35337,7 @@ mod tests {
         );
     }
 
-    /// The death rites a no-terminal carrier would otherwise fall through.
+    /// The death rites a no-terminal io would otherwise fall through.
     ///
     /// The byte pump performs them when the PTY closes — the tab stops being
     /// live, the conversation's session lineage ends. A session that paints
@@ -35409,7 +35409,7 @@ mod tests {
     /// The whole path, end to end: a human says something to a run whose
     /// provider has no terminal, and what comes back is a conversation.
     ///
-    /// Nothing here is hand-built — the daemon picks the carrier off the
+    /// Nothing here is hand-built — the daemon picks the io off the
     /// provider, opens a real child, hands it the turn as a value, and the
     /// activity pump posts what the child reported into the thread the human
     /// reads. The child is a fake stream-json harness replaying a recording of
@@ -36446,7 +36446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_carrier_with_no_revision_channel_pumps_exactly_as_it_did() {
+    async fn an_io_with_no_revision_channel_pumps_exactly_as_it_did() {
         let (_dir, state, key) = a_run_with_a_dictated_tab(
             "run-unrevised",
             DictatedSession::reporting(AgentStatus::Working),
@@ -36456,7 +36456,7 @@ mod tests {
                 .session
                 .surfaces_changed()
                 .is_none(),
-            "this carrier says nothing about surfaces"
+            "this io says nothing about surfaces"
         );
 
         let (activity, subscribed) = broadcast::channel(4);
@@ -36725,7 +36725,7 @@ mod tests {
         assert_eq!(got["result"]["state"], "idle_unreported", "{got:?}");
     }
 
-    /// The digest pair this step makes reachable on a headless carrier, pinned:
+    /// The digest pair this step makes reachable on a headless provider, pinned:
     /// `working: true` with `can_interrupt: false`.
     ///
     /// It is legal and always was — the PTY has reported it since the field
@@ -36776,7 +36776,7 @@ mod tests {
         );
         assert_eq!(
             bubble["has_terminal"], false,
-            "this carrier has no basement to fall back on: {bubble:?}"
+            "this io has no basement to fall back on: {bubble:?}"
         );
     }
 
@@ -36884,7 +36884,7 @@ mod tests {
     /// And status moves by exactly one step: the human's message. Nothing else
     /// is minted — an interrupted turn's `error_during_execution` result is a
     /// turn boundary, never a report, and the only path by which its text could
-    /// have reached a human was the epitaph the carrier clears.
+    /// have reached a human was the epitaph the io clears.
     #[tokio::test]
     async fn a_post_that_interrupts_stops_the_turn_and_hands_over_the_message() {
         let (dir, repo) = init_repo();
@@ -37001,14 +37001,14 @@ mod tests {
 
     /// A refused interrupt does not fail the post.
     ///
-    /// Where the carrier cannot stop a turn — a CLI built before the capability
+    /// Where the io cannot stop a turn — a CLI built before the capability
     /// landed, or one lost between the digest the client read and the post it
     /// sent — the message is delivered as an ordinary queued turn, which the
     /// probes verified reaches the running turn at its next step boundary
     /// anyway. The alternative is an error the human must read for a difference
     /// they cannot act on and did not cause.
     #[tokio::test]
-    async fn an_interrupt_the_carrier_refuses_still_hands_over_the_message() {
+    async fn an_interrupt_the_io_refuses_still_hands_over_the_message() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-refuses");
@@ -37044,7 +37044,7 @@ mod tests {
         );
         assert_eq!(
             steered["ok"], true,
-            "a capability the carrier lacks is not the human's mistake: {steered:?}"
+            "a capability the io lacks is not the human's mistake: {steered:?}"
         );
         wait_for(Duration::from_secs(10), || {
             (reasoning_count(&state, "run-refuses") == 2).then_some(())
@@ -37447,11 +37447,11 @@ mod tests {
             Arc::new(move |_, _| Some(Box::new(LocatorThatFound(named))));
     }
 
-    /// The terminal carrier's capture, and the respawn that spends it.
+    /// The terminal io's capture, and the respawn that spends it.
     ///
     /// A terminal announces nothing, so nothing wakes on its behalf: the
     /// daemon's own sweep asks each live session for the name its locator
-    /// found and writes it down the same way the headless carrier's
+    /// found and writes it down the same way the headless io's
     /// announcement is written down. One tick later the name is on the record,
     /// and the next spawn resumes by it instead of guessing at the checkout.
     #[tokio::test]
@@ -37551,7 +37551,7 @@ mod tests {
         );
     }
 
-    /// The argv the TUI carrier builds from one recorded spawn — the mirror of
+    /// The argv the TUI provider builds from one recorded spawn — the mirror of
     /// [`headless_argv`], so the same capture is walked out to argv on both.
     fn terminal_argv(options: &SpawnOptions) -> String {
         use crate::harness::Harness;
@@ -37624,7 +37624,7 @@ mod tests {
     async fn a_spawn_writes_down_the_model_it_spent() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        on_the_terminal_carrier(&state);
+        on_the_terminal_provider(&state);
         insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-spent");
         insert_run_without_agent(
             &state,
@@ -37660,7 +37660,7 @@ mod tests {
                 .unwrap()
                 .agent_digests("run-spent", DigestScope::List)[0]["active_model"],
             "claude-opus-5",
-            "a carrier that announces nothing still says what Build handed it"
+            "an io that announces nothing still says what Build handed it"
         );
 
         let posted = call(
@@ -37778,7 +37778,7 @@ mod tests {
     /// The close arm RECORDS; it never clears.
     ///
     /// The headless pump clears on a session that ended having announced
-    /// nothing, because for that carrier it means a dead `--resume` id. A
+    /// nothing, because for that io it means a dead `--resume` id. A
     /// terminal resumed in place legitimately writes no new transcript, so its
     /// locator finding nothing is the normal answer — and clearing on it would
     /// throw a good name away at every restart. The dead-name problem is
@@ -38264,7 +38264,7 @@ mod tests {
     /// further out, and it is now asked the same way: a session that reports
     /// `Ended` is over, whatever a process table would have said about it.
     ///
-    /// `has_exited` was how a terminal answered this. A carrier with no process
+    /// `has_exited` was how a terminal answered this. An io with no process
     /// behind it has no such question to poll, and it must still be able to say
     /// its session is over.
     #[test]
@@ -38536,7 +38536,7 @@ mod tests {
 
     /// A worktree card's "last active" reads the same quiet clock. It was the
     /// PTY's paint clock and the comment said so; the measurement has not
-    /// moved, but the question is now one every carrier can answer.
+    /// moved, but the question is now one every io can answer.
     #[test]
     fn a_worktree_card_reads_the_sessions_quiet_clock() {
         let (dir, repo) = init_repo();
@@ -38569,7 +38569,7 @@ mod tests {
     }
 
     /// The nudge is a turn, and it travels as one. It used to be a `write_prompt`
-    /// — keystroke mechanics — and the whole point of a value is that a carrier
+    /// — keystroke mechanics — and the whole point of a value is that an io
     /// with no keyboard can still be told what to say.
     #[test]
     fn the_nudge_hands_the_agent_a_turn() {
@@ -40580,7 +40580,7 @@ mod tests {
     fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        // This half of the test is about the carrier that HAS a basement, so
+        // This half of the test is about the provider that HAS a basement, so
         // the account names it rather than riding the default.
         state.default_harness = AgentProvider::Claude;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
@@ -40594,7 +40594,7 @@ mod tests {
         };
 
         // Nothing has started yet, so the PROVIDER answers: it knows which
-        // carrier its spawn will open, before there is a session to ask. This
+        // io its spawn will open, before there is a session to ask. This
         // run's provider is the one with a terminal, so the answer is yes —
         // and on a provider without one the rail stops offering a basement the
         // spawn would refuse, with no second place to fix.

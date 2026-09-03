@@ -1,4 +1,4 @@
-//! The headless Claude Code carrier — a session protocol, not a terminal.
+//! The headless Claude Code provider — a session protocol, not a terminal.
 //!
 //! `claude -p --input-format stream-json --output-format stream-json` runs the
 //! whole harness over newline-delimited JSON on stdin and stdout: a turn is one
@@ -19,7 +19,7 @@
 //!
 //! Nothing here parses a screen. Every answer below is a value the child said
 //! out loud, which is what keeps the scope doc's no-scraping rule intact for a
-//! carrier that has no screen to scrape.
+//! provider that has no screen to scrape.
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -58,8 +58,8 @@ impl Harness for AdkHarness {
         AgentProvider::ClaudeAdk
     }
 
-    /// The default carrier of this CLI, so it owns the plain name the human
-    /// knows. The terminal carrier beside it is "Claude Code TUI" — the
+    /// The default provider of this CLI, so it owns the plain name the human
+    /// knows. The terminal provider beside it is "Claude Code TUI" — the
     /// difference a human can see, never the word the code uses for it.
     fn label(&self) -> &'static str {
         "Claude Code"
@@ -84,7 +84,7 @@ impl Harness for AdkHarness {
     /// `--mcp-config`, the same `--strict-mcp-config`, the same
     /// `BRIDGE_MCP_SOCKET` / `BRIDGE_MCP_TOKEN` — because `done`,
     /// `post_thread_message`, `read_unread_messages` and `search_conversation`
-    /// arrive over the same unix socket whichever carrier is running. No
+    /// arrive over the same unix socket whichever provider is running. No
     /// settle window and no submit delay: those are how a prompt is typed into
     /// a line editor, and this harness is handed a turn as a value.
     fn spec(
@@ -143,15 +143,15 @@ impl Harness for AdkHarness {
     /// Headless sessions write the same `~/.claude/projects/**/*.jsonl`
     /// transcripts the TUI does, so the resume question has the same answer —
     /// and a worktree the human left a conversation in is picked up whichever
-    /// carrier ran there.
+    /// provider ran there.
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
         ClaudeHarness.has_transcript(home, cwd)
     }
 
     /// The same transcripts, so the same answer — and this is the dividend: an
-    /// id captured under the TUI carrier verifies here and resumes here, and
+    /// id captured under the TUI provider verifies here and resumes here, and
     /// one captured here resumes there. Both write that tree and both spend
-    /// `--resume`, so a provider swap between the two claude carriers keeps the
+    /// `--resume`, so a provider swap between the two claude providers keeps the
     /// exact conversation.
     fn holds_conversation(&self, home: &Path, cwd: &Path, id: &str) -> bool {
         ClaudeHarness.holds_conversation(home, cwd, id)
@@ -214,7 +214,7 @@ struct PendingInterrupt {
 /// Everything the protocol has told this session so far.
 ///
 /// Every field is reported rather than inferred, which is the whole difference
-/// between this carrier and a terminal: a PTY guesses `Working` from the age of
+/// between this io and a terminal: a PTY guesses `Working` from the age of
 /// the last byte, and this one counts turns against the results that closed
 /// them.
 struct ProtocolState {
@@ -523,7 +523,7 @@ impl AdkSession {
 
     /// Write one protocol line to the child's stdin, and return.
     ///
-    /// The whole of what this carrier says to its child — a turn, an interrupt
+    /// The whole of what this io says to its child — a turn, an interrupt
     /// — is one line on the same pipe, and both callers return on the write for
     /// the same reason: the daemon speaks to a session from under the app-wide
     /// state lock.
@@ -682,7 +682,7 @@ impl AgentSession for AdkSession {
         self.state.lock().unwrap().model.clone()
     }
 
-    /// Reported, never guessed — the difference this carrier exists for. A model
+    /// Reported, never guessed — the difference this io exists for. A model
     /// that reasons for forty minutes without emitting a token is `Working` the
     /// whole time, because the turn it was given has not been answered.
     fn status(&self) -> AgentStatus {
@@ -693,7 +693,7 @@ impl AgentSession for AdkSession {
     }
 
     /// The age of the last protocol line. The same instrument the PTY answers
-    /// with its paint clock, reading the evidence this carrier actually has.
+    /// with its paint clock, reading the evidence this io actually has.
     fn quiet_for(&self) -> Duration {
         Instant::now().saturating_duration_since(self.state.lock().unwrap().last_line)
     }
@@ -716,7 +716,7 @@ impl AgentSession for AdkSession {
 
     /// Close stdin, then kill and reap.
     ///
-    /// Stdin first because it is how this carrier is asked to leave — the child
+    /// Stdin first because it is how this io is asked to leave — the child
     /// runs turn after turn for exactly as long as its stdin is open. The kill
     /// and the reap follow regardless: killing without collecting the status
     /// leaks one zombie per session on a daemon that never restarts.
@@ -2708,7 +2708,7 @@ mod tests {
 
     /// §2's dividend, held to: everything an agent says to Build arrives over
     /// the MCP socket, so the from-agent half of the interface needs zero work
-    /// for a new carrier — provided the wiring really is identical. This is
+    /// for a new provider — provided the wiring really is identical. This is
     /// what checks that it is.
     #[test]
     fn the_headless_spec_carries_exactly_the_interactive_mcp_wiring() {
@@ -2726,7 +2726,7 @@ mod tests {
         );
         assert_eq!(
             headless.unset, interactive.unset,
-            "an agent Build spawns is its own session on either carrier"
+            "an agent Build spawns is its own session on either provider"
         );
         let mcp_args = |spec: &HarnessSpec| -> Vec<String> {
             spec.args
@@ -2747,10 +2747,10 @@ mod tests {
     }
 
     /// The catalog, the trust registry and the transcripts belong to the CLI,
-    /// not to the carrier — it is the same claude, the same account and the
+    /// not to the io — it is the same claude, the same account and the
     /// same `~/.claude/projects`. Only the terminal answer differs.
     #[test]
-    fn the_headless_provider_is_claude_in_every_way_but_its_carrier() {
+    fn the_headless_provider_is_claude_in_every_way_but_its_io() {
         assert_eq!(
             AdkHarness.models().len(),
             ClaudeHarness.models().len(),
@@ -2778,7 +2778,7 @@ mod tests {
         );
     }
 
-    /// The two capabilities are alternatives, and this carrier takes the second
+    /// The two capabilities are alternatives, and this io takes the second
     /// one: it reports its own reasoning and tool calls, so there is nothing for
     /// a human to escape to.
     #[test]
@@ -2791,7 +2791,7 @@ mod tests {
 
     /// `Starting` is not a guess here. The child is forked long before it can
     /// take a turn, and the init line is the moment it can — so the status the
-    /// PTY could never report is exactly what this carrier reads off the wire.
+    /// PTY could never report is exactly what this io reads off the wire.
     #[test]
     fn status_is_starting_until_the_session_reports_init() {
         let session = open(&stream_json_harness(&[RESULT]));
@@ -2826,12 +2826,12 @@ mod tests {
         session.end();
     }
 
-    /// The turn boundary the whole carrier exists for: a model reasoning in
+    /// The turn boundary the whole io exists for: a model reasoning in
     /// silence is still working, and only its result line says otherwise.
     #[test]
     fn a_turn_is_working_until_its_result_line_arrives() {
         // This fake takes its time answering and says NOTHING while it does —
-        // the silence the terminal carrier could only read as "waiting for you".
+        // the silence the terminal io could only read as "waiting for you".
         let session = open(&HarnessSpec::new("sh").arg("-c").arg(format!(
             "printf '%s\\n' '{INIT}'\nwhile IFS= read -r turn; do sleep 0.4; printf '%s\\n' '{RESULT}'; done\n"
         )));
@@ -2858,7 +2858,7 @@ mod tests {
 
     /// A turn handed over mid-turn is absorbed by the one already running, and
     /// the child answers both with a single result. The session has to end that
-    /// turn on it: a carrier that kept waiting for a second result would report
+    /// turn on it: an io that kept waiting for a second result would report
     /// `Working` forever, and `Working` is what stops the idle sweep from ever
     /// explaining an agent that quietly stopped.
     #[test]
@@ -3685,7 +3685,7 @@ mod tests {
         session.end();
     }
 
-    /// The reap lag, from the other carrier's test: a dying child closes its
+    /// The reap lag, from the other io's test: a dying child closes its
     /// pipes before its exit status is reapable, so the caller deciding whether
     /// a failed write means "crashed" rather than "wedged" waits it out here.
     #[test]
@@ -3725,7 +3725,7 @@ mod tests {
     }
 
     /// `send_turn` returns on the WRITE. The daemon's in-place nudge speaks from
-    /// under the app-wide state lock, so a carrier that waited on the model here
+    /// under the app-wide state lock, so an io that waited on the model here
     /// would stall every RPC, every pump and the idle sweep with it.
     #[test]
     fn send_turn_returns_on_the_write_even_when_the_child_never_answers() {
@@ -3798,7 +3798,7 @@ mod tests {
         silent.send_turn(&Turn::new("drop the index")).unwrap();
         assert!(
             !silent.can_interrupt(),
-            "a turn is open, so a false flag here is the carrier's refusal"
+            "a turn is open, so a false flag here is the io's refusal"
         );
         assert!(matches!(
             silent.interrupt(),
@@ -3880,7 +3880,7 @@ mod tests {
         );
         assert!(
             !said.contains("Esc"),
-            "and never sends anyone to a terminal this carrier does not have: {said}"
+            "and never sends anyone to a terminal this io does not have: {said}"
         );
 
         session
@@ -4038,7 +4038,7 @@ mod tests {
     }
 
     /// The quiet clock is the minutes-scale anomaly instrument the idle sweep
-    /// demotes on, and for this carrier it reads protocol lines rather than
+    /// demotes on, and for this io it reads protocol lines rather than
     /// paint — the last thing the session actually said.
     #[test]
     fn quiet_for_reads_the_age_of_the_last_protocol_line() {

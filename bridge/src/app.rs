@@ -16047,9 +16047,7 @@ impl WorktreeFinishJob {
                 result: Err(format!("worktree finish intent store: {error}")),
             };
         }
-        if let Err(error) =
-            run_finish_git_steps(self.worktrees.repo_path(), &self.base_branch, &record)
-        {
+        if let Err(error) = run_finish_git_steps(&self.worktrees, &self.base_branch, &record) {
             return WorktreeFinishOutcome {
                 scan,
                 record: Some(record),
@@ -16120,66 +16118,99 @@ impl WorktreeFinishJob {
 }
 
 /// The destructive half of a finish: push or merge what the action promised to
-/// keep, delete the branch, and remove the checkout. The record is the only
-/// authority for what is acted on — a client path never reaches here.
+/// keep, settle the branch, and remove the checkout. The record is the only
+/// authority for what is acted on — a client path never reaches here — and
+/// every checkout and branch it touches goes through the façade, so a clone
+/// and a linked worktree are finished by one function.
 fn run_finish_git_steps(
-    project_path: &std::path::Path,
+    worktrees: &WorktreeManager,
     base_branch: &str,
     record: &PersistedArchivedWorktree,
 ) -> Result<(), String> {
-    let worktree_path = validate_finish_record_path(record, project_path)?;
+    let checkout = validate_finish_record_path(record, worktrees.repo_path())?;
     match record.action {
-        WorktreeFinishAction::Cleanup => {
-            if worktree_path.exists() {
-                remove_registered_worktree(project_path, &worktree_path, false)?;
-            }
-        }
+        WorktreeFinishAction::Cleanup => remove_finished_checkout(worktrees, &checkout),
         WorktreeFinishAction::Push => {
-            if worktree_path.exists() {
-                crate::gitgui::push(&worktree_path, false)?;
-                remove_registered_worktree(project_path, &worktree_path, false)?;
+            if !checkout.exists() {
+                return Ok(());
             }
+            crate::gitgui::push(&checkout, false)?;
+            remove_finished_checkout(worktrees, &checkout)
         }
         WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
-            let merging = record.action == WorktreeFinishAction::Merge;
-            let verb = if merging { "merge" } else { "delete" };
-            let branch_exists = record
-                .branch
-                .as_deref()
-                .map(|branch| local_branch_exists(project_path, branch))
-                .transpose()?
-                .unwrap_or(false);
-            if !worktree_path.exists() && branch_exists {
-                return Err(format!(
-                    "worktree.finish {verb} lost its worktree before branch deletion"
-                ));
-            }
-            if worktree_path.exists() {
-                let deleted_branch =
-                    if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
-                        if merging {
-                            merge_external_branch(project_path, branch, base_branch)?;
-                        }
-                        delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                        true
-                    } else {
-                        false
-                    };
-                if let Err(remove_error) =
-                    remove_registered_worktree(project_path, &worktree_path, true)
-                {
-                    restore_finish_branch_after_removal_failure(
-                        project_path,
-                        record,
-                        deleted_branch,
-                        &remove_error,
-                    )?;
-                    return Err(remove_error);
-                }
-            }
+            land_finished_branch(worktrees, base_branch, record, &checkout)
         }
     }
-    Ok(())
+}
+
+/// Be rid of the checkout a finish is done with. Absence is the goal, so a
+/// checkout somebody already deleted is nothing to report.
+fn remove_finished_checkout(
+    worktrees: &WorktreeManager,
+    checkout: &std::path::Path,
+) -> Result<(), String> {
+    worktrees
+        .remove_checkout(checkout)
+        .map_err(|error| error.to_string())
+}
+
+/// The `merge` and `delete` half: settle the branch in the project repo, then
+/// remove the checkout — putting the branch back if that removal fails, so a
+/// finish that could not finish has thrown nothing away.
+fn land_finished_branch(
+    worktrees: &WorktreeManager,
+    base_branch: &str,
+    record: &PersistedArchivedWorktree,
+    checkout: &std::path::Path,
+) -> Result<(), String> {
+    let merging = record.action == WorktreeFinishAction::Merge;
+    let verb = if merging { "merge" } else { "delete" };
+    let standing = checkout.exists();
+    // Whatever the checkout holds reaches the project repo before the project
+    // repo is asked what it holds: for a clone that is the only way its branch
+    // is there at all, and for a linked worktree it is nothing.
+    if standing {
+        if let Some(branch) = record.branch.as_deref() {
+            worktrees
+                .publish(checkout, branch)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let live_branch = match record.branch.as_deref() {
+        Some(branch) if worktrees.branch_exists(branch).map_err(|e| e.to_string())? => Some(branch),
+        _ => None,
+    };
+    if !standing {
+        return match live_branch {
+            Some(_) => Err(format!(
+                "worktree.finish {verb} lost its worktree before branch deletion"
+            )),
+            None => Ok(()),
+        };
+    }
+    if let Some(branch) = live_branch {
+        if merging {
+            worktrees
+                .merge_into_base(checkout, branch, base_branch)
+                .map_err(|error| error.to_string())?;
+        }
+        worktrees
+            .delete_branch_at(branch, &record.head_sha)
+            .map_err(|error| error.to_string())?;
+    }
+    let Err(remove_error) = remove_finished_checkout(worktrees, checkout) else {
+        return Ok(());
+    };
+    let Some(branch) = live_branch else {
+        return Err(remove_error);
+    };
+    match worktrees.restore_branch(branch, &record.head_sha) {
+        Ok(()) => Err(remove_error),
+        Err(restore_error) => Err(format!(
+            "{remove_error}; restoring branch {branch:?} after removal failure also failed: \
+             {restore_error}"
+        )),
+    }
 }
 
 fn parse_worktree_finish_action(action: &str) -> Result<WorktreeFinishAction, String> {
@@ -16298,48 +16329,10 @@ fn validate_finish_record_path(
     Ok(resolved_worktree)
 }
 
-fn local_branch_exists(project_path: &std::path::Path, branch: &str) -> Result<bool, String> {
-    let repo = git2::Repository::open(project_path).map_err(|error| error.to_string())?;
-    let result = match repo.find_branch(branch, git2::BranchType::Local) {
-        Ok(_) => Ok(true),
-        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(false),
-        Err(error) => Err(error.to_string()),
-    };
-    result
-}
-
-fn delete_local_branch_for_finish(
-    project_path: &std::path::Path,
-    branch: &str,
-    expected_head: &str,
-) -> Result<(), String> {
-    let reference = format!("refs/heads/{branch}");
-    git_stdout(
-        project_path,
-        &["update-ref", "-d", &reference, expected_head],
-    )
-    .map(|_| ())
-}
-
-fn restore_finish_branch_after_removal_failure(
-    project_path: &std::path::Path,
-    record: &PersistedArchivedWorktree,
-    deleted_branch: bool,
-    remove_error: &str,
-) -> Result<(), String> {
-    let Some(branch) = record.branch.as_deref().filter(|_| deleted_branch) else {
-        return Ok(());
-    };
-    let reference = format!("refs/heads/{branch}");
-    git_stdout(project_path, &["update-ref", &reference, &record.head_sha])
-        .map(|_| ())
-        .map_err(|restore_error| {
-            format!(
-                "{remove_error}; restoring branch {branch:?} after removal failure also failed: {restore_error}"
-            )
-        })
-}
-
+/// Whether a Pending finish record's git is in fact already done — the boot
+/// question that turns an interrupted finish into an archived one. It is asked
+/// before any project is registered, so the record's own two paths are the
+/// only thing that can say which repository to put it to.
 fn finish_git_steps_are_complete(record: &PersistedArchivedWorktree) -> bool {
     if std::path::Path::new(&record.worktree_path).exists() {
         return false;
@@ -16348,48 +16341,23 @@ fn finish_git_steps_are_complete(record: &PersistedArchivedWorktree) -> bool {
         WorktreeFinishAction::Cleanup | WorktreeFinishAction::Push => true,
         WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
             record.branch.as_deref().is_none_or(|branch| {
-                local_branch_exists(std::path::Path::new(&record.project_path), branch)
+                worktrees_of_record(record)
+                    .branch_exists(branch)
                     .is_ok_and(|exists| !exists)
             })
         }
     }
 }
 
-fn merge_external_branch(
-    project_path: &std::path::Path,
-    branch: &str,
-    base_branch: &str,
-) -> Result<(), String> {
-    let checked_out = git_stdout(project_path, &["symbolic-ref", "--short", "HEAD"])?;
-    if checked_out.trim() != base_branch {
-        return Err(format!(
-            "primary checkout is on {:?}, not configured base {base_branch:?}",
-            checked_out.trim()
-        ));
-    }
-    if let Err(merge_error) = git_stdout(project_path, &["merge", "--no-edit", "--", branch]) {
-        if let Err(abort_error) = git_stdout(project_path, &["merge", "--abort"]) {
-            eprintln!("worktree.finish merge {branch}: abort failed: {abort_error}");
-        }
-        return Err(merge_error);
-    }
-    Ok(())
-}
-
-fn remove_registered_worktree(
-    project_path: &std::path::Path,
-    worktree_path: &std::path::Path,
-    force: bool,
-) -> Result<(), String> {
-    let path = worktree_path
-        .to_str()
-        .ok_or("worktree path is not valid UTF-8")?;
-    let mut args = vec!["worktree", "remove"];
-    if force {
-        args.push("--force");
-    }
-    args.extend(["--", path]);
-    git_stdout(project_path, &args).map(|_| ())
+/// The checkout seam for the project a finish record names, rooted where that
+/// record's own checkout stood — the two paths a record carries, and all a
+/// completeness check needs to ask the project repo about its branches.
+fn worktrees_of_record(record: &PersistedArchivedWorktree) -> WorktreeManager {
+    let checkout = std::path::Path::new(&record.worktree_path);
+    WorktreeManager::new(
+        std::path::PathBuf::from(&record.project_path),
+        checkout.parent().unwrap_or(checkout),
+    )
 }
 
 fn classify_stage_publication(
@@ -21641,6 +21609,15 @@ mod tests {
             .unwrap()
             .success());
         path
+    }
+
+    /// Whether the project repo still holds a local branch, asked the way
+    /// every caller asks it: through the project's own checkout seam.
+    fn local_branch_exists(
+        repo: &std::path::Path,
+        branch: &str,
+    ) -> Result<bool, crate::worktree::WorktreeError> {
+        WorktreeManager::new(repo, repo.join("worktrees")).branch_exists(branch)
     }
 
     #[test]
@@ -39680,6 +39657,82 @@ mod tests {
             .find(|row| row["branch"] == json!("labelled"))
             .expect("the scan finds the checkout");
         assert_eq!(row["isolation"], "worktree", "{row:?}");
+    }
+
+    /// A finish whose checkout vanished between the write-ahead record and the
+    /// destructive steps refuses while its branch still stands, rather than
+    /// quietly dropping work nobody has merged. Whether the branch stands is
+    /// the façade's answer about the project repo, not the app's own git.
+    #[test]
+    fn a_finish_merge_that_lost_its_checkout_refuses_while_the_branch_stands() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout =
+            std::fs::canonicalize(add_external_worktree(&repo, dir.path(), "lost", "lost"))
+                .unwrap();
+        let record = pending_merge_record(&repo, &checkout);
+        std::fs::remove_dir_all(&checkout).unwrap();
+
+        let refused = run_finish_git_steps(&worktrees, "main", &record).unwrap_err();
+
+        assert!(
+            refused.contains("lost its worktree before branch deletion"),
+            "{refused}"
+        );
+        assert!(
+            worktrees.branch_exists("lost").unwrap(),
+            "the branch the finish refused to act on is untouched"
+        );
+    }
+
+    /// The same finish once the branch has gone too: there is nothing left to
+    /// merge or delete, so the destructive half is already done.
+    #[test]
+    fn a_finish_merge_that_lost_its_checkout_and_its_branch_is_done() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout =
+            std::fs::canonicalize(add_external_worktree(&repo, dir.path(), "gone", "gone"))
+                .unwrap();
+        let record = pending_merge_record(&repo, &checkout);
+        std::fs::remove_dir_all(&checkout).unwrap();
+        git_in(&repo, &["worktree", "prune"]);
+        git_in(&repo, &["branch", "-D", "gone"]);
+
+        assert!(run_finish_git_steps(&worktrees, "main", &record).is_ok());
+    }
+
+    /// The write-ahead record a `merge` finish steps from, for a checkout whose
+    /// branch is named after its directory.
+    fn pending_merge_record(
+        repo: &std::path::Path,
+        checkout: &std::path::Path,
+    ) -> PersistedArchivedWorktree {
+        let name = checkout
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the checkout has a directory name")
+            .to_string();
+        PersistedArchivedWorktree {
+            status: WorktreeFinishStatus::Pending,
+            project_path: repo.display().to_string(),
+            worktree_id: crate::worktree::external_worktree_id(checkout),
+            worktree_name: name.clone(),
+            worktree_path: checkout.display().to_string(),
+            branch: Some(name),
+            head_sha: git_stdout(checkout, &["rev-parse", "HEAD"])
+                .unwrap()
+                .trim()
+                .to_string(),
+            upstream: None,
+            unpushed: None,
+            dirty_files: 0,
+            uncommitted_files: 0,
+            uncommitted_insertions: 0,
+            uncommitted_deletions: 0,
+            action: WorktreeFinishAction::Merge,
+            archived_at: None,
+        }
     }
 
     #[test]

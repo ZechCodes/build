@@ -16,7 +16,9 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::git_process::run_git;
-use crate::isolation::{Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend};
+use crate::isolation::{
+    Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend, NO_BACKEND_IN_THIS_BUILD,
+};
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
@@ -470,10 +472,8 @@ impl WorktreeManager {
                 WorktreeError::IsolationUnavailable(
                     self.availability()
                         .lock_reason(isolation)
-                        .map(str::to_string)
-                        .unwrap_or_else(|| {
-                            format!("no {} backend in this build", isolation.wire())
-                        }),
+                        .unwrap_or(NO_BACKEND_IN_THIS_BUILD)
+                        .to_string(),
                 )
             })
     }
@@ -1020,16 +1020,7 @@ fn upstream_of(repo: &git2::Repository, branch: &str) -> Option<(String, git2::O
 
 /// Count of non-empty `git status --porcelain` lines in `worktree_path`.
 fn worktree_status_line_count(worktree_path: &Path) -> Result<usize, WorktreeError> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(worktree_path)
-        .output()?;
-    if !output.status.success() {
-        return Err(WorktreeError::Command(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
+    Ok(run_git(worktree_path, &["status", "--porcelain"])?
         .lines()
         .filter(|line| !line.trim().is_empty())
         .count())
@@ -1295,6 +1286,20 @@ mod tests {
                 .unwrap(),
             head
         );
+    }
+
+    /// The status count runs its git child through the one runner, so a
+    /// failure carries what git said and which command said it.
+    #[test]
+    fn a_status_count_that_fails_says_which_command_failed() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let failure = worktree_status_line_count(dir.path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(failure.contains("status"), "{failure}");
+        assert!(failure.contains("not a git repository"), "{failure}");
     }
 
     /// A checkout deleted outside Build leaves git's record of it behind, and

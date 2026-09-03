@@ -131,6 +131,13 @@ pub fn cow_marker_names(checkout: &Path, project: &Path) -> bool {
 /// Why a clone cannot be made until the clone backend exists.
 const COW_NOT_IN_THIS_BUILD: &str = "copy-on-write isolation is not available in this build";
 
+/// What an isolation this build ships no backend for is refused with. Every
+/// isolation in that position is one [`IsolationAvailability`] already locks,
+/// so this is the answer of last resort — and it lives beside the others
+/// because a sentence about which isolations can be used is this module's to
+/// write, never the façade's.
+pub(crate) const NO_BACKEND_IN_THIS_BUILD: &str = "this build has no backend for that isolation";
+
 /// Which isolations can be used for a project on this volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsolationAvailability {

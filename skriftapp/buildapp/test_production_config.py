@@ -99,7 +99,7 @@ def test_production_csp_core_directives_are_self():
     assert "'self'" in directives["script-src"]
     assert "'unsafe-inline'" not in directives["script-src"]
     assert "'unsafe-eval'" not in directives["script-src"]
-    assert directives["form-action"] == ["'self'"]
+    assert directives["form-action"] == ["'self'", "getbuilding:"]
     assert directives["base-uri"] == ["'self'"]
     assert directives["frame-ancestors"] == ["'none'"]
     assert directives["object-src"] == ["'none'"]

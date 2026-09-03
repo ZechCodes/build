@@ -18,11 +18,14 @@ Chromium developer tools; packaged builds do not.
 
 ## Package
 
-Build an unsigned installer for the current platform:
+Build an installer for the current platform:
 
 ```bash
 npm run dist
 ```
 
 Use `dist:mac`, `dist:win`, or `dist:linux` on the corresponding signing host.
-Production releases must be signed and, on macOS, notarized before distribution.
+When no macOS signing identity is available, local builds receive an ad-hoc
+signature so macOS can run the hardened binary. A configured `CSC_LINK`,
+`CSC_NAME`, or keychain identity takes precedence for production signing.
+Production macOS releases must also be notarized before distribution.

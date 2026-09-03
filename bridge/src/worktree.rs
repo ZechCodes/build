@@ -1,10 +1,16 @@
-//! Git worktree lifecycle: one worktree + branch per task.
+//! Worktree lifecycle: one worktree + branch per task.
 //!
 //! The bridge owns worktrees. A task gets an isolated branch (`build/<slug>`) and
 //! a working directory cut from the project's base branch, so parallel tasks on
 //! the same repo never touch each other. On abandon the worktree is removed but
 //! the branch is kept (abandoning stays reversible-ish); merge decides for itself.
 //! Issue planning has no worktree at all: its agent runs on the primary checkout.
+//!
+//! [`WorktreeManager`] is the one seam the orchestrator and the app talk to. How
+//! a working directory is actually made — a git linked worktree, a
+//! copy-on-write clone — is [`crate::isolation`]'s business, and nothing here
+//! chooses between them except by passing on the isolation a caller resolved or
+//! the one a checkout on disk answers for itself.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

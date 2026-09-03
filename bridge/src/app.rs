@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
+    harness_for, open_session, AgentIo, AgentSession, AgentStatus, HarnessContext, SessionOutput,
     TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
@@ -790,24 +790,24 @@ impl Tab {
         // always a terminal, and is the one session never handed a turn: it is
         // not waited on, because a login shell may never announce a line editor
         // at all and `term.create` holds the state lock across this.
-        let carrier = match &role {
+        let io = match &role {
             TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
-                Carrier::Protocol
+                AgentIo::Protocol
             }
-            TabRole::Agent { .. } => Carrier::Terminal {
+            TabRole::Agent { .. } => AgentIo::Terminal {
                 size,
                 turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
                 locator,
             },
             // The human's own shell is having no conversation, so there is no
             // name for a locator to find.
-            TabRole::Shell => Carrier::Terminal {
+            TabRole::Shell => AgentIo::Terminal {
                 size,
                 turn_ready_grace: None,
                 locator: None,
             },
         };
-        let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
+        let (session, rx) = open_session(spec, root.clone(), io).map_err(|e| e.to_string())?;
         Ok((
             Tab {
                 tab_id,

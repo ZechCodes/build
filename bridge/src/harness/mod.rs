@@ -214,13 +214,14 @@ pub(crate) fn is_a_filename(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Which carrier a spawn opens, and what that carrier needs to know.
+/// How a spawn talks to its agent — a terminal or a session protocol — and
+/// what each needs to know.
 ///
 /// The provider decides ([`Harness::has_terminal`]) and this is the shape that
-/// decision travels in, so the two arms carry only what their own carrier has
-/// an answer for: a grid and a readiness wait belong to a terminal, and a
-/// session protocol has neither.
-pub enum Carrier {
+/// decision travels in, so the two arms carry only what their own kind has an
+/// answer for: a grid and a readiness wait belong to a terminal, and a session
+/// protocol has neither.
+pub enum AgentIo {
     /// A full PTY around an opaque CLI wrapper.
     ///
     /// `turn_ready_grace` is how long to wait for the harness to be able to
@@ -270,10 +271,10 @@ pub enum Carrier {
 pub fn open_session(
     spec: &HarnessSpec,
     root: PathBuf,
-    carrier: Carrier,
+    io: AgentIo,
 ) -> Result<(Arc<dyn AgentSession>, SessionOutput), HarnessError> {
-    let (session, output): (Arc<dyn AgentSession>, SessionOutput) = match carrier {
-        Carrier::Terminal {
+    let (session, output): (Arc<dyn AgentSession>, SessionOutput) = match io {
+        AgentIo::Terminal {
             size,
             turn_ready_grace,
             locator,
@@ -288,7 +289,7 @@ pub fn open_session(
             }
             (Arc::new(session), output)
         }
-        Carrier::Protocol => {
+        AgentIo::Protocol => {
             let (session, activity) = adk::AdkSession::spawn(spec, Some(root))?;
             (Arc::new(session), SessionOutput::reporting(activity))
         }
@@ -488,7 +489,7 @@ mod tests {
         let (session, _output) = open_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            AgentIo::Terminal {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
                 locator: None,
@@ -516,7 +517,7 @@ mod tests {
         let (session, _output) = open_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            AgentIo::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
                 locator: None,
@@ -548,7 +549,7 @@ mod tests {
         let (named, _output) = open_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            AgentIo::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
                 locator: Some(Box::new(Says("sess-located"))),
@@ -561,7 +562,7 @@ mod tests {
         let (unnamed, _output) = open_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            AgentIo::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
                 locator: None,
@@ -585,12 +586,12 @@ mod tests {
     /// terminal opens a session protocol, and what comes back offers the
     /// alternative capability instead of an empty one.
     #[test]
-    fn a_harness_with_no_terminal_opens_a_carrier_that_reports_itself() {
+    fn a_harness_with_no_terminal_opens_an_io_that_reports_itself() {
         let root = tempfile::tempdir().expect("temp worktree");
         let (session, output) = open_session(
             &fake_protocol_spec(),
             root.path().to_path_buf(),
-            Carrier::Protocol,
+            AgentIo::Protocol,
         )
         .expect("the session opens");
 
@@ -646,7 +647,7 @@ mod tests {
         let (session, _output) = open_session(
             &fake_protocol_spec(),
             root.path().to_path_buf(),
-            Carrier::Protocol,
+            AgentIo::Protocol,
         )
         .expect("a carrier that reports itself opens");
         assert!(refuse_a_session_nobody_can_watch(session.as_ref()).is_ok());

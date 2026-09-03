@@ -351,13 +351,24 @@ impl FrameIntake {
         })
     }
 
+    /// A client opened a session on this carrier: register the key its
+    /// `session_init` unwrapped to, and answer with the encrypted
+    /// `session_accept` that proves the device holds it. The key comes in and
+    /// only the proof goes out, so no carrier names key material.
     pub fn open(
         &self,
         session_id: &str,
-        session_key: String,
+        opened: transport::OpenedSession,
         carrier: &CarrierHandle,
-    ) -> Result<(), CarrierError> {
-        self.registry.open(session_id, session_key, carrier)
+    ) -> Result<Envelope, CarrierError> {
+        self.registry
+            .open(session_id, opened.session_key_b64.clone(), carrier)?;
+        Ok(transport::build_session_accept(
+            &opened.session_key_b64,
+            session_id,
+            &transport::session_route(session_id),
+            None,
+        )?)
     }
 
     /// One envelope arrived on this carrier: admit it through the registry,
@@ -727,12 +738,36 @@ mod intake_tests {
             .expect("the channel is open")
     }
 
+    /// What the relay hands the intake once it has unwrapped a `session_init`.
+    fn opened(session_id: &str, session_key: &str) -> transport::OpenedSession {
+        transport::OpenedSession {
+            session_key_b64: session_key.to_string(),
+            session_id: session_id.to_string(),
+            device_id: "d-1".into(),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn opening_a_session_answers_with_an_accept_the_client_can_verify() {
+        let (intake, _seen) = watching_intake();
+        let (carrier, _out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+
+        let accept = intake
+            .open("s-1", opened("s-1", &key), &carrier)
+            .expect("a fresh session opens");
+
+        transport::verify_session_accept(&key, &accept, "s-1")
+            .expect("the accept proves the device unwrapped the key");
+        assert_eq!(accept.route_to, "session:s-1");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_close_frame_ends_the_session_outright() {
         let (intake, mut seen) = watching_intake();
         let (carrier, _out) = CarrierHandle::open();
         let key = transport::generate_session_key();
-        intake.open("s-1", key.clone(), &carrier).unwrap();
+        intake.open("s-1", opened("s-1", &key), &carrier).unwrap();
 
         intake
             .accept(client_envelope(&key, "s-1", "close"), &carrier)
@@ -753,7 +788,7 @@ mod intake_tests {
         let (intake, mut seen) = watching_intake();
         let (carrier, _out) = CarrierHandle::open();
         let key = transport::generate_session_key();
-        intake.open("s-1", key.clone(), &carrier).unwrap();
+        intake.open("s-1", opened("s-1", &key), &carrier).unwrap();
 
         intake.close_carrier(&carrier);
 
@@ -765,7 +800,7 @@ mod intake_tests {
         let (intake, mut seen) = watching_intake();
         let (carrier, _out) = CarrierHandle::open();
         let key = transport::generate_session_key();
-        intake.open("s-1", key.clone(), &carrier).unwrap();
+        intake.open("s-1", opened("s-1", &key), &carrier).unwrap();
 
         intake.close_session("s-1", &carrier);
 
@@ -784,7 +819,7 @@ mod intake_tests {
         let (relay, _relay_out) = CarrierHandle::open();
         let (peer, _peer_out) = CarrierHandle::open();
         let key = transport::generate_session_key();
-        intake.open("s-1", key.clone(), &relay).unwrap();
+        intake.open("s-1", opened("s-1", &key), &relay).unwrap();
         intake
             .accept(client_envelope(&key, "s-1", "data"), &peer)
             .await
@@ -825,7 +860,7 @@ mod intake_tests {
         let (first, _first_out) = CarrierHandle::open();
         let (second, _second_out) = CarrierHandle::open();
         let key = transport::generate_session_key();
-        intake.open("s-1", key.clone(), &first).unwrap();
+        intake.open("s-1", opened("s-1", &key), &first).unwrap();
         intake
             .accept(
                 client_request(
@@ -842,7 +877,7 @@ mod intake_tests {
 
         intake.close_carrier(&first);
         intake
-            .open("s-1", key.clone(), &second)
+            .open("s-1", opened("s-1", &key), &second)
             .expect("the id is free to mint again once its session ended");
         release_tx.send(()).unwrap();
 

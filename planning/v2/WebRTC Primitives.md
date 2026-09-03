@@ -61,7 +61,7 @@ read folding — as one `Arc` shared by the relay loop and every DataChannel rea
 reports ended it emits that session's synthetic `close` frame. **Hides** the dispatcher, the fold, the lanes.
 ```rust
 pub fn new(handler: FrameHandler) -> Arc<Self>;
-pub fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
+pub fn open(&self, session_id: &str, opened: transport::OpenedSession, carrier: &CarrierHandle) -> Result<Envelope, CarrierError>;
 pub async fn accept(&self, envelope: Envelope, carrier: &CarrierHandle) -> Result<(), CarrierError>;
 pub fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
 pub fn close_carrier(&self, carrier: &CarrierHandle);

@@ -270,8 +270,9 @@ impl<'a> RelayConnection<'a> {
         self.deadline = silence_deadline(interval);
     }
 
-    /// A client opened a session: unwrap its session key, register it against
-    /// this carrier and prove receipt with an encrypted `session_accept`.
+    /// A client opened a session: unwrap its `session_init` with the device's
+    /// transport key, hand the intake what it unwrapped to, and send back the
+    /// `session_accept` the intake built.
     fn open_session(&self, msg: &Value) -> Result<(), RelayError> {
         let session_id = field_str(msg, "session_id")?;
         let init: SessionInit = serde_json::from_value(
@@ -282,15 +283,7 @@ impl<'a> RelayConnection<'a> {
         .map_err(|e| RelayError::Protocol(format!("bad session_init: {e}")))?;
 
         let opened = transport::open_session_init(&self.identity.transport.private_key_b64, &init)?;
-        self.intake
-            .open(&session_id, opened.session_key_b64.clone(), &self.carrier)?;
-
-        let accept = transport::build_session_accept(
-            &opened.session_key_b64,
-            &session_id,
-            &transport::session_route(&session_id),
-            None,
-        )?;
+        let accept = self.intake.open(&session_id, opened, &self.carrier)?;
         send(
             &self.control_tx,
             json!({

@@ -411,7 +411,7 @@ mod tests {
     /// The compat alias round trips both ways for the two carriers it can
     /// name, and answers the old default for everything else.
     #[test]
-    fn the_old_claude_mode_words_map_to_carriers_and_back() {
+    fn the_old_claude_mode_words_map_to_providers_and_back() {
         assert_eq!(carrier_of_claude_mode("tui"), Some(AgentProvider::Claude));
         assert_eq!(
             carrier_of_claude_mode("headless"),

@@ -13,9 +13,10 @@
 //! the one a checkout on disk answers for itself.
 
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::git_process::run_git;
+use crate::git_process::{run_git, run_git_with_deadline};
 use crate::isolation::{
     checkout_name, local_branch_ref, Isolation, IsolationAvailability, IsolationBackend,
     WorktreeBackend,
@@ -753,49 +754,13 @@ pub(crate) fn bounded_git_fetch(
     remote: &str,
     refspec: &str,
 ) -> Result<std::process::Output, WorktreeError> {
-    use std::io::Read;
-    use std::process::Stdio;
-    use std::time::{Duration, Instant};
-
-    let mut child = std::process::Command::new("git")
-        .arg("fetch")
-        .arg("--")
-        .arg(remote)
-        .arg(refspec)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "Never")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .current_dir(repo_path)
-        .spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(WorktreeError::Command(format!(
-                "timed out fetching persisted ref {refspec:?} from remote {remote:?}"
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)?;
-    }
-    Ok(std::process::Output {
-        status,
-        stdout,
-        stderr,
-    })
+    let args = [
+        OsStr::new("fetch"),
+        OsStr::new("--"),
+        OsStr::new(remote),
+        OsStr::new(refspec),
+    ];
+    Ok(run_git_with_deadline(repo_path, &args)?)
 }
 
 /// One git worktree of the project repo that Build did not create (or no longer

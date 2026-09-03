@@ -7,7 +7,8 @@
 //! on and the bridge's candidates go back over that same carrier — never over
 //! the channels they negotiate, which do not exist yet when they are needed.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -57,6 +58,139 @@ pub trait SessionPeer: Send + Sync {
 /// The only place a peer implementation is chosen and built.
 pub trait SessionPeerFactory: Send + Sync {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError>;
+}
+
+/// Which peer connection each E2EE session has, and when it stops being its.
+///
+/// **Boundary** the whole lifecycle behind three verbs the signaling arms call
+/// and one a session end calls: a session's first offer opens its peer, every
+/// later offer reconfigures that same one, and a peer stops being the
+/// session's exactly once. **Hides** the map and its lock, the factory, the
+/// open-once race, and that a peer's work is async at all — a handler runs on
+/// a blocking thread and gets its answer back before it replies.
+pub struct SessionPeers {
+    factory: Arc<dyn SessionPeerFactory>,
+    peers: Mutex<HashMap<String, Arc<dyn SessionPeer>>>,
+}
+
+impl SessionPeers {
+    pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self> {
+        Arc::new(SessionPeers {
+            factory,
+            peers: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Answer this session's offer, opening its peer if this is the first one.
+    ///
+    /// A first offer the peer cannot answer leaves the session with no peer, so
+    /// the browser's retry builds a fresh one rather than reaching the
+    /// half-open peer that just failed; a failed ICE restart keeps the peer
+    /// that is already carrying.
+    pub fn offer(
+        &self,
+        session_id: &str,
+        offer_sdp: &str,
+        ice_servers: &[Value],
+        signaling: SessionSender,
+    ) -> Result<String, RtcError> {
+        let (peer, opened_by_this_offer) = self.riding_or_opened(session_id)?;
+        match awaited(peer.answer(offer_sdp, ice_servers, signaling)) {
+            Ok(answer) => Ok(answer),
+            Err(refused) => {
+                if opened_by_this_offer {
+                    if let Some(unusable) = self.take(session_id) {
+                        awaited(unusable.close());
+                    }
+                }
+                Err(refused)
+            }
+        }
+    }
+
+    /// Trickle one of the browser's candidates to the peer this session is
+    /// negotiating over. A candidate for a session that never offered is
+    /// refused, not answered by opening a peer nobody negotiated.
+    pub fn candidate(&self, session_id: &str, candidate: Value) -> Result<(), RtcError> {
+        let peer = self
+            .peers
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
+        awaited(peer.add_remote_candidate(candidate))
+    }
+
+    /// The browser gave up on the peer carrier: tear this session's peer down
+    /// and leave the session working over the relay.
+    pub fn close(&self, session_id: &str) -> Result<(), RtcError> {
+        let peer = self
+            .take(session_id)
+            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))?;
+        awaited(peer.close());
+        Ok(())
+    }
+
+    /// The session ended, so its peer does: an ICE negotiation belongs to the
+    /// session that offered it. The teardown is spawned, because this runs
+    /// where the app releases everything else the session held and nothing
+    /// there waits on a socket.
+    pub fn end_session(&self, session_id: &str) {
+        if let Some(peer) = self.take(session_id) {
+            tokio::spawn(async move { peer.close().await });
+        }
+    }
+
+    /// This session's peer and whether this call is the one that opened it.
+    ///
+    /// Building a peer is foreign work — a real one allocates an ICE agent and
+    /// a DTLS transport — so it runs with no lock held, and two offers racing
+    /// on one session still leave one peer: the one that reached the map first,
+    /// the loser closed rather than left negotiating.
+    fn riding_or_opened(&self, session_id: &str) -> Result<(Arc<dyn SessionPeer>, bool), RtcError> {
+        if let Some(peer) = self.peers.lock().unwrap().get(session_id) {
+            return Ok((peer.clone(), false));
+        }
+        let opened = self.factory.open(session_id)?;
+        let won_the_race = {
+            let mut peers = self.peers.lock().unwrap();
+            match peers.get(session_id) {
+                Some(peer) => Some(peer.clone()),
+                None => {
+                    peers.insert(session_id.to_string(), opened.clone());
+                    None
+                }
+            }
+        };
+        match won_the_race {
+            Some(peer) => {
+                awaited(opened.close());
+                Ok((peer, false))
+            }
+            None => Ok((opened, true)),
+        }
+    }
+
+    /// Take this session's peer out — the one place a peer stops being the
+    /// session's, so an answer still in flight cannot put a closed one back.
+    fn take(&self, session_id: &str) -> Option<Arc<dyn SessionPeer>> {
+        self.peers.lock().unwrap().remove(session_id)
+    }
+
+    /// Test-only: how many sessions hold a peer.
+    #[cfg(test)]
+    pub fn count(&self) -> usize {
+        self.peers.lock().unwrap().len()
+    }
+}
+
+/// Finish one peer-connection call where a frame handler can wait for it.
+/// Handlers run on the runtime's blocking pool (`carrier::dispatch`), so the
+/// peer's async work is finished here rather than outliving the reply the
+/// client is waiting for — the one place that happens.
+fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Handle::current().block_on(work)
 }
 
 /// A bridge with no peer transport built in. Every offer is refused, so the

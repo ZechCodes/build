@@ -44,7 +44,7 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
-use crate::rtc::{NoPeerFactory, RtcError, SessionPeer, SessionPeerFactory};
+use crate::rtc::{NoPeerFactory, SessionPeerFactory, SessionPeers};
 use crate::run::ValidationReport;
 use crate::run::{
     PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
@@ -2057,14 +2057,12 @@ pub struct AppState {
     notifier: Option<Notifier>,
     /// At most one push per task-state change.
     notify_throttle: NotifyThrottle,
-    /// One peer connection per E2EE session (spec §Signaling), opened by that
-    /// session's first `rtc.offer` and torn down with the session. The bridge
-    /// is always the answerer, so there is nothing here until a browser offers.
-    peers: HashMap<String, Arc<dyn SessionPeer>>,
-    /// Where a session's peer comes from — the only place an implementation is
-    /// chosen. A bridge with no peer transport built in refuses every offer and
-    /// its clients keep working over the relay carrier.
-    peer_factory: Arc<dyn SessionPeerFactory>,
+    /// Which peer connection each E2EE session has (spec §Signaling), and the
+    /// factory that builds them. The bridge is always the answerer, so there is
+    /// nothing here until a browser offers; a bridge with no peer transport
+    /// built in refuses every offer and its clients keep working over the relay
+    /// carrier.
+    peers: Arc<SessionPeers>,
     /// Push invalidation: every browser session that asked to be told when
     /// state moves, and the changes waiting to reach them.
     ///
@@ -2189,8 +2187,7 @@ impl AppState {
             resume_id_probe: default_resume_id_probe(),
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
-            peers: HashMap::new(),
-            peer_factory: Arc::new(NoPeerFactory),
+            peers: SessionPeers::with_factory(Arc::new(NoPeerFactory)),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
         };
         state.add_project(repo_path.into(), base_branch.into());
@@ -2229,7 +2226,7 @@ impl AppState {
     /// Answer `rtc.offer` with peer connections `factory` builds. Without one
     /// the bridge has no peer transport and every offer is refused.
     pub fn with_peer_factory(mut self, factory: Arc<dyn SessionPeerFactory>) -> Self {
-        self.peer_factory = factory;
+        self.peers = SessionPeers::with_factory(factory);
         self
     }
 
@@ -6086,60 +6083,10 @@ impl AppState {
         Ok(json!({ "ok": true, "live": live }))
     }
 
-    /// This session's peer connection, opened on first ask, and whether this
-    /// call is the one that opened it. One per E2EE session: a second
-    /// `rtc.offer` reconfigures the peer the first one built (the ICE restart
-    /// fresh TURN credentials arrive on), never a second peer.
-    ///
-    /// Building a peer is foreign work — a real one allocates an ICE agent and
-    /// a DTLS transport — so it runs with the app mutex released, and two
-    /// offers racing on one session still leave one peer: the one that reached
-    /// the map first, the loser closed rather than left negotiating.
-    fn session_peer(
-        state: &Arc<Mutex<AppState>>,
-        session_id: &str,
-    ) -> Result<(Arc<dyn SessionPeer>, bool), RtcError> {
-        let factory = {
-            let app = state.lock().unwrap();
-            if let Some(peer) = app.peers.get(session_id) {
-                return Ok((peer.clone(), false));
-            }
-            Arc::clone(&app.peer_factory)
-        };
-        let opened = factory.open(session_id)?;
-        let already_the_sessions = {
-            let mut app = state.lock().unwrap();
-            match app.peers.get(session_id) {
-                Some(peer) => Some(peer.clone()),
-                None => {
-                    app.peers.insert(session_id.to_string(), opened.clone());
-                    None
-                }
-            }
-        };
-        match already_the_sessions {
-            Some(peer) => {
-                awaited(opened.close());
-                Ok((peer, false))
-            }
-            None => Ok((opened, true)),
-        }
-    }
-
-    /// The peer this session is already negotiating over. A candidate for a
-    /// session that never offered is refused, not answered with a peer built to
-    /// hold it.
-    fn negotiating_peer(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
-        self.peers
-            .get(session_id)
-            .cloned()
-            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))
-    }
-
-    /// Take this session's peer out — the one place a peer stops being the
-    /// session's, so an answer still in flight cannot put a closed one back.
-    fn take_peer(&mut self, session_id: &str) -> Option<Arc<dyn SessionPeer>> {
-        self.peers.remove(session_id)
+    /// The sessions' peer connections, for a caller that must not hold the app
+    /// mutex while a peer negotiates.
+    fn peers(&self) -> Arc<SessionPeers> {
+        self.peers.clone()
     }
 
     /// A session ended: detach it from every tab so the pumps stop encrypting
@@ -6156,9 +6103,7 @@ impl AppState {
     /// they render at — with the last one gone there is nothing to hold, and
     /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
-        if let Some(peer) = self.take_peer(session_id) {
-            tokio::spawn(async move { peer.close().await });
-        }
+        self.peers.end_session(session_id);
         for tab in self.tabs.values_mut() {
             if let Some(screen) = &mut tab.screen {
                 screen
@@ -17614,23 +17559,11 @@ fn rtc_offer(
     if ice_servers.is_empty() {
         return Err("ice_servers must not be empty".into());
     }
-    let (peer, just_opened) =
-        AppState::session_peer(state, sender.session_id()).map_err(|e| e.to_string())?;
-    match awaited(peer.answer(&sdp, &ice_servers, sender.clone())) {
-        Ok(answer) => Ok(json!({ "sdp": answer })),
-        Err(refused) => {
-            // A first offer the peer could not answer leaves the session with
-            // no peer, so the browser's retry builds a fresh one instead of
-            // reaching the half-open peer again; a failed ICE restart keeps the
-            // peer that is already carrying.
-            if just_opened {
-                if let Some(peer) = state.lock().unwrap().take_peer(sender.session_id()) {
-                    awaited(peer.close());
-                }
-            }
-            Err(refused.to_string())
-        }
-    }
+    let peers = state.lock().unwrap().peers();
+    let answer = peers
+        .offer(sender.session_id(), &sdp, &ice_servers, sender.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(json!({ "sdp": answer }))
 }
 
 fn rtc_ice(
@@ -17639,32 +17572,19 @@ fn rtc_ice(
     params: &Value,
 ) -> Result<Value, String> {
     let candidate = require_value(params, "candidate")?;
-    let peer = state
-        .lock()
-        .unwrap()
-        .negotiating_peer(session_id)
+    let peers = state.lock().unwrap().peers();
+    peers
+        .candidate(session_id, candidate)
         .map_err(|e| e.to_string())?;
-    awaited(peer.add_remote_candidate(candidate)).map_err(|e| e.to_string())?;
     Ok(json!({}))
 }
 
 /// The browser gave up on the peer carrier: tear this session's peer down and
 /// leave the session working over the relay.
 fn rtc_close(state: &Arc<Mutex<AppState>>, session_id: &str) -> Result<Value, String> {
-    let peer = state
-        .lock()
-        .unwrap()
-        .take_peer(session_id)
-        .ok_or_else(|| RtcError::NoPeer(session_id.to_string()).to_string())?;
-    awaited(peer.close());
+    let peers = state.lock().unwrap().peers();
+    peers.close(session_id).map_err(|e| e.to_string())?;
     Ok(json!({}))
-}
-
-/// Finish one peer-connection call inside a frame handler. Handlers run on the
-/// runtime's blocking pool (`carrier::dispatch`), so the peer's async work is
-/// awaited here rather than outliving the reply the client is waiting for.
-fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
-    tokio::runtime::Handle::current().block_on(work)
 }
 
 /// Greet a browser session: announce what this bridge pushes, and subscribe the
@@ -45612,7 +45532,7 @@ mod tests {
         assert_eq!(first["result"]["sdp"], "answer-to:v=0 first");
         assert_eq!(restarted["result"]["sdp"], "answer-to:v=0 restart");
         assert_eq!(factory.opened_count(), 1, "one session, one peer");
-        assert_eq!(state.lock().unwrap().peers.len(), 1);
+        assert_eq!(state.lock().unwrap().peers().count(), 1);
         let peer = factory
             .peer_of("s-restart")
             .expect("the session has a peer");
@@ -45700,7 +45620,7 @@ mod tests {
             .expect("the offer opened a peer");
         assert!(peer.is_closed(), "the peer the close took is torn down");
         assert!(
-            state.lock().unwrap().peers.is_empty(),
+            state.lock().unwrap().peers().count() == 0,
             "the answer does not put a closed peer back"
         );
     }
@@ -45730,7 +45650,7 @@ mod tests {
             .await
             .expect("the close ran");
 
-        assert!(state.lock().unwrap().peers.is_empty());
+        assert_eq!(state.lock().unwrap().peers().count(), 0);
         tokio::time::timeout(Duration::from_secs(5), peer.closed())
             .await
             .expect("the session's end closed its peer");
@@ -45754,7 +45674,7 @@ mod tests {
             "the peer connection refused the offer: v=0 refused"
         );
         assert!(
-            state.lock().unwrap().peers.is_empty(),
+            state.lock().unwrap().peers().count() == 0,
             "a peer that never negotiated is not the session's"
         );
         let failed = factory.peer_of("s-refused").expect("a peer was opened");
@@ -45782,7 +45702,7 @@ mod tests {
 
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert_eq!(refused["error"], "this bridge has no peer transport");
-        assert!(state.lock().unwrap().peers.is_empty());
+        assert_eq!(state.lock().unwrap().peers().count(), 0);
     }
 
     /// The offer's two params are both required: a peer configured from no ICE

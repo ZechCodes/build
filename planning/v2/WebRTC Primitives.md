@@ -122,12 +122,30 @@ The only place a peer implementation is chosen and built: `WebrtcPeerFactory::ne
 `AppState`; tests build `RecordingPeerFactory`. The intake goes in because every DataChannel reader delivers through it.
 **Hides** the crate, the ring provider, channel labels and ids.
 
+### `SessionPeers` — which peer a session has, `bridge/src/rtc.rs` (stage 2)
+**Boundary** the peer lifecycle whole: `session_id → peer`, the factory that builds them, and when a peer stops being a
+session's.
+```rust
+pub fn with_factory(factory: Arc<dyn SessionPeerFactory>) -> Arc<Self>;
+pub fn offer(&self, session_id: &str, offer_sdp: &str, ice_servers: &[Value], signaling: SessionSender) -> Result<String, RtcError>;
+pub fn candidate(&self, session_id: &str, candidate: Value) -> Result<(), RtcError>;
+pub fn close(&self, session_id: &str) -> Result<(), RtcError>;
+pub fn end_session(&self, session_id: &str);
+```
+**Hides** the map and its own leaf lock, the factory, the open-once race, and that a peer's work is async at all —
+`awaited` lives here, the one place a peer future is finished from a blocking handler. `offer` owns two rules the
+component list did not name: a session's first offer opens its peer and every later one reconfigures that same peer (the
+ICE restart), and **an offer that fails leaves the session with no peer if it was the one that opened it** — the
+browser's retry then builds a fresh peer instead of reaching the half-open one, while a failed ICE restart keeps the
+peer that is already carrying. Building a peer runs with no lock held, so **two offers racing on one session still leave
+one peer**: the one that reached the map first, the loser closed rather than left negotiating.
+
 ### `rtc.offer` / `rtc.ice` / `rtc.close` — `bridge/src/app.rs::dispatch_frame` (stage 2)
-Three arms beside `session.hello` (they need the caller's own `SessionSender`), each a parse and one call on the trait.
-`AppState` gains `peers: HashMap<String, Arc<dyn SessionPeer>>` and a `peer_factory`, and no WebRTC knowledge.
-**Extends** `AppState::drop_session`, which already releases terminals and subscriptions: it takes the session's peer
-out of the map and spawns its `close` — safe because `drop_session` now runs only on a real session end, never on a bare
-relay-socket loss.
+Three arms beside `session.hello` (they need the caller's own `SessionSender`), each a parse and one call on
+`SessionPeers`, taken out of the app mutex before it is called. `AppState` gains one field, `peers: Arc<SessionPeers>`,
+and no WebRTC knowledge. **Extends** `AppState::drop_session`, which already releases terminals and subscriptions: it
+calls `end_session` — safe because `drop_session` now runs only on a real session end, never on a bare relay-socket
+loss.
 
 **Stage 2 notes.** Three things the stage needed that the component list did not name, each the smallest thing that
 would do. (1) `rtc::trickle_candidate(&signaling, candidate)` — the one home of the bridge→client push
@@ -136,7 +154,7 @@ factory an `AppState` carries until `main.rs` hands it a real one at stage 4: ev
 no peer transport answers `rtc.offer` with an error and its clients stay on the relay — the spec's own failure case,
 and no `Option<peer_factory>` for the call sites to branch on. (3) `rtc.ice` and `rtc.close` for a session that never
 offered are refused (`RtcError::NoPeer`), never answered by opening a peer nobody negotiated. `answer` is awaited from
-the handler's blocking thread (`app::awaited`), which is what keeps `dispatch_frame` synchronous.
+the handler's blocking thread (`rtc::awaited`), which is what keeps `dispatch_frame` synchronous.
 
 ### `chunk` — `bridge/src/rtc/chunk.rs` (new, stage 4)
 Pure, no I/O, one exported pair: `chunk::split(envelope_json: &str) -> Vec<String>` (the input unchanged under

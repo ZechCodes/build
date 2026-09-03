@@ -1,6 +1,4 @@
-use serde_json::json;
-
-use super::protocol::{ServerRequest, ServerRequestKind, ServerResponse};
+use super::protocol::{ServerRequest, ServerResponse};
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity};
 
@@ -22,58 +20,47 @@ pub struct ServerRequestPolicy;
 
 impl ServerRequestPolicy {
     pub fn decide(request: ServerRequest, current_unix_seconds: i64) -> ServerRequestDecision {
-        let id = request.id;
-        match request.kind {
-            ServerRequestKind::CommandApproval | ServerRequestKind::FileApproval => {
+        match request {
+            ServerRequest::CommandApproval { id } | ServerRequest::FileApproval { id } => {
                 report_decision(
-                    ServerResponse::result(id, json!({"decision":"decline"})),
+                    ServerResponse::approval_declined(id),
                     "Codex approval request declined",
                 )
             }
-            ServerRequestKind::LegacyCommandApproval => report_decision(
-                ServerResponse::result(
-                    id,
-                    json!({"decision":{"denied":{"rejection":"Build does not approve commands"}}}),
-                ),
+            ServerRequest::LegacyCommandApproval { id } => report_decision(
+                ServerResponse::legacy_command_declined(id),
                 "Codex approval request declined",
             ),
-            ServerRequestKind::LegacyPatchApproval => report_decision(
-                ServerResponse::result(
-                    id,
-                    json!({"decision":{"denied":{"rejection":"Build does not approve file changes"}}}),
-                ),
+            ServerRequest::LegacyPatchApproval { id } => report_decision(
+                ServerResponse::legacy_patch_declined(id),
                 "Codex approval request declined",
             ),
-            ServerRequestKind::Elicitation => {
-                decision(ServerResponse::result(id, json!({"action":"decline"})))
+            ServerRequest::Elicitation { id } => decision(ServerResponse::elicitation_declined(id)),
+            ServerRequest::CurrentTime { id } => {
+                decision(ServerResponse::current_time(id, current_unix_seconds))
             }
-            ServerRequestKind::CurrentTime => decision(ServerResponse::result(
-                id,
-                json!({"currentTimeAt":current_unix_seconds}),
-            )),
-            ServerRequestKind::UserInput => fail_turn(
+            ServerRequest::UserInput { id } => fail_turn(
                 id,
                 "Codex requested user input, which this carrier does not support",
             ),
-            ServerRequestKind::Permissions => fail_turn(
+            ServerRequest::Permissions { id } => fail_turn(
                 id,
                 "Codex requested permissions, which this carrier cannot grant",
             ),
-            ServerRequestKind::DynamicTool => {
+            ServerRequest::DynamicTool { id } => {
                 fail_turn(id, "Codex dynamic tools are not supported")
             }
-            ServerRequestKind::RefreshAuth => fail_session(
+            ServerRequest::RefreshAuth { id } => fail_session(
                 id,
                 "Codex authentication expired; run `codex login` and start the agent again",
             ),
-            ServerRequestKind::Attestation => fail_session(
+            ServerRequest::Attestation { id } => fail_session(
                 id,
                 "Codex requested attestation that Build did not advertise",
             ),
-            ServerRequestKind::Unknown => fail_session(
-                id,
-                format!("unsupported Codex server request {}", request.method),
-            ),
+            ServerRequest::Unknown { id, method } => {
+                fail_session(id, format!("unsupported Codex server request {method}"))
+            }
         }
     }
 }

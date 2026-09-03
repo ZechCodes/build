@@ -11,6 +11,8 @@ pub struct AppServerLimits {
     pub queued_turn_bytes: usize,
     pub open_items: usize,
     pub open_item_bytes: usize,
+    pub completed_items: usize,
+    pub completed_item_bytes: usize,
     pub reconciliation: Duration,
 }
 
@@ -26,6 +28,8 @@ impl Default for AppServerLimits {
             queued_turn_bytes: 256 * 1024,
             open_items: 256,
             open_item_bytes: 128 * 1024,
+            completed_items: 256,
+            completed_item_bytes: 128 * 1024,
             reconciliation: Duration::from_secs(5),
         }
     }

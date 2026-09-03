@@ -253,11 +253,13 @@ fn decode_server_request(
     let method = method.as_str().ok_or_else(|| {
         ConnectionError::Protocol("server request method is not a string".to_string())
     })?;
-    Ok(ConnectionEvent::Request(ServerRequest::new(
+    ServerRequest::decode(
         id.clone(),
         method,
         params.cloned().unwrap_or_else(|| json!({})),
-    )))
+    )
+    .map(ConnectionEvent::Request)
+    .map_err(ConnectionError::Protocol)
 }
 
 fn decode_notification(
@@ -276,7 +278,17 @@ pub fn read_jsonl_frame(
     reader: &mut dyn Read,
     limit: usize,
 ) -> Result<Option<Value>, ConnectionError> {
-    let mut frame = Vec::with_capacity(limit.min(8192));
+    let Some(frame) = read_jsonl_bytes(reader, limit)? else {
+        return Ok(None);
+    };
+    decode_json_frame(&frame).map(Some)
+}
+
+fn read_jsonl_bytes(
+    reader: &mut dyn Read,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, ConnectionError> {
+    let mut frame = Vec::with_capacity(limit.saturating_add(1));
     let mut byte = [0_u8; 1];
     loop {
         match reader.read(&mut byte)? {
@@ -284,12 +296,13 @@ pub fn read_jsonl_frame(
             0 => return Err(ConnectionError::UnterminatedFrame),
             _ if byte[0] == b'\n' => break,
             _ => {
-                frame.push(byte[0]);
-                if frame.len() > limit
-                    && !(frame.len() == limit + 1 && frame.last() == Some(&b'\r'))
-                {
+                if frame.len() == limit && byte[0] != b'\r' {
                     return Err(ConnectionError::FrameTooLarge(limit));
                 }
+                if frame.len() > limit {
+                    return Err(ConnectionError::FrameTooLarge(limit));
+                }
+                frame.push(byte[0]);
             }
         }
     }
@@ -302,8 +315,12 @@ pub fn read_jsonl_frame(
     if frame.is_empty() {
         return Err(ConnectionError::Protocol("blank JSONL frame".to_string()));
     }
-    let text = std::str::from_utf8(&frame)?;
-    Ok(Some(serde_json::from_str(text)?))
+    Ok(Some(frame))
+}
+
+fn decode_json_frame(frame: &[u8]) -> Result<Value, ConnectionError> {
+    let text = std::str::from_utf8(frame)?;
+    Ok(serde_json::from_str(text)?)
 }
 
 pub type SharedConnection = Arc<AppServerConnection>;
@@ -311,6 +328,7 @@ pub type SharedConnection = Arc<AppServerConnection>;
 #[cfg(test)]
 mod tests {
     use std::io::{Error, ErrorKind};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -339,5 +357,43 @@ mod tests {
         let error = connection.close().unwrap_err().to_string();
         assert!(error.contains("exact close error"), "{error}");
         assert!(connection.close().is_ok());
+    }
+
+    #[test]
+    fn every_write_path_propagates_flush_failure() {
+        struct FlushFails(Arc<AtomicUsize>);
+        impl Write for FlushFails {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(Error::new(ErrorKind::BrokenPipe, "exact flush error"))
+            }
+        }
+
+        let flushes = Arc::new(AtomicUsize::new(0));
+        let connection = AppServerConnection::new(
+            Box::new(FlushFails(Arc::clone(&flushes))),
+            AppServerLimits::default(),
+        );
+        assert!(connection
+            .request(PendingOperation::Initialize)
+            .unwrap_err()
+            .to_string()
+            .contains("exact flush error"));
+        assert_eq!(connection.pending_count(), 0);
+        assert!(connection
+            .notify(ClientNotification::Initialized)
+            .unwrap_err()
+            .to_string()
+            .contains("exact flush error"));
+        assert!(connection
+            .respond(ServerResponse::error(json!(1), -32601, "unsupported"))
+            .unwrap_err()
+            .to_string()
+            .contains("exact flush error"));
+        assert_eq!(flushes.load(Ordering::SeqCst), 3);
     }
 }

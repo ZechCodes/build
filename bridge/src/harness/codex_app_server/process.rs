@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
@@ -133,6 +134,7 @@ impl AppServerProcess {
 
     pub fn liveness_failed(&self) -> bool {
         self.state.lock().unwrap().process_error.is_some()
+            || self.stderr.lock().unwrap().read_error.is_some()
     }
 
     pub fn exited_within(&self, timeout: Duration) -> bool {
@@ -204,6 +206,8 @@ impl AppServerProcess {
                     None => format!("Codex wait failed: {error}"),
                 };
                 record_process_error(&mut state, failure);
+                state.child = Some(child);
+                return cached_shutdown_result(&state);
             }
         }
         state.reaped = true;
@@ -266,7 +270,7 @@ struct StderrTail {
     line_limit: usize,
     total_limit: usize,
     current: Vec<u8>,
-    retained: Vec<u8>,
+    retained: VecDeque<u8>,
     read_error: Option<String>,
 }
 
@@ -275,8 +279,8 @@ impl StderrTail {
         StderrTail {
             line_limit,
             total_limit,
-            current: Vec::new(),
-            retained: Vec::new(),
+            current: Vec::with_capacity(line_limit),
+            retained: VecDeque::with_capacity(total_limit),
             read_error: None,
         }
     }
@@ -297,19 +301,29 @@ impl StderrTail {
         }
         if !self.current.is_empty() {
             if !self.retained.is_empty() {
-                self.retained.push(b'\n');
+                self.push_retained(b'\n');
             }
-            self.retained.extend_from_slice(&self.current);
-            if self.retained.len() > self.total_limit {
-                let drop_count = self.retained.len() - self.total_limit;
-                self.retained.drain(..drop_count);
+            let line = std::mem::replace(&mut self.current, Vec::with_capacity(self.line_limit));
+            for byte in line {
+                self.push_retained(byte);
             }
         }
         self.current.clear();
     }
 
+    fn push_retained(&mut self, byte: u8) {
+        if self.total_limit == 0 {
+            return;
+        }
+        if self.retained.len() == self.total_limit {
+            self.retained.pop_front();
+        }
+        self.retained.push_back(byte);
+    }
+
     fn epitaph(&self) -> Option<String> {
-        let text = String::from_utf8_lossy(&self.retained).trim().to_string();
+        let bytes = self.retained.iter().copied().collect::<Vec<_>>();
+        let text = String::from_utf8_lossy(&bytes).trim().to_string();
         (!text.is_empty()).then_some(text)
     }
 }
@@ -330,6 +344,8 @@ mod tests {
         }
         assert_eq!(tail.epitaph().as_deref(), Some("abc\ndef"));
         assert!(tail.retained.len() <= 7);
+        assert!(tail.current.capacity() <= 4);
+        assert!(tail.retained.capacity() <= 7);
     }
 
     #[test]
@@ -399,6 +415,26 @@ mod tests {
             retained.lock().unwrap().read_error.as_deref(),
             Some("Codex stderr read failed: exact drain error")
         );
+
+        let process = AppServerProcess::new(
+            Box::new(FakeChild::running(Arc::new(FakeCalls::default()))),
+            retained,
+        );
+        assert!(process.liveness_failed());
+    }
+
+    #[test]
+    fn failed_wait_keeps_the_child_for_a_retry_without_killing_twice() {
+        let calls = Arc::new(FakeCalls::default());
+        let process = fake_process(FakeChild::wait_error_once(Arc::clone(&calls)));
+
+        assert!(process.shutdown().is_err());
+        assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
+        assert!(process.shutdown().is_err());
+        assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.waits.load(Ordering::SeqCst), 2);
+        assert!(process.exit_code().is_some());
     }
 
     fn fake_process(child: FakeChild) -> AppServerProcess {
@@ -417,6 +453,7 @@ mod tests {
     struct FakeChild {
         calls: Arc<FakeCalls>,
         poll_error: bool,
+        wait_error_once: bool,
     }
 
     impl FakeChild {
@@ -424,6 +461,7 @@ mod tests {
             FakeChild {
                 calls,
                 poll_error: false,
+                wait_error_once: false,
             }
         }
 
@@ -431,6 +469,15 @@ mod tests {
             FakeChild {
                 calls,
                 poll_error: true,
+                wait_error_once: false,
+            }
+        }
+
+        fn wait_error_once(calls: Arc<FakeCalls>) -> FakeChild {
+            FakeChild {
+                calls,
+                poll_error: false,
+                wait_error_once: true,
             }
         }
     }
@@ -450,7 +497,10 @@ mod tests {
         }
 
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
-            self.calls.waits.fetch_add(1, Ordering::SeqCst);
+            let call = self.calls.waits.fetch_add(1, Ordering::SeqCst);
+            if self.wait_error_once && call == 0 {
+                return Err(Error::other("exact wait error"));
+            }
             Ok(ExitStatus::from_raw(0))
         }
     }

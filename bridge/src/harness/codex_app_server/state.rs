@@ -67,7 +67,6 @@ pub struct CodexSessionState {
     active_effort: Option<String>,
     queued_turns: VecDeque<String>,
     queued_bytes: usize,
-    last_completed_turn: Option<String>,
     last_completion: Option<TurnCompletion>,
     reported_error: Option<String>,
 }
@@ -106,6 +105,7 @@ struct WorkingTurn {
 enum PendingSteer {
     Response { input: String },
     NoActiveTurn { input: String, since: Duration },
+    ActiveTurnNotSteerable { input: String },
     ReplayAfterInterrupt { input: String },
 }
 
@@ -133,7 +133,6 @@ impl CodexSessionState {
             active_effort: None,
             queued_turns: VecDeque::new(),
             queued_bytes: 0,
-            last_completed_turn: None,
             last_completion: None,
             reported_error: None,
         }
@@ -630,7 +629,12 @@ impl CodexSessionState {
                 Ok(Vec::new())
             }
             Phase::Working(working) if working.id == id => Ok(Vec::new()),
-            Phase::Waiting if self.last_completed_turn.as_deref() == Some(id.as_str()) => {
+            Phase::Waiting
+                if self
+                    .last_completion
+                    .as_ref()
+                    .is_some_and(|completion| completion.turn_id == id) =>
+            {
                 Ok(Vec::new())
             }
             _ => Err(StateError(format!(
@@ -700,7 +704,9 @@ impl CodexSessionState {
             return Ok(effects);
         }
         if let Some(steer) = working.steer.take() {
-            effects.push(self.begin_start_turn(retained_steer_input(steer)));
+            let input = retained_steer_input(steer);
+            self.remember_completion(completion);
+            effects.push(self.begin_start_turn(input));
             return Ok(effects);
         }
         effects.extend(self.finish_turn(completion, limits)?);
@@ -711,12 +717,12 @@ impl CodexSessionState {
         &self,
         completion: TurnCompletion,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        if self.last_completed_turn.as_deref() != Some(completion.turn_id.as_str()) {
-            return Err(unexpected_completion(&completion));
-        }
         match &self.last_completion {
-            Some(existing) => duplicate_completion(existing, &completion),
+            Some(existing) if existing.turn_id == completion.turn_id => {
+                duplicate_completion(existing, &completion)
+            }
             None => Err(unexpected_completion(&completion)),
+            Some(_) => Err(unexpected_completion(&completion)),
         }
     }
 
@@ -735,6 +741,9 @@ impl CodexSessionState {
             }
             Err(error) if error.is_no_active_turn() => {
                 self.reconcile_no_active_turn(operation_input, completion, now)
+            }
+            Err(error) if error.is_active_turn_not_steerable() => {
+                self.reconcile_non_steerable(operation_input, completion)
             }
             Ok(_) => Err(StateError(
                 "turn/steer response body was mistyped".to_string(),
@@ -800,6 +809,26 @@ impl CodexSessionState {
         };
         let Some(completion) = completion else {
             working.steer = Some(PendingSteer::NoActiveTurn { input, since: now });
+            return Ok(Vec::new());
+        };
+        if working.interrupt.is_some() {
+            working.steer = Some(PendingSteer::ReplayAfterInterrupt { input });
+            return Ok(Vec::new());
+        }
+        self.remember_completion(completion);
+        Ok(vec![self.begin_start_turn(input)])
+    }
+
+    fn reconcile_non_steerable(
+        &mut self,
+        input: String,
+        completion: Option<TurnCompletion>,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &mut self.phase else {
+            unreachable!()
+        };
+        let Some(completion) = completion else {
+            working.steer = Some(PendingSteer::ActiveTurnNotSteerable { input });
             return Ok(Vec::new());
         };
         if working.interrupt.is_some() {
@@ -940,7 +969,6 @@ impl CodexSessionState {
     }
 
     fn remember_completion(&mut self, completion: TurnCompletion) {
-        self.last_completed_turn = Some(completion.turn_id.clone());
         self.last_completion = Some(completion);
     }
 
@@ -1193,6 +1221,7 @@ fn retained_steer_input(steer: PendingSteer) -> String {
     match steer {
         PendingSteer::Response { input }
         | PendingSteer::NoActiveTurn { input, .. }
+        | PendingSteer::ActiveTurnNotSteerable { input }
         | PendingSteer::ReplayAfterInterrupt { input } => input,
     }
 }

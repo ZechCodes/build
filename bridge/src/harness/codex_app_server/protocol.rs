@@ -258,6 +258,13 @@ impl RpcError {
                 "no active turn" | "no active turn to steer" | "no active turn to interrupt"
             )
     }
+
+    pub fn is_active_turn_not_steerable(&self) -> bool {
+        self.data
+            .as_ref()
+            .and_then(|data| data.pointer("/codexErrorInfo/activeTurnNotSteerable"))
+            .is_some_and(Value::is_object)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -367,6 +374,20 @@ pub struct ItemNotification {
     pub item: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorNotification {
+    pub thread_id: String,
+    pub turn_id: String,
+    pub error: NotificationError,
+    pub will_retry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NotificationError {
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerNotification {
     ThreadStarted {
@@ -382,7 +403,7 @@ pub enum ServerNotification {
         completion: TurnCompletion,
     },
     Item(ItemNotification),
-    Error(Value),
+    Error(ErrorNotification),
     Delta,
     Unknown,
 }
@@ -423,60 +444,61 @@ impl ServerNotification {
                     item,
                 }))
             }
-            "error" => Ok(ServerNotification::Error(params)),
-            method if method.contains("delta") => Ok(ServerNotification::Delta),
+            "error" => decode(&params).map(ServerNotification::Error),
+            "item/agentMessage/delta"
+            | "item/commandExecution/outputDelta"
+            | "item/fileChange/outputDelta"
+            | "item/reasoning/summaryTextDelta"
+            | "item/reasoning/textDelta" => Ok(ServerNotification::Delta),
             _ => Ok(ServerNotification::Unknown),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerRequestKind {
-    CommandApproval,
-    FileApproval,
-    LegacyCommandApproval,
-    LegacyPatchApproval,
-    Elicitation,
-    UserInput,
-    Permissions,
-    DynamicTool,
-    RefreshAuth,
-    Attestation,
-    CurrentTime,
-    Unknown,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-pub struct ServerRequest {
-    pub id: Value,
-    pub kind: ServerRequestKind,
-    pub method: String,
-    pub params: Value,
+pub enum ServerRequest {
+    CommandApproval { id: Value },
+    FileApproval { id: Value },
+    LegacyCommandApproval { id: Value },
+    LegacyPatchApproval { id: Value },
+    Elicitation { id: Value },
+    UserInput { id: Value },
+    Permissions { id: Value },
+    DynamicTool { id: Value },
+    RefreshAuth { id: Value },
+    Attestation { id: Value },
+    CurrentTime { id: Value },
+    Unknown { id: Value, method: String },
 }
 
 impl ServerRequest {
+    pub fn decode(id: Value, method: &str, params: Value) -> Result<ServerRequest, String> {
+        if !params.is_object() {
+            return Err(format!("{method} params are not an object"));
+        }
+        Ok(match method {
+            "item/commandExecution/requestApproval" => ServerRequest::CommandApproval { id },
+            "item/fileChange/requestApproval" => ServerRequest::FileApproval { id },
+            "execCommandApproval" => ServerRequest::LegacyCommandApproval { id },
+            "applyPatchApproval" => ServerRequest::LegacyPatchApproval { id },
+            "mcpServer/elicitation/request" => ServerRequest::Elicitation { id },
+            "item/tool/requestUserInput" => ServerRequest::UserInput { id },
+            "item/permissions/requestApproval" => ServerRequest::Permissions { id },
+            "item/tool/call" => ServerRequest::DynamicTool { id },
+            "account/chatgptAuthTokens/refresh" => ServerRequest::RefreshAuth { id },
+            "attestation/generate" => ServerRequest::Attestation { id },
+            "currentTime/read" => ServerRequest::CurrentTime { id },
+            _ => ServerRequest::Unknown {
+                id,
+                method: method.to_string(),
+            },
+        })
+    }
+
+    #[cfg(test)]
     pub fn new(id: Value, method: impl Into<String>, params: Value) -> ServerRequest {
         let method = method.into();
-        let kind = match method.as_str() {
-            "item/commandExecution/requestApproval" => ServerRequestKind::CommandApproval,
-            "item/fileChange/requestApproval" => ServerRequestKind::FileApproval,
-            "execCommandApproval" => ServerRequestKind::LegacyCommandApproval,
-            "applyPatchApproval" => ServerRequestKind::LegacyPatchApproval,
-            "mcpServer/elicitation/request" => ServerRequestKind::Elicitation,
-            "item/tool/requestUserInput" => ServerRequestKind::UserInput,
-            "item/permissions/requestApproval" => ServerRequestKind::Permissions,
-            "item/tool/call" => ServerRequestKind::DynamicTool,
-            "account/chatgptAuthTokens/refresh" => ServerRequestKind::RefreshAuth,
-            "attestation/generate" => ServerRequestKind::Attestation,
-            "currentTime/read" => ServerRequestKind::CurrentTime,
-            _ => ServerRequestKind::Unknown,
-        };
-        ServerRequest {
-            id,
-            kind,
-            method,
-            params,
-        }
+        ServerRequest::decode(id, &method, params).expect("test request params are objects")
     }
 }
 
@@ -491,7 +513,7 @@ pub enum ClientNotification {
 pub struct ServerResponse {
     id: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<Value>,
+    result: Option<ServerResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<RpcErrorBody>,
 }
@@ -504,13 +526,104 @@ struct RpcErrorBody {
     data: Option<Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+enum ServerResult {
+    Approval(ApprovalResult),
+    LegacyApproval(LegacyApprovalResult),
+    Elicitation(ElicitationResult),
+    CurrentTime(CurrentTimeResult),
+    #[cfg(test)]
+    Test(Value),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ApprovalResult {
+    decision: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct LegacyApprovalResult {
+    decision: DeniedDecision,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DeniedDecision {
+    denied: DeniedReason,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct DeniedReason {
+    rejection: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ElicitationResult {
+    action: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CurrentTimeResult {
+    current_time_at: i64,
+}
+
 impl ServerResponse {
-    pub fn result(id: Value, result: Value) -> ServerResponse {
+    pub fn approval_declined(id: Value) -> ServerResponse {
+        ServerResponse::success(
+            id,
+            ServerResult::Approval(ApprovalResult {
+                decision: "decline",
+            }),
+        )
+    }
+
+    pub fn legacy_command_declined(id: Value) -> ServerResponse {
+        ServerResponse::legacy_declined(id, "Build does not approve commands")
+    }
+
+    pub fn legacy_patch_declined(id: Value) -> ServerResponse {
+        ServerResponse::legacy_declined(id, "Build does not approve file changes")
+    }
+
+    fn legacy_declined(id: Value, rejection: &'static str) -> ServerResponse {
+        ServerResponse::success(
+            id,
+            ServerResult::LegacyApproval(LegacyApprovalResult {
+                decision: DeniedDecision {
+                    denied: DeniedReason { rejection },
+                },
+            }),
+        )
+    }
+
+    pub fn elicitation_declined(id: Value) -> ServerResponse {
+        ServerResponse::success(
+            id,
+            ServerResult::Elicitation(ElicitationResult { action: "decline" }),
+        )
+    }
+
+    pub fn current_time(id: Value, current_unix_seconds: i64) -> ServerResponse {
+        ServerResponse::success(
+            id,
+            ServerResult::CurrentTime(CurrentTimeResult {
+                current_time_at: current_unix_seconds,
+            }),
+        )
+    }
+
+    fn success(id: Value, result: ServerResult) -> ServerResponse {
         ServerResponse {
             id,
             result: Some(result),
             error: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn result(id: Value, result: Value) -> ServerResponse {
+        ServerResponse::success(id, ServerResult::Test(result))
     }
 
     pub fn error(id: Value, code: i64, message: impl Into<String>) -> ServerResponse {

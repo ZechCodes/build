@@ -11,7 +11,7 @@ use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
     ClientNotification, ConnectionEvent, ItemType, PendingOperation, RpcError, ServerNotification,
-    ServerRequest, ServerResponse, TurnCompletion,
+    ServerRequest, TurnCompletion,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
@@ -1042,8 +1042,16 @@ fn completion_before_interrupt_error_preserves_the_error_during_steer_reconcilia
     );
 }
 
+fn active_turn_not_steerable_error() -> RpcError {
+    RpcError::with_data(
+        -32600,
+        "cannot steer",
+        json!({"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}),
+    )
+}
+
 #[test]
-fn active_turn_not_steerable_remains_an_unsupported_steer_error() {
+fn active_turn_not_steerable_waits_for_completion_then_replays_once() {
     let pending = working_state()
         .transition(
             SessionEvent::SendTurn("next".to_string()),
@@ -1052,23 +1060,66 @@ fn active_turn_not_steerable_remains_an_unsupported_steer_error() {
         )
         .unwrap()
         .state;
-    let failure = pending
+    let waiting = pending
         .transition(
-            correlated(
-                steer_turn("next"),
-                Err(RpcError::with_data(
-                    -32600,
-                    "cannot steer",
-                    json!({"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}),
-                )),
-            ),
+            correlated(steer_turn("next"), Err(active_turn_not_steerable_error())),
             Duration::from_secs(1),
             &limits(),
         )
-        .unwrap_err();
-    assert!(failure
-        .to_string()
-        .contains("Codex did not deliver steer input"));
+        .unwrap();
+    assert!(waiting.effects.is_empty());
+    assert_eq!(waiting.state.status(), AgentStatus::Working);
+
+    let replayed = waiting
+        .state
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: None,
+            },
+            Duration::from_secs(2),
+            &limits(),
+        )
+        .unwrap();
+    assert!(matches!(
+        replayed.effects.as_slice(),
+        [SessionEffect::CloseTurn(turn_id), SessionEffect::Request(PendingOperation::StartTurn { input, .. })]
+            if turn_id == "turn-1" && input == "next"
+    ));
+}
+
+#[test]
+fn active_turn_not_steerable_after_completion_replays_immediately() {
+    let completed = working_state()
+        .transition(
+            SessionEvent::SendTurn("next".to_string()),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: None,
+            },
+            Duration::from_secs(1),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+
+    let replayed = completed
+        .transition(
+            correlated(steer_turn("next"), Err(active_turn_not_steerable_error())),
+            Duration::from_secs(2),
+            &limits(),
+        )
+        .unwrap();
+    assert!(matches!(
+        replayed.effects.as_slice(),
+        [SessionEffect::Request(PendingOperation::StartTurn { input, .. })] if input == "next"
+    ));
 }
 
 #[test]
@@ -1216,8 +1267,12 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         let decision =
             ServerRequestPolicy::decide(ServerRequest::new(json!(7), method, json!({})), 1234);
         assert_eq!(
-            decision.response,
-            ServerResponse::result(json!(7), expected)
+            decision.response.to_value(),
+            json!({"id":7,"result":expected})
+        );
+        assert_eq!(
+            serde_json::to_string(&decision.response).unwrap(),
+            serde_json::to_string(&json!({"id":7,"result":expected})).unwrap()
         );
         assert_eq!(decision.after_response, after_response);
         assert_eq!(
@@ -1235,6 +1290,10 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         let decision =
             ServerRequestPolicy::decide(ServerRequest::new(json!(8), method, json!({})), 0);
         assert_eq!(decision.response.error_code(), Some(-32601));
+        assert_eq!(
+            decision.response.to_value(),
+            json!({"id":8,"error":{"code":-32601,"message":"method not supported"}})
+        );
         assert!(matches!(
             decision.after_response,
             AfterResponse::FailTurn(_)
@@ -1248,11 +1307,60 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         let decision =
             ServerRequestPolicy::decide(ServerRequest::new(json!(9), method, json!({})), 0);
         assert_eq!(decision.response.error_code(), Some(-32601));
+        assert_eq!(
+            decision.response.to_value(),
+            json!({"id":9,"error":{"code":-32601,"message":"method not found"}})
+        );
         assert!(matches!(
             decision.after_response,
             AfterResponse::FailSession(_)
         ));
     }
+}
+
+#[test]
+fn server_request_decoder_types_known_requests_and_retains_only_unknown_methods() {
+    assert!(matches!(
+        ServerRequest::decode(
+            json!(1),
+            "item/commandExecution/requestApproval",
+            json!({"threadId":"thread-1"})
+        )
+        .unwrap(),
+        ServerRequest::CommandApproval { id } if id == json!(1)
+    ));
+    assert!(matches!(
+        ServerRequest::decode(json!(2), "future/request", json!({})).unwrap(),
+        ServerRequest::Unknown { id, method }
+            if id == json!(2) && method == "future/request"
+    ));
+    assert!(ServerRequest::decode(json!(3), "currentTime/read", json!([])).is_err());
+}
+
+#[test]
+fn error_notifications_require_the_typed_liveness_shape() {
+    assert!(matches!(
+        ServerNotification::decode(
+            "error",
+            json!({
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "error":{"message":"retry failed"},
+                "willRetry":false
+            })
+        )
+        .unwrap(),
+        ServerNotification::Error(error)
+            if error.thread_id == "thread-1"
+                && error.turn_id == "turn-1"
+                && error.error.message == "retry failed"
+                && !error.will_retry
+    ));
+    assert!(ServerNotification::decode(
+        "error",
+        json!({"error":{"message":"missing lifecycle fields"}})
+    )
+    .is_err());
 }
 
 #[test]
@@ -1280,6 +1388,109 @@ fn completed_speech_and_tools_translate_without_raw_payloads() {
     let completed = translator.translate("item/completed", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":"c","type":"commandExecution","command":"secret command","aggregatedOutput":"secret output","status":"completed","exitCode":0}})).unwrap();
     assert!(
         matches!(&completed[0].activity, AgentActivity::ToolResult { call_id, outcome: ToolOutcome::Ok, summary } if call_id == "c" && !summary.contains("secret"))
+    );
+}
+
+#[test]
+fn duplicate_completed_items_emit_once_and_cannot_reopen_tools() {
+    let mut translator = CodexActivityTranslator::new(limits());
+    let completed_speech = json!({
+        "threadId":"thread-1",
+        "turnId":"turn-1",
+        "item":{"id":"speech","type":"agentMessage","text":"once"}
+    });
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed_speech)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(translator
+        .translate("item/completed", &completed_speech)
+        .unwrap()
+        .is_empty());
+
+    let started_tool = json!({
+        "threadId":"thread-1",
+        "turnId":"turn-1",
+        "item":{"id":"tool","type":"webSearch"}
+    });
+    let completed_tool = json!({
+        "threadId":"thread-1",
+        "turnId":"turn-1",
+        "item":{"id":"tool","type":"webSearch","status":"completed"}
+    });
+    assert_eq!(
+        translator
+            .translate("item/started", &started_tool)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed_tool)
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(translator
+        .translate("item/completed", &completed_tool)
+        .unwrap()
+        .is_empty());
+    assert!(translator
+        .translate("item/started", &started_tool)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn completed_item_deduplication_is_bounded_and_resets_for_a_new_turn() {
+    let mut bounded = limits();
+    bounded.completed_items = 2;
+    bounded.completed_item_bytes = 16;
+    let mut translator = CodexActivityTranslator::new(bounded);
+    let completed = |turn: &str, id: &str| {
+        json!({
+            "threadId":"thread-1",
+            "turnId":turn,
+            "item":{"id":id,"type":"agentMessage","text":id}
+        })
+    };
+
+    for id in ["a", "b"] {
+        assert_eq!(
+            translator
+                .translate("item/completed", &completed("turn-1", id))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert!(translator
+        .translate("item/completed", &completed("turn-1", "c"))
+        .is_err());
+    assert_eq!(translator.completed_item_count(), 2);
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed("turn-2", "c"))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(translator.completed_item_count(), 1);
+}
+
+#[test]
+fn only_exact_delta_notification_methods_are_classified_as_deltas() {
+    assert_eq!(
+        ServerNotification::decode("item/agentMessage/delta", json!({})).unwrap(),
+        ServerNotification::Delta
+    );
+    assert_eq!(
+        ServerNotification::decode("future/deltaEvent", json!({})).unwrap(),
+        ServerNotification::Unknown
     );
 }
 

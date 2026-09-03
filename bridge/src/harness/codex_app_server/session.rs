@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
 use tokio::sync::broadcast;
 
 use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection};
@@ -85,7 +84,7 @@ impl SessionCore {
     }
 
     fn apply_state(self: &Arc<Self>, event: SessionEvent) -> Result<(), HarnessError> {
-        let (require_version, reconciliation_pending) = {
+        let (require_version, should_close, reconciliation_pending) = {
             let mut state = self.state.lock().unwrap();
             let transition = match state.transition(event, self.elapsed(), &self.limits) {
                 Ok(transition) => transition,
@@ -97,7 +96,12 @@ impl SessionCore {
                 }
             };
             let mut require_version = false;
+            let mut should_close = false;
             for effect in &transition.effects {
+                if matches!(effect, SessionEffect::Close) {
+                    should_close = true;
+                    continue;
+                }
                 match self.apply_effect(effect) {
                     Ok(needed) => require_version |= needed,
                     Err(error) => {
@@ -108,8 +112,15 @@ impl SessionCore {
                 }
             }
             *state = transition.state;
-            (require_version, state.reconciliation_pending())
+            (
+                require_version,
+                should_close,
+                state.reconciliation_pending(),
+            )
         };
+        if should_close {
+            self.terminate();
+        }
         if require_version {
             self.apply_state(SessionEvent::VersionEvidence(
                 super::CodexAppServerHarness::probe_version(&self.binary),
@@ -138,7 +149,7 @@ impl SessionCore {
             }
             SessionEffect::Report(report) => self.report(report.clone()),
             SessionEffect::RequireVersionEvidence => return Ok(true),
-            SessionEffect::Close => self.close_activity(),
+            SessionEffect::Close => unreachable!("close effects are applied after releasing state"),
         }
         Ok(false)
     }
@@ -162,9 +173,7 @@ impl SessionCore {
                         self.apply_state(SessionEvent::FailTurn(reason))
                     }
                     AfterResponse::FailSession(reason) => {
-                        self.apply_state(SessionEvent::FailSession(reason))?;
-                        self.end();
-                        Ok(())
+                        self.apply_state(SessionEvent::FailSession(reason))
                     }
                 }
             }
@@ -227,14 +236,11 @@ impl SessionCore {
                     .translate_notification(&notification)
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
-                if params["willRetry"].as_bool() == Some(false) {
-                    if let Some(message) = params.pointer("/error/message").and_then(Value::as_str)
-                    {
-                        self.protocol_error
-                            .lock()
-                            .unwrap()
-                            .get_or_insert_with(|| message.to_string());
-                    }
+                if !params.will_retry {
+                    self.protocol_error
+                        .lock()
+                        .unwrap()
+                        .get_or_insert_with(|| params.error.message.clone());
                 }
                 Ok(())
             }
@@ -317,6 +323,9 @@ impl AgentSession for CodexAppServerSession {
             return AgentStatus::Ended { code: Some(code) };
         }
         if self.core.process.liveness_failed() {
+            if let Some(error) = self.core.process.error_epitaph() {
+                self.core.fail(error);
+            }
             return AgentStatus::Ended { code: None };
         }
         self.core.state.lock().unwrap().status()
@@ -617,6 +626,65 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         panic!("activity did not close after stdout EOF");
+    }
+
+    #[test]
+    fn stdout_eof_reports_unanswered_tools_before_closing_activity() {
+        let root = tempfile::tempdir().unwrap();
+        let thread_response = format!(
+            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
+            root.path().display()
+        );
+        let command = format!(
+            "read initialize; printf '%s\\n' '{}'; read initialized; read thread; printf '%s\\n' '{}'; read turn; printf '%s\\n' '{}'; printf '%s\\n' '{}'",
+            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
+            thread_response,
+            r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
+            r#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"tool-1","type":"webSearch"}}}"#,
+        );
+        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
+        let (session, mut activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some("high".to_string()),
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..100 {
+            if session.session_id().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        session
+            .send_turn(&Turn {
+                text: "go".to_string(),
+            })
+            .unwrap();
+
+        let mut reports = Vec::new();
+        for _ in 0..100 {
+            match activity.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("activity receive failed: {error}"),
+            }
+        }
+        assert!(reports.iter().any(|report| matches!(
+            report.activity,
+            crate::harness::AgentActivity::ToolResult {
+                outcome: crate::harness::ToolOutcome::Unanswered,
+                ..
+            }
+        )));
     }
 
     #[test]

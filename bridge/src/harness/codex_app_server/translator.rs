@@ -1,9 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
 use super::limits::AppServerLimits;
-use super::protocol::{ItemLifecycle, ItemNotification, ItemType, ServerNotification};
+use super::protocol::{
+    ErrorNotification, ItemLifecycle, ItemNotification, ItemType, ServerNotification,
+};
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
 
@@ -15,6 +17,10 @@ pub enum TranslationError {
     ItemCountLimit(usize),
     #[error("Codex open item byte limit exceeded ({0})")]
     ItemBytesLimit(usize),
+    #[error("Codex completed item limit exceeded ({0})")]
+    CompletedItemCountLimit(usize),
+    #[error("Codex completed item byte limit exceeded ({0})")]
+    CompletedItemBytesLimit(usize),
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +35,9 @@ pub struct CodexActivityTranslator {
     limits: AppServerLimits,
     open_tools: BTreeMap<String, OpenTool>,
     open_bytes: usize,
+    completed_turn_id: Option<String>,
+    completed_items: BTreeSet<String>,
+    completed_bytes: usize,
     unknown_events: u64,
 }
 
@@ -38,6 +47,9 @@ impl CodexActivityTranslator {
             limits,
             open_tools: BTreeMap::new(),
             open_bytes: 0,
+            completed_turn_id: None,
+            completed_items: BTreeSet::new(),
+            completed_bytes: 0,
             unknown_events: 0,
         }
     }
@@ -75,10 +87,48 @@ impl CodexActivityTranslator {
         &mut self,
         notification: &ItemNotification,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
+        self.select_completed_turn(&notification.turn_id);
+        let id = required(&notification.item, "id")?;
+        if self.completed_items.contains(id) {
+            return Ok(Vec::new());
+        }
         match notification.lifecycle {
             ItemLifecycle::Started => self.item_started(notification),
-            ItemLifecycle::Completed => Ok(self.item_completed(notification)),
+            ItemLifecycle::Completed => {
+                self.ensure_completed_capacity(id)?;
+                let reports = self.item_completed(notification);
+                self.remember_completed(id);
+                Ok(reports)
+            }
         }
+    }
+
+    fn select_completed_turn(&mut self, turn_id: &str) {
+        if self.completed_turn_id.as_deref() == Some(turn_id) {
+            return;
+        }
+        self.completed_turn_id = Some(turn_id.to_string());
+        self.completed_items.clear();
+        self.completed_bytes = 0;
+    }
+
+    fn ensure_completed_capacity(&self, id: &str) -> Result<(), TranslationError> {
+        if self.completed_items.len() >= self.limits.completed_items {
+            return Err(TranslationError::CompletedItemCountLimit(
+                self.limits.completed_items,
+            ));
+        }
+        if self.completed_bytes.saturating_add(id.len()) > self.limits.completed_item_bytes {
+            return Err(TranslationError::CompletedItemBytesLimit(
+                self.limits.completed_item_bytes,
+            ));
+        }
+        Ok(())
+    }
+
+    fn remember_completed(&mut self, id: &str) {
+        self.completed_items.insert(id.to_string());
+        self.completed_bytes += id.len();
     }
 
     fn item_started(
@@ -234,6 +284,11 @@ impl CodexActivityTranslator {
     pub fn open_item_count(&self) -> usize {
         self.open_tools.len()
     }
+
+    #[cfg(test)]
+    pub fn completed_item_count(&self) -> usize {
+        self.completed_items.len()
+    }
 }
 
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str, TranslationError> {
@@ -330,11 +385,8 @@ fn task_report(notification: &ItemNotification, lifecycle: &str) -> Option<Activ
     }))
 }
 
-fn error_report(params: &Value) -> Option<ActivityReport> {
-    let message = params["error"]["message"]
-        .as_str()
-        .or_else(|| params["message"].as_str())?
-        .trim();
+fn error_report(notification: &ErrorNotification) -> Option<ActivityReport> {
+    let message = notification.error.message.trim();
     (!message.is_empty()).then(|| {
         ActivityReport::own_work(AgentActivity::TaskUpdate {
             summary: one_line(message, TOOL_SUMMARY_LIMIT),

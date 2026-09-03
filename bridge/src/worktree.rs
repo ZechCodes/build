@@ -1607,7 +1607,6 @@ mod tests {
         assert_eq!(entry.uncommitted.files_changed, 1);
     }
 
-    /// Commit `name` in `dir` as a new file of the same name.
     fn git_output(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
             .args(args)
@@ -1618,6 +1617,7 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    /// Commit `name` in `dir` as a new file of the same name.
     fn commit_file(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
         git_in(dir, &["add", "."]);
@@ -2163,23 +2163,14 @@ mod tests {
 #[cfg(test)]
 mod vanished_worktree_removal {
     use super::*;
-    use crate::git_fixture::init_repo;
+    use crate::git_fixture::{git_in, init_repo};
 
     /// The state an outside cleanup leaves behind: directory removed,
     /// bookkeeping pruned, branch deleted.
     fn fully_vanished(repo: &Path, wt: &Worktree) {
         std::fs::remove_dir_all(&wt.path).unwrap();
-        for args in [
-            vec!["worktree", "prune"],
-            vec!["branch", "-D", &wt.recorded_branch],
-        ] {
-            let out = std::process::Command::new("git")
-                .args(&args)
-                .current_dir(repo)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?} failed");
-        }
+        git_in(repo, &["worktree", "prune"]);
+        git_in(repo, &["branch", "-D", &wt.recorded_branch]);
     }
 
     #[test]
@@ -2209,12 +2200,7 @@ mod vanished_worktree_removal {
             .create("half-gone", "main", Isolation::Worktree)
             .unwrap();
         std::fs::remove_dir_all(&wt.path).unwrap();
-        let out = std::process::Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(&repo)
-            .output()
-            .unwrap();
-        assert!(out.status.success());
+        git_in(&repo, &["worktree", "prune"]);
 
         manager
             .remove(&wt, false)
@@ -2225,5 +2211,23 @@ mod vanished_worktree_removal {
                 .is_err(),
             "the surviving branch is deleted, not skipped"
         );
+    }
+
+    #[test]
+    fn removal_refuses_before_deleting_when_the_project_repo_is_unreachable() {
+        // A teardown that cannot reach git's registry would delete the
+        // directory and strand a record naming it; it must refuse while
+        // nothing is lost yet.
+        let (dir, repo) = init_repo();
+        let root = dir.path().join("wts");
+        let wt = WorktreeManager::new(&repo, &root)
+            .create("kept-slug", "main", Isolation::Worktree)
+            .unwrap();
+        let unreachable = WorktreeManager::new(dir.path().join("not-a-repo"), &root);
+
+        unreachable
+            .remove_checkout(&wt.path)
+            .expect_err("no registry to clear, so nothing is deleted");
+        assert!(wt.path.exists(), "the checkout survives a refused teardown");
     }
 }

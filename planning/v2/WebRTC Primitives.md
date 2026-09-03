@@ -35,15 +35,17 @@ call site outside the registry holds key material. **Replaces** today's WebSocke
 unchanged.
 
 ### `SessionRegistry` — `bridge/src/carrier.rs` (new, stage 1)
-**Boundary** the one home of `session_id → (session_key, carriers riding it)`: `Arc`-shared, own leaf lock, built in
-`main.rs`, outliving every socket. **Owns the teardown rule**, the only place it is written, and **hides** every session
-key — a caller gets a decrypted frame and a sender, never the material.
+**Boundary** the one home of `session_id → (session_key, carriers riding it)`: own leaf lock, owned by the
+`FrameIntake`, outliving every socket. **Owns the teardown rule**, the only place it is written, and **hides** every
+session key — a caller gets a decrypted frame and a sender, never the material. Every verb below is private to
+`carrier.rs` and reached through the intake, which is the module's only public entry, so no caller outside can name a
+session key or a `CarrierId`.
 ```rust
-pub fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
-pub fn admit(&self, envelope: &Envelope, carrier: &CarrierHandle) -> Result<(Frame, SessionSender), CarrierError>;
-pub fn release_session(&self, session_id: &str, carrier: CarrierId) -> Vec<String>;
-pub fn release_carrier(&self, carrier: CarrierId) -> Vec<String>;
-pub fn end(&self, session_id: &str) -> Vec<String>;
+fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
+fn admit(&self, envelope: &Envelope, carrier: &CarrierHandle) -> Result<(Frame, SessionSender), CarrierError>;
+fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<String>;
+fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<String>;
+fn end(&self, session_id: &str) -> Vec<String>;
 ```
 The last three return the session ids that actually ended, from one private rule: *no carriers left, or `end`*. `admit`
 records the ride, so a session rides a carrier the moment a frame for it arrives there. `open` is idempotent for a
@@ -54,14 +56,15 @@ errors on a known session with a different key, which is the frame the spec drop
 
 ### `FrameIntake` — `bridge/src/carrier.rs` (new, stage 1)
 **Boundary** "one envelope arrived on some carrier", whole job: admit it through the registry, honour a `close` frame,
-else dispatch. Owns the `Dispatcher` — workers, ordered terminal lanes, read folding — as one `Arc` shared by the relay
-loop and every DataChannel reader, and is the *effect* side of the teardown rule: for every session id the registry
+else dispatch. Builds and owns the `SessionRegistry`, and owns the `Dispatcher` — workers, ordered terminal lanes,
+read folding — as one `Arc` shared by the relay loop and every DataChannel reader, and is the *effect* side of the teardown rule: for every session id the registry
 reports ended it emits that session's synthetic `close` frame. **Hides** the dispatcher, the fold, the lanes.
 ```rust
-pub fn new(registry: Arc<SessionRegistry>, handler: FrameHandler) -> Arc<Self>;
+pub fn new(handler: FrameHandler) -> Arc<Self>;
+pub fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
 pub async fn accept(&self, envelope: Envelope, carrier: &CarrierHandle) -> Result<(), CarrierError>;
-pub async fn close_session(&self, session_id: &str, carrier: CarrierId);
-pub async fn close_carrier(&self, carrier: CarrierId);
+pub fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
+pub fn close_carrier(&self, carrier: &CarrierHandle);
 ```
 `&self`, not `&mut self`, so the sharing is real: the lane map moves behind its own `Mutex` inside the `Dispatcher`,
 held only long enough to clone a lane sender — **no lock crosses an await**. What still makes a flooding carrier wait is
@@ -71,10 +74,10 @@ carrier binds to no session**.
 
 ### `relay::run` — `bridge/src/relay.rs` (extended, stage 1)
 Takes `Arc<FrameIntake>` where it took a `FrameHandler`, mints one `CarrierHandle` per socket generation, and calls
-`close_carrier` when that socket ends. `session_init` → `registry.open`; `e2ee_envelope` → `intake.accept`;
+`close_carrier` when that socket ends. `session_init` → `intake.open`; `e2ee_envelope` → `intake.accept`;
 `session_closed` → `intake.close_session`, one carrier released. Its writer task keeps the one job the wrapper move
-leaves it: wrap each `OutboundEnvelope` as `{"type":"e2ee_envelope",…}`. `main.rs` builds registry and intake once and
-passes the intake into every reconnect.
+leaves it: wrap each `OutboundEnvelope` as `{"type":"e2ee_envelope",…}`. `main.rs` builds the intake once and passes
+it into every reconnect.
 
 ### `SessionPeer` — the peer-connection trait, `bridge/src/rtc.rs` (new, stage 2)
 One implementor per live `RTCPeerConnection`, one per E2EE session, always the answerer. New; the bridge has no peer

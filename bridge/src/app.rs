@@ -16161,6 +16161,31 @@ fn remove_finished_checkout(
         .map_err(|error| error.to_string())
 }
 
+/// The §0.4 publish-before-read step, owned in one place: whatever a standing
+/// checkout holds reaches the project repo — for a clone the only way its branch
+/// is there at all, for a linked worktree nothing — then the project repo is
+/// asked whether the branch stands. The branch that stands is the one to act on;
+/// a branch that does not is nothing to merge, delete or restore.
+fn resolve_live_branch<'a>(
+    worktrees: &WorktreeManager,
+    checkout: &std::path::Path,
+    recorded_branch: Option<&'a str>,
+    standing: bool,
+) -> Result<Option<&'a str>, String> {
+    let Some(branch) = recorded_branch else {
+        return Ok(None);
+    };
+    if standing {
+        worktrees
+            .publish(checkout, branch)
+            .map_err(|error| error.to_string())?;
+    }
+    let branch_stands = worktrees
+        .branch_exists(branch)
+        .map_err(|error| error.to_string())?;
+    Ok(branch_stands.then_some(branch))
+}
+
 /// The `merge` and `delete` half: settle the branch in the project repo, then
 /// remove the checkout — putting the branch back if that removal fails, so a
 /// finish that could not finish has thrown nothing away.
@@ -16173,22 +16198,7 @@ fn land_finished_branch(
     let merging = record.action == WorktreeFinishAction::Merge;
     let verb = if merging { "merge" } else { "delete" };
     let standing = checkout.exists();
-    let recorded_branch = record.branch.as_deref();
-    // Whatever the checkout holds reaches the project repo before the project
-    // repo is asked what it holds: for a clone that is the only way its branch
-    // is there at all, and for a linked worktree it is nothing.
-    if let (true, Some(branch)) = (standing, recorded_branch) {
-        worktrees
-            .publish(checkout, branch)
-            .map_err(|error| error.to_string())?;
-    }
-    let branch_stands = match recorded_branch {
-        Some(branch) => worktrees
-            .branch_exists(branch)
-            .map_err(|error| error.to_string())?,
-        None => false,
-    };
-    let live_branch = recorded_branch.filter(|_| branch_stands);
+    let live_branch = resolve_live_branch(worktrees, checkout, record.branch.as_deref(), standing)?;
     if !standing {
         return match live_branch {
             Some(_) => Err(format!(

@@ -44,6 +44,7 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
+use crate::rtc::{NoPeerFactory, RtcError, SessionPeer, SessionPeerFactory};
 use crate::run::ValidationReport;
 use crate::run::{
     PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
@@ -2056,6 +2057,14 @@ pub struct AppState {
     notifier: Option<Notifier>,
     /// At most one push per task-state change.
     notify_throttle: NotifyThrottle,
+    /// One peer connection per E2EE session (spec §Signaling), opened by that
+    /// session's first `rtc.offer` and torn down with the session. The bridge
+    /// is always the answerer, so there is nothing here until a browser offers.
+    peers: HashMap<String, Arc<dyn SessionPeer>>,
+    /// Where a session's peer comes from — the only place an implementation is
+    /// chosen. A bridge with no peer transport built in refuses every offer and
+    /// its clients keep working over the relay carrier.
+    peer_factory: Arc<dyn SessionPeerFactory>,
     /// Push invalidation: every browser session that asked to be told when
     /// state moves, and the changes waiting to reach them.
     ///
@@ -2180,6 +2189,8 @@ impl AppState {
             resume_id_probe: default_resume_id_probe(),
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
+            peers: HashMap::new(),
+            peer_factory: Arc::new(NoPeerFactory),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
         };
         state.add_project(repo_path.into(), base_branch.into());
@@ -2212,6 +2223,13 @@ impl AppState {
     /// state that needs the human fires one signed, content-free notify at the api.
     pub fn with_notifier(mut self, notifier: Notifier) -> Self {
         self.notifier = Some(notifier);
+        self
+    }
+
+    /// Answer `rtc.offer` with peer connections `factory` builds. Without one
+    /// the bridge has no peer transport and every offer is refused.
+    pub fn with_peer_factory(mut self, factory: Arc<dyn SessionPeerFactory>) -> Self {
+        self.peer_factory = factory;
         self
     }
 
@@ -6068,8 +6086,42 @@ impl AppState {
         Ok(json!({ "ok": true, "live": live }))
     }
 
+    /// This session's peer connection, opened on first ask. One per E2EE
+    /// session: a second `rtc.offer` reconfigures the peer the first one built
+    /// (the ICE restart fresh TURN credentials arrive on), never a second peer.
+    fn session_peer(&mut self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        if let Some(peer) = self.peers.get(session_id) {
+            return Ok(peer.clone());
+        }
+        let peer = self.peer_factory.open(session_id)?;
+        self.peers.insert(session_id.to_string(), peer.clone());
+        Ok(peer)
+    }
+
+    /// The peer this session is already negotiating over. A candidate for a
+    /// session that never offered is refused, not answered with a peer built to
+    /// hold it.
+    fn negotiating_peer(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        self.peers
+            .get(session_id)
+            .cloned()
+            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))
+    }
+
+    /// Take this session's peer out — the one place a peer stops being the
+    /// session's, so an answer still in flight cannot put a closed one back.
+    fn close_peer(&mut self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        self.peers
+            .remove(session_id)
+            .ok_or_else(|| RtcError::NoPeer(session_id.to_string()))
+    }
+
     /// A session ended: detach it from every tab so the pumps stop encrypting
     /// (and serializing) output frames into a session the relay will just drop.
+    ///
+    /// Its peer connection goes the same way: an ICE negotiation belongs to the
+    /// session that offered it, and this runs only on a real session end — the
+    /// teardown rule (`carrier.rs`), never a bare relay-socket loss.
     ///
     /// A screen waiting for its first spawn is a tab one step early and follows
     /// the same rule: [`ensure_agent_tab`] carries its clients onto the real
@@ -6078,6 +6130,9 @@ impl AppState {
     /// they render at — with the last one gone there is nothing to hold, and
     /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
+        if let Ok(peer) = self.close_peer(session_id) {
+            tokio::spawn(async move { peer.close().await });
+        }
         for tab in self.tabs.values_mut() {
             if let Some(screen) = &mut tab.screen {
                 screen
@@ -15277,6 +15332,14 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("missing required param: {key}"))
 }
 
+fn require_array(params: &Value, key: &str) -> Result<Vec<Value>, String> {
+    params
+        .get(key)
+        .and_then(Value::as_array)
+        .cloned()
+        .ok_or_else(|| format!("missing required param: {key}"))
+}
+
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or
 /// garbage (non-integer, negative) value reads as absent — the poll then gets
 /// the conversation's newest page instead of an error.
@@ -17412,6 +17475,14 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
         "session.hello" => session_hello(state, &sender),
+        // Signaling for the peer carrier. Pinned to the carrier the client sent
+        // it on (spec §Signaling), so each of these needs the caller's own
+        // `SessionSender` too: the bridge's answer and its trickled candidates
+        // go back over the wire that is live now, never over the channels they
+        // negotiate.
+        "rtc.offer" => rtc_offer(state, &sender, &params),
+        "rtc.ice" => rtc_ice(state, sender.session_id(), &params),
+        "rtc.close" => rtc_close(state, sender.session_id()),
         "stream.start" => stream_start(state, &params),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
@@ -17490,6 +17561,67 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         Ok(result) => json!({ "id": id, "ok": true, "result": result }),
         Err(message) => json!({ "id": id, "ok": false, "error": message }),
     }
+}
+
+/// Answer the browser's offer for this session (spec §Signaling), opening the
+/// session's one peer connection if this is its first offer.
+///
+/// The ICE servers the browser fetched from the api ride with every offer and
+/// with nothing else, so the bridge needs no Cloudflare credential of its own
+/// and a restart carries fresh ones to the peer it already has.
+fn rtc_offer(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    params: &Value,
+) -> Result<Value, String> {
+    let sdp = require_str(params, "sdp")?;
+    let ice_servers = require_array(params, "ice_servers")?;
+    let peer = state
+        .lock()
+        .unwrap()
+        .session_peer(sender.session_id())
+        .map_err(|e| e.to_string())?;
+    let answer =
+        awaited(peer.answer(&sdp, &ice_servers, sender.clone())).map_err(|e| e.to_string())?;
+    Ok(json!({ "sdp": answer }))
+}
+
+/// Take one candidate the browser trickled for this session's peer.
+fn rtc_ice(
+    state: &Arc<Mutex<AppState>>,
+    session_id: &str,
+    params: &Value,
+) -> Result<Value, String> {
+    let candidate = params
+        .get("candidate")
+        .cloned()
+        .ok_or("missing required param: candidate")?;
+    let peer = state
+        .lock()
+        .unwrap()
+        .negotiating_peer(session_id)
+        .map_err(|e| e.to_string())?;
+    awaited(peer.add_remote_candidate(candidate)).map_err(|e| e.to_string())?;
+    Ok(json!({}))
+}
+
+/// The browser gave up on the peer carrier: tear this session's peer down and
+/// leave the session working over the relay.
+fn rtc_close(state: &Arc<Mutex<AppState>>, session_id: &str) -> Result<Value, String> {
+    let peer = state
+        .lock()
+        .unwrap()
+        .close_peer(session_id)
+        .map_err(|e| e.to_string())?;
+    awaited(peer.close());
+    Ok(json!({}))
+}
+
+/// Finish one peer-connection call inside a frame handler. Handlers run on the
+/// runtime's blocking pool (`carrier::dispatch`), so the peer's async work is
+/// awaited here rather than outliving the reply the client is waiting for.
+fn awaited<T>(work: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Handle::current().block_on(work)
 }
 
 /// Greet a browser session: announce what this bridge pushes, and subscribe the
@@ -45312,5 +45444,287 @@ mod tests {
                 json!({ "type": "entity.changed", "id": plan_id }),
             ]
         );
+    }
+
+    // ---- rtc.* signaling (spec §Signaling) ---------------------------------
+
+    /// A bridge whose peer connections are recorded rather than negotiated: the
+    /// shared state, its handler, and the factory a test reads to see what
+    /// reached the peer.
+    fn signaling_fixture(
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (
+        Arc<Mutex<AppState>>,
+        FrameHandler,
+        Arc<crate::rtc::recording::RecordingPeerFactory>,
+    ) {
+        let factory = crate::rtc::recording::RecordingPeerFactory::new();
+        let state = AppState::new(
+            repo.to_path_buf(),
+            dir.join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_peer_factory(factory.clone())
+        .shared();
+        let handler = AppState::handler(Arc::clone(&state));
+        (state, handler, factory)
+    }
+
+    /// Run one frame the way a carrier does: on a blocking thread of the
+    /// runtime, which is where a handler may finish a peer's async work.
+    async fn signal(
+        handler: &FrameHandler,
+        sender: &SessionSender,
+        method: &str,
+        params: Value,
+    ) -> Value {
+        let handler = handler.clone();
+        let sender = sender.clone();
+        let frame = req(method, params);
+        tokio::task::spawn_blocking(move || handler(sender, frame))
+            .await
+            .expect("the handler finished")
+    }
+
+    fn offer(sdp: &str) -> Value {
+        json!({
+            "sdp": sdp,
+            "ice_servers": [{ "urls": "stun:stun.cloudflare.com:3478" }],
+        })
+    }
+
+    /// The whole negotiation as the browser drives it: an offer answered from
+    /// the ICE servers it fetched, its candidates trickled to the bridge, and
+    /// the bridge's own trickled back over the carrier the offer arrived on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offer_is_answered_and_candidates_trickle_both_ways() {
+        let (dir, repo) = init_repo();
+        let (_state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, mut pushes, key) = SessionSender::observable("s-peer");
+
+        let answered = signal(&handler, &sender, "rtc.offer", offer("v=0 browser")).await;
+
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(answered["result"]["sdp"], "answer-to:v=0 browser");
+        let peer = factory
+            .peer_of("s-peer")
+            .expect("the session opened a peer");
+        assert_eq!(
+            peer.offers(),
+            vec![(
+                "v=0 browser".to_string(),
+                vec![json!({ "urls": "stun:stun.cloudflare.com:3478" })]
+            )],
+            "the offer reached the peer with the ICE servers the browser fetched"
+        );
+
+        let trickled = signal(
+            &handler,
+            &sender,
+            "rtc.ice",
+            json!({ "candidate": { "candidate": "candidate:1 1 udp", "sdpMid": "0" } }),
+        )
+        .await;
+        assert_eq!(trickled["ok"], true, "{trickled:?}");
+        assert_eq!(trickled["result"], json!({}));
+        assert_eq!(
+            peer.remote_candidates(),
+            vec![json!({ "candidate": "candidate:1 1 udp", "sdpMid": "0" })]
+        );
+
+        assert!(peer.trickle(json!({ "candidate": "candidate:2 1 udp" })));
+        let pushed = SessionSender::decrypt_push(
+            &key,
+            &pushes
+                .try_recv()
+                .expect("the bridge's candidate was pushed"),
+        );
+        assert_eq!(
+            pushed,
+            json!({ "type": "rtc.ice", "candidate": { "candidate": "candidate:2 1 udp" } })
+        );
+    }
+
+    /// One peer per E2EE session: a second offer reconfigures the peer the
+    /// first one built (that is the ICE restart fresh TURN credentials arrive
+    /// on), never a second peer for the same session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_offer_reconfigures_the_one_peer_the_session_has() {
+        let (dir, repo) = init_repo();
+        let (state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-restart");
+
+        let first = signal(&handler, &sender, "rtc.offer", offer("v=0 first")).await;
+        let restarted = signal(
+            &handler,
+            &sender,
+            "rtc.offer",
+            json!({ "sdp": "v=0 restart", "ice_servers": [{ "urls": "turn:turn.example:3478" }] }),
+        )
+        .await;
+
+        assert_eq!(first["result"]["sdp"], "answer-to:v=0 first");
+        assert_eq!(restarted["result"]["sdp"], "answer-to:v=0 restart");
+        assert_eq!(factory.opened_count(), 1, "one session, one peer");
+        assert_eq!(state.lock().unwrap().peers.len(), 1);
+        let peer = factory
+            .peer_of("s-restart")
+            .expect("the session has a peer");
+        assert_eq!(
+            peer.offers(),
+            vec![
+                (
+                    "v=0 first".to_string(),
+                    vec![json!({ "urls": "stun:stun.cloudflare.com:3478" })]
+                ),
+                (
+                    "v=0 restart".to_string(),
+                    vec![json!({ "urls": "turn:turn.example:3478" })]
+                ),
+            ],
+            "the restart carries its own ICE servers to the same peer"
+        );
+    }
+
+    /// A candidate for a session that never offered has nowhere to go: it is
+    /// refused rather than opening a peer nothing negotiated.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_candidate_before_any_offer_is_refused() {
+        let (dir, repo) = init_repo();
+        let (_state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-early");
+
+        let early = signal(
+            &handler,
+            &sender,
+            "rtc.ice",
+            json!({ "candidate": { "candidate": "candidate:1 1 udp" } }),
+        )
+        .await;
+
+        assert_eq!(early["ok"], false, "{early:?}");
+        assert_eq!(early["error"], "no peer connection for session s-early");
+        assert_eq!(factory.opened_count(), 0, "no peer was built to hold it");
+    }
+
+    /// The same for a close: a session with no peer connection has nothing to
+    /// tear down, and saying so leaves it free to offer afterwards.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_close_before_any_offer_is_refused_and_the_session_can_still_offer() {
+        let (dir, repo) = init_repo();
+        let (_state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-nothing");
+
+        let nothing = signal(&handler, &sender, "rtc.close", json!({})).await;
+
+        assert_eq!(nothing["ok"], false, "{nothing:?}");
+        assert_eq!(nothing["error"], "no peer connection for session s-nothing");
+
+        let answered = signal(&handler, &sender, "rtc.offer", offer("v=0 later")).await;
+        assert_eq!(answered["result"]["sdp"], "answer-to:v=0 later");
+        assert_eq!(factory.opened_count(), 1);
+    }
+
+    /// A close that arrives while the offer is still being answered wins: the
+    /// browser gave up on the upgrade, so the peer is closed and the session is
+    /// left with none — a live peer nobody asked for would keep an ICE
+    /// negotiation running for the life of the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_close_during_an_offer_leaves_no_peer_behind() {
+        let (dir, repo) = init_repo();
+        let (state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let gate = factory.hold_answers();
+        let (sender, _pushes, _key) = SessionSender::observable("s-abandoned");
+
+        let offering = tokio::spawn({
+            let handler = handler.clone();
+            let sender = sender.clone();
+            async move { signal(&handler, &sender, "rtc.offer", offer("v=0 abandoned")).await }
+        });
+        gate.wait_until_answering().await;
+
+        let closed = signal(&handler, &sender, "rtc.close", json!({})).await;
+        gate.release();
+        let answered = offering.await.expect("the offer was answered");
+
+        assert_eq!(closed["ok"], true, "{closed:?}");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        let peer = factory
+            .peer_of("s-abandoned")
+            .expect("the offer opened a peer");
+        assert!(peer.is_closed(), "the peer the close took is torn down");
+        assert!(
+            state.lock().unwrap().peers.is_empty(),
+            "the answer does not put a closed peer back"
+        );
+    }
+
+    /// A session's end is its peer's end: the close frame takes the peer out
+    /// and tears it down, so no ICE negotiation outlives the session that asked
+    /// for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_end_of_a_session_tears_down_its_peer() {
+        let (dir, repo) = init_repo();
+        let (state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-ending");
+        signal(&handler, &sender, "rtc.offer", offer("v=0 ending")).await;
+        let peer = factory.peer_of("s-ending").expect("the session has a peer");
+
+        let close = Frame {
+            session_id: "s-ending".into(),
+            message_id: "m".into(),
+            frame_type: transport::CLOSE_FRAME_TYPE.into(),
+            sender: "client".into(),
+            created_at: "t".into(),
+            payload: Value::Null,
+        };
+        let closing = handler.clone();
+        let closing_sender = sender.clone();
+        tokio::task::spawn_blocking(move || closing(closing_sender, close))
+            .await
+            .expect("the close ran");
+
+        assert!(state.lock().unwrap().peers.is_empty());
+        for _ in 0..100 {
+            if peer.is_closed() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(peer.is_closed(), "the session's end closed its peer");
+    }
+
+    /// A bridge with no peer transport built in refuses the offer, and the
+    /// client stays on the relay carrier.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bridge_with_no_peer_transport_refuses_the_offer() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-relay-only");
+
+        let refused = signal(&handler, &sender, "rtc.offer", offer("v=0 hopeful")).await;
+
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(refused["error"], "this bridge has no peer transport");
+        assert!(state.lock().unwrap().peers.is_empty());
+    }
+
+    /// The offer's two params are both required: a peer configured from no ICE
+    /// servers would silently negotiate host candidates only.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_offer_without_an_sdp_or_ice_servers_is_refused() {
+        let (dir, repo) = init_repo();
+        let (_state, handler, factory) = signaling_fixture(&repo, dir.path());
+        let (sender, _pushes, _key) = SessionSender::observable("s-malformed");
+
+        let no_sdp = signal(&handler, &sender, "rtc.offer", json!({ "ice_servers": [] })).await;
+        let no_servers = signal(&handler, &sender, "rtc.offer", json!({ "sdp": "v=0" })).await;
+
+        assert_eq!(no_sdp["error"], "missing required param: sdp");
+        assert_eq!(no_servers["error"], "missing required param: ice_servers");
+        assert_eq!(factory.opened_count(), 0);
     }
 }

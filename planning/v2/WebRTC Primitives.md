@@ -128,6 +128,15 @@ Three arms beside `session.hello` (they need the caller's own `SessionSender`), 
 out of the map and spawns its `close` — safe because `drop_session` now runs only on a real session end, never on a bare
 relay-socket loss.
 
+**Stage 2 notes.** Three things the stage needed that the component list did not name, each the smallest thing that
+would do. (1) `rtc::trickle_candidate(&signaling, candidate)` — the one home of the bridge→client push
+`{"type":"rtc.ice","candidate":…}`, so no implementor of `SessionPeer` writes that shape again. (2) `NoPeerFactory`, the
+factory an `AppState` carries until `main.rs` hands it a real one at stage 4: every `open` is refused, so a bridge with
+no peer transport answers `rtc.offer` with an error and its clients stay on the relay — the spec's own failure case,
+and no `Option<peer_factory>` for the call sites to branch on. (3) `rtc.ice` and `rtc.close` for a session that never
+offered are refused (`RtcError::NoPeer`), never answered by opening a peer nobody negotiated. `answer` is awaited from
+the handler's blocking thread (`app::awaited`), which is what keeps `dispatch_frame` synchronous.
+
 ### `chunk` — `bridge/src/rtc/chunk.rs` (new, stage 4)
 Pure, no I/O, one exported pair: `chunk::split(envelope_json: &str) -> Vec<String>` (the input unchanged under
 `CHUNK_BYTES`) and `chunk::Reassembler::accept(&mut self, text: &str) -> Result<Option<String>, ChunkError>`, erroring

@@ -837,14 +837,14 @@ impl Orchestrator {
         }
     }
 
-    /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize
-    /// it to their own viewport; this is what it paints into until one does.
     /// The one seam every checkout operation goes through, for callers that
     /// hold the orchestrator rather than the manager.
     pub fn worktrees(&self) -> &WorktreeManager {
         &self.worktrees
     }
 
+    /// The grid an agent PTY is spawned at (40 × 120). Attaching clients resize
+    /// it to their own viewport; this is what it paints into until one does.
     pub fn pty_size(&self) -> PtySize {
         self.pty_size
     }

@@ -3,7 +3,8 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{run_git, Isolation, IsolationBackend, WorktreeError};
+use super::{Isolation, IsolationBackend, WorktreeError};
+use crate::git_process::run_git;
 
 /// Materializes a checkout as a git linked worktree of the project repository.
 /// The project repo already holds every ref, so publishing and base-syncing are
@@ -63,7 +64,8 @@ impl IsolationBackend for WorktreeBackend {
         Ok(())
     }
 
-    fn remove(&self, project: &Path, path: &Path, name: &str) -> Result<(), WorktreeError> {
+    fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError> {
+        let name = directory_name(path)?;
         // The project repo is opened before the directory goes: a teardown that
         // cannot reach the registry would leave a record naming a directory it
         // can no longer prune, so it refuses while there is still nothing lost.
@@ -74,7 +76,7 @@ impl IsolationBackend for WorktreeBackend {
         // find_worktree on pruned bookkeeping surfaces as NotFound — sometimes
         // via a baffling "could not find '.git/shallow' to stat" — and either
         // spelling means the same thing: nothing left to prune.
-        match repo.find_worktree(name) {
+        match repo.find_worktree(&name) {
             Ok(registered) => {
                 let mut options = git2::WorktreePruneOptions::new();
                 options.valid(true).working_tree(true);
@@ -101,7 +103,8 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn prune(&self, project: &Path) -> Result<(), WorktreeError> {
-        run_git(project, &["worktree", "prune"]).map(|_| ())
+        run_git(project, &["worktree", "prune"])?;
+        Ok(())
     }
 
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError> {

@@ -12,7 +12,8 @@
 pub mod worktree;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+
+use crate::git_process::GitError;
 
 pub use worktree::WorktreeBackend;
 
@@ -27,26 +28,19 @@ pub enum WorktreeError {
     Command(String),
     #[error("not a Build checkout: {0}")]
     NotABuildCheckout(PathBuf),
+    /// An isolation this project cannot be checked out with here, in the words
+    /// the controls show. No git command ran, so it says only what it means.
+    #[error("{0}")]
+    IsolationUnavailable(String),
 }
 
-/// One git command in `dir`, its output or why it failed. git splits its story
-/// across streams (a conflicting merge reports "CONFLICT …" on stdout), so a
-/// failure carries both.
-pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
-    let out = Command::new("git").args(args).current_dir(dir).output()?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        return Err(WorktreeError::Command(format!(
-            "git {args:?}: {}",
-            detail.join("\n")
-        )));
+impl From<GitError> for WorktreeError {
+    fn from(error: GitError) -> Self {
+        match error {
+            GitError::Unstartable(io) => WorktreeError::Io(io),
+            GitError::Failed(detail) => WorktreeError::Command(detail),
+        }
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// How a checkout is isolated from the project it came from.
@@ -61,7 +55,7 @@ pub enum Isolation {
 }
 
 impl Isolation {
-    /// Every isolation there is, in the order the façade walks them.
+    /// Every isolation there is, in the order the façade keeps its backends in.
     pub const ALL: [Isolation; 2] = [Isolation::Worktree, Isolation::Cow];
 
     /// The word the wire, the settings file and the controls all use.
@@ -183,8 +177,11 @@ pub trait IsolationBackend: Send + Sync {
     /// On any failure nothing is left at `path`.
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError>;
 
-    /// The checkout at `path` is this backend's, belongs to `project`, and has
-    /// `branch` checked out.
+    /// Everything only this backend can check about the checkout at `path`:
+    /// that it is this backend's, that it belongs to `project`, and, where the
+    /// backend is the only thing that can tell, that it is on `branch`. The
+    /// checks every isolation shares — HEAD on the branch, HEAD at the
+    /// project's tip, a merge-base with the base — stay in `WorktreeManager`.
     fn verify(&self, project: &Path, path: &Path, branch: &str) -> Result<(), WorktreeError>;
 
     /// Make the checkout's tip of `branch` the project repo's `refs/heads/<branch>`.
@@ -200,9 +197,10 @@ pub trait IsolationBackend: Send + Sync {
         base_branch: &str,
     ) -> Result<(), WorktreeError>;
 
-    /// Delete the checkout at `path` and this backend's own record of it, where
-    /// `name` is the checkout's directory name. Absence is success.
-    fn remove(&self, project: &Path, path: &Path, name: &str) -> Result<(), WorktreeError>;
+    /// Delete the checkout at `path` and this backend's own record of it. A
+    /// checkout is named by its directory, so the name is the path's own and no
+    /// caller can pass one that disagrees with it. Absence is success.
+    fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError>;
 
     /// Canonical paths of every checkout of `project` this backend can find
     /// under `worktrees_root` or in its own records, the project's own checkout

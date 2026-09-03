@@ -149,9 +149,11 @@ pub trait IsolationBackend: Send + Sync {
         path: &Path,
     ) -> Result<(), WorktreeError>;
 
-    /// The checkout at `path` is this backend's, belongs to `project`, and has
-    /// `branch` checked out. Everything backend-specific about
-    /// `WorktreeManager::verify_existing_worktree` lives here.
+    /// Everything only this backend can check about the checkout at `path`:
+    /// that it is this backend's, that it belongs to `project`, and, where the
+    /// backend is the only thing that can tell, that it is on `branch`. The
+    /// checks every isolation shares (HEAD on the branch, HEAD at the project's
+    /// tip, a merge-base with the base) stay in `WorktreeManager`.
     fn verify(&self, project: &Path, path: &Path, branch: &str) -> Result<(), WorktreeError>;
 
     /// Make the checkout's tip of `branch` the project repo's `refs/heads/<branch>`.
@@ -162,9 +164,10 @@ pub trait IsolationBackend: Send + Sync {
     /// mean the same thing in both isolations.
     fn sync_base(&self, project: &Path, path: &Path, base_branch: &str) -> Result<(), WorktreeError>;
 
-    /// Delete the checkout at `path` and this backend's own record of it
-    /// (`name` is the checkout's directory name, §4.1). Absence is success.
-    fn remove(&self, project: &Path, path: &Path, name: &str) -> Result<(), WorktreeError>;
+    /// Delete the checkout at `path` and this backend's own record of it.
+    /// A checkout's name is its directory basename (§4.1), so the name is the
+    /// path's and no caller can pass one that disagrees. Absence is success.
+    fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError>;
 
     /// Canonical paths of every checkout of `project` this backend can find
     /// under `worktrees_root` or in git's records, the primary excluded.
@@ -236,7 +239,7 @@ impl WorktreeManager {
 
     // ---- everything else: keyed on `Isolation::of(&path)`, bar `remove_checkout` ----
     pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError>;
-    pub fn remove_checkout(&self, path: &Path, name: &str) -> Result<(), WorktreeError>;  // every backend's `remove`
+    pub fn remove_checkout(&self, path: &Path) -> Result<(), WorktreeError>;  // every backend's `remove`
     pub fn publish(&self, path: &Path, branch: &str) -> Result<(), WorktreeError>;
     pub fn sync_base(&self, path: &Path, base_branch: &str) -> Result<(), WorktreeError>;
     pub fn merge_into_base(&self, path: &Path, branch: &str, base_branch: &str)
@@ -274,9 +277,13 @@ Rules:
   of what the vanished checkout was. A vanished checkout's stale record is cleared
   by `prune` before `materialize`; a record whose directory still stands is not
   stale, and `materialize`'s own error is then the answer.
-- `remove` = `publish` when the checkout exists and `keep_branch` (a publish
-  failure fails the removal: an abandon must not lose the branch), then
-  `remove_checkout`, then `delete_branch_at` when `!keep_branch`.
+- `remove` = `publish` when there is a checkout at the path to publish from
+  (`Isolation::of` answers, so a directory that is no checkout is not a reason to
+  refuse to delete it) and `keep_branch` (a publish failure fails the removal: an
+  abandon must not lose the branch), then `remove_checkout`, then deletes the
+  branch outright when `!keep_branch` — a run teardown has no expected head to
+  guard on, and inventing one would refuse removals that succeed today (§0.6).
+  `delete_branch_at` is for callers that read a head first.
 - `remove_checkout` asks **every** backend's `remove`, never `backend_of`: a gone
   checkout has no `Isolation::of` to key on, and absence is success for every
   backend, so present and gone are one path and a stale `git worktree` entry is
@@ -301,16 +308,17 @@ Rules:
 still skips bare/prunable entries silently). A new
 
 ```rust
-pub fn describe_checkout(
-    project: &git2::Repository,
-    path: &Path,
-    base_branch: &str,
-    now: i64,
-) -> Option<ExternalWorktree>
+pub fn describe_checkout(path: &Path, base_branch: &str, now: i64) -> Option<ExternalWorktree>
 ```
 
 computes the summary from the checkout at `path` alone, so a clone and a linked
-worktree are described by one function. `ExternalWorktree` gains
+worktree are described by one function. It takes no project repository: every
+fact comes from the checkout, so the parameter would be unused. `Isolation::of`
+is the whole of the gate, which the project's own checkout cannot pass — it is
+nobody's isolated copy — so the summary itself is one function down,
+`summarize_checkout(path, isolation, base_branch, now)`, which `describe_checkout`
+calls through the gate and `WorktreeManager::describe_primary` calls with the
+default isolation. `ExternalWorktree` gains
 `pub isolation: Isolation` from `Isolation::of(path)?`: the function already
 answers `Option`, so a path that is not a Build checkout is described by nobody
 rather than described as a `Worktree` — the same condition `backend_of` answers

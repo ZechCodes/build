@@ -1,14 +1,18 @@
 use std::io::{Cursor, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::connection::{read_jsonl_frame, AppServerConnection, RequestContext};
+use super::connection::{read_jsonl_frame, AppServerConnection};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
-use super::protocol::{ConnectionEvent, PendingOperation, RpcError, ServerRequest, ServerResponse};
+use super::protocol::{
+    ClientNotification, ConnectionEvent, ItemType, PendingOperation, RpcError, ServerNotification,
+    ServerRequest, ServerResponse, TurnCompletion,
+};
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::{AgentActivity, AgentStatus, ToolOutcome};
@@ -39,7 +43,50 @@ fn initialized_state() -> CodexSessionState {
 }
 
 fn correlated(operation: PendingOperation, result: Result<Value, RpcError>) -> SessionEvent {
+    let result = match result {
+        Ok(value) => Ok(operation.decode_result(&value).unwrap()),
+        Err(error) => Err(error),
+    };
     SessionEvent::Connection(ConnectionEvent::Response { operation, result })
+}
+
+fn start_thread() -> PendingOperation {
+    PendingOperation::StartThread {
+        cwd: "/tmp/worktree".to_string(),
+        model: Some("gpt-5.6-sol".to_string()),
+    }
+}
+
+fn resume_thread() -> PendingOperation {
+    PendingOperation::ResumeThread {
+        thread_id: "thread-exact".to_string(),
+        cwd: "/tmp/worktree".to_string(),
+        model: Some("gpt-5.6-sol".to_string()),
+    }
+}
+
+fn start_turn(input: &str) -> PendingOperation {
+    PendingOperation::StartTurn {
+        thread_id: "thread-1".to_string(),
+        input: input.to_string(),
+        model: Some("gpt-5.6-sol".to_string()),
+        effort: Some("high".to_string()),
+    }
+}
+
+fn steer_turn(input: &str) -> PendingOperation {
+    PendingOperation::SteerTurn {
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-1".to_string(),
+        input: input.to_string(),
+    }
+}
+
+fn interrupt_turn() -> PendingOperation {
+    PendingOperation::InterruptTurn {
+        thread_id: "thread-1".to_string(),
+        turn_id: "turn-1".to_string(),
+    }
 }
 
 fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
@@ -61,7 +108,7 @@ fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
     state
         .transition(
             correlated(
-                PendingOperation::StartThread,
+                start_thread(),
                 Ok(json!({
                     "thread":{"id":"thread-1"},
                     "model":"gpt-5.6-sol",
@@ -82,7 +129,7 @@ fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
 fn correlation_resolves_out_of_order_to_typed_operations() {
     let connection = AppServerConnection::memory(limits());
     let first = connection.request(PendingOperation::Initialize).unwrap();
-    let second = connection.request(PendingOperation::StartThread).unwrap();
+    let second = connection.request(start_thread()).unwrap();
 
     let second_event = connection
         .decode(json!({"id":second,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":null,"cwd":"/tmp","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}))
@@ -94,7 +141,7 @@ fn correlation_resolves_out_of_order_to_typed_operations() {
     assert!(matches!(
         second_event,
         ConnectionEvent::Response {
-            operation: PendingOperation::StartThread,
+            operation: PendingOperation::StartThread { .. },
             ..
         }
     ));
@@ -126,12 +173,17 @@ fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
     small.pending_requests = 1;
     let connection = AppServerConnection::memory(small);
     connection.request(PendingOperation::Initialize).unwrap();
-    assert!(connection.request(PendingOperation::StartThread).is_err());
+    assert!(connection.request(start_thread()).is_err());
     assert_eq!(connection.pending_count(), 1);
 
     let failed = AppServerConnection::failing_writer(limits());
     assert!(failed.request(PendingOperation::Initialize).is_err());
     assert_eq!(failed.pending_count(), 0);
+    assert!(failed
+        .decode(json!({"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}))
+        .unwrap_err()
+        .to_string()
+        .contains("unknown response id 1"));
 
     let exhausted = AppServerConnection::memory(limits());
     exhausted.set_next_id(u64::MAX);
@@ -140,15 +192,11 @@ fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
 }
 
 #[test]
-fn request_parameter_failure_removes_its_pending_correlation() {
+fn bound_turn_request_needs_no_mutable_connection_context() {
     let connection = AppServerConnection::memory(limits());
 
-    assert!(connection
-        .request(PendingOperation::StartTurn {
-            input: "too early".to_string(),
-        })
-        .is_err());
-    assert_eq!(connection.pending_count(), 0);
+    assert!(connection.request(start_turn("too early")).is_ok());
+    assert_eq!(connection.pending_count(), 1);
 }
 
 #[derive(Clone)]
@@ -170,29 +218,14 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     let bytes = Arc::new(Mutex::new(Vec::new()));
     let connection = AppServerConnection::new(
         Box::new(CapturedWriter(Arc::clone(&bytes))),
-        RequestContext {
-            root: PathBuf::from("/tmp/worktree"),
-            model: Some("gpt-5.6-sol".to_string()),
-            effort: Some("high".to_string()),
-            resume_id: Some("thread-exact".to_string()),
-            thread_id: None,
-        },
         AppServerLimits::default(),
     );
     connection.request(PendingOperation::Initialize).unwrap();
-    connection.request(PendingOperation::ResumeThread).unwrap();
-    connection.set_thread_id("thread-exact".to_string());
-    connection
-        .request(PendingOperation::StartTurn {
-            input: "start".to_string(),
-        })
-        .unwrap();
-    connection
-        .request(PendingOperation::SteerTurn {
-            turn_id: "turn-1".to_string(),
-            input: "steer".to_string(),
-        })
-        .unwrap();
+    connection.request(resume_thread()).unwrap();
+    connection.request(start_turn("start")).unwrap();
+    connection.request(steer_turn("steer")).unwrap();
+    connection.request(interrupt_turn()).unwrap();
+    connection.notify(ClientNotification::Initialized).unwrap();
 
     let written = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     let frames = written
@@ -216,6 +249,10 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     assert!(frames[3]["params"].get("model").is_none());
     assert!(frames[3]["params"].get("effort").is_none());
     assert_eq!(frames[3]["params"]["expectedTurnId"], "turn-1");
+    assert_eq!(frames[4]["method"], "turn/interrupt");
+    assert_eq!(frames[4]["params"]["threadId"], "thread-1");
+    assert_eq!(frames[4]["params"]["turnId"], "turn-1");
+    assert_eq!(frames[5], json!({"method":"initialized"}));
 }
 
 #[test]
@@ -227,7 +264,7 @@ fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
     assert_eq!(connection.pending_count(), 0);
     assert!(connection.close().is_ok());
     assert!(connection.close().is_ok());
-    assert!(connection.notify("initialized", None).is_err());
+    assert!(connection.notify(ClientNotification::Initialized).is_err());
 }
 
 #[test]
@@ -303,6 +340,93 @@ fn initialize_version_floor_uses_only_the_leading_matching_component() {
 }
 
 #[test]
+fn version_probe_fallback_accepts_success_and_preserves_failure() {
+    let awaiting = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, &limits())
+        .unwrap()
+        .state
+        .transition(
+            correlated(
+                PendingOperation::Initialize,
+                Ok(json!({"userAgent":"unparseable"})),
+            ),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap();
+    assert_eq!(
+        awaiting.effects,
+        vec![SessionEffect::RequireVersionEvidence]
+    );
+    assert!(awaiting
+        .state
+        .transition(
+            SessionEvent::VersionEvidence(Ok("codex-cli 0.153.0".to_string())),
+            Duration::ZERO,
+            &limits(),
+        )
+        .is_ok());
+
+    let failure = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, &limits())
+        .unwrap()
+        .state
+        .transition(
+            correlated(PendingOperation::Initialize, Ok(json!({}))),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            SessionEvent::VersionEvidence(Err("exact probe failure".to_string())),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap_err();
+    assert!(failure.to_string().contains("exact probe failure"));
+}
+
+#[test]
+fn concurrent_version_probes_share_one_cached_result() {
+    let root = tempfile::tempdir().unwrap();
+    let binary = root.path().join("codex-probe");
+    let calls = root.path().join("calls");
+    std::fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\nprintf 'called\\n' >> '{}'\nsleep 0.05\nprintf 'codex-cli 0.153.0\\n'\n",
+            calls.display()
+        ),
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let barrier = Arc::new(Barrier::new(8));
+    let probes = (0..8)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let binary = binary.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                super::CodexAppServerHarness::probe_version(&binary)
+            })
+        })
+        .collect::<Vec<_>>();
+    for probe in probes {
+        assert_eq!(probe.join().unwrap().unwrap(), "codex-cli 0.153.0");
+    }
+    assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 1);
+
+    let missing = root.path().join("missing-codex");
+    let first = super::CodexAppServerHarness::probe_version(&missing).unwrap_err();
+    let second = super::CodexAppServerHarness::probe_version(&missing).unwrap_err();
+    assert_eq!(first, second);
+}
+
+#[test]
 fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
     let fresh = initialized_state();
     let resumed = CodexSessionState::new(
@@ -339,11 +463,11 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
         )
         .unwrap()
         .state;
-    let matching = notified.transition(correlated(PendingOperation::StartThread, Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, &limits()).unwrap();
+    let matching = notified.transition(correlated(start_thread(), Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, &limits()).unwrap();
     assert_eq!(matching.state.status(), AgentStatus::Waiting);
 
     let mismatch = opening.transition(SessionEvent::ThreadStarted("other".to_string()), Duration::ZERO, &limits()).unwrap().state
-        .transition(correlated(PendingOperation::StartThread, Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, &limits());
+        .transition(correlated(start_thread(), Ok(json!({"thread":{"id":"thread-1"},"model":"gpt-5.6-sol","reasoningEffort":null,"cwd":"/tmp/worktree","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}))), Duration::ZERO, &limits());
     assert!(mismatch.is_err());
 }
 
@@ -391,17 +515,137 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
     assert_eq!(completed.status(), AgentStatus::Working);
     let settled = completed
         .transition(
-            correlated(
-                PendingOperation::StartTurn {
-                    input: "go".to_string(),
-                },
-                Ok(json!({"turn":{"id":"turn-1"}})),
-            ),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
             Duration::from_secs(2),
             &limits(),
         )
         .unwrap();
     assert_eq!(settled.state.status(), AgentStatus::Waiting);
+}
+
+#[test]
+fn conflicting_duplicate_completion_is_rejected() {
+    let starting = advance_to_waiting(initialized_state())
+        .transition(
+            SessionEvent::SendTurn("go".to_string()),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    let completed = starting
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: Some("first failure".to_string()),
+            },
+            Duration::from_secs(1),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+
+    let normalized_duplicate = completed
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: Some("  first   failure\n".to_string()),
+            },
+            Duration::from_secs(2),
+            &limits(),
+        )
+        .unwrap();
+    assert!(normalized_duplicate.effects.is_empty());
+
+    assert!(normalized_duplicate
+        .state
+        .transition(
+            SessionEvent::ObservedCompletion(TurnCompletion::observed(
+                "turn-1".to_string(),
+                "interrupted".to_string(),
+                Some("first failure".to_string()),
+            )),
+            Duration::from_secs(3),
+            &limits(),
+        )
+        .is_err());
+
+    assert!(normalized_duplicate
+        .state
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: Some("different failure".to_string()),
+            },
+            Duration::from_secs(4),
+            &limits(),
+        )
+        .is_err());
+}
+
+#[test]
+fn completion_before_start_response_applies_accepted_turn_facts() {
+    let waiting = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, &limits())
+        .unwrap()
+        .state
+        .transition(
+            correlated(
+                PendingOperation::Initialize,
+                Ok(json!({"userAgent":"build_bridge/0.153.0"})),
+            ),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            correlated(
+                start_thread(),
+                Ok(json!({
+                    "thread":{"id":"thread-1"},
+                    "model":"gpt-5.6-sol",
+                    "reasoningEffort":"low",
+                    "cwd":"/tmp/worktree",
+                    "approvalPolicy":"never",
+                    "sandbox":{"type":"dangerFullAccess"}
+                })),
+            ),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(waiting.active_effort().as_deref(), Some("low"));
+    let starting = waiting
+        .transition(
+            SessionEvent::SendTurn("go".to_string()),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    let completed = starting
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: None,
+            },
+            Duration::from_secs(1),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    let settled = completed
+        .transition(
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
+            Duration::from_secs(2),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+
+    assert_eq!(settled.active_effort().as_deref(), Some("high"));
 }
 
 #[test]
@@ -423,12 +667,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
         .state;
     assert!(starting
         .transition(
-            correlated(
-                PendingOperation::StartTurn {
-                    input: "go".to_string()
-                },
-                Err(RpcError::new(-32000, "rejected"))
-            ),
+            correlated(start_turn("go"), Err(RpcError::new(-32000, "rejected"))),
             Duration::ZERO,
             &limits()
         )
@@ -444,12 +683,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
         .state;
     assert!(starting
         .transition(
-            correlated(
-                PendingOperation::StartTurn {
-                    input: "go".to_string()
-                },
-                Ok(json!({"turn":{"id":"turn-2"}}))
-            ),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-2"}}))),
             Duration::ZERO,
             &limits()
         )
@@ -510,19 +744,14 @@ fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
     let confirmed = failed
         .state
         .transition(
-            correlated(
-                PendingOperation::StartTurn {
-                    input: "go".to_string(),
-                },
-                Ok(json!({"turn":{"id":"turn-1"}})),
-            ),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
             Duration::from_secs(1),
             &limits(),
         )
         .unwrap();
     assert!(confirmed.effects.iter().any(|effect| matches!(
         effect,
-        SessionEffect::Request(PendingOperation::InterruptTurn { turn_id })
+        SessionEffect::Request(PendingOperation::InterruptTurn { turn_id, .. })
             if turn_id == "turn-1"
     )));
     assert!(!confirmed.state.can_interrupt());
@@ -539,12 +768,7 @@ fn working_state() -> CodexSessionState {
         .state;
     starting
         .transition(
-            correlated(
-                PendingOperation::StartTurn {
-                    input: "go".to_string(),
-                },
-                Ok(json!({"turn":{"id":"turn-1"}})),
-            ),
+            correlated(start_turn("go"), Ok(json!({"turn":{"id":"turn-1"}}))),
             Duration::ZERO,
             &limits(),
         )
@@ -576,13 +800,7 @@ fn steers_are_serialized_and_success_releases_input_in_order() {
     let released = queued
         .state
         .transition(
-            correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "one".to_string(),
-                },
-                Ok(json!({"turnId":"turn-1"})),
-            ),
+            correlated(steer_turn("one"), Ok(json!({"turnId":"turn-1"}))),
             Duration::ZERO,
             &limits(),
         )
@@ -616,10 +834,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
     let replayed = completed
         .transition(
             correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "next".to_string(),
-                },
+                steer_turn("next"),
                 Err(RpcError::new(-32600, "no active turn")),
             ),
             Duration::from_secs(2),
@@ -627,7 +842,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
         )
         .unwrap();
     assert!(
-        matches!(replayed.effects.as_slice(), [SessionEffect::Request(PendingOperation::StartTurn { input })] if input == "next")
+        matches!(replayed.effects.as_slice(), [SessionEffect::Request(PendingOperation::StartTurn { input, .. })] if input == "next")
     );
 
     let pending = working_state()
@@ -641,10 +856,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
     let provisional = pending
         .transition(
             correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "next".to_string(),
-                },
+                steer_turn("next"),
                 Err(RpcError::new(-32600, "no active turn")),
             ),
             Duration::from_secs(1),
@@ -663,7 +875,7 @@ fn steer_completion_race_replays_retained_input_exactly_once() {
             &limits(),
         )
         .unwrap();
-    assert!(replayed.effects.iter().any(|effect| matches!(effect, SessionEffect::Request(PendingOperation::StartTurn { input }) if input == "next")));
+    assert!(replayed.effects.iter().any(|effect| matches!(effect, SessionEffect::Request(PendingOperation::StartTurn { input, .. }) if input == "next")));
 }
 
 #[test]
@@ -689,13 +901,7 @@ fn successful_steer_after_completion_never_replays_input() {
         .state;
     let settled = completed
         .transition(
-            correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "accepted".to_string(),
-                },
-                Ok(json!({"turnId":"turn-1"})),
-            ),
+            correlated(steer_turn("accepted"), Ok(json!({"turnId":"turn-1"}))),
             Duration::from_secs(2),
             &limits(),
         )
@@ -764,13 +970,7 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
         .state;
     let steer_settled = completed
         .transition(
-            correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "steer".to_string(),
-                },
-                Ok(json!({"turnId":"turn-1"})),
-            ),
+            correlated(steer_turn("steer"), Ok(json!({"turnId":"turn-1"}))),
             Duration::from_secs(2),
             &limits(),
         )
@@ -779,12 +979,7 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
     let interrupt_settled = steer_settled
         .state
         .transition(
-            correlated(
-                PendingOperation::InterruptTurn {
-                    turn_id: "turn-1".to_string(),
-                },
-                Ok(json!({})),
-            ),
+            correlated(interrupt_turn(), Ok(json!({}))),
             Duration::from_secs(3),
             &limits(),
         )
@@ -793,7 +988,62 @@ fn steer_and_interrupt_completion_wait_for_both_correlated_responses() {
 }
 
 #[test]
-fn active_turn_not_steerable_waits_for_completion() {
+fn completion_before_interrupt_error_preserves_the_error_during_steer_reconciliation() {
+    let steering = working_state()
+        .transition(
+            SessionEvent::SendTurn("steer".to_string()),
+            Duration::ZERO,
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    let interrupted = steering
+        .transition(SessionEvent::Interrupt, Duration::ZERO, &limits())
+        .unwrap()
+        .state;
+    let completed = interrupted
+        .transition(
+            SessionEvent::TurnCompleted {
+                turn_id: "turn-1".to_string(),
+                error: None,
+            },
+            Duration::from_secs(1),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    let interrupt_failed = completed
+        .transition(
+            correlated(
+                interrupt_turn(),
+                Err(RpcError::new(-32000, "interrupt transport rejected")),
+            ),
+            Duration::from_secs(2),
+            &limits(),
+        )
+        .unwrap();
+    assert!(interrupt_failed.effects.iter().any(|effect| matches!(
+        effect,
+        SessionEffect::Report(report)
+            if matches!(&report.activity, AgentActivity::TaskUpdate { summary } if summary.contains("interrupt transport rejected"))
+    )));
+    let settled = interrupt_failed
+        .state
+        .transition(
+            correlated(steer_turn("steer"), Ok(json!({"turnId":"turn-1"}))),
+            Duration::from_secs(3),
+            &limits(),
+        )
+        .unwrap()
+        .state;
+    assert_eq!(
+        settled.epitaph().as_deref(),
+        Some("interrupt transport rejected")
+    );
+}
+
+#[test]
+fn active_turn_not_steerable_remains_an_unsupported_steer_error() {
     let pending = working_state()
         .transition(
             SessionEvent::SendTurn("next".to_string()),
@@ -802,13 +1052,10 @@ fn active_turn_not_steerable_waits_for_completion() {
         )
         .unwrap()
         .state;
-    let waiting = pending
+    let failure = pending
         .transition(
             correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "next".to_string(),
-                },
+                steer_turn("next"),
                 Err(RpcError::with_data(
                     -32600,
                     "cannot steer",
@@ -818,20 +1065,10 @@ fn active_turn_not_steerable_waits_for_completion() {
             Duration::from_secs(1),
             &limits(),
         )
-        .unwrap();
-    assert!(waiting.effects.is_empty());
-    let next = waiting
-        .state
-        .transition(
-            SessionEvent::TurnCompleted {
-                turn_id: "turn-1".to_string(),
-                error: None,
-            },
-            Duration::from_secs(2),
-            &limits(),
-        )
-        .unwrap();
-    assert!(next.effects.iter().any(|effect| matches!(effect, SessionEffect::Request(PendingOperation::StartTurn { input }) if input == "next")));
+        .unwrap_err();
+    assert!(failure
+        .to_string()
+        .contains("Codex did not deliver steer input"));
 }
 
 #[test]
@@ -891,12 +1128,7 @@ fn interrupt_is_idempotent_and_holds_replacement_until_completion() {
     let acked = queued
         .state
         .transition(
-            correlated(
-                PendingOperation::InterruptTurn {
-                    turn_id: "turn-1".to_string(),
-                },
-                Ok(json!({})),
-            ),
+            correlated(interrupt_turn(), Ok(json!({}))),
             Duration::from_secs(1),
             &limits(),
         )
@@ -913,7 +1145,7 @@ fn interrupt_is_idempotent_and_holds_replacement_until_completion() {
             &limits(),
         )
         .unwrap();
-    assert!(completed.effects.iter().any(|effect| matches!(effect, SessionEffect::Request(PendingOperation::StartTurn { input }) if input == "replacement")));
+    assert!(completed.effects.iter().any(|effect| matches!(effect, SessionEffect::Request(PendingOperation::StartTurn { input, .. }) if input == "replacement")));
 }
 
 #[test]
@@ -929,10 +1161,7 @@ fn reconciliation_timeout_fails_instead_of_guessing() {
     let provisional = pending
         .transition(
             correlated(
-                PendingOperation::SteerTurn {
-                    turn_id: "turn-1".to_string(),
-                    input: "next".to_string(),
-                },
+                steer_turn("next"),
                 Err(RpcError::new(-32600, "no active turn")),
             ),
             Duration::ZERO,
@@ -991,6 +1220,11 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
             ServerResponse::result(json!(7), expected)
         );
         assert_eq!(decision.after_response, after_response);
+        assert_eq!(
+            decision.report.is_some(),
+            method.contains("Approval"),
+            "{method}"
+        );
         assert!(!decision.response.to_value().to_string().contains("accept"));
     }
     for method in [
@@ -1047,6 +1281,100 @@ fn completed_speech_and_tools_translate_without_raw_payloads() {
     assert!(
         matches!(&completed[0].activity, AgentActivity::ToolResult { call_id, outcome: ToolOutcome::Ok, summary } if call_id == "c" && !summary.contains("secret"))
     );
+}
+
+#[test]
+fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained() {
+    let state = working_state();
+    let child_thread = ServerNotification::decode(
+        "thread/started",
+        json!({
+            "thread":{
+                "id":"thread-child",
+                "parentThreadId":"thread-1"
+            }
+        }),
+    )
+    .unwrap();
+    assert!(matches!(
+        child_thread,
+        ServerNotification::ThreadStarted {
+            parent_thread_id: Some(parent),
+            ..
+        } if parent == "thread-1"
+    ));
+    let child = ServerNotification::decode(
+        "item/started",
+        json!({
+            "threadId":"thread-child",
+            "turnId":"turn-child",
+            "item":{"id":"child-command","type":"commandExecution"}
+        }),
+    )
+    .unwrap();
+    let ServerNotification::Item(child_item) = child else {
+        panic!("expected a typed child item");
+    };
+    assert!(!state.parent_thread_matches(&child_item.thread_id));
+
+    let parent = ServerNotification::decode(
+        "item/completed",
+        json!({
+            "threadId":"thread-1",
+            "turnId":"turn-1",
+            "item":{
+                "id":"subagent",
+                "type":"subAgentActivity",
+                "agentPath":"worker",
+                "agentThreadId":"thread-child",
+                "kind":"completed"
+            }
+        }),
+    )
+    .unwrap();
+    let ServerNotification::Item(parent_item) = &parent else {
+        panic!("expected a typed parent item");
+    };
+    assert!(state.parent_thread_matches(&parent_item.thread_id));
+    assert_eq!(parent_item.item_type, ItemType::SubAgentActivity);
+    assert!(state
+        .transition(
+            SessionEvent::TurnStarted(parent_item.turn_id.clone()),
+            Duration::ZERO,
+            &limits(),
+        )
+        .is_ok());
+    let reports = CodexActivityTranslator::new(limits())
+        .translate_notification(&parent)
+        .unwrap();
+    assert!(matches!(
+        reports.as_slice(),
+        [crate::harness::ActivityReport {
+            activity: AgentActivity::TaskUpdate { .. },
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn speech_summaries_share_the_activity_summary_bound() {
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default());
+    for item in [
+        json!({"id":"r","type":"reasoning","summary":["x".repeat(1000)]}),
+        json!({"id":"n","type":"agentMessage","text":"y".repeat(1000)}),
+    ] {
+        let reports = translator
+            .translate(
+                "item/completed",
+                &json!({"threadId":"thread-1","turnId":"turn-1","item":item}),
+            )
+            .unwrap();
+        let summary = match &reports[0].activity {
+            AgentActivity::Reasoning { summary } | AgentActivity::Narration { summary } => summary,
+            other => panic!("expected speech report, got {other:?}"),
+        };
+        assert!(summary.chars().count() <= crate::harness::adk::TOOL_SUMMARY_LIMIT + 1);
+    }
 }
 
 #[test]

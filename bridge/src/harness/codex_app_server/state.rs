@@ -2,12 +2,13 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use semver::Version;
-use serde_json::Value;
-
 use super::limits::AppServerLimits;
-use super::protocol::{ConnectionEvent, PendingOperation, RpcError};
+use super::protocol::{
+    ConnectionEvent, InitializeResult, OperationResult, PendingOperation, RpcError,
+    ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult,
+};
 use crate::harness::{ActivityReport, AgentActivity, AgentStatus};
+use semver::Version;
 
 const CLIENT_NAME: &str = "build_bridge";
 const MINIMUM_VERSION: &str = "0.153.0";
@@ -31,10 +32,12 @@ pub enum SessionEvent {
     Connection(ConnectionEvent),
     ThreadStarted(String),
     TurnStarted(String),
+    #[cfg(test)]
     TurnCompleted {
         turn_id: String,
         error: Option<String>,
     },
+    ObservedCompletion(TurnCompletion),
     VersionEvidence(Result<String, String>),
     CheckTimeouts,
     FailTurn(String),
@@ -65,6 +68,7 @@ pub struct CodexSessionState {
     queued_turns: VecDeque<String>,
     queued_bytes: usize,
     last_completed_turn: Option<String>,
+    last_completion: Option<TurnCompletion>,
     reported_error: Option<String>,
 }
 
@@ -102,19 +106,13 @@ struct WorkingTurn {
 enum PendingSteer {
     Response { input: String },
     NoActiveTurn { input: String, since: Duration },
-    NotSteerable { input: String },
+    ReplayAfterInterrupt { input: String },
 }
 
 #[derive(Debug, Clone)]
 enum PendingInterrupt {
     Response,
     AwaitingCompletion,
-}
-
-#[derive(Debug, Clone)]
-struct TurnCompletion {
-    id: String,
-    error: Option<String>,
 }
 
 impl CodexSessionState {
@@ -136,6 +134,7 @@ impl CodexSessionState {
             queued_turns: VecDeque::new(),
             queued_bytes: 0,
             last_completed_turn: None,
+            last_completion: None,
             reported_error: None,
         }
     }
@@ -158,32 +157,102 @@ impl CodexSessionState {
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match event {
+            command @ (SessionEvent::Start
+            | SessionEvent::SendTurn(_)
+            | SessionEvent::Interrupt) => self.apply_command(command, limits),
+            SessionEvent::Connection(event) => self.apply_connection(event, now, limits),
+            lifecycle @ (SessionEvent::ThreadStarted(_)
+            | SessionEvent::TurnStarted(_)
+            | SessionEvent::ObservedCompletion(_)
+            | SessionEvent::Eof) => self.apply_lifecycle(lifecycle, now, limits),
+            #[cfg(test)]
+            lifecycle @ SessionEvent::TurnCompleted { .. } => {
+                self.apply_lifecycle(lifecycle, now, limits)
+            }
+            reconciliation @ (SessionEvent::VersionEvidence(_) | SessionEvent::CheckTimeouts) => {
+                self.apply_reconciliation(reconciliation, now, limits)
+            }
+            failure @ (SessionEvent::FailTurn(_) | SessionEvent::FailSession(_)) => {
+                self.apply_failure(failure)
+            }
+        }
+    }
+
+    fn apply_command(
+        &mut self,
+        command: SessionEvent,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        match command {
             SessionEvent::Start => self.start(),
             SessionEvent::SendTurn(input) => self.send_turn(input, limits),
             SessionEvent::Interrupt => self.interrupt(),
-            SessionEvent::Connection(ConnectionEvent::Response { operation, result }) => {
-                self.response(operation, result, now, limits)
-            }
-            SessionEvent::Connection(_) => Err(StateError(
-                "state received a non-response connection event".to_string(),
-            )),
+            _ => unreachable!(),
+        }
+    }
+
+    fn apply_lifecycle(
+        &mut self,
+        event: SessionEvent,
+        now: Duration,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        match event {
             SessionEvent::ThreadStarted(id) => self.thread_started(id, now),
             SessionEvent::TurnStarted(id) => self.turn_started(id, now),
+            #[cfg(test)]
             SessionEvent::TurnCompleted { turn_id, error } => {
-                self.turn_completed(turn_id, error, now, limits)
+                self.complete_turn(TurnCompletion::new(turn_id, error), now, limits)
             }
+            SessionEvent::ObservedCompletion(completion) => {
+                self.complete_turn(completion, now, limits)
+            }
+            SessionEvent::Eof => {
+                self.phase = Phase::Ended;
+                Ok(vec![SessionEffect::Close])
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn apply_connection(
+        &mut self,
+        event: ConnectionEvent,
+        now: Duration,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        match event {
+            ConnectionEvent::Response { operation, result } => {
+                self.response(operation, result, now, limits)
+            }
+            _ => Err(StateError(
+                "state received a non-response connection event".to_string(),
+            )),
+        }
+    }
+
+    fn apply_reconciliation(
+        &mut self,
+        event: SessionEvent,
+        now: Duration,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        match event {
             SessionEvent::VersionEvidence(version) => self.version_evidence(version),
             SessionEvent::CheckTimeouts => self.check_timeouts(now, limits),
+            _ => unreachable!(),
+        }
+    }
+
+    fn apply_failure(&mut self, event: SessionEvent) -> Result<Vec<SessionEffect>, StateError> {
+        match event {
             SessionEvent::FailTurn(reason) => self.fail_turn(reason),
             SessionEvent::FailSession(reason) => {
                 self.reported_error = Some(reason.clone());
                 self.phase = Phase::Ending;
                 Ok(vec![operational_report(reason), SessionEffect::Close])
             }
-            SessionEvent::Eof => {
-                self.phase = Phase::Ended;
-                Ok(vec![SessionEffect::Close])
-            }
+            _ => unreachable!(),
         }
     }
 
@@ -202,6 +271,7 @@ impl CodexSessionState {
         input: String,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        let thread_id = self.thread_id.clone();
         match &mut self.phase {
             Phase::Waiting => Ok(vec![self.begin_start_turn(input)]),
             Phase::Working(working) if working.interrupt.is_none() && working.steer.is_none() => {
@@ -209,6 +279,7 @@ impl CodexSessionState {
                     input: input.clone(),
                 });
                 Ok(vec![SessionEffect::Request(PendingOperation::SteerTurn {
+                    thread_id: thread_id.expect("an active turn has a thread"),
                     turn_id: working.id.clone(),
                     input,
                 })])
@@ -248,6 +319,7 @@ impl CodexSessionState {
     }
 
     fn interrupt(&mut self) -> Result<Vec<SessionEffect>, StateError> {
+        let thread_id = self.thread_id.clone();
         let Phase::Working(working) = &mut self.phase else {
             return Ok(Vec::new());
         };
@@ -257,6 +329,7 @@ impl CodexSessionState {
         working.interrupt = Some(PendingInterrupt::Response);
         Ok(vec![SessionEffect::Request(
             PendingOperation::InterruptTurn {
+                thread_id: thread_id.expect("an active turn has a thread"),
                 turn_id: working.id.clone(),
             },
         )])
@@ -265,30 +338,30 @@ impl CodexSessionState {
     fn response(
         &mut self,
         operation: PendingOperation,
-        result: Result<Value, RpcError>,
+        result: Result<OperationResult, RpcError>,
         now: Duration,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match operation {
-            PendingOperation::Initialize => self.initialize_response(result),
-            PendingOperation::StartThread | PendingOperation::ResumeThread => {
+            PendingOperation::Initialize => self.initialize_response(expect_initialize(result)?),
+            PendingOperation::StartThread { .. } | PendingOperation::ResumeThread { .. } => {
                 self.thread_response(operation, result, limits)
             }
-            PendingOperation::StartTurn { input } => {
+            PendingOperation::StartTurn { input, .. } => {
                 self.start_turn_response(input, result, limits)
             }
-            PendingOperation::SteerTurn { turn_id, input } => {
+            PendingOperation::SteerTurn { turn_id, input, .. } => {
                 self.steer_response(turn_id, input, result, now, limits)
             }
-            PendingOperation::InterruptTurn { turn_id } => {
-                self.interrupt_response(turn_id, result, limits)
+            PendingOperation::InterruptTurn { turn_id, .. } => {
+                self.interrupt_response(turn_id, expect_interrupted(result)?, limits)
             }
         }
     }
 
     fn initialize_response(
         &mut self,
-        result: Result<Value, RpcError>,
+        result: Result<InitializeResult, RpcError>,
     ) -> Result<Vec<SessionEffect>, StateError> {
         if !matches!(self.phase, Phase::Initializing) {
             return Err(StateError(
@@ -296,11 +369,11 @@ impl CodexSessionState {
             ));
         }
         let result = result.map_err(rpc_failure)?;
-        let Some(user_agent) = result["userAgent"].as_str() else {
+        let Some(user_agent) = result.user_agent else {
             self.phase = Phase::AwaitingVersion;
             return Ok(vec![SessionEffect::RequireVersionEvidence]);
         };
-        match check_user_agent(user_agent) {
+        match check_user_agent(&user_agent) {
             VersionCheck::Supported => self.finish_initialize(),
             VersionCheck::TooOld(observed) => Err(StateError(format!(
                 "Codex {observed} is unsupported; version 0.153.0 or newer is required"
@@ -341,9 +414,17 @@ impl CodexSessionState {
             observed_id: None,
             reconcile_since: None,
         };
-        let open = match self.resume_id {
-            Some(_) => PendingOperation::ResumeThread,
-            None => PendingOperation::StartThread,
+        let cwd = self.root.to_string_lossy().into_owned();
+        let open = match &self.resume_id {
+            Some(thread_id) => PendingOperation::ResumeThread {
+                thread_id: thread_id.clone(),
+                cwd,
+                model: self.selected_model.clone(),
+            },
+            None => PendingOperation::StartThread {
+                cwd,
+                model: self.selected_model.clone(),
+            },
         };
         Ok(vec![
             SessionEffect::NotifyInitialized,
@@ -379,10 +460,10 @@ impl CodexSessionState {
     fn thread_response(
         &mut self,
         operation: PendingOperation,
-        result: Result<Value, RpcError>,
+        result: Result<OperationResult, RpcError>,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let expected_resume = matches!(operation, PendingOperation::ResumeThread);
+        let expected_resume = matches!(operation, PendingOperation::ResumeThread { .. });
         if expected_resume != self.resume_id.is_some() {
             return Err(StateError(
                 "wrong thread-open response operation".to_string(),
@@ -394,7 +475,8 @@ impl CodexSessionState {
             ));
         };
         let observed = observed_id.clone();
-        let result = result.map_err(|error| {
+        let typed_result = expect_thread_opened(result)?;
+        let result = typed_result.map_err(|error| {
             if observed.is_some() {
                 StateError(format!(
                     "thread was announced and then open failed: {}",
@@ -405,45 +487,45 @@ impl CodexSessionState {
             }
         })?;
         self.verify_thread_settings(&result)?;
-        let id = required_string(&result, "/thread/id", "thread response id")?;
+        let id = result.thread.id;
         if observed.as_deref().is_some_and(|candidate| candidate != id) {
             return Err(StateError(format!(
                 "thread id mismatch: notification named {:?}, response named {id:?}",
                 observed.unwrap()
             )));
         }
-        self.thread_id = Some(id.to_string());
-        self.active_model = result["model"].as_str().map(str::to_string);
-        self.active_effort = result["reasoningEffort"].as_str().map(str::to_string);
+        self.thread_id = Some(id.clone());
+        self.active_model = Some(result.model);
+        self.active_effort = result.reasoning_effort;
         self.phase = Phase::Waiting;
-        let mut effects = vec![SessionEffect::ThreadReady(id.to_string())];
+        let mut effects = vec![SessionEffect::ThreadReady(id)];
         effects.extend(self.start_next_queued(limits));
         Ok(effects)
     }
 
-    fn verify_thread_settings(&self, result: &Value) -> Result<(), StateError> {
+    fn verify_thread_settings(&self, result: &ThreadOpenResult) -> Result<(), StateError> {
         let expected_cwd = self.root.to_string_lossy();
-        let actual_cwd = required_string(result, "/cwd", "thread cwd")?;
-        if actual_cwd != expected_cwd {
+        let actual_cwd = &result.cwd;
+        if actual_cwd != expected_cwd.as_ref() {
             return Err(StateError(format!(
                 "thread cwd mismatch: expected {expected_cwd:?}, got {actual_cwd:?}"
             )));
         }
-        if result["approvalPolicy"].as_str() != Some("never") {
+        if result.approval_policy != "never" {
             return Err(StateError(
                 "Codex did not apply approvalPolicy=never".to_string(),
             ));
         }
-        if result.pointer("/sandbox/type").and_then(Value::as_str) != Some("dangerFullAccess") {
+        if result.sandbox.kind != "dangerFullAccess" {
             return Err(StateError(
                 "Codex did not apply danger-full-access sandbox".to_string(),
             ));
         }
         if let Some(selected) = &self.selected_model {
-            if result["model"].as_str() != Some(selected) {
+            if result.model != *selected {
                 return Err(StateError(format!(
                     "Codex opened model {:?}, expected {selected:?}",
-                    result["model"]
+                    result.model
                 )));
             }
         }
@@ -458,13 +540,21 @@ impl CodexSessionState {
             interrupt_after_start: false,
             reconcile_since: None,
         };
-        SessionEffect::Request(PendingOperation::StartTurn { input })
+        SessionEffect::Request(PendingOperation::StartTurn {
+            thread_id: self
+                .thread_id
+                .clone()
+                .expect("a turn starts only after its thread is ready"),
+            input,
+            model: self.selected_model.clone(),
+            effort: self.selected_effort.clone(),
+        })
     }
 
     fn start_turn_response(
         &mut self,
         input: String,
-        result: Result<Value, RpcError>,
+        result: Result<OperationResult, RpcError>,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::StartingTurn {
@@ -487,7 +577,8 @@ impl CodexSessionState {
         let observed = observed_id.clone();
         let completed = completion.clone();
         let interrupt_after_start = *interrupt_after_start;
-        let result = result.map_err(|error| {
+        let typed_result = expect_turn_started(result)?;
+        let result = typed_result.map_err(|error| {
             if observed.is_some() || completed.is_some() {
                 StateError(format!(
                     "turn was observed and then turn/start failed: {}",
@@ -497,16 +588,16 @@ impl CodexSessionState {
                 rpc_failure(error)
             }
         })?;
-        let id = required_string(&result, "/turn/id", "turn/start response id")?;
-        ensure_optional_id(&observed, id, "turn/start")?;
+        let id = result.turn.id;
+        ensure_optional_id(&observed, &id, "turn/start")?;
+        self.active_model = self.selected_model.clone().or(self.active_model.clone());
+        self.active_effort = self.selected_effort.clone().or(self.active_effort.clone());
         if let Some(completion) = completed {
-            ensure_id(&completion.id, id, "completed turn")?;
+            ensure_id(&completion.turn_id, &id, "completed turn")?;
             self.finish_turn(completion, limits)
         } else {
-            self.active_model = self.selected_model.clone().or(self.active_model.clone());
-            self.active_effort = self.selected_effort.clone().or(self.active_effort.clone());
             self.phase = Phase::Working(WorkingTurn {
-                id: id.to_string(),
+                id: id.clone(),
                 steer: None,
                 interrupt: interrupt_after_start.then_some(PendingInterrupt::Response),
                 completion: None,
@@ -514,7 +605,8 @@ impl CodexSessionState {
             Ok(interrupt_after_start
                 .then(|| {
                     SessionEffect::Request(PendingOperation::InterruptTurn {
-                        turn_id: id.to_string(),
+                        thread_id: self.thread_id.clone().expect("an active turn has a thread"),
+                        turn_id: id,
                     })
                 })
                 .into_iter()
@@ -547,62 +639,84 @@ impl CodexSessionState {
         }
     }
 
-    fn turn_completed(
+    fn complete_turn(
         &mut self,
-        turn_id: String,
-        error: Option<String>,
+        completion: TurnCompletion,
         now: Duration,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        let completion = TurnCompletion { id: turn_id, error };
-        match &mut self.phase {
-            Phase::StartingTurn {
-                observed_id,
-                completion: held,
-                reconcile_since,
-                ..
-            } => {
-                establish_id(observed_id, &completion.id, "turn")?;
-                if let Some(existing) = held {
-                    ensure_id(&existing.id, &completion.id, "duplicate completion")?;
-                    return Ok(Vec::new());
-                }
-                *held = Some(completion);
-                reconcile_since.get_or_insert(now);
-                Ok(vec![SessionEffect::CloseTurn(
-                    observed_id.clone().expect("completion established an id"),
-                )])
-            }
-            Phase::Working(working) => {
-                ensure_id(&working.id, &completion.id, "turn/completed")?;
-                if working.completion.is_some() {
-                    return Ok(Vec::new());
-                }
-                let mut effects = vec![SessionEffect::CloseTurn(completion.id.clone())];
-                working.completion = Some(completion.clone());
-                let waits_for_response =
-                    matches!(working.steer, Some(PendingSteer::Response { .. }))
-                        || matches!(working.interrupt, Some(PendingInterrupt::Response));
-                if waits_for_response {
-                    return Ok(effects);
-                }
-                if let Some(steer) = working.steer.take() {
-                    let input = retained_steer_input(steer);
-                    effects.push(self.begin_start_turn(input));
-                    return Ok(effects);
-                }
-                effects.extend(self.finish_turn(completion, limits)?);
-                Ok(effects)
-            }
-            Phase::Waiting
-                if self.last_completed_turn.as_deref() == Some(completion.id.as_str()) =>
-            {
-                Ok(Vec::new())
-            }
-            _ => Err(StateError(format!(
-                "turn/completed named unexpected turn {}",
-                completion.id
-            ))),
+        if matches!(self.phase, Phase::StartingTurn { .. }) {
+            return self.complete_starting_turn(completion, now);
+        }
+        if matches!(self.phase, Phase::Working(_)) {
+            return self.complete_working_turn(completion, limits);
+        }
+        if matches!(self.phase, Phase::Waiting) {
+            return self.check_waiting_duplicate(completion);
+        }
+        Err(unexpected_completion(&completion))
+    }
+
+    fn complete_starting_turn(
+        &mut self,
+        completion: TurnCompletion,
+        now: Duration,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::StartingTurn {
+            observed_id,
+            completion: held,
+            reconcile_since,
+            ..
+        } = &mut self.phase
+        else {
+            unreachable!()
+        };
+        establish_id(observed_id, &completion.turn_id, "turn")?;
+        if let Some(existing) = held {
+            return duplicate_completion(existing, &completion);
+        }
+        *held = Some(completion);
+        reconcile_since.get_or_insert(now);
+        Ok(vec![SessionEffect::CloseTurn(
+            observed_id.clone().expect("completion established an id"),
+        )])
+    }
+
+    fn complete_working_turn(
+        &mut self,
+        completion: TurnCompletion,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &mut self.phase else {
+            unreachable!()
+        };
+        ensure_id(&working.id, &completion.turn_id, "turn/completed")?;
+        if let Some(existing) = &working.completion {
+            return duplicate_completion(existing, &completion);
+        }
+        let mut effects = vec![SessionEffect::CloseTurn(completion.turn_id.clone())];
+        working.completion = Some(completion.clone());
+        if pending_response(working) {
+            return Ok(effects);
+        }
+        if let Some(steer) = working.steer.take() {
+            effects.push(self.begin_start_turn(retained_steer_input(steer)));
+            return Ok(effects);
+        }
+        effects.extend(self.finish_turn(completion, limits)?);
+        Ok(effects)
+    }
+
+    fn check_waiting_duplicate(
+        &self,
+        completion: TurnCompletion,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        if self.last_completed_turn.as_deref() != Some(completion.turn_id.as_str()) {
+            return Err(unexpected_completion(&completion));
+        }
+        match &self.last_completion {
+            Some(existing) => duplicate_completion(existing, &completion),
+            None => Err(unexpected_completion(&completion)),
         }
     }
 
@@ -610,16 +724,39 @@ impl CodexSessionState {
         &mut self,
         operation_turn_id: String,
         operation_input: String,
-        result: Result<Value, RpcError>,
+        result: Result<OperationResult, RpcError>,
         now: Duration,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
+        let completion = self.take_pending_steer(&operation_turn_id, &operation_input)?;
+        match result {
+            Ok(OperationResult::TurnSteered(TurnSteerResult { turn_id })) => {
+                self.accept_steer(turn_id, completion, limits)
+            }
+            Err(error) if error.is_no_active_turn() => {
+                self.reconcile_no_active_turn(operation_input, completion, now)
+            }
+            Ok(_) => Err(StateError(
+                "turn/steer response body was mistyped".to_string(),
+            )),
+            Err(error) => Err(StateError(format!(
+                "Codex did not deliver steer input: {}",
+                error.message
+            ))),
+        }
+    }
+
+    fn take_pending_steer(
+        &mut self,
+        operation_turn_id: &str,
+        operation_input: &str,
+    ) -> Result<Option<TurnCompletion>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             return Err(StateError(
                 "turn/steer response arrived out of order".to_string(),
             ));
         };
-        ensure_id(&working.id, &operation_turn_id, "steer operation")?;
+        ensure_id(&working.id, operation_turn_id, "steer operation")?;
         let Some(PendingSteer::Response { input }) = working.steer.take() else {
             return Err(StateError(
                 "turn/steer response had no pending steer".to_string(),
@@ -630,61 +767,47 @@ impl CodexSessionState {
                 "turn/steer response input did not match".to_string(),
             ));
         }
-        let completion = working.completion.clone();
-        match result {
-            Ok(result) => {
-                let returned = required_string(&result, "/turnId", "turn/steer turn id")?;
-                ensure_id(&working.id, returned, "turn/steer response")?;
-                if let Some(completion) = completion {
-                    if working.interrupt.is_some() {
-                        return Ok(Vec::new());
-                    }
-                    return self.finish_turn(completion, limits);
-                }
-                self.release_next_steer(limits)
-            }
-            Err(error) if error.is_no_active_turn() => {
-                if let Some(completion) = completion {
-                    if working.interrupt.is_some() {
-                        working.steer = Some(PendingSteer::NotSteerable {
-                            input: operation_input,
-                        });
-                        Ok(Vec::new())
-                    } else {
-                        self.last_completed_turn = Some(completion.id);
-                        Ok(vec![self.begin_start_turn(operation_input)])
-                    }
-                } else {
-                    working.steer = Some(PendingSteer::NoActiveTurn {
-                        input: operation_input,
-                        since: now,
-                    });
-                    Ok(Vec::new())
-                }
-            }
-            Err(error) if error.is_active_turn_not_steerable() => {
-                if let Some(completion) = completion {
-                    if working.interrupt.is_some() {
-                        working.steer = Some(PendingSteer::NotSteerable {
-                            input: operation_input,
-                        });
-                        Ok(Vec::new())
-                    } else {
-                        self.last_completed_turn = Some(completion.id);
-                        Ok(vec![self.begin_start_turn(operation_input)])
-                    }
-                } else {
-                    working.steer = Some(PendingSteer::NotSteerable {
-                        input: operation_input,
-                    });
-                    Ok(Vec::new())
-                }
-            }
-            Err(error) => Err(StateError(format!(
-                "Codex did not deliver steer input: {}",
-                error.message
-            ))),
+        Ok(working.completion.clone())
+    }
+
+    fn accept_steer(
+        &mut self,
+        returned_turn_id: String,
+        completion: Option<TurnCompletion>,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &self.phase else {
+            unreachable!()
+        };
+        ensure_id(&working.id, &returned_turn_id, "turn/steer response")?;
+        if completion.is_some() && working.interrupt.is_some() {
+            return Ok(Vec::new());
         }
+        match completion {
+            Some(completion) => self.finish_turn(completion, limits),
+            None => self.release_next_steer(limits),
+        }
+    }
+
+    fn reconcile_no_active_turn(
+        &mut self,
+        input: String,
+        completion: Option<TurnCompletion>,
+        now: Duration,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &mut self.phase else {
+            unreachable!()
+        };
+        let Some(completion) = completion else {
+            working.steer = Some(PendingSteer::NoActiveTurn { input, since: now });
+            return Ok(Vec::new());
+        };
+        if working.interrupt.is_some() {
+            working.steer = Some(PendingSteer::ReplayAfterInterrupt { input });
+            return Ok(Vec::new());
+        }
+        self.remember_completion(completion);
+        Ok(vec![self.begin_start_turn(input)])
     }
 
     fn release_next_steer(
@@ -694,6 +817,7 @@ impl CodexSessionState {
         let Some(input) = self.pop_queue() else {
             return Ok(Vec::new());
         };
+        let thread_id = self.thread_id.clone().expect("an active turn has a thread");
         let Phase::Working(working) = &mut self.phase else {
             return Err(StateError(
                 "cannot release steer without active turn".to_string(),
@@ -708,6 +832,7 @@ impl CodexSessionState {
             input: input.clone(),
         });
         Ok(vec![SessionEffect::Request(PendingOperation::SteerTurn {
+            thread_id,
             turn_id: working.id.clone(),
             input,
         })])
@@ -716,7 +841,7 @@ impl CodexSessionState {
     fn interrupt_response(
         &mut self,
         operation_turn_id: String,
-        result: Result<Value, RpcError>,
+        result: Result<(), RpcError>,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
@@ -730,30 +855,24 @@ impl CodexSessionState {
                 "turn/interrupt response had no pending interrupt".to_string(),
             ));
         }
+        let completion = working.completion.clone();
+        if let Some(completion) = completion {
+            return self.interrupt_after_completion(completion, result, limits);
+        }
+        self.interrupt_before_completion(result)
+    }
+
+    fn interrupt_before_completion(
+        &mut self,
+        result: Result<(), RpcError>,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &mut self.phase else {
+            unreachable!()
+        };
         let accepted = result.is_ok()
             || result
                 .as_ref()
                 .is_err_and(|error| error.is_no_active_turn());
-        if let Some(completion) = working.completion.clone() {
-            if matches!(working.steer, Some(PendingSteer::Response { .. })) {
-                working.interrupt = None;
-                return Ok(Vec::new());
-            }
-            if let Some(steer) = working.steer.take() {
-                let input = retained_steer_input(steer);
-                self.last_completed_turn = Some(completion.id);
-                return Ok(vec![self.begin_start_turn(input)]);
-            }
-            if let Err(error) = result {
-                if !error.is_no_active_turn() {
-                    self.reported_error = Some(error.message.clone());
-                    let mut effects = self.finish_turn(completion, limits)?;
-                    effects.insert(0, operational_report(error.message));
-                    return Ok(effects);
-                }
-            }
-            return self.finish_turn(completion, limits);
-        }
         if accepted {
             working.interrupt = Some(PendingInterrupt::AwaitingCompletion);
             return Ok(Vec::new());
@@ -764,15 +883,65 @@ impl CodexSessionState {
         Ok(vec![operational_report(error.message)])
     }
 
+    fn interrupt_after_completion(
+        &mut self,
+        completion: TurnCompletion,
+        result: Result<(), RpcError>,
+        limits: &AppServerLimits,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        let Phase::Working(working) = &mut self.phase else {
+            unreachable!()
+        };
+        if matches!(working.steer, Some(PendingSteer::Response { .. })) {
+            working.interrupt = None;
+            return self.report_late_interrupt_error(result);
+        }
+        if let Some(steer) = working.steer.take() {
+            let input = retained_steer_input(steer);
+            self.remember_completion(completion);
+            return Ok(vec![self.begin_start_turn(input)]);
+        }
+        let report = match result {
+            Err(error) if !error.is_no_active_turn() => {
+                self.reported_error = Some(error.message.clone());
+                Some(operational_report(error.message))
+            }
+            _ => None,
+        };
+        let mut effects = self.finish_turn(completion, limits)?;
+        effects.splice(0..0, report);
+        Ok(effects)
+    }
+
+    fn report_late_interrupt_error(
+        &mut self,
+        result: Result<(), RpcError>,
+    ) -> Result<Vec<SessionEffect>, StateError> {
+        match result {
+            Err(error) if !error.is_no_active_turn() => {
+                self.reported_error = Some(error.message.clone());
+                Ok(vec![operational_report(error.message)])
+            }
+            _ => Ok(Vec::new()),
+        }
+    }
+
     fn finish_turn(
         &mut self,
         completion: TurnCompletion,
         limits: &AppServerLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
-        self.last_completed_turn = Some(completion.id);
-        self.reported_error = completion.error;
+        self.remember_completion(completion.clone());
+        if completion.error.is_some() {
+            self.reported_error = completion.error;
+        }
         self.phase = Phase::Waiting;
         Ok(self.start_next_queued(limits))
+    }
+
+    fn remember_completion(&mut self, completion: TurnCompletion) {
+        self.last_completed_turn = Some(completion.turn_id.clone());
+        self.last_completion = Some(completion);
     }
 
     fn start_next_queued(&mut self, _limits: &AppServerLimits) -> Vec<SessionEffect> {
@@ -871,8 +1040,24 @@ impl CodexSessionState {
         self.thread_id.clone()
     }
 
+    pub fn parent_thread_matches(&self, thread_id: &str) -> bool {
+        self.thread_id.as_deref() == Some(thread_id)
+            || matches!(
+                &self.phase,
+                Phase::OpeningThread {
+                    observed_id: Some(observed),
+                    ..
+                } if observed == thread_id
+            )
+    }
+
     pub fn active_model(&self) -> Option<String> {
         self.active_model.clone()
+    }
+
+    #[cfg(test)]
+    pub fn active_effort(&self) -> Option<String> {
+        self.active_effort.clone()
     }
 
     pub fn epitaph(&self) -> Option<String> {
@@ -926,26 +1111,89 @@ fn ensure_id(expected: &str, actual: &str, label: &str) -> Result<(), StateError
     }
 }
 
-fn required_string<'a>(
-    value: &'a Value,
-    pointer: &str,
-    label: &str,
-) -> Result<&'a str, StateError> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .ok_or_else(|| StateError(format!("{label} is missing")))
+fn duplicate_completion(
+    existing: &TurnCompletion,
+    duplicate: &TurnCompletion,
+) -> Result<Vec<SessionEffect>, StateError> {
+    if existing == duplicate {
+        Ok(Vec::new())
+    } else {
+        Err(StateError(format!(
+            "conflicting duplicate completion for turn {:?}",
+            duplicate.turn_id
+        )))
+    }
+}
+
+fn unexpected_completion(completion: &TurnCompletion) -> StateError {
+    StateError(format!(
+        "turn/completed named unexpected turn {}",
+        completion.turn_id
+    ))
+}
+
+fn pending_response(working: &WorkingTurn) -> bool {
+    matches!(working.steer, Some(PendingSteer::Response { .. }))
+        || matches!(working.interrupt, Some(PendingInterrupt::Response))
 }
 
 fn rpc_failure(error: RpcError) -> StateError {
     StateError(format!("JSON-RPC {}: {}", error.code, error.message))
 }
 
+fn expect_initialize(
+    result: Result<OperationResult, RpcError>,
+) -> Result<Result<InitializeResult, RpcError>, StateError> {
+    match result {
+        Ok(OperationResult::Initialize(result)) => Ok(Ok(result)),
+        Ok(_) => Err(StateError(
+            "initialize response body was mistyped".to_string(),
+        )),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
+fn expect_thread_opened(
+    result: Result<OperationResult, RpcError>,
+) -> Result<Result<ThreadOpenResult, RpcError>, StateError> {
+    match result {
+        Ok(OperationResult::ThreadOpened(result)) => Ok(Ok(result)),
+        Ok(_) => Err(StateError(
+            "thread-open response body was mistyped".to_string(),
+        )),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
+fn expect_turn_started(
+    result: Result<OperationResult, RpcError>,
+) -> Result<Result<TurnStartResult, RpcError>, StateError> {
+    match result {
+        Ok(OperationResult::TurnStarted(result)) => Ok(Ok(result)),
+        Ok(_) => Err(StateError(
+            "turn/start response body was mistyped".to_string(),
+        )),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
+fn expect_interrupted(
+    result: Result<OperationResult, RpcError>,
+) -> Result<Result<(), RpcError>, StateError> {
+    match result {
+        Ok(OperationResult::TurnInterrupted) => Ok(Ok(())),
+        Ok(_) => Err(StateError(
+            "turn/interrupt response body was mistyped".to_string(),
+        )),
+        Err(error) => Ok(Err(error)),
+    }
+}
+
 fn retained_steer_input(steer: PendingSteer) -> String {
     match steer {
         PendingSteer::Response { input }
         | PendingSteer::NoActiveTurn { input, .. }
-        | PendingSteer::NotSteerable { input } => input,
+        | PendingSteer::ReplayAfterInterrupt { input } => input,
     }
 }
 

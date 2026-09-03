@@ -78,35 +78,41 @@ impl AgentProvider {
 ///
 /// A mode this bridge has no carrier for answers `None`.
 pub fn carrier_of_claude_mode(mode: &str) -> Option<AgentProvider> {
-    match mode {
-        "headless" => Some(AgentProvider::ClaudeAdk),
-        "tui" => Some(AgentProvider::Claude),
-        _ => None,
-    }
+    carrier_of_mode(mode, AgentProvider::ClaudeAdk, AgentProvider::Claude)
 }
 
 /// The same mapping backwards, for the old key `settings.get` keeps serving.
 /// Only the terminal carrier is "tui"; every other default is the honest "not
 /// tui", which is also what the old key defaulted to.
 pub fn claude_mode_of_harness(harness: AgentProvider) -> &'static str {
-    match harness {
-        AgentProvider::Claude => "tui",
-        _ => "headless",
-    }
+    mode_of_harness(harness, AgentProvider::Claude)
 }
 
 pub fn carrier_of_codex_mode(mode: &str) -> Option<AgentProvider> {
+    carrier_of_mode(mode, AgentProvider::CodexAppServer, AgentProvider::Codex)
+}
+
+pub fn codex_mode_of_harness(harness: AgentProvider) -> &'static str {
+    mode_of_harness(harness, AgentProvider::Codex)
+}
+
+fn carrier_of_mode(
+    mode: &str,
+    headless: AgentProvider,
+    tui: AgentProvider,
+) -> Option<AgentProvider> {
     match mode {
-        "headless" => Some(AgentProvider::CodexAppServer),
-        "tui" => Some(AgentProvider::Codex),
+        "headless" => Some(headless),
+        "tui" => Some(tui),
         _ => None,
     }
 }
 
-pub fn codex_mode_of_harness(harness: AgentProvider) -> &'static str {
-    match harness {
-        AgentProvider::Codex => "tui",
-        _ => "headless",
+fn mode_of_harness(harness: AgentProvider, tui: AgentProvider) -> &'static str {
+    if harness == tui {
+        "tui"
+    } else {
+        "headless"
     }
 }
 

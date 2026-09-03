@@ -1,7 +1,7 @@
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,9 +15,38 @@ pub struct ConnectionPipes {
 }
 
 pub struct AppServerProcess {
-    child: Mutex<Option<Child>>,
-    exit_code: Mutex<Option<i32>>,
+    state: Mutex<ProcessState>,
     stderr: Arc<Mutex<StderrTail>>,
+}
+
+struct ProcessState {
+    child: Option<Box<dyn ChildControl>>,
+    exit_code: Option<i32>,
+    reaped: bool,
+    kill_sent: bool,
+    poll_failed: bool,
+    process_error: Option<String>,
+    shutdown_error: Option<String>,
+}
+
+trait ChildControl: Send {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn kill(&mut self) -> std::io::Result<()>;
+    fn wait(&mut self) -> std::io::Result<ExitStatus>;
+}
+
+impl ChildControl for Child {
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+
+    fn kill(&mut self) -> std::io::Result<()> {
+        Child::kill(self)
+    }
+
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        Child::wait(self)
+    }
 }
 
 impl AppServerProcess {
@@ -57,36 +86,59 @@ impl AppServerProcess {
         )));
         drain_stderr(stderr, Arc::clone(&retained));
         Ok((
-            AppServerProcess {
-                child: Mutex::new(Some(child)),
-                exit_code: Mutex::new(None),
-                stderr: retained,
-            },
+            AppServerProcess::new(Box::new(child), retained),
             ConnectionPipes { stdin, stdout },
         ))
     }
 
+    fn new(child: Box<dyn ChildControl>, stderr: Arc<Mutex<StderrTail>>) -> AppServerProcess {
+        AppServerProcess {
+            state: Mutex::new(ProcessState {
+                child: Some(child),
+                exit_code: None,
+                reaped: false,
+                kill_sent: false,
+                poll_failed: false,
+                process_error: None,
+                shutdown_error: None,
+            }),
+            stderr,
+        }
+    }
+
     pub fn exit_code(&self) -> Option<i32> {
-        if let Some(code) = *self.exit_code.lock().unwrap() {
-            return Some(code);
+        let mut state = self.state.lock().unwrap();
+        if state.exit_code.is_some() || state.reaped || state.poll_failed {
+            return state.exit_code;
         }
-        let observed = self
-            .child
-            .lock()
-            .unwrap()
-            .as_mut()
-            .and_then(|child| child.try_wait().ok().flatten())
-            .map(observed_code);
-        if let Some(code) = observed {
-            *self.exit_code.lock().unwrap() = Some(code);
+        let Some(child) = state.child.as_mut() else {
+            return state.exit_code;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = observed_code(status);
+                state.exit_code = Some(code);
+                state.reaped = true;
+                state.child = None;
+                Some(code)
+            }
+            Ok(None) => None,
+            Err(error) => {
+                state.poll_failed = true;
+                record_process_error(&mut state, format!("Codex try_wait failed: {error}"));
+                None
+            }
         }
-        observed
+    }
+
+    pub fn liveness_failed(&self) -> bool {
+        self.state.lock().unwrap().process_error.is_some()
     }
 
     pub fn exited_within(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.exit_code().is_some() {
+            if self.exit_code().is_some() || self.liveness_failed() {
                 return true;
             }
             if Instant::now() >= deadline {
@@ -100,33 +152,62 @@ impl AppServerProcess {
         self.stderr.lock().unwrap().epitaph()
     }
 
+    pub fn error_epitaph(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap()
+            .process_error
+            .clone()
+            .or_else(|| self.stderr.lock().unwrap().read_error.clone())
+    }
+
     pub fn shutdown(&self) -> Result<(), HarnessError> {
-        if self.exit_code.lock().unwrap().is_some() {
-            self.child.lock().unwrap().take();
-            return Ok(());
+        let mut state = self.state.lock().unwrap();
+        if state.reaped {
+            return cached_shutdown_result(&state);
         }
-        let Some(mut child) = self.child.lock().unwrap().take() else {
-            return Ok(());
+        let Some(mut child) = state.child.take() else {
+            state.reaped = true;
+            return cached_shutdown_result(&state);
         };
-        let status = match child.try_wait()? {
-            Some(status) => status,
-            None => {
-                let kill_error = child.kill().err();
-                match child.wait() {
-                    Ok(status) => status,
-                    Err(wait_error) => {
-                        return Err(HarnessError::Session(match kill_error {
-                            Some(kill_error) => format!(
-                                "could not kill Codex ({kill_error}) or reap it ({wait_error})"
-                            ),
-                            None => format!("could not reap Codex after killing it: {wait_error}"),
-                        }))
-                    }
+
+        let already_exited = if state.poll_failed {
+            None
+        } else {
+            match child.try_wait() {
+                Ok(status) => status,
+                Err(error) => {
+                    record_process_error(&mut state, format!("Codex try_wait failed: {error}"));
+                    None
                 }
             }
         };
-        *self.exit_code.lock().unwrap() = Some(observed_code(status));
-        Ok(())
+        if let Some(status) = already_exited {
+            state.exit_code = Some(observed_code(status));
+            state.reaped = true;
+            return cached_shutdown_result(&state);
+        }
+
+        let kill_error = if !state.kill_sent {
+            state.kill_sent = true;
+            child.kill().err()
+        } else {
+            None
+        };
+        match child.wait() {
+            Ok(status) => state.exit_code = Some(observed_code(status)),
+            Err(error) => {
+                let failure = match kill_error {
+                    Some(kill_error) => {
+                        format!("Codex kill failed: {kill_error}; Codex wait failed: {error}")
+                    }
+                    None => format!("Codex wait failed: {error}"),
+                };
+                record_process_error(&mut state, failure);
+            }
+        }
+        state.reaped = true;
+        cached_shutdown_result(&state)
     }
 }
 
@@ -136,31 +217,49 @@ impl Drop for AppServerProcess {
     }
 }
 
+fn cached_shutdown_result(state: &ProcessState) -> Result<(), HarnessError> {
+    match &state.shutdown_error {
+        Some(error) => Err(HarnessError::Session(error.clone())),
+        None => Ok(()),
+    }
+}
+
+fn record_process_error(state: &mut ProcessState, error: String) {
+    state.process_error.get_or_insert(error.clone());
+    state.shutdown_error.get_or_insert(error);
+}
+
 fn observed_code(status: ExitStatus) -> i32 {
     status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-fn drain_stderr(mut stderr: ChildStderr, retained: Arc<Mutex<StderrTail>>) {
-    std::thread::spawn(move || {
-        let mut buffer = [0_u8; 4096];
-        loop {
-            match stderr.read(&mut buffer) {
-                Ok(0) => {
-                    retained.lock().unwrap().finish_line();
-                    return;
+fn drain_stderr(reader: impl Read + Send + 'static, retained: Arc<Mutex<StderrTail>>) {
+    std::thread::spawn(move || drain_stderr_reader(reader, retained));
+}
+
+fn drain_stderr_reader(mut reader: impl Read, retained: Arc<Mutex<StderrTail>>) {
+    let mut buffer = [0_u8; 4096];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => {
+                retained.lock().unwrap().finish_line();
+                return;
+            }
+            Ok(read) => {
+                let mut tail = retained.lock().unwrap();
+                for byte in &buffer[..read] {
+                    tail.push(*byte);
                 }
-                Ok(read) => {
-                    let mut tail = retained.lock().unwrap();
-                    for byte in &buffer[..read] {
-                        tail.push(*byte);
-                    }
-                }
-                Err(_) => return,
+            }
+            Err(error) => {
+                retained.lock().unwrap().read_error =
+                    Some(format!("Codex stderr read failed: {error}"));
+                return;
             }
         }
-    });
+    }
 }
 
 struct StderrTail {
@@ -168,6 +267,7 @@ struct StderrTail {
     total_limit: usize,
     current: Vec<u8>,
     retained: Vec<u8>,
+    read_error: Option<String>,
 }
 
 impl StderrTail {
@@ -177,6 +277,7 @@ impl StderrTail {
             total_limit,
             current: Vec::new(),
             retained: Vec::new(),
+            read_error: None,
         }
     }
 
@@ -215,6 +316,10 @@ impl StderrTail {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Error;
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
 
     #[test]
@@ -243,5 +348,110 @@ mod tests {
         process.shutdown().unwrap();
         assert_eq!(process.exit_code(), first);
         assert!(first.is_some());
+    }
+
+    #[test]
+    fn concurrent_status_and_shutdown_kill_once_and_reap_once() {
+        let calls = Arc::new(FakeCalls::default());
+        let process = Arc::new(fake_process(FakeChild::running(Arc::clone(&calls))));
+        let status_process = Arc::clone(&process);
+        let status = std::thread::spawn(move || status_process.exit_code());
+        let end_process = Arc::clone(&process);
+        let end = std::thread::spawn(move || end_process.shutdown());
+        assert!(matches!(status.join().unwrap(), None | Some(0)));
+        end.join().unwrap().unwrap();
+        process.shutdown().unwrap();
+        assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
+        drop(process);
+        assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn signal_exit_has_a_stable_code() {
+        assert_eq!(observed_code(ExitStatus::from_raw(9)), 137);
+    }
+
+    #[test]
+    fn try_wait_and_stderr_read_errors_are_retained_exactly() {
+        let calls = Arc::new(FakeCalls::default());
+        let process = fake_process(FakeChild::try_wait_error(Arc::clone(&calls)));
+        assert_eq!(process.exit_code(), None);
+        assert_eq!(
+            process.error_epitaph().as_deref(),
+            Some("Codex try_wait failed: exact poll error")
+        );
+        assert!(process.exited_within(Duration::ZERO));
+        assert!(process.shutdown().is_err());
+        assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
+
+        struct FailedReader;
+        impl Read for FailedReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+                Err(Error::other("exact drain error"))
+            }
+        }
+        let retained = Arc::new(Mutex::new(StderrTail::new(16, 32)));
+        drain_stderr_reader(FailedReader, Arc::clone(&retained));
+        assert_eq!(
+            retained.lock().unwrap().read_error.as_deref(),
+            Some("Codex stderr read failed: exact drain error")
+        );
+    }
+
+    fn fake_process(child: FakeChild) -> AppServerProcess {
+        AppServerProcess::new(
+            Box::new(child),
+            Arc::new(Mutex::new(StderrTail::new(16, 32))),
+        )
+    }
+
+    #[derive(Default)]
+    struct FakeCalls {
+        kills: AtomicUsize,
+        waits: AtomicUsize,
+    }
+
+    struct FakeChild {
+        calls: Arc<FakeCalls>,
+        poll_error: bool,
+    }
+
+    impl FakeChild {
+        fn running(calls: Arc<FakeCalls>) -> FakeChild {
+            FakeChild {
+                calls,
+                poll_error: false,
+            }
+        }
+
+        fn try_wait_error(calls: Arc<FakeCalls>) -> FakeChild {
+            FakeChild {
+                calls,
+                poll_error: true,
+            }
+        }
+    }
+
+    impl ChildControl for FakeChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            if self.poll_error {
+                Err(Error::other("exact poll error"))
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.calls.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            self.calls.waits.fetch_add(1, Ordering::SeqCst);
+            Ok(ExitStatus::from_raw(0))
+        }
     }
 }

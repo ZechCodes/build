@@ -2236,10 +2236,6 @@ impl AppState {
                 if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
                     self.projects_dir = expand_tilde(dir);
                 }
-                // The new key first, then the one a bridge written before it
-                // saved: an upgrade in place keeps the human's choice with no
-                // migration step, and the old key is never written again. An
-                // absent key is the stated default.
                 if let Some(named) = cfg.get("default_harness").and_then(Value::as_str) {
                     match AgentProvider::from_wire(named) {
                         Some(harness) => self.default_harness = harness,
@@ -6585,10 +6581,8 @@ impl AppState {
         }))
     }
 
-    /// Every account setting this bridge holds. `claude_mode` and `codex_mode`
-    /// are derived rather than stored — the first is what a step-13 client
-    /// calls the default harness, the second is Codex's one mode — so there is
-    /// nothing to remember and nothing to migrate.
+    /// Every account setting this bridge holds. Legacy mode fields are derived
+    /// from the concrete default harness rather than stored separately.
     fn settings_get(&self) -> Value {
         json!({
             "projects_dir": self.projects_dir.display().to_string(),
@@ -6608,43 +6602,7 @@ impl AppState {
             Some(_) => Some(expand_tilde(&require_str(params, "projects_dir")?)),
             None => None,
         };
-        // A step-13 client names the same setting in an older vocabulary, so
-        // `claude_mode` is parsed into the harness it means. Both are parsed;
-        // the new key wins when a client sends both, because that is the one
-        // this bridge writes back.
-        let harness_named_as_a_claude_mode = match params.get("claude_mode") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(models::carrier_of_claude_mode(named).ok_or_else(|| {
-                    format!("unknown claude_mode {named:?} (expected \"headless\" or \"tui\")")
-                })?)
-            }
-            None => None,
-        };
-        let default_harness = match params.get("default_harness") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(AgentProvider::from_wire(named).ok_or_else(|| {
-                    format!(
-                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
-                         \"codex\" or \"codex_app_server\")"
-                    )
-                })?)
-            }
-            None => None,
-        };
-        let harness_named_as_a_codex_mode = match params.get("codex_mode") {
-            Some(named) => {
-                let named = named.as_str().unwrap_or_default();
-                Some(models::carrier_of_codex_mode(named).ok_or_else(|| {
-                    format!("unknown codex_mode {named:?} (expected \"headless\" or \"tui\")")
-                })?)
-            }
-            None => None,
-        };
-        let default_harness = default_harness
-            .or(harness_named_as_a_codex_mode)
-            .or(harness_named_as_a_claude_mode);
+        let default_harness = requested_default_harness(params)?;
         if projects_dir.is_none() && default_harness.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
@@ -15289,6 +15247,35 @@ fn require_str(params: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or_else(|| format!("missing required param: {key}"))
+}
+
+fn requested_default_harness(params: &Value) -> Result<Option<AgentProvider>, String> {
+    let parse_mode = |key: &str,
+                      mapping: fn(&str) -> Option<AgentProvider>|
+     -> Result<Option<AgentProvider>, String> {
+        let Some(value) = params.get(key) else {
+            return Ok(None);
+        };
+        let named = value.as_str().unwrap_or_default();
+        mapping(named)
+            .map(Some)
+            .ok_or_else(|| format!("unknown {key} {named:?} (expected \"headless\" or \"tui\")"))
+    };
+    let claude_mode = parse_mode("claude_mode", models::carrier_of_claude_mode)?;
+    let codex_mode = parse_mode("codex_mode", models::carrier_of_codex_mode)?;
+    let default_harness = params
+        .get("default_harness")
+        .map(|value| {
+            let named = value.as_str().unwrap_or_default();
+            AgentProvider::from_wire(named).ok_or_else(|| {
+                format!(
+                    "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                     \"codex\" or \"codex_app_server\")"
+                )
+            })
+        })
+        .transpose()?;
+    Ok(default_harness.or(codex_mode).or(claude_mode))
 }
 
 /// The detail polls' optional `thread_after_sequence` cursor. A missing or

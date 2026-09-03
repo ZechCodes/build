@@ -131,17 +131,6 @@ pub trait Harness: Send + Sync {
     }
 
     /// Whether a session opened for this provider offers a terminal.
-    ///
-    /// The provider answers because it is the only authority that exists BOTH
-    /// before and after a spawn: the rail decides whether to offer an agent a
-    /// basement while that agent is still idle, and the spawn decides which
-    /// carrier to open. One authority, one answer, so the rail never offers a
-    /// TUI button the spawn would then refuse.
-    ///
-    /// True by default, and true for every provider today: a CLI wrapper is
-    /// opaque — Build sees what it launched and what the agent reported, and
-    /// nothing in between — so it needs the escape hatch. A harness that
-    /// reports its own reasoning and tool calls has nothing to escape to.
     fn has_terminal(&self) -> bool {
         true
     }

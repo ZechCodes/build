@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::limits::AppServerLimits;
+use super::protocol::{ItemLifecycle, ItemNotification, ItemType, ServerNotification};
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
 
@@ -41,51 +42,96 @@ impl CodexActivityTranslator {
         }
     }
 
+    pub fn translate_notification(
+        &mut self,
+        notification: &ServerNotification,
+    ) -> Result<Vec<ActivityReport>, TranslationError> {
+        match notification {
+            ServerNotification::Item(item) => self.translate_item(item),
+            ServerNotification::Error(params) => Ok(error_report(params).into_iter().collect()),
+            ServerNotification::Unknown => {
+                self.unknown_events = self.unknown_events.saturating_add(1);
+                Ok(Vec::new())
+            }
+            ServerNotification::Delta
+            | ServerNotification::ThreadStarted { .. }
+            | ServerNotification::TurnStarted { .. }
+            | ServerNotification::TurnCompleted { .. } => Ok(Vec::new()),
+        }
+    }
+
+    #[cfg(test)]
     pub fn translate(
         &mut self,
         method: &str,
         params: &Value,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
-        match method {
-            "item/started" => self.item_started(params),
-            "item/completed" => self.item_completed(params),
-            "error" => Ok(error_report(params).into_iter().collect()),
-            known if known.contains("delta") => Ok(Vec::new()),
-            _ => {
-                self.unknown_events = self.unknown_events.saturating_add(1);
-                Ok(Vec::new())
+        let notification = ServerNotification::decode(method, params.clone())
+            .map_err(TranslationError::Malformed)?;
+        self.translate_notification(&notification)
+    }
+
+    fn translate_item(
+        &mut self,
+        notification: &ItemNotification,
+    ) -> Result<Vec<ActivityReport>, TranslationError> {
+        match notification.lifecycle {
+            ItemLifecycle::Started => self.item_started(notification),
+            ItemLifecycle::Completed => Ok(self.item_completed(notification)),
+        }
+    }
+
+    fn item_started(
+        &mut self,
+        notification: &ItemNotification,
+    ) -> Result<Vec<ActivityReport>, TranslationError> {
+        match notification.item_type {
+            ItemType::CommandExecution
+            | ItemType::FileChange
+            | ItemType::McpToolCall
+            | ItemType::WebSearch
+            | ItemType::ImageView
+            | ItemType::Sleep
+            | ItemType::ImageGeneration
+            | ItemType::CollabAgentToolCall => self.open_tool(notification, false),
+            ItemType::BuildMcpToolCall => self.open_tool(notification, true),
+            ItemType::SubAgentActivity | ItemType::ContextCompaction => {
+                Ok(task_report(notification, "started").into_iter().collect())
             }
+            ItemType::Reasoning
+            | ItemType::AgentMessage
+            | ItemType::DynamicToolCall
+            | ItemType::Unknown => Ok(Vec::new()),
         }
     }
 
-    fn item_started(&mut self, params: &Value) -> Result<Vec<ActivityReport>, TranslationError> {
-        let item = item(params)?;
-        let kind = item["type"].as_str().unwrap_or_default();
-        match classified_item(item, kind) {
-            ItemKind::Tool => self.open_tool(params, item, false),
-            ItemKind::BuildMcp => self.open_tool(params, item, true),
-            ItemKind::Task => Ok(task_report(item, "started").into_iter().collect()),
-            ItemKind::Deferred | ItemKind::Speech | ItemKind::Unknown => Ok(Vec::new()),
-        }
-    }
-
-    fn item_completed(&mut self, params: &Value) -> Result<Vec<ActivityReport>, TranslationError> {
-        let item = item(params)?;
-        let kind = item["type"].as_str().unwrap_or_default();
-        match classified_item(item, kind) {
-            ItemKind::Speech => Ok(speech_report(kind, item).into_iter().collect()),
-            ItemKind::Tool | ItemKind::BuildMcp => Ok(self.complete_tool(item)),
-            ItemKind::Task => Ok(task_report(item, "completed").into_iter().collect()),
-            ItemKind::Deferred | ItemKind::Unknown => Ok(Vec::new()),
+    fn item_completed(&mut self, notification: &ItemNotification) -> Vec<ActivityReport> {
+        match notification.item_type {
+            ItemType::Reasoning | ItemType::AgentMessage => {
+                speech_report(notification).into_iter().collect()
+            }
+            ItemType::CommandExecution
+            | ItemType::FileChange
+            | ItemType::BuildMcpToolCall
+            | ItemType::McpToolCall
+            | ItemType::WebSearch
+            | ItemType::ImageView
+            | ItemType::Sleep
+            | ItemType::ImageGeneration
+            | ItemType::CollabAgentToolCall => self.complete_tool(&notification.item),
+            ItemType::SubAgentActivity | ItemType::ContextCompaction => {
+                task_report(notification, "completed").into_iter().collect()
+            }
+            ItemType::DynamicToolCall | ItemType::Unknown => Vec::new(),
         }
     }
 
     fn open_tool(
         &mut self,
-        params: &Value,
-        item: &Value,
+        notification: &ItemNotification,
         suppressed: bool,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
+        let item = &notification.item;
         let id = required(item, "id")?;
         if self.open_tools.contains_key(id) {
             return Ok(Vec::new());
@@ -93,9 +139,8 @@ impl CodexActivityTranslator {
         if self.open_tools.len() >= self.limits.open_items {
             return Err(TranslationError::ItemCountLimit(self.limits.open_items));
         }
-        let turn_id = required(params, "turnId")?;
-        let summary = tool_summary(item);
-        let charge = id.len() + turn_id.len() + summary.len();
+        let summary = tool_summary(notification.item_type, item);
+        let charge = id.len() + notification.turn_id.len() + summary.len();
         if self.open_bytes.saturating_add(charge) > self.limits.open_item_bytes {
             return Err(TranslationError::ItemBytesLimit(
                 self.limits.open_item_bytes,
@@ -104,7 +149,7 @@ impl CodexActivityTranslator {
         self.open_tools.insert(
             id.to_string(),
             OpenTool {
-                turn_id: turn_id.to_string(),
+                turn_id: notification.turn_id.clone(),
                 summary: summary.clone(),
                 suppressed,
                 charge,
@@ -131,14 +176,15 @@ impl CodexActivityTranslator {
         if open.suppressed {
             return Vec::new();
         }
+        let outcome = tool_outcome(item);
         vec![ActivityReport::own_work(AgentActivity::ToolResult {
             call_id: id.to_string(),
-            outcome: tool_outcome(item),
+            outcome,
             summary: one_line(
                 &format!(
                     "{} {}",
                     open.summary,
-                    match tool_outcome(item) {
+                    match outcome {
                         ToolOutcome::Ok => "completed",
                         ToolOutcome::Error => "failed",
                         ToolOutcome::Unanswered => "unanswered",
@@ -190,59 +236,15 @@ impl CodexActivityTranslator {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ItemKind {
-    Speech,
-    Tool,
-    BuildMcp,
-    Task,
-    Deferred,
-    Unknown,
-}
-
-fn item_kind(kind: &str) -> ItemKind {
-    match kind {
-        "reasoning" | "agentMessage" => ItemKind::Speech,
-        "commandExecution"
-        | "fileChange"
-        | "webSearch"
-        | "imageView"
-        | "sleep"
-        | "imageGeneration"
-        | "collabAgentToolCall" => ItemKind::Tool,
-        "subAgentActivity" | "contextCompaction" => ItemKind::Task,
-        "dynamicToolCall" => ItemKind::Deferred,
-        _ => ItemKind::Unknown,
-    }
-}
-
-fn classified_item(item: &Value, kind: &str) -> ItemKind {
-    match kind {
-        "mcpToolCall" => mcp_kind(item),
-        _ => item_kind(kind),
-    }
-}
-
-fn item(params: &Value) -> Result<&Value, TranslationError> {
-    let item = params
-        .get("item")
-        .filter(|item| item.is_object())
-        .ok_or_else(|| TranslationError::Malformed("item is missing".to_string()))?;
-    if item["type"].as_str() == Some("mcpToolCall") {
-        return Ok(item);
-    }
-    Ok(item)
-}
-
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str, TranslationError> {
     value[field]
         .as_str()
         .ok_or_else(|| TranslationError::Malformed(format!("{field} is missing")))
 }
 
-fn speech_report(kind: &str, item: &Value) -> Option<ActivityReport> {
-    let summary = match kind {
-        "reasoning" => item["summary"]
+fn speech_report(notification: &ItemNotification) -> Option<ActivityReport> {
+    let summary = match notification.item_type {
+        ItemType::Reasoning => notification.item["summary"]
             .as_array()
             .map(|parts| {
                 parts
@@ -257,38 +259,43 @@ fn speech_report(kind: &str, item: &Value) -> Option<ActivityReport> {
                     .join("\n")
             })
             .unwrap_or_default(),
-        "agentMessage" => item["text"].as_str().unwrap_or_default().trim().to_string(),
-        _ => String::new(),
+        ItemType::AgentMessage => notification.item["text"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        _ => return None,
     };
     if summary.is_empty() {
         return None;
     }
-    let activity = match kind {
-        "reasoning" => AgentActivity::Reasoning { summary },
-        _ => AgentActivity::Narration { summary },
+    let summary = one_line(&summary, TOOL_SUMMARY_LIMIT);
+    let activity = match notification.item_type {
+        ItemType::Reasoning => AgentActivity::Reasoning { summary },
+        ItemType::AgentMessage => AgentActivity::Narration { summary },
+        _ => unreachable!(),
     };
     Some(ActivityReport::own_work(activity))
 }
 
-fn tool_summary(item: &Value) -> String {
-    let kind = item["type"].as_str().unwrap_or("Tool");
-    let summary = match kind {
-        "commandExecution" => "Command".to_string(),
-        "fileChange" => "File change".to_string(),
-        "mcpToolCall" => format!(
+fn tool_summary(item_type: ItemType, item: &Value) -> String {
+    let summary = match item_type {
+        ItemType::CommandExecution => "Command".to_string(),
+        ItemType::FileChange => "File change".to_string(),
+        ItemType::BuildMcpToolCall | ItemType::McpToolCall => format!(
             "MCP {}.{}",
             item["server"].as_str().unwrap_or("server"),
             item["tool"].as_str().unwrap_or("tool")
         ),
-        "webSearch" => "Web search".to_string(),
-        "imageView" => "Image view".to_string(),
-        "sleep" => "Sleep".to_string(),
-        "imageGeneration" => "Image generation".to_string(),
-        "collabAgentToolCall" => format!(
+        ItemType::WebSearch => "Web search".to_string(),
+        ItemType::ImageView => "Image view".to_string(),
+        ItemType::Sleep => "Sleep".to_string(),
+        ItemType::ImageGeneration => "Image generation".to_string(),
+        ItemType::CollabAgentToolCall => format!(
             "Collaboration {}",
             item["tool"].as_str().unwrap_or("activity")
         ),
-        _ => kind.to_string(),
+        _ => "Tool".to_string(),
     };
     one_line(&summary, TOOL_SUMMARY_LIMIT)
 }
@@ -306,15 +313,16 @@ fn tool_outcome(item: &Value) -> ToolOutcome {
     }
 }
 
-fn task_report(item: &Value, lifecycle: &str) -> Option<ActivityReport> {
-    let kind = item["type"].as_str()?;
-    let summary = match kind {
-        "subAgentActivity" => format!(
+fn task_report(notification: &ItemNotification, lifecycle: &str) -> Option<ActivityReport> {
+    let summary = match notification.item_type {
+        ItemType::SubAgentActivity => format!(
             "{} - {}",
-            item["agentPath"].as_str().unwrap_or("Sub-agent"),
-            item["kind"].as_str().unwrap_or(lifecycle)
+            notification.item["agentPath"]
+                .as_str()
+                .unwrap_or("Sub-agent"),
+            notification.item["kind"].as_str().unwrap_or(lifecycle)
         ),
-        "contextCompaction" => format!("Context compaction {lifecycle}"),
+        ItemType::ContextCompaction => format!("Context compaction {lifecycle}"),
         _ => return None,
     };
     Some(ActivityReport::own_work(AgentActivity::TaskUpdate {
@@ -332,11 +340,4 @@ fn error_report(params: &Value) -> Option<ActivityReport> {
             summary: one_line(message, TOOL_SUMMARY_LIMIT),
         })
     })
-}
-
-fn mcp_kind(item: &Value) -> ItemKind {
-    match item["server"].as_str() {
-        Some("build") => ItemKind::BuildMcp,
-        _ => ItemKind::Tool,
-    }
 }

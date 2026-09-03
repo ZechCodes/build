@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::limits::AppServerLimits;
 use super::protocol::{
-    ConnectionEvent, PendingOperation, RequestId, RpcError, ServerNotification, ServerRequest,
-    ServerResponse,
+    ClientNotification, ConnectionEvent, PendingOperation, RequestId, RpcError, ServerNotification,
+    ServerRequest, ServerResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -33,57 +33,26 @@ pub enum ConnectionError {
     Io(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone)]
-pub struct RequestContext {
-    pub root: PathBuf,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub resume_id: Option<String>,
-    pub thread_id: Option<String>,
-}
-
-impl Default for RequestContext {
-    fn default() -> Self {
-        RequestContext {
-            root: PathBuf::from("/tmp"),
-            model: None,
-            effort: None,
-            resume_id: None,
-            thread_id: None,
-        }
-    }
-}
-
 pub struct AppServerConnection {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     pending: Mutex<BTreeMap<RequestId, PendingOperation>>,
     next_id: Mutex<RequestId>,
-    context: Mutex<RequestContext>,
     limits: AppServerLimits,
 }
 
 impl AppServerConnection {
-    pub fn new(
-        writer: Box<dyn Write + Send>,
-        context: RequestContext,
-        limits: AppServerLimits,
-    ) -> AppServerConnection {
+    pub fn new(writer: Box<dyn Write + Send>, limits: AppServerLimits) -> AppServerConnection {
         AppServerConnection {
             writer: Mutex::new(Some(writer)),
             pending: Mutex::new(BTreeMap::new()),
             next_id: Mutex::new(1),
-            context: Mutex::new(context),
             limits,
         }
     }
 
     #[cfg(test)]
     pub fn memory(limits: AppServerLimits) -> AppServerConnection {
-        AppServerConnection::new(
-            Box::new(Vec::<u8>::new()),
-            RequestContext::default(),
-            limits,
-        )
+        AppServerConnection::new(Box::new(Vec::<u8>::new()), limits)
     }
 
     #[cfg(test)]
@@ -96,72 +65,86 @@ impl AppServerConnection {
                     "injected",
                 ))
             }
+
             fn flush(&mut self) -> std::io::Result<()> {
                 Ok(())
             }
         }
-        AppServerConnection::new(Box::new(Fails), RequestContext::default(), limits)
+        AppServerConnection::new(Box::new(Fails), limits)
     }
 
     pub fn request(&self, operation: PendingOperation) -> Result<RequestId, ConnectionError> {
-        let params = operation_params(&operation, &self.context.lock().unwrap())?;
-        let request_id = self.reserve(operation.clone())?;
-        let frame = json!({"id":request_id,"method":operation.method(),"params":params});
-        if let Err(error) = self.write(frame) {
-            self.pending.lock().unwrap().remove(&request_id);
+        let mut pending = self.pending.lock().unwrap();
+        if pending.len() >= self.limits.pending_requests {
+            return Err(ConnectionError::PendingLimit(self.limits.pending_requests));
+        }
+        let request_id = self.allocate_request_id()?;
+        pending.insert(request_id, operation.clone());
+        if let Err(error) = self.write_operation(request_id, &operation) {
+            pending.remove(&request_id);
             return Err(error);
         }
         Ok(request_id)
     }
 
-    fn reserve(&self, operation: PendingOperation) -> Result<RequestId, ConnectionError> {
-        let mut pending = self.pending.lock().unwrap();
-        if pending.len() >= self.limits.pending_requests {
-            return Err(ConnectionError::PendingLimit(self.limits.pending_requests));
-        }
+    fn allocate_request_id(&self) -> Result<RequestId, ConnectionError> {
         let mut next_id = self.next_id.lock().unwrap();
         let request_id = *next_id;
         *next_id = next_id
             .checked_add(1)
             .ok_or(ConnectionError::RequestIdExhausted)?;
-        pending.insert(request_id, operation);
         Ok(request_id)
     }
 
-    pub fn notify(&self, method: &str, params: Option<Value>) -> Result<(), ConnectionError> {
-        let frame = match params {
-            Some(params) => json!({"method":method,"params":params}),
-            None => json!({"method":method}),
-        };
-        self.write(frame)
+    pub fn notify(&self, notification: ClientNotification) -> Result<(), ConnectionError> {
+        self.write_serialized(&notification)
     }
 
     pub fn respond(&self, response: ServerResponse) -> Result<(), ConnectionError> {
-        self.write(response.to_value())
+        self.write_serialized(&response)
     }
 
-    fn write(&self, value: Value) -> Result<(), ConnectionError> {
-        let mut encoded = serde_json::to_vec(&value)?;
-        if encoded.len() > self.limits.outbound_frame_bytes {
+    fn write_operation(
+        &self,
+        request_id: RequestId,
+        operation: &PendingOperation,
+    ) -> Result<(), ConnectionError> {
+        let mut encoded = CappedBuffer::new(self.limits.outbound_frame_bytes);
+        let result = operation.serialize_request(request_id, &mut encoded);
+        self.finish_serialization(encoded, result)
+    }
+
+    fn write_serialized(&self, value: &impl Serialize) -> Result<(), ConnectionError> {
+        let mut encoded = CappedBuffer::new(self.limits.outbound_frame_bytes);
+        let result = serde_json::to_writer(&mut encoded, value);
+        self.finish_serialization(encoded, result)
+    }
+
+    fn finish_serialization(
+        &self,
+        mut encoded: CappedBuffer,
+        result: Result<(), serde_json::Error>,
+    ) -> Result<(), ConnectionError> {
+        if encoded.exceeded {
             return Err(ConnectionError::FrameTooLarge(
                 self.limits.outbound_frame_bytes,
             ));
         }
-        encoded.push(b'\n');
+        result?;
+        encoded.bytes.push(b'\n');
         let mut writer = self.writer.lock().unwrap();
         let writer = writer.as_mut().ok_or(ConnectionError::Closed)?;
-        writer.write_all(&encoded)?;
+        writer.write_all(&encoded.bytes)?;
         writer.flush()?;
         Ok(())
     }
 
     pub fn close(&self) -> Result<(), ConnectionError> {
-        self.writer.lock().unwrap().take();
+        let Some(mut writer) = self.writer.lock().unwrap().take() else {
+            return Ok(());
+        };
+        writer.flush()?;
         Ok(())
-    }
-
-    pub fn set_thread_id(&self, thread_id: String) {
-        self.context.lock().unwrap().thread_id = Some(thread_id);
     }
 
     pub fn decode(&self, value: Value) -> Result<ConnectionEvent, ConnectionError> {
@@ -201,10 +184,10 @@ impl AppServerConnection {
                 ConnectionError::Protocol(format!("unknown response id {request_id}"))
             })?;
         let body = match (result, error) {
-            (Some(result), None) => {
-                validate_result(&operation, result)?;
-                Ok(result.clone())
-            }
+            (Some(result), None) => operation
+                .decode_result(result)
+                .map_err(ConnectionError::Protocol)
+                .map(Ok)?,
             (None, Some(error)) => {
                 Err(RpcError::from_value(error).map_err(ConnectionError::Protocol)?)
             }
@@ -224,6 +207,41 @@ impl AppServerConnection {
     #[cfg(test)]
     pub fn set_next_id(&self, next_id: RequestId) {
         *self.next_id.lock().unwrap() = next_id;
+    }
+}
+
+struct CappedBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded: bool,
+}
+
+impl CappedBuffer {
+    fn new(limit: usize) -> CappedBuffer {
+        CappedBuffer {
+            bytes: Vec::with_capacity(limit.min(8192)),
+            limit,
+            exceeded: false,
+        }
+    }
+}
+
+impl Write for CappedBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        if bytes.len() > remaining {
+            self.exceeded = true;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "outbound frame limit exceeded",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -249,95 +267,9 @@ fn decode_notification(
     let method = method.as_str().ok_or_else(|| {
         ConnectionError::Protocol("notification method is not a string".to_string())
     })?;
-    Ok(ConnectionEvent::Notification(ServerNotification {
-        method: method.to_string(),
-        params: params.cloned().unwrap_or_else(|| json!({})),
-    }))
-}
-
-fn operation_params(
-    operation: &PendingOperation,
-    context: &RequestContext,
-) -> Result<Value, ConnectionError> {
-    let cwd = context.root.to_string_lossy();
-    let thread_id = || {
-        context.thread_id.clone().ok_or_else(|| {
-            ConnectionError::Protocol("thread request made before thread id was known".to_string())
-        })
-    };
-    Ok(match operation {
-        PendingOperation::Initialize => json!({
-            "clientInfo":{"name":"build_bridge","title":"Build","version":env!("CARGO_PKG_VERSION")},
-            "capabilities":{}
-        }),
-        PendingOperation::StartThread => {
-            thread_open_params(cwd.as_ref(), context.model.as_deref(), None)
-        }
-        PendingOperation::ResumeThread => thread_open_params(
-            cwd.as_ref(),
-            context.model.as_deref(),
-            Some(context.resume_id.as_deref().ok_or_else(|| {
-                ConnectionError::Protocol("resume operation has no exact thread id".to_string())
-            })?),
-        ),
-        PendingOperation::StartTurn { input } => json!({
-            "threadId":thread_id()?,
-            "input":[{"type":"text","text":input}],
-            "model":context.model,
-            "effort":context.effort,
-        }),
-        PendingOperation::SteerTurn { turn_id, input } => json!({
-            "threadId":thread_id()?,
-            "expectedTurnId":turn_id,
-            "input":[{"type":"text","text":input}],
-        }),
-        PendingOperation::InterruptTurn { turn_id } => json!({
-            "threadId":thread_id()?,
-            "turnId":turn_id,
-        }),
-    })
-}
-
-fn thread_open_params(cwd: &str, model: Option<&str>, resume_id: Option<&str>) -> Value {
-    let mut params = json!({
-        "cwd":cwd,
-        "model":model,
-        "approvalPolicy":"never",
-        "sandbox":"danger-full-access",
-    });
-    if let Some(thread_id) = resume_id {
-        params["threadId"] = json!(thread_id);
-    }
-    params
-}
-
-fn validate_result(operation: &PendingOperation, result: &Value) -> Result<(), ConnectionError> {
-    let required = match operation {
-        PendingOperation::Initialize => result.is_object(),
-        PendingOperation::StartThread | PendingOperation::ResumeThread => {
-            result
-                .pointer("/thread/id")
-                .and_then(Value::as_str)
-                .is_some()
-                && result["model"].as_str().is_some()
-                && result["cwd"].as_str().is_some()
-                && result["approvalPolicy"].as_str().is_some()
-                && result["sandbox"].is_object()
-        }
-        PendingOperation::StartTurn { .. } => {
-            result.pointer("/turn/id").and_then(Value::as_str).is_some()
-        }
-        PendingOperation::SteerTurn { .. } => result["turnId"].as_str().is_some(),
-        PendingOperation::InterruptTurn { .. } => result.is_object(),
-    };
-    if required {
-        Ok(())
-    } else {
-        Err(ConnectionError::Protocol(format!(
-            "{} response has the wrong body",
-            operation.method()
-        )))
-    }
+    ServerNotification::decode(method, params.cloned().unwrap_or_else(|| json!({})))
+        .map(ConnectionEvent::Notification)
+        .map_err(ConnectionError::Protocol)
 }
 
 pub fn read_jsonl_frame(
@@ -375,3 +307,37 @@ pub fn read_jsonl_frame(
 }
 
 pub type SharedConnection = Arc<AppServerConnection>;
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+
+    use super::*;
+
+    #[test]
+    fn capped_outbound_serializer_never_retains_more_than_the_limit() {
+        let mut buffer = CappedBuffer::new(8);
+        assert!(serde_json::to_writer(&mut buffer, &"x".repeat(1024)).is_err());
+        assert!(buffer.exceeded);
+        assert!(buffer.bytes.len() <= 8);
+    }
+
+    #[test]
+    fn close_propagates_the_writer_flush_error() {
+        struct FlushFails;
+        impl Write for FlushFails {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(Error::new(ErrorKind::BrokenPipe, "exact close error"))
+            }
+        }
+
+        let connection = AppServerConnection::new(Box::new(FlushFails), AppServerLimits::default());
+        let error = connection.close().unwrap_err().to_string();
+        assert!(error.contains("exact close error"), "{error}");
+        assert!(connection.close().is_ok());
+    }
+}

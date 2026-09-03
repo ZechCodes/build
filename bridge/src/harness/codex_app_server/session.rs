@@ -1,23 +1,19 @@
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use tokio::sync::broadcast;
 
-use super::connection::{read_jsonl_frame, AppServerConnection, RequestContext, SharedConnection};
+use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection};
 use super::limits::AppServerLimits;
-use super::policy::{AfterResponse, ServerRequestPolicy};
+use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::AppServerProcess;
-use super::protocol::{ConnectionEvent, ServerNotification};
+use super::protocol::{ClientNotification, ConnectionEvent, ServerNotification};
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
-use crate::harness::{
-    ActivityReport, AgentActivity, AgentSession, AgentStatus, HarnessError, Turn,
-};
+use crate::harness::{ActivityReport, AgentSession, AgentStatus, HarnessError, Turn};
 use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
@@ -39,6 +35,7 @@ struct SessionCore {
     limits: AppServerLimits,
     binary: PathBuf,
     ended: AtomicBool,
+    reconciliation_timer: ReconciliationTimer,
 }
 
 impl CodexAppServerSession {
@@ -51,16 +48,8 @@ impl CodexAppServerSession {
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let binary = crate::pty::resolve_binary(spec)?;
         let (process, pipes) = AppServerProcess::spawn(spec, root.clone(), &limits)?;
-        let context = RequestContext {
-            root: root.clone(),
-            model: choice.model.clone(),
-            effort: choice.effort.clone(),
-            resume_id: resume_id.clone(),
-            thread_id: None,
-        };
         let connection = Arc::new(AppServerConnection::new(
             Box::new(pipes.stdin),
-            context,
             limits.clone(),
         ));
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
@@ -81,7 +70,9 @@ impl CodexAppServerSession {
             limits,
             binary,
             ended: AtomicBool::new(false),
+            reconciliation_timer: ReconciliationTimer::new(),
         });
+        core.reconciliation_timer.start(Arc::downgrade(&core));
         start_reader(Arc::downgrade(&core), pipes.stdout);
         core.apply_state(SessionEvent::Start)?;
         Ok((CodexAppServerSession { core }, receiver))
@@ -94,7 +85,7 @@ impl SessionCore {
     }
 
     fn apply_state(self: &Arc<Self>, event: SessionEvent) -> Result<(), HarnessError> {
-        let (require_version, schedule_timeout) = {
+        let (require_version, reconciliation_pending) = {
             let mut state = self.state.lock().unwrap();
             let transition = match state.transition(event, self.elapsed(), &self.limits) {
                 Ok(transition) => transition,
@@ -120,13 +111,12 @@ impl SessionCore {
             (require_version, state.reconciliation_pending())
         };
         if require_version {
-            self.apply_state(SessionEvent::VersionEvidence(CodexVersionProbe::probe(
-                &self.binary,
-            )))?;
+            self.apply_state(SessionEvent::VersionEvidence(
+                super::CodexAppServerHarness::probe_version(&self.binary),
+            ))?;
         }
-        if schedule_timeout {
-            schedule_reconciliation_check(Arc::downgrade(self), self.limits.reconciliation);
-        }
+        self.reconciliation_timer
+            .set(reconciliation_pending, self.limits.reconciliation);
         Ok(())
     }
 
@@ -139,11 +129,9 @@ impl SessionCore {
             }
             SessionEffect::NotifyInitialized => self
                 .connection
-                .notify("initialized", None)
+                .notify(ClientNotification::Initialized)
                 .map_err(|error| HarnessError::Session(error.to_string()))?,
-            SessionEffect::ThreadReady(thread_id) => {
-                self.connection.set_thread_id(thread_id.clone());
-            }
+            SessionEffect::ThreadReady(_) => {}
             SessionEffect::CloseTurn(turn_id) => {
                 let reports = self.translator.lock().unwrap().close_turn(turn_id);
                 self.report_all(reports);
@@ -163,21 +151,10 @@ impl SessionCore {
             }
             ConnectionEvent::Notification(notification) => self.handle_notification(notification),
             ConnectionEvent::Request(request) => {
-                let approval_request = matches!(
-                    request.method.as_str(),
-                    "item/commandExecution/requestApproval"
-                        | "item/fileChange/requestApproval"
-                        | "execCommandApproval"
-                        | "applyPatchApproval"
-                );
                 let decision = ServerRequestPolicy::decide(request, unix_seconds_now());
-                self.connection
-                    .respond(decision.response)
-                    .map_err(|error| HarnessError::Session(error.to_string()))?;
-                if approval_request {
-                    self.report(ActivityReport::own_work(AgentActivity::TaskUpdate {
-                        summary: "Codex approval request declined".to_string(),
-                    }));
+                let decision = write_server_response(&self.connection, decision)?;
+                if let Some(report) = decision.report {
+                    self.report(report);
                 }
                 match decision.after_response {
                     AfterResponse::Continue => Ok(()),
@@ -198,42 +175,56 @@ impl SessionCore {
         self: &Arc<Self>,
         notification: ServerNotification,
     ) -> Result<(), HarnessError> {
-        let method = notification.method.as_str();
-        let params = &notification.params;
-        match method {
-            "thread/started" => self.apply_state(SessionEvent::ThreadStarted(required_id(
-                params,
-                "/thread/id",
-                method,
-            )?)),
-            "turn/started" => self.apply_state(SessionEvent::TurnStarted(required_id(
-                params, "/turn/id", method,
-            )?)),
-            "turn/completed" => self.apply_state(SessionEvent::TurnCompleted {
-                turn_id: required_id(params, "/turn/id", method)?,
-                error: params
-                    .pointer("/turn/error/message")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            }),
-            "item/started" | "item/completed" => {
-                let turn_id = required_id(params, "/turnId", method)?;
-                self.apply_state(SessionEvent::TurnStarted(turn_id))?;
+        match &notification {
+            ServerNotification::ThreadStarted {
+                thread_id,
+                parent_thread_id,
+            } => {
+                let active_parent = self.state.lock().unwrap().session_id();
+                if is_child_thread_notification(
+                    thread_id,
+                    parent_thread_id.as_deref(),
+                    active_parent.as_deref(),
+                ) {
+                    return Ok(());
+                }
+                self.apply_state(SessionEvent::ThreadStarted(thread_id.clone()))
+            }
+            ServerNotification::TurnStarted { thread_id, turn_id } => {
+                if !self.parent_thread_matches(thread_id) {
+                    return Ok(());
+                }
+                self.apply_state(SessionEvent::TurnStarted(turn_id.clone()))
+            }
+            ServerNotification::TurnCompleted {
+                thread_id,
+                completion,
+            } => {
+                if !self.parent_thread_matches(thread_id) {
+                    return Ok(());
+                }
+                self.apply_state(SessionEvent::ObservedCompletion(completion.clone()))
+            }
+            ServerNotification::Item(item) => {
+                if !self.parent_thread_matches(&item.thread_id) {
+                    return Ok(());
+                }
+                self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
                 let reports = self
                     .translator
                     .lock()
                     .unwrap()
-                    .translate(method, params)
+                    .translate_notification(&notification)
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
                 Ok(())
             }
-            "error" => {
+            ServerNotification::Error(params) => {
                 let reports = self
                     .translator
                     .lock()
                     .unwrap()
-                    .translate(method, params)
+                    .translate_notification(&notification)
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
                 if params["willRetry"].as_bool() == Some(false) {
@@ -247,16 +238,20 @@ impl SessionCore {
                 }
                 Ok(())
             }
-            method if method.contains("delta") => Ok(()),
-            _ => {
+            ServerNotification::Delta => Ok(()),
+            ServerNotification::Unknown => {
                 self.translator
                     .lock()
                     .unwrap()
-                    .translate(method, params)
+                    .translate_notification(&notification)
                     .map_err(|error| HarnessError::Session(error.to_string()))?;
                 Ok(())
             }
         }
+    }
+
+    fn parent_thread_matches(&self, thread_id: &str) -> bool {
+        self.state.lock().unwrap().parent_thread_matches(thread_id)
     }
 
     fn report(&self, report: ActivityReport) {
@@ -277,17 +272,18 @@ impl SessionCore {
 
     fn fail(&self, reason: String) {
         self.protocol_error.lock().unwrap().get_or_insert(reason);
-        self.report_all(self.translator.lock().unwrap().close_all());
-        self.close_activity();
-        let _ = self.connection.close();
-        let _ = self.process.shutdown();
-        self.ended.store(true, Ordering::Release);
+        self.terminate();
     }
 
     fn end(&self) {
+        self.terminate();
+    }
+
+    fn terminate(&self) {
         if self.ended.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.reconciliation_timer.stop();
         self.report_all(self.translator.lock().unwrap().close_all());
         self.close_activity();
         if let Err(error) = self.connection.close() {
@@ -305,9 +301,8 @@ impl SessionCore {
     }
 
     fn eof(self: &Arc<Self>) {
-        self.report_all(self.translator.lock().unwrap().close_all());
         let _ = self.apply_state(SessionEvent::Eof);
-        self.end();
+        self.terminate();
     }
 }
 
@@ -320,6 +315,9 @@ impl AgentSession for CodexAppServerSession {
     fn status(&self) -> AgentStatus {
         if let Some(code) = self.core.process.exit_code() {
             return AgentStatus::Ended { code: Some(code) };
+        }
+        if self.core.process.liveness_failed() {
+            return AgentStatus::Ended { code: None };
         }
         self.core.state.lock().unwrap().status()
     }
@@ -343,6 +341,7 @@ impl AgentSession for CodexAppServerSession {
             .unwrap()
             .clone()
             .or_else(|| self.core.state.lock().unwrap().epitaph())
+            .or_else(|| self.core.process.error_epitaph())
             .or_else(|| self.core.process.stderr_epitaph())
     }
 
@@ -417,25 +416,6 @@ fn start_reader(core: Weak<SessionCore>, mut stdout: std::process::ChildStdout) 
     });
 }
 
-fn schedule_reconciliation_check(core: Weak<SessionCore>, delay: Duration) {
-    std::thread::spawn(move || {
-        std::thread::sleep(delay);
-        if let Some(core) = core.upgrade() {
-            if let Err(error) = core.apply_state(SessionEvent::CheckTimeouts) {
-                core.fail(error.to_string());
-            }
-        }
-    });
-}
-
-fn required_id(params: &Value, pointer: &str, method: &str) -> Result<String, HarnessError> {
-    params
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| HarnessError::Session(format!("malformed {method}: missing {pointer}")))
-}
-
 fn unix_seconds_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -443,35 +423,228 @@ fn unix_seconds_now() -> i64 {
         .as_secs() as i64
 }
 
-struct CodexVersionProbe;
+fn is_child_thread_notification(
+    thread_id: &str,
+    parent_thread_id: Option<&str>,
+    active_parent: Option<&str>,
+) -> bool {
+    parent_thread_id.is_some() || active_parent.is_some_and(|parent| parent != thread_id)
+}
 
-impl CodexVersionProbe {
-    fn probe(binary: &Path) -> Result<String, String> {
-        static CACHE: OnceLock<Mutex<HashMap<PathBuf, Result<String, String>>>> = OnceLock::new();
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(cached) = cache.lock().unwrap().get(binary).cloned() {
-            return cached;
+fn write_server_response(
+    connection: &AppServerConnection,
+    decision: ServerRequestDecision,
+) -> Result<ServerRequestDecision, HarnessError> {
+    connection
+        .respond(decision.response.clone())
+        .map_err(|error| HarnessError::Session(error.to_string()))?;
+    Ok(decision)
+}
+
+struct ReconciliationTimer {
+    shared: Arc<(Mutex<TimerState>, Condvar)>,
+}
+
+struct TimerState {
+    generation: u64,
+    deadline: Option<Instant>,
+    stopped: bool,
+}
+
+impl ReconciliationTimer {
+    fn new() -> ReconciliationTimer {
+        ReconciliationTimer {
+            shared: Arc::new((
+                Mutex::new(TimerState {
+                    generation: 0,
+                    deadline: None,
+                    stopped: false,
+                }),
+                Condvar::new(),
+            )),
         }
-        let observed = Command::new(binary)
-            .arg("--version")
-            .output()
-            .map_err(|error| format!("cannot run {} --version: {error}", binary.display()))
-            .and_then(|output| {
-                if !output.status.success() {
-                    return Err(format!(
-                        "{} --version exited with {}",
-                        binary.display(),
-                        output.status
-                    ));
-                }
-                String::from_utf8(output.stdout)
-                    .map(|text| text.trim().to_string())
-                    .map_err(|error| format!("Codex version output is not UTF-8: {error}"))
-            });
-        cache
-            .lock()
-            .unwrap()
-            .insert(binary.to_path_buf(), observed.clone());
-        observed
+    }
+
+    fn start(&self, core: Weak<SessionCore>) {
+        let shared = Arc::clone(&self.shared);
+        std::thread::spawn(move || reconciliation_timer_loop(shared, core));
+    }
+
+    fn set(&self, pending: bool, delay: Duration) {
+        let (state, wake) = &*self.shared;
+        let mut state = state.lock().unwrap();
+        if state.stopped {
+            return;
+        }
+        if pending == state.deadline.is_some() {
+            return;
+        }
+        state.generation = state.generation.wrapping_add(1);
+        state.deadline = pending.then(|| Instant::now() + delay);
+        wake.notify_one();
+    }
+
+    fn stop(&self) {
+        let (state, wake) = &*self.shared;
+        let mut state = state.lock().unwrap();
+        state.stopped = true;
+        state.deadline = None;
+        wake.notify_one();
+    }
+
+    #[cfg(test)]
+    fn generation(&self) -> u64 {
+        self.shared.0.lock().unwrap().generation
+    }
+}
+
+fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: Weak<SessionCore>) {
+    let (state, wake) = &*shared;
+    let mut state = state.lock().unwrap();
+    loop {
+        if state.stopped {
+            return;
+        }
+        let Some(deadline) = state.deadline else {
+            state = wake.wait(state).unwrap();
+            continue;
+        };
+        let generation = state.generation;
+        let delay = deadline.saturating_duration_since(Instant::now());
+        let (next_state, timeout) = wake.wait_timeout(state, delay).unwrap();
+        state = next_state;
+        if !timeout.timed_out() || state.generation != generation || state.deadline.is_none() {
+            continue;
+        }
+        state.deadline = None;
+        drop(state);
+        let Some(core) = core.upgrade() else {
+            return;
+        };
+        if let Err(error) = core.apply_state(SessionEvent::CheckTimeouts) {
+            core.fail(error.to_string());
+            return;
+        }
+        state = shared.0.lock().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::harness::codex_app_server::policy::AfterResponse;
+    use crate::harness::codex_app_server::protocol::ServerResponse;
+    use crate::harness::AgentSession;
+    use crate::models::{AgentProvider, ModelChoice};
+    use crate::pty::HarnessSpec;
+
+    #[test]
+    fn one_reconciliation_timer_generation_serves_repeated_pending_events() {
+        let timer = ReconciliationTimer::new();
+        timer.set(true, Duration::from_secs(5));
+        let generation = timer.generation();
+        timer.set(true, Duration::from_secs(5));
+        assert_eq!(timer.generation(), generation);
+        timer.set(false, Duration::from_secs(5));
+        assert_eq!(timer.generation(), generation + 1);
+        timer.set(false, Duration::from_secs(5));
+        assert_eq!(timer.generation(), generation + 1);
+    }
+
+    #[test]
+    fn child_thread_start_is_ignored_before_and_after_parent_readiness() {
+        assert!(is_child_thread_notification(
+            "thread-child",
+            Some("thread-parent"),
+            None,
+        ));
+        assert!(is_child_thread_notification(
+            "thread-child",
+            None,
+            Some("thread-parent"),
+        ));
+        assert!(!is_child_thread_notification(
+            "thread-parent",
+            None,
+            Some("thread-parent"),
+        ));
+    }
+
+    #[test]
+    fn server_response_write_failure_prevents_after_response_and_report_actions() {
+        let connection = AppServerConnection::failing_writer(AppServerLimits::default());
+        let decision = ServerRequestDecision {
+            response: ServerResponse::result(json!(1), json!({"decision":"decline"})),
+            after_response: AfterResponse::FailTurn("must not run".to_string()),
+            report: Some(ActivityReport::own_work(
+                crate::harness::AgentActivity::TaskUpdate {
+                    summary: "must not report".to_string(),
+                },
+            )),
+        };
+        assert!(write_server_response(&connection, decision).is_err());
+    }
+
+    #[test]
+    fn stdout_eof_closes_activity_and_end_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let spec = HarnessSpec::new("sh").arg("-c").arg("read line");
+        let (session, mut activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: None,
+                effort: None,
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..100 {
+            if matches!(
+                activity.try_recv(),
+                Err(broadcast::error::TryRecvError::Closed)
+            ) {
+                session.end();
+                session.end();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("activity did not close after stdout EOF");
+    }
+
+    #[test]
+    fn protocol_failure_epitaph_precedes_stderr_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let spec = HarnessSpec::new("sh")
+            .arg("-c")
+            .arg("read line; echo stderr-fallback >&2; echo '{bad}'");
+        let (session, _activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: None,
+                effort: None,
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+        for _ in 0..100 {
+            if let Some(epitaph) = session.epitaph() {
+                assert!(epitaph.contains("invalid JSON"), "{epitaph}");
+                assert!(!epitaph.contains("stderr-fallback"), "{epitaph}");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        panic!("protocol failure produced no epitaph");
     }
 }

@@ -764,6 +764,36 @@ impl Tab {
         }
     }
 
+    fn carry_replaced_screen(&mut self, screen: Option<TermScreen>) {
+        let Some(screen) = screen else {
+            return;
+        };
+        match self.session.terminal() {
+            Some(terminal) => {
+                let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
+                self.screen = Some(screen);
+            }
+            None => close_a_screen_with_no_terminal(&screen, &self.tab_id),
+        }
+    }
+
+    fn carry_waiting_screen(&mut self, waiting: Option<TermScreen>) {
+        let Some(waiting) = waiting else {
+            return;
+        };
+        let tab_id = self.tab_id.clone();
+        match self.require_terminal_and_screen() {
+            Ok((terminal, screen)) => {
+                let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
+                screen.set_size(waiting.cols, waiting.rows);
+                for client in &waiting.attached {
+                    screen.register(&client.sender);
+                }
+            }
+            Err(_) => close_a_screen_with_no_terminal(&waiting, &tab_id),
+        }
+    }
+
     fn spawn_agent(
         owner: String,
         agent_id: String,
@@ -17924,29 +17954,31 @@ fn live_agent_wire_id(state: &AppState, key: &TabKey, owner: &str) -> Option<Str
     (same_owner && tab.session_is_live()).then(|| tab.wire_id())
 }
 
-fn take_replaced_agent_screen(state: &mut AppState, key: &TabKey) -> Option<TermScreen> {
-    state.tabs.remove(key).and_then(|tab| {
-        tab.session.end();
-        tab.screen
-    })
-}
-
-fn retire_stale_agent_tabs(state: &mut AppState, root: &std::path::Path, owner: &str) {
-    let stale: Vec<TabKey> = state
-        .tabs
-        .iter()
-        .filter(|(key, tab)| {
-            key.root == root
-                && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-        })
-        .map(|(key, _)| key.clone())
-        .collect();
-    for key in stale {
-        if let Some(tab) = state.tabs.remove(&key) {
-            let wire_id = tab.wire_id();
+impl AppState {
+    fn take_replaced_agent_screen(&mut self, key: &TabKey) -> Option<TermScreen> {
+        self.tabs.remove(key).and_then(|tab| {
             tab.session.end();
-            if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "closed");
+            tab.screen
+        })
+    }
+
+    fn retire_stale_agent_tabs(&mut self, root: &std::path::Path, owner: &str) {
+        let stale: Vec<TabKey> = self
+            .tabs
+            .iter()
+            .filter(|(key, tab)| {
+                key.root == root
+                    && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in stale {
+            if let Some(tab) = self.tabs.remove(&key) {
+                let wire_id = tab.wire_id();
+                tab.session.end();
+                if let Some(screen) = &tab.screen {
+                    screen.push_closed(&wire_id, "closed");
+                }
             }
         }
     }
@@ -17966,95 +17998,95 @@ fn project_for_agent_spawn(
     }
 }
 
-fn resume_options_for_agent(
-    state: &mut AppState,
-    root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    provider: AgentProvider,
-) -> (Option<String>, bool) {
-    let resume_session_id = match state.recorded_resume_id(owner, agent_id) {
-        Some(named) if (state.resume_id_probe)(root, provider, &named) => Some(named),
-        Some(_) => {
-            state.record_agent_resume_id(owner, agent_id, None);
-            None
+impl AppState {
+    fn resume_options_for_agent(
+        &mut self,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        provider: AgentProvider,
+    ) -> (Option<String>, bool) {
+        let resume_session_id = match self.recorded_resume_id(owner, agent_id) {
+            Some(named) if (self.resume_id_probe)(root, provider, &named) => Some(named),
+            Some(_) => {
+                self.record_agent_resume_id(owner, agent_id, None);
+                None
+            }
+            None => None,
+        };
+        let continue_session = resume_session_id.is_none()
+            && self.may_pick_up_a_conversation(owner, agent_id)
+            && (self.transcript_probe)(root, provider);
+        (resume_session_id, continue_session)
+    }
+
+    fn build_agent_session_request(
+        &mut self,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        model_choice: &ModelChoice,
+    ) -> Result<(SessionOpenRequest, String), String> {
+        let project_id = project_for_agent_spawn(self, owner, agent_id)?;
+        let (resume_session_id, continue_session) =
+            self.resume_options_for_agent(root, owner, agent_id, model_choice.provider);
+        let session_locator = (self.session_locator_factory)(root, model_choice.provider);
+        let orchestrator = self.orch_for(&project_id)?;
+        orchestrator
+            .scaffold_agent_worktree(root, agent_id)
+            .map_err(err)?;
+        let session_token = uuid::Uuid::new_v4().to_string();
+        let spec = orchestrator.agent_harness_spec(
+            agent_id,
+            root,
+            model_choice,
+            continue_session,
+            resume_session_id.clone(),
+            &session_token,
+        );
+        let request = SessionOpenRequest {
+            spec,
+            root: root.to_path_buf(),
+            choice: model_choice.clone(),
+            terminal: TerminalOpenOptions {
+                size: orchestrator.pty_size(),
+                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                session_locator,
+            },
+            resume_session_id,
+        };
+        Ok((request, session_token))
+    }
+
+    fn reserve_agent_spawn(
+        &mut self,
+        key: &TabKey,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        model_choice: &ModelChoice,
+    ) -> Result<AgentSpawnReservation, String> {
+        if let Some(wire_id) = live_agent_wire_id(self, key, owner) {
+            return Ok(AgentSpawnReservation::Warm(wire_id));
         }
-        None => None,
-    };
-    let continue_session = resume_session_id.is_none()
-        && state.may_pick_up_a_conversation(owner, agent_id)
-        && (state.transcript_probe)(root, provider);
-    (resume_session_id, continue_session)
-}
-
-fn build_agent_session_request(
-    state: &mut AppState,
-    root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-) -> Result<(SessionOpenRequest, String), String> {
-    let project_id = project_for_agent_spawn(state, owner, agent_id)?;
-    let (resume_session_id, continue_session) =
-        resume_options_for_agent(state, root, owner, agent_id, model_choice.provider);
-    let session_locator = (state.session_locator_factory)(root, model_choice.provider);
-    let orchestrator = state.orch_for(&project_id)?;
-    orchestrator
-        .scaffold_agent_worktree(root, agent_id)
-        .map_err(err)?;
-    let session_token = uuid::Uuid::new_v4().to_string();
-    let spec = orchestrator.agent_harness_spec(
-        agent_id,
-        root,
-        model_choice,
-        continue_session,
-        resume_session_id.clone(),
-        &session_token,
-    );
-    let request = SessionOpenRequest {
-        spec,
-        root: root.to_path_buf(),
-        choice: model_choice.clone(),
-        terminal: TerminalOpenOptions {
-            size: orchestrator.pty_size(),
-            turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-            session_locator,
-        },
-        resume_session_id,
-    };
-    Ok((request, session_token))
-}
-
-fn reserve_agent_spawn(
-    state: &Arc<Mutex<AppState>>,
-    key: &TabKey,
-    root: &std::path::Path,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-) -> Result<AgentSpawnReservation, String> {
-    let mut state = state.lock().unwrap();
-    if let Some(wire_id) = live_agent_wire_id(&state, key, owner) {
-        return Ok(AgentSpawnReservation::Warm(wire_id));
+        if self.agent_spawns_in_flight.contains(key) {
+            return Ok(AgentSpawnReservation::InFlight);
+        }
+        let carried_screen = self.take_replaced_agent_screen(key);
+        self.retire_stale_agent_tabs(root, owner);
+        let (request, session_token) =
+            self.build_agent_session_request(root, owner, agent_id, model_choice)?;
+        self.mcp_session_tokens
+            .insert(agent_id.to_string(), session_token.clone());
+        self.agent_spawns_in_flight.insert(key.clone());
+        Ok(AgentSpawnReservation::Reserved(Box::new(
+            ReservedAgentSpawn {
+                request,
+                carried_screen,
+                session_token,
+            },
+        )))
     }
-    if state.agent_spawns_in_flight.contains(key) {
-        return Ok(AgentSpawnReservation::InFlight);
-    }
-    let carried_screen = take_replaced_agent_screen(&mut state, key);
-    retire_stale_agent_tabs(&mut state, root, owner);
-    let (request, session_token) =
-        build_agent_session_request(&mut state, root, owner, agent_id, model_choice)?;
-    state
-        .mcp_session_tokens
-        .insert(agent_id.to_string(), session_token.clone());
-    state.agent_spawns_in_flight.insert(key.clone());
-    Ok(AgentSpawnReservation::Reserved(Box::new(
-        ReservedAgentSpawn {
-            request,
-            carried_screen,
-            session_token,
-        },
-    )))
 }
 
 fn wait_for_agent_spawn(
@@ -18071,94 +18103,54 @@ fn wait_for_agent_spawn(
     Ok(())
 }
 
-fn clear_failed_agent_spawn(
-    state: &Arc<Mutex<AppState>>,
-    key: &TabKey,
-    agent_id: &str,
-    session_token: &str,
-) {
-    let mut state = state.lock().unwrap();
-    state.agent_spawns_in_flight.remove(key);
-    if state
-        .mcp_session_tokens
-        .get(agent_id)
-        .is_some_and(|current| constant_time_token_eq(current, session_token))
-    {
-        state.mcp_session_tokens.remove(agent_id);
-    }
-}
-
-fn carry_replaced_screen(tab: &mut Tab, screen: Option<TermScreen>, term_id: &str) {
-    let Some(screen) = screen else {
-        return;
-    };
-    match tab.session.terminal() {
-        Some(terminal) => {
-            let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
-            tab.screen = Some(screen);
+impl AppState {
+    fn clear_failed_agent_spawn(&mut self, key: &TabKey, agent_id: &str, session_token: &str) {
+        self.agent_spawns_in_flight.remove(key);
+        if self
+            .mcp_session_tokens
+            .get(agent_id)
+            .is_some_and(|current| constant_time_token_eq(current, session_token))
+        {
+            self.mcp_session_tokens.remove(agent_id);
         }
-        None => close_a_screen_with_no_terminal(&screen, term_id),
     }
-}
 
-fn take_waiting_agent_screen(
-    state: &mut AppState,
-    key: &TabKey,
-    root: &std::path::Path,
-) -> Option<TermScreen> {
-    if let Some(waiting) = state.agent_screens_awaiting_spawn.remove(key) {
-        return Some(waiting);
-    }
-    let first_agent = !state
-        .tabs
-        .keys()
-        .any(|other| other.is_agent() && other.root == root);
-    first_agent.then(|| {
-        state.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-            root,
-            &crate::worktree::external_worktree_id(root),
-        ))
-    })?
-}
-
-fn carry_waiting_screen(tab: &mut Tab, waiting: Option<TermScreen>, term_id: &str) {
-    let Some(waiting) = waiting else {
-        return;
-    };
-    match tab.require_terminal_and_screen() {
-        Ok((terminal, screen)) => {
-            let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
-            screen.set_size(waiting.cols, waiting.rows);
-            for client in &waiting.attached {
-                screen.register(&client.sender);
-            }
+    fn take_waiting_agent_screen(&mut self, key: &TabKey) -> Option<TermScreen> {
+        if let Some(waiting) = self.agent_screens_awaiting_spawn.remove(key) {
+            return Some(waiting);
         }
-        Err(_) => close_a_screen_with_no_terminal(&waiting, term_id),
+        let first_agent = !self
+            .tabs
+            .keys()
+            .any(|other| other.is_agent() && other.root == key.root);
+        first_agent.then(|| {
+            self.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+                &key.root,
+                &crate::worktree::external_worktree_id(&key.root),
+            ))
+        })?
     }
-}
 
-fn publish_agent_tab(
-    state: &Arc<Mutex<AppState>>,
-    key: &TabKey,
-    owner: &str,
-    agent_id: &str,
-    model_choice: &ModelChoice,
-    mut tab: Tab,
-    carried_screen: Option<TermScreen>,
-) -> String {
-    carry_replaced_screen(&mut tab, carried_screen, &key.tab_id);
-    let wire_id = tab.wire_id();
-    let mut state = state.lock().unwrap();
-    let waiting = take_waiting_agent_screen(&mut state, key, &key.root);
-    carry_waiting_screen(&mut tab, waiting, &key.tab_id);
-    let active_model = tab
-        .session
-        .active_model()
-        .or_else(|| model_choice.model.clone());
-    state.tabs.insert(key.clone(), tab);
-    state.agent_spawns_in_flight.remove(key);
-    state.record_agent_active_model(owner, agent_id, active_model);
-    wire_id
+    fn publish_agent_tab(
+        &mut self,
+        key: &TabKey,
+        owner: &str,
+        agent_id: &str,
+        model_choice: &ModelChoice,
+        mut tab: Tab,
+    ) -> String {
+        let wire_id = tab.wire_id();
+        let waiting = self.take_waiting_agent_screen(key);
+        tab.carry_waiting_screen(waiting);
+        let active_model = tab
+            .session
+            .active_model()
+            .or_else(|| model_choice.model.clone());
+        self.tabs.insert(key.clone(), tab);
+        self.agent_spawns_in_flight.remove(key);
+        self.record_agent_active_model(owner, agent_id, active_model);
+        wire_id
+    }
 }
 
 fn spawn_reserved_agent(
@@ -18175,22 +18167,21 @@ fn spawn_reserved_agent(
         session_token,
     } = *reserved;
     let spawned = Tab::spawn_agent(owner.to_string(), agent_id.to_string(), request);
-    let (tab, output) = match spawned {
+    let (mut tab, output) = match spawned {
         Ok(spawned) => spawned,
         Err(error) => {
-            clear_failed_agent_spawn(state, &key, agent_id, &session_token);
+            state
+                .lock()
+                .unwrap()
+                .clear_failed_agent_spawn(&key, agent_id, &session_token);
             return Err(error);
         }
     };
-    let wire_id = publish_agent_tab(
-        state,
-        &key,
-        owner,
-        agent_id,
-        model_choice,
-        tab,
-        carried_screen,
-    );
+    tab.carry_replaced_screen(carried_screen);
+    let wire_id = state
+        .lock()
+        .unwrap()
+        .publish_agent_tab(&key, owner, agent_id, model_choice, tab);
     spawn_tab_pumps(state, key, output);
     Ok((wire_id, Spawned::Fresh))
 }
@@ -18207,7 +18198,14 @@ fn ensure_agent_tab(
     let key = TabKey::agent(&root, agent_id);
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
     loop {
-        match reserve_agent_spawn(state, &key, &root, owner, agent_id, model_choice)? {
+        let reservation = state.lock().unwrap().reserve_agent_spawn(
+            &key,
+            &root,
+            owner,
+            agent_id,
+            model_choice,
+        )?;
+        match reservation {
             AgentSpawnReservation::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
             AgentSpawnReservation::InFlight => wait_for_agent_spawn(deadline, &root)?,
             AgentSpawnReservation::Reserved(reserved) => {

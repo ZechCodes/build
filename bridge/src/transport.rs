@@ -94,13 +94,6 @@ pub struct OuterFields {
     pub route_to: String,
 }
 
-/// Where a frame the device sends is routed: the client session's address on
-/// the relay, and the shape every carrier of a device frame writes into
-/// `route_to`.
-pub fn session_route(session_id: &str) -> String {
-    format!("session:{session_id}")
-}
-
 /// The inner frame type that means "this session is over" — sent by a client
 /// to end its session, and minted by the device for a session that ended under
 /// it, so the app releases what the session held.

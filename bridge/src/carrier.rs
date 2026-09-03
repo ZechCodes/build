@@ -134,7 +134,7 @@ impl SessionSender {
             &self.session_key,
             &OuterFields {
                 session_id: self.session_id.clone(),
-                route_to: transport::session_route(&self.session_id),
+                route_to: session_route(&self.session_id),
             },
             &transport::FrameFields {
                 frame_type: transport::DATA_FRAME_TYPE.into(),
@@ -150,6 +150,14 @@ impl SessionSender {
         };
         self.out.send(OutboundEnvelope::new(envelope)).is_ok()
     }
+}
+
+/// Where a frame the device sends is routed: the client session's address on
+/// the relay, which is the relay's own routing convention and the value every
+/// device frame carries. A DataChannel ignores it, as the receiving side of the
+/// protocol always has (`transport.rs` only checks it is non-empty).
+fn session_route(session_id: &str) -> String {
+    format!("session:{session_id}")
 }
 
 /// What went wrong with one frame on one carrier. Never fatal to the carrier:
@@ -403,7 +411,7 @@ impl FrameIntake {
         Ok(transport::build_session_accept(
             &opened.session_key_b64,
             session_id,
-            &transport::session_route(session_id),
+            &session_route(session_id),
             None,
         )?)
     }

@@ -134,12 +134,16 @@ under one writer lock, flushes, and returns its exact I/O or encoding error.
 
 ### `ServerRequestPolicy`
 
-- **Boundary:** Purely maps a typed server request to
+- **Boundary:** Purely maps a typed server request and coordinator-supplied time to
   `ServerRequestDecision { response, after_response }`. The connection writes
   `response` first; only after that `Result` succeeds may the session apply
   `Continue`, `FailTurn(reason)`, or `FailSession(reason)`.
-- **Interface:** `decide(ServerRequest) -> ServerRequestDecision`.
+- **Interface:** `decide(ServerRequest, current_unix_seconds: i64) ->
+  ServerRequestDecision`.
 - **Hides:** Every known app-server callback and the required-now no-UI policy.
+
+The session coordinator samples whole Unix seconds and passes that value to
+`decide`; `ServerRequestPolicy` never reads a clock.
 
 The exhaustive 0.153.0 policy is:
 
@@ -153,7 +157,7 @@ The exhaustive 0.153.0 policy is:
 | `item/tool/call` | JSON-RPC `-32601` unsupported | FailTurn: dynamic tools are deferred |
 | `account/chatgptAuthTokens/refresh` | JSON-RPC `-32601` unsupported | FailSession with an actionable re-authentication epitaph |
 | `attestation/generate` | JSON-RPC `-32601` unsupported | FailSession; Build did not advertise attestation support |
-| `currentTime/read` | current whole Unix seconds | Continue |
+| `currentTime/read` | `{ "currentTimeAt": <i64> }` | Continue |
 | unknown method | JSON-RPC `-32601` method-not-found | FailSession after replying |
 
 The launch requests `approvalPolicy: "never"`, so approval callbacks are
@@ -467,10 +471,13 @@ on 0.153.0, specifically `v1/InitializeResponse.json`,
 requires `userAgent`.
 
 `CodexSessionState` validates the semantic version in
-`initialize.result.userAgent` before sending `initialized`. If it cannot parse
-one, the pure state returns `RequireVersionEvidence`; the session coordinator
-asks `CodexAppServerHarness`'s `CodexVersionProbe` and feeds the typed result
-back as a state event. The probe runs `codex --version`, expects
+`initialize.result.userAgent` before sending `initialized`. It parses only the
+first whitespace-delimited component and requires that entire component to be
+`<clientInfo.name>/<Codex semver>`, using the name sent in the initialize
+request. It never searches later user-agent text for a version. If that leading
+component does not parse, the pure state returns `RequireVersionEvidence`; the
+session coordinator asks `CodexAppServerHarness`'s `CodexVersionProbe` and feeds
+the typed result back as a state event. The probe runs `codex --version`, expects
 `codex-cli <semver>`, and caches the result by resolved binary path for the
 daemon lifetime. The cache is shared by all sessions; there is never a probe per
 turn. A version below 0.153.0 from either source, or failure to obtain parseable
@@ -516,7 +523,7 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Identity/construction | old `codex` records reopen on TUI; `codex_app_server` round-trips; every provider is opened through free `open_session`; no caller above `harness_for` dispatches on provider; no-terminal sessions report activity |
 | Correlation | responses resolve out of order to the right `PendingOperation`; duplicate/unknown id, id exhaustion, wrong typed body, result-plus-error, and result-less response fail; pending-map overflow is unchanged state |
 | Writes | request, notification, server response, flush, and close each propagate encoding/size/I/O failure; failed request write removes its pending entry |
-| Initialize/version | no request precedes initialize; queued first turn waits; initialize error fails; 0.153.0 user-agent passes; 0.152.x, unparsable, and missing versions use/fail through the one cached probe as specified; `initialized` is sent once |
+| Initialize/version | no request precedes initialize; queued first turn waits; initialize error fails; leading matching-name 0.153.0 user-agent passes; wrong-name, 0.152.x, unparsable, missing, and later-text-only versions use/fail through the one cached probe as specified; `initialized` is sent once |
 | Thread open | fresh uses start, exact id uses resume, no exact id never guesses; notification-before-response and response-before-notification converge; matching duplicates are inert; id mismatch and error-after-notification fail |
 | Model/effort | thread start/resume send `model` but no effort; turn start sends `model` plus `effort`; steer sends neither; response model/effort update session facts |
 | Starting turn | response-start, start-response, completion-response, start-completion-response, and response-completion converge; completion-before-response never resurrects Working; error after observed start/completion fails; duplicate completion is inert and wrong turn id fails |
@@ -524,7 +531,7 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Steer completion race | completion then `-32600` and `-32600` then completion each replay retained input exactly once as a new turn; success after completion never replays; missing completion reaches the five-second failure |
 | Non-steerable turn | `activeTurnNotSteerable` does not pretend completion; retained input waits behind the same turn and starts once after its matching completion |
 | Interrupt | duplicate interrupt is a no-op; completion before response plus later success or `-32600` stays completed; queued post-interrupt input starts only after completion; interrupt never kills the process |
-| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; response-write failure prevents the decision; unknown method replies `-32601` before session failure; no path approves |
+| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown method replies `-32601` before session failure; no path approves |
 | Translation | each required item emits the stated report once; tool result pairs by item id; natural collaboration events remain visible; Build MCP emits nothing; dynamic tool items and unknown items emit nothing; open calls close `Unanswered` at turn end |
 | Bounds/decoder | exact-limit frames pass; limit-plus-one, no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
 | Process/liveness | stdout EOF closes activity; long quiet Working is not demoted; close/end/drop and concurrent status/end kill at most once and reap exactly once; signal exits have stable codes; protocol error wins epitaph over stderr fallback |

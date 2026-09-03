@@ -25,7 +25,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
+use crate::carrier::{OutboundEnvelope, SessionSender};
+use crate::transport::{self, Envelope, Frame, KeyPairB64, SessionInit};
 
 /// The signed-challenge path the relay expects (`{ts}.GET./ws/device`).
 const AUTH_PATH: &str = "/ws/device";
@@ -65,99 +66,6 @@ pub struct DeviceIdentity {
     pub identity_private_key_b64: String,
     /// The durable X25519 transport keypair clients wrap session keys to.
     pub transport: KeyPairB64,
-}
-
-/// A handle the app uses to push encrypted frames to a specific client session —
-/// the channel for server-initiated output (live terminal bytes, updates), not
-/// just request replies. Cheap to clone; store one per attached client.
-#[derive(Clone)]
-pub struct SessionSender {
-    session_id: String,
-    session_key: String,
-    out: mpsc::UnboundedSender<Message>,
-}
-
-impl SessionSender {
-    /// The session this sender targets.
-    pub fn session_id(&self) -> &str {
-        &self.session_id
-    }
-
-    /// A sender not bound to a live connection — for tests and request/response
-    /// callers that never push. `push` succeeds-into-the-void.
-    pub fn detached(session_id: impl Into<String>) -> Self {
-        let (out, _rx) = mpsc::unbounded_channel();
-        SessionSender {
-            session_id: session_id.into(),
-            session_key: String::new(),
-            out,
-        }
-    }
-
-    /// Test-only: a sender with a real session key and a captured channel, so
-    /// tests can decrypt every pushed frame (`term.output`, `term.closed`, …)
-    /// with [`decrypt_push`](Self::decrypt_push).
-    #[cfg(test)]
-    pub fn observable(
-        session_id: impl Into<String>,
-    ) -> (Self, mpsc::UnboundedReceiver<Message>, String) {
-        let (out, rx) = mpsc::unbounded_channel();
-        let session_key = transport::generate_session_key();
-        (
-            SessionSender {
-                session_id: session_id.into(),
-                session_key: session_key.clone(),
-                out,
-            },
-            rx,
-            session_key,
-        )
-    }
-
-    /// Test-only: decode one captured [`Self::observable`] message back to the
-    /// pushed inner payload.
-    #[cfg(test)]
-    pub fn decrypt_push(session_key: &str, message: &Message) -> Value {
-        let Message::Text(text) = message else {
-            panic!("pushes are text frames, got {message:?}");
-        };
-        let outer: Value = serde_json::from_str(text).expect("push is JSON");
-        let envelope: Envelope =
-            serde_json::from_value(outer["envelope"].clone()).expect("push carries an envelope");
-        transport::decrypt_envelope(session_key, &envelope)
-            .expect("push decrypts with the session key")
-            .payload
-    }
-
-    /// Encrypt `payload` as an inner frame and send it to the client as an
-    /// `e2ee_envelope`. Returns false once the connection is gone (so the app can
-    /// drop the stale sender).
-    pub fn push(&self, payload: Value) -> bool {
-        let envelope = match transport::encrypt_frame(
-            &self.session_key,
-            &OuterFields {
-                session_id: self.session_id.clone(),
-                route_to: format!("session:{}", self.session_id),
-            },
-            &transport::FrameFields {
-                frame_type: "data".into(),
-                sender: "device".into(),
-                payload,
-                message_id: None,
-                created_at: None,
-            },
-            None,
-        ) {
-            Ok(env) => env,
-            Err(_) => return false,
-        };
-        self.out
-            .send(Message::Text(
-                json!({ "type": "e2ee_envelope", "session_id": self.session_id, "envelope": envelope })
-                    .to_string(),
-            ))
-            .is_ok()
-    }
 }
 
 /// Handles a decrypted request frame. Receives a [`SessionSender`] (so it can
@@ -627,12 +535,26 @@ pub async fn run_with_connector(
             .await?;
     let (mut sink, mut source) = stream.split();
 
-    // One writer owns the sink; everything else queues messages to it. Unbounded
-    // so pushes (terminal output bursts) never block the app under a lock.
+    // One writer owns the sink; everything else queues to it. Two queues meet
+    // here: the relay's own control messages, already wire-shaped, and the
+    // envelopes the app pushes to sessions, which know nothing of this wire.
+    // Unbounded so pushes (terminal output bursts) never block the app under a
+    // lock.
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let (envelopes_tx, mut envelopes_rx) = mpsc::unbounded_channel::<OutboundEnvelope>();
     let writer = tokio::spawn(async move {
-        while let Some(msg) = out_rx.recv().await {
-            if sink.send(msg).await.is_err() {
+        loop {
+            let message = tokio::select! {
+                control = out_rx.recv() => match control {
+                    Some(message) => message,
+                    None => break,
+                },
+                outbound = envelopes_rx.recv() => match outbound {
+                    Some(outbound) => relay_message(&outbound),
+                    None => break,
+                },
+            };
+            if sink.send(message).await.is_err() {
                 break;
             }
         }
@@ -686,7 +608,8 @@ pub async fn run_with_connector(
                 }
             }
             "e2ee_envelope" => {
-                if let Err(e) = handle_envelope(&out_tx, &mut sessions, &msg, &mut dispatcher).await
+                if let Err(e) =
+                    handle_envelope(&envelopes_tx, &mut sessions, &msg, &mut dispatcher).await
                 {
                     tracing_protocol_error(&e);
                 }
@@ -705,6 +628,7 @@ pub async fn run_with_connector(
 
     abort_heartbeat(heartbeat);
     drop(out_tx);
+    drop(envelopes_tx);
     let _ = writer.await;
     Ok(())
 }
@@ -754,7 +678,7 @@ fn handle_session_init(
 /// A client sent an encrypted frame: decrypt it, hand the inner request to the
 /// application along with a [`SessionSender`], and send the response back.
 async fn handle_envelope(
-    out_tx: &mpsc::UnboundedSender<Message>,
+    envelopes_tx: &mpsc::UnboundedSender<OutboundEnvelope>,
     sessions: &mut HashMap<String, String>,
     msg: &Value,
     dispatcher: &mut Dispatcher,
@@ -778,11 +702,7 @@ async fn handle_envelope(
         return Ok(());
     }
 
-    let sender = SessionSender {
-        session_id: session_id.clone(),
-        session_key,
-        out: out_tx.clone(),
-    };
+    let sender = SessionSender::keyed(&session_id, session_key, envelopes_tx.clone());
     // The handler runs on a worker and pushes its own answer down this same
     // channel; the app may also push server-initiated frames during the call
     // (e.g. an initial terminal flush).
@@ -822,6 +742,18 @@ fn spawn_heartbeat(
     })
 }
 
+/// The relay's wire wrapper: the one thing this carrier adds to an envelope.
+fn relay_message(outbound: &OutboundEnvelope) -> Message {
+    Message::Text(
+        json!({
+            "type": "e2ee_envelope",
+            "session_id": outbound.session_id,
+            "envelope": outbound.envelope,
+        })
+        .to_string(),
+    )
+}
+
 fn send(out_tx: &mpsc::UnboundedSender<Message>, value: Value) {
     let _ = out_tx.send(Message::Text(value.to_string()));
 }
@@ -837,6 +769,40 @@ fn tracing_protocol_error(err: &RelayError) {
     // Protocol errors on a single frame must not kill the connection; a real
     // build wires this to `tracing`. Kept minimal here.
     let _ = err;
+}
+
+#[cfg(test)]
+mod writer_tests {
+    use super::*;
+
+    /// The wire wrapper is the relay carrier's whole contribution: an envelope
+    /// goes out as `{"type":"e2ee_envelope",…}` and nothing above the carrier
+    /// boundary has to know that.
+    #[test]
+    fn the_writer_wraps_an_outbound_envelope_for_the_relay_wire() {
+        let outbound = OutboundEnvelope {
+            session_id: "s-1".into(),
+            envelope: Envelope {
+                version: 1,
+                session_id: "s-1".into(),
+                route_to: "session:s-1".into(),
+                nonce: "bm9uY2U=".into(),
+                ciphertext: "Y2lwaGVy".into(),
+            },
+        };
+
+        let Message::Text(text) = relay_message(&outbound) else {
+            panic!("the relay carries text frames");
+        };
+        let wire: Value = serde_json::from_str(&text).expect("the wrapper is JSON");
+        assert_eq!(wire["type"], "e2ee_envelope");
+        assert_eq!(wire["session_id"], "s-1");
+        assert_eq!(
+            wire["envelope"],
+            serde_json::to_value(&outbound.envelope).unwrap(),
+            "the envelope crosses the wire byte-identical"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -874,15 +840,15 @@ mod dispatcher_tests {
 
     /// Wait for the next push on an observable session, decoded.
     async fn next_push(
-        rx: &mut mpsc::UnboundedReceiver<Message>,
+        rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
         key: &str,
         within: Duration,
     ) -> Value {
-        let message = tokio::time::timeout(within, rx.recv())
+        let outbound = tokio::time::timeout(within, rx.recv())
             .await
             .expect("a response arrives in time")
             .expect("the session channel is open");
-        SessionSender::decrypt_push(key, &message)
+        SessionSender::decrypt_push(key, &outbound)
     }
 
     /// How long a test waits for something it expects to happen. Generous on
@@ -1319,7 +1285,7 @@ mod dispatcher_tests {
 
     /// Collect `count` answers off one session, as ids.
     async fn answered_ids(
-        rx: &mut mpsc::UnboundedReceiver<Message>,
+        rx: &mut mpsc::UnboundedReceiver<OutboundEnvelope>,
         key: &str,
         count: usize,
     ) -> Vec<Value> {

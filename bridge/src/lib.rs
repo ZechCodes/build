@@ -48,6 +48,7 @@ pub mod attention;
 pub mod backoff;
 pub mod branch;
 pub mod capture;
+pub mod carrier;
 pub mod changes;
 pub mod config;
 pub mod diff;

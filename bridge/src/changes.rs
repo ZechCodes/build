@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::relay::SessionSender;
+use crate::carrier::SessionSender;
 
 /// How long changes collapse together before the next flush. Short enough that
 /// a browser reacts as if it were watching, long enough that a mutation storm
@@ -252,7 +252,7 @@ mod tests {
 
     /// Drain everything a subscriber was pushed, decrypted.
     fn drained(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         key: &str,
     ) -> Vec<Value> {
         let mut seen = Vec::new();

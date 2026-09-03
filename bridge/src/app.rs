@@ -24,6 +24,7 @@ use tokio::sync::broadcast;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+use crate::carrier::SessionSender;
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
@@ -43,7 +44,7 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
-use crate::relay::{FrameHandler, SessionSender};
+use crate::relay::FrameHandler;
 use crate::run::ValidationReport;
 use crate::run::{
     PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
@@ -19680,7 +19681,7 @@ mod tests {
     /// Poll an observable sender's captured pushes until the decrypted history
     /// satisfies `pred` (returning everything seen), or panic after 10 s.
     async fn wait_for_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         session_key: &str,
         pred: impl Fn(&[Value]) -> bool,
     ) -> Vec<Value> {
@@ -19703,7 +19704,7 @@ mod tests {
 
     /// Wait until one push matches `pred`.
     async fn wait_for_push(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         session_key: &str,
         pred: impl Fn(&Value) -> bool,
     ) -> Vec<Value> {
@@ -33446,7 +33447,7 @@ mod tests {
 
     /// Drain every decrypted push a test sender has captured so far.
     fn drain_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         session_key: &str,
     ) -> Vec<Value> {
         let mut seen = Vec::new();
@@ -33467,7 +33468,7 @@ mod tests {
 
     fn flooded_screen() -> (
         TermScreen,
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         String,
     ) {
         let (sender, pushes, session_key) = SessionSender::observable("flood-client");
@@ -33625,7 +33626,7 @@ mod tests {
     /// One client's capture: everything the bridge pushed to it, and the
     /// session key those pushes decrypt with.
     type ClientCapture = (
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         String,
     );
 
@@ -45031,7 +45032,7 @@ mod tests {
         Arc<Mutex<AppState>>,
         FrameHandler,
         SessionSender,
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         String,
     ) {
         let mut app = qa_state(repo, dir).with_change_window(TEST_CHANGE_WINDOW);
@@ -45046,7 +45047,7 @@ mod tests {
 
     /// Give the flusher several windows, then take everything it sent.
     async fn settled_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::carrier::OutboundEnvelope>,
         session_key: &str,
     ) -> Vec<Value> {
         tokio::time::sleep(TEST_CHANGE_WINDOW * 5).await;

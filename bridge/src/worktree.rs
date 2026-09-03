@@ -247,9 +247,9 @@ impl WorktreeManager {
         worktree: &Worktree,
         isolation: Isolation,
     ) -> Result<Worktree, WorktreeError> {
-        let expected_path = self.refuse_outside_root(worktree)?;
+        self.refuse_outside_root(worktree)?;
         if worktree.path.exists() {
-            return self.verify_existing_checkout(worktree, &expected_path);
+            return self.verify_existing_checkout(worktree);
         }
         let backend = self.backend(isolation)?;
         let repo = git2::Repository::open(&self.repo_path)?;
@@ -258,7 +258,7 @@ impl WorktreeManager {
         self.prune();
         std::fs::create_dir_all(&self.worktrees_root)?;
         backend.materialize(&self.repo_path, &worktree.recorded_branch, &worktree.path)?;
-        self.verify_existing_checkout(worktree, &expected_path)
+        self.verify_existing_checkout(worktree)
     }
 
     /// Remove the checkout's working directory and every backend's record of
@@ -571,9 +571,8 @@ impl WorktreeManager {
     /// The path a restore is allowed to act on: the one this manager would have
     /// given the checkout. A recorded path that is not it, or a name that could
     /// climb out of the root, is refused before anything is read from disk.
-    fn refuse_outside_root(&self, worktree: &Worktree) -> Result<PathBuf, WorktreeError> {
-        let expected = self.worktrees_root.join(&worktree.name);
-        if worktree.path != expected
+    fn refuse_outside_root(&self, worktree: &Worktree) -> Result<(), WorktreeError> {
+        if worktree.path != self.worktrees_root.join(&worktree.name)
             || worktree.name.is_empty()
             || worktree.name.contains(['/', '\\'])
         {
@@ -581,7 +580,7 @@ impl WorktreeManager {
                 "refusing to restore a worktree outside its managed root".to_string(),
             ));
         }
-        Ok(expected)
+        Ok(())
     }
 
     /// Make sure the project repo has `branch` locally, fetching exactly it
@@ -622,12 +621,8 @@ impl WorktreeManager {
     /// order the spec names them: the path is the one this manager gave it,
     /// the checkout is its own backend's, whatever it holds reaches the
     /// project repo, and then the checks every isolation shares.
-    fn verify_existing_checkout(
-        &self,
-        worktree: &Worktree,
-        expected_path: &Path,
-    ) -> Result<Worktree, WorktreeError> {
-        let checkout = self.canonical_managed_path(worktree, expected_path)?;
+    fn verify_existing_checkout(&self, worktree: &Worktree) -> Result<Worktree, WorktreeError> {
+        let checkout = self.canonical_managed_path(&worktree.path)?;
         self.backend_of(&checkout)?.verify(
             &self.repo_path,
             &checkout,
@@ -638,21 +633,17 @@ impl WorktreeManager {
         Ok(worktree.clone())
     }
 
-    /// The checkout's canonical path, refused unless it is the very path this
-    /// manager would have given it — a symlink or a bind mount pointing
-    /// somewhere else is not the checkout that was recorded.
-    fn canonical_managed_path(
-        &self,
-        worktree: &Worktree,
-        expected_path: &Path,
-    ) -> Result<PathBuf, WorktreeError> {
-        let actual = std::fs::canonicalize(&worktree.path)?;
-        if actual != std::fs::canonicalize(expected_path)? {
+    /// The checkout's canonical path, refused unless it resolves to somewhere
+    /// under the worktrees root — a symlink or a bind mount pointing out of it
+    /// is not the checkout that was recorded, whatever the recorded path spells.
+    fn canonical_managed_path(&self, path: &Path) -> Result<PathBuf, WorktreeError> {
+        let checkout = std::fs::canonicalize(path)?;
+        if !checkout.starts_with(std::fs::canonicalize(&self.worktrees_root)?) {
             return Err(WorktreeError::Refused(
                 "refusing to trust a worktree outside its canonical managed path".to_string(),
             ));
         }
-        Ok(actual)
+        Ok(checkout)
     }
 
     /// What a restored checkout must be true of whatever made it: it is on the
@@ -1444,6 +1435,43 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("not a Build checkout"), "{error}");
+    }
+
+    /// A symlink sitting at the managed path and pointing at a checkout outside
+    /// the root is not the checkout that was recorded: whatever the path
+    /// spells, what it resolves to must still be under the root.
+    #[test]
+    fn restore_refuses_a_managed_path_that_resolves_outside_the_root() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let elsewhere = dir.path().join("elsewhere");
+        git_in(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                elsewhere.to_str().unwrap(),
+                "-b",
+                "build/escaped",
+            ],
+        );
+        let root = dir.path().join("worktrees");
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("escaped");
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        let escaped = Worktree {
+            name: "escaped".into(),
+            path,
+            recorded_branch: "build/escaped".into(),
+            base_branch: "main".into(),
+        };
+
+        let refused = mgr
+            .restore(&escaped, Isolation::Worktree)
+            .unwrap_err()
+            .to_string();
+
+        assert!(refused.contains("canonical managed path"), "{refused}");
     }
 
     #[test]

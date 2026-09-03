@@ -13,6 +13,9 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
   directory basename, whatever made it — owned once, in the shape of `of` (a path with no basename is no checkout
   either). `WorktreeBackend` reads git's registry name through it and `summarize_checkout` names `ExternalWorktree`
   through it, so no backend writes the rule again.
+- **`local_branch_ref(branch: &str) -> String`** — `refs/heads/<branch>`, spelled here because both sides of the
+  seam use it (the façade finds, cuts and deletes branches by it in the project repo; a backend checks one out by
+  it), so no caller writes the prefix again.
 - **The marker**: `COW_MARKER` (the file name under `.git`) with `write_cow_marker(checkout, project)` and
   `cow_marker_names(checkout, project) -> bool`. §4.6's name and format are one fact with one owner, here because
   `Isolation::of` reads it in stage 1 before `cow.rs` exists; the three places that touch it — `Isolation::of`,

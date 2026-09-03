@@ -1,9 +1,11 @@
 //! Running git as a child process.
 //!
 //! Every git child the isolation backends, the worktree façade and the
-//! orchestrator start goes through here, so how a child is started, how its
-//! streams are read and what a failure reads like are one fact with one owner.
-//! This module knows nothing of worktrees, isolations or runs.
+//! orchestrator start goes through here — bar `bounded_git_fetch`, which keeps
+//! its own deadline until `run_git_with_deadline` lands (spec §2) — so how a
+//! child is started, how its streams are read and what a failure reads like
+//! are one fact with one owner. This module knows nothing of worktrees,
+//! isolations or runs.
 
 use std::path::Path;
 use std::process::Command;

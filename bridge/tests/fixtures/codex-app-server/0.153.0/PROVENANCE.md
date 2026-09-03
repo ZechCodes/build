@@ -97,11 +97,8 @@ test loads that exact path. Lines 1-10 are sanitized observed notifications:
 reasoning, agent message, file change, failed command, build-named fixture MCP,
 and non-Build fixture MCP. The build-named lines remain fixture-double events.
 
-Lines 11-15 are clearly synthetic:
-
-- line 11: natural subagent activity, which was not forced
-- lines 12-13: context compaction, which was not deterministically induced
-- lines 14-15: retrying and terminal `error` notifications
+Lines 11-12 are the only synthetic records. They are retrying and terminal
+`error` notifications.
 
 The error pair is synthetic because safely inducing an upstream retry and
 terminal failure would require manipulating network or account behavior. Both

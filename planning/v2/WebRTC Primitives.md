@@ -81,6 +81,15 @@ Takes `Arc<FrameIntake>` where it took a `FrameHandler`, mints one `CarrierHandl
 leaves it: wrap each `OutboundEnvelope` as `{"type":"e2ee_envelope",…}`. `main.rs` builds the intake once and passes
 it into every reconnect.
 
+**Stage 1 notes.** The spec calls the stage "zero behaviour change"; the teardown rule above is right where the two
+disagree, and two observable behaviours changed with it. (1) A bridge relay-socket loss now releases that carrier, so
+every session that rode only it ends and the app hears each one's synthetic `close` frame — `AppState::drop_session`
+detaches the session's terminal viewers and change subscription (it kills no PTY). Before, the read loop's local key map
+died with the socket and nothing was released. (2) That synthetic `close` frame's `sender` is `"device"`
+(`SENDER_DEVICE`), the value every device-built frame carries; it was the literal `"relay"`. Neither crosses the wire:
+the relay protocol and the envelope are unchanged. `relay::run` and `run_with_connector` take `Arc<FrameIntake>` where
+they took a `FrameHandler`, so the integration tests were edited mechanically to build one; every test still passes.
+
 ### `SessionPeer` — the peer-connection trait, `bridge/src/rtc.rs` (new, stage 2)
 One implementor per live `RTCPeerConnection`, one per E2EE session, always the answerer. New; the bridge has no peer
 concept today, so this replaces nothing.

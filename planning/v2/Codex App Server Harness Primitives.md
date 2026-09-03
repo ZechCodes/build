@@ -39,53 +39,67 @@ an unknown provider is refused at selection, and no migration rewrites a stored
 
 ### Provider-owned protocol construction
 
-`open_session` remains the one terminal-versus-protocol construction point, but
-it must not name `AdkSession`. Add this small provider hook:
+Agent construction has one callable entry point and one provider dispatch:
 
 ```rust
 pub trait Harness {
     // Existing launch and catalog methods remain.
-    fn open_protocol_session(
+    fn open_session(
         &self,
-        request: ProtocolSessionRequest<'_>,
+        request: SessionOpenRequest,
     ) -> Result<OpenedSession, HarnessError>;
 }
 
-pub struct ProtocolSessionRequest<'a> {
-    pub spec: &'a HarnessSpec,
+pub struct SessionOpenRequest {
+    pub spec: HarnessSpec,
     pub root: PathBuf,
-    pub resume_session_id: Option<&'a str>,
+    pub choice: ModelChoice,
+    pub terminal: TerminalOpenOptions,
+    pub resume_session_id: Option<String>,
 }
 
 pub struct OpenedSession {
     pub session: Arc<dyn AgentSession>,
     pub output: SessionOutput,
 }
+
+pub fn open_session(
+    provider: AgentProvider,
+    request: SessionOpenRequest,
+) -> Result<OpenedSession, HarnessError> {
+    harness_for(provider).open_session(request)
+}
 ```
 
-- **Boundary:** `Carrier::Protocol` calls the selected `Harness` hook. The ADK
-  harness constructs `AdkSession`; the new harness constructs
-  `CodexAppServerSession`. TUI providers use the existing terminal arm.
+- **Boundary:** Every agent spawn calls the free `open_session`; that function's
+  call to `harness_for` is the only provider dispatch. `Harness::open_session`
+  has one shared PTY default used by both TUI providers. The ADK and app-server
+  harnesses override it to construct their own protocol sessions. A human shell
+  calls the lower-level PTY constructor directly because it has no provider.
 - **Interface:** One operation that returns the existing session and its already
   subscribed output stream.
 - **Hides:** Protocol type, startup handshake, subprocess pipes, and provider
-  event vocabulary. No code above `harness/` matches a protocol provider.
+  event vocabulary. `Tab::spawn`, `Carrier`, and `app.rs` never match a provider
+  or name `AdkSession` / `CodexAppServerSession`.
 
-The default hook refuses protocol construction. Contract tests require every
-provider with `has_terminal() == false` to open an activity-reporting protocol
-session, while `open_session` keeps rejecting a session with neither terminal
-nor activity.
+`TerminalOpenOptions` contains size, readiness grace, and optional transcript
+locator. A protocol override consumes none of those terminal mechanics; it uses
+the same request's `root`, model choice, process spec, and exact resume id.
+Contract tests call the public construction function for every provider and
+require `has_terminal() == false` to return an activity-reporting session. The
+existing refusal of a session with neither terminal nor activity remains after
+construction.
 
 ### `CodexAppServerHarness`
 
 - **Boundary:** A new provider module owns the `codex app-server --stdio`
-  process specification, Codex model/effort config, Build MCP config, and the
-  construction hook above.
-- **Interface:** The existing `Harness` interface plus
-  `open_protocol_session`.
-- **Hides:** Codex argument ordering and config keys. Callers provide
-  `ModelChoice`, `SpawnOptions`, and `HarnessContext`; they never build app-server
-  JSON or Codex config.
+  process specification, conversion of `ModelChoice` into the 0.153.0 protocol
+  fields, Build MCP config, and the construction override above.
+- **Interface:** The existing `Harness` interface plus its callable
+  `open_session` operation.
+- **Hides:** Codex argument ordering, config keys, and model/effort JSON fields.
+  Callers provide `ModelChoice`, `SpawnOptions`, and `HarnessContext`; they never
+  build app-server JSON or Codex config.
 
 Use one app-server process per Build agent session. This preserves the current
 warm-session lifetime, makes process death equal session death, avoids thread
@@ -93,30 +107,89 @@ multiplexing across owners, and keeps each MCP token scoped to one agent.
 
 ### `AppServerConnection`
 
-- **Boundary:** Own the child stdin/stdout JSONL transport and JSON-RPC request
-  correlation. Wire messages omit `"jsonrpc":"2.0"`, as Codex requires.
-- **Interface:** `request(method, params, expected_response) -> RequestId`,
-  `notify(method, params)`, and `respond(id, result_or_error)`. Each write is one
-  serialized line under one writer lock.
-- **Hides:** Monotonic request-id allocation, the bounded pending-request map,
-  out-of-order response matching, serialization, line framing, and response
-  delivery to the state machine.
+- **Boundary:** Own only stdin/stdout JSONL framing and JSON-RPC request
+  correlation. It does not own the child process, session state, policy, or
+  activity translation. Wire messages omit `"jsonrpc":"2.0"`, as Codex
+  requires.
+- **Interface:** `request(PendingOperation) -> Result<RequestId,
+  ConnectionError>`, `notify(ClientNotification) -> Result<(),
+  ConnectionError>`, `respond(ServerResponse) -> Result<(), ConnectionError>`,
+  and `close() -> Result<(), ConnectionError>`. No other component writes
+  app-server stdin.
+- **Hides:** Monotonic checked request-id allocation, serialization, the bounded
+  `RequestId -> PendingOperation` map, and out-of-order response matching.
 
-A response resolves exactly one pending request by id. A duplicate or unknown
-response id is a protocol failure, not a guessed response. A correlated JSON-RPC
-error is returned to the operation that issued the request with method and id
-context. Notifications never enter the request map.
+`PendingOperation` is a typed enum with `Initialize`, `StartThread`,
+`ResumeThread`, `StartTurn { input }`, `SteerTurn { turn_id, input }`, and
+`InterruptTurn { turn_id }`. It owns each method and params shape, so callers
+cannot pair a method with the wrong response expectation. The reader removes one
+entry and emits `CorrelatedResponse { operation, result }`; `CodexSessionState`
+never sees a raw response id and cannot maintain a second correlation map.
 
-Server-initiated requests cannot be left unanswered. The required-now
-configuration requests no approvals; an unexpected approval, elicitation, or
-unknown server request receives an explicit unsupported/denied response and is
-recorded as a protocol error. It is never auto-approved and never waits for UI
-that this feature does not provide.
+A duplicate/unknown response id, id exhaustion, a response carrying both result
+and error or neither, and a response whose typed body does not match its
+`PendingOperation` fail the connection. Notifications never enter the pending
+map. Every write serializes first, enforces the outbound limit, writes one line
+under one writer lock, flushes, and returns its exact I/O or encoding error.
+
+### `ServerRequestPolicy`
+
+- **Boundary:** Purely maps a typed server request to
+  `ServerRequestDecision { response, after_response }`. The connection writes
+  `response` first; only after that `Result` succeeds may the session apply
+  `Continue`, `FailTurn(reason)`, or `FailSession(reason)`.
+- **Interface:** `decide(ServerRequest) -> ServerRequestDecision`.
+- **Hides:** Every known app-server callback and the required-now no-UI policy.
+
+The exhaustive 0.153.0 policy is:
+
+| Server request | Response | Decision after successful write |
+| --- | --- | --- |
+| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | typed `decline` | Continue; report one bounded `TaskUpdate` |
+| legacy `execCommandApproval`, `applyPatchApproval` | typed denied decision | Continue; report one bounded `TaskUpdate` |
+| `mcpServer/elicitation/request` | `{ action: "decline" }` | Continue |
+| `item/tool/requestUserInput` | JSON-RPC `-32601` unsupported | FailTurn: no answers may be invented |
+| `item/permissions/requestApproval` | JSON-RPC `-32601` unsupported | FailTurn: no permission may be invented |
+| `item/tool/call` | JSON-RPC `-32601` unsupported | FailTurn: dynamic tools are deferred |
+| `account/chatgptAuthTokens/refresh` | JSON-RPC `-32601` unsupported | FailSession with an actionable re-authentication epitaph |
+| `attestation/generate` | JSON-RPC `-32601` unsupported | FailSession; Build did not advertise attestation support |
+| `currentTime/read` | current whole Unix seconds | Continue |
+| unknown method | JSON-RPC `-32601` method-not-found | FailSession after replying |
+
+The launch requests `approvalPolicy: "never"`, so approval callbacks are
+unexpected but still answered. Nothing is auto-approved and no request waits for
+UI that this feature does not provide.
+
+`Continue` leaves the turn and session open. `FailTurn` records the reason and,
+when a turn is active, issues the ordinary typed `InterruptTurn`; the session
+remains reusable after matching completion. `FailSession` records the epitaph,
+closes activity, and runs the normal idempotent shutdown. If the response write
+fails, connection failure wins and none of these follow-up actions runs.
+
+### `AppServerProcess`
+
+- **Boundary:** Own the `Child`, cached exit status, and bounded stderr drainer.
+  It hands stdin/stdout to `AppServerConnection` exactly once and never parses
+  protocol messages or allocates request ids.
+- **Interface:** `spawn(spec, root) -> Result<(AppServerProcess,
+  ConnectionPipes), HarnessError>`, `exit_code()`, `exited_within(timeout)`,
+  `stderr_epitaph()`, and `shutdown() -> Result<(), HarnessError>`.
+- **Hides:** Spawn setup, pipe extraction, signal-derived exit codes, wait/reap
+  races, and stderr retention.
+
+`CodexAppServerSession::end` first calls idempotent `connection.close()` to send
+EOF, then idempotent `process.shutdown()`. Shutdown returns the cached result if
+already reaped; otherwise it calls `try_wait`, kills only a still-running child,
+and always waits after kill. Concurrent `end`, EOF, and status polling share the
+one cached result, so the child is killed at most once and reaped exactly once.
+Drop is only a backup that invokes the same shutdown path and cannot invent a
+second process owner.
 
 ### `CodexSessionState`
 
 - **Boundary:** The only owner of initialization, thread, active-turn, pending
-  interrupt, liveness, active model, and last reported error state.
+  turn reconciliation, ordered user input, pending interrupt, liveness, active
+  model, and last reported error state.
 - **Interface:** Pure transitions over lifecycle `ConnectionEvent` and
   `SessionCommand` values, returning `SessionEffect` values for JSON-RPC writes,
   session-fact updates, bounded operational reports, or close. Item
@@ -127,9 +200,10 @@ The state machine is:
 
 ```text
 Starting
-  -> Initializing(initialize request id)
-  -> OpeningThread(thread/start or thread/resume request id)
+  -> Initializing
+  -> OpeningThread(thread/start or thread/resume)
   -> Waiting(thread id)
+  -> StartingTurn(thread id, observed turn id?, early completion?)
   -> Working(thread id, turn id)
   -> Waiting(thread id)
   -> Ending
@@ -144,6 +218,16 @@ handshake is in progress waits in the bounded session queue and starts as soon
 as the thread reaches `Waiting`; this covers the existing spawn-then-deliver
 path without making `send_turn` wait on Codex.
 
+Initialization omits `experimentalApi` (equivalent to false), does not advertise
+attestation or MCP elicitation extensions, and opts out of no notifications the
+translator requires. Dynamic tools and other experimental methods therefore
+cannot enter through an accidental capability opt-in.
+
+`StartingTurn` maps to public `AgentStatus::Working`: the session has accepted
+the user's turn even while the start response is being reconciled. `Working`
+lasts through any pending steer/completion reconciliation that can still affect
+delivery; it never falls back to the quiet clock.
+
 An exact persisted `resume_session_id` selects `thread/resume { threadId, cwd,
 ... }`; absence selects `thread/start { cwd, ... }`. The response's `thread.id`
 becomes `AgentSession::session_id()` and is persisted through the existing agent
@@ -151,10 +235,23 @@ resume-id path. The app-server provider does not use the Codex TUI's
 cwd/`resume --last` transcript guess: without an exact app-server thread id it
 starts fresh rather than adopting an unrelated global rollout.
 
-`thread/start` and `thread/resume` set the configured model/effort, `cwd`,
-`approvalPolicy: "never"`, and danger-full-access sandbox policy. The response's
-model becomes `AgentSession::active_model()`. A failure at initialize or thread
-open closes the activity stream and exposes the JSON-RPC error as the epitaph.
+For the pinned 0.153.0 schema, `thread/start` and `thread/resume` send optional
+`model`, `cwd`, `approvalPolicy: "never"`, and `sandbox: "danger-full-access"`.
+Neither method accepts effort. Every `turn/start` sends
+the selected optional `model` and `effort`; those are the 0.153.0 sticky turn
+fields. `turn/steer` accepts neither. `result.model` and
+`result.reasoningEffort` from thread start/resume initialize the session facts;
+the selected turn values update them when a turn is accepted.
+
+`thread/started` may precede the start/resume response. In that case
+`OpeningThread` records its candidate id but does not become ready. The
+correlated response must name the same id, after which `Waiting` begins. A
+response-first path becomes `Waiting` immediately and a later matching
+notification is idempotent. A differing id or an error response after a
+successful notification is a protocol contradiction and fails the session.
+
+A failure at initialize or thread open closes the activity stream and exposes
+the correlated JSON-RPC error as the epitaph.
 
 ### Turn controller
 
@@ -165,24 +262,72 @@ open closes the activity stream and exposes the JSON-RPC error as the epitaph.
   the cancellation.
 - **Hides:** The choice among Codex turn methods and the active thread/turn ids.
 
-In `Waiting`, `send_turn` issues `turn/start` with one text input. In `Working`,
-it issues `turn/steer` with `threadId`, the active `expectedTurnId`, and the same
-text input. A `turn/started` notification or correlated `turn/start` response
-records the turn id idempotently. `turn/completed` is the sole turn boundary and
-clears it for statuses `completed`, `failed`, and `interrupted`.
+In `Waiting`, `send_turn` retains the input in `PendingOperation::StartTurn`,
+writes `turn/start`, and enters `StartingTurn`. In `Working`, it retains the
+input in `PendingOperation::SteerTurn` and writes `turn/steer` with `threadId`
+and the exact active `expectedTurnId`. At most one steer request is in flight;
+later inputs enter the ordered bounded queue and are not written until that
+steer is reconciled. This serializes steers and preserves user order.
 
-The state retains a steering input until the matching response accepts it. An
-`activeTurnNotSteerable` response moves that input to the next-turn queue instead
-of dropping the user's words; any other steering error becomes a bounded
-`TaskUpdate` and the session's reported error. An interrupt request similarly
-stays pending until its response or the matching turn completion clears it.
+`StartingTurn` resolves every legal ordering:
+
+| Observed order | Reconciliation |
+| --- | --- |
+| response, then `turn/started` | Response id enters `Working`; the same notification is idempotent |
+| `turn/started`, then response | Record the observed id but remain `StartingTurn`; response must match before entering `Working` |
+| `turn/completed`, then response | Record id/status, close open items, remain `StartingTurn`; matching response settles directly to `Waiting` and never resurrects `Working` |
+| `turn/started`, completion, response | Both notifications are retained; matching response settles directly to `Waiting` |
+| response error after a start/completion notification | Fail: the same operation cannot both start and fail |
+
+Any turn-scoped notification received in `StartingTurn` may establish the
+observed turn id before `turn/started`; all later response and notification ids
+must match it. This lets early item events reach the translator without treating
+them as another turn.
+
+Any notification-before-response or completion-before-response reconciliation
+must receive its correlated response within the five-second reconciliation
+limit. Timeout fails the session; it never guesses whether the request was
+accepted.
+
+An exact duplicate start/completion notification is a no-op. A second id for the
+same start, a completion for another active id, a steer success naming another
+id, or any other turn-id disagreement fails the session. `Waiting` retains the
+last completed id only to ignore an exact duplicate completion; any other
+completion while waiting is desynchronization.
+
+A steer input remains owned by its `PendingOperation` until one of these
+outcomes:
+
+- Success must return the expected active turn id. The input was accepted once
+  and is never replayed.
+- `SteerErrorKind::NoActiveTurn` is only JSON-RPC `-32600` with the canonical
+  no-active-turn message. It is the normal completion race, not
+  `activeTurnNotSteerable`. If matching `turn/completed` was already
+  seen, replay the retained input as the next `turn/start`. If the response wins
+  the race, hold it provisionally until matching completion arrives, then
+  replay. Absence of that completion for five seconds is a protocol failure.
+- `SteerErrorKind::ActiveTurnNotSteerable` is the structured
+  `codexErrorInfo.activeTurnNotSteerable` variant. It means the current
+  review/compact turn still exists but cannot accept same-turn input. Keep the
+  input queued until that exact turn completes, then send it as the next
+  `turn/start`; if completion was already retained, start it immediately.
+- Any other error reports the retained input as undelivered and fails the
+  session. Build never silently drops or guesses delivery.
+
+If `turn/completed` arrives while a steer response is pending, the state closes
+the turn but does not send another queued input until the response establishes
+whether the retained steer was accepted or must be replayed. Thus
+completion-before-response cannot duplicate or lose a message.
 
 `can_interrupt` is true only while one turn is active and no interrupt is
 pending. `interrupt` sends `turn/interrupt { threadId, turnId }`; it never kills
 the process. A turn submitted after an interrupt request is held in a bounded
 session-owned queue and starts only after `turn/completed`, so it cannot steer a
-turn the user just cancelled. `turn/completed` is never Build completion:
-`done` remains the only lifecycle report.
+turn the user just cancelled. A completion before the interrupt response is
+retained against the pending operation; later success or `-32600` no-active-turn
+is satisfied, while another error is reported without reopening the completed
+turn. `turn/completed` is never Build completion: `done` remains the only
+lifecycle report.
 
 ### `CodexActivityTranslator`
 
@@ -201,8 +346,10 @@ The required mapping is one place:
 | --- | --- |
 | completed `reasoning` item | `Reasoning` from its final summary |
 | completed `agentMessage` item | `Narration` from its final text |
-| started command, file change, web search, dynamic tool, collaboration tool, or non-Build MCP item | `ToolUse { call_id: item.id }` |
+| started `commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`, `imageGeneration`, `collabAgentToolCall`, or non-Build `mcpToolCall` | `ToolUse { call_id: item.id }` |
 | matching completed item | `ToolResult` with `Ok`/`Error` from status, exit code, or error |
+| `subAgentActivity` | bounded `TaskUpdate` from its `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`) |
+| started/completed `contextCompaction` | bounded `TaskUpdate` |
 | retrying or terminal `error` notification | bounded `TaskUpdate`; terminal errors also become the session epitaph |
 
 Delta notifications update the quiet clock but allocate no transcript and do
@@ -211,6 +358,17 @@ emits once. An open tool item is removed on completion; items still open at
 `turn/completed` emit `Unanswered`. MCP items whose server is `build` emit
 nothing because `post_thread_message` and `done` already arrive through their
 real Build MCP path.
+
+Dynamic tools are deferred: the harness does not advertise them, execute
+`item/tool/call`, or include `dynamicToolCall` in required translation. The
+decoder recognizes an externally introduced `dynamicToolCall` only as a
+deferred item and emits nothing rather than implementing part of that surface.
+
+The harness does not set `features.multi_agent` or otherwise force native
+delegation. Existing Codex configuration remains authoritative. When Codex
+naturally emits `collabAgentToolCall` or `subAgentActivity`, the mappings above
+keep that work visible in the generic conversation. Codex-specific subagent
+surfaces remain deferred.
 
 ### Build MCP configuration
 
@@ -229,14 +387,17 @@ call does.
 
 ### Process, error, and quiet status
 
-- **Boundary:** `CodexAppServerSession` owns the child, stdin close, stdout and
-  stderr drainers, exit status, activity sender, and `CodexSessionState`.
+- **Boundary:** `CodexAppServerSession` composes, but does not merge,
+  `AppServerProcess`, `AppServerConnection`, `CodexSessionState`,
+  `ServerRequestPolicy`, the translator, and the activity sender.
 - **Interface:** The existing `AgentSession` methods. `status` reads reported
   protocol state, `quiet_for` measures time since the last accepted protocol
-  message, `exited_within` handles pipe-close/reap lag, `epitaph` returns the
-  last terminal protocol error or bounded stderr line, and `end` closes stdin,
-  kills if needed, and always reaps.
-- **Hides:** Threads, pipes, locks, and shutdown ordering.
+  message, `exited_within` delegates process/reap lag, `epitaph` returns the last
+  terminal protocol error or process stderr tail, and `end` runs the idempotent
+  close-then-shutdown sequence.
+- **Hides:** The coordination loop. Process ownership stays in
+  `AppServerProcess`; request IDs stay in `AppServerConnection`; domain state
+  stays in `CodexSessionState`.
 
 `Working` lasts from accepted turn start until `turn/completed`, even during a
 long silent model call, so the existing idle sweep does not report false quiet.
@@ -246,13 +407,41 @@ tab and session-lineage death rites.
 
 ### Bounds and forward compatibility
 
-Name each limit once beside the connection: maximum JSONL frame bytes, maximum
-stderr line bytes, maximum pending requests, maximum queued turns, maximum open
-items, and the existing activity broadcast backlog. Read frames with a capped
-buffer rather than `BufRead::lines`, which can allocate an unbounded line before
-validation. Clip all protocol-derived activity
-summaries before broadcasting; raw command output, patches, arguments, and full
-JSON objects never enter `ActivityReport`.
+`AppServerLimits` is the one value passed to process, connection, state, and
+translator. Production uses these conservative defaults:
+
+| Limit | Value |
+| --- | ---: |
+| inbound JSONL frame | 1 MiB |
+| outbound JSONL frame | 1 MiB |
+| one retained stderr line | 16 KiB |
+| all retained stderr text | 32 KiB |
+| correlated pending requests | 64 |
+| queued user inputs | 16 |
+| aggregate queued input UTF-8 bytes | 256 KiB |
+| open translated items | 256 |
+| aggregate open-item ids/summaries | 128 KiB |
+| one emitted activity summary | existing 240-character summary limit |
+| notification/response reconciliation | 5 seconds |
+| activity broadcast backlog | existing 1,024 reports |
+
+The stdout decoder incrementally reads into a buffer capped at 1 MiB plus one
+sentinel byte. Newline at or below the cap yields exactly one JSON value; cap
+without newline, invalid UTF-8/JSON, a blank frame, or trailing non-whitespace
+after the value fails the connection. It stops reading and session shutdown
+kills/reaps the child, so an oversized line is never drained into another
+allocation. The writer serializes into a capped buffer before taking the lock.
+
+Queue insertion checks both count and aggregate UTF-8 bytes before mutation.
+Open-item insertion checks both item count and aggregate retained bytes; item
+completion removes its charge. Overflow refuses the new operation and fails the
+session with the named limit. Stderr is always drained to prevent child
+deadlock. Its rolling decoder retains at most 16 KiB for one line, discards that
+line's excess bytes until newline, and retains at most the newest 32 KiB across
+lines.
+Protocol-derived summaries are clipped before broadcast; raw command output,
+patches, arguments, image data, and full JSON objects never enter
+`ActivityReport`.
 
 Unknown notification methods and unknown item variants are ignored after
 updating the quiet clock and a bounded diagnostic counter. Unknown fields on
@@ -260,6 +449,32 @@ known messages are accepted. Unknown response ids, malformed envelopes,
 oversized frames, and missing fields required for the current lifecycle
 transition fail fast. This permits additive Codex protocol releases without
 hiding loss of session control.
+
+### Protocol version floor
+
+The minimum supported version is `codex-cli 0.153.0`. This design is pinned to
+the stable files emitted by:
+
+```text
+codex app-server generate-json-schema --out <dir>
+```
+
+on 0.153.0, specifically `v1/InitializeResponse.json`,
+`v2/ThreadStartParams.json`, `v2/ThreadResumeParams.json`,
+`v2/TurnStartParams.json`, `ClientRequest.json`, `ServerRequest.json`, and
+`ServerNotification.json`. A live 0.153.0 initialize probe on 2026-09-03 returned
+`userAgent: "build_probe/0.153.0 (...)"`; the generated initialize schema also
+requires `userAgent`.
+
+`CodexSessionState` validates the semantic version in
+`initialize.result.userAgent` before sending `initialized`. If it cannot parse
+one, the pure state returns `RequireVersionEvidence`; the session coordinator
+asks `CodexAppServerHarness`'s `CodexVersionProbe` and feeds the typed result
+back as a state event. The probe runs `codex --version`, expects
+`codex-cli <semver>`, and caches the result by resolved binary path for the
+daemon lifetime. The cache is shared by all sessions; there is never a probe per
+turn. A version below 0.153.0 from either source, or failure to obtain parseable
+evidence from both, fails startup with the required and observed values.
 
 ## Settings-only SPA work
 
@@ -288,17 +503,32 @@ issue, branch, plan, diff, or review UI.
 | Static shared Codex model/effort catalog | Dynamic `model/list` catalog and provider capability discovery |
 | Text-only `Turn` input | Images, local files, audio, mentions, skills, and Build attachment delivery |
 | `approvalPolicy: never`, danger-full-access, explicit refusal of unexpected server requests | Approval, permission, elicitation, and user-input UI |
+| Natural collaboration activity translation under existing Codex config | Forcing native delegation or pinning `features.multi_agent` |
+| Typed refusal of `item/tool/call` | Dynamic tool registration, execution, and translation |
 | Settings/default-harness naming and selection only | Any conversation, activity, terminal, task, issue, branch, plan, diff, or review UI change |
 
 ## Tests and live fixtures
 
-Implementation follows TDD. Unit tests first pin provider serde compatibility,
-provider-owned construction, JSON-RPC out-of-order correlation and errors, the
-initialization/start/resume state machine, start-versus-steer, interrupt queueing,
-item pairing, Build-MCP suppression, every bound, unknown additive messages,
-process EOF, quiet status, and kill-plus-reap. Existing generic activity-pump,
-idle-sweep, resume-id persistence, settings, catalog, and old-record tests must
-pass unchanged except for additive expected-provider lists and labels.
+Implementation follows TDD. Each matrix row starts as a failing test:
+
+| Area | Required race and failure cases |
+| --- | --- |
+| Identity/construction | old `codex` records reopen on TUI; `codex_app_server` round-trips; every provider is opened through free `open_session`; no caller above `harness_for` dispatches on provider; no-terminal sessions report activity |
+| Correlation | responses resolve out of order to the right `PendingOperation`; duplicate/unknown id, id exhaustion, wrong typed body, result-plus-error, and result-less response fail; pending-map overflow is unchanged state |
+| Writes | request, notification, server response, flush, and close each propagate encoding/size/I/O failure; failed request write removes its pending entry |
+| Initialize/version | no request precedes initialize; queued first turn waits; initialize error fails; 0.153.0 user-agent passes; 0.152.x, unparsable, and missing versions use/fail through the one cached probe as specified; `initialized` is sent once |
+| Thread open | fresh uses start, exact id uses resume, no exact id never guesses; notification-before-response and response-before-notification converge; matching duplicates are inert; id mismatch and error-after-notification fail |
+| Model/effort | thread start/resume send `model` but no effort; turn start sends `model` plus `effort`; steer sends neither; response model/effort update session facts |
+| Starting turn | response-start, start-response, completion-response, start-completion-response, and response-completion converge; completion-before-response never resurrects Working; error after observed start/completion fails; duplicate completion is inert and wrong turn id fails |
+| Steer serialization | one steer is written while later inputs queue; success releases the next input in order; returned turn-id mismatch fails; queue count/byte overflow fails without partial insertion |
+| Steer completion race | completion then `-32600` and `-32600` then completion each replay retained input exactly once as a new turn; success after completion never replays; missing completion reaches the five-second failure |
+| Non-steerable turn | `activeTurnNotSteerable` does not pretend completion; retained input waits behind the same turn and starts once after its matching completion |
+| Interrupt | duplicate interrupt is a no-op; completion before response plus later success or `-32600` stays completed; queued post-interrupt input starts only after completion; interrupt never kills the process |
+| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; response-write failure prevents the decision; unknown method replies `-32601` before session failure; no path approves |
+| Translation | each required item emits the stated report once; tool result pairs by item id; natural collaboration events remain visible; Build MCP emits nothing; dynamic tool items and unknown items emit nothing; open calls close `Unanswered` at turn end |
+| Bounds/decoder | exact-limit frames pass; limit-plus-one, no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
+| Process/liveness | stdout EOF closes activity; long quiet Working is not demoted; close/end/drop and concurrent status/end kill at most once and reap exactly once; signal exits have stable codes; protocol error wins epitaph over stderr fallback |
+| Compatibility/UI | existing activity pump, idle sweep, resume persistence, store fixtures, and MCP `done` tests pass; settings lists the new provider; only allowed provider/default wiring changes in the SPA |
 
 Before implementing the translator, capture a real, non-secret protocol session
 from the minimum supported Codex CLI into
@@ -306,7 +536,9 @@ from the minimum supported Codex CLI into
 server lines for initialize, thread start, thread resume, narration, reasoning,
 successful and failed commands, a file change, a non-Build MCP call, Build
 `done`, steering, interruption, retry/error, turn completion, and clean process
-shutdown. Store the CLI version and generated-schema hash beside the JSONL.
+shutdown. Include naturally emitted `collabAgentToolCall` and
+`subAgentActivity` when available, but do not force delegation to obtain them.
+Store the CLI version and generated-schema hash beside the JSONL.
 
 The capture tool must use a temporary repository and test prompts, redact home
 paths, account/workspace ids, tokens, URLs, and machine-specific values, then
@@ -314,10 +546,3 @@ validate every redacted line against the generated schema. Tests replay the
 checked-in fixture with no network or local Codex account. Hand-written fixtures
 cover only failure shapes that cannot be induced safely, and are labelled as
 synthetic.
-
-## Unresolved choice
-
-The minimum supported Codex CLI version is not yet selected. Fixture capture
-must establish the first version whose stable schema has all required methods
-and item fields; startup should fail with an actionable version error below that
-floor rather than probe behavior by trial and error.

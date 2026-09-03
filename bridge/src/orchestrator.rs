@@ -2955,29 +2955,9 @@ impl Orchestrator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_fixture::init_repo;
     use crate::mcp::DoneOutputs;
     use std::process::Command;
-
-    fn init_repo() -> (tempfile::TempDir, PathBuf) {
-        let dir = tempfile::tempdir().unwrap();
-        let repo = dir.path().join("repo");
-        std::fs::create_dir(&repo).unwrap();
-        let git = |args: &[&str]| {
-            assert!(Command::new("git")
-                .args(args)
-                .current_dir(&repo)
-                .status()
-                .unwrap()
-                .success());
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@build.ing"]);
-        git(&["config", "user.name", "T"]);
-        std::fs::write(repo.join("README.md"), "# project\n").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-m", "initial"]);
-        (dir, repo)
-    }
 
     /// A warm "harness" that stays alive and drains stdin (it discards the
     /// prompt), like a real interactive CLI. Draining matters: a child that never

@@ -24,7 +24,7 @@ use tokio::sync::broadcast;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
-use crate::carrier::SessionSender;
+use crate::carrier::{FrameHandler, SessionSender};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
@@ -44,7 +44,6 @@ use crate::plan::{
     StageDocState,
 };
 use crate::pty::HarnessSpec;
-use crate::relay::FrameHandler;
 use crate::run::ValidationReport;
 use crate::run::{
     PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,

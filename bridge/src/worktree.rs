@@ -1000,7 +1000,7 @@ fn summarize_checkout(
 /// checkout says why it was skipped.
 fn or_skip<T, E: std::fmt::Display>(what: &str, path: &Path, fact: Result<T, E>) -> Option<T> {
     fact.inspect_err(|error| {
-        eprintln!("describe_checkout: {what} for {}: {error}", path.display());
+        eprintln!("summarize_checkout: {what} for {}: {error}", path.display());
     })
     .ok()
 }

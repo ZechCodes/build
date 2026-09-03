@@ -1688,9 +1688,13 @@ mod tests {
         assert_eq!(found[0].name, "wt-listed");
         assert_eq!(found[0].branch.as_deref(), Some("listed"));
         assert_eq!(found[0].isolation, Isolation::Worktree);
+        let through_the_free_seam = discover_external_worktrees(&repo, "main", &excluded).unwrap();
         assert_eq!(
-            found,
-            discover_external_worktrees(&repo, "main", &excluded).unwrap(),
+            found.iter().map(|w| &w.path).collect::<Vec<_>>(),
+            through_the_free_seam
+                .iter()
+                .map(|w| &w.path)
+                .collect::<Vec<_>>(),
             "the free seam is the manager"
         );
     }

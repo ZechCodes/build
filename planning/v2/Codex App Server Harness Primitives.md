@@ -145,6 +145,14 @@ under one writer lock, flushes, and returns its exact I/O or encoding error.
 The session coordinator samples whole Unix seconds and passes that value to
 `decide`; `ServerRequestPolicy` never reads a clock.
 
+Request decoding classifies the method before validating method-specific
+params. A known method enters only its focused typed params decoder. Any other
+method becomes `ServerRequest::Unknown { id, method }` without inspecting
+`params`; absent params and arbitrary valid JSON params, including scalars and
+arrays, therefore receive JSON-RPC `-32601` method-not-found and then the
+`FailSession` policy below. Malformed JSON-RPC envelopes still fail before
+policy.
+
 The exhaustive 0.153.0 policy is:
 
 | Server request | Response | Decision after successful write |
@@ -175,17 +183,26 @@ fails, connection failure wins and none of these follow-up actions runs.
 - **Boundary:** Own the `Child`, cached exit status, and bounded stderr drainer.
   It hands stdin/stdout to `AppServerConnection` exactly once and never parses
   protocol messages or allocates request ids.
-- **Interface:** `spawn(spec, root) -> Result<(AppServerProcess,
-  ConnectionPipes), HarnessError>`, `exit_code()`, `exited_within(timeout)`,
-  `stderr_epitaph()`, and `shutdown() -> Result<(), HarnessError>`.
+- **Interface:** `spawn(spec, root, process_events) ->
+  Result<(AppServerProcess, ConnectionPipes), HarnessError>`, `exit_code()`,
+  `exited_within(timeout)`, `stderr_epitaph()`, and `shutdown() ->
+  Result<(), HarnessError>`.
 - **Hides:** Spawn setup, pipe extraction, signal-derived exit codes, wait/reap
   races, and stderr retention.
+
+The process monitor and stderr drainer push typed
+`ProcessEvent::{Exited(code), MonitorFailed(reason),
+StderrDrainerFailed(reason)}` values asynchronously to the session coordinator.
+They never wait for `AgentSession::status()` to discover failure and never
+mutate `CodexSessionState` themselves. The coordinator owns the resulting
+failure transition and shutdown.
 
 `CodexAppServerSession::end` first calls idempotent `connection.close()` to send
 EOF, then idempotent `process.shutdown()`. Shutdown returns the cached result if
 already reaped; otherwise it calls `try_wait`, kills only a still-running child,
-and always waits after kill. Concurrent `end`, EOF, and status polling share the
-one cached result, so the child is killed at most once and reaped exactly once.
+and always waits after kill. Concurrent `end`, EOF, and process-monitor
+completion share the one cached result, so the child is killed at most once and
+reaped exactly once.
 Drop is only a backup that invokes the same shutdown path and cannot invent a
 second process owner.
 
@@ -256,6 +273,25 @@ successful notification is a protocol contradiction and fails the session.
 
 A failure at initialize or thread open closes the activity stream and exposes
 the correlated JSON-RPC error as the epitaph.
+
+### `ParentThreadFilter`
+
+- **Boundary:** Routes every thread-scoped notification before typed lifecycle
+  or activity handling.
+- **Interface:** `classify(method, params, expected_parent_thread) ->
+  ParentThreadRoute::{Parent, Child, Unscoped}`.
+- **Hides:** The routing-field differences between `thread/started` and the
+  other notification shapes.
+
+The filter reads only the method's routing fields. During thread opening, a
+`thread/started` value with `parentThreadId` is a child and a root value may
+establish the candidate parent id; after opening, a thread-scoped notification
+is parent-owned only when its `threadId` matches the exact active parent.
+`Child` returns before full params decoding and before any lifecycle, quiet
+clock, activity, error, epitaph, diagnostic, open-item, completed-item, or limit
+mutation. A malformed child error therefore cannot contaminate or terminate the
+parent session. A `subAgentActivity` item emitted on the parent thread remains
+parent activity even though its payload describes a child agent.
 
 ### Turn controller
 
@@ -342,31 +378,59 @@ lifecycle report.
 - **Interface:** `translate(notification) -> Vec<ActivityReport>` plus
   `close_turn(turn_id) -> Vec<ActivityReport>` for unanswered calls.
 - **Hides:** Codex item variants, item-id pairing, delta suppression, status
-  mapping, and Build-MCP suppression.
+  mapping, completed-item deduplication, and suppression.
 
-The required mapping is one place:
+`classify_item(item) -> ItemClassification` is the only item-type switch.
+`ItemClassification` is a typed enum with `TrackedTool { summary:
+ToolSummaryCategory }`, `Emitting { report: ItemReportKind }`, and `Suppressed {
+reason: SuppressionReason }`. It owns both lifecycle behavior and the tool
+summary category, so start/completion handlers do not repeat item lists or
+reclassify an item.
 
-| Codex notification/item | Existing report |
+The exhaustive classification and report mapping is one place:
+
+| Codex item | Classification and existing report |
 | --- | --- |
-| completed `reasoning` item | `Reasoning` from its final summary |
-| completed `agentMessage` item | `Narration` from its final text |
-| started `commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`, `imageGeneration`, `collabAgentToolCall`, or non-Build `mcpToolCall` | `ToolUse { call_id: item.id }` |
-| matching completed item | `ToolResult` with `Ok`/`Error` from status, exit code, or error |
-| `subAgentActivity` | bounded `TaskUpdate` from its `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`) |
-| started/completed `contextCompaction` | bounded `TaskUpdate` |
-| retrying or terminal `error` notification | bounded `TaskUpdate`; terminal errors also become the session epitaph |
+| `reasoning` | `Emitting { report: Reasoning }`; completion emits `Reasoning` from its final summary |
+| `agentMessage` | `Emitting { report: Narration }`; completion emits `Narration` from its final text |
+| `commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`, `imageGeneration`, `collabAgentToolCall`, non-Build `mcpToolCall` | `TrackedTool` with its corresponding `ToolSummaryCategory`; start emits `ToolUse { call_id: item.id }`, and matching completion emits `ToolResult` with `Ok`/`Error` from status, exit code, or error |
+| `subAgentActivity` | `Emitting { report: SubAgentActivity }`; emits bounded `TaskUpdate` from `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`) |
+| `contextCompaction` | `Emitting { report: ContextCompaction }`; start/completion emit bounded `TaskUpdate` |
+| Build `mcpToolCall` | `Suppressed { reason: BuildMcp }` |
+| `dynamicToolCall` | `Suppressed { reason: DeferredDynamicTool }` |
+| unknown item | `Suppressed { reason: UnknownItem }` |
 
 Delta notifications update the quiet clock but allocate no transcript and do
-not mint one conversation row per token. A completed item is authoritative and
-emits once. An open tool item is removed on completion; items still open at
-`turn/completed` emit `Unanswered`. MCP items whose server is `build` emit
-nothing because `post_thread_message` and `done` already arrive through their
-real Build MCP path.
+not mint one conversation row per token. Error notifications are outside item
+classification: each emits a bounded `TaskUpdate`, and a terminal parent error
+also becomes the session epitaph. An open tracked tool is removed on completion;
+tracked tools still open at `turn/completed` emit `Unanswered`.
+
+`CompletedItemLedger` is a provider-owned, per-session LRU of `(turn_id,
+item_id)` keys. Production retains at most 256 keys and 128 KiB of aggregate
+retained turn/item-id UTF-8 bytes. A duplicate key is suppressed and refreshed
+to newest. Before inserting a new key, the ledger evicts oldest keys until both
+limits admit it. A key larger than the byte limit is processed but not retained;
+inability to retain a completion is never fatal. All keys for a turn are removed
+by `close_turn(turn_id)`.
+
+Classification happens before requiring an item id or touching either ledger.
+Suppressed Build-MCP, deferred dynamic-tool, and unknown items therefore emit
+nothing and consume no open-item or completed-item count/byte capacity. For
+tracked and emitting items, a key still in `CompletedItemLedger` suppresses both
+duplicate completion and a late duplicate start. The ledger never terminates a
+session solely because many valid items complete during a long turn. Its finite
+memory deliberately means a duplicate replayed after eviction, or a duplicate
+of an individually unretainable key, may emit again; suppression is guaranteed
+only while the key remains in the window.
+
+Build MCP remains suppressed because `post_thread_message` and `done` already
+arrive through their real Build MCP path.
 
 Dynamic tools are deferred: the harness does not advertise them, execute
-`item/tool/call`, or include `dynamicToolCall` in required translation. The
-decoder recognizes an externally introduced `dynamicToolCall` only as a
-deferred item and emits nothing rather than implementing part of that surface.
+`item/tool/call`, or translate externally introduced dynamic-tool items. Their
+typed suppressed classification prevents accidental partial implementation of
+that surface.
 
 The harness does not set `features.multi_agent` or otherwise force native
 delegation. Existing Codex configuration remains authoritative. When Codex
@@ -394,10 +458,10 @@ call does.
 - **Boundary:** `CodexAppServerSession` composes, but does not merge,
   `AppServerProcess`, `AppServerConnection`, `CodexSessionState`,
   `ServerRequestPolicy`, the translator, and the activity sender.
-- **Interface:** The existing `AgentSession` methods. `status` reads reported
-  protocol state, `quiet_for` measures time since the last accepted protocol
-  message, `exited_within` delegates process/reap lag, `epitaph` returns the last
-  terminal protocol error or process stderr tail, and `end` runs the idempotent
+- **Interface:** The existing `AgentSession` methods. `status` reads the
+  coordinator-published state, `quiet_for` measures time since the last accepted
+  parent protocol message, `exited_within` delegates process/reap lag, `epitaph`
+  reads the coordinator-published terminal reason, and `end` runs the idempotent
   close-then-shutdown sequence.
 - **Hides:** The coordination loop. Process ownership stays in
   `AppServerProcess`; request IDs stay in `AppServerConnection`; domain state
@@ -408,6 +472,21 @@ long silent model call, so the existing idle sweep does not report false quiet.
 EOF, malformed required lifecycle messages, oversized frames, and correlation
 violations close the activity sender; the existing activity pump performs the
 tab and session-lineage death rites.
+
+`AgentSession::status()` is a pure snapshot read. It does not poll the child,
+inspect drainer health, transition state, close activity, or initiate shutdown.
+Process and drainer failures arrive through `ProcessEvent` and are handled by
+the coordinator even if no caller polls status.
+
+The protocol reader sends decoded events in wire order and then exactly one
+`ReaderFinished` event after it reaches EOF or its terminal decode error. Any
+terminal trigger may begin idempotent process shutdown immediately, but the
+coordinator does not publish `Ended`, close the activity sender, or publish the
+final epitaph until `ReaderFinished` has been processed. Final epitaph priority
+is a terminal protocol/session error delivered by the reader, then a typed
+process or drainer failure, then the retained stderr tail. Buffered stdout
+errors therefore outrank stderr fallback deterministically even when process
+exit is observed first.
 
 ### Bounds and forward compatibility
 
@@ -425,34 +504,46 @@ translator. Production uses these conservative defaults:
 | aggregate queued input UTF-8 bytes | 256 KiB |
 | open translated items | 256 |
 | aggregate open-item ids/summaries | 128 KiB |
+| completed-item deduplication keys | 256 |
+| aggregate completed-item key bytes | 128 KiB |
 | one emitted activity summary | existing 240-character summary limit |
 | notification/response reconciliation | 5 seconds |
 | activity broadcast backlog | existing 1,024 reports |
 
 The stdout decoder incrementally reads into a buffer capped at 1 MiB plus one
-sentinel byte. Newline at or below the cap yields exactly one JSON value; cap
-without newline, invalid UTF-8/JSON, a blank frame, or trailing non-whitespace
-after the value fails the connection. It stops reading and session shutdown
-kills/reaps the child, so an oversized line is never drained into another
-allocation. The writer serializes into a capped buffer before taking the lock.
+sentinel byte. Newline at or below the cap yields exactly one JSON value. On the
+first excess byte, the decoder enters an oversized-frame discard state, retains
+no more payload, and consumes through that frame's newline using only its fixed
+buffer and fixed read scratch space. It then returns the one frame-too-large
+error and closes the connection; no unread suffix of the oversized frame can be
+parsed as a second frame. EOF while discarding returns the same terminal
+oversized-frame error. Invalid UTF-8/JSON, a blank frame, or trailing
+non-whitespace after the value also fails the connection. The writer serializes
+into a capped buffer before taking the lock.
 
 Queue insertion checks both count and aggregate UTF-8 bytes before mutation.
 Open-item insertion checks both item count and aggregate retained bytes; item
 completion removes its charge. Overflow refuses the new operation and fails the
-session with the named limit. Stderr is always drained to prevent child
-deadlock. Its rolling decoder retains at most 16 KiB for one line, discards that
-line's excess bytes until newline, and retains at most the newest 32 KiB across
-lines.
+session with the named limit. Completed-item insertion instead evicts least
+recently used keys to satisfy both ledger limits and never fails the session for
+ledger capacity. Stderr is always drained to prevent child deadlock. Its rolling
+decoder retains at most 16 KiB for one line, discards that line's excess bytes
+until newline, and retains at most the newest 32 KiB across lines.
 Protocol-derived summaries are clipped before broadcast; raw command output,
 patches, arguments, image data, and full JSON objects never enter
 `ActivityReport`.
 
-Unknown notification methods and unknown item variants are ignored after
-updating the quiet clock and a bounded diagnostic counter. Unknown fields on
-known messages are accepted. Unknown response ids, malformed envelopes,
+Parent-owned unknown notification methods and unknown item variants are ignored
+after updating the quiet clock and a bounded diagnostic counter. Unknown fields
+on known messages are accepted. Unknown response ids, malformed envelopes,
 oversized frames, and missing fields required for the current lifecycle
 transition fail fast. This permits additive Codex protocol releases without
 hiding loss of session control.
+
+Static method lookup tables and focused request, notification, lifecycle, and
+item handlers keep every dispatch function under the `~10-path` complexity
+target. Item behavior and summary selection delegate to the one typed
+`ItemClassification` rather than duplicating type matches in multiple handlers.
 
 ### Protocol version floor
 
@@ -531,10 +622,13 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Steer completion race | completion then `-32600` and `-32600` then completion each replay retained input exactly once as a new turn; success after completion never replays; missing completion reaches the five-second failure |
 | Non-steerable turn | `activeTurnNotSteerable` does not pretend completion; retained input waits behind the same turn and starts once after its matching completion |
 | Interrupt | duplicate interrupt is a no-op; completion before response plus later success or `-32600` stays completed; queued post-interrupt input starts only after completion; interrupt never kills the process |
-| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown method replies `-32601` before session failure; no path approves |
-| Translation | each required item emits the stated report once; tool result pairs by item id; natural collaboration events remain visible; Build MCP emits nothing; dynamic tool items and unknown items emit nothing; open calls close `Unanswered` at turn end |
-| Bounds/decoder | exact-limit frames pass; limit-plus-one, no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
-| Process/liveness | stdout EOF closes activity; long quiet Working is not demoted; close/end/drop and concurrent status/end kill at most once and reap exactly once; signal exits have stable codes; protocol error wins epitaph over stderr fallback |
+| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown methods with absent, object, array, scalar, or null params reply `-32601` before session failure, while malformed known-method params fail typed decoding; no path approves |
+| Parent isolation | child lifecycle, item, delta, malformed error, terminal error, and unknown notifications cause no state, quiet-clock, activity, error, epitaph, diagnostic, ledger, or limit mutation; root `thread/started` still establishes the candidate parent; parent-thread `subAgentActivity` remains visible |
+| Translation | the one typed classification covers every item variant and tool summary category; each required item emits the stated report once; tool result pairs by item id; natural collaboration events remain visible; suppressed Build MCP, dynamic, and unknown items require no id and consume no ledger capacity; open calls close `Unanswered` at turn end |
+| Completed-item ledger | duplicates suppress completion and late start while retained and refresh recency; count and byte pressure evict oldest keys without failure; individually oversized keys process without retention; long turns exceeding the window remain live; evicted duplicates document the finite-window tradeoff; turn close clears only that turn's keys |
+| Bounds/decoder | exact-limit frames pass; limit-plus-one is discarded through newline at fixed capacity before one terminal error; an oversized suffix is never decoded as another frame; no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
+| Process/liveness | stdout EOF closes activity only after `ReaderFinished`; process exit, monitor failure, and drainer failure reach the coordinator without status polling; `status()` is a pure read; buffered protocol error wins over process/drainer failure and stderr fallback regardless of arrival race; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
+| Dispatch shape | method lookup selects focused typed request and notification handlers; the single item classifier selects lifecycle behavior and summary category; each dispatch function remains under the `~10-path` complexity target |
 | Compatibility/UI | existing activity pump, idle sweep, resume persistence, store fixtures, and MCP `done` tests pass; settings lists the new provider; only allowed provider/default wiring changes in the SPA |
 
 Before implementing the translator, capture a real, non-secret protocol session

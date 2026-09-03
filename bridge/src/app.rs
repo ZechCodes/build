@@ -667,7 +667,7 @@ enum TabRole {
 /// rather than a byte replay.
 ///
 /// The session is held behind [`AgentSession`], so nothing a tab does knows
-/// which harness — or which kind of io — is on the other end.
+/// which harness — or which kind of session — is on the other end.
 struct Tab {
     tab_id: String,
     root: std::path::PathBuf,
@@ -726,7 +726,7 @@ impl Tab {
     /// so `live` is the tab's own answer; and a session that reports `Ended` is
     /// over whatever the tab still holds. `has_exited` was how a terminal asked
     /// the second — a process poll — and [`AgentStatus::Ended`] is how every
-    /// io does.
+    /// session does.
     fn session_is_live(&self) -> bool {
         self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
     }
@@ -784,7 +784,8 @@ impl Tab {
             pixel_width: 0,
             pixel_height: 0,
         };
-        // Which io opens is the PROVIDER's answer, asked here and asked by
+        // Whether a terminal or a session protocol opens is the PROVIDER's
+        // answer, asked here and asked by
         // the rail before there is a session — one authority, so the rail never
         // offers a basement this spawn would refuse. The human's own shell is
         // always a terminal, and is the one session never handed a turn: it is
@@ -8424,7 +8425,7 @@ impl AppState {
             // Whether the rail offers this agent a basement. The live session
             // answers for an agent that is running, since it is the only thing
             // that can; before there is one the PROVIDER answers, because it
-            // knows which io its spawn will open. Same authority either
+            // knows whether its spawn will open a terminal. Same authority either
             // side of the spawn, so the rail never offers a TUI button that the
             // spawn then refuses.
             "has_terminal": match tab {
@@ -14198,7 +14199,7 @@ impl AppState {
     /// When the agent working in this checkout was last heard from, or `None`
     /// when no agent has ever run there. Read off the session's own quiet
     /// clock, which is the only record of it — bytes painted for a terminal,
-    /// protocol events read for an io that has none.
+    /// protocol events read for a session that has none.
     fn agent_last_painted_at(&self, root: &std::path::Path) -> Option<String> {
         let root = Self::canonical_root(root);
         let quiet = self
@@ -16787,7 +16788,7 @@ fn parse_message_anchor(
 ///
 /// Unlike [`deliver`], this speaks from under the app-wide state lock — it
 /// reads the caller's own tab registry — which is why
-/// [`AgentSession::send_turn`] must return promptly. An io that blocked
+/// [`AgentSession::send_turn`] must return promptly. A session that blocked
 /// there would stall every RPC and every terminal pump behind one nudge.
 fn nudge_live_agent_tab(
     tabs: &HashMap<TabKey, Tab>,
@@ -16808,7 +16809,7 @@ fn nudge_live_agent_tab(
     // `done`. Both calls return promptly by contract, which is what lets them
     // speak from under the state lock.
     //
-    // A refusal is not a failed post. Where the io cannot stop a turn —
+    // A refusal is not a failed post. Where the session cannot stop a turn —
     // a capability lost between the digest the client read and the post it sent
     // — the message is delivered as an ordinary queued turn, which reaches the
     // running turn at its next step boundary anyway. The alternative is an
@@ -16820,10 +16821,10 @@ fn nudge_live_agent_tab(
         }
     }
     // As a turn, not a raw write with a hardcoded Enter: the nudge is one of
-    // Build's turns, so it travels the way every other one does and the io
-    // decides what that means. Hardcoding \r submits into a SubmitKey::None
+    // Build's turns, so it travels the way every other one does and the
+    // session decides what that means. Hardcoding \r submits into a SubmitKey::None
     // harness that never asked for it, leaves the notification unframed — and
-    // says nothing at all to an io with no keyboard.
+    // says nothing at all to a session with no keyboard.
     if let Err(error) = tab
         .session
         .send_turn(&Turn::new(NEW_THREAD_MESSAGES_PROMPT))
@@ -18010,7 +18011,7 @@ fn ensure_agent_tab(
                 //    agent continuing its own conversation, which `--continue`
                 //    guesses at as the newest one in the checkout, still gated
                 //    on the transcript probe.
-                // 3. Otherwise fresh, on every io. A brand-new agent
+                // 3. Otherwise fresh, terminal or session protocol. A brand-new agent
                 //    record has no conversation to pick up, and the checkout's
                 //    old one belongs to whoever had it — adoption included:
                 //    Build cannot show a history it never heard.
@@ -18185,7 +18186,7 @@ fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
 /// The one pipe from Build to a worktree's agent.
 ///
 /// Ensures the tab exists, then hands the agent exactly one turn — a value the
-/// io decides how to say, which for a PTY is the harness's own submit key
+/// session decides how to say, which for a PTY is the harness's own submit key
 /// and bracketed paste framing and never a raw write with a hardcoded `\r`.
 /// Which text travels
 /// is decided by whether the tab had to be spawned: `cold` for an agent with no
@@ -18212,7 +18213,7 @@ fn deliver(
     let key = TabKey::agent(&AppState::canonical_root(root), agent_id);
     // The handle comes out of the registry so the turn travels with the
     // app-wide state lock RELEASED: every RPC, every terminal pump and the idle
-    // sweep wait on that lock, and how long an io takes to accept a turn is
+    // sweep wait on that lock, and how long a session takes to accept a turn is
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
     let session = {
@@ -18455,7 +18456,7 @@ fn spawn_tab_pump(
 
 /// Pump one session's reported activity into the conversation it speaks in.
 ///
-/// The mirror of [`spawn_tab_pump`] for an io that has no bytes. Where the
+/// The mirror of [`spawn_tab_pump`] for a session protocol that has no bytes. Where the
 /// byte pump paints a stream into a grid, this one posts what the agent
 /// reported doing as the activity kinds — reasoning, tool calls, narration and
 /// background work — which are conversation, classed `Status`: they move no
@@ -18582,7 +18583,7 @@ enum PumpWake {
 }
 
 /// The name the session in `key`'s tab has given its conversation, or `None`
-/// for an io that names none and for one that has not named one yet.
+/// for a session that names none and for one that has not named one yet.
 fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
     state.tabs.get(key)?.session.session_id()
 }
@@ -18622,11 +18623,11 @@ fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, age
     note_announced_model(state, key, owner, agent_id);
 }
 
-/// The terminal io's capture point: ask every live agent session for the
+/// The terminal's capture point: ask every live agent session for the
 /// name its conversation has, and write down each answer that moved.
 ///
 /// A terminal announces nothing, so no task wakes on its behalf the way the
-/// activity pump wakes on a protocol io's events — which is why the sweep
+/// activity pump wakes on a session protocol's events — which is why the sweep
 /// is daemon-owned and fixed-cadence rather than hung off the status poll. The
 /// poll is client-driven: with no browser open nothing would ever be captured,
 /// and every attached client would multiply this filesystem read by its own
@@ -20518,7 +20519,7 @@ mod tests {
     /// The turn travels with the app-wide state lock RELEASED.
     ///
     /// Every RPC, every terminal pump and the idle sweep wait on that lock, so
-    /// an io that takes its time accepting a turn — a protocol write to a
+    /// a session that takes its time accepting a turn — a protocol write to a
     /// full pipe, an ack the harness answers late — would stall the whole
     /// daemon if the turn were handed over under it. `AgentSession::send_turn`
     /// promises callers they may take that time; this is where the promise is
@@ -23219,7 +23220,7 @@ mod tests {
     }
 
     /// The OS process behind a tab, asked through the terminal that owns it —
-    /// a process id is the basement's, and no other io has one to give.
+    /// a process id is the basement's, and no other kind of session has one to give.
     fn agent_pid(tab: &Tab) -> Option<u32> {
         tab.session.terminal().and_then(TerminalView::pid)
     }
@@ -23344,7 +23345,7 @@ mod tests {
 
     /// The harness an agent's session was actually opened on. The tab records
     /// what it spawned, so this is what a start really spent — and unlike the
-    /// attach's answer it holds for an io with no terminal.
+    /// attach's answer it holds for a session with no terminal.
     fn spawned_provider(
         state: &Arc<Mutex<AppState>>,
         root: &std::path::Path,
@@ -30368,7 +30369,7 @@ mod tests {
         );
     }
 
-    /// An io that knows when its turn began is never demoted mid-turn.
+    /// A session that knows when its turn began is never demoted mid-turn.
     ///
     /// The sweep's whole instrument used to be silence, and silence is exactly
     /// what a model reasoning for forty minutes produces. A PTY could only
@@ -33239,7 +33240,8 @@ mod tests {
     /// hand back the model choice that opens it.
     ///
     /// The provider on the choice is the whole launch config — it is what
-    /// `Tab::spawn` asks which io to open — so a test that swaps the spec
+    /// `Tab::spawn` asks whether to open a terminal or a session protocol —
+    /// so a test that swaps the spec
     /// without swapping the provider would run a stream-json child inside a
     /// PTY and prove nothing.
     fn a_headless_provider_running(
@@ -35166,7 +35168,7 @@ mod tests {
     }
 
     /// A live agent tab at `root` carrying a session that reports exactly what
-    /// it was told — the only way a test can put a turn-boundary io where
+    /// it was told — the only way a test can put a turn-reporting session where
     /// the daemon expects one, since a PTY can only be asked about paint.
     fn dictated_agent_tab(
         root: &std::path::Path,
@@ -35337,7 +35339,7 @@ mod tests {
         );
     }
 
-    /// The death rites a no-terminal io would otherwise fall through.
+    /// The death rites a session with no terminal would otherwise fall through.
     ///
     /// The byte pump performs them when the PTY closes — the tab stops being
     /// live, the conversation's session lineage ends. A session that paints
@@ -35409,7 +35411,7 @@ mod tests {
     /// The whole path, end to end: a human says something to a run whose
     /// provider has no terminal, and what comes back is a conversation.
     ///
-    /// Nothing here is hand-built — the daemon picks the io off the
+    /// Nothing here is hand-built — the daemon picks the session protocol off the
     /// provider, opens a real child, hands it the turn as a value, and the
     /// activity pump posts what the child reported into the thread the human
     /// reads. The child is a fake stream-json harness replaying a recording of
@@ -36456,7 +36458,7 @@ mod tests {
                 .session
                 .surfaces_changed()
                 .is_none(),
-            "this io says nothing about surfaces"
+            "this session protocol says nothing about surfaces"
         );
 
         let (activity, subscribed) = broadcast::channel(4);
@@ -36776,7 +36778,7 @@ mod tests {
         );
         assert_eq!(
             bubble["has_terminal"], false,
-            "this io has no basement to fall back on: {bubble:?}"
+            "this session has no basement to fall back on: {bubble:?}"
         );
     }
 
@@ -36884,7 +36886,7 @@ mod tests {
     /// And status moves by exactly one step: the human's message. Nothing else
     /// is minted — an interrupted turn's `error_during_execution` result is a
     /// turn boundary, never a report, and the only path by which its text could
-    /// have reached a human was the epitaph the io clears.
+    /// have reached a human was the epitaph the session clears.
     #[tokio::test]
     async fn a_post_that_interrupts_stops_the_turn_and_hands_over_the_message() {
         let (dir, repo) = init_repo();
@@ -37001,7 +37003,7 @@ mod tests {
 
     /// A refused interrupt does not fail the post.
     ///
-    /// Where the io cannot stop a turn — a CLI built before the capability
+    /// Where the session cannot stop a turn — a CLI built before the capability
     /// landed, or one lost between the digest the client read and the post it
     /// sent — the message is delivered as an ordinary queued turn, which the
     /// probes verified reaches the running turn at its next step boundary
@@ -37044,7 +37046,7 @@ mod tests {
         );
         assert_eq!(
             steered["ok"], true,
-            "a capability the io lacks is not the human's mistake: {steered:?}"
+            "a capability the harness lacks is not the human's mistake: {steered:?}"
         );
         wait_for(Duration::from_secs(10), || {
             (reasoning_count(&state, "run-refuses") == 2).then_some(())
@@ -37447,11 +37449,11 @@ mod tests {
             Arc::new(move |_, _| Some(Box::new(LocatorThatFound(named))));
     }
 
-    /// The terminal io's capture, and the respawn that spends it.
+    /// The terminal's capture, and the respawn that spends it.
     ///
     /// A terminal announces nothing, so nothing wakes on its behalf: the
     /// daemon's own sweep asks each live session for the name its locator
-    /// found and writes it down the same way the headless io's
+    /// found and writes it down the same way the headless session's
     /// announcement is written down. One tick later the name is on the record,
     /// and the next spawn resumes by it instead of guessing at the checkout.
     #[tokio::test]
@@ -37660,7 +37662,7 @@ mod tests {
                 .unwrap()
                 .agent_digests("run-spent", DigestScope::List)[0]["active_model"],
             "claude-opus-5",
-            "an io that announces nothing still says what Build handed it"
+            "a session that announces nothing still says what Build handed it"
         );
 
         let posted = call(
@@ -37778,7 +37780,7 @@ mod tests {
     /// The close arm RECORDS; it never clears.
     ///
     /// The headless pump clears on a session that ended having announced
-    /// nothing, because for that io it means a dead `--resume` id. A
+    /// nothing, because for a session protocol it means a dead `--resume` id. A
     /// terminal resumed in place legitimately writes no new transcript, so its
     /// locator finding nothing is the normal answer — and clearing on it would
     /// throw a good name away at every restart. The dead-name problem is
@@ -38264,7 +38266,7 @@ mod tests {
     /// further out, and it is now asked the same way: a session that reports
     /// `Ended` is over, whatever a process table would have said about it.
     ///
-    /// `has_exited` was how a terminal answered this. An io with no process
+    /// `has_exited` was how a terminal answered this. A session with no process
     /// behind it has no such question to poll, and it must still be able to say
     /// its session is over.
     #[test]
@@ -38536,7 +38538,7 @@ mod tests {
 
     /// A worktree card's "last active" reads the same quiet clock. It was the
     /// PTY's paint clock and the comment said so; the measurement has not
-    /// moved, but the question is now one every io can answer.
+    /// moved, but the question is now one every session can answer.
     #[test]
     fn a_worktree_card_reads_the_sessions_quiet_clock() {
         let (dir, repo) = init_repo();
@@ -38569,8 +38571,8 @@ mod tests {
     }
 
     /// The nudge is a turn, and it travels as one. It used to be a `write_prompt`
-    /// — keystroke mechanics — and the whole point of a value is that an io
-    /// with no keyboard can still be told what to say.
+    /// — keystroke mechanics — and the whole point of a value is that a
+    /// session with no keyboard can still be told what to say.
     #[test]
     fn the_nudge_hands_the_agent_a_turn() {
         let root = AppState::canonical_root(&PathBuf::from("/nowhere"));
@@ -40593,8 +40595,8 @@ mod tests {
             listed["result"]["agents"][0].clone()
         };
 
-        // Nothing has started yet, so the PROVIDER answers: it knows which
-        // io its spawn will open, before there is a session to ask. This
+        // Nothing has started yet, so the PROVIDER answers: it knows whether
+        // its spawn will open a terminal, before there is a session to ask. This
         // run's provider is the one with a terminal, so the answer is yes —
         // and on a provider without one the rail stops offering a basement the
         // spawn would refuse, with no second place to fix.

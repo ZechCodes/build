@@ -26,8 +26,8 @@ pub enum AgentProvider {
     Codex,
     /// The same CLI as [`Claude`](AgentProvider::Claude), run headless over its
     /// session protocol instead of as a TUI. A different provider rather than a
-    /// flag on that one: the io it opens has no terminal, and which
-    /// io a spawn opens is what a provider answers.
+    /// flag on that one: the session it opens has no terminal, and whether a
+    /// spawn opens a terminal or a session protocol is what a provider answers.
     #[serde(rename = "claude_adk")]
     ClaudeAdk,
 }

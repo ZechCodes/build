@@ -82,8 +82,10 @@ Move, do not rewrite. Map today's code onto the primitives per spec §4.2:
 private fields, plus a `worktree: WorktreeBackend` field. Implement §3 of the
 spec **for one backend**: a private `fn backend(&self, isolation: Isolation) ->
 &dyn IsolationBackend` that returns `&self.worktree` for `Worktree` and, for
-`Cow`, an `Err(WorktreeError::Command("copy-on-write isolation is not available
-in this build"))` from every entry point (stage 3 replaces that arm). A private
+`Cow`, an `Err(WorktreeError::IsolationUnavailable(reason))` from every entry
+point, the reason taken from `IsolationAvailability::lock_reason` — no git
+command ran, so it must not read as one having failed, and the sentence has one
+owner (stage 3 fills the slot). A private
 `fn backend_of(&self, path) -> Result<&dyn IsolationBackend, WorktreeError>` wraps
 `Isolation::of`; a path that is `None` is `WorktreeError::NotABuildCheckout(path)`.
 These two selectors are the whole of keyed dispatch. Three primitives have

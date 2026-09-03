@@ -186,9 +186,20 @@ pub trait IsolationBackend: Send + Sync {
 ```
 
 `WorktreeError` moves into `bridge/src/isolation/mod.rs` (the trait is its most
-public use) and `worktree.rs` re-exports it. It gains
-`NotABuildCheckout(PathBuf)` ("not a Build checkout: {0}") for a path whose
-`Isolation::of` is `None`.
+public use) and `worktree.rs` re-exports it. It gains three variants, each for a
+failure that runs no git command and so must not render as one:
+
+- `NotABuildCheckout(PathBuf)` ("not a Build checkout: {0}") for a path whose
+  `Isolation::of` is `None`.
+- `IsolationUnavailable(String)` ("{0}") for an isolation this build or this
+  volume cannot make, in the sentence the controls show — the answer
+  `IsolationAvailability::lock_reason` gives, carried as an error.
+- `Refused(String)` ("{0}") for everything the manager itself will not do: a
+  branch name that is no branch name, a restore outside the managed root, a
+  primary checkout on the wrong branch, a HEAD that does not match the
+  persisted tip. `Command(String)` ("git command failed: {0}") is then what
+  `From<GitError>` produces and nothing else — git's own words, and only when
+  git spoke them.
 
 Branch **cutting** and **deletion** are not primitives: they are operations on the
 project repo and identical for both backends. They live on `WorktreeManager` (§3).
@@ -200,17 +211,30 @@ bridge/src/isolation/mod.rs        Isolation, IsolationAvailability, IsolationBa
 bridge/src/isolation/worktree.rs   WorktreeBackend  (stage 1: moved from worktree.rs)
 bridge/src/isolation/cow.rs        CowBackend       (stage 3)
 bridge/src/isolation/probe.rs      cow_availability (stage 3)
-bridge/src/git_process.rs          run_git_with_deadline (stage 3)
+bridge/src/git_process.rs          run_git (stage 1), run_git_with_deadline (stage 3)
 bridge/src/worktree.rs             Worktree, slugify, branch helpers, ExternalWorktree,
                                    describe_checkout, WorktreeManager (the façade)
 ```
 
-`bridge/src/git_process.rs` holds one function,
-`run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`:
-one git child with terminal prompts disabled (`GIT_TERMINAL_PROMPT=0`,
+`bridge/src/git_process.rs` is the owner of "one git child, both streams in the
+failure", and it spawns a child in exactly one place.
+
+Stage 1 introduces `run_git(dir: &Path, args: &[&str]) -> Result<String, GitError>`:
+one git child in `dir`, its stdout on success, and on failure a
+`GitError::Failed` carrying the command and everything git said on **both**
+streams (a conflicting merge reports "CONFLICT …" on stdout, so a failure that
+kept only stderr loses the reason). `GitError::Unstartable(io::Error)` is git
+not starting at all. `From<GitError>` carries it into `WorktreeError` and
+`OrchestratorError`, so no caller composes a git failure message of its own.
+Every git invocation the bridge makes through the CLI rather than `git2` goes
+through this module.
+
+Stage 3 adds `run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`:
+the same child with terminal prompts disabled (`GIT_TERMINAL_PROMPT=0`,
 `GCM_INTERACTIVE=Never`), pipes drained, killed at a 30 s deadline as
-`ErrorKind::TimedOut`. `bounded_git_fetch` and the clone backend's fetches both run
-through it.
+`ErrorKind::TimedOut`. `run_git` delegates to it — one child-spawning function
+in the module, not two — and `bounded_git_fetch` and the clone backend's fetches
+call it directly for the raw `Output` they read.
 
 ---
 

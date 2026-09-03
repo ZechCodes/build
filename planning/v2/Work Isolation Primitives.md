@@ -32,13 +32,21 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
   only trace is its directory, which the façade already tests. Without it the uniqueness check would query git's
   registry itself, leaving that variation outside the trait.
 - `WorktreeError` moves here (§2) — the trait's signatures are its most public use — and `worktree.rs` re-exports it,
-  so `isolation/` imports nothing from the façade. It gains `NotABuildCheckout(PathBuf)`, `"not a Build checkout:
-  {0}"`.
+  so `isolation/` imports nothing from the façade. It gains three variants for the failures where no git command ran,
+  so none of them may render as one: `NotABuildCheckout(PathBuf)`, `"not a Build checkout: {0}"`;
+  `IsolationUnavailable(String)`, `"{0}"`, `lock_reason`'s sentence carried as an error; and `Refused(String)`,
+  `"{0}"`, everything the façade itself will not do. `Command(String)`, `"git command failed: {0}"`, is left to
+  `From<GitError>` alone.
 
-## `run_git_with_deadline` — `bridge/src/git_process.rs`
-`fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`: one git child, no terminal prompt
-(`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=Never`), pipes drained, killed at a 30s deadline as `ErrorKind::TimedOut`.
-`bounded_git_fetch` and the clone backend's two fetches run through it (§2).
+## `run_git` / `run_git_with_deadline` — `bridge/src/git_process.rs`
+The owner of "one git child, both streams in the failure", spawning a child in one place. Stage 1 introduces
+`fn run_git(dir: &Path, args: &[&str]) -> Result<String, GitError>`: stdout on success, and on failure the command
+plus everything git said on both streams (a conflicting merge reports "CONFLICT …" on stdout). `From<GitError>`
+carries it into `WorktreeError` and `OrchestratorError`, so no caller writes a git-failure sentence of its own.
+Stage 3 adds `fn run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`: the same child, no
+terminal prompt (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=Never`), pipes drained, killed at a 30s deadline as
+`ErrorKind::TimedOut`. `run_git` delegates to it, and `bounded_git_fetch` and the clone backend's two fetches call it
+directly for the raw `Output` (§2).
 
 ## The two backends
 **`WorktreeBackend`** (`bridge/src/isolation/worktree.rs`). Stage 1, moved code. Owns every `git worktree` invocation

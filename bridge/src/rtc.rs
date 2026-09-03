@@ -23,6 +23,8 @@ pub enum RtcError {
     NoPeer(String),
     #[error("this bridge has no peer transport")]
     Unavailable,
+    #[error("the peer connection refused the offer: {0}")]
+    Refused(String),
 }
 
 /// One live peer connection — one per E2EE session, always the answerer.
@@ -45,7 +47,6 @@ pub trait SessionPeer: Send + Sync {
         signaling: SessionSender,
     ) -> Result<String, RtcError>;
 
-    /// Take one trickled browser candidate.
     async fn add_remote_candidate(&self, candidate: Value) -> Result<(), RtcError>;
 
     /// Tear this peer connection down. Nothing to report: the session keeps
@@ -82,6 +83,7 @@ pub mod recording {
 
     use super::*;
     use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
     use tokio::sync::{Notify, Semaphore};
 
@@ -113,7 +115,6 @@ pub mod recording {
             })
         }
 
-        /// Wait until a peer is inside `answer` and held there.
         pub async fn wait_until_answering(&self) {
             self.answering
                 .acquire()
@@ -136,10 +137,11 @@ pub mod recording {
     pub struct RecordingPeer {
         record: Mutex<PeerRecord>,
         gate: Option<Arc<AnswerGate>>,
+        refuses_offers: bool,
+        closing: Notify,
     }
 
     impl RecordingPeer {
-        /// The offers this peer answered, as `(sdp, ice_servers)`.
         pub fn offers(&self) -> Vec<(String, Vec<Value>)> {
             self.record.lock().unwrap().offers.clone()
         }
@@ -150,6 +152,14 @@ pub mod recording {
 
         pub fn is_closed(&self) -> bool {
             self.record.lock().unwrap().closed
+        }
+
+        /// Wait for this peer to be torn down, however far away the teardown
+        /// was spawned — an order of events rather than a wall-clock bet.
+        pub async fn closed(&self) {
+            while !self.is_closed() {
+                self.closing.notified().await;
+            }
         }
 
         /// Trickle one of the bridge's candidates back over the carrier the
@@ -181,6 +191,9 @@ pub mod recording {
             if let Some(gate) = &self.gate {
                 gate.hold().await;
             }
+            if self.refuses_offers {
+                return Err(RtcError::Refused(offer_sdp.to_string()));
+            }
             Ok(format!("answer-to:{offer_sdp}"))
         }
 
@@ -195,13 +208,16 @@ pub mod recording {
 
         async fn close(&self) {
             self.record.lock().unwrap().closed = true;
+            self.closing.notify_one();
         }
     }
 
     #[derive(Default)]
     pub struct RecordingPeerFactory {
         opened: Mutex<HashMap<String, Arc<RecordingPeer>>>,
+        opens: AtomicUsize,
         gate: Mutex<Option<Arc<AnswerGate>>>,
+        refuse_offers: AtomicBool,
     }
 
     impl RecordingPeerFactory {
@@ -216,13 +232,20 @@ pub mod recording {
             gate
         }
 
-        /// The peer this session was given, if it ever asked for one.
+        /// Make every peer opened from here on refuse the offers it is given —
+        /// the malformed or unusable SDP a real peer connection reports.
+        pub fn fail_answers(&self) {
+            self.refuse_offers.store(true, Ordering::SeqCst);
+        }
+
         pub fn peer_of(&self, session_id: &str) -> Option<Arc<RecordingPeer>> {
             self.opened.lock().unwrap().get(session_id).cloned()
         }
 
+        /// How many peers were built, not how many sessions hold one: a second
+        /// peer for one session is the regression these tests watch for.
         pub fn opened_count(&self) -> usize {
-            self.opened.lock().unwrap().len()
+            self.opens.load(Ordering::SeqCst)
         }
     }
 
@@ -231,7 +254,10 @@ pub mod recording {
             let peer = Arc::new(RecordingPeer {
                 record: Mutex::new(PeerRecord::default()),
                 gate: self.gate.lock().unwrap().clone(),
+                refuses_offers: self.refuse_offers.load(Ordering::SeqCst),
+                closing: Notify::new(),
             });
+            self.opens.fetch_add(1, Ordering::SeqCst);
             self.opened
                 .lock()
                 .unwrap()

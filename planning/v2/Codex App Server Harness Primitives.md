@@ -146,12 +146,13 @@ The session coordinator samples whole Unix seconds and passes that value to
 `decide`; `ServerRequestPolicy` never reads a clock.
 
 Request decoding classifies the method before validating method-specific
-params. A known method enters only its focused typed params decoder. Any other
-method becomes `ServerRequest::Unknown { id, method }` without inspecting
-`params`; absent params and arbitrary valid JSON params, including scalars and
-arrays, therefore receive JSON-RPC `-32601` method-not-found and then the
-`FailSession` policy below. Malformed JSON-RPC envelopes still fail before
-policy.
+params. A known thread-scoped method enters `ParentThreadFilter` before its
+focused typed params decoder; other known methods enter only their focused typed
+decoder. Any unknown method becomes `ServerRequest::Unknown { id, method }`
+without inspecting `params`; absent params and arbitrary valid JSON params,
+including scalars and arrays, therefore receive JSON-RPC `-32601`
+method-not-found and then the `FailSession` policy below. Malformed JSON-RPC
+envelopes still fail before policy.
 
 The exhaustive 0.153.0 policy is:
 
@@ -190,12 +191,13 @@ fails, connection failure wins and none of these follow-up actions runs.
 - **Hides:** Spawn setup, pipe extraction, signal-derived exit codes, wait/reap
   races, and stderr retention.
 
-The process monitor and stderr drainer push typed
-`ProcessEvent::{Exited(code), MonitorFailed(reason),
-StderrDrainerFailed(reason)}` values asynchronously to the session coordinator.
-They never wait for `AgentSession::status()` to discover failure and never
-mutate `CodexSessionState` themselves. The coordinator owns the resulting
-failure transition and shutdown.
+The process monitor and stderr drainer each push exactly one typed terminal
+source event asynchronously to the session coordinator:
+`TerminalSourceEvent::ProcessSettled { exit_code, monitor_error }` and
+`TerminalSourceEvent::StderrSettled { retained_tail, drainer_error }`. Failure
+is carried in that source's settled event; neither source waits for
+`AgentSession::status()` to discover it or mutates `CodexSessionState` itself.
+The coordinator owns the resulting failure transition and shutdown.
 
 `CodexAppServerSession::end` first calls idempotent `connection.close()` to send
 EOF, then idempotent `process.shutdown()`. Shutdown returns the cached result if
@@ -276,22 +278,44 @@ the correlated JSON-RPC error as the epitaph.
 
 ### `ParentThreadFilter`
 
-- **Boundary:** Routes every thread-scoped notification before typed lifecycle
-  or activity handling.
+- **Boundary:** Routes every thread-scoped notification and every known
+  thread-scoped server request before typed lifecycle, policy, or activity
+  handling.
 - **Interface:** `classify(method, params, expected_parent_thread) ->
   ParentThreadRoute::{Parent, Child, Unscoped}`.
-- **Hides:** The routing-field differences between `thread/started` and the
-  other notification shapes.
+- **Hides:** The routing-field differences among notification `threadId`,
+  `thread/started.thread.parentThreadId`, current request `threadId`, and legacy
+  request `conversationId` shapes.
 
-The filter reads only the method's routing fields. During thread opening, a
+The filter reads only the method's routing field. During thread opening, a
 `thread/started` value with `parentThreadId` is a child and a root value may
-establish the candidate parent id; after opening, a thread-scoped notification
-is parent-owned only when its `threadId` matches the exact active parent.
-`Child` returns before full params decoding and before any lifecycle, quiet
-clock, activity, error, epitaph, diagnostic, open-item, completed-item, or limit
-mutation. A malformed child error therefore cannot contaminate or terminate the
-parent session. A `subAgentActivity` item emitted on the parent thread remains
-parent activity even though its payload describes a child agent.
+establish the candidate parent id; after opening, a thread-scoped inbound value
+is parent-owned only when its exact `threadId` or legacy `conversationId`
+matches the active parent. Notification `Child` returns before full params
+decoding. A known server-request `Child` enters `ChildServerRequestPolicy`
+without validating any non-routing param.
+
+`ChildServerRequestPolicy` produces a typed response from the already classified
+known method:
+
+| Known child request | Safe response |
+| --- | --- |
+| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | typed `decline` |
+| `execCommandApproval`, `applyPatchApproval` | corresponding typed denied decision |
+| `mcpServer/elicitation/request` | `{ action: "decline" }` |
+| `item/tool/requestUserInput`, `item/permissions/requestApproval`, `item/tool/call` | JSON-RPC `-32601` unsupported |
+
+Every child decision is `Continue` with no report. In particular, a child method
+whose parent policy is `FailTurn` never interrupts or otherwise targets the
+parent turn.
+
+Apart from writing that required response, `Child` returns before any parent
+lifecycle, quiet clock, activity, error, epitaph, diagnostic, open-item,
+completed-item, or limit mutation. Malformed child errors and child requests
+with malformed non-routing params therefore cannot contaminate or terminate the
+parent session. A response-write failure remains the ordinary connection-level
+failure. A `subAgentActivity` item emitted on the parent thread remains parent
+activity even though its payload describes a child agent.
 
 ### Turn controller
 
@@ -391,11 +415,17 @@ The exhaustive classification and report mapping is one place:
 
 | Codex item | Classification and existing report |
 | --- | --- |
+| `userMessage` | `Suppressed { reason: UserMessageEcho }`; Build already owns and stores the submitted turn |
+| `hookPrompt` | `Suppressed { reason: HookPrompt }`; hook internals do not become conversation activity |
 | `reasoning` | `Emitting { report: Reasoning }`; completion emits `Reasoning` from its final summary |
 | `agentMessage` | `Emitting { report: Narration }`; completion emits `Narration` from its final text |
+| `functionCallOutput` | `Suppressed { reason: FunctionCallOutput }`; unpaired raw function output is not surfaced |
+| `plan` | `Suppressed { reason: ExperimentalPlan }`; the experimental Codex plan surface remains deferred |
 | `commandExecution`, `fileChange`, `webSearch`, `imageView`, `sleep`, `imageGeneration`, `collabAgentToolCall`, non-Build `mcpToolCall` | `TrackedTool` with its corresponding `ToolSummaryCategory`; start emits `ToolUse { call_id: item.id }`, and matching completion emits `ToolResult` with `Ok`/`Error` from status, exit code, or error |
 | `subAgentActivity` | `Emitting { report: SubAgentActivity }`; emits bounded `TaskUpdate` from `agentPath` and `kind` (`started`, `interacted`, `interrupted`, or `completed`) |
 | `contextCompaction` | `Emitting { report: ContextCompaction }`; start/completion emit bounded `TaskUpdate` |
+| `enteredReviewMode` | `Emitting { report: EnteredReviewMode }`; completion emits one bounded `TaskUpdate` |
+| `exitedReviewMode` | `Emitting { report: ExitedReviewMode }`; completion emits one bounded `TaskUpdate` |
 | Build `mcpToolCall` | `Suppressed { reason: BuildMcp }` |
 | `dynamicToolCall` | `Suppressed { reason: DeferredDynamicTool }` |
 | unknown item | `Suppressed { reason: UnknownItem }` |
@@ -415,14 +445,14 @@ inability to retain a completion is never fatal. All keys for a turn are removed
 by `close_turn(turn_id)`.
 
 Classification happens before requiring an item id or touching either ledger.
-Suppressed Build-MCP, deferred dynamic-tool, and unknown items therefore emit
-nothing and consume no open-item or completed-item count/byte capacity. For
-tracked and emitting items, a key still in `CompletedItemLedger` suppresses both
-duplicate completion and a late duplicate start. The ledger never terminates a
-session solely because many valid items complete during a long turn. Its finite
-memory deliberately means a duplicate replayed after eviction, or a duplicate
-of an individually unretainable key, may emit again; suppression is guaranteed
-only while the key remains in the window.
+Every `Suppressed` item therefore emits nothing and consumes no open-item or
+completed-item count/byte capacity. For tracked and emitting items, a key still
+in `CompletedItemLedger` suppresses both duplicate completion and a late
+duplicate start. The ledger never terminates a session solely because many
+valid items complete during a long turn. Its finite memory deliberately means a
+duplicate replayed after eviction, or a duplicate of an individually
+unretainable key, may emit again; suppression is guaranteed only while the key
+remains in the window.
 
 Build MCP remains suppressed because `post_thread_message` and `done` already
 arrive through their real Build MCP path.
@@ -431,6 +461,10 @@ Dynamic tools are deferred: the harness does not advertise them, execute
 `item/tool/call`, or translate externally introduced dynamic-tool items. Their
 typed suppressed classification prevents accidental partial implementation of
 that surface.
+
+The experimental `plan` item is likewise suppressed and deferred. It does not
+become a Build plan, conversation row, task status, or alternate lifecycle
+signal.
 
 The harness does not set `features.multi_agent` or otherwise force native
 delegation. Existing Codex configuration remains authoritative. When Codex
@@ -470,23 +504,39 @@ call does.
 `Working` lasts from accepted turn start until `turn/completed`, even during a
 long silent model call, so the existing idle sweep does not report false quiet.
 EOF, malformed required lifecycle messages, oversized frames, and correlation
-violations close the activity sender; the existing activity pump performs the
-tab and session-lineage death rites.
+violations begin the terminal sequence; after final publication, the existing
+activity pump performs the tab and session-lineage death rites.
 
 `AgentSession::status()` is a pure snapshot read. It does not poll the child,
 inspect drainer health, transition state, close activity, or initiate shutdown.
-Process and drainer failures arrive through `ProcessEvent` and are handled by
-the coordinator even if no caller polls status.
+Process and drainer failures arrive through `TerminalSourceEvent` and are
+handled by the coordinator even if no caller polls status.
 
-The protocol reader sends decoded events in wire order and then exactly one
-`ReaderFinished` event after it reaches EOF or its terminal decode error. Any
-terminal trigger may begin idempotent process shutdown immediately, but the
-coordinator does not publish `Ended`, close the activity sender, or publish the
-final epitaph until `ReaderFinished` has been processed. Final epitaph priority
-is a terminal protocol/session error delivered by the reader, then a typed
-process or drainer failure, then the retained stderr tail. Buffered stdout
-errors therefore outrank stderr fallback deterministically even when process
-exit is observed first.
+The coordinator owns a `TerminalSnapshot` with independently pending/settled
+stdout-reader, process-monitor, and stderr-drainer outcomes, plus the first
+terminal protocol/session error. The protocol reader sends decoded events in
+wire order and then exactly one `TerminalSourceEvent::StdoutSettled {
+reader_error }` after EOF or its terminal decode error. Any terminal trigger may
+begin idempotent process shutdown immediately, but the coordinator does not
+publish `Ended`, close the activity sender, or publish the final epitaph until
+all three source outcomes are settled. A clean settled source remains part of
+the barrier; reader completion alone is insufficient.
+
+Once the barrier is complete, final epitaph selection has this fixed priority:
+
+| Priority | Epitaph source |
+| ---: | --- |
+| 1 | first terminal protocol/session error in coordinator event order, including stdout decode and typed transition failures |
+| 2 | process-monitor failure |
+| 3 | stderr-drainer failure |
+| 4 | retained non-empty stderr tail |
+| 5 | no epitaph |
+
+The process outcome independently supplies the stable exit code. Because final
+publication uses the completed snapshot rather than event arrival order, a
+process-monitor or stderr-drainer failure that arrives after stdout settlement
+is still included, while a buffered stdout protocol error always outranks
+process failure, drainer failure, and stderr fallback.
 
 ### Bounds and forward compatibility
 
@@ -623,11 +673,11 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Non-steerable turn | `activeTurnNotSteerable` does not pretend completion; retained input waits behind the same turn and starts once after its matching completion |
 | Interrupt | duplicate interrupt is a no-op; completion before response plus later success or `-32600` stays completed; queued post-interrupt input starts only after completion; interrupt never kills the process |
 | Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown methods with absent, object, array, scalar, or null params reply `-32601` before session failure, while malformed known-method params fail typed decoding; no path approves |
-| Parent isolation | child lifecycle, item, delta, malformed error, terminal error, and unknown notifications cause no state, quiet-clock, activity, error, epitaph, diagnostic, ledger, or limit mutation; root `thread/started` still establishes the candidate parent; parent-thread `subAgentActivity` remains visible |
-| Translation | the one typed classification covers every item variant and tool summary category; each required item emits the stated report once; tool result pairs by item id; natural collaboration events remain visible; suppressed Build MCP, dynamic, and unknown items require no id and consume no ledger capacity; open calls close `Unanswered` at turn end |
+| Parent isolation | child lifecycle, item, delta, malformed error, terminal error, and unknown notifications cause no state, quiet-clock, activity, error, epitaph, diagnostic, ledger, or limit mutation; every schema-known thread-scoped child request, including malformed non-routing params, receives its exact typed safe response with `Continue` and no report or parent mutation; child user-input, permission, and dynamic-tool requests never produce a parent `FailTurn`; root `thread/started` still establishes the candidate parent; parent-thread `subAgentActivity` remains visible |
+| Translation | one table-driven case for each of the 19 `ThreadItem` discriminators in the generated 0.153.0 schema, plus separate Build/non-Build `mcpToolCall` and unknown-fallback cases, asserts the exact `ItemClassification`, lifecycle behavior, and tool summary category; each required item emits the stated report once; tool result pairs by item id; natural collaboration events and review-mode transitions remain visible; all suppressed items require no id and consume no ledger capacity; experimental `plan` remains suppressed/deferred; open calls close `Unanswered` at turn end |
 | Completed-item ledger | duplicates suppress completion and late start while retained and refresh recency; count and byte pressure evict oldest keys without failure; individually oversized keys process without retention; long turns exceeding the window remain live; evicted duplicates document the finite-window tradeoff; turn close clears only that turn's keys |
 | Bounds/decoder | exact-limit frames pass; limit-plus-one is discarded through newline at fixed capacity before one terminal error; an oversized suffix is never decoded as another frame; no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
-| Process/liveness | stdout EOF closes activity only after `ReaderFinished`; process exit, monitor failure, and drainer failure reach the coordinator without status polling; `status()` is a pure read; buffered protocol error wins over process/drainer failure and stderr fallback regardless of arrival race; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
+| Process/liveness | all permutations of stdout, process, and stderr settlement publish `Ended`, close activity, and expose the epitaph only after all three settle; process-monitor and stderr-drainer failures arriving after stdout settlement are retained in the final snapshot; fixed precedence is protocol/session error, process-monitor failure, stderr-drainer failure, stderr tail, then none; process exit and both failures reach the coordinator without status polling; `status()` is a pure read; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
 | Dispatch shape | method lookup selects focused typed request and notification handlers; the single item classifier selects lifecycle behavior and summary category; each dispatch function remains under the `~10-path` complexity target |
 | Compatibility/UI | existing activity pump, idle sweep, resume persistence, store fixtures, and MCP `done` tests pass; settings lists the new provider; only allowed provider/default wiring changes in the SPA |
 

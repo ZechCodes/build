@@ -9,6 +9,8 @@
 //! whether a volume can make one, and [`IsolationBackend`] is the whole of what
 //! a backend does. `WorktreeManager` is the only caller.
 
+pub mod cow;
+pub mod probe;
 pub mod worktree;
 
 use std::path::{Path, PathBuf};

@@ -614,57 +614,110 @@ impl WorktreeManager {
         )))
     }
 
-    /// The checks a restore makes on a checkout that is still there: the ones
-    /// only its own backend can make, then the ones every isolation shares.
+    /// The checks a restore makes on a checkout that is still there, in the
+    /// order the spec names them: the path is the one this manager gave it,
+    /// the checkout is its own backend's, whatever it holds reaches the
+    /// project repo, and then the checks every isolation shares.
     fn verify_existing_checkout(
         &self,
         worktree: &Worktree,
         expected_path: &Path,
     ) -> Result<Worktree, WorktreeError> {
+        let checkout = self.canonical_managed_path(worktree, expected_path)?;
+        self.backend_of(&checkout)?.verify(
+            &self.repo_path,
+            &checkout,
+            &worktree.recorded_branch,
+        )?;
+        self.publish(&checkout, &worktree.recorded_branch)?;
+        self.verify_common(worktree, &checkout)?;
+        Ok(worktree.clone())
+    }
+
+    /// The checkout's canonical path, refused unless it is the very path this
+    /// manager would have given it — a symlink or a bind mount pointing
+    /// somewhere else is not the checkout that was recorded.
+    fn canonical_managed_path(
+        &self,
+        worktree: &Worktree,
+        expected_path: &Path,
+    ) -> Result<PathBuf, WorktreeError> {
         let actual = std::fs::canonicalize(&worktree.path)?;
-        let expected = std::fs::canonicalize(expected_path)?;
-        if actual != expected {
+        if actual != std::fs::canonicalize(expected_path)? {
             return Err(WorktreeError::Refused(
                 "refusing to trust a worktree outside its canonical managed path".to_string(),
             ));
         }
-        self.backend_of(&actual)?
-            .verify(&self.repo_path, &actual, &worktree.recorded_branch)?;
-        self.publish(&actual, &worktree.recorded_branch)?;
-
-        let checkout = git2::Repository::open(&actual)?;
-        let head = checkout.head()?;
-        if !head.is_branch() || head.shorthand() != Some(worktree.recorded_branch.as_str()) {
-            return Err(WorktreeError::Refused(format!(
-                "worktree is not on the exact persisted branch {:?}",
-                worktree.recorded_branch
-            )));
-        }
-        let head_oid = head.target().ok_or_else(|| {
-            WorktreeError::Refused("worktree HEAD has no direct commit".to_string())
-        })?;
-        let primary = git2::Repository::open(&self.repo_path)?;
-        let branch_oid = primary
-            .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
-            .target()
-            .ok_or_else(|| WorktreeError::Refused("persisted branch has no commit".to_string()))?;
-        if head_oid != branch_oid {
-            return Err(WorktreeError::Refused(
-                "worktree HEAD does not match the persisted branch tip".to_string(),
-            ));
-        }
-        let base_oid = primary
-            .revparse_single(&worktree.base_branch)?
-            .peel_to_commit()?
-            .id();
-        primary.merge_base(base_oid, head_oid).map_err(|_| {
-            WorktreeError::Refused(format!(
-                "worktree branch has no verified ancestry with {:?}",
-                worktree.base_branch
-            ))
-        })?;
-        Ok(worktree.clone())
+        Ok(actual)
     }
+
+    /// What a restored checkout must be true of whatever made it: it is on the
+    /// branch that was recorded for it, that branch is where the project repo
+    /// says it is, and it grew out of the base it was cut from.
+    fn verify_common(&self, worktree: &Worktree, checkout: &Path) -> Result<(), WorktreeError> {
+        let head = head_on_recorded_branch(checkout, worktree)?;
+        let project = git2::Repository::open(&self.repo_path)?;
+        head_matches_project_tip(&project, head, worktree)?;
+        shares_ancestry_with_base(&project, head, worktree)
+    }
+}
+
+/// The commit the checkout has checked out, refused unless HEAD is the branch
+/// the caller recorded for it.
+fn head_on_recorded_branch(
+    checkout: &Path,
+    worktree: &Worktree,
+) -> Result<git2::Oid, WorktreeError> {
+    let repository = git2::Repository::open(checkout)?;
+    let head = repository.head()?;
+    if !head.is_branch() || head.shorthand() != Some(worktree.recorded_branch.as_str()) {
+        return Err(WorktreeError::Refused(format!(
+            "worktree is not on the exact persisted branch {:?}",
+            worktree.recorded_branch
+        )));
+    }
+    head.target()
+        .ok_or_else(|| WorktreeError::Refused("worktree HEAD has no direct commit".to_string()))
+}
+
+/// That the project repo's own tip of the recorded branch is the commit the
+/// checkout is sitting on — the point of publishing before this is asked.
+fn head_matches_project_tip(
+    project: &git2::Repository,
+    head: git2::Oid,
+    worktree: &Worktree,
+) -> Result<(), WorktreeError> {
+    let tip = project
+        .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
+        .target()
+        .ok_or_else(|| WorktreeError::Refused("persisted branch has no commit".to_string()))?;
+    if head != tip {
+        return Err(WorktreeError::Refused(
+            "worktree HEAD does not match the persisted branch tip".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// That the branch and the base it was cut from share a commit. Restoring a
+/// checkout whose branch grew somewhere else would hand back lineage nobody
+/// cut.
+fn shares_ancestry_with_base(
+    project: &git2::Repository,
+    head: git2::Oid,
+    worktree: &Worktree,
+) -> Result<(), WorktreeError> {
+    let base = project
+        .revparse_single(&worktree.base_branch)?
+        .peel_to_commit()?
+        .id();
+    project.merge_base(base, head).map_err(|_| {
+        WorktreeError::Refused(format!(
+            "worktree branch has no verified ancestry with {:?}",
+            worktree.base_branch
+        ))
+    })?;
+    Ok(())
 }
 
 /// Seconds since the epoch, the clock every checkout summary is aged against.
@@ -1302,6 +1355,56 @@ mod tests {
         assert!(failure.contains("not a git repository"), "{failure}");
     }
 
+    /// The checks a restore makes on a checkout that is still there, whatever
+    /// made it: it is on the branch that was recorded for it, and that branch
+    /// grew out of the base it was cut from.
+    #[test]
+    fn restore_refuses_a_checkout_that_left_its_recorded_branch() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("wandered", "main", Isolation::Worktree).unwrap();
+        git_in(&wt.path, &["checkout", "--detach"]);
+
+        let refused = mgr
+            .restore(&wt, Isolation::Worktree)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            refused.contains("not on the exact persisted branch"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn restore_refuses_a_branch_that_shares_no_history_with_its_base() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr
+            .create("unrelated", "main", Isolation::Worktree)
+            .unwrap();
+        let empty_tree = git_output(&repo, &["hash-object", "-t", "tree", "/dev/null"]);
+        let orphan = git_output(
+            &repo,
+            &["commit-tree", empty_tree.trim(), "-m", "unrelated"],
+        );
+        git_in(
+            &repo,
+            &[
+                "update-ref",
+                &format!("refs/heads/{}", wt.recorded_branch),
+                orphan.trim(),
+            ],
+        );
+
+        let refused = mgr
+            .restore(&wt, Isolation::Worktree)
+            .unwrap_err()
+            .to_string();
+
+        assert!(refused.contains("no verified ancestry"), "{refused}");
+    }
+
     /// A checkout deleted outside Build leaves git's record of it behind, and
     /// git refuses to add a worktree under a name a record still holds. The
     /// record is stale the moment the directory goes, so restore clears it
@@ -1492,6 +1595,16 @@ mod tests {
     }
 
     /// Commit `name` in `dir` as a new file of the same name.
+    fn git_output(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
     fn commit_file(dir: &Path, name: &str) {
         std::fs::write(dir.join(format!("{name}.txt")), "x\n").unwrap();
         git_in(dir, &["add", "."]);

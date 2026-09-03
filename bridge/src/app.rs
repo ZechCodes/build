@@ -16173,20 +16173,22 @@ fn land_finished_branch(
     let merging = record.action == WorktreeFinishAction::Merge;
     let verb = if merging { "merge" } else { "delete" };
     let standing = checkout.exists();
+    let recorded_branch = record.branch.as_deref();
     // Whatever the checkout holds reaches the project repo before the project
     // repo is asked what it holds: for a clone that is the only way its branch
     // is there at all, and for a linked worktree it is nothing.
-    if standing {
-        if let Some(branch) = record.branch.as_deref() {
-            worktrees
-                .publish(checkout, branch)
-                .map_err(|error| error.to_string())?;
-        }
+    if let (true, Some(branch)) = (standing, recorded_branch) {
+        worktrees
+            .publish(checkout, branch)
+            .map_err(|error| error.to_string())?;
     }
-    let live_branch = match record.branch.as_deref() {
-        Some(branch) if worktrees.branch_exists(branch).map_err(|e| e.to_string())? => Some(branch),
-        _ => None,
+    let branch_stands = match recorded_branch {
+        Some(branch) => worktrees
+            .branch_exists(branch)
+            .map_err(|error| error.to_string())?,
+        None => false,
     };
+    let live_branch = recorded_branch.filter(|_| branch_stands);
     if !standing {
         return match live_branch {
             Some(_) => Err(format!(

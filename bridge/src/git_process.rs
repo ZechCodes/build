@@ -1,9 +1,9 @@
 //! Running git as a child process.
 //!
-//! Every git invocation the bridge makes through the CLI rather than `git2`
-//! goes through here, so how a child is started, how its streams are read and
-//! what a failure reads like are one fact with one owner. This module knows
-//! nothing of worktrees, isolations or runs.
+//! Every git child the isolation backends, the worktree façade and the
+//! orchestrator start goes through here, so how a child is started, how its
+//! streams are read and what a failure reads like are one fact with one owner.
+//! This module knows nothing of worktrees, isolations or runs.
 
 use std::path::Path;
 use std::process::Command;

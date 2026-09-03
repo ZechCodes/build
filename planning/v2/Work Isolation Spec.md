@@ -226,8 +226,8 @@ streams (a conflicting merge reports "CONFLICT …" on stdout, so a failure that
 kept only stderr loses the reason). `GitError::Unstartable(io::Error)` is git
 not starting at all. `From<GitError>` carries it into `WorktreeError` and
 `OrchestratorError`, so no caller composes a git failure message of its own.
-Every git invocation the bridge makes through the CLI rather than `git2` goes
-through this module.
+Every git child the isolation backends, the worktree façade and the
+orchestrator start goes through this module; `git2` answers everything else.
 
 Stage 3 adds `run_git_with_deadline(dir: &Path, args: &[&OsStr]) -> std::io::Result<Output>`:
 the same child with terminal prompts disabled (`GIT_TERMINAL_PROMPT=0`,

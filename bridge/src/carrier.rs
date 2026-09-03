@@ -7,7 +7,7 @@
 //! above it learns which wire is carrying.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
@@ -49,6 +49,9 @@ pub struct SessionSender {
     session_id: String,
     session_key: String,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
+    /// Whether the opening this sender was built for is still open — see
+    /// [`OpenSession::still_open`].
+    still_open: Arc<AtomicBool>,
 }
 
 impl SessionSender {
@@ -56,15 +59,28 @@ impl SessionSender {
         &self.session_id
     }
 
+    fn session_is_open(&self) -> bool {
+        self.still_open.load(Ordering::SeqCst)
+    }
+
+    /// Test-only: what the registry does to every sender of an opening that
+    /// ended.
+    #[cfg(test)]
+    fn opening_ended(&self) {
+        self.still_open.store(false, Ordering::SeqCst);
+    }
+
     fn keyed(
         session_id: &str,
         session_key: String,
         out: mpsc::UnboundedSender<OutboundEnvelope>,
+        still_open: Arc<AtomicBool>,
     ) -> Self {
         SessionSender {
             session_id: session_id.to_string(),
             session_key,
             out,
+            still_open,
         }
     }
 
@@ -76,6 +92,7 @@ impl SessionSender {
             session_id: session_id.into(),
             session_key: String::new(),
             out,
+            still_open: Arc::new(AtomicBool::new(true)),
         }
     }
 
@@ -93,6 +110,7 @@ impl SessionSender {
                 session_id: session_id.into(),
                 session_key: session_key.clone(),
                 out,
+                still_open: Arc::new(AtomicBool::new(true)),
             },
             rx,
             session_key,
@@ -183,6 +201,21 @@ struct OpenSession {
     key: String,
     generation: u64,
     carriers: HashSet<CarrierId>,
+    /// Cleared when this opening ends, under the registry lock, and read by
+    /// every sender built for it: a frame admitted before the end and
+    /// dispatched after it is told apart from the same id's next opening, so
+    /// no lane is born for it (`Dispatcher::lane`).
+    still_open: Arc<AtomicBool>,
+}
+
+impl OpenSession {
+    fn ended(&self, session_id: &str) -> SessionEnd {
+        self.still_open.store(false, Ordering::SeqCst);
+        SessionEnd {
+            session_id: session_id.to_string(),
+            generation: self.generation,
+        }
+    }
 }
 
 /// One opening of a session id that ended. Versioned, because the effects of
@@ -192,15 +225,6 @@ struct OpenSession {
 struct SessionEnd {
     session_id: String,
     generation: u64,
-}
-
-impl SessionEnd {
-    fn of(session_id: &str, open: &OpenSession) -> Self {
-        SessionEnd {
-            session_id: session_id.to_string(),
-            generation: open.generation,
-        }
-    }
 }
 
 /// The one home of `session_id → (session key, carriers riding it)`.
@@ -247,6 +271,7 @@ impl SessionRegistry {
                         key: session_key,
                         generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
                         carriers: HashSet::from([carrier.id]),
+                        still_open: Arc::new(AtomicBool::new(true)),
                     },
                 );
                 Ok(())
@@ -267,14 +292,20 @@ impl SessionRegistry {
     ) -> Result<(Frame, SessionSender), CarrierError> {
         let session_key = self.key_of(&envelope.session_id)?;
         let frame = transport::decrypt_envelope(&session_key, envelope)?;
-        {
+        let still_open = {
             let mut sessions = self.sessions.lock().unwrap();
             let open = sessions
                 .get_mut(&envelope.session_id)
                 .ok_or_else(|| CarrierError::UnknownSession(envelope.session_id.clone()))?;
             open.carriers.insert(carrier.id);
-        }
-        let sender = SessionSender::keyed(&envelope.session_id, session_key, carrier.out.clone());
+            open.still_open.clone()
+        };
+        let sender = SessionSender::keyed(
+            &envelope.session_id,
+            session_key,
+            carrier.out.clone(),
+            still_open,
+        );
         Ok((frame, sender))
     }
 
@@ -292,11 +323,11 @@ impl SessionRegistry {
         let Some(open) = sessions.get_mut(session_id) else {
             return Vec::new();
         };
-        open.carriers.remove(&carrier.id);
-        if !open.carriers.is_empty() {
+        let rode_it = open.carriers.remove(&carrier.id);
+        if !rode_it || !open.carriers.is_empty() {
             return Vec::new();
         }
-        let ended = SessionEnd::of(session_id, open);
+        let ended = open.ended(session_id);
         sessions.remove(session_id);
         vec![ended]
     }
@@ -306,7 +337,7 @@ impl SessionRegistry {
         self.sessions.lock().unwrap().retain(|session_id, open| {
             open.carriers.remove(&carrier.id);
             if open.carriers.is_empty() {
-                ended.push(SessionEnd::of(session_id, open));
+                ended.push(open.ended(session_id));
                 return false;
             }
             true
@@ -316,7 +347,7 @@ impl SessionRegistry {
 
     fn end(&self, session_id: &str) -> Vec<SessionEnd> {
         match self.sessions.lock().unwrap().remove(session_id) {
-            Some(open) => vec![SessionEnd::of(session_id, &open)],
+            Some(open) => vec![open.ended(session_id)],
             None => Vec::new(),
         }
     }
@@ -533,6 +564,32 @@ mod registry_tests {
         assert!(
             registry.end("s-1").is_empty(),
             "a session ends once, however often it is asked to"
+        );
+    }
+
+    #[test]
+    fn releasing_a_session_the_registry_does_not_hold_ends_nothing() {
+        let registry = SessionRegistry::default();
+        let (carrier, _out) = CarrierHandle::open();
+
+        assert!(registry.release_session("s-unknown", &carrier).is_empty());
+    }
+
+    #[test]
+    fn a_carrier_that_never_rode_a_session_cannot_end_it() {
+        let registry = SessionRegistry::default();
+        let (relay, _relay_out) = CarrierHandle::open();
+        let (stranger, _stranger_out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        registry.open("s-1", key.clone(), &relay).unwrap();
+
+        assert!(registry.release_session("s-1", &stranger).is_empty());
+
+        assert!(
+            registry
+                .admit(&client_envelope(&key, "s-1", "data"), &relay)
+                .is_ok(),
+            "the session still rides the carrier that opened it"
         );
     }
 
@@ -814,6 +871,17 @@ mod intake_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_session_closed_for_a_session_the_device_does_not_know_closes_nothing() {
+        let (intake, mut seen) = watching_intake();
+        let (carrier, _out) = CarrierHandle::open();
+
+        intake.close_session("s-unknown", &carrier);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(seen.try_recv().is_err(), "there was no session to close");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relay_session_closed_leaves_a_session_a_second_carrier_still_rides() {
         let (intake, mut seen) = watching_intake();
         let (relay, _relay_out) = CarrierHandle::open();
@@ -905,5 +973,41 @@ mod intake_tests {
 
         assert!(matches!(refused, Err(CarrierError::UnknownSession(_))));
         assert!(seen.try_recv().is_err(), "nothing was dispatched");
+    }
+
+    /// The race a second carrier makes real: a frame admitted while the
+    /// session was open, dispatched after another carrier's end has already
+    /// taken the session's lanes. It must not be born a lane of its own — the
+    /// attach would run after the close and register a sender into a session
+    /// that is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_frame_admitted_before_the_end_births_no_lane_after_it() {
+        let (intake, mut seen) = watching_intake();
+        let (carrier, _out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake.open("s-1", opened("s-1", &key), &carrier).unwrap();
+        let (attach, sender) = intake
+            .registry
+            .admit(
+                &client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 1, "method": "term.attach", "params": { "term_id": "term-1" } }),
+                ),
+                &carrier,
+            )
+            .expect("the frame was admitted while the session was open");
+
+        intake.close_carrier(&carrier);
+        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+
+        intake.dispatcher.dispatch(sender, attach).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            seen.try_recv().is_err(),
+            "nothing runs for a session after its close"
+        );
     }
 }

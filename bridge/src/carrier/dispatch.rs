@@ -105,7 +105,9 @@ enum QueuedWork {
 /// What an ordered lane can be asked to do.
 enum LaneMessage {
     /// Run this frame's handler; the lane runs one at a time, in arrival order.
-    Run(Job),
+    /// Boxed: a job is a sender and a frame, and the fence beside it is a
+    /// oneshot, so the enum would otherwise be the size of its largest arm.
+    Run(Box<Job>),
     /// Tell me when everything queued before you has run. Used to make a session
     /// close the last thing that happens to that session.
     Fence(tokio::sync::oneshot::Sender<()>),
@@ -202,8 +204,12 @@ impl Dispatcher {
         if let Some(key) = ordered_lane(&sender, &frame) {
             let closing =
                 frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
-            let lane = self.lane(key.clone());
-            let _ = lane.send(LaneMessage::Run(Job { sender, frame })).await;
+            let Some(lane) = self.lane(key.clone(), &sender) else {
+                return;
+            };
+            let _ = lane
+                .send(LaneMessage::Run(Box::new(Job { sender, frame })))
+                .await;
             if closing {
                 // A terminal id is minted once and never reused, so its close
                 // is the last frame its lane can carry. Letting the sender go
@@ -266,28 +272,36 @@ impl Dispatcher {
         }
     }
 
-    /// The lane for a terminal, started on first use.
-    fn lane(&self, key: (String, String)) -> mpsc::Sender<LaneMessage> {
-        self.lanes
-            .lock()
-            .unwrap()
-            .entry(key)
-            .or_insert_with(|| {
-                let (tx, mut rx) = mpsc::channel::<LaneMessage>(LANE_QUEUE_DEPTH);
-                let handler = self.handler.clone();
-                tokio::spawn(async move {
-                    while let Some(message) = rx.recv().await {
-                        match message {
-                            LaneMessage::Run(job) => run_job(&handler, job).await,
-                            LaneMessage::Fence(reply) => {
-                                let _ = reply.send(());
-                            }
-                        }
+    /// The lane for a terminal, started on first use — but never for a session
+    /// that has ended. [`Self::close_session`] took that session's lanes
+    /// already, and a lane born behind it would run its frame after the close;
+    /// the question is asked under the lane lock, so the two cannot cross.
+    fn lane(
+        &self,
+        key: (String, String),
+        sender: &SessionSender,
+    ) -> Option<mpsc::Sender<LaneMessage>> {
+        let mut lanes = self.lanes.lock().unwrap();
+        if let Some(lane) = lanes.get(&key) {
+            return Some(lane.clone());
+        }
+        if !sender.session_is_open() {
+            return None;
+        }
+        let (tx, mut rx) = mpsc::channel::<LaneMessage>(LANE_QUEUE_DEPTH);
+        let handler = self.handler.clone();
+        tokio::spawn(async move {
+            while let Some(message) = rx.recv().await {
+                match message {
+                    LaneMessage::Run(job) => run_job(&handler, *job).await,
+                    LaneMessage::Fence(reply) => {
+                        let _ = reply.send(());
                     }
-                });
-                tx
-            })
-            .clone()
+                }
+            }
+        });
+        lanes.insert(key, tx.clone());
+        Some(tx)
     }
 
     /// A session ended: tell the app so it releases the session's attachments.
@@ -1175,6 +1189,56 @@ mod dispatcher_tests {
             *seen.lock().unwrap(),
             vec!["1".to_string(), "close".to_string()],
             "the close ran last"
+        );
+    }
+
+    /// The race a second carrier makes real: a session's end has taken its
+    /// lanes, and a frame for that session — admitted while it was still open
+    /// — is dispatched behind it. No lane is born for it: the close was the
+    /// session's last frame, and an attach run after it would register a
+    /// sender into a session that is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn no_lane_is_born_for_a_session_that_has_ended() {
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
+                "close".to_string()
+            } else {
+                frame.payload["id"].to_string()
+            };
+            recorder.lock().unwrap().push(ran);
+            json!({ "ok": true })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 16, 4);
+        let (sender, _rx, _key) = SessionSender::observable("s-ended");
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                request(1, "term.attach", json!({ "term_id": "term-1" })),
+            )
+            .await;
+
+        sender.opening_ended();
+        dispatcher.close_session("s-ended", || true);
+        dispatcher
+            .dispatch(
+                sender.clone(),
+                request(2, "term.attach", json!({ "term_id": "term-1" })),
+            )
+            .await;
+
+        for _ in 0..100 {
+            if seen.lock().unwrap().contains(&"close".to_string()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["1".to_string(), "close".to_string()],
+            "the attach dispatched behind the close was never run"
         );
     }
 }

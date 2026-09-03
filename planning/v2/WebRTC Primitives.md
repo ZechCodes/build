@@ -67,7 +67,9 @@ pub fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
 pub fn close_carrier(&self, carrier: &CarrierHandle);
 ```
 `&self`, not `&mut self`, so the sharing is real: the lane map moves behind its own `Mutex` inside the `Dispatcher`,
-held only long enough to clone a lane sender — **no lock crosses an await**. What still makes a flooding carrier wait is
+held only long enough to clone a lane sender — **no lock crosses an await**. A lane is never born for a session that has
+ended: the sender the registry builds knows whether its opening is still open, and the dispatcher reads that under the
+lane lock, so a frame admitted on one carrier before an end reported on another cannot run behind the close. What still makes a flooding carrier wait is
 the bounded job queue, the existing designed backpressure, shared on purpose. **Replaces** `relay::handle_envelope` and
 `relay::end_session`, which stage 4 would otherwise copy into `rtc.rs`. It reads the session id off the envelope, so **a
 carrier binds to no session**.

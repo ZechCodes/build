@@ -81,7 +81,7 @@ describe("an outcome carried by the agent's message", () => {
       items: [outcomeMessage("completed", { done: true })],
     });
     const marker = document.querySelector(".thread-outcome");
-    expect(marker.textContent).toContain("Codex reported done");
+    expect(marker.textContent).toContain("Codex TUI reported done");
     expect(marker.textContent).not.toContain("Agent reported done");
   });
 

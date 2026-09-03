@@ -113,7 +113,7 @@ describe("the assignment overlay", () => {
 
   // Dispatching an issue creates an agent, so it asks the same question the
   // new-agent cards ask: which of the two agents, never which carrier.
-  it("offers the two agents, out of the three the bridge serves", () => {
+  it("offers the two agents, out of the four harnesses the bridge serves", () => {
     const anchor = document.createElement("button");
     document.body.appendChild(anchor);
     const overlay = openAssignmentOverlay({
@@ -125,14 +125,15 @@ describe("the assignment overlay", () => {
         providers: [
           { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
           { id: "claude", label: "Claude Code", models: [], efforts: [] },
-          { id: "codex", label: "Codex", models: [], efforts: [] },
+          { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+          { id: "codex", label: "Codex TUI", models: [], efforts: [] },
         ],
       }),
       getWorktrees: () => [],
     });
 
     const options = [...document.querySelector("#assignprovider").options];
-    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex_app_server"]);
     expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
     // A stored preference for the carrier no longer offered clamps onto the
     // entry that is, rather than leaving the field on a name it cannot show.
@@ -156,13 +157,13 @@ describe("the assignment overlay", () => {
     });
     // Before it lands the picker still offers both agents — dispatching needs
     // only a harness — with no models under either.
-    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude_adk", "codex_app_server"]);
     const worktree = document.querySelector("#assignworktree");
     worktree.value = "existing";
     worktree.dispatchEvent(new Event("change"));
-    held = { default_provider: "claude", providers: [...catalog.providers, { id: "codex", label: "Codex", models: [], efforts: [] }] };
+    held = { default_provider: "claude", providers: [...catalog.providers, { id: "codex_app_server", label: "Codex", models: [], efforts: [] }] };
     overlay.update();
-    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude", "codex"]);
+    expect([...document.querySelector("#assignprovider").options].map((option) => option.value)).toEqual(["claude", "codex_app_server"]);
     expect(document.querySelector("#assignworktree").value).toBe("existing");
     overlay.close();
   });

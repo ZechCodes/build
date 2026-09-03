@@ -331,7 +331,7 @@ describe("the advanced panel", () => {
     // only a harness. The Claude Code entry is the carrier this account's
     // default names, so the carrier question is never put to the writer.
     const providers = [...document.querySelectorAll("#compose-choice-provider option")];
-    expect(providers.map((option) => option.value)).toEqual(["claude", "codex"]);
+    expect(providers.map((option) => option.value)).toEqual(["claude", "codex_app_server"]);
     expect(providers.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
     expect($("#compose-choice-model")).toBeTruthy();
     expect($("#compose-choice-effort")).toBeTruthy();

@@ -251,10 +251,10 @@ describe("conversation thread rendering", () => {
       ],
     }, { initialMessage: "Do the task" });
     const completionHead = [...document.querySelectorAll(".thread-message-head")].at(-1).textContent;
-    expect(completionHead).toContain("Codex commented");
+    expect(completionHead).toContain("Codex TUI commented");
     expect(completionHead).not.toContain("Agent commented");
-    expect(document.querySelector(".thread-items").textContent).toContain("Codex session ended");
-    expect(document.querySelector(".thread-items").textContent).toContain("Codex reported done");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI session ended");
+    expect(document.querySelector(".thread-items").textContent).toContain("Codex TUI reported done");
   });
 
   it("calls either claude carrier Claude Code, never the word the wire uses", () => {

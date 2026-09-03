@@ -10,6 +10,7 @@ import {
   providerLabel,
   providerOptionsHtml,
   creatableCatalog,
+  concreteProviderId,
   matchCatalogModel,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
@@ -41,18 +42,25 @@ const CATALOG = {
 
 describe("the harnesses an agent can be created on", () => {
   it("offers one card per harness — an agent is locked to the one it was made on", () => {
-    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+    expect(STARTABLE_PROVIDERS.map((provider) => provider.id)).toEqual([
+      "claude_adk",
+      "claude",
+      "codex_app_server",
+      "codex",
+    ]);
     expect(STARTABLE_PROVIDERS.map((provider) => provider.label)).toEqual([
       "Claude Code",
       "Claude Code TUI",
       "Codex",
+      "Codex TUI",
     ]);
   });
 
   it("gives every harness its own name, so no two agents read alike", () => {
     expect(providerLabel("claude_adk")).toBe("Claude Code");
     expect(providerLabel("claude")).toBe("Claude Code TUI");
-    expect(providerLabel("codex")).toBe("Codex");
+    expect(providerLabel("codex_app_server")).toBe("Codex");
+    expect(providerLabel("codex")).toBe("Codex TUI");
   });
 
   it("keeps no alias between the two claude harnesses — each one is an agent", () => {
@@ -70,29 +78,30 @@ describe("the harnesses an agent can be created on", () => {
       ...STARTABLE_PROVIDERS.map((provider) => provider.label),
       providerLabel("claude"),
       providerLabel("claude_adk"),
+      providerLabel("codex_app_server"),
       providerLabel("codex"),
     ].join(" ");
     expect(shown).not.toMatch(/headless/i);
   });
 });
 
-// What a create surface offers is two agents, never three. Whether Claude Code
-// opens as the TUI is the account's question, answered once in Settings, and
-// asking it again in front of every new agent is the thing this narrowing ends.
+// What a create surface offers is two agents, never four harnesses. Which
+// concrete carrier opens is the account's question, answered once in Settings.
 describe("the catalog a create surface offers", () => {
-  const threeProviders = (defaultProvider) => ({
+  const fourProviders = (defaultProvider) => ({
     default_provider: defaultProvider,
     providers: [
       { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
       { id: "claude", label: "Claude Code", models: [], efforts: [] },
-      { id: "codex", label: "Codex CLI", models: [{ id: "gpt-5.6-sol", label: "GPT-5.6-Sol" }], efforts: ["low"] },
+      { id: "codex_app_server", label: "Codex", models: [{ id: "gpt-app", label: "GPT App" }], efforts: ["medium"] },
+      { id: "codex", label: "Codex TUI", models: [{ id: "gpt-tui", label: "GPT TUI" }], efforts: ["low"] },
     ],
   });
 
-  it("offers two agents out of the three the bridge serves", () => {
-    const offered = creatableCatalog(threeProviders("claude_adk"));
+  it("offers two generic agents out of the four concrete harnesses the bridge serves", () => {
+    const offered = creatableCatalog(fourProviders("claude_adk"));
 
-    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex_app_server"]);
     // The labels are the client's one naming table, so an older bridge that
     // called both claude carriers the same thing cannot show the name twice.
     expect(offered.providers.map((provider) => provider.label)).toEqual(["Claude Code", "Codex"]);
@@ -100,20 +109,42 @@ describe("the catalog a create surface offers", () => {
 
   it("gives the Claude Code card the carrier the account chose, and only then", () => {
     const claudeIds = (defaultProvider) =>
-      creatableCatalog(threeProviders(defaultProvider)).providers.map((provider) => provider.id);
+      creatableCatalog(fourProviders(defaultProvider)).providers.map((provider) => provider.id);
 
-    expect(claudeIds("claude")).toEqual(["claude", "codex"]);
-    expect(claudeIds("claude_adk")).toEqual(["claude_adk", "codex"]);
+    expect(claudeIds("claude")).toEqual(["claude", "codex_app_server"]);
+    expect(claudeIds("claude_adk")).toEqual(["claude_adk", "codex_app_server"]);
     // Under a Codex default, "Claude Code" means the plain name's own carrier.
     expect(claudeIds("codex")).toEqual(["claude_adk", "codex"]);
   });
 
-  it("carries each agent the models the bridge listed for the carrier behind it", () => {
-    const offered = creatableCatalog(threeProviders("claude_adk"));
+  it("resolves both generic agents through one concrete-carrier rule", () => {
+    expect(concreteProviderId("claude_adk", "claude")).toBe("claude");
+    expect(concreteProviderId("claude_adk", "codex")).toBe("claude_adk");
+    expect(concreteProviderId("codex_app_server", "codex")).toBe("codex");
+    expect(concreteProviderId("codex_app_server", "claude")).toBe("codex_app_server");
+    expect(() => concreteProviderId("gemini", "gemini")).toThrow(/gemini/);
+  });
 
-    expect(offered.providers[0].models).toEqual(MODELS);
-    expect(offered.providers[0].efforts).toEqual(EFFORTS);
-    expect(offered.providers[1].models.map((model) => model.id)).toEqual(["gpt-5.6-sol"]);
+  it("gives the Codex card the TUI carrier only when that is the account default", () => {
+    const codexId = (defaultProvider) =>
+      creatableCatalog(fourProviders(defaultProvider)).providers[1].id;
+
+    expect(codexId("codex")).toBe("codex");
+    expect(codexId("codex_app_server")).toBe("codex_app_server");
+    expect(codexId("claude")).toBe("codex_app_server");
+    expect(codexId("claude_adk")).toBe("codex_app_server");
+  });
+
+  it("carries each agent the models the bridge listed for the carrier behind it", () => {
+    const appServerOffered = creatableCatalog(fourProviders("claude_adk"));
+    const tuiOffered = creatableCatalog(fourProviders("codex"));
+
+    expect(appServerOffered.providers[0].models).toEqual(MODELS);
+    expect(appServerOffered.providers[0].efforts).toEqual(EFFORTS);
+    expect(appServerOffered.providers[1].models.map((model) => model.id)).toEqual(["gpt-app"]);
+    expect(appServerOffered.providers[1].efforts).toEqual(["medium"]);
+    expect(tuiOffered.providers[1].models.map((model) => model.id)).toEqual(["gpt-tui"]);
+    expect(tuiOffered.providers[1].efforts).toEqual(["low"]);
   });
 
   // Creating an agent needs only a harness, and the cards paint before the
@@ -121,12 +152,12 @@ describe("the catalog a create surface offers", () => {
   it("offers both agents before the bridge has listed a single model", () => {
     const offered = creatableCatalog({});
 
-    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex_app_server"]);
     expect(offered.providers.every((provider) => provider.models.length === 0)).toBe(true);
   });
 
   it("never puts the carrier question in front of a person", () => {
-    const shown = providerOptionsHtml(creatableCatalog(threeProviders("claude_adk")).providers, "claude_adk");
+    const shown = providerOptionsHtml(creatableCatalog(fourProviders("claude_adk")).providers, "claude_adk");
 
     expect(shown).not.toContain("Claude Code TUI");
     expect(shown).not.toMatch(/headless/i);
@@ -147,10 +178,16 @@ describe("provider catalog", () => {
       providers: [
         { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
         { id: "claude", label: "Claude Code TUI", models: MODELS, efforts: EFFORTS },
-        { id: "codex", label: "Codex", models: [], efforts: [] },
+        { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+        { id: "codex", label: "Codex TUI", models: [], efforts: [] },
       ],
     });
-    expect(normalized.providers.map((provider) => provider.id)).toEqual(["claude_adk", "claude", "codex"]);
+    expect(normalized.providers.map((provider) => provider.id)).toEqual([
+      "claude_adk",
+      "claude",
+      "codex_app_server",
+      "codex",
+    ]);
     expect(normalized.default_provider).toBe("claude_adk");
   });
 

@@ -8,16 +8,17 @@ import { esc } from "./text.js";
  *
  *  One entry per harness, because an agent is LOCKED to the one it was created
  *  on: its conversation lives in that program, so it never moves, and two
- *  agents on the two claude carriers sit side by side and must not read alike.
+ *  agents on two carriers sit side by side and must not read alike.
  *
  *  This is the naming vocabulary, not an offer. What a create surface offers is
- *  two agents (`creatableCatalog`); the third name is spoken only where a
+ *  two agents (`creatableCatalog`); carrier-specific names are spoken where a
  *  harness is being NAMED — an agent's own bubble, and the Account setting that
- *  decides which carrier a new Claude Code agent gets. */
+ *  decides which carrier a new agent gets. */
 export const STARTABLE_PROVIDERS = [
   { id: "claude_adk", label: "Claude Code" },
   { id: "claude", label: "Claude Code TUI" },
-  { id: "codex", label: "Codex" },
+  { id: "codex_app_server", label: "Codex" },
+  { id: "codex", label: "Codex TUI" },
 ];
 
 /** Every harness the bridge can name, and what a person calls it. */
@@ -32,15 +33,28 @@ export function providerLabel(provider) {
   return PROVIDER_LABELS[provider] || String(provider);
 }
 
+const CARRIERS_BY_GENERIC_PROVIDER = {
+  claude_adk: ["claude_adk", "claude"],
+  codex_app_server: ["codex_app_server", "codex"],
+};
+
+export function concreteProviderId(genericProviderId, defaultProviderId) {
+  const carriers = CARRIERS_BY_GENERIC_PROVIDER[genericProviderId];
+  if (!carriers) throw new Error(`Unknown generic provider: ${genericProviderId}`);
+  return carriers.includes(defaultProviderId) ? defaultProviderId : genericProviderId;
+}
+
 /** The two agents a person can create, with the account's answer folded in: the
- *  Claude Code card carries the TUI carrier only when the account's own default
- *  IS the TUI carrier.
+ *  generic card carries its TUI carrier only when the account's own default is
+ *  that TUI carrier.
  *
- *  Whether Claude Code opens as the TUI is an account question, answered once
- *  in Settings — so a create surface asks which agent, never which carrier. */
+ *  Which carrier opens is an account question, answered once in Settings — so
+ *  a create surface asks which agent, never which carrier. */
 export function creatableAgents(defaultProviderId) {
-  const claudeId = defaultProviderId === "claude" ? "claude" : "claude_adk";
-  return [{ id: claudeId, label: "Claude Code" }, { id: "codex", label: "Codex" }];
+  return Object.keys(CARRIERS_BY_GENERIC_PROVIDER).map((genericProviderId) => ({
+    id: concreteProviderId(genericProviderId, defaultProviderId),
+    label: providerLabel(genericProviderId),
+  }));
 }
 
 /** The catalog a create surface offers: exactly the two agents, each carrying

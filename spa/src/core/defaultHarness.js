@@ -8,8 +8,8 @@
 // bridge falls back to when it has to deliver.
 //
 // It is also the only control that names a carrier. A create surface offers two
-// agents — Claude Code and Codex — so whether Claude Code opens as the TUI is
-// asked here, once, by choosing which of the three this account starts on.
+// agents — Claude Code and Codex — so which concrete harness opens is asked
+// here, once, by choosing which one this account starts on.
 //
 // The bridge is the authority (settings.get / settings.set, persisted), so
 // every device gets the same answer. The names are the client's one naming

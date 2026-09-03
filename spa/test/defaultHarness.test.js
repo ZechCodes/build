@@ -33,6 +33,7 @@ beforeEach(() => {
 describe("the harness a settings payload names", () => {
   it("takes the bridge's answer when it names one", () => {
     expect(defaultHarnessOf({ default_harness: "claude" })).toBe("claude");
+    expect(defaultHarnessOf({ default_harness: "codex_app_server" })).toBe("codex_app_server");
     expect(defaultHarnessOf({ default_harness: "codex" })).toBe("codex");
   });
 
@@ -49,7 +50,7 @@ describe("the harness a settings payload names", () => {
 });
 
 describe("the default-agent panel", () => {
-  it("is one select, naming all three agents — the one place a carrier is chosen", async () => {
+  it("is one select, naming all four harnesses — the one place a carrier is chosen", async () => {
     const callRpc = vi.fn(async () => ({ default_harness: "claude_adk", claude_mode: "headless" }));
     const host = panel();
     await mountDefaultHarness(host, { callRpc });
@@ -58,15 +59,14 @@ describe("the default-agent panel", () => {
     expect(callRpc).toHaveBeenCalledWith("settings.get");
     expect(host.querySelectorAll("select")).toHaveLength(1);
     expect(select().value).toBe("claude_adk");
-    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex"]);
+    expect(optionText(select())).toEqual(["Claude Code", "Claude Code TUI", "Codex", "Codex TUI"]);
     // Not one visible word about how any of them is carried.
     expect(host.textContent).not.toMatch(/headless/i);
     expect(host.textContent).not.toMatch(/carrier/i);
   });
 
   // Everywhere an agent is created offers two: Claude Code and Codex. This
-  // select is the only place the third name appears, so it is the only place
-  // that can say what choosing it does.
+  // select is the only place their concrete harnesses appear.
   it("says what choosing Claude Code TUI does, since no other screen can", async () => {
     const host = panel();
     await mountDefaultHarness(host, { callRpc: vi.fn(async () => ({ default_harness: "claude_adk" })) });
@@ -79,17 +79,17 @@ describe("the default-agent panel", () => {
 
   it("saves the chosen harness on the bridge and repaints from what it answers", async () => {
     const callRpc = vi.fn(async (method) =>
-      method === "settings.get" ? { default_harness: "claude_adk" } : { default_harness: "codex" },
+      method === "settings.get" ? { default_harness: "claude_adk" } : { default_harness: "codex_app_server" },
     );
     await mountDefaultHarness(panel(), { callRpc });
     await flush();
 
-    select().value = "codex";
+    select().value = "codex_app_server";
     select().dispatchEvent(new Event("change"));
     await flush();
 
-    expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "codex" });
-    expect(select().value).toBe("codex");
+    expect(callRpc).toHaveBeenCalledWith("settings.set", { default_harness: "codex_app_server" });
+    expect(select().value).toBe("codex_app_server");
     expect(select().disabled).toBe(false);
     expect(document.getElementById("harnesssaved").textContent).toContain("Saved");
     // What it changes and what it does not: the agents already here keep theirs.
@@ -125,7 +125,7 @@ describe("the default-agent panel", () => {
     await mountDefaultHarness(panel(), { callRpc });
     await flush();
 
-    select().value = "codex";
+    select().value = "codex_app_server";
     select().dispatchEvent(new Event("change"));
     await flush();
     await flush();
@@ -200,7 +200,7 @@ describe("the Settings page", () => {
   }, SLOW_IMPORT_MS);
 
   // These defaults are spent creating agents, so they offer what every create
-  // surface offers — the two agents. Which carrier "Claude Code" means is the
+  // surface offers — the two agents. Which concrete harness each means is the
   // Default agent panel's question, and it is asked exactly once.
   it("offers the agent defaults the two agents, not the three harnesses", async () => {
     await renderWith(async (method) => {
@@ -212,7 +212,8 @@ describe("the Settings page", () => {
           providers: [
             { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
             { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
-            { id: "codex", label: "Codex", models: [], efforts: [] },
+            { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+            { id: "codex", label: "Codex TUI", models: [], efforts: [] },
           ],
         };
       }
@@ -220,13 +221,14 @@ describe("the Settings page", () => {
     });
 
     const defaults = document.getElementById("defprovider");
-    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
+    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex_app_server"]);
     expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
     // The account's own question is still asked, once, in its own panel.
     expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([
       "Claude Code",
       "Claude Code TUI",
       "Codex",
+      "Codex TUI",
     ]);
   }, SLOW_IMPORT_MS);
 

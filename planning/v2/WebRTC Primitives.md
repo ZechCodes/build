@@ -49,8 +49,9 @@ fn end(&self, session_id: &str) -> Vec<String>;
 ```
 The last three return the session ids that actually ended, from one private rule: *no carriers left, or `end`*. `admit`
 records the ride, so a session rides a carrier the moment a frame for it arrives there. `open` is idempotent for a
-known session whose unwrapped key matches — that is the carrier re-attach a browser's relay reconnect performs — and
-errors on a known session with a different key, which is the frame the spec drops. **Replaces** the
+known session whose unwrapped key matches — that is the carrier re-attach a browser's relay reconnect performs, and it
+records the ride, so the carrier the session rode before may drop without ending it — and errors on a known session with
+a different key, which is the frame the spec drops. **Replaces** the
 `HashMap<String, String>` local to `relay::run`'s read loop, which died with the socket, and the key-removal half of
 `relay::end_session`.
 

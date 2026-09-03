@@ -257,13 +257,10 @@ impl SessionRegistry {
     /// Mint a session, or accept a re-open of one already open.
     ///
     /// Idempotent for a known session whose key matches — that is the re-attach
-    /// a browser performs when its relay socket reconnects. A known session
-    /// presented under a different key is refused; the frame is dropped.
-    ///
-    /// Only the mint puts the session on this carrier. A `session_init` unwraps
-    /// with the device's own key, so a repeat of one proves nothing about who
-    /// sent it; the re-attaching carrier earns its ride the way every carrier
-    /// does, through the first frame that decrypts there ([`Self::admit`]).
+    /// a browser performs when its relay socket reconnects — and the session
+    /// rides the re-attaching carrier from that moment, so the carrier it was
+    /// riding before may drop without ending it. A known session presented
+    /// under a different key is refused; the frame is dropped.
     fn open(
         &self,
         session_id: &str,
@@ -275,7 +272,10 @@ impl SessionRegistry {
             Some(open) if open.key != session_key => {
                 Err(CarrierError::KeyMismatch(session_id.to_string()))
             }
-            Some(_) => Ok(()),
+            Some(open) => {
+                open.carriers.insert(carrier.id);
+                Ok(())
+            }
             None => {
                 sessions.insert(
                     session_id.to_string(),
@@ -698,11 +698,13 @@ mod registry_tests {
             .is_ok());
     }
 
-    /// A `session_init` unwraps with the device's own key, so anyone who saw it
-    /// on the relay can replay it. Repeating one earns the `session_accept`,
-    /// never the ride: only a frame that decrypts binds the session to a wire.
+    /// The re-attach the spec asks for: a browser whose relay socket reconnects
+    /// re-presents its `session_init`, and the session rides the new carrier
+    /// from that moment — before any frame has crossed it. Without the ride,
+    /// the carrier it was riding before could drop and end the session the
+    /// client just re-attached.
     #[test]
-    fn reopening_a_session_records_no_ride_until_a_frame_decrypts_there() {
+    fn reopening_a_session_puts_it_on_the_re_attaching_carrier() {
         let registry = SessionRegistry::default();
         let (first, _first_out) = CarrierHandle::open();
         let (second, _second_out) = CarrierHandle::open();
@@ -711,10 +713,14 @@ mod registry_tests {
 
         registry.open("s-1", key.clone(), &second).unwrap();
 
+        assert!(
+            registry.release_carrier(&first).is_empty(),
+            "the session rides the carrier it re-attached on"
+        );
         assert_eq!(
-            ended_ids(registry.release_carrier(&first)),
+            ended_ids(registry.release_carrier(&second)),
             vec!["s-1".to_string()],
-            "a replayed session_init put the session on no second carrier"
+            "and ends with that last carrier"
         );
     }
 

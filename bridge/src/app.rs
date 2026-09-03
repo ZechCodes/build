@@ -14045,29 +14045,18 @@ impl AppState {
         }
     }
 
-    /// Best-effort `git worktree prune` in the run's project repo.
-    fn prune_worktree_records(&mut self, run_id: &str) {
-        let Some(repo_path) = self
+    /// Clear every stale record of a checkout in the run's project — the
+    /// sweep after one went away outside Build. Best effort, which is the
+    /// façade's own policy for it: nothing the caller asked for depends on it.
+    fn prune_worktree_records(&self, run_id: &str) {
+        let Some(project) = self
             .entity_project
             .get(run_id)
             .and_then(|pid| self.projects.iter().find(|p| &p.id == pid))
-            .map(|p| p.repo_path.clone())
         else {
             return;
         };
-        match std::process::Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(&repo_path)
-            .output()
-        {
-            Ok(out) if !out.status.success() => eprintln!(
-                "git worktree prune {}: {}",
-                repo_path.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ),
-            Err(e) => eprintln!("git worktree prune {}: {e}", repo_path.display()),
-            Ok(_) => {}
-        }
+        project.orch.worktrees().prune();
     }
 
     /// The wire view of a plan (spec §board.list): identity, state, project,

@@ -94,10 +94,13 @@ fallible it makes `name_taken` fallible too. It owns branch cutting and deletion
 publish-before-read ordering, the union `discover`, `availability()` from `IsolationAvailability::of`, and
 `merge_into_base`, which absorbs `Orchestrator::merge_into_base` and `app::merge_external_branch`. No setting or record
 is read here. `backend(Isolation)`, keyed on a resolved isolation, and `backend_of(&Path)`, keyed on `Isolation::of`,
-are the whole of keyed dispatch — nowhere else is a `match Isolation` written or a backend field reached for. Three
-primitives have nothing to key on, and each owns one `Isolation::ALL` walk no caller repeats: `record_held` walks
-`holds_record` (a name carries no isolation), `remove_checkout(path)` (§3) walks `remove` (a gone checkout carries
-none), `prune` walks `prune`. So `remove_checkout` is `record_held`'s fallible sibling and never asks
+are the whole of keyed dispatch — nowhere else is a `match Isolation` written or a backend field reached for. Both
+resolve through `backends()`, the one list of backends: an array with one slot per `Isolation::ALL` entry, keyed to the
+enum by length, so a new isolation cannot be added without declaring its slot (`None` until its backend exists). Three
+primitives have nothing to key on, and each owns one walk over `every_backend()` — the backends this build has, that
+array with the empty slots dropped — that no caller repeats: `record_held` walks `holds_record` (a name carries no
+isolation), `remove_checkout(path)` (§3) walks `remove` (a gone checkout carries none), `prune` walks `prune`. Walking
+the array rather than `Isolation::ALL` keeps `backend()` from being asked for an absent backend mid-walk. So `remove_checkout` is `record_held`'s fallible sibling and never asks
 `backend_of`: absence is success for every backend's `remove`, so present and gone are one unconditional path. `prune`
 alone returns nothing, being the one place turning a backend's `Err` into a log line; the record clearing `restore`
 does before recreating a vanished checkout (worktree.rs:285) is that `prune`, and a record whose directory still stands

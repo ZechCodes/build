@@ -212,6 +212,7 @@ bridge/src/isolation/worktree.rs   WorktreeBackend  (stage 1: moved from worktre
 bridge/src/isolation/cow.rs        CowBackend       (stage 3)
 bridge/src/isolation/probe.rs      cow_availability (stage 3)
 bridge/src/git_process.rs          run_git (stage 1), run_git_with_deadline (stage 3)
+bridge/src/git_fixture.rs          init_repo, git_in (test-only: the repository every test starts from)
 bridge/src/worktree.rs             Worktree, slugify, branch helpers, ExternalWorktree,
                                    describe_checkout, WorktreeManager (the façade)
 ```

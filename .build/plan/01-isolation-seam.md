@@ -133,8 +133,8 @@ Rules from spec §3 that must hold now:
   `self.publish(path, branch)?`. The orchestrator's copy is deleted and
   `run_approve_merge` calls the manager. `Orchestrator` may need
   `pub fn worktrees(&self) -> &WorktreeManager` for the app; add it.
-- `discover` = union of every backend's `discover`, minus the primary and
-  `excluded`, then `sync_base` best effort (logged) on each, then
+- `discover` = union of every backend's `discover`, minus `excluded`
+  (each backend already excludes the project's own checkout), then `sync_base` best effort (logged) on each, then
   `describe_checkout` on each, then today's sort. `discover_external_worktrees`
   and `describe_primary_checkout` become thin wrappers over the manager and gain
   a `worktrees_root` parameter after `repo_path` — the project's real root,

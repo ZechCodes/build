@@ -38,6 +38,11 @@ def test_production_auth_is_passkey_only():
     assert method_types == {"passkey"}
 
 
+def test_production_enables_oauth_for_the_public_desktop_client():
+    config = load_config("app.yaml")
+    assert config["oauth2_enabled"] is True
+
+
 def test_dummy_auth_stays_dev_only():
     dev_types = {m["type"] for m in load_config("app.dev.yaml")["auth"]["methods"].values()}
     assert "dummy" in dev_types

@@ -24,6 +24,14 @@
   "build": {
     "appId": "ing.getbuild.desktop",
     "productName": "Build",
+    "protocols": [
+      {
+        "name": "Build desktop sign-in",
+        "schemes": [
+          "getbuilding"
+        ]
+      }
+    ],
     "artifactName": "Build-${version}-${os}-${arch}.${ext}",
     "asar": true,
     "electronFuses": {

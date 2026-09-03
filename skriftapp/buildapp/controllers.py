@@ -16,7 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from skrift.db.models.user import User
 
-from buildapp.session_auth import session_user_id
+from buildapp.desktop_auth import build_auth_guard
+from buildapp.session_auth import require_user, session_user_id
 
 HERE = Path(__file__).parent
 STATIC_DIR = HERE / "static"
@@ -43,13 +44,21 @@ class BuildController(Controller):
     @get("/")
     async def index(self, request: Request, db_session: AsyncSession) -> Response | Redirect:
         # Skrift auth via the shared session helper (a malformed session value
-        # means "not logged in", never a 500). Unlike the API routes' auth_guard
+        # means "not logged in", never a 500). Unlike guarded API routes
         # (which answers 401), the SPA shell redirects to login — landing back on
         # the board afterwards, never the empty CMS root.
         user_id = session_user_id(request)
         if user_id is None:
             return Redirect("/auth/login?next=/app/")
 
+        return await self._render_spa(user_id, db_session)
+
+    @get("/desktop", guards=[build_auth_guard])
+    async def desktop(self, request: Request, db_session: AsyncSession) -> Response:
+        return await self._render_spa(require_user(request), db_session)
+
+    @staticmethod
+    async def _render_spa(user_id, db_session: AsyncSession) -> Response:
         result = await db_session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
         email = getattr(user, "email", None) or "user"

@@ -1,4 +1,4 @@
-export const APP_URL = "https://getbuild.ing/app/";
+export const APP_URL = "https://getbuild.ing/app/desktop";
 
 const APP_ORIGIN = new URL(APP_URL).origin;
 const EXTERNAL_PROTOCOLS = new Set(["http:", "https:", "mailto:"]);
@@ -25,6 +25,11 @@ export function createPermissionPolicy() {
       return false;
     }
   };
+}
+
+export function authorizeRequestHeaders(url, headers, accessToken) {
+  if (!accessToken || classifyNavigation(url) !== "internal") return headers;
+  return { ...headers, Authorization: `Bearer ${accessToken}` };
 }
 
 export function createWindowOptions({ development }) {

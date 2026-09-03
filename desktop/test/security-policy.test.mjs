@@ -4,13 +4,14 @@ import test from "node:test";
 
 import {
   APP_URL,
+  authorizeRequestHeaders,
   classifyNavigation,
   createPermissionPolicy,
   createWindowOptions,
 } from "../src/security-policy.mjs";
 
 test("the desktop app opens the production web client", () => {
-  assert.equal(APP_URL, "https://getbuild.ing/app/");
+  assert.equal(APP_URL, "https://getbuild.ing/app/desktop");
 });
 
 test("only the application origin may navigate inside the window", () => {
@@ -54,6 +55,25 @@ test("only notifications from the application origin receive permission", () => 
   assert.equal(permissionAllowed("media", "https://getbuild.ing/app/"), false);
   assert.equal(permissionAllowed("clipboard-read", "https://getbuild.ing/app/"), false);
   assert.equal(permissionAllowed("notifications", "not a url"), false);
+});
+
+test("the OAuth token is attached only to the application origin", () => {
+  assert.deepEqual(
+    authorizeRequestHeaders(
+      "https://getbuild.ing/api/devices",
+      { Accept: "application/json" },
+      "access-token",
+    ),
+    { Accept: "application/json", Authorization: "Bearer access-token" },
+  );
+  assert.deepEqual(
+    authorizeRequestHeaders(
+      "https://example.com/",
+      { Accept: "application/json" },
+      "access-token",
+    ),
+    { Accept: "application/json" },
+  );
 });
 
 test("packaged binaries disable Electron escape hatches", async () => {

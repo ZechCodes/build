@@ -5,6 +5,10 @@ It connects to the user's separately installed bridge through Build's existing
 end-to-end encrypted relay. The desktop app does not install, launch, or access
 the bridge or the user's files.
 
+Sign-in opens the existing passkey flow in the system browser through Skrift's
+OAuth 2.0 Authorization Code flow with PKCE. Access and refresh tokens remain in
+the Electron main process and are never exposed to the hosted renderer.
+
 ## Develop
 
 ```bash

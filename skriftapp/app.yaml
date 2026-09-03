@@ -33,6 +33,7 @@ auth:
     passkey:
       type: passkey
       label: Passkey
+oauth2_enabled: true
 rate_limit:
   enabled: true
   rules:

@@ -81,8 +81,13 @@ fn device_identity() -> DeviceIdentity {
     DeviceIdentity {
         device_id: "dev-1".into(),
         identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
     }
+}
+
+/// An intake holding a fresh device transport keypair — the key browsers wrap
+/// their session keys to, and the one the relay socket uploads.
+fn test_intake(handler: FrameHandler) -> Arc<FrameIntake> {
+    FrameIntake::new(handler, transport::generate_transport_keypair())
 }
 
 /// A bridge stood up against one mock relay socket, as the test's browser sees
@@ -130,20 +135,17 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     // Run the real bridge relay-client; its handler echoes the request payload.
     let handler: FrameHandler =
         Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
+    let intake = test_intake(handler);
     let ConnectedDevice {
         to_device,
         mut from_device,
         transport_public_key,
         bridge,
         relay_socket: _,
-    } = connected_device(
-        FrameIntake::new(handler, identity.transport.clone()),
-        &identity,
-    )
-    .await;
+    } = connected_device(intake.clone(), &identity).await;
 
-    // 1. The device uploaded its transport key; the browser learns it.
-    assert_eq!(transport_public_key, identity.transport.public_key_b64);
+    // 1. The device uploaded the intake's transport key; the browser learns it.
+    assert_eq!(transport_public_key, intake.transport_public_key());
 
     // 2. Browser bootstraps a session: wrap a fresh key to the device.
     let session_id = "sess-1";
@@ -230,11 +232,7 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         transport_public_key,
         bridge,
         relay_socket: _,
-    } = connected_device(
-        FrameIntake::new(handler, identity.transport.clone()),
-        &identity,
-    )
-    .await;
+    } = connected_device(test_intake(handler), &identity).await;
 
     let session_id = "sess-slow";
     let session_key = transport::generate_session_key();
@@ -374,7 +372,7 @@ async fn next_frame(frames: &mut mpsc::UnboundedReceiver<String>) -> String {
 async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
     let identity = device_identity();
     let (handler, mut frames) = reporting_handler();
-    let intake = FrameIntake::new(handler, identity.transport.clone());
+    let intake = test_intake(handler);
     let ConnectedDevice {
         to_device,
         mut from_device,
@@ -456,11 +454,7 @@ async fn a_session_init_under_a_different_key_is_refused() {
         transport_public_key,
         bridge,
         relay_socket: _,
-    } = connected_device(
-        FrameIntake::new(handler, identity.transport.clone()),
-        &identity,
-    )
-    .await;
+    } = connected_device(test_intake(handler), &identity).await;
     let session_id = "sess-minted";
     let session_key = transport::generate_session_key();
     to_device
@@ -520,11 +514,7 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         transport_public_key,
         bridge,
         relay_socket: _,
-    } = connected_device(
-        FrameIntake::new(handler, identity.transport.clone()),
-        &identity,
-    )
-    .await;
+    } = connected_device(test_intake(handler), &identity).await;
     let session_id = "sess-cut";
     let session_key = transport::generate_session_key();
     to_device

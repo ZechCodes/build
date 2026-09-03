@@ -156,19 +156,21 @@ async fn serve() {
     // Otherwise the bridge loads-or-generates a durable identity and pairs it to a user
     // account: register as pending, print the pairing code + fingerprint, wait for the
     // human to approve in the web app, then connect.
-    let identity = match (
+    let (identity, transport_keypair) = match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PUB"),
     ) {
-        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => DeviceIdentity {
-            device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
-            identity_private_key_b64: id_priv,
-            transport: transport::KeyPairB64 {
+        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => (
+            DeviceIdentity {
+                device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
+                identity_private_key_b64: id_priv,
+            },
+            transport::KeyPairB64 {
                 public_key_b64: tp_pub,
                 private_key_b64: tp_priv,
             },
-        },
+        ),
         _ => {
             let identity_path = cfg.identity_file.clone();
             let stored = match identity::load(&identity_path) {
@@ -208,7 +210,10 @@ async fn serve() {
                     std::process::exit(1);
                 }
             };
-            identity::to_device_identity(&approved)
+            (
+                identity::to_device_identity(&approved),
+                approved.transport.clone(),
+            )
         }
     };
 
@@ -303,7 +308,7 @@ async fn serve() {
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on.
-    let intake = FrameIntake::new(handler, identity.transport.clone());
+    let intake = FrameIntake::new(handler, transport_keypair);
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted

@@ -15,8 +15,11 @@ fn test_identity() -> DeviceIdentity {
     DeviceIdentity {
         device_id: "dev-silence".into(),
         identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
     }
+}
+
+fn idle_intake() -> Arc<FrameIntake> {
+    FrameIntake::new(idle_handler(), transport::generate_transport_keypair())
 }
 
 fn idle_handler() -> FrameHandler {
@@ -67,11 +70,7 @@ async fn a_relay_that_goes_silent_is_treated_as_disconnected() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(HEARTBEAT_INTERVAL_S * 3 + 5),
-        relay::run(
-            &url,
-            &test_identity(),
-            FrameIntake::new(idle_handler(), test_identity().transport),
-        ),
+        relay::run(&url, &test_identity(), idle_intake()),
     )
     .await
     .expect("the client gives up on a silent relay instead of waiting forever");
@@ -91,11 +90,7 @@ async fn a_quiet_relay_that_still_answers_pings_keeps_the_session() {
 
     let still_running = tokio::time::timeout(
         Duration::from_secs(HEARTBEAT_INTERVAL_S * 3 + 3),
-        relay::run(
-            &url,
-            &test_identity(),
-            FrameIntake::new(idle_handler(), test_identity().transport),
-        ),
+        relay::run(&url, &test_identity(), idle_intake()),
     )
     .await
     .is_err();

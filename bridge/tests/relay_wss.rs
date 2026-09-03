@@ -38,7 +38,6 @@ fn test_identity() -> DeviceIdentity {
     DeviceIdentity {
         device_id: "wss-test-device".into(),
         identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
     }
 }
 
@@ -137,14 +136,10 @@ async fn wss_connects_to_tls_server_with_injected_root() {
     let url = format!("wss://localhost:{port}/ws/device");
     let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
 
+    let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(
-            &url,
-            &identity,
-            FrameIntake::new(handler, identity.transport.clone()),
-            Some(connector),
-        ),
+        relay::run_with_connector(&url, &identity, intake.clone(), Some(connector)),
     )
     .await
     .expect("no timeout");
@@ -153,7 +148,7 @@ async fn wss_connects_to_tls_server_with_injected_root() {
     let (device_id, signed, transport_key) = seen_rx.recv().await.expect("server saw the device");
     assert_eq!(device_id, identity.device_id);
     assert!(signed, "auth headers rode the TLS upgrade");
-    assert_eq!(transport_key, identity.transport.public_key_b64);
+    assert_eq!(transport_key, intake.transport_public_key());
 }
 
 #[tokio::test]
@@ -175,7 +170,7 @@ async fn wss_scheme_is_supported_without_injected_connector() {
         relay::run(
             &url,
             &identity,
-            FrameIntake::new(handler, identity.transport.clone()),
+            FrameIntake::new(handler, transport::generate_transport_keypair()),
         ),
     )
     .await

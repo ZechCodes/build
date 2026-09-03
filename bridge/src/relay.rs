@@ -25,7 +25,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::carrier::{CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
-use crate::transport::{self, Envelope, KeyPairB64, SessionInit};
+use crate::transport::{self, Envelope, SessionInit};
 
 /// The signed-challenge path the relay expects (`{ts}.GET./ws/device`).
 const AUTH_PATH: &str = "/ws/device";
@@ -59,14 +59,15 @@ impl From<tokio_tungstenite::tungstenite::Error> for RelayError {
     }
 }
 
-/// The device's stable identity: who it is and the keys that prove it.
+/// The device's stable identity as the relay's auth checks it: who it is and
+/// the seed that signs its challenge. The transport keypair clients wrap
+/// session keys to is not here — it belongs to the [`FrameIntake`] that opens
+/// them, and this socket reads the public half back from there.
 #[derive(Debug, Clone)]
 pub struct DeviceIdentity {
     pub device_id: String,
     /// Ed25519 seed (base64) — signs the auth challenge.
     pub identity_private_key_b64: String,
-    /// The durable X25519 transport keypair clients wrap session keys to.
-    pub transport: KeyPairB64,
 }
 
 /// Build the authenticated WebSocket upgrade request: the relay verifies an
@@ -135,7 +136,7 @@ pub async fn run_with_connector(
     let (control_tx, control_rx) = mpsc::unbounded_channel::<Message>();
     let (carrier, envelopes_rx) = CarrierHandle::open();
     let writer = spawn_writer(sink, control_rx, envelopes_rx);
-    let mut connection = RelayConnection::new(control_tx.clone(), identity, &intake, carrier);
+    let mut connection = RelayConnection::new(control_tx.clone(), &intake, carrier);
 
     // Handlers run in the intake, not on this task: below, the loop only reads
     // and hands over, so no handler can stop the socket from being drained.
@@ -203,7 +204,6 @@ fn spawn_writer(
 /// or the future that runs it being dropped mid-session.
 struct RelayConnection<'a> {
     control_tx: mpsc::UnboundedSender<Message>,
-    identity: &'a DeviceIdentity,
     intake: &'a FrameIntake,
     carrier: CarrierHandle,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
@@ -215,13 +215,11 @@ struct RelayConnection<'a> {
 impl<'a> RelayConnection<'a> {
     fn new(
         control_tx: mpsc::UnboundedSender<Message>,
-        identity: &'a DeviceIdentity,
         intake: &'a FrameIntake,
         carrier: CarrierHandle,
     ) -> Self {
         RelayConnection {
             control_tx,
-            identity,
             intake,
             carrier,
             heartbeat: None,
@@ -263,7 +261,7 @@ impl<'a> RelayConnection<'a> {
             &self.control_tx,
             json!({
                 "type": "transport_key",
-                "transport_public_key": self.identity.transport.public_key_b64,
+                "transport_public_key": self.intake.transport_public_key(),
             }),
         );
         self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));

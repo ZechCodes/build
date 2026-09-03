@@ -379,9 +379,11 @@ impl SessionRegistry {
 pub struct FrameIntake {
     registry: Arc<SessionRegistry>,
     dispatcher: Dispatcher,
-    /// The device's durable X25519 keypair clients wrap session keys to. Held
-    /// here so that unwrapping a `session_init` — the one moment a session key
-    /// exists outside the registry — happens inside this module too.
+    /// The device's durable X25519 keypair clients wrap session keys to. The
+    /// intake is its one owner: it opens every `session_init` — the one moment
+    /// a session key exists outside the registry — and every carrier that has
+    /// to advertise the public half reads it back from here, so the key a
+    /// client wraps to is the key the device unwraps with by construction.
     transport: KeyPairB64,
 }
 
@@ -392,6 +394,12 @@ impl FrameIntake {
             dispatcher: Dispatcher::new(handler),
             transport,
         })
+    }
+
+    /// The public half of the device's transport keypair: what a carrier
+    /// publishes so a client can wrap a session key the intake can open.
+    pub fn transport_public_key(&self) -> &str {
+        &self.transport.public_key_b64
     }
 
     /// A client opened a session on this carrier: unwrap its `session_init`

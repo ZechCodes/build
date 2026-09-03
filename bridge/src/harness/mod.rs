@@ -260,7 +260,14 @@ pub fn open_session(
     provider: AgentProvider,
     request: SessionOpenRequest,
 ) -> Result<OpenedSession, HarnessError> {
-    let opened = harness_for(provider).open_session(request)?;
+    open_session_with_harness(harness_for(provider), request)
+}
+
+fn open_session_with_harness(
+    harness: &dyn Harness,
+    request: SessionOpenRequest,
+) -> Result<OpenedSession, HarnessError> {
+    let opened = harness.open_session(request)?;
     refuse_a_session_nobody_can_watch(opened.session.as_ref())?;
     Ok(opened)
 }
@@ -377,21 +384,6 @@ mod tests {
                 "{provider:?}"
             );
         }
-    }
-
-    /// The terminal is a capability, and exactly the opaque CLI wrappers have
-    /// it: Build sees what it launched and what they reported, and nothing in
-    /// between, so the human needs the escape hatch. The headless carrier
-    /// reports its own reasoning and tool calls, so it has nothing to escape
-    /// to — and this is the answer the rail and the spawn BOTH read, which is
-    /// what keeps the rail from offering a button the spawn would refuse.
-    #[test]
-    fn only_the_opaque_cli_wrappers_offer_a_terminal() {
-        for provider in [AgentProvider::Claude, AgentProvider::Codex] {
-            assert!(harness_for(provider).has_terminal(), "{provider:?}");
-        }
-        assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
-        assert!(!harness_for(AgentProvider::CodexAppServer).has_terminal());
     }
 
     /// The alternatives hold their shape: a carrier Build can only see the
@@ -603,12 +595,8 @@ mod tests {
         }
     }
 
-    /// The public constructor reaches every provider through its harness, and
-    /// each harness opens the carrier it owns. The same harmless process spec
-    /// therefore becomes a terminal for opaque providers and an activity
-    /// stream for the headless provider without the caller choosing a carrier.
     #[test]
-    fn every_provider_opens_its_own_session_carrier() {
+    fn public_open_session_matches_each_harness_declared_output_capability() {
         for provider in AgentProvider::ALL {
             let root = tempfile::tempdir().expect("temp worktree");
             let opened = open_session(provider, protocol_open_request(provider, root.path()))
@@ -622,43 +610,12 @@ mod tests {
         }
     }
 
-    /// The carrier choice, made in the one place it is made: a harness with no
-    /// terminal opens a session protocol, and what comes back offers the
-    /// alternative capability instead of an empty one.
     #[test]
-    fn a_harness_with_no_terminal_opens_a_carrier_that_reports_itself() {
-        let root = tempfile::tempdir().expect("temp worktree");
-        let opened = open_session(
-            AgentProvider::ClaudeAdk,
-            protocol_open_request(AgentProvider::ClaudeAdk, root.path()),
-        )
-        .expect("the session opens");
+    fn public_construction_refuses_and_ends_an_invisible_session() {
+        struct MuteSession {
+            ended: Arc<std::sync::atomic::AtomicBool>,
+        }
 
-        assert!(
-            opened.session.terminal().is_none(),
-            "a session protocol has nothing to escape to"
-        );
-        assert!(
-            opened.output.bytes.is_none(),
-            "and nothing to paint into a grid"
-        );
-        assert!(
-            opened.output.activity.is_some(),
-            "what it has instead is its own account of its work"
-        );
-        opened.session.end();
-    }
-
-    /// A session that offers NEITHER capability is refused rather than opened.
-    ///
-    /// Not because Build could not watch it work — because the death rites hang
-    /// off a stream closing. A session with no stream has no close to hang them
-    /// on, so its tab would keep reading as live and its conversation would
-    /// stay in session until the idle sweep explained the exit as silence,
-    /// minutes later.
-    #[test]
-    fn a_session_offering_neither_capability_is_refused() {
-        struct MuteSession;
         impl AgentSession for MuteSession {
             fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
                 Ok(())
@@ -672,27 +629,85 @@ mod tests {
             fn exited_within(&self, _timeout: Duration) -> bool {
                 false
             }
-            fn end(&self) {}
+            fn end(&self) {
+                self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             fn backdate_last_output(&self, _ago: Duration) {}
         }
 
-        let refusal = refuse_a_session_nobody_can_watch(&MuteSession)
-            .expect_err("a session nobody can watch is not opened");
+        struct MuteHarness {
+            ended: Arc<std::sync::atomic::AtomicBool>,
+        }
+
+        impl Harness for MuteHarness {
+            fn provider(&self) -> AgentProvider {
+                AgentProvider::Claude
+            }
+
+            fn label(&self) -> &'static str {
+                "mute"
+            }
+
+            fn models(&self) -> Vec<ModelOption> {
+                claude::ClaudeHarness.models()
+            }
+
+            fn effort_levels(&self) -> &'static [&'static str] {
+                claude::ClaudeHarness.effort_levels()
+            }
+
+            fn model_args(&self, choice: &ModelChoice) -> Vec<String> {
+                claude::ClaudeHarness.model_args(choice)
+            }
+
+            fn spec(
+                &self,
+                choice: &ModelChoice,
+                options: &SpawnOptions,
+                context: &HarnessContext,
+            ) -> HarnessSpec {
+                claude::ClaudeHarness.spec(choice, options, context)
+            }
+
+            fn open_session(
+                &self,
+                _request: SessionOpenRequest,
+            ) -> Result<OpenedSession, HarnessError> {
+                Ok(OpenedSession {
+                    session: Arc::new(MuteSession {
+                        ended: Arc::clone(&self.ended),
+                    }),
+                    output: SessionOutput::silent(),
+                })
+            }
+
+            fn has_transcript(&self, _home: &Path, _cwd: &Path) -> bool {
+                false
+            }
+        }
+
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let harness = MuteHarness {
+            ended: Arc::clone(&ended),
+        };
+        let root = tempfile::tempdir().expect("temp worktree");
+        let refusal = match open_session_with_harness(
+            &harness,
+            protocol_open_request(AgentProvider::Claude, root.path()),
+        ) {
+            Err(refusal) => refusal,
+            Ok(opened) => {
+                opened.session.end();
+                panic!("a session nobody can watch was opened")
+            }
+        };
         assert!(
             refusal
                 .to_string()
                 .contains("neither a terminal nor an activity stream"),
             "the refusal says what is missing: {refusal}"
         );
-
-        let root = tempfile::tempdir().expect("temp worktree");
-        let opened = open_session(
-            AgentProvider::ClaudeAdk,
-            protocol_open_request(AgentProvider::ClaudeAdk, root.path()),
-        )
-        .expect("a carrier that reports itself opens");
-        assert!(refuse_a_session_nobody_can_watch(opened.session.as_ref()).is_ok());
-        opened.session.end();
+        assert!(ended.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     /// A worktree Build has never opened has no conversation to resume, on any

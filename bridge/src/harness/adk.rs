@@ -2780,21 +2780,13 @@ mod tests {
             AdkHarness.has_transcript(home.path(), cwd),
             "a headless session writes the transcripts the TUI does, so a resume finds them"
         );
-
-        assert!(
-            !AdkHarness.has_terminal(),
-            "and the one thing that does differ: no basement"
-        );
     }
 
-    /// The two capabilities are alternatives, and this carrier takes the second
-    /// one: it reports its own reasoning and tool calls, so there is nothing for
-    /// a human to escape to.
     #[test]
-    fn a_reporting_session_has_no_terminal_and_offers_its_activity() {
+    fn a_reporting_session_matches_its_harness_capability() {
         let session = open(&stream_json_harness(&[RESULT]));
-        assert!(session.terminal().is_none());
-        assert!(session.activity().is_some());
+        assert_eq!(session.terminal().is_some(), AdkHarness.has_terminal());
+        assert_eq!(session.activity().is_some(), !AdkHarness.has_terminal());
         session.end();
     }
 

@@ -671,11 +671,6 @@ enum TabRole {
     },
 }
 
-struct AgentSessionOpenOptions {
-    choice: ModelChoice,
-    resume_session_id: Option<String>,
-}
-
 /// A live tab: one agent session rooted in a worktree, plus the authoritative
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
@@ -754,10 +749,8 @@ impl Tab {
 
     /// The terminal and the grid it paints into.
     ///
-    /// One question answers for both: they are made together in
-    /// [`Tab::spawn`] and a session with no terminal has neither, so there is
-    /// no state in which a tab has a screen to hand a client and nothing
-    /// behind it.
+    /// One question answers for both: the final constructor makes them
+    /// together, and a session with no terminal has neither.
     fn require_terminal_and_screen(
         &mut self,
     ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
@@ -771,62 +764,64 @@ impl Tab {
         }
     }
 
-    /// Spawn `role`'s program at `root`, returning the tab and whichever stream
-    /// its session offers, subscribed before its first word can be missed.
-    ///
-    /// The grid is made together with the terminal, or not at all: a session
-    /// with no terminal paints nothing, so there is no screen to hold and no
-    /// byte pump to run — its work reaches the conversation through the
-    /// activity pump instead.
-    ///
-    /// `locator` is how the session opened here will name the conversation it
-    /// is having, and it arrives from the caller because it has to be built
-    /// before this: it snapshots the harness's transcript tree, and a snapshot
-    /// taken after the child started could contain the child's own file.
-    fn spawn(
-        role: TabRole,
+    fn spawn_agent(
+        owner: String,
+        agent_id: String,
+        request: SessionOpenRequest,
+    ) -> Result<(Tab, SessionOutput), String> {
+        let provider = request.choice.provider;
+        let tab_id = agent_tab_id(&agent_id);
+        let root = request.root.clone();
+        let size = request.terminal.size;
+        let opened = open_session(provider, request).map_err(|error| error.to_string())?;
+        Ok(Self::from_opened_session(
+            TabRole::Agent {
+                owner,
+                agent_id,
+                provider,
+            },
+            tab_id,
+            root,
+            size,
+            opened,
+        ))
+    }
+
+    fn spawn_shell(
         spec: &HarnessSpec,
         tab_id: String,
         root: std::path::PathBuf,
         size: PtySize,
-        locator: Option<Box<dyn crate::harness::SessionLocator>>,
-        agent_options: Option<AgentSessionOpenOptions>,
     ) -> Result<(Tab, SessionOutput), String> {
+        let opened = open_terminal_session(
+            spec,
+            root.clone(),
+            TerminalOpenOptions {
+                size,
+                turn_ready_grace: None,
+                session_locator: None,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self::from_opened_session(
+            TabRole::Shell,
+            tab_id,
+            root,
+            size,
+            opened,
+        ))
+    }
+
+    fn from_opened_session(
+        role: TabRole,
+        tab_id: String,
+        root: std::path::PathBuf,
+        size: PtySize,
+        opened: crate::harness::OpenedSession,
+    ) -> (Tab, SessionOutput) {
         let (cols, rows) = (size.cols, size.rows);
-        let opened = match (&role, agent_options) {
-            (TabRole::Agent { provider, .. }, Some(options)) => open_session(
-                *provider,
-                SessionOpenRequest {
-                    spec: spec.clone(),
-                    root: root.clone(),
-                    choice: options.choice,
-                    terminal: TerminalOpenOptions {
-                        size,
-                        turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                        session_locator: locator,
-                    },
-                    resume_session_id: options.resume_session_id,
-                },
-            ),
-            (TabRole::Shell, None) => open_terminal_session(
-                spec,
-                root.clone(),
-                TerminalOpenOptions {
-                    size,
-                    turn_ready_grace: None,
-                    session_locator: None,
-                },
-            ),
-            (TabRole::Agent { .. }, None) => {
-                return Err("an agent session requires model and resume options".to_string())
-            }
-            (TabRole::Shell, Some(_)) => {
-                return Err("a human shell cannot have agent session options".to_string())
-            }
-        };
-        let opened = opened.map_err(|e| e.to_string())?;
         let session = opened.session;
-        Ok((
+        (
             Tab {
                 tab_id,
                 root,
@@ -839,7 +834,7 @@ impl Tab {
                 last_delivered_at: None,
             },
             opened.output,
-        ))
+        )
     }
 }
 
@@ -17573,14 +17568,11 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             root: root.clone(),
             tab_id: tab_id.clone(),
         };
-        let (tab, rx) = Tab::spawn(
-            TabRole::Shell,
+        let (tab, rx) = Tab::spawn_shell(
             &shell_harness_spec(&shell),
             tab_id,
             root,
             terminal_size(cols, rows),
-            None,
-            None,
         )?;
         s.tabs.insert(key.clone(), tab);
         (key, rx)
@@ -17924,19 +17916,299 @@ fn attach_to_tab(
     }))
 }
 
+enum AgentSpawnReservation {
+    Warm(String),
+    InFlight,
+    Reserved(Box<ReservedAgentSpawn>),
+}
+
+struct ReservedAgentSpawn {
+    request: SessionOpenRequest,
+    carried_screen: Option<TermScreen>,
+    session_token: String,
+}
+
+fn live_agent_wire_id(state: &AppState, key: &TabKey, owner: &str) -> Option<String> {
+    let tab = state.tabs.get(key)?;
+    let same_owner = matches!(
+        &tab.role,
+        TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
+    );
+    (same_owner && tab.session_is_live()).then(|| tab.wire_id())
+}
+
+fn take_replaced_agent_screen(state: &mut AppState, key: &TabKey) -> Option<TermScreen> {
+    state.tabs.remove(key).and_then(|tab| {
+        tab.session.end();
+        tab.screen
+    })
+}
+
+fn retire_stale_agent_tabs(state: &mut AppState, root: &std::path::Path, owner: &str) {
+    let stale: Vec<TabKey> = state
+        .tabs
+        .iter()
+        .filter(|(key, tab)| {
+            key.root == root
+                && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
+    for key in stale {
+        if let Some(tab) = state.tabs.remove(&key) {
+            let wire_id = tab.wire_id();
+            tab.session.end();
+            if let Some(screen) = &tab.screen {
+                screen.push_closed(&wire_id, "closed");
+            }
+        }
+    }
+}
+
+fn project_for_agent_spawn(
+    state: &AppState,
+    owner: &str,
+    agent_id: &str,
+) -> Result<String, String> {
+    match state.project_of(owner) {
+        Ok(project_id) => Ok(project_id),
+        Err(unknown) if crate::router::is_router_agent(agent_id) => {
+            state.default_project().map_err(|_| unknown)
+        }
+        Err(unknown) => Err(unknown),
+    }
+}
+
+fn resume_options_for_agent(
+    state: &mut AppState,
+    root: &std::path::Path,
+    owner: &str,
+    agent_id: &str,
+    provider: AgentProvider,
+) -> (Option<String>, bool) {
+    let resume_session_id = match state.recorded_resume_id(owner, agent_id) {
+        Some(named) if (state.resume_id_probe)(root, provider, &named) => Some(named),
+        Some(_) => {
+            state.record_agent_resume_id(owner, agent_id, None);
+            None
+        }
+        None => None,
+    };
+    let continue_session = resume_session_id.is_none()
+        && state.may_pick_up_a_conversation(owner, agent_id)
+        && (state.transcript_probe)(root, provider);
+    (resume_session_id, continue_session)
+}
+
+fn build_agent_session_request(
+    state: &mut AppState,
+    root: &std::path::Path,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+) -> Result<(SessionOpenRequest, String), String> {
+    let project_id = project_for_agent_spawn(state, owner, agent_id)?;
+    let (resume_session_id, continue_session) =
+        resume_options_for_agent(state, root, owner, agent_id, model_choice.provider);
+    let session_locator = (state.session_locator_factory)(root, model_choice.provider);
+    let orchestrator = state.orch_for(&project_id)?;
+    orchestrator
+        .scaffold_agent_worktree(root, agent_id)
+        .map_err(err)?;
+    let session_token = uuid::Uuid::new_v4().to_string();
+    let spec = orchestrator.agent_harness_spec(
+        agent_id,
+        root,
+        model_choice,
+        continue_session,
+        resume_session_id.clone(),
+        &session_token,
+    );
+    let request = SessionOpenRequest {
+        spec,
+        root: root.to_path_buf(),
+        choice: model_choice.clone(),
+        terminal: TerminalOpenOptions {
+            size: orchestrator.pty_size(),
+            turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+            session_locator,
+        },
+        resume_session_id,
+    };
+    Ok((request, session_token))
+}
+
+fn reserve_agent_spawn(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    root: &std::path::Path,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+) -> Result<AgentSpawnReservation, String> {
+    let mut state = state.lock().unwrap();
+    if let Some(wire_id) = live_agent_wire_id(&state, key, owner) {
+        return Ok(AgentSpawnReservation::Warm(wire_id));
+    }
+    if state.agent_spawns_in_flight.contains(key) {
+        return Ok(AgentSpawnReservation::InFlight);
+    }
+    let carried_screen = take_replaced_agent_screen(&mut state, key);
+    retire_stale_agent_tabs(&mut state, root, owner);
+    let (request, session_token) =
+        build_agent_session_request(&mut state, root, owner, agent_id, model_choice)?;
+    state
+        .mcp_session_tokens
+        .insert(agent_id.to_string(), session_token.clone());
+    state.agent_spawns_in_flight.insert(key.clone());
+    Ok(AgentSpawnReservation::Reserved(Box::new(
+        ReservedAgentSpawn {
+            request,
+            carried_screen,
+            session_token,
+        },
+    )))
+}
+
+fn wait_for_agent_spawn(
+    deadline: std::time::Instant,
+    root: &std::path::Path,
+) -> Result<(), String> {
+    if std::time::Instant::now() >= deadline {
+        return Err(format!(
+            "timed out waiting for the agent starting in {}",
+            root.display()
+        ));
+    }
+    std::thread::sleep(Duration::from_millis(25));
+    Ok(())
+}
+
+fn clear_failed_agent_spawn(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    agent_id: &str,
+    session_token: &str,
+) {
+    let mut state = state.lock().unwrap();
+    state.agent_spawns_in_flight.remove(key);
+    if state
+        .mcp_session_tokens
+        .get(agent_id)
+        .is_some_and(|current| constant_time_token_eq(current, session_token))
+    {
+        state.mcp_session_tokens.remove(agent_id);
+    }
+}
+
+fn carry_replaced_screen(tab: &mut Tab, screen: Option<TermScreen>, term_id: &str) {
+    let Some(screen) = screen else {
+        return;
+    };
+    match tab.session.terminal() {
+        Some(terminal) => {
+            let _ = terminal.resize(terminal_size(screen.cols, screen.rows));
+            tab.screen = Some(screen);
+        }
+        None => close_a_screen_with_no_terminal(&screen, term_id),
+    }
+}
+
+fn take_waiting_agent_screen(
+    state: &mut AppState,
+    key: &TabKey,
+    root: &std::path::Path,
+) -> Option<TermScreen> {
+    if let Some(waiting) = state.agent_screens_awaiting_spawn.remove(key) {
+        return Some(waiting);
+    }
+    let first_agent = !state
+        .tabs
+        .keys()
+        .any(|other| other.is_agent() && other.root == root);
+    first_agent.then(|| {
+        state.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+            root,
+            &crate::worktree::external_worktree_id(root),
+        ))
+    })?
+}
+
+fn carry_waiting_screen(tab: &mut Tab, waiting: Option<TermScreen>, term_id: &str) {
+    let Some(waiting) = waiting else {
+        return;
+    };
+    match tab.require_terminal_and_screen() {
+        Ok((terminal, screen)) => {
+            let _ = terminal.resize(terminal_size(waiting.cols, waiting.rows));
+            screen.set_size(waiting.cols, waiting.rows);
+            for client in &waiting.attached {
+                screen.register(&client.sender);
+            }
+        }
+        Err(_) => close_a_screen_with_no_terminal(&waiting, term_id),
+    }
+}
+
+fn publish_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    mut tab: Tab,
+    carried_screen: Option<TermScreen>,
+) -> String {
+    carry_replaced_screen(&mut tab, carried_screen, &key.tab_id);
+    let wire_id = tab.wire_id();
+    let mut state = state.lock().unwrap();
+    let waiting = take_waiting_agent_screen(&mut state, key, &key.root);
+    carry_waiting_screen(&mut tab, waiting, &key.tab_id);
+    let active_model = tab
+        .session
+        .active_model()
+        .or_else(|| model_choice.model.clone());
+    state.tabs.insert(key.clone(), tab);
+    state.agent_spawns_in_flight.remove(key);
+    state.record_agent_active_model(owner, agent_id, active_model);
+    wire_id
+}
+
+fn spawn_reserved_agent(
+    state: &Arc<Mutex<AppState>>,
+    key: TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    reserved: Box<ReservedAgentSpawn>,
+) -> Result<(String, Spawned), String> {
+    let ReservedAgentSpawn {
+        request,
+        carried_screen,
+        session_token,
+    } = *reserved;
+    let spawned = Tab::spawn_agent(owner.to_string(), agent_id.to_string(), request);
+    let (tab, output) = match spawned {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            clear_failed_agent_spawn(state, &key, agent_id, &session_token);
+            return Err(error);
+        }
+    };
+    let wire_id = publish_agent_tab(
+        state,
+        &key,
+        owner,
+        agent_id,
+        model_choice,
+        tab,
+        carried_screen,
+    );
+    spawn_tab_pumps(state, key, output);
+    Ok((wire_id, Spawned::Fresh))
+}
+
 /// Find-or-create the one agent tab rooted at `root`.
-///
-/// Idempotent per root: the find half and the in-flight reservation are taken
-/// under the SAME lock acquisition, so two concurrent callers produce one
-/// harness — two agents in one worktree would both report `done` for the same
-/// owner, and the second report is an illegal transition that lands on the
-/// thread as a bogus failure. A tab whose process has died is replaced (a dead
-/// agent is not an agent), and that replacement reports `Fresh` while carrying
-/// the retained screen — and its monotonic cursor — forward.
-///
-/// The create half needs an owner for the MCP `--task` argv, so it requires a
-/// bound plan/run: `owner` resolves the project whose orchestrator builds the
-/// spec (the MCP socket lives inside that closure and is unreachable from here).
 fn ensure_agent_tab(
     state: &Arc<Mutex<AppState>>,
     root: &std::path::Path,
@@ -17948,247 +18220,13 @@ fn ensure_agent_tab(
     let key = TabKey::agent(&root, agent_id);
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
     loop {
-        // Under the lock: hand back a live tab, or reserve the spawn. The lock
-        // is dropped across the spawn below (it blocks for seconds on the
-        // harness's readiness wait, and every terminal pump needs this lock),
-        // so the reservation is what the losing caller waits on.
-        let reserved = {
-            let mut s = state.lock().unwrap();
-            if let Some(tab) = s.tabs.get(&key) {
-                let same_owner = matches!(
-                    &tab.role,
-                    TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
-                );
-                if same_owner && tab.session_is_live() {
-                    return Ok((tab.wire_id(), Spawned::Warm));
-                }
-            }
-            if s.agent_spawns_in_flight.contains(&key) {
-                None
-            } else {
-                let carried = s.tabs.remove(&key).and_then(|dead| {
-                    dead.session.end();
-                    dead.screen
-                });
-                // A checkout outlives the entity that owned it — a planning
-                // worktree is torn down and a run cuts a new one at the same
-                // path, an adopted worktree is released and re-adopted. Agents
-                // of the entity that USED to own this directory are stale: they
-                // would keep working in it and report `done` for an owner that
-                // no longer holds it. Several agents of the CURRENT owner are
-                // exactly what a branch is allowed to have, so only the others
-                // go.
-                let stale: Vec<TabKey> = s
-                    .tabs
-                    .iter()
-                    .filter(|(other, tab)| {
-                        other.root == root
-                            && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-                    })
-                    .map(|(other, _)| other.clone())
-                    .collect();
-                for other in stale {
-                    if let Some(tab) = s.tabs.remove(&other) {
-                        let wire_id = tab.wire_id();
-                        tab.session.end();
-                        if let Some(screen) = &tab.screen {
-                            screen.push_closed(&wire_id, "closed");
-                        }
-                    }
-                }
-                // A router session belongs to no project — deciding which one
-                // the capture belongs to is its job. Any project's
-                // orchestrator builds the same harness spec for it, since the
-                // spec is made from the cwd and the owner id alone.
-                let project_id = match s.project_of(owner) {
-                    Ok(project_id) => project_id,
-                    Err(unknown) if crate::router::is_router_agent(agent_id) => {
-                        s.default_project().map_err(|_| unknown)?
-                    }
-                    Err(unknown) => return Err(unknown),
-                };
-                // What this spawn picks back up, decided in order, and the
-                // order is the rule.
-                //
-                // 1. A recorded name the provider still holds is resumed
-                //    EXACTLY — the conversation Build was speaking to, with no
-                //    cwd guess beside it. Verified first, so a dead name costs
-                //    zero restarts instead of one, and the claude uuid an agent
-                //    carried onto codex is cleared here rather than choking the
-                //    resume.
-                let resume_session_id = match s.recorded_resume_id(owner, agent_id) {
-                    Some(named) if (s.resume_id_probe)(&root, model_choice.provider, &named) => {
-                        Some(named)
-                    }
-                    Some(_gone) => {
-                        s.record_agent_resume_id(owner, agent_id, None);
-                        None
-                    }
-                    None => None,
-                };
-                // 2. No name, but this agent's record shows history: the same
-                //    agent continuing its own conversation, which `--continue`
-                //    guesses at as the newest one in the checkout, still gated
-                //    on the transcript probe.
-                // 3. Otherwise fresh, on every carrier. A brand-new agent
-                //    record has no conversation to pick up, and the checkout's
-                //    old one belongs to whoever had it — adoption included:
-                //    Build cannot show a history it never heard.
-                let continue_session = resume_session_id.is_none()
-                    && s.may_pick_up_a_conversation(owner, agent_id)
-                    && (s.transcript_probe)(&root, model_choice.provider);
-                // Built here, before the child exists, so the transcripts it
-                // snapshots as "not mine" cannot include the child's own.
-                let locator = (s.session_locator_factory)(&root, model_choice.provider);
-                let orch = s.orch_for(&project_id)?;
-                // Unconditional: under `--strict-mcp-config` a missing config
-                // kills the harness before it reads a byte of the prompt, and
-                // the scaffold is idempotent. The config is written per AGENT,
-                // so two agents sharing a checkout report as themselves.
-                orch.scaffold_agent_worktree(&root, agent_id).map_err(err)?;
-                let session_token = uuid::Uuid::new_v4().to_string();
-                let spec = orch.agent_harness_spec(
-                    agent_id,
-                    &root,
-                    model_choice,
-                    continue_session,
-                    resume_session_id.clone(),
-                    &session_token,
-                );
-                let size = orch.pty_size();
-                s.mcp_session_tokens
-                    .insert(agent_id.to_string(), session_token.clone());
-                s.agent_spawns_in_flight.insert(key.clone());
-                Some((
-                    spec,
-                    size,
-                    carried,
-                    session_token,
-                    locator,
-                    AgentSessionOpenOptions {
-                        choice: model_choice.clone(),
-                        resume_session_id,
-                    },
-                ))
-            }
-        };
-
-        let Some((spec, size, carried, session_token, locator, agent_options)) = reserved else {
-            // Someone else is spawning this root's agent: wait for their tab
-            // rather than start a second harness beside it.
-            if std::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for the agent starting in {}",
-                    root.display()
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(25));
-            continue;
-        };
-
-        let spawned = Tab::spawn(
-            TabRole::Agent {
-                owner: owner.to_string(),
-                agent_id: agent_id.to_string(),
-                provider: model_choice.provider,
-            },
-            &spec,
-            key.tab_id.clone(),
-            root.clone(),
-            size,
-            locator,
-            Some(agent_options),
-        );
-        let (mut tab, rx) = match spawned {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                let mut state = state.lock().unwrap();
-                state.agent_spawns_in_flight.remove(&key);
-                if state
-                    .mcp_session_tokens
-                    .get(agent_id)
-                    .is_some_and(|current| constant_time_token_eq(current, &session_token))
-                {
-                    state.mcp_session_tokens.remove(agent_id);
-                }
-                return Err(error);
-            }
-        };
-        if let Some(screen) = carried {
-            match tab.session.terminal() {
-                // Reconnect is snapshot + cursor: a replacement process must
-                // never rewind that cursor, and clients already attached stay
-                // attached. The new PTY takes the retained screen's grid so the
-                // two agree.
-                Some(terminal) => {
-                    let _ = terminal.resize(PtySize {
-                        rows: screen.rows,
-                        cols: screen.cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                    tab.screen = Some(screen);
-                }
-                // The replacement paints nothing, so the retained grid has
-                // nothing to become — see [`close_a_screen_with_no_terminal`].
-                None => close_a_screen_with_no_terminal(&screen, &key.tab_id),
+        match reserve_agent_spawn(state, &key, &root, owner, agent_id, model_choice)? {
+            AgentSpawnReservation::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
+            AgentSpawnReservation::InFlight => wait_for_agent_spawn(deadline, &root)?,
+            AgentSpawnReservation::Reserved(reserved) => {
+                return spawn_reserved_agent(state, key, owner, agent_id, model_choice, reserved)
             }
         }
-        let wire_id = tab.wire_id();
-        {
-            let mut s = state.lock().unwrap();
-            // Clients that mounted the Agent tab before this worktree had one
-            // are attached to a screen with no PTY. Carry them — and the
-            // viewport they render at, the same rule an attach to a live tab
-            // follows — onto the real screen, under the SAME lock acquisition
-            // that publishes the tab, so a client attaching during the spawn is
-            // on one screen or the other and never between them. The waiting
-            // screen's cursor is not carried: it painted nothing, while a
-            // retained screen's cursor is the one that must never rewind.
-            let first_here = !s
-                .tabs
-                .keys()
-                .any(|other| other.is_agent() && other.root == root);
-            let waiting = s.agent_screens_awaiting_spawn.remove(&key).or_else(|| {
-                // Clients that mounted the tab before this worktree had an
-                // agent addressed it by the WORKTREE; the first agent born here
-                // is the one they were waiting for.
-                first_here.then(|| {
-                    s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                        &root,
-                        &crate::worktree::external_worktree_id(&root),
-                    ))
-                })?
-            });
-            if let Some(waiting) = waiting {
-                match tab.require_terminal_and_screen() {
-                    Ok((terminal, screen)) => {
-                        let _ = terminal.resize(PtySize {
-                            rows: waiting.rows,
-                            cols: waiting.cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
-                        screen.set_size(waiting.cols, waiting.rows);
-                        for client in &waiting.attached {
-                            screen.register(&client.sender);
-                        }
-                    }
-                    // There is no real screen to carry them onto — see
-                    // [`close_a_screen_with_no_terminal`].
-                    Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
-                }
-            }
-            let running = tab
-                .session
-                .active_model()
-                .or_else(|| model_choice.model.clone());
-            s.tabs.insert(key.clone(), tab);
-            s.agent_spawns_in_flight.remove(&key);
-            s.record_agent_active_model(owner, agent_id, running);
-        }
-        spawn_tab_pumps(state, key, rx);
-        return Ok((wire_id, Spawned::Fresh));
     }
 }
 
@@ -20860,18 +20898,15 @@ mod tests {
             let root = AppState::canonical_root(&active.worktree.path);
             (agent_id, root)
         };
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: agent_id.clone(),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&agent_id),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            agent_id.clone(),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
@@ -21193,14 +21228,11 @@ mod tests {
             root: shell_root.clone(),
             tab_id: "term-99".to_string(),
         };
-        let (shell_tab, _shell_rx) = Tab::spawn(
-            TabRole::Shell,
+        let (shell_tab, _shell_rx) = Tab::spawn_shell(
             &shell_harness_spec("/bin/bash"),
             "term-99".to_string(),
             shell_root,
             terminal_size(80, 24),
-            None,
-            None,
         )
         .expect("a shell tab spawns");
         state.lock().unwrap().tabs.insert(shell_key, shell_tab);
@@ -29457,18 +29489,15 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (issue_id, run_id) = planned_run_in_review(&mut state, "issue-addressed post");
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
@@ -29941,18 +29970,15 @@ mod tests {
         let (_, run_id) = planned_run_in_review(&mut state, "abandon me");
         let worktree = state.runs[&run_id].worktree.path.clone();
         let root = AppState::canonical_root(&worktree);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
@@ -30283,18 +30309,15 @@ mod tests {
         spec: HarnessSpec,
     ) -> (TabKey, broadcast::Receiver<Vec<u8>>) {
         let root = insert_run(state, repo, side_root, run_id, run_state);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: crate::agent::derived_agent_id(run_id),
-                provider: AgentProvider::default(),
-            },
-            &spec,
-            agent_tab_id(&crate::agent::derived_agent_id(run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            crate::agent::derived_agent_id(run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                spec,
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -30363,14 +30386,26 @@ mod tests {
             .arg("printf '\\033[?2004h'; cat >/dev/null")
     }
 
-    fn agent_session_open_options(provider: AgentProvider) -> Option<AgentSessionOpenOptions> {
-        Some(AgentSessionOpenOptions {
+    fn test_agent_session_request(
+        provider: AgentProvider,
+        spec: HarnessSpec,
+        root: std::path::PathBuf,
+        size: PtySize,
+    ) -> SessionOpenRequest {
+        SessionOpenRequest {
+            spec,
+            root,
             choice: ModelChoice {
                 provider,
                 ..ModelChoice::default()
             },
+            terminal: TerminalOpenOptions {
+                size,
+                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                session_locator: None,
+            },
             resume_session_id: None,
-        })
+        }
     }
 
     /// The sweep threshold these tests speak in — the shape of the real one
@@ -31486,18 +31521,15 @@ mod tests {
         let run_id = run_id_of(&adopted);
         // Build's agent in that worktree reports `done` for THIS run.
         let root = AppState::canonical_root(&state.runs[&run_id].worktree.path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -31698,18 +31730,15 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let run_id = adopted_primary_run(&mut state);
         let root = AppState::canonical_root(&repo);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: crate::agent::derived_agent_id(&run_id),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            crate::agent::derived_agent_id(&run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -32101,20 +32130,17 @@ mod tests {
             )
             .unwrap();
         let root = AppState::canonical_root(&active.worktree.path);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.to_string(),
-                agent_id: crate::agent::derived_agent_id(run_id),
-                provider: AgentProvider::default(),
-            },
-            &HarnessSpec::new("sh").arg("-c").arg(
+        let (tab, rx) = Tab::spawn_agent(
+            run_id.to_string(),
+            crate::agent::derived_agent_id(run_id),
+            test_agent_session_request(
+                AgentProvider::default(),
+                HarnessSpec::new("sh").arg("-c").arg(
                 "printf '\\033[?2004h'; (while :; do echo agent-beat; sleep 0.05; done) & cat >/dev/null",
             ),
-            agent_tab_id(&crate::agent::derived_agent_id(run_id)),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -33016,18 +33042,15 @@ mod tests {
         // Once an agent runs in that worktree, the same scope reaches the tab
         // itself — one agent, one wire id, whichever shape asked for it.
         let root = AppState::canonical_root(&external.path);
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "run-x".to_string(),
-                agent_id: crate::agent::derived_agent_id("run-x"),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id("run-x")),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, rx) = Tab::spawn_agent(
+            "run-x".to_string(),
+            crate::agent::derived_agent_id("run-x"),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
@@ -33072,18 +33095,15 @@ mod tests {
         );
 
         // One ran, on codex, and died. The retained screen still answers for it.
-        let (tab, rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "run-codex".to_string(),
-                agent_id: crate::agent::derived_agent_id("run-codex"),
-                provider: AgentProvider::Codex,
-            },
-            &HarnessSpec::new("true"),
-            agent_tab_id(&crate::agent::derived_agent_id("run-codex")),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::Codex),
+        let (tab, rx) = Tab::spawn_agent(
+            "run-codex".to_string(),
+            crate::agent::derived_agent_id("run-codex"),
+            test_agent_session_request(
+                AgentProvider::Codex,
+                HarnessSpec::new("true"),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, "run-codex");
@@ -33291,10 +33311,9 @@ mod tests {
     /// Point a fixture's project at a headless provider running `spec`, and
     /// hand back the model choice that opens it.
     ///
-    /// The provider on the choice is the whole launch config — it is what
-    /// `Tab::spawn` asks which carrier to open — so a test that swaps the spec
-    /// without swapping the provider would run a stream-json child inside a
-    /// PTY and prove nothing.
+    /// The provider on the choice is the whole launch config, so a test that
+    /// swaps the spec without swapping the provider would run a stream-json
+    /// child inside a PTY and prove nothing.
     fn a_headless_provider_running(
         state: &Arc<Mutex<AppState>>,
         repo: &std::path::Path,
@@ -35029,14 +35048,11 @@ mod tests {
 
         // The human's own shell is never an agent, however busy it looks.
         let shell_root = AppState::canonical_root(&repo);
-        let (shell, _rx) = Tab::spawn(
-            TabRole::Shell,
+        let (shell, _rx) = Tab::spawn_shell(
             &shell_harness_spec("/bin/bash"),
             "term-77".to_string(),
             shell_root.clone(),
             terminal_size(80, 24),
-            None,
-            None,
         )
         .expect("a shell tab spawns");
         assert!(!agent_is_working(&shell));
@@ -40551,18 +40567,15 @@ mod tests {
         let path = add_external_worktree(&repo, dir.path(), "idle-agent", "idle-agent");
         let worktree_id = external_id(&mut state, &project_id, Some("idle-agent"));
         let root = AppState::canonical_root(&path);
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: "idle-agent-owner".to_string(),
-                agent_id: crate::agent::derived_agent_id("idle-agent-owner"),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&crate::agent::derived_agent_id("idle-agent-owner")),
-            root.clone(),
-            terminal_size(80, 24),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            "idle-agent-owner".to_string(),
+            crate::agent::derived_agent_id("idle-agent-owner"),
+            test_agent_session_request(
+                AgentProvider::default(),
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(80, 24),
+            ),
         )
         .unwrap();
         tab.session
@@ -40633,9 +40646,15 @@ mod tests {
     fn the_agent_digest_says_whether_its_agent_has_a_terminal() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
-        // This half of the test is about the carrier that HAS a basement, so
-        // the account names it rather than riding the default.
-        state.default_harness = AgentProvider::Claude;
+        let terminal_provider = AgentProvider::ALL
+            .into_iter()
+            .find(|provider| harness_for(*provider).has_terminal())
+            .expect("at least one harness exposes a terminal");
+        let reporting_provider = AgentProvider::ALL
+            .into_iter()
+            .find(|provider| !harness_for(*provider).has_terminal())
+            .expect("at least one harness reports activity");
+        state.default_harness = terminal_provider;
         let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-basement");
         let agent_id = primary_agent_id(&state, &run_id);
         let root = state
@@ -40658,13 +40677,8 @@ mod tests {
             crate::harness::harness_for(provider).has_terminal(),
             "a session-less agent's answer comes from its provider: {idle:?}"
         );
-        assert_eq!(idle["has_terminal"], true, "{idle:?}");
         assert_eq!(idle["working"], false, "{idle:?}");
 
-        // And on the headless provider the same question answers no before
-        // anything has started — which is the whole point of asking the
-        // provider: the rail stops offering the basement while there is still
-        // no session to ask, so it never offers one the spawn would refuse.
         state
             .runs
             .get_mut(&run_id)
@@ -40673,8 +40687,11 @@ mod tests {
             .resolve_mut(None)
             .expect("its agent")
             .choice
-            .provider = AgentProvider::ClaudeAdk;
-        assert_eq!(bubble(&mut state)["has_terminal"], false);
+            .provider = reporting_provider;
+        assert_eq!(
+            bubble(&mut state)["has_terminal"],
+            harness_for(reporting_provider).has_terminal()
+        );
         state
             .runs
             .get_mut(&run_id)
@@ -40683,41 +40700,42 @@ mod tests {
             .resolve_mut(None)
             .expect("its agent")
             .choice
-            .provider = AgentProvider::default();
+            .provider = terminal_provider;
 
         // A PTY session answers for itself, and answers yes: today every
         // session does.
-        let (tab, _rx) = Tab::spawn(
-            TabRole::Agent {
-                owner: run_id.clone(),
-                agent_id: agent_id.clone(),
-                provider: AgentProvider::default(),
-            },
-            &warm_tui_spec(),
-            agent_tab_id(&agent_id),
-            root.clone(),
-            terminal_size(120, 40),
-            None,
-            agent_session_open_options(AgentProvider::default()),
+        let (tab, _rx) = Tab::spawn_agent(
+            run_id.clone(),
+            agent_id.clone(),
+            test_agent_session_request(
+                terminal_provider,
+                warm_tui_spec(),
+                root.clone(),
+                terminal_size(120, 40),
+            ),
         )
         .expect("the agent tab spawns");
-        state.tabs.insert(TabKey::agent(&root, &agent_id), tab);
+        let terminal_key = TabKey::agent(&root, &agent_id);
+        let terminal_capability = tab.session.terminal().is_some();
+        state.tabs.insert(terminal_key.clone(), tab);
         let running = bubble(&mut state);
-        assert_eq!(running["has_terminal"], true, "{running:?}");
+        assert_eq!(running["has_terminal"], terminal_capability, "{running:?}");
 
         // And a session with no terminal answers no, while still reporting the
         // status it is in — `working` keeps its exact meaning.
+        let reporting_tab = terminal_free_agent_tab(&root, &run_id, &agent_id);
+        let reporting_capability = reporting_tab.session.terminal().is_some();
         state
             .tabs
-            .insert(
-                TabKey::agent(&root, &agent_id),
-                terminal_free_agent_tab(&root, &run_id, &agent_id),
-            )
+            .insert(terminal_key, reporting_tab)
             .expect("the PTY tab it replaces")
             .session
             .end();
         let protocol = bubble(&mut state);
-        assert_eq!(protocol["has_terminal"], false, "{protocol:?}");
+        assert_eq!(
+            protocol["has_terminal"], reporting_capability,
+            "{protocol:?}"
+        );
         assert_eq!(
             protocol["working"], true,
             "a session with no terminal still says what it is doing: {protocol:?}"

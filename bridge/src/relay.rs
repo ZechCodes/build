@@ -278,7 +278,7 @@ fn handle_session_init(
     let accept = transport::build_session_accept(
         &opened.session_key_b64,
         &session_id,
-        &format!("session:{session_id}"),
+        &transport::session_route(&session_id),
         None,
     )?;
     send(
@@ -332,8 +332,8 @@ fn relay_message(outbound: &OutboundEnvelope) -> Message {
     Message::Text(
         json!({
             "type": "e2ee_envelope",
-            "session_id": outbound.session_id,
-            "envelope": outbound.envelope,
+            "session_id": outbound.session_id(),
+            "envelope": outbound.envelope(),
         })
         .to_string(),
     )
@@ -365,16 +365,13 @@ mod writer_tests {
     /// boundary has to know that.
     #[test]
     fn the_writer_wraps_an_outbound_envelope_for_the_relay_wire() {
-        let outbound = OutboundEnvelope {
+        let outbound = OutboundEnvelope::new(Envelope {
+            version: 1,
             session_id: "s-1".into(),
-            envelope: Envelope {
-                version: 1,
-                session_id: "s-1".into(),
-                route_to: "session:s-1".into(),
-                nonce: "bm9uY2U=".into(),
-                ciphertext: "Y2lwaGVy".into(),
-            },
-        };
+            route_to: "session:s-1".into(),
+            nonce: "bm9uY2U=".into(),
+            ciphertext: "Y2lwaGVy".into(),
+        });
 
         let Message::Text(text) = relay_message(&outbound) else {
             panic!("the relay carries text frames");
@@ -384,7 +381,7 @@ mod writer_tests {
         assert_eq!(wire["session_id"], "s-1");
         assert_eq!(
             wire["envelope"],
-            serde_json::to_value(&outbound.envelope).unwrap(),
+            serde_json::to_value(outbound.envelope()).unwrap(),
             "the envelope crosses the wire byte-identical"
         );
     }

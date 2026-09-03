@@ -60,10 +60,8 @@ Replace it with a carrier-neutral outbound:
 
 ```rust
 /// One encrypted frame bound for one client session. The carrier decides the wire wrapper.
-pub struct OutboundEnvelope {
-    pub session_id: String,
-    pub envelope: Envelope,
-}
+/// The session it is bound for is the envelope's own, stamped by `encrypt_frame`.
+pub struct OutboundEnvelope(Envelope);
 
 pub struct SessionSender {
     session_id: String,

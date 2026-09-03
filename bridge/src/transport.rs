@@ -94,6 +94,13 @@ pub struct OuterFields {
     pub route_to: String,
 }
 
+/// Where a frame the device sends is routed: the client session's address on
+/// the relay, and the shape every carrier of a device frame writes into
+/// `route_to`.
+pub fn session_route(session_id: &str) -> String {
+    format!("session:{session_id}")
+}
+
 /// The inner-frame fields a sender supplies; `message_id`/`created_at` default.
 #[derive(Debug, Clone)]
 pub struct FrameFields {

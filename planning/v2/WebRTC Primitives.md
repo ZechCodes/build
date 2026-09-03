@@ -15,10 +15,11 @@ by name.
 
 ## Bridge (Rust)
 ### `OutboundEnvelope` and `CarrierHandle` — `bridge/src/carrier.rs` (new, stage 1)
-`OutboundEnvelope` is one encrypted frame bound for one session, before any wire wrapper exists:
-`{ session_id: String, envelope: Envelope }`. It is what the envelope-only outbound queue carries; the relay writer
+`OutboundEnvelope` is one encrypted frame bound for one session, before any wire wrapper exists: a newtype over one
+`Envelope`, whose `session_id` `encrypt_frame` already stamped and which `session_id()` reads back. It is what the
+envelope-only outbound queue carries; the relay writer
 merges that queue with its own control-message channel (`session_accept`, `heartbeat`, `Ping`, the auth reply), so
-no `tungstenite::Message` reaches a `SessionSender`. A carrier reads `session_id` off it and needs nothing else,
+no `tungstenite::Message` reaches a `SessionSender`. A carrier reads `session_id()` off it and needs nothing else,
 because one wire already carries every client session of the device, as the relay socket does today. `CarrierHandle` is one live wire: a process-unique `CarrierId` plus the
 `UnboundedSender<OutboundEnvelope>` draining to it, built once per relay socket generation and once per DataChannel.
 It **hides** that ids exist from every caller but the registry, and is what makes "which carriers does this session

@@ -18,11 +18,25 @@ use crate::transport::{self, Envelope, Frame, OuterFields};
 /// One encrypted frame bound for one client session, before any wire wrapper
 /// exists. The carrier that takes it decides how to frame it: the relay writer
 /// wraps it as `{"type":"e2ee_envelope",…}`, a DataChannel sends the envelope
-/// JSON directly.
+/// JSON directly. The session it is bound for is the envelope's own — one fact,
+/// stamped once, by `encrypt_frame`.
 #[derive(Debug, Clone)]
-pub struct OutboundEnvelope {
-    pub session_id: String,
-    pub envelope: Envelope,
+pub struct OutboundEnvelope(Envelope);
+
+impl OutboundEnvelope {
+    pub fn new(envelope: Envelope) -> Self {
+        OutboundEnvelope(envelope)
+    }
+
+    /// Who this frame is for — all a carrier reads off it.
+    pub fn session_id(&self) -> &str {
+        &self.0.session_id
+    }
+
+    /// The frame itself, for the carrier that puts it on a wire.
+    pub fn envelope(&self) -> &Envelope {
+        &self.0
+    }
 }
 
 /// A handle the app uses to push encrypted frames to a specific client session —
@@ -88,7 +102,7 @@ impl SessionSender {
     /// pushed inner payload.
     #[cfg(test)]
     pub fn decrypt_push(session_key: &str, outbound: &OutboundEnvelope) -> Value {
-        transport::decrypt_envelope(session_key, &outbound.envelope)
+        transport::decrypt_envelope(session_key, outbound.envelope())
             .expect("push decrypts with the session key")
             .payload
     }
@@ -100,7 +114,7 @@ impl SessionSender {
             &self.session_key,
             &OuterFields {
                 session_id: self.session_id.clone(),
-                route_to: format!("session:{}", self.session_id),
+                route_to: transport::session_route(&self.session_id),
             },
             &transport::FrameFields {
                 frame_type: "data".into(),
@@ -114,12 +128,7 @@ impl SessionSender {
             Ok(env) => env,
             Err(_) => return false,
         };
-        self.out
-            .send(OutboundEnvelope {
-                session_id: self.session_id.clone(),
-                envelope,
-            })
-            .is_ok()
+        self.out.send(OutboundEnvelope::new(envelope)).is_ok()
     }
 }
 
@@ -136,8 +145,10 @@ pub enum CarrierError {
 }
 
 /// A carrier, as the registry knows one: process-unique, so "which carriers does
-/// this session ride" has an answer that outlives any one of them.
-type CarrierId = u64;
+/// this session ride" has an answer that outlives any one of them. Minted only
+/// by [`CarrierHandle::new`], so nothing can name a wire it does not hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CarrierId(u64);
 
 /// One live wire — a relay socket generation, or a DataChannel — as everything
 /// above the wire sees it: somewhere to put envelopes for any session, since one
@@ -152,7 +163,7 @@ impl CarrierHandle {
     pub fn new(out: mpsc::UnboundedSender<OutboundEnvelope>) -> Self {
         static NEXT_CARRIER_ID: AtomicU64 = AtomicU64::new(1);
         CarrierHandle {
-            id: NEXT_CARRIER_ID.fetch_add(1, Ordering::Relaxed),
+            id: CarrierId(NEXT_CARRIER_ID.fetch_add(1, Ordering::Relaxed)),
             out,
         }
     }
@@ -191,7 +202,7 @@ impl SessionRegistry {
     /// Idempotent for a known session whose key matches — that is the re-attach
     /// a browser performs when its relay socket reconnects. A known session
     /// presented under a different key is refused; the frame is dropped.
-    pub fn open(
+    fn open(
         &self,
         session_id: &str,
         session_key: String,
@@ -225,7 +236,7 @@ impl SessionRegistry {
     /// so a frame that does not is the one thing that must never bind a session
     /// to a wire — and recording it is what makes a session reachable from
     /// whichever wire its frames arrive on.
-    pub fn admit(
+    fn admit(
         &self,
         envelope: &Envelope,
         carrier: &CarrierHandle,
@@ -253,7 +264,7 @@ impl SessionRegistry {
     }
 
     /// One carrier stops carrying one session.
-    pub fn release_session(&self, session_id: &str, carrier: CarrierId) -> Vec<String> {
+    fn release_session(&self, session_id: &str, carrier: CarrierId) -> Vec<String> {
         let mut sessions = self.sessions.lock().unwrap();
         let Some(open) = sessions.get_mut(session_id) else {
             return Vec::new();
@@ -267,7 +278,7 @@ impl SessionRegistry {
     }
 
     /// One carrier is gone: every session that rode nothing else ends with it.
-    pub fn release_carrier(&self, carrier: CarrierId) -> Vec<String> {
+    fn release_carrier(&self, carrier: CarrierId) -> Vec<String> {
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
             open.carriers.remove(&carrier);
@@ -281,7 +292,7 @@ impl SessionRegistry {
     }
 
     /// The client said so: the session ends however many carriers it rides.
-    pub fn end(&self, session_id: &str) -> Vec<String> {
+    fn end(&self, session_id: &str) -> Vec<String> {
         match self.sessions.lock().unwrap().remove(session_id) {
             Some(_) => vec![session_id.to_string()],
             None => Vec::new(),
@@ -779,8 +790,8 @@ mod sender_tests {
         assert!(sender.push(json!({ "id": 7, "ok": true })));
 
         let outbound = pushes.try_recv().expect("the push arrived");
-        assert_eq!(outbound.session_id, "s-1");
-        assert_eq!(outbound.envelope.route_to, "session:s-1");
+        assert_eq!(outbound.session_id(), "s-1");
+        assert_eq!(outbound.envelope().route_to, "session:s-1");
         assert_eq!(
             SessionSender::decrypt_push(&key, &outbound),
             json!({ "id": 7, "ok": true })

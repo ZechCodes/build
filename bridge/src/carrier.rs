@@ -179,10 +179,30 @@ impl CarrierHandle {
     }
 }
 
-/// One open session: the key it was minted with and the carriers riding it.
+/// One open session: the key it was minted with, which opening of its id this
+/// is, and the carriers riding it.
 struct OpenSession {
     key: String,
+    generation: u64,
     carriers: HashSet<CarrierId>,
+}
+
+/// One opening of a session id that ended. Versioned, because the effects of
+/// an end run behind the frames queued ahead of it, and the same id may be
+/// opened again before they do — that newer session is not this end's to close.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SessionEnd {
+    session_id: String,
+    generation: u64,
+}
+
+impl SessionEnd {
+    fn of(session_id: &str, open: &OpenSession) -> Self {
+        SessionEnd {
+            session_id: session_id.to_string(),
+            generation: open.generation,
+        }
+    }
 }
 
 /// The one home of `session_id → (session key, carriers riding it)`.
@@ -196,6 +216,7 @@ struct OpenSession {
 #[derive(Default)]
 struct SessionRegistry {
     sessions: Mutex<HashMap<String, OpenSession>>,
+    minted: AtomicU64,
 }
 
 impl SessionRegistry {
@@ -226,6 +247,7 @@ impl SessionRegistry {
                     session_id.to_string(),
                     OpenSession {
                         key: session_key,
+                        generation: self.minted.fetch_add(1, Ordering::Relaxed) + 1,
                         carriers: HashSet::from([carrier.id]),
                     },
                 );
@@ -268,7 +290,7 @@ impl SessionRegistry {
     }
 
     /// One carrier stops carrying one session.
-    fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<String> {
+    fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<SessionEnd> {
         let mut sessions = self.sessions.lock().unwrap();
         let Some(open) = sessions.get_mut(session_id) else {
             return Vec::new();
@@ -277,17 +299,18 @@ impl SessionRegistry {
         if !open.carriers.is_empty() {
             return Vec::new();
         }
+        let ended = SessionEnd::of(session_id, open);
         sessions.remove(session_id);
-        vec![session_id.to_string()]
+        vec![ended]
     }
 
     /// One carrier is gone: every session that rode nothing else ends with it.
-    fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<String> {
+    fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd> {
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
             open.carriers.remove(&carrier.id);
             if open.carriers.is_empty() {
-                ended.push(session_id.clone());
+                ended.push(SessionEnd::of(session_id, open));
                 return false;
             }
             true
@@ -296,11 +319,20 @@ impl SessionRegistry {
     }
 
     /// The client said so: the session ends however many carriers it rides.
-    fn end(&self, session_id: &str) -> Vec<String> {
+    fn end(&self, session_id: &str) -> Vec<SessionEnd> {
         match self.sessions.lock().unwrap().remove(session_id) {
-            Some(_) => vec![session_id.to_string()],
+            Some(open) => vec![SessionEnd::of(session_id, &open)],
             None => Vec::new(),
         }
+    }
+
+    /// Whether the id of this end has been minted again since it ended.
+    fn reopened_since(&self, end: &SessionEnd) -> bool {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(&end.session_id)
+            .is_some_and(|open| open.generation > end.generation)
     }
 }
 
@@ -313,14 +345,14 @@ impl SessionRegistry {
 /// resources however many wires the device is carrying. It reads the session id
 /// off the envelope: a carrier binds to no session.
 pub struct FrameIntake {
-    registry: SessionRegistry,
+    registry: Arc<SessionRegistry>,
     dispatcher: Dispatcher,
 }
 
 impl FrameIntake {
     pub fn new(handler: FrameHandler) -> Arc<Self> {
         Arc::new(FrameIntake {
-            registry: SessionRegistry::default(),
+            registry: Arc::new(SessionRegistry::default()),
             dispatcher: Dispatcher::new(handler),
         })
     }
@@ -363,9 +395,12 @@ impl FrameIntake {
         self.close_ended(self.registry.release_carrier(carrier));
     }
 
-    fn close_ended(&self, ended: Vec<String>) {
-        for session_id in ended {
-            self.dispatcher.close_session(&session_id);
+    fn close_ended(&self, ended: Vec<SessionEnd>) {
+        for end in ended {
+            let registry = self.registry.clone();
+            let session_id = end.session_id.clone();
+            self.dispatcher
+                .close_session(&session_id, move || !registry.reopened_since(&end));
         }
     }
 }
@@ -415,6 +450,24 @@ mod registry_tests {
         session_id: &str,
         frame_type: &str,
     ) -> Envelope {
+        client_request(
+            session_key,
+            session_id,
+            frame_type,
+            json!({ "id": 1, "method": "board.list" }),
+        )
+    }
+
+    pub(super) fn ended_ids(ended: Vec<SessionEnd>) -> Vec<String> {
+        ended.into_iter().map(|end| end.session_id).collect()
+    }
+
+    pub(super) fn client_request(
+        session_key: &str,
+        session_id: &str,
+        frame_type: &str,
+        payload: Value,
+    ) -> Envelope {
         transport::encrypt_frame(
             session_key,
             &OuterFields {
@@ -424,7 +477,7 @@ mod registry_tests {
             &FrameFields {
                 frame_type: frame_type.into(),
                 sender: "client".into(),
-                payload: json!({ "id": 1, "method": "board.list" }),
+                payload,
                 message_id: None,
                 created_at: None,
             },
@@ -468,7 +521,7 @@ mod registry_tests {
         let key = transport::generate_session_key();
         registry.open("s-1", key.clone(), &carrier).unwrap();
 
-        assert_eq!(registry.end("s-1"), vec!["s-1".to_string()]);
+        assert_eq!(ended_ids(registry.end("s-1")), vec!["s-1".to_string()]);
 
         assert!(matches!(
             registry.admit(&client_envelope(&key, "s-1", "data"), &carrier),
@@ -497,7 +550,7 @@ mod registry_tests {
         );
 
         assert_eq!(
-            registry.release_session("s-1", &peer),
+            ended_ids(registry.release_session("s-1", &peer)),
             vec!["s-1".to_string()],
             "the last carrier takes the session with it"
         );
@@ -516,7 +569,7 @@ mod registry_tests {
             .unwrap();
 
         assert_eq!(
-            registry.release_carrier(&relay),
+            ended_ids(registry.release_carrier(&relay)),
             vec!["s-alone".to_string()]
         );
         assert!(registry
@@ -577,7 +630,7 @@ mod registry_tests {
         registry.open("s-1", key.clone(), &second).unwrap();
 
         assert_eq!(
-            registry.release_carrier(&first),
+            ended_ids(registry.release_carrier(&first)),
             vec!["s-1".to_string()],
             "a replayed session_init put the session on no second carrier"
         );
@@ -617,10 +670,24 @@ mod registry_tests {
 
         assert!(matches!(refused, Err(CarrierError::Transport(_))));
         assert_eq!(
-            registry.release_session("s-1", &relay),
+            ended_ids(registry.release_session("s-1", &relay)),
             vec!["s-1".to_string()],
             "a frame that proves no key possession puts the session on no carrier"
         );
+    }
+
+    #[test]
+    fn an_id_minted_again_outranks_the_end_of_its_earlier_opening() {
+        let registry = SessionRegistry::default();
+        let (carrier, _out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        registry.open("s-1", key.clone(), &carrier).unwrap();
+        let earlier = registry.end("s-1").remove(0);
+        assert!(!registry.reopened_since(&earlier));
+
+        registry.open("s-1", key, &carrier).unwrap();
+
+        assert!(registry.reopened_since(&earlier));
     }
 
     #[test]
@@ -743,6 +810,60 @@ mod intake_tests {
             .registry
             .admit(&client_envelope(&key, "s-1", "data"), &peer)
             .is_ok());
+    }
+
+    /// A session's synthetic `close` runs after the frames queued ahead of it,
+    /// which can be arbitrarily long behind a slow terminal handler. The same id
+    /// may be opened again meanwhile — the browser re-presenting its session
+    /// after a relay reconnect — and the earlier opening's close is not that
+    /// session's to receive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_late_close_from_an_earlier_opening_leaves_the_reopened_session_alone() {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let (seen, mut frames) = mpsc::unbounded_channel();
+        let handler: FrameHandler = Arc::new(move |sender, frame| {
+            let _ = seen.send(format!("{}:{}", frame.frame_type, sender.session_id()));
+            if frame.payload["method"] == "term.input" {
+                let _ = release_rx.lock().unwrap().recv();
+            }
+            json!({ "ok": true })
+        });
+        let intake = FrameIntake::new(handler);
+        let (first, _first_out) = CarrierHandle::open();
+        let (second, _second_out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        intake.open("s-1", key.clone(), &first).unwrap();
+        intake
+            .accept(
+                client_request(
+                    &key,
+                    "s-1",
+                    "data",
+                    json!({ "id": 1, "method": "term.input", "params": { "term_id": "term-1" } }),
+                ),
+                &first,
+            )
+            .await
+            .unwrap();
+        assert_eq!(next_seen(&mut frames).await, "data:s-1");
+
+        intake.close_carrier(&first);
+        intake
+            .open("s-1", key.clone(), &second)
+            .expect("the id is free to mint again once its session ended");
+        release_tx.send(()).unwrap();
+
+        intake
+            .accept(client_envelope(&key, "s-1", "data"), &second)
+            .await
+            .expect("the reopened session takes frames");
+        assert_eq!(next_seen(&mut frames).await, "data:s-1");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            frames.try_recv().is_err(),
+            "the earlier opening's close never reached the session that replaced it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

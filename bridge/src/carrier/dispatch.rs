@@ -299,7 +299,15 @@ impl Dispatcher {
     /// map is all of that this call does: draining them is a wait on however
     /// slow the terminal's handler is, and the carrier teardown that reports the
     /// end — the one a relay reconnect is queued behind — never waits on it.
-    pub(super) fn close_session(&self, session_id: &str) {
+    ///
+    /// The frame goes out only if `still_ended` says so once the lanes have
+    /// drained: the same id may have been opened again in the meantime, and
+    /// what that session holds is not this end's to release.
+    pub(super) fn close_session(
+        &self,
+        session_id: &str,
+        still_ended: impl FnOnce() -> bool + Send + 'static,
+    ) {
         let session_lanes: Vec<mpsc::Sender<LaneMessage>> = {
             let mut lanes = self.lanes.lock().unwrap();
             let keys: Vec<(String, String)> = lanes
@@ -319,6 +327,9 @@ impl Dispatcher {
                     let _ = wait.await;
                 }
                 // Dropping the lane sender ends the lane once it has drained.
+            }
+            if !still_ended() {
+                return;
             }
             let closed = Frame {
                 session_id: session_id.clone(),
@@ -564,7 +575,7 @@ mod dispatcher_tests {
         let closing = dispatcher.clone();
         tokio::time::timeout(
             PATIENTLY,
-            tokio::task::spawn_blocking(move || closing.close_session("s-wedged")),
+            tokio::task::spawn_blocking(move || closing.close_session("s-wedged", || true)),
         )
         .await
         .expect("the close does not wait on the lane it is tearing down")
@@ -1154,7 +1165,7 @@ mod dispatcher_tests {
                 request(1, "term.attach", json!({ "term_id": "term-1" })),
             )
             .await;
-        dispatcher.close_session("s-closing");
+        dispatcher.close_session("s-closing", || true);
 
         for _ in 0..100 {
             if seen.lock().unwrap().len() == 2 {

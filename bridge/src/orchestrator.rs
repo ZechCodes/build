@@ -116,6 +116,9 @@ impl From<GitError> for OrchestratorError {
 fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
     match error {
         OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
+        OrchestratorError::Worktree(WorktreeError::Command(reason)) => {
+            OrchestratorError::MergeFailed(reason)
+        }
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
@@ -5483,6 +5486,10 @@ mod tests {
         assert!(
             err.to_string().contains("CONFLICT"),
             "a failed merge carries git's own words: {err}"
+        );
+        assert!(
+            !err.to_string().contains("git command failed"),
+            "the banner carries git's words alone, not the façade's prefix: {err}"
         );
         assert_eq!(second.run.state, RunState::Review);
         assert!(

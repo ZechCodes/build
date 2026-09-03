@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use build_bridge::carrier::{FrameIntake, SessionRegistry};
+use build_bridge::carrier::{FrameHandler, FrameIntake};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::transport;
 use futures_util::{SinkExt, StreamExt};
@@ -53,10 +53,10 @@ async fn main() {
     {
         let device_url = format!("{url}/ws/device");
         tokio::spawn(async move {
-            let handler: relay::FrameHandler =
+            let handler: FrameHandler =
                 Arc::new(|_sender, frame| json!({ "echo": frame.payload, "from": "bridge" }));
-            let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
-            if let Err(e) = relay::run(&device_url, &identity, intake, None).await {
+            let intake = FrameIntake::new(handler);
+            if let Err(e) = relay::run(&device_url, &identity, intake).await {
                 eprintln!("device exited: {e}");
             }
         });

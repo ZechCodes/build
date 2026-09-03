@@ -32,12 +32,10 @@ impl OutboundEnvelope {
         OutboundEnvelope(envelope)
     }
 
-    /// Who this frame is for — all a carrier reads off it.
     pub fn session_id(&self) -> &str {
         &self.0.session_id
     }
 
-    /// The frame itself, for the carrier that puts it on a wire.
     pub fn envelope(&self) -> &Envelope {
         &self.0
     }
@@ -150,9 +148,10 @@ pub enum CarrierError {
 
 /// A carrier, as the registry knows one: process-unique, so "which carriers does
 /// this session ride" has an answer that outlives any one of them. Minted only
-/// by [`CarrierHandle::new`], so nothing can name a wire it does not hold.
+/// by [`CarrierHandle::new`], and never named outside this module — a caller
+/// hands over the wire it holds and the registry reads the id off it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CarrierId(u64);
+struct CarrierId(u64);
 
 /// One live wire — a relay socket generation, or a DataChannel — as everything
 /// above the wire sees it: somewhere to put envelopes for any session, since one
@@ -171,10 +170,6 @@ impl CarrierHandle {
             out,
         }
     }
-
-    pub(crate) fn id(&self) -> CarrierId {
-        self.id
-    }
 }
 
 /// One open session: the key it was minted with and the carriers riding it.
@@ -192,15 +187,11 @@ struct OpenSession {
 /// client says so**. A caller gets a decrypted frame and a sender back; the key
 /// material never leaves this module.
 #[derive(Default)]
-pub struct SessionRegistry {
+struct SessionRegistry {
     sessions: Mutex<HashMap<String, OpenSession>>,
 }
 
 impl SessionRegistry {
-    pub fn new() -> Self {
-        SessionRegistry::default()
-    }
-
     /// Mint a session, or attach another carrier to one already open.
     ///
     /// Idempotent for a known session whose key matches — that is the re-attach
@@ -268,12 +259,12 @@ impl SessionRegistry {
     }
 
     /// One carrier stops carrying one session.
-    fn release_session(&self, session_id: &str, carrier: CarrierId) -> Vec<String> {
+    fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<String> {
         let mut sessions = self.sessions.lock().unwrap();
         let Some(open) = sessions.get_mut(session_id) else {
             return Vec::new();
         };
-        open.carriers.remove(&carrier);
+        open.carriers.remove(&carrier.id);
         if !open.carriers.is_empty() {
             return Vec::new();
         }
@@ -282,10 +273,10 @@ impl SessionRegistry {
     }
 
     /// One carrier is gone: every session that rode nothing else ends with it.
-    fn release_carrier(&self, carrier: CarrierId) -> Vec<String> {
+    fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<String> {
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
-            open.carriers.remove(&carrier);
+            open.carriers.remove(&carrier.id);
             if open.carriers.is_empty() {
                 ended.push(session_id.clone());
                 return false;
@@ -313,14 +304,14 @@ impl SessionRegistry {
 /// resources however many wires the device is carrying. It reads the session id
 /// off the envelope: a carrier binds to no session.
 pub struct FrameIntake {
-    registry: Arc<SessionRegistry>,
+    registry: SessionRegistry,
     dispatcher: Dispatcher,
 }
 
 impl FrameIntake {
-    pub fn new(registry: Arc<SessionRegistry>, handler: FrameHandler) -> Arc<Self> {
+    pub fn new(handler: FrameHandler) -> Arc<Self> {
         Arc::new(FrameIntake {
-            registry,
+            registry: SessionRegistry::default(),
             dispatcher: Dispatcher::new(handler),
         })
     }
@@ -354,12 +345,12 @@ impl FrameIntake {
 
     /// This carrier stops carrying this session — the relay's `session_closed`,
     /// or a channel that closed under one session.
-    pub fn close_session(&self, session_id: &str, carrier: CarrierId) {
+    pub fn close_session(&self, session_id: &str, carrier: &CarrierHandle) {
         self.close_ended(self.registry.release_session(session_id, carrier));
     }
 
     /// This carrier is gone.
-    pub fn close_carrier(&self, carrier: CarrierId) {
+    pub fn close_carrier(&self, carrier: &CarrierHandle) {
         self.close_ended(self.registry.release_carrier(carrier));
     }
 
@@ -440,7 +431,7 @@ mod registry_tests {
 
     #[test]
     fn a_session_opened_on_a_carrier_admits_that_carrier_s_frames() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
 
@@ -457,7 +448,7 @@ mod registry_tests {
 
     #[test]
     fn a_frame_for_an_unknown_session_is_refused() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
 
@@ -468,7 +459,7 @@ mod registry_tests {
 
     #[test]
     fn a_session_that_ends_is_forgotten_with_its_key() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
         registry.open("s-1", key.clone(), &carrier).unwrap();
@@ -487,7 +478,7 @@ mod registry_tests {
 
     #[test]
     fn a_session_ends_with_the_last_carrier_that_rides_it() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (relay, _relay_out) = test_carrier();
         let (peer, _peer_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -495,7 +486,7 @@ mod registry_tests {
         registry.open("s-1", key.clone(), &peer).unwrap();
 
         assert!(
-            registry.release_session("s-1", relay.id()).is_empty(),
+            registry.release_session("s-1", &relay).is_empty(),
             "one carrier gone is not the session gone"
         );
         assert!(registry
@@ -503,7 +494,7 @@ mod registry_tests {
             .is_ok());
 
         assert_eq!(
-            registry.release_session("s-1", peer.id()),
+            registry.release_session("s-1", &peer),
             vec!["s-1".to_string()],
             "the last carrier takes the session with it"
         );
@@ -511,7 +502,7 @@ mod registry_tests {
 
     #[test]
     fn a_carrier_gone_ends_only_the_sessions_that_rode_it_alone() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (relay, _relay_out) = test_carrier();
         let (peer, _peer_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -520,7 +511,7 @@ mod registry_tests {
         registry.open("s-shared", key.clone(), &peer).unwrap();
 
         assert_eq!(
-            registry.release_carrier(relay.id()),
+            registry.release_carrier(&relay),
             vec!["s-alone".to_string()]
         );
         assert!(registry
@@ -530,7 +521,7 @@ mod registry_tests {
 
     #[test]
     fn a_frame_arriving_on_a_new_carrier_records_the_ride() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (relay, _relay_out) = test_carrier();
         let (peer, _peer_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -541,14 +532,14 @@ mod registry_tests {
             .expect("any carrier may deliver a frame for a known session");
 
         assert!(
-            registry.release_session("s-1", relay.id()).is_empty(),
+            registry.release_session("s-1", &relay).is_empty(),
             "the session rides the carrier its frame arrived on"
         );
     }
 
     #[test]
     fn reopening_a_session_with_its_own_key_re_attaches_the_new_carrier() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (first, _first_out) = test_carrier();
         let (second, _second_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -558,7 +549,7 @@ mod registry_tests {
             .open("s-1", key.clone(), &second)
             .expect("the same session on a second carrier is a re-attach");
 
-        assert!(registry.release_carrier(first.id()).is_empty());
+        assert!(registry.release_carrier(&first).is_empty());
         assert!(registry
             .admit(&client_envelope(&key, "s-1", "data"), &second)
             .is_ok());
@@ -566,7 +557,7 @@ mod registry_tests {
 
     #[test]
     fn reopening_a_session_under_a_different_key_is_refused() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (first, _first_out) = test_carrier();
         let (second, _second_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -585,7 +576,7 @@ mod registry_tests {
 
     #[test]
     fn a_frame_that_does_not_decrypt_records_no_ride() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (relay, _relay_out) = test_carrier();
         let (forged, _forged_out) = test_carrier();
         let key = transport::generate_session_key();
@@ -598,7 +589,7 @@ mod registry_tests {
 
         assert!(matches!(refused, Err(CarrierError::Transport(_))));
         assert_eq!(
-            registry.release_session("s-1", relay.id()),
+            registry.release_session("s-1", &relay),
             vec!["s-1".to_string()],
             "a frame that proves no key possession puts the session on no carrier"
         );
@@ -606,7 +597,7 @@ mod registry_tests {
 
     #[test]
     fn a_sender_the_registry_builds_pushes_to_the_admitting_carrier() {
-        let registry = SessionRegistry::new();
+        let registry = SessionRegistry::default();
         let (carrier, mut out) = test_carrier();
         let key = transport::generate_session_key();
         registry.open("s-1", key.clone(), &carrier).unwrap();
@@ -633,22 +624,13 @@ mod intake_tests {
 
     /// The intake's effect side: a session that ended gets its synthetic `close`
     /// frame, whoever reported the end.
-    fn watching_intake() -> (
-        Arc<FrameIntake>,
-        Arc<SessionRegistry>,
-        mpsc::UnboundedReceiver<String>,
-    ) {
+    fn watching_intake() -> (Arc<FrameIntake>, mpsc::UnboundedReceiver<String>) {
         let (seen, closes) = mpsc::unbounded_channel();
         let handler: FrameHandler = Arc::new(move |sender, frame| {
             let _ = seen.send(format!("{}:{}", frame.frame_type, sender.session_id()));
             json!({ "ok": true })
         });
-        let registry = Arc::new(SessionRegistry::new());
-        (
-            FrameIntake::new(registry.clone(), handler),
-            registry,
-            closes,
-        )
+        (FrameIntake::new(handler), closes)
     }
 
     async fn next_seen(closes: &mut mpsc::UnboundedReceiver<String>) -> String {
@@ -660,7 +642,7 @@ mod intake_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_close_frame_ends_the_session_outright() {
-        let (intake, registry, mut seen) = watching_intake();
+        let (intake, mut seen) = watching_intake();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &carrier).unwrap();
@@ -672,63 +654,68 @@ mod intake_tests {
 
         assert_eq!(next_seen(&mut seen).await, "close:s-1");
         assert!(matches!(
-            registry.admit(&client_envelope(&key, "s-1", "data"), &carrier),
+            intake
+                .registry
+                .admit(&client_envelope(&key, "s-1", "data"), &carrier),
             Err(CarrierError::UnknownSession(_))
         ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_carrier_gone_closes_the_sessions_that_ended_with_it() {
-        let (intake, _registry, mut seen) = watching_intake();
+        let (intake, mut seen) = watching_intake();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &carrier).unwrap();
 
-        intake.close_carrier(carrier.id());
+        intake.close_carrier(&carrier);
 
         assert_eq!(next_seen(&mut seen).await, "close:s-1");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relay_session_closed_ends_a_session_riding_only_that_carrier() {
-        let (intake, registry, mut seen) = watching_intake();
+        let (intake, mut seen) = watching_intake();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &carrier).unwrap();
 
-        intake.close_session("s-1", carrier.id());
+        intake.close_session("s-1", &carrier);
 
         assert_eq!(next_seen(&mut seen).await, "close:s-1");
         assert!(matches!(
-            registry.admit(&client_envelope(&key, "s-1", "data"), &carrier),
+            intake
+                .registry
+                .admit(&client_envelope(&key, "s-1", "data"), &carrier),
             Err(CarrierError::UnknownSession(_))
         ));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_relay_session_closed_leaves_a_session_a_second_carrier_still_rides() {
-        let (intake, registry, mut seen) = watching_intake();
+        let (intake, mut seen) = watching_intake();
         let (relay, _relay_out) = test_carrier();
         let (peer, _peer_out) = test_carrier();
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &relay).unwrap();
         intake.open("s-1", key.clone(), &peer).unwrap();
 
-        intake.close_session("s-1", relay.id());
+        intake.close_session("s-1", &relay);
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
             seen.try_recv().is_err(),
             "the session is still carried, so nothing closed"
         );
-        assert!(registry
+        assert!(intake
+            .registry
             .admit(&client_envelope(&key, "s-1", "data"), &peer)
             .is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_frame_for_an_unknown_session_reaches_no_handler() {
-        let (intake, _registry, mut seen) = watching_intake();
+        let (intake, mut seen) = watching_intake();
         let (carrier, _out) = test_carrier();
         let key = transport::generate_session_key();
 

@@ -6,10 +6,10 @@
 //! certificate injected as the trust root:
 //!
 //! - `wss_connects_to_tls_server_with_injected_root` runs the *real*
-//!   `relay::run` with an injected connector over a genuine TLS handshake and
-//!   checks the signed device-auth headers arrive.
+//!   `relay::run_with_connector` over a genuine TLS handshake and checks the
+//!   signed device-auth headers arrive.
 //! - `wss_scheme_is_supported_without_injected_connector` proves the default
-//!   connector (webpki roots) recognizes the `wss` scheme — the failure
+//!   `relay::run` path (webpki roots) recognizes the `wss` scheme — the failure
 //!   against an unreachable port is a network error, never tungstenite's
 //!   "TLS support not compiled in".
 //!
@@ -30,7 +30,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
-use build_bridge::carrier::{FrameIntake, SessionRegistry};
+use build_bridge::carrier::{FrameHandler, FrameIntake};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::transport;
 
@@ -135,16 +135,11 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let identity = test_identity();
     let url = format!("wss://localhost:{port}/ws/device");
-    let handler: relay::FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(
-            &url,
-            &identity,
-            FrameIntake::new(Arc::new(SessionRegistry::new()), handler),
-            Some(connector),
-        ),
+        relay::run_with_connector(&url, &identity, FrameIntake::new(handler), Some(connector)),
     )
     .await
     .expect("no timeout");
@@ -168,16 +163,11 @@ async fn wss_scheme_is_supported_without_injected_connector() {
     };
     let identity = test_identity();
     let url = format!("wss://127.0.0.1:{unused_port}/ws/device");
-    let handler: relay::FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(
-            &url,
-            &identity,
-            FrameIntake::new(Arc::new(SessionRegistry::new()), handler),
-            None,
-        ),
+        relay::run(&url, &identity, FrameIntake::new(handler)),
     )
     .await
     .expect("no timeout")

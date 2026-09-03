@@ -24,7 +24,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
-pub use crate::carrier::FrameHandler;
 use crate::carrier::{CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
 use crate::transport::{self, Envelope, KeyPairB64, SessionInit};
 
@@ -104,15 +103,25 @@ fn auth_request(url: &str, identity: &DeviceIdentity) -> Result<Request<()>, Rel
 ///
 /// Handles both plain-`ws` URLs (local/dev) and `wss://` (production, e.g.
 /// `wss://relay.getbuild.ing/ws/device`) — TLS is rustls with bundled webpki
-/// roots (the crate's only TLS feature, so the default `None` connector can never
-/// silently pick native-tls); tests pass a `Connector::Rustls` trusting a
-/// self-signed root to exercise real TLS locally.
+/// roots (the crate's only TLS feature, so the default connector below can never
+/// silently pick native-tls).
 ///
 /// This socket is one carrier of the intake's sessions: every session minted
 /// here is reachable from every other carrier that intake serves, and when the
 /// socket ends the carrier is released — the sessions that rode nothing else end
 /// with it.
 pub async fn run(
+    url: &str,
+    identity: &DeviceIdentity,
+    intake: Arc<FrameIntake>,
+) -> Result<(), RelayError> {
+    run_with_connector(url, identity, intake, None).await
+}
+
+/// [`run`], with an explicit TLS connector. `None` uses the default (rustls +
+/// webpki roots for `wss://`, plain TCP for `ws` URLs); tests inject
+/// `Connector::Rustls` trusting a self-signed root to exercise real TLS locally.
+pub async fn run_with_connector(
     url: &str,
     identity: &DeviceIdentity,
     intake: Arc<FrameIntake>,
@@ -237,7 +246,7 @@ impl<'a> RelayConnection<'a> {
             }
             "session_closed" => {
                 if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                    self.intake.close_session(session_id, self.carrier.id());
+                    self.intake.close_session(session_id, &self.carrier);
                 }
             }
             // "response"/"error"/unknown: nothing for the device to do here.
@@ -313,7 +322,7 @@ impl<'a> RelayConnection<'a> {
     /// The socket is gone: this carrier carries nothing more, the heartbeat that
     /// fed it stops with it, and its hold on the writer's queue goes with it.
     fn close(mut self) {
-        self.intake.close_carrier(self.carrier.id());
+        self.intake.close_carrier(&self.carrier);
         if let Some(task) = self.heartbeat.take() {
             task.abort();
         }

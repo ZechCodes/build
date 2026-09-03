@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use build_bridge::carrier::{FrameIntake, SessionRegistry};
+use build_bridge::carrier::{FrameHandler, FrameIntake};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
 use futures_util::{SinkExt, StreamExt};
@@ -95,12 +95,12 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
 
     // Run the real bridge relay-client; its handler echoes the request payload.
-    let handler: relay::FrameHandler =
+    let handler: FrameHandler =
         Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
     let bridge = {
         let identity = identity.clone();
-        let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
-        tokio::spawn(async move { relay::run(&url, &identity, intake, None).await })
+        let intake = FrameIntake::new(handler);
+        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
     };
 
     // 1. The device uploaded its transport key; the browser learns it.
@@ -198,7 +198,7 @@ async fn a_slow_handler_does_not_stall_the_socket() {
     tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
 
     // `slow` is the board.list-with-a-libgit2-diff of the incident.
-    let handler: relay::FrameHandler = Arc::new(|_sender, frame| {
+    let handler: FrameHandler = Arc::new(|_sender, frame| {
         if frame.payload["method"] == "slow" {
             std::thread::sleep(std::time::Duration::from_millis(1500));
         }
@@ -206,8 +206,8 @@ async fn a_slow_handler_does_not_stall_the_socket() {
     });
     let bridge = {
         let identity = identity.clone();
-        let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
-        tokio::spawn(async move { relay::run(&url, &identity, intake, None).await })
+        let intake = FrameIntake::new(handler);
+        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
     };
 
     let device_transport_pub =

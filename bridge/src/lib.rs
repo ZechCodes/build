@@ -51,6 +51,7 @@ pub mod capture;
 pub mod changes;
 pub mod config;
 pub mod diff;
+pub mod git_process;
 pub mod gitgui;
 pub mod harness;
 pub mod identity;

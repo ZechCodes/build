@@ -67,7 +67,8 @@ Move, do not rewrite. Map today's code onto the primitives per spec §4.2:
   The common checks (HEAD on `branch`, HEAD equals the project tip, merge-base
   with base exists) stay in the façade.
 - `publish`, `sync_base`: `Ok(())`.
-- `remove(project, path, name)`: today's `remove` body minus the branch deletion.
+- `remove(project, path)`: today's `remove` body minus the branch deletion; the
+  registry name is the path's basename (spec §4.1), so no caller passes one.
 - `discover(project, _root)`: `git worktree list --porcelain` → canonical paths,
   primary excluded, bare/prunable skipped. This is the path-only half of
   `describe_checkouts`.
@@ -135,8 +136,12 @@ Rules from spec §3 that must hold now:
 - `discover` = union of every backend's `discover`, minus the primary and
   `excluded`, then `sync_base` best effort (logged) on each, then
   `describe_checkout` on each, then today's sort. `discover_external_worktrees`
-  and `describe_primary_checkout` become thin wrappers over the manager (keep
-  their signatures this stage so `app.rs` does not change; stage 2 retires them).
+  and `describe_primary_checkout` become thin wrappers over the manager and gain
+  a `worktrees_root` parameter after `repo_path` — the project's real root,
+  `AppState.worktrees_root/<project_id>`, which `app.rs` already knows and now
+  carries on `DiffCacheRefresh::ExternalScan` and `WorktreeFinishJob`. A
+  placeholder root would turn a root-scanning backend loose on the project
+  directory, so none is ever passed. Stage 2 retires both wrappers.
 - `prune` asks every backend (`Isolation::ALL`) and is the one place that turns a
   backend's `Err` into a log line and continues (moves from `app.rs` in stage 2;
   define it now).

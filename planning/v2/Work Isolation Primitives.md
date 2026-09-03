@@ -9,6 +9,10 @@ disagree the spec wins. **The rule:** two ways to materialize a checkout, one ca
 - **`Isolation`**: the choice as a value — `ALL`, `wire`, `from_wire`, `of(&Path)`. `of` is the one authority on what
   an existing checkout is (two `stat`s, no git, no record) and never consults a setting, a record, or a caller's
   memory.
+- **`checkout_name(path: &Path) -> Option<String>`**, beside `of`: §4.1's one rule — a checkout is called by its
+  directory basename, whatever made it — owned once, in the shape of `of` (a path with no basename is no checkout
+  either). `WorktreeBackend` reads git's registry name through it and `summarize_checkout` names `ExternalWorktree`
+  through it, so no backend writes the rule again.
 - **The marker**: `COW_MARKER` (the file name under `.git`) with `write_cow_marker(checkout, project)` and
   `cow_marker_names(checkout, project) -> bool`. §4.6's name and format are one fact with one owner, here because
   `Isolation::of` reads it in stage 1 before `cow.rs` exists; the three places that touch it — `Isolation::of`,
@@ -67,16 +71,20 @@ reason so neither app nor SPA writes one, and it never caches. Whether a project
 so that sentence is `app.rs`'s.
 
 ## `bridge/src/worktree.rs` — the façade
-**`describe_checkout(project_repo, path, base_branch, now)`** summarizes a checkout **from the checkout alone**, so a
-clone and a linked worktree are one function; `parse_worktree_block` shrinks to a path-only porcelain parser feeding
-the worktree backend's `discover`. "Alone" holds because `ExternalWorktree.name` is the checkout's directory basename
-in both isolations, so `resolve_worktree_name`'s registry walk (worktree.rs:901) is deleted and no per-isolation name
-resolution is left unnamed in the façade: Build's own checkouts have the two equal by construction and `git worktree
-add <dir>` names a hand-made one after its directory; where they part — a directory renamed after registration —
-`remove` finds no record, already success, and `prune` clears the stale one. That is the one behavior change stage 1
-carries (spec §0.6, §4.1). `ExternalWorktree` gains `pub isolation: Isolation` from `Isolation::of(path)?` — the
-function already answers an `Option`, so a path that is no Build checkout is described by nobody rather than as a
-`Worktree`: one condition with `backend_of`'s one answer. `external_worktrees_json` emits it as `"isolation"` (§4.1).
+**`describe_checkout(path, base_branch, now)`** summarizes a checkout **from the checkout alone**, so a clone and a
+linked worktree are one function and no project repository is passed; `parse_worktree_block` shrinks to a path-only
+porcelain parser feeding the worktree backend's `discover`. `Isolation::of` is the whole of its gate, which the
+project's own checkout cannot pass, so the summary itself is one function down —
+`summarize_checkout(path, isolation, base_branch, now)` — which `describe_checkout` calls through the gate and
+`WorktreeManager::describe_primary` calls with the default isolation (spec §4.1). "Alone" holds because
+`ExternalWorktree.name` is the checkout's directory basename in both isolations, so `resolve_worktree_name`'s registry
+walk (worktree.rs:901) is deleted and no per-isolation name resolution is left unnamed in the façade: Build's own
+checkouts have the two equal by construction and `git worktree add <dir>` names a hand-made one after its directory;
+where they part — a directory renamed after registration — `remove` finds no record, already success, and `prune`
+clears the stale one. That is the one behavior change stage 1 carries (spec §0.6, §4.1). `ExternalWorktree` gains
+`pub isolation: Isolation` from `Isolation::of(path)?` — the function already answers an `Option`, so a path that is
+no Build checkout is described by nobody rather than as a `Worktree`: one condition with `backend_of`'s one answer.
+`external_worktrees_json` emits it as `"isolation"` (§4.1).
 **`WorktreeManager`** is the one seam, same name and callers as today, holding `repo_path`, `worktrees_root` and both
 backends. `create*`/`restore` take the resolved `Isolation`; everything else reads `Isolation::of(path)`. It owns
 naming and uniqueness — `name_taken` keeps its answer and its isolation-blindness but not its body. "Does some backend
@@ -88,8 +96,8 @@ publish-before-read ordering, the union `discover`, `availability()` from `Isola
 is read here. `backend(Isolation)`, keyed on a resolved isolation, and `backend_of(&Path)`, keyed on `Isolation::of`,
 are the whole of keyed dispatch — nowhere else is a `match Isolation` written or a backend field reached for. Three
 primitives have nothing to key on, and each owns one `Isolation::ALL` walk no caller repeats: `record_held` walks
-`holds_record` (a name carries no isolation), `remove_checkout(path, name)` (§3) walks `remove` (a gone checkout
-carries none), `prune` walks `prune`. So `remove_checkout` is `record_held`'s fallible sibling and never asks
+`holds_record` (a name carries no isolation), `remove_checkout(path)` (§3) walks `remove` (a gone checkout carries
+none), `prune` walks `prune`. So `remove_checkout` is `record_held`'s fallible sibling and never asks
 `backend_of`: absence is success for every backend's `remove`, so present and gone are one unconditional path. `prune`
 alone returns nothing, being the one place turning a backend's `Err` into a log line; the record clearing `restore`
 does before recreating a vanished checkout (worktree.rs:285) is that `prune`, and a record whose directory still stands

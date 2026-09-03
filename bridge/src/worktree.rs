@@ -168,7 +168,7 @@ impl WorktreeManager {
         let base_commit = repo.revparse_single(base_branch)?.peel_to_commit()?;
         std::fs::create_dir_all(&self.worktrees_root)?;
 
-        let name = self.unique_name(slug, |candidate| self.name_taken(candidate))?;
+        let name = self.unique_name(slug, |candidate| self.name_taken(&repo, candidate))?;
         let branch = self.branch_name(&name);
 
         // Cut the task branch from the tip of the base branch.
@@ -519,8 +519,7 @@ impl WorktreeManager {
 
     /// Whether a candidate name is already in use as a branch in Build's
     /// namespace or as a checkout.
-    fn name_taken(&self, name: &str) -> Result<bool, WorktreeError> {
-        let repo = git2::Repository::open(&self.repo_path)?;
+    fn name_taken(&self, repo: &git2::Repository, name: &str) -> Result<bool, WorktreeError> {
         Ok(repo
             .find_branch(&self.branch_name(name), git2::BranchType::Local)
             .is_ok()

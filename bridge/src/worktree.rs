@@ -17,7 +17,8 @@ use std::path::{Path, PathBuf};
 
 use crate::git_process::run_git;
 use crate::isolation::{
-    Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend, NO_BACKEND_IN_THIS_BUILD,
+    checkout_name, Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend,
+    NO_BACKEND_IN_THIS_BUILD,
 };
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
@@ -962,9 +963,7 @@ fn summarize_checkout(
     now: i64,
 ) -> Option<ExternalWorktree> {
     let canonical = std::fs::canonicalize(path).ok()?;
-    let name = canonical
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())?;
+    let name = checkout_name(&canonical)?;
     let repo = or_skip(
         "opening the repository",
         &canonical,

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Isolation, IsolationBackend, WorktreeError};
+use super::{checkout_name, Isolation, IsolationBackend, WorktreeError};
 use crate::git_process::run_git;
 
 /// Materializes a checkout as a git linked worktree of the project repository.
@@ -17,7 +17,7 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError> {
-        let name = directory_name(path)?;
+        let name = registered_name(path)?;
         let repo = git2::Repository::open(project)?;
         let reference = repo.find_reference(&format!("refs/heads/{branch}"))?;
         let mut options = git2::WorktreeAddOptions::new();
@@ -28,7 +28,7 @@ impl IsolationBackend for WorktreeBackend {
 
     fn verify(&self, project: &Path, path: &Path, _branch: &str) -> Result<(), WorktreeError> {
         let actual = std::fs::canonicalize(path)?;
-        let name = directory_name(&actual)?;
+        let name = registered_name(&actual)?;
         let primary = git2::Repository::open(project)?;
         let registered = primary.find_worktree(&name).map_err(|_| {
             WorktreeError::Refused(format!(
@@ -65,7 +65,7 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn remove(&self, project: &Path, path: &Path) -> Result<(), WorktreeError> {
-        let name = directory_name(path)?;
+        let name = registered_name(path)?;
         // The project repo is opened before the directory goes: a teardown that
         // cannot reach the registry would leave a record naming a directory it
         // can no longer prune, so it refuses while there is still nothing lost.
@@ -112,17 +112,15 @@ impl IsolationBackend for WorktreeBackend {
     }
 }
 
-/// A checkout's directory name — git's own name for a linked worktree, and the
-/// name every isolation calls a checkout by.
-fn directory_name(path: &Path) -> Result<String, WorktreeError> {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .ok_or_else(|| {
-            WorktreeError::Refused(format!(
-                "checkout path has no directory name: {}",
-                path.display()
-            ))
-        })
+/// The name git's registry knows the checkout at `path` by, refused when the
+/// path has no directory to be called by.
+fn registered_name(path: &Path) -> Result<String, WorktreeError> {
+    checkout_name(path).ok_or_else(|| {
+        WorktreeError::Refused(format!(
+            "checkout path has no directory name: {}",
+            path.display()
+        ))
+    })
 }
 
 /// The canonical path in one `git worktree list --porcelain` block, or `None`

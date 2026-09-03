@@ -95,6 +95,16 @@ impl Isolation {
     }
 }
 
+/// What the checkout at `path` is called: its directory's name, whatever made
+/// it. Git names a linked worktree after its directory and a clone has no
+/// other name, so this is the one name every backend calls a checkout by. A
+/// path with no directory to be called by is no checkout, as a path with no
+/// `.git` is none for [`Isolation::of`].
+pub fn checkout_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
 /// The file inside a clone's `.git` that says the clone is Build's and which
 /// project it was cloned from. A clone is a repository like any other, so this
 /// is the only thing that tells it apart; its contents are compared, never used
@@ -261,6 +271,22 @@ mod tests {
             "the project is not a checkout Build made"
         );
         assert_eq!(Isolation::of(&dir.path().join("nothing-here")), None);
+    }
+
+    /// A checkout is called by its directory, whatever made it — and a path
+    /// with no directory to be called by is no checkout at all.
+    #[test]
+    fn a_checkout_is_named_by_its_directory() {
+        assert_eq!(
+            checkout_name(Path::new("/tmp/worktrees/csv-export")),
+            Some("csv-export".to_string())
+        );
+        assert_eq!(
+            checkout_name(Path::new("worktrees/csv-export/")),
+            Some("csv-export".to_string())
+        );
+        assert_eq!(checkout_name(Path::new("/")), None);
+        assert_eq!(checkout_name(Path::new("")), None);
     }
 
     #[test]

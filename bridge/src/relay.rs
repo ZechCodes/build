@@ -164,7 +164,7 @@ pub async fn run_with_connector(
     }
     .await;
 
-    connection.close();
+    drop(connection);
     drop(control_tx);
     let _ = writer.await;
     outcome
@@ -203,7 +203,9 @@ fn spawn_writer(
 }
 
 /// This socket generation as a carrier: what a relay message may act on, and the
-/// heartbeat that keeps the relay believing in the device.
+/// heartbeat that keeps the relay believing in the device. Dropping it is the
+/// socket generation ending, however that happens — the read loop returning,
+/// or the future that runs it being dropped mid-session.
 struct RelayConnection<'a> {
     control_tx: mpsc::UnboundedSender<Message>,
     identity: &'a DeviceIdentity,
@@ -317,10 +319,13 @@ impl<'a> RelayConnection<'a> {
         self.intake.accept(envelope, &self.carrier).await?;
         Ok(())
     }
+}
 
-    /// The socket is gone: this carrier carries nothing more, the heartbeat that
-    /// fed it stops with it, and its hold on the writer's queue goes with it.
-    fn close(mut self) {
+impl Drop for RelayConnection<'_> {
+    /// The socket is gone: this carrier carries nothing more — the sessions that
+    /// rode nothing else end with it — and the heartbeat that fed it stops, so
+    /// its hold on the writer's queue goes with it.
+    fn drop(&mut self) {
         self.intake.close_carrier(&self.carrier);
         if let Some(task) = self.heartbeat.take() {
             task.abort();

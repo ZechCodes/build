@@ -516,3 +516,65 @@ async fn a_session_init_under_a_different_key_is_refused() {
     drop(to_device_tx);
     bridge.abort();
 }
+
+/// The carrier is released however `run` ends. A caller that drops the future
+/// mid-session — a timeout around it, an abort — never reaches the read loop's
+/// normal exit, and the sessions riding that socket must end all the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
+    let identity = DeviceIdentity {
+        device_id: "dev-1".into(),
+        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
+        transport: transport::generate_transport_keypair(),
+    };
+    let (handler, mut frames) = reporting_handler();
+    let intake = FrameIntake::new(handler);
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
+    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
+    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
+    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
+    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
+    let bridge = {
+        let identity = identity.clone();
+        let intake = intake.clone();
+        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
+    };
+
+    let device_transport_pub =
+        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
+            .await
+            .expect("transport key arrives")
+            .unwrap();
+    let session_id = "sess-cut";
+    let session_key = transport::generate_session_key();
+    to_device_tx
+        .send(session_init_message(
+            session_id,
+            &device_transport_pub,
+            &session_key,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(recv(&mut from_device_rx).await["type"], "session_accept");
+    to_device_tx
+        .send(request_message(
+            &session_key,
+            session_id,
+            json!({ "method": "ping" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(next_frame(&mut frames).await, format!("data:{session_id}"));
+
+    // The run future is dropped mid-session, the socket still up.
+    bridge.abort();
+    let _ = bridge.await;
+
+    assert_eq!(
+        next_frame(&mut frames).await,
+        format!("close:{session_id}"),
+        "the session that rode the cancelled socket ended with it"
+    );
+}

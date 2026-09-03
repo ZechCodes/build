@@ -184,7 +184,7 @@ jobs:
             --prefix "${{ github.workspace }}/../build-secure-transport/js"
       - name: Install
         working-directory: spa
-        run: npm install --no-audit --no-fund
+        run: npm install --legacy-peer-deps --no-audit --no-fund
       - name: vitest
         working-directory: spa
         run: npx vitest run

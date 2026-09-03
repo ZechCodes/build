@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from uuid import UUID
 
 import sqlalchemy as sa
+from advanced_alchemy.types import GUID
 from alembic import op
 
 revision: str = "c9e3a5b7d8f0"
@@ -22,7 +23,7 @@ DESKTOP_CLIENT_DATABASE_ID = UUID("ac297ec5-3881-4df7-a9b8-35b20be6b718")
 def upgrade() -> None:
     clients = sa.table(
         "oauth2_clients",
-        sa.column("id", sa.Uuid()),
+        sa.column("id", GUID(length=16)),
         sa.column("client_id", sa.String()),
         sa.column("client_secret", sa.String()),
         sa.column("display_name", sa.String()),

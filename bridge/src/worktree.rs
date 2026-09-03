@@ -1297,6 +1297,33 @@ mod tests {
         );
     }
 
+    /// A checkout deleted outside Build leaves git's record of it behind, and
+    /// git refuses to add a worktree under a name a record still holds. The
+    /// record is stale the moment the directory goes, so restore clears it
+    /// before materializing.
+    #[test]
+    fn restore_recreates_a_checkout_deleted_outside_build() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let wt = mgr
+            .create("hand-deleted", "main", Isolation::Worktree)
+            .unwrap();
+
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        assert!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_worktree(&wt.name)
+                .is_ok(),
+            "git still records the checkout somebody deleted by hand"
+        );
+
+        let restored = mgr.restore(&wt, Isolation::Worktree).unwrap();
+
+        assert_eq!(restored, wt);
+        assert!(wt.path.join("README.md").exists());
+    }
+
     /// A directory sitting where a checkout belongs, which is no checkout at
     /// all, is refused for what it is — nothing ran git to say otherwise.
     #[test]

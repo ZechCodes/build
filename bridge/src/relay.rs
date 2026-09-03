@@ -106,10 +106,8 @@ fn auth_request(url: &str, identity: &DeviceIdentity) -> Result<Request<()>, Rel
 /// roots (the crate's only TLS feature, so the default connector below can never
 /// silently pick native-tls).
 ///
-/// This socket is one carrier of the intake's sessions: every session minted
-/// here is reachable from every other carrier that intake serves, and when the
-/// socket ends the carrier is released — the sessions that rode nothing else end
-/// with it.
+/// This socket is one carrier of the intake's sessions; what its end does to
+/// them is `SessionRegistry`'s rule (`carrier.rs`).
 pub async fn run(
     url: &str,
     identity: &DeviceIdentity,
@@ -142,10 +140,9 @@ pub async fn run_with_connector(
     // Handlers run in the intake, not on this task: below, the loop only reads
     // and hands over, so no handler can stop the socket from being drained.
     let outcome: Result<(), RelayError> = async {
-        let mut deadline = silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S);
         loop {
-            let Ok(next) = tokio::time::timeout(deadline, source.next()).await else {
-                return Err(RelayError::Silent(deadline));
+            let Ok(next) = tokio::time::timeout(connection.deadline, source.next()).await else {
+                return Err(RelayError::Silent(connection.deadline));
             };
             let Some(message) = next else { break };
             let text = match message? {
@@ -156,9 +153,7 @@ pub async fn run_with_connector(
             let Ok(msg) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
-            if let Some(next_deadline) = connection.accept(&msg).await {
-                deadline = next_deadline;
-            }
+            connection.accept(&msg).await;
         }
         Ok(())
     }
@@ -212,6 +207,9 @@ struct RelayConnection<'a> {
     intake: &'a FrameIntake,
     carrier: CarrierHandle,
     heartbeat: Option<tokio::task::JoinHandle<()>>,
+    /// How long the relay may stay silent before this socket is given up on;
+    /// the interval `authenticated` carries sets it.
+    deadline: Duration,
 }
 
 impl<'a> RelayConnection<'a> {
@@ -227,14 +225,13 @@ impl<'a> RelayConnection<'a> {
             intake,
             carrier,
             heartbeat: None,
+            deadline: silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S),
         }
     }
 
-    /// One relay message, honoured. Returns the silence deadline the message
-    /// sets, which only `authenticated` does — it carries the interval.
-    async fn accept(&mut self, msg: &Value) -> Option<Duration> {
+    async fn accept(&mut self, msg: &Value) {
         match msg.get("type").and_then(Value::as_str).unwrap_or("") {
-            "authenticated" => return Some(self.authenticated(msg)),
+            "authenticated" => self.authenticated(msg),
             "session_init" => {
                 if let Err(e) = self.open_session(msg) {
                     log_protocol_error(&e);
@@ -253,12 +250,11 @@ impl<'a> RelayConnection<'a> {
             // "response"/"error"/unknown: nothing for the device to do here.
             _ => {}
         }
-        None
     }
 
     /// The relay took the signed challenge: upload the transport public key
     /// clients wrap session keys to, and start heartbeating at its interval.
-    fn authenticated(&mut self, msg: &Value) -> Duration {
+    fn authenticated(&mut self, msg: &Value) {
         let interval = msg
             .get("heartbeat_interval_s")
             .and_then(Value::as_u64)
@@ -271,7 +267,7 @@ impl<'a> RelayConnection<'a> {
             }),
         );
         self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));
-        silence_deadline(interval)
+        self.deadline = silence_deadline(interval);
     }
 
     /// A client opened a session: unwrap its session key, register it against
@@ -322,9 +318,9 @@ impl<'a> RelayConnection<'a> {
 }
 
 impl Drop for RelayConnection<'_> {
-    /// The socket is gone: this carrier carries nothing more — the sessions that
-    /// rode nothing else end with it — and the heartbeat that fed it stops, so
-    /// its hold on the writer's queue goes with it.
+    /// The socket is gone: the carrier is released (see `SessionRegistry`) and
+    /// the heartbeat that fed it stops, so its hold on the writer's queue goes
+    /// with it.
     fn drop(&mut self) {
         self.intake.close_carrier(&self.carrier);
         if let Some(task) = self.heartbeat.take() {
@@ -373,12 +369,10 @@ fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
         .ok_or_else(|| RelayError::Protocol(format!("{key} missing")))
 }
 
-/// A frame the device could not honour. Never fatal to the socket, and never
-/// silent: a refused `session_init` or a frame for a session nobody knows is
-/// what a browser sees as a call that never came back.
-fn log_protocol_error(err: &RelayError) {
-    eprintln!("relay protocol error: {err}");
-}
+/// A frame the device could not honour. Never fatal to the socket; a real
+/// build wires this to tracing, and until then it is deliberately silent, so a
+/// paired browser cannot drive stderr from the frame path.
+fn log_protocol_error(_err: &RelayError) {}
 
 #[cfg(test)]
 mod writer_tests {

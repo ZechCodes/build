@@ -28,7 +28,7 @@ use dispatch::Dispatcher;
 pub struct OutboundEnvelope(Envelope);
 
 impl OutboundEnvelope {
-    pub fn new(envelope: Envelope) -> Self {
+    pub(crate) fn new(envelope: Envelope) -> Self {
         OutboundEnvelope(envelope)
     }
 
@@ -36,7 +36,7 @@ impl OutboundEnvelope {
         &self.0.session_id
     }
 
-    pub fn envelope(&self) -> &Envelope {
+    pub(crate) fn envelope(&self) -> &Envelope {
         &self.0
     }
 }
@@ -52,7 +52,6 @@ pub struct SessionSender {
 }
 
 impl SessionSender {
-    /// The session this sender targets.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -119,8 +118,8 @@ impl SessionSender {
                 route_to: transport::session_route(&self.session_id),
             },
             &transport::FrameFields {
-                frame_type: "data".into(),
-                sender: "device".into(),
+                frame_type: transport::DATA_FRAME_TYPE.into(),
+                sender: transport::SENDER_DEVICE.into(),
                 payload,
                 message_id: None,
                 created_at: None,
@@ -156,7 +155,6 @@ struct CarrierId(u64);
 /// One live wire — a relay socket generation, or a DataChannel — as everything
 /// above the wire sees it: somewhere to put envelopes for any session, since one
 /// wire carries every client session of the device.
-#[derive(Clone)]
 pub struct CarrierHandle {
     id: CarrierId,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
@@ -166,7 +164,7 @@ impl CarrierHandle {
     /// Open one wire: the handle everything above the wire pushes into, and the
     /// queue the wire's writer drains. Minting both here is what keeps the two
     /// halves of one carrier from ever being crossed with another's.
-    pub fn open() -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>) {
+    pub(crate) fn open() -> (Self, mpsc::UnboundedReceiver<OutboundEnvelope>) {
         static NEXT_CARRIER_ID: AtomicU64 = AtomicU64::new(1);
         let (out, envelopes) = mpsc::unbounded_channel();
         (
@@ -289,7 +287,6 @@ impl SessionRegistry {
             .ok_or_else(|| CarrierError::UnknownSession(session_id.to_string()))
     }
 
-    /// One carrier stops carrying one session.
     fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<SessionEnd> {
         let mut sessions = self.sessions.lock().unwrap();
         let Some(open) = sessions.get_mut(session_id) else {
@@ -304,7 +301,6 @@ impl SessionRegistry {
         vec![ended]
     }
 
-    /// One carrier is gone: every session that rode nothing else ends with it.
     fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd> {
         let mut ended = Vec::new();
         self.sessions.lock().unwrap().retain(|session_id, open| {
@@ -318,7 +314,6 @@ impl SessionRegistry {
         ended
     }
 
-    /// The client said so: the session ends however many carriers it rides.
     fn end(&self, session_id: &str) -> Vec<SessionEnd> {
         match self.sessions.lock().unwrap().remove(session_id) {
             Some(open) => vec![SessionEnd::of(session_id, &open)],
@@ -326,7 +321,6 @@ impl SessionRegistry {
         }
     }
 
-    /// Whether the id of this end has been minted again since it ended.
     fn reopened_since(&self, end: &SessionEnd) -> bool {
         self.sessions
             .lock()
@@ -357,7 +351,6 @@ impl FrameIntake {
         })
     }
 
-    /// A client opened a session on this carrier (or re-attached an open one).
     pub fn open(
         &self,
         session_id: &str,
@@ -390,7 +383,6 @@ impl FrameIntake {
         self.close_ended(self.registry.release_session(session_id, carrier));
     }
 
-    /// This carrier is gone.
     pub fn close_carrier(&self, carrier: &CarrierHandle) {
         self.close_ended(self.registry.release_carrier(carrier));
     }

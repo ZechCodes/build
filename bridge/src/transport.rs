@@ -109,6 +109,10 @@ pub const CLOSE_FRAME_TYPE: &str = "close";
 /// The inner frame type of every request and reply.
 pub const DATA_FRAME_TYPE: &str = "data";
 
+/// The two parties an inner frame's `sender` may name.
+pub const SENDER_CLIENT: &str = "client";
+pub const SENDER_DEVICE: &str = "device";
+
 /// The inner-frame fields a sender supplies; `message_id`/`created_at` default.
 #[derive(Debug, Clone)]
 pub struct FrameFields {
@@ -322,7 +326,7 @@ pub fn encrypt_frame(
         &[DATA_FRAME_TYPE, CLOSE_FRAME_TYPE],
         "frame_type",
     )?;
-    validate_enum(&frame.sender, &["client", "device"], "sender")?;
+    validate_enum(&frame.sender, &[SENDER_CLIENT, SENDER_DEVICE], "sender")?;
 
     let inner = json!({
         "session_id": session_id,
@@ -366,7 +370,7 @@ pub fn decrypt_envelope(session_key_b64: &str, envelope: &Envelope) -> Result<Fr
         &[DATA_FRAME_TYPE, CLOSE_FRAME_TYPE],
         "frame_type",
     )?;
-    validate_enum(&frame.sender, &["client", "device"], "sender")?;
+    validate_enum(&frame.sender, &[SENDER_CLIENT, SENDER_DEVICE], "sender")?;
     Ok(frame)
 }
 

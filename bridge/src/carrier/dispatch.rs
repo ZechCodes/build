@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use super::{FrameHandler, SessionSender};
-use crate::transport::{Frame, CLOSE_FRAME_TYPE};
+use crate::transport::{Frame, CLOSE_FRAME_TYPE, SENDER_DEVICE};
 
 /// How many handlers may run at once. Handlers are blocking (they take the app
 /// mutex, and some of them walk a worktree with libgit2), so they run on the
@@ -335,7 +335,7 @@ impl Dispatcher {
                 session_id: session_id.clone(),
                 message_id: String::new(),
                 frame_type: CLOSE_FRAME_TYPE.into(),
-                sender: "device".into(),
+                sender: SENDER_DEVICE.into(),
                 created_at: String::new(),
                 payload: Value::Null,
             };
@@ -409,8 +409,6 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     }
 }
 
-/// Run one handler on a blocking thread and send its answer back.
-///
 /// Blocking, not async: a handler takes the app mutex and may sit in libgit2 for
 /// seconds. On a runtime worker that would block the read loop and the writer
 /// with it — the very thing this queue exists to prevent.

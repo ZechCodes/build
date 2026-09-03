@@ -119,6 +119,16 @@ pub trait Harness: Send + Sync {
         context: &HarnessContext,
     ) -> HarnessSpec;
 
+    /// Open this provider's running session and subscribe to its output before
+    /// startup can emit anything.
+    ///
+    /// Opaque CLI providers share this PTY implementation. Protocol providers
+    /// override it so their concrete process and session types remain private
+    /// to the provider module.
+    fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
+        open_terminal_session(&request.spec, request.root, request.terminal)
+    }
+
     /// Whether a session opened for this provider offers a terminal.
     ///
     /// The provider answers because it is the only authority that exists BOTH
@@ -214,38 +224,30 @@ pub(crate) fn is_a_filename(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// Which carrier a spawn opens, and what that carrier needs to know.
-///
-/// The provider decides ([`Harness::has_terminal`]) and this is the shape that
-/// decision travels in, so the two arms carry only what their own carrier has
-/// an answer for: a grid and a readiness wait belong to a terminal, and a
-/// session protocol has neither.
-pub enum Carrier {
-    /// A full PTY around an opaque CLI wrapper.
-    ///
-    /// `turn_ready_grace` is how long to wait for the harness to be able to
-    /// take a turn, and `None` is for a session Build will never hand one to
-    /// (the human's own shell): waiting on a login shell for a signal it may
-    /// never send would stall the caller for the whole grace.
-    ///
-    /// `locator` is how this carrier answers
-    /// [`AgentSession::session_id`] — the provider's watcher over its own
-    /// transcript tree, built by the caller BEFORE the child exists so the
-    /// child's own record can be told from what was already there. `None` for
-    /// the human's shell, which is having no conversation to name.
-    Terminal {
-        size: PtySize,
-        turn_ready_grace: Option<Duration>,
-        locator: Option<Box<dyn SessionLocator>>,
-    },
-    /// A session protocol over piped stdio. There is no readiness dance: a
-    /// turn is a value, and the child says for itself when it can take one.
-    Protocol,
+/// Terminal mechanics supplied to a provider without deciding that provider's
+/// carrier. Protocol harnesses ignore them and own their startup mechanics.
+pub struct TerminalOpenOptions {
+    pub size: PtySize,
+    pub turn_ready_grace: Option<Duration>,
+    pub session_locator: Option<Box<dyn SessionLocator>>,
 }
 
-/// Open a live session for `spec`, rooted at `root`, on the carrier the
-/// provider chose. Returns the session and its output, subscribed before its
-/// first word can be missed.
+/// Everything a provider needs to construct one live session.
+pub struct SessionOpenRequest {
+    pub spec: HarnessSpec,
+    pub root: PathBuf,
+    pub choice: ModelChoice,
+    pub terminal: TerminalOpenOptions,
+    pub resume_session_id: Option<String>,
+}
+
+/// A live session and the output subscribed during its construction.
+pub struct OpenedSession {
+    pub session: Arc<dyn AgentSession>,
+    pub output: SessionOutput,
+}
+
+/// Open a provider's live session through its harness implementation.
 ///
 /// The session comes back behind an [`Arc`] because the daemon keeps it inside
 /// the state it locks, and hands turns to it with that lock RELEASED — see
@@ -253,48 +255,37 @@ pub enum Carrier {
 /// session out of the registry without holding the registry open across the
 /// turn.
 ///
-/// The one place a launch description becomes a running agent, and the only
-/// place the two carriers are told apart: above here a session is a session.
-///
-/// The readiness wait is the PTY arm's alone, because readiness is how a
-/// *terminal* opens: an interactive TUI paints a banner — or a modal
-/// workspace-trust dialog — long before its line editor will accept a turn, so
-/// a prompt written on first byte lands in whatever owns the keyboard. A
-/// carrier that takes a turn as a value has nothing to wait for.
-///
-/// The subscribe happens BEFORE that wait, and the order is not incidental: a
-/// harness paints its entire startup while readiness is being waited out — and
-/// a harness that dies there paints its last words — so a stream subscribed
-/// afterwards would open blank on a live agent and lose the epitaph of a dead
-/// one. The protocol arm subscribes inside its own spawn for the same reason.
 pub fn open_session(
+    provider: AgentProvider,
+    request: SessionOpenRequest,
+) -> Result<OpenedSession, HarnessError> {
+    let opened = harness_for(provider).open_session(request)?;
+    refuse_a_session_nobody_can_watch(opened.session.as_ref())?;
+    Ok(opened)
+}
+
+/// Open a PTY session and subscribe before waiting for its line editor.
+///
+/// Harnesses use this as their shared default. The app also uses it directly
+/// for a human shell, which has no provider to dispatch through.
+pub(crate) fn open_terminal_session(
     spec: &HarnessSpec,
     root: PathBuf,
-    carrier: Carrier,
-) -> Result<(Arc<dyn AgentSession>, SessionOutput), HarnessError> {
-    let (session, output): (Arc<dyn AgentSession>, SessionOutput) = match carrier {
-        Carrier::Terminal {
-            size,
-            turn_ready_grace,
-            locator,
-        } => {
-            let session = PtySession::spawn(spec, Some(root), size)?.named_by(locator);
-            let output = match session.terminal() {
-                Some(terminal) => SessionOutput::painting(terminal.subscribe()),
-                None => SessionOutput::silent(),
-            };
-            if let Some(grace) = turn_ready_grace {
-                session.ready_within(grace);
-            }
-            (Arc::new(session), output)
-        }
-        Carrier::Protocol => {
-            let (session, activity) = adk::AdkSession::spawn(spec, Some(root))?;
-            (Arc::new(session), SessionOutput::reporting(activity))
-        }
+    options: TerminalOpenOptions,
+) -> Result<OpenedSession, HarnessError> {
+    let session =
+        PtySession::spawn(spec, Some(root), options.size)?.named_by(options.session_locator);
+    let output = match session.terminal() {
+        Some(terminal) => SessionOutput::painting(terminal.subscribe()),
+        None => SessionOutput::silent(),
     };
-    refuse_a_session_nobody_can_watch(session.as_ref())?;
-    Ok((session, output))
+    if let Some(grace) = options.turn_ready_grace {
+        session.ready_within(grace);
+    }
+    Ok(OpenedSession {
+        session: Arc::new(session),
+        output,
+    })
 }
 
 /// Refuse a session that offers neither a terminal nor an activity stream.
@@ -485,18 +476,18 @@ mod tests {
     fn a_session_that_will_be_handed_a_turn_opens_ready() {
         let root = tempfile::tempdir().expect("temp worktree");
         let started = std::time::Instant::now();
-        let (session, _output) = open_session(
+        let opened = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
-                locator: None,
+                session_locator: None,
             },
         )
         .expect("the session opens");
         let waited = started.elapsed();
-        session.end();
+        opened.session.end();
         assert!(
             waited >= Duration::from_millis(300),
             "the open returned before the harness would take a turn, after {waited:?}"
@@ -513,18 +504,18 @@ mod tests {
     fn a_session_with_no_turn_coming_is_not_waited_on() {
         let root = tempfile::tempdir().expect("temp worktree");
         let started = std::time::Instant::now();
-        let (session, _output) = open_session(
+        let opened = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: None,
+                session_locator: None,
             },
         )
         .expect("the session opens");
         let waited = started.elapsed();
-        session.end();
+        opened.session.end();
         assert!(
             waited < Duration::from_millis(200),
             "opening a session nobody will speak to waited {waited:?} for readiness"
@@ -545,31 +536,31 @@ mod tests {
         }
 
         let root = tempfile::tempdir().expect("temp worktree");
-        let (named, _output) = open_session(
+        let named = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: Some(Box::new(Says("sess-located"))),
+                session_locator: Some(Box::new(Says("sess-located"))),
             },
         )
         .expect("the session opens");
-        assert_eq!(named.session_id().as_deref(), Some("sess-located"));
-        named.end();
+        assert_eq!(named.session.session_id().as_deref(), Some("sess-located"));
+        named.session.end();
 
-        let (unnamed, _output) = open_session(
+        let unnamed = open_terminal_session(
             &slow_to_open_spec(),
             root.path().to_path_buf(),
-            Carrier::Terminal {
+            TerminalOpenOptions {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: None,
+                session_locator: None,
             },
         )
         .expect("the session opens");
-        assert_eq!(unnamed.session_id(), None);
-        unnamed.end();
+        assert_eq!(unnamed.session.session_id(), None);
+        unnamed.session.end();
     }
 
     /// A fake stream-json harness: it announces its session, then sits with its
@@ -581,29 +572,75 @@ mod tests {
         )
     }
 
+    fn protocol_open_request(provider: AgentProvider, root: &Path) -> SessionOpenRequest {
+        SessionOpenRequest {
+            spec: fake_protocol_spec(),
+            root: root.to_path_buf(),
+            choice: ModelChoice {
+                provider,
+                ..ModelChoice::default()
+            },
+            terminal: TerminalOpenOptions {
+                size: one_pty(),
+                turn_ready_grace: None,
+                session_locator: None,
+            },
+            resume_session_id: None,
+        }
+    }
+
+    /// The public constructor reaches every provider through its harness, and
+    /// each harness opens the carrier it owns. The same harmless process spec
+    /// therefore becomes a terminal for opaque providers and an activity
+    /// stream for the headless provider without the caller choosing a carrier.
+    #[test]
+    fn every_provider_opens_its_own_session_carrier() {
+        for provider in AgentProvider::ALL {
+            let root = tempfile::tempdir().expect("temp worktree");
+            let opened = open_session(provider, protocol_open_request(provider, root.path()))
+                .expect("the provider opens its session");
+
+            assert_eq!(
+                opened.session.terminal().is_some(),
+                provider != AgentProvider::ClaudeAdk
+            );
+            assert_eq!(
+                opened.output.bytes.is_some(),
+                provider != AgentProvider::ClaudeAdk
+            );
+            assert_eq!(
+                opened.output.activity.is_some(),
+                provider == AgentProvider::ClaudeAdk
+            );
+            opened.session.end();
+        }
+    }
+
     /// The carrier choice, made in the one place it is made: a harness with no
     /// terminal opens a session protocol, and what comes back offers the
     /// alternative capability instead of an empty one.
     #[test]
     fn a_harness_with_no_terminal_opens_a_carrier_that_reports_itself() {
         let root = tempfile::tempdir().expect("temp worktree");
-        let (session, output) = open_session(
-            &fake_protocol_spec(),
-            root.path().to_path_buf(),
-            Carrier::Protocol,
+        let opened = open_session(
+            AgentProvider::ClaudeAdk,
+            protocol_open_request(AgentProvider::ClaudeAdk, root.path()),
         )
         .expect("the session opens");
 
         assert!(
-            session.terminal().is_none(),
+            opened.session.terminal().is_none(),
             "a session protocol has nothing to escape to"
         );
-        assert!(output.bytes.is_none(), "and nothing to paint into a grid");
         assert!(
-            output.activity.is_some(),
+            opened.output.bytes.is_none(),
+            "and nothing to paint into a grid"
+        );
+        assert!(
+            opened.output.activity.is_some(),
             "what it has instead is its own account of its work"
         );
-        session.end();
+        opened.session.end();
     }
 
     /// A session that offers NEITHER capability is refused rather than opened.
@@ -643,14 +680,13 @@ mod tests {
         );
 
         let root = tempfile::tempdir().expect("temp worktree");
-        let (session, _output) = open_session(
-            &fake_protocol_spec(),
-            root.path().to_path_buf(),
-            Carrier::Protocol,
+        let opened = open_session(
+            AgentProvider::ClaudeAdk,
+            protocol_open_request(AgentProvider::ClaudeAdk, root.path()),
         )
         .expect("a carrier that reports itself opens");
-        assert!(refuse_a_session_nobody_can_watch(session.as_ref()).is_ok());
-        session.end();
+        assert!(refuse_a_session_nobody_can_watch(opened.session.as_ref()).is_ok());
+        opened.session.end();
     }
 
     /// A worktree Build has never opened has no conversation to resume, on any

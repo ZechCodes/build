@@ -26,8 +26,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
-    TerminalView, Turn,
+    harness_for, open_session, open_terminal_session, AgentSession, AgentStatus, HarnessContext,
+    SessionOpenRequest, SessionOutput, TerminalOpenOptions, TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -141,6 +141,15 @@ fn shell_harness_spec(shell: &str) -> HarnessSpec {
         .arg("-i")
         .arg("-l")
         .env("TERM", "xterm-256color")
+}
+
+fn terminal_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
 }
 
 /// A worktree-backed surface a terminal or fs call is scoped to. Scope roots are
@@ -662,6 +671,11 @@ enum TabRole {
     },
 }
 
+struct AgentSessionOpenOptions {
+    choice: ModelChoice,
+    resume_session_id: Option<String>,
+}
+
 /// A live tab: one agent session rooted in a worktree, plus the authoritative
 /// screen model that makes reconnect a snapshot (current screen + cursor)
 /// rather than a byte replay.
@@ -774,40 +788,44 @@ impl Tab {
         spec: &HarnessSpec,
         tab_id: String,
         root: std::path::PathBuf,
-        cols: u16,
-        rows: u16,
+        size: PtySize,
         locator: Option<Box<dyn crate::harness::SessionLocator>>,
+        agent_options: Option<AgentSessionOpenOptions>,
     ) -> Result<(Tab, SessionOutput), String> {
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        // Which carrier opens is the PROVIDER's answer, asked here and asked by
-        // the rail before there is a session — one authority, so the rail never
-        // offers a basement this spawn would refuse. The human's own shell is
-        // always a terminal, and is the one session never handed a turn: it is
-        // not waited on, because a login shell may never announce a line editor
-        // at all and `term.create` holds the state lock across this.
-        let carrier = match &role {
-            TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
-                Carrier::Protocol
+        let (cols, rows) = (size.cols, size.rows);
+        let opened = match (&role, agent_options) {
+            (TabRole::Agent { provider, .. }, Some(options)) => open_session(
+                *provider,
+                SessionOpenRequest {
+                    spec: spec.clone(),
+                    root: root.clone(),
+                    choice: options.choice,
+                    terminal: TerminalOpenOptions {
+                        size,
+                        turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                        session_locator: locator,
+                    },
+                    resume_session_id: options.resume_session_id,
+                },
+            ),
+            (TabRole::Shell, None) => open_terminal_session(
+                spec,
+                root.clone(),
+                TerminalOpenOptions {
+                    size,
+                    turn_ready_grace: None,
+                    session_locator: None,
+                },
+            ),
+            (TabRole::Agent { .. }, None) => {
+                return Err("an agent session requires model and resume options".to_string())
             }
-            TabRole::Agent { .. } => Carrier::Terminal {
-                size,
-                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                locator,
-            },
-            // The human's own shell is having no conversation, so there is no
-            // name for a locator to find.
-            TabRole::Shell => Carrier::Terminal {
-                size,
-                turn_ready_grace: None,
-                locator: None,
-            },
+            (TabRole::Shell, Some(_)) => {
+                return Err("a human shell cannot have agent session options".to_string())
+            }
         };
-        let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
+        let opened = opened.map_err(|e| e.to_string())?;
+        let session = opened.session;
         Ok((
             Tab {
                 tab_id,
@@ -820,7 +838,7 @@ impl Tab {
                 call_sequences: HashMap::new(),
                 last_delivered_at: None,
             },
-            rx,
+            opened.output,
         ))
     }
 }
@@ -17558,8 +17576,8 @@ fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             &shell_harness_spec(&shell),
             tab_id,
             root,
-            cols,
-            rows,
+            terminal_size(cols, rows),
+            None,
             None,
         )?;
         s.tabs.insert(key.clone(), tab);
@@ -18032,18 +18050,28 @@ fn ensure_agent_tab(
                     &root,
                     model_choice,
                     continue_session,
-                    resume_session_id,
+                    resume_session_id.clone(),
                     &session_token,
                 );
                 let size = orch.pty_size();
                 s.mcp_session_tokens
                     .insert(agent_id.to_string(), session_token.clone());
                 s.agent_spawns_in_flight.insert(key.clone());
-                Some((spec, size, carried, session_token, locator))
+                Some((
+                    spec,
+                    size,
+                    carried,
+                    session_token,
+                    locator,
+                    AgentSessionOpenOptions {
+                        choice: model_choice.clone(),
+                        resume_session_id,
+                    },
+                ))
             }
         };
 
-        let Some((spec, size, carried, session_token, locator)) = reserved else {
+        let Some((spec, size, carried, session_token, locator, agent_options)) = reserved else {
             // Someone else is spawning this root's agent: wait for their tab
             // rather than start a second harness beside it.
             if std::time::Instant::now() >= deadline {
@@ -18065,9 +18093,9 @@ fn ensure_agent_tab(
             &spec,
             key.tab_id.clone(),
             root.clone(),
-            size.cols,
-            size.rows,
+            size,
             locator,
+            Some(agent_options),
         );
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
@@ -20834,9 +20862,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&agent_id),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the second agent's tab spawns");
         let key = TabKey::agent(&root, &agent_id);
@@ -21163,8 +21191,8 @@ mod tests {
             &shell_harness_spec("/bin/bash"),
             "term-99".to_string(),
             shell_root,
-            80,
-            24,
+            terminal_size(80, 24),
+            None,
             None,
         )
         .expect("a shell tab spawns");
@@ -29423,9 +29451,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("implementation agent tab spawns");
         let mut output = agent_terminal(&tab).subscribe();
@@ -29907,9 +29935,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the agent tab spawns");
         let agent_pid = agent_pid(&tab).expect("the agent has a pid");
@@ -30249,9 +30277,9 @@ mod tests {
             &spec,
             agent_tab_id(&crate::agent::derived_agent_id(run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -30318,6 +30346,16 @@ mod tests {
         HarnessSpec::new("sh")
             .arg("-c")
             .arg("printf '\\033[?2004h'; cat >/dev/null")
+    }
+
+    fn agent_session_open_options(provider: AgentProvider) -> Option<AgentSessionOpenOptions> {
+        Some(AgentSessionOpenOptions {
+            choice: ModelChoice {
+                provider,
+                ..ModelChoice::default()
+            },
+            resume_session_id: None,
+        })
     }
 
     /// The sweep threshold these tests speak in — the shape of the real one
@@ -31442,9 +31480,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -31654,9 +31692,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id(&run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .unwrap();
         let agent_pid = agent_pid(&tab).expect("a live agent");
@@ -32059,9 +32097,9 @@ mod tests {
             ),
             agent_tab_id(&crate::agent::derived_agent_id(run_id)),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, run_id);
@@ -32972,9 +33010,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("run-x")),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the agent tab spawns");
         let wire_id = tab.wire_id();
@@ -33028,9 +33066,9 @@ mod tests {
             &HarnessSpec::new("true"),
             agent_tab_id(&crate::agent::derived_agent_id("run-codex")),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::Codex),
         )
         .expect("the agent tab spawns");
         let key = derived_agent_key(&root, "run-codex");
@@ -34981,8 +35019,8 @@ mod tests {
             &shell_harness_spec("/bin/bash"),
             "term-77".to_string(),
             shell_root.clone(),
-            80,
-            24,
+            terminal_size(80, 24),
+            None,
             None,
         )
         .expect("a shell tab spawns");
@@ -40507,9 +40545,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&crate::agent::derived_agent_id("idle-agent-owner")),
             root.clone(),
-            80,
-            24,
+            terminal_size(80, 24),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .unwrap();
         tab.session
@@ -40643,9 +40681,9 @@ mod tests {
             &warm_tui_spec(),
             agent_tab_id(&agent_id),
             root.clone(),
-            120,
-            40,
+            terminal_size(120, 40),
             None,
+            agent_session_open_options(AgentProvider::default()),
         )
         .expect("the agent tab spawns");
         state.tabs.insert(TabKey::agent(&root, &agent_id), tab);

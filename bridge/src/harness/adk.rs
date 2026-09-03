@@ -38,7 +38,8 @@ use crate::harness::shell_tail::ShellTail;
 use crate::harness::surfaces::{AgentSurfaces, SurfaceLedger, SurfaceRevision};
 use crate::harness::{
     ActivityReport, AgentActivity, AgentSession, AgentStatus, Harness, HarnessContext,
-    HarnessError, SessionLocator, ToolOutcome, Turn, INHERITED_AGENT_MARKERS,
+    HarnessError, OpenedSession, SessionLocator, SessionOpenRequest, SessionOutput, ToolOutcome,
+    Turn, INHERITED_AGENT_MARKERS,
 };
 use crate::models::{AgentProvider, ModelChoice, ModelOption};
 use crate::orchestrator::SpawnOptions;
@@ -123,6 +124,14 @@ impl Harness for AdkHarness {
         }
         spec.env("BRIDGE_MCP_SOCKET", &context.mcp_socket)
             .env("BRIDGE_MCP_TOKEN", &options.mcp_session_token)
+    }
+
+    fn open_session(&self, request: SessionOpenRequest) -> Result<OpenedSession, HarnessError> {
+        let (session, activity) = AdkSession::spawn(&request.spec, Some(request.root))?;
+        Ok(OpenedSession {
+            session: Arc::new(session),
+            output: SessionOutput::reporting(activity),
+        })
     }
 
     /// No terminal, and this is the first provider to say so. A session that

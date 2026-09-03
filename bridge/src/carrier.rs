@@ -199,11 +199,16 @@ struct SessionRegistry {
 }
 
 impl SessionRegistry {
-    /// Mint a session, or attach another carrier to one already open.
+    /// Mint a session, or accept a re-open of one already open.
     ///
     /// Idempotent for a known session whose key matches — that is the re-attach
     /// a browser performs when its relay socket reconnects. A known session
     /// presented under a different key is refused; the frame is dropped.
+    ///
+    /// Only the mint puts the session on this carrier. A `session_init` unwraps
+    /// with the device's own key, so a repeat of one proves nothing about who
+    /// sent it; the re-attaching carrier earns its ride the way every carrier
+    /// does, through the first frame that decrypts there ([`Self::admit`]).
     fn open(
         &self,
         session_id: &str,
@@ -215,10 +220,7 @@ impl SessionRegistry {
             Some(open) if open.key != session_key => {
                 Err(CarrierError::KeyMismatch(session_id.to_string()))
             }
-            Some(open) => {
-                open.carriers.insert(carrier.id);
-                Ok(())
-            }
+            Some(_) => Ok(()),
             None => {
                 sessions.insert(
                     session_id.to_string(),
@@ -485,15 +487,14 @@ mod registry_tests {
         let (peer, _peer_out) = CarrierHandle::open();
         let key = transport::generate_session_key();
         registry.open("s-1", key.clone(), &relay).unwrap();
-        registry.open("s-1", key.clone(), &peer).unwrap();
+        registry
+            .admit(&client_envelope(&key, "s-1", "data"), &peer)
+            .unwrap();
 
         assert!(
             registry.release_session("s-1", &relay).is_empty(),
             "one carrier gone is not the session gone"
         );
-        assert!(registry
-            .admit(&client_envelope(&key, "s-1", "data"), &peer)
-            .is_ok());
 
         assert_eq!(
             registry.release_session("s-1", &peer),
@@ -510,7 +511,9 @@ mod registry_tests {
         let key = transport::generate_session_key();
         registry.open("s-alone", key.clone(), &relay).unwrap();
         registry.open("s-shared", key.clone(), &relay).unwrap();
-        registry.open("s-shared", key.clone(), &peer).unwrap();
+        registry
+            .admit(&client_envelope(&key, "s-shared", "data"), &peer)
+            .unwrap();
 
         assert_eq!(
             registry.release_carrier(&relay),
@@ -550,11 +553,34 @@ mod registry_tests {
         registry
             .open("s-1", key.clone(), &second)
             .expect("the same session on a second carrier is a re-attach");
+        registry
+            .admit(&client_envelope(&key, "s-1", "data"), &second)
+            .expect("the re-attached session takes frames on the new carrier");
 
         assert!(registry.release_carrier(&first).is_empty());
         assert!(registry
             .admit(&client_envelope(&key, "s-1", "data"), &second)
             .is_ok());
+    }
+
+    /// A `session_init` unwraps with the device's own key, so anyone who saw it
+    /// on the relay can replay it. Repeating one earns the `session_accept`,
+    /// never the ride: only a frame that decrypts binds the session to a wire.
+    #[test]
+    fn reopening_a_session_records_no_ride_until_a_frame_decrypts_there() {
+        let registry = SessionRegistry::default();
+        let (first, _first_out) = CarrierHandle::open();
+        let (second, _second_out) = CarrierHandle::open();
+        let key = transport::generate_session_key();
+        registry.open("s-1", key.clone(), &first).unwrap();
+
+        registry.open("s-1", key.clone(), &second).unwrap();
+
+        assert_eq!(
+            registry.release_carrier(&first),
+            vec!["s-1".to_string()],
+            "a replayed session_init put the session on no second carrier"
+        );
     }
 
     #[test]
@@ -700,7 +726,11 @@ mod intake_tests {
         let (peer, _peer_out) = CarrierHandle::open();
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &relay).unwrap();
-        intake.open("s-1", key.clone(), &peer).unwrap();
+        intake
+            .accept(client_envelope(&key, "s-1", "data"), &peer)
+            .await
+            .unwrap();
+        assert_eq!(next_seen(&mut seen).await, "data:s-1");
 
         intake.close_session("s-1", &relay);
 

@@ -34,10 +34,12 @@
 //! the api must confirm this device is approved and owned by an account before
 //! anything is written. `uninstall-service` removes it.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::backoff::Backoff;
+use build_bridge::carrier::{FrameIntake, SessionRegistry};
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::{identity, pairing, service, transport};
@@ -299,6 +301,10 @@ async fn serve() {
     // rm -rf'ing an external worktree); mutation-driven closure happens inline.
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     let handler = AppState::handler(app);
+    // One registry and one intake for the life of the daemon: a session is
+    // minted once and reachable from every carrier, so it outlives the relay
+    // socket it arrived on.
+    let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted
@@ -307,7 +313,7 @@ async fn serve() {
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&device_url, &identity, handler.clone()).await {
+        match relay::run_with_intake(&device_url, &identity, intake.clone(), None).await {
             Ok(()) => eprintln!(
                 "relay disconnected; reconnecting in {}s",
                 backoff.current().as_secs()

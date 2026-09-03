@@ -90,7 +90,7 @@ These two selectors are the whole of keyed dispatch. Three primitives have
 nothing to key on and each owns one walk over `Isolation::ALL` that no caller
 repeats: a private `record_held(name) -> Result<bool, WorktreeError>` walks
 `holds_record` (`name_taken` and `create_on_branch`'s collision loop both ask it,
-so `name_taken` becomes fallible), `remove_checkout(path, name)` walks every
+so `name_taken` becomes fallible), `remove_checkout(path)` walks every
 backend's `remove` (absence is success for each, so present and gone are one
 path), and `prune` walks `prune`. No other `match` on `Isolation` and no direct
 reach for a backend field anywhere in the façade.
@@ -102,7 +102,7 @@ pub fn create(&self, slug: &str, base_branch: &str, isolation: Isolation) -> Res
 pub fn create_on_branch(&self, branch: &str, base_branch: &str, isolation: Isolation) -> Result<NamedBranchCheckout, WorktreeError>;
 pub fn restore(&self, worktree: &Worktree, isolation: Isolation) -> Result<Worktree, WorktreeError>;
 pub fn remove(&self, worktree: &Worktree, keep_branch: bool) -> Result<(), WorktreeError>;
-pub fn remove_checkout(&self, path: &Path, name: &str) -> Result<(), WorktreeError>;
+pub fn remove_checkout(&self, path: &Path) -> Result<(), WorktreeError>;
 pub fn publish(&self, path: &Path, branch: &str) -> Result<(), WorktreeError>;
 pub fn sync_base(&self, path: &Path, base_branch: &str) -> Result<(), WorktreeError>;
 pub fn merge_into_base(&self, path: &Path, branch: &str, base_branch: &str) -> Result<(), WorktreeError>;
@@ -116,9 +116,11 @@ pub fn availability(&self) -> IsolationAvailability;   // this stage: cow = Err(
 
 Rules from spec §3 that must hold now:
 
-- `remove` publishes before removing when `keep_branch` and the checkout exists
-  (a no-op for the worktree backend, but the call is there); when the checkout is
-  gone, `remove_checkout` asks **every** backend to clear its record.
+- `remove` publishes before removing when `keep_branch` and `Isolation::of` says
+  there is a checkout at the path to publish from (a no-op for the worktree
+  backend, but the call is there); when the checkout is gone — or the directory
+  is no checkout at all — `remove_checkout` asks **every** backend to clear its
+  record, and the directory still goes.
 - `restore` of an existing checkout: `backend_of(path).verify`, then `publish`,
   then the common checks. `restore` of a missing checkout: the branch-finding
   code exactly as today (local ref, else bounded fetch from the configured
@@ -144,7 +146,7 @@ Rules from spec §3 that must hold now:
 ### 4. `describe_checkout` (spec §4.1)
 
 Split `parse_worktree_block` so the summary is computed by
-`describe_checkout(project, path, base_branch, now) -> Option<ExternalWorktree>`
+`describe_checkout(path, base_branch, now) -> Option<ExternalWorktree>`
 from the checkout alone. Add `pub isolation: Isolation` to `ExternalWorktree`
 from `Isolation::of(path)?` (a path that is not a Build checkout is described by
 nobody) and emit `"isolation"` in `external_worktrees_json` (`app.rs`). The SPA

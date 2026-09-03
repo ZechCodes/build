@@ -51,18 +51,33 @@ git itself:
 
 | today | after |
 |---|---|
-| `remove_registered_worktree(project, path, force)` | `worktrees.remove_checkout(&path, &record.worktree_name)` |
+| `remove_registered_worktree(project, path, force)` | `worktrees.remove_checkout(&path)` |
 | `merge_external_branch(project, branch, base)` | `worktrees.merge_into_base(&path, branch, base)` |
 | `local_branch_exists(project, branch)` | `worktrees.publish(&path, branch)` when the checkout exists, then `worktrees.branch_exists(branch)` |
 | `delete_local_branch_for_finish(project, branch, head)` | `worktrees.delete_branch_at(branch, head)` |
 | `restore_finish_branch_after_removal_failure` | `worktrees.restore_branch(branch, &record.head_sha)` inside the same error-composition |
 
+A checkout is named by its directory, so `remove_checkout` takes the path alone
+and no caller can hand it a name that disagrees with the path (spec §2, §4.1).
 The `force` distinction disappears: `remove_checkout` deletes the directory
 first, which is what `--force` bought. The Cleanup arm's "requires clean" check
 already ran in planning. Delete the five free functions.
 
 `checkpoint_worktree`, `validate_finish_record_path`, `finish_git_steps_are_complete`
 stay; the last one uses `worktrees.branch_exists`.
+
+### 1b. What stage 1 settled, so nobody unsettles it
+
+- `WorktreeManager::remove` deletes the run branch outright when `!keep_branch`
+  (a private `delete_branch`), and does **not** go through `delete_branch_at`. A
+  run teardown has read no head to guard on, and inventing one would refuse
+  removals that succeed today. `delete_branch_at` is for the finish path above,
+  which reads a head first. Spec §3 says so; do not "fix" `remove` back onto it.
+- `remove` publishes only when `Isolation::of(path)` answers — a directory that
+  is no checkout has nothing to publish from, and must still be removable.
+- `describe_checkout(path, base_branch, now)` takes no project repository, and
+  the primary is summarized by `summarize_checkout`, which skips the
+  `Isolation::of` gate the primary cannot pass.
 
 ### 2. Stage publication classification
 

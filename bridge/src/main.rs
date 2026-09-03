@@ -303,7 +303,7 @@ async fn serve() {
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on.
-    let intake = FrameIntake::new(handler);
+    let intake = FrameIntake::new(handler, identity.transport.clone());
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted

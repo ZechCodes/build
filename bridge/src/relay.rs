@@ -234,12 +234,12 @@ impl<'a> RelayConnection<'a> {
             "authenticated" => self.authenticated(msg),
             "session_init" => {
                 if let Err(e) = self.open_session(msg) {
-                    log_protocol_error(&e);
+                    drop_protocol_error(&e);
                 }
             }
             "e2ee_envelope" => {
                 if let Err(e) = self.take_envelope(msg).await {
-                    log_protocol_error(&e);
+                    drop_protocol_error(&e);
                 }
             }
             "session_closed" => {
@@ -270,9 +270,9 @@ impl<'a> RelayConnection<'a> {
         self.deadline = silence_deadline(interval);
     }
 
-    /// A client opened a session: unwrap its `session_init` with the device's
-    /// transport key, hand the intake what it unwrapped to, and send back the
-    /// `session_accept` the intake built.
+    /// A client opened a session: parse its `session_init` off the relay wire,
+    /// hand it to the intake, and send back the `session_accept` the intake
+    /// built. The wrapped key passes through here unopened.
     fn open_session(&self, msg: &Value) -> Result<(), RelayError> {
         let session_id = field_str(msg, "session_id")?;
         let init: SessionInit = serde_json::from_value(
@@ -282,8 +282,7 @@ impl<'a> RelayConnection<'a> {
         )
         .map_err(|e| RelayError::Protocol(format!("bad session_init: {e}")))?;
 
-        let opened = transport::open_session_init(&self.identity.transport.private_key_b64, &init)?;
-        let accept = self.intake.open(&session_id, opened, &self.carrier)?;
+        let accept = self.intake.open(&session_id, &init, &self.carrier)?;
         send(
             &self.control_tx,
             json!({
@@ -362,10 +361,19 @@ fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
         .ok_or_else(|| RelayError::Protocol(format!("{key} missing")))
 }
 
-/// A frame the device could not honour. Never fatal to the socket; a real
-/// build wires this to tracing, and until then it is deliberately silent, so a
-/// paired browser cannot drive stderr from the frame path.
-fn log_protocol_error(_err: &RelayError) {}
+/// A frame the device could not honour. Never fatal to the socket, and dropped
+/// without a trace on purpose — a paired browser must not be able to drive
+/// stderr from the frame path — with one exception: a `session_init` replayed
+/// for a live session under a foreign key. That is the frame the spec drops,
+/// it means a client is contesting an open session, and one line per refusal
+/// is the only way to see it happen in production.
+fn drop_protocol_error(err: &RelayError) {
+    if let RelayError::Carrier(CarrierError::KeyMismatch(session_id)) = err {
+        eprintln!(
+            "relay: session_init for {session_id} refused: the session is open under another key"
+        );
+    }
+}
 
 #[cfg(test)]
 mod writer_tests {

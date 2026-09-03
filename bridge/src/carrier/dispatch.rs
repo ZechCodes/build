@@ -201,44 +201,45 @@ impl Dispatcher {
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     pub(super) async fn dispatch(&self, sender: SessionSender, frame: Frame) {
-        if let Some(key) = ordered_lane(&sender, &frame) {
-            let closing =
-                frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
-            let Some(lane) = self.lane(key.clone(), &sender) else {
-                return;
-            };
-            let _ = lane
-                .send(LaneMessage::Run(Box::new(Job { sender, frame })))
-                .await;
-            if closing {
-                // A terminal id is minted once and never reused, so its close
-                // is the last frame its lane can carry. Letting the sender go
-                // ends the lane as soon as it has run that close.
-                self.lanes.lock().unwrap().remove(&key);
-            }
-            return;
+        match ordered_lane(&sender, &frame) {
+            Some(key) => self.dispatch_in_order(key, sender, frame).await,
+            None => self.dispatch_to_pool(sender, frame).await,
         }
-        let job = match read_key(&sender, &frame) {
+    }
+
+    /// Queue a terminal's frame on its serial lane. A terminal id is minted
+    /// once and never reused, so its close is the last frame its lane can
+    /// carry: letting the lane's sender go ends the lane once that close has
+    /// run.
+    async fn dispatch_in_order(&self, key: (String, String), sender: SessionSender, frame: Frame) {
+        let closing =
+            frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
+        let _ = self
+            .lane(key.clone())
+            .send(LaneMessage::Run(Box::new(Job { sender, frame })))
+            .await;
+        if closing {
+            self.lanes.lock().unwrap().remove(&key);
+        }
+    }
+
+    /// Queue an independent frame for whichever worker is free, joining an
+    /// identical read already waiting if there is one. A fold that heads the
+    /// queue and finds no worker left to take it is unparked again, so no frame
+    /// waits in a map nothing will ever drain.
+    async fn dispatch_to_pool(&self, sender: SessionSender, frame: Frame) {
+        let work = match read_key(&sender, &frame) {
+            None => QueuedWork::Frame(Job { sender, frame }),
             Some(key) => match self.fold_into_queued_read(key.clone(), sender, frame) {
-                Folded::Joined => return, // an identical read is waiting; it answers both
-                Folded::Heads => {
-                    if self
-                        .jobs
-                        .send(QueuedWork::FoldedRead(key.clone()))
-                        .await
-                        .is_err()
-                    {
-                        // No workers left to take the marker: don't leave the
-                        // frames parked in a map nothing will ever drain.
-                        self.folded_reads.lock().unwrap().remove(&key);
-                    }
-                    return;
-                }
-                Folded::Overflowed(job) => *job,
+                Folded::Joined => return,
+                Folded::Heads => QueuedWork::FoldedRead(key),
+                Folded::Overflowed(job) => QueuedWork::Frame(*job),
             },
-            None => Job { sender, frame },
         };
-        let _ = self.jobs.send(QueuedWork::Frame(job)).await;
+        if let Err(mpsc::error::SendError(QueuedWork::FoldedRead(key))) = self.jobs.send(work).await
+        {
+            self.folded_reads.lock().unwrap().remove(&key);
+        }
     }
 
     /// Join a read to an identical one already waiting for a worker, if there is
@@ -272,36 +273,14 @@ impl Dispatcher {
         }
     }
 
-    /// The lane for a terminal, started on first use — but never for a session
-    /// that has ended. [`Self::close_session`] took that session's lanes
-    /// already, and a lane born behind it would run its frame after the close;
-    /// the question is asked under the lane lock, so the two cannot cross.
-    fn lane(
-        &self,
-        key: (String, String),
-        sender: &SessionSender,
-    ) -> Option<mpsc::Sender<LaneMessage>> {
-        let mut lanes = self.lanes.lock().unwrap();
-        if let Some(lane) = lanes.get(&key) {
-            return Some(lane.clone());
-        }
-        if !sender.session_is_open() {
-            return None;
-        }
-        let (tx, mut rx) = mpsc::channel::<LaneMessage>(LANE_QUEUE_DEPTH);
-        let handler = self.handler.clone();
-        tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
-                match message {
-                    LaneMessage::Run(job) => run_job(&handler, *job).await,
-                    LaneMessage::Fence(reply) => {
-                        let _ = reply.send(());
-                    }
-                }
-            }
-        });
-        lanes.insert(key, tx.clone());
-        Some(tx)
+    /// The lane for a terminal, started on first use.
+    fn lane(&self, key: (String, String)) -> mpsc::Sender<LaneMessage> {
+        self.lanes
+            .lock()
+            .unwrap()
+            .entry(key)
+            .or_insert_with(|| spawn_lane(self.handler.clone()))
+            .clone()
     }
 
     /// A session ended: tell the app so it releases the session's attachments.
@@ -360,6 +339,23 @@ impl Dispatcher {
     }
 }
 
+/// One serial lane: runs what it is sent, one at a time, in arrival order,
+/// until its last sender is dropped.
+fn spawn_lane(handler: FrameHandler) -> mpsc::Sender<LaneMessage> {
+    let (tx, mut rx) = mpsc::channel::<LaneMessage>(LANE_QUEUE_DEPTH);
+    tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            match message {
+                LaneMessage::Run(job) => run_job(&handler, *job).await,
+                LaneMessage::Fence(reply) => {
+                    let _ = reply.send(());
+                }
+            }
+        }
+    });
+    tx
+}
+
 /// The serial lane a frame belongs to, if its order is part of its meaning.
 /// Terminal traffic — input, acks, resizes, attach and close — is a stream per
 /// terminal per client; everything else is an independent request.
@@ -401,13 +397,10 @@ fn read_key(sender: &SessionSender, frame: &Frame) -> Option<ReadKey> {
 /// result back under each waiting request id.
 async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     let FoldedRead { sender, frame, ids } = folded;
-    let handler = handler.clone();
-    let answering = sender.clone();
-    let answer = match tokio::task::spawn_blocking(move || handler(answering, frame)).await {
-        Ok(payload) => payload,
-        // The handler panicked (or the runtime is shutting down). Answer anyway:
-        // a client that never hears back waits forever.
-        Err(_) => json!({ "ok": false, "error": "handler failed" }),
+    let answer = match run_handler(handler, &sender, frame).await {
+        None => return,
+        Some(Ok(payload)) => payload,
+        Some(Err(_)) => json!({ "ok": false, "error": "handler failed" }),
     };
     for id in ids {
         let mut for_caller = answer.clone();
@@ -423,24 +416,47 @@ async fn run_folded_read(handler: &FrameHandler, folded: FoldedRead) {
     }
 }
 
-/// Blocking, not async: a handler takes the app mutex and may sit in libgit2 for
-/// seconds. On a runtime worker that would block the read loop and the writer
-/// with it — the very thing this queue exists to prevent.
+/// Run one frame's handler and push its answer. A handler that panicked (or a
+/// runtime shutting down) is answered too: a client that never hears back
+/// waits forever.
 async fn run_job(handler: &FrameHandler, job: Job) {
     let Job { sender, frame } = job;
     let id = frame.payload.get("id").cloned().unwrap_or(Value::Null);
-    let handler = handler.clone();
-    let answering = sender.clone();
-    match tokio::task::spawn_blocking(move || handler(answering, frame)).await {
-        Ok(payload) => {
+    match run_handler(handler, &sender, frame).await {
+        None => {}
+        Some(Ok(payload)) => {
             sender.push(payload);
         }
-        // The handler panicked (or the runtime is shutting down). Answer anyway:
-        // a client that never hears back waits forever.
-        Err(_) => {
+        Some(Err(_)) => {
             sender.push(json!({ "id": id, "ok": false, "error": "handler failed" }));
         }
     }
+}
+
+/// The one place a handler is invoked, and so the one place this rule is
+/// written: **nothing runs for a session after its close**. A frame admitted
+/// while its session was open and taken off a lane, the pool or a fold after
+/// that session ended is dropped here, whatever it asked — the close was the
+/// session's last frame, and a `session.hello` or a `term.attach` run behind
+/// it would register the session into a bus or a terminal it has left.
+///
+/// `None` is that refusal. Otherwise the handler's answer, or the join error of
+/// a handler that panicked.
+///
+/// Blocking, not async: a handler takes the app mutex and may sit in libgit2
+/// for seconds. On a runtime worker that would block the read loop and the
+/// writer with it — the very thing the queue exists to prevent.
+async fn run_handler(
+    handler: &FrameHandler,
+    sender: &SessionSender,
+    frame: Frame,
+) -> Option<Result<Value, tokio::task::JoinError>> {
+    if !sender.session_is_open() {
+        return None;
+    }
+    let handler = handler.clone();
+    let answering = sender.clone();
+    Some(tokio::task::spawn_blocking(move || handler(answering, frame)).await)
 }
 
 #[cfg(test)]
@@ -1194,11 +1210,11 @@ mod dispatcher_tests {
 
     /// The race a second carrier makes real: a session's end has taken its
     /// lanes, and a frame for that session — admitted while it was still open
-    /// — is dispatched behind it. No lane is born for it: the close was the
-    /// session's last frame, and an attach run after it would register a
-    /// sender into a session that is gone.
+    /// — is dispatched behind it. It never runs: the close was the session's
+    /// last frame, and an attach run after it would register a sender into a
+    /// session that is gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn no_lane_is_born_for_a_session_that_has_ended() {
+    async fn a_lane_frame_admitted_before_the_end_never_runs_after_it() {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
         let handler: FrameHandler = Arc::new(move |_sender, frame| {
@@ -1218,6 +1234,12 @@ mod dispatcher_tests {
                 request(1, "term.attach", json!({ "term_id": "term-1" })),
             )
             .await;
+        for _ in 0..100 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
 
         sender.opening_ended();
         dispatcher.close_session("s-ended", || true);
@@ -1239,6 +1261,70 @@ mod dispatcher_tests {
             *seen.lock().unwrap(),
             vec!["1".to_string(), "close".to_string()],
             "the attach dispatched behind the close was never run"
+        );
+    }
+
+    /// The same race for a frame that names no terminal, so it waits in the
+    /// pool rather than on a lane: taken by a worker after the session ended,
+    /// it never runs. `session.hello` is the one that matters — run behind the
+    /// close it would subscribe a session that is gone to every change event
+    /// for the life of the carrier.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_pooled_frame_admitted_before_the_end_never_runs_after_it() {
+        a_queued_frame_never_runs_after_its_session_ended("session.hello").await;
+    }
+
+    /// And for a read that waits in a fold rather than as a frame of its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_folded_read_admitted_before_the_end_never_runs_after_it() {
+        a_queued_frame_never_runs_after_its_session_ended("board.list").await;
+    }
+
+    /// Queue `method` behind a held worker — the only one — end the session,
+    /// close it, let the worker go, and check the frame's handler never ran.
+    async fn a_queued_frame_never_runs_after_its_session_ended(method: &str) {
+        let (gate, gated) = HandlerGate::new();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            if frame.payload["method"] == "hold" {
+                gated.hold();
+            }
+            let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
+                "close".to_string()
+            } else {
+                frame.payload["method"].as_str().unwrap_or("").to_string()
+            };
+            recorder.lock().unwrap().push(ran);
+            json!({ "ok": true })
+        });
+        let dispatcher = Dispatcher::with_capacity(handler, 16, 1);
+        let (sender, _rx, _key) = SessionSender::observable("s-ended");
+        dispatcher
+            .dispatch(sender.clone(), request(0, "hold", json!({})))
+            .await;
+        gate.wait_until_held();
+        dispatcher
+            .dispatch(sender.clone(), request(1, method, json!({})))
+            .await;
+
+        sender.opening_ended();
+        dispatcher.close_session("s-ended", || true);
+        gate.release();
+
+        for _ in 0..100 {
+            if seen.lock().unwrap().contains(&"close".to_string()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut ran = seen.lock().unwrap().clone();
+        ran.sort();
+        assert_eq!(
+            ran,
+            vec!["close".to_string(), "hold".to_string()],
+            "the {method} queued behind the close never ran"
         );
     }
 }

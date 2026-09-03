@@ -139,7 +139,12 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(&url, &identity, FrameIntake::new(handler), Some(connector)),
+        relay::run_with_connector(
+            &url,
+            &identity,
+            FrameIntake::new(handler, identity.transport.clone()),
+            Some(connector),
+        ),
     )
     .await
     .expect("no timeout");
@@ -167,7 +172,11 @@ async fn wss_scheme_is_supported_without_injected_connector() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(&url, &identity, FrameIntake::new(handler)),
+        relay::run(
+            &url,
+            &identity,
+            FrameIntake::new(handler, identity.transport.clone()),
+        ),
     )
     .await
     .expect("no timeout")

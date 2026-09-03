@@ -8,12 +8,13 @@
 use std::sync::Arc;
 
 use build_bridge::carrier::{FrameHandler, FrameIntake};
-use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::relay::{self, DeviceIdentity, RelayError};
 use build_bridge::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 
 /// Receive the next value or fail the test on a 10s timeout.
@@ -75,47 +76,80 @@ async fn mock_relay(
     }
 }
 
-#[tokio::test]
-async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
-    // The device's stable identity.
-    let identity = DeviceIdentity {
+/// The device's stable identity, freshly minted.
+fn device_identity() -> DeviceIdentity {
+    DeviceIdentity {
         device_id: "dev-1".into(),
         identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
         transport: transport::generate_transport_keypair(),
-    };
+    }
+}
 
-    // Stand up the mock relay.
+/// A bridge stood up against one mock relay socket, as the test's browser sees
+/// it: the two halves of the relay wire, the transport public key the device
+/// uploaded, and the two tasks behind them.
+struct ConnectedDevice {
+    to_device: mpsc::Sender<Value>,
+    from_device: mpsc::Receiver<Value>,
+    transport_public_key: String,
+    bridge: JoinHandle<Result<(), RelayError>>,
+    relay_socket: JoinHandle<()>,
+}
+
+/// Bind a mock relay, run the real bridge relay-client against it with
+/// `intake`, and wait until the device has authenticated and uploaded its
+/// transport key.
+async fn connected_device(intake: Arc<FrameIntake>, identity: &DeviceIdentity) -> ConnectedDevice {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}/ws/device");
-
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
+    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
+    let (to_device, to_device_rx) = mpsc::channel::<Value>(64);
+    let (from_device_tx, from_device) = mpsc::channel::<Value>(64);
     let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
-
-    // Run the real bridge relay-client; its handler echoes the request payload.
-    let handler: FrameHandler =
-        Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
+    let relay_socket = tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
     let bridge = {
         let identity = identity.clone();
-        let intake = FrameIntake::new(handler);
         tokio::spawn(async move { relay::run(&url, &identity, intake).await })
     };
-
-    // 1. The device uploaded its transport key; the browser learns it.
-    let device_transport_pub =
+    let transport_public_key =
         tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
             .await
             .expect("transport key arrives")
             .unwrap();
-    assert_eq!(device_transport_pub, identity.transport.public_key_b64);
+    ConnectedDevice {
+        to_device,
+        from_device,
+        transport_public_key,
+        bridge,
+        relay_socket,
+    }
+}
+
+#[tokio::test]
+async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
+    let identity = device_identity();
+    // Run the real bridge relay-client; its handler echoes the request payload.
+    let handler: FrameHandler =
+        Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket: _,
+    } = connected_device(
+        FrameIntake::new(handler, identity.transport.clone()),
+        &identity,
+    )
+    .await;
+
+    // 1. The device uploaded its transport key; the browser learns it.
+    assert_eq!(transport_public_key, identity.transport.public_key_b64);
 
     // 2. Browser bootstraps a session: wrap a fresh key to the device.
     let session_id = "sess-1";
     let session_key = transport::generate_session_key();
-    let wrapped = transport::wrap_session_key(&device_transport_pub, &session_key).unwrap();
-    to_device_tx
+    let wrapped = transport::wrap_session_key(&transport_public_key, &session_key).unwrap();
+    to_device
         .send(json!({
             "type": "session_init",
             "session_id": session_id,
@@ -129,7 +163,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         .unwrap();
 
     // 3. Device proves receipt with an encrypted session_accept.
-    let accept = recv(&mut from_device_rx).await;
+    let accept = recv(&mut from_device).await;
     assert_eq!(accept["type"], "session_accept");
     let accept_env: Envelope = serde_json::from_value(accept["envelope"].clone()).unwrap();
     transport::verify_session_accept(&session_key, &accept_env, session_id)
@@ -152,7 +186,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         None,
     )
     .unwrap();
-    to_device_tx
+    to_device
         .send(json!({
             "type": "e2ee_envelope",
             "session_id": session_id,
@@ -162,7 +196,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         .unwrap();
 
     // 5. Bridge decrypts, the handler echoes, and the response comes back encrypted.
-    let response = recv(&mut from_device_rx).await;
+    let response = recv(&mut from_device).await;
     assert_eq!(response["type"], "e2ee_envelope");
     let response_env: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
     let frame = transport::decrypt_envelope(&session_key, &response_env).unwrap();
@@ -173,7 +207,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     );
 
     // Tear down: dropping the browser sender lets the bridge/relay wind down.
-    drop(to_device_tx);
+    drop(to_device);
     bridge.abort();
 }
 
@@ -182,21 +216,7 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
 /// ones; every cheap answer comes back while the slow one is still working.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_slow_handler_does_not_stall_the_socket() {
-    let identity = DeviceIdentity {
-        device_id: "dev-1".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
-    };
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let url = format!("ws://{addr}/ws/device");
-
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(64);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(64);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
-
+    let identity = device_identity();
     // `slow` is the board.list-with-a-libgit2-diff of the incident.
     let handler: FrameHandler = Arc::new(|_sender, frame| {
         if frame.payload["method"] == "slow" {
@@ -204,22 +224,22 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         }
         json!({ "id": frame.payload["id"] })
     });
-    let bridge = {
-        let identity = identity.clone();
-        let intake = FrameIntake::new(handler);
-        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
-    };
-
-    let device_transport_pub =
-        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-            .await
-            .expect("transport key arrives")
-            .unwrap();
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket: _,
+    } = connected_device(
+        FrameIntake::new(handler, identity.transport.clone()),
+        &identity,
+    )
+    .await;
 
     let session_id = "sess-slow";
     let session_key = transport::generate_session_key();
-    let wrapped = transport::wrap_session_key(&device_transport_pub, &session_key).unwrap();
-    to_device_tx
+    let wrapped = transport::wrap_session_key(&transport_public_key, &session_key).unwrap();
+    to_device
         .send(json!({
             "type": "session_init",
             "session_id": session_id,
@@ -231,7 +251,7 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         }))
         .await
         .unwrap();
-    let accept = recv(&mut from_device_rx).await;
+    let accept = recv(&mut from_device).await;
     assert_eq!(accept["type"], "session_accept");
 
     let ask = |id: u64, method: &str| {
@@ -258,16 +278,16 @@ async fn a_slow_handler_does_not_stall_the_socket() {
         })
     };
 
-    to_device_tx.send(ask(0, "slow")).await.unwrap();
+    to_device.send(ask(0, "slow")).await.unwrap();
     for id in 1..=5u64 {
-        to_device_tx.send(ask(id, "cheap")).await.unwrap();
+        to_device.send(ask(id, "cheap")).await.unwrap();
     }
 
     // The five cheap answers come back first — the read loop kept draining.
     let mut answered: Vec<u64> = Vec::new();
     for _ in 0..5 {
         let response =
-            tokio::time::timeout(std::time::Duration::from_secs(1), recv(&mut from_device_rx))
+            tokio::time::timeout(std::time::Duration::from_secs(1), recv(&mut from_device))
                 .await
                 .expect("cheap answers do not wait for the slow one");
         let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
@@ -282,18 +302,18 @@ async fn a_slow_handler_does_not_stall_the_socket() {
     );
 
     // And the slow one still gets its answer.
-    let response = recv(&mut from_device_rx).await;
+    let response = recv(&mut from_device).await;
     let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
     let frame = transport::decrypt_envelope(&session_key, &envelope).unwrap();
     assert_eq!(frame.payload["id"], 0);
 
-    drop(to_device_tx);
+    drop(to_device);
     bridge.abort();
 }
 
 /// A browser opening a session, in the two messages the relay carries for it.
-fn session_init_message(session_id: &str, device_transport_pub: &str, session_key: &str) -> Value {
-    let wrapped = transport::wrap_session_key(device_transport_pub, session_key).unwrap();
+fn session_init_message(session_id: &str, transport_public_key: &str, session_key: &str) -> Value {
+    let wrapped = transport::wrap_session_key(transport_public_key, session_key).unwrap();
     json!({
         "type": "session_init",
         "session_id": session_id,
@@ -352,43 +372,28 @@ async fn next_frame(frames: &mut mpsc::UnboundedReceiver<String>) -> String {
 /// session id on the next socket is a session the device no longer knows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
-    let identity = DeviceIdentity {
-        device_id: "dev-1".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
-    };
+    let identity = device_identity();
     let (handler, mut frames) = reporting_handler();
-    let intake = FrameIntake::new(handler);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    let relay_socket = tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
-    let bridge = {
-        let identity = identity.clone();
-        let intake = intake.clone();
-        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
-    };
-
-    let device_transport_pub =
-        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-            .await
-            .expect("transport key arrives")
-            .unwrap();
+    let intake = FrameIntake::new(handler, identity.transport.clone());
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket,
+    } = connected_device(intake.clone(), &identity).await;
     let session_id = "sess-carried";
     let session_key = transport::generate_session_key();
-    to_device_tx
+    to_device
         .send(session_init_message(
             session_id,
-            &device_transport_pub,
+            &transport_public_key,
             &session_key,
         ))
         .await
         .unwrap();
-    assert_eq!(recv(&mut from_device_rx).await["type"], "session_accept");
-    to_device_tx
+    assert_eq!(recv(&mut from_device).await["type"], "session_accept");
+    to_device
         .send(request_message(
             &session_key,
             session_id,
@@ -409,19 +414,15 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
     );
 
     // The next socket, same intake: the old session id is nobody's.
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
-    let bridge = tokio::spawn(async move { relay::run(&url, &identity, intake).await });
-    tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-        .await
-        .expect("the second socket authenticates")
-        .unwrap();
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key: _,
+        bridge,
+        relay_socket: _,
+    } = connected_device(intake, &identity).await;
 
-    to_device_tx
+    to_device
         .send(request_message(
             &session_key,
             session_id,
@@ -431,14 +432,14 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         .unwrap();
 
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(500), from_device_rx.recv())
+        tokio::time::timeout(std::time::Duration::from_millis(500), from_device.recv())
             .await
             .is_err(),
         "a frame for a session the device forgot is answered by nothing"
     );
     assert!(frames.try_recv().is_err(), "and reaches no handler");
 
-    drop(to_device_tx);
+    drop(to_device);
     bridge.abort();
 }
 
@@ -447,59 +448,48 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
 /// minted with.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_session_init_under_a_different_key_is_refused() {
-    let identity = DeviceIdentity {
-        device_id: "dev-1".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
-    };
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
+    let identity = device_identity();
     let (handler, _frames) = reporting_handler();
-    let bridge = {
-        let identity = identity.clone();
-        let intake = FrameIntake::new(handler);
-        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
-    };
-
-    let device_transport_pub =
-        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-            .await
-            .expect("transport key arrives")
-            .unwrap();
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket: _,
+    } = connected_device(
+        FrameIntake::new(handler, identity.transport.clone()),
+        &identity,
+    )
+    .await;
     let session_id = "sess-minted";
     let session_key = transport::generate_session_key();
-    to_device_tx
+    to_device
         .send(session_init_message(
             session_id,
-            &device_transport_pub,
+            &transport_public_key,
             &session_key,
         ))
         .await
         .unwrap();
-    assert_eq!(recv(&mut from_device_rx).await["type"], "session_accept");
+    assert_eq!(recv(&mut from_device).await["type"], "session_accept");
 
-    to_device_tx
+    to_device
         .send(session_init_message(
             session_id,
-            &device_transport_pub,
+            &transport_public_key,
             &transport::generate_session_key(),
         ))
         .await
         .unwrap();
 
     assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(500), from_device_rx.recv())
+        tokio::time::timeout(std::time::Duration::from_millis(500), from_device.recv())
             .await
             .is_err(),
         "the device accepts no session under a key that is not the one it holds"
     );
 
-    to_device_tx
+    to_device
         .send(request_message(
             &session_key,
             session_id,
@@ -507,13 +497,13 @@ async fn a_session_init_under_a_different_key_is_refused() {
         ))
         .await
         .unwrap();
-    let response = recv(&mut from_device_rx).await;
+    let response = recv(&mut from_device).await;
     assert_eq!(response["type"], "e2ee_envelope");
     let envelope: Envelope = serde_json::from_value(response["envelope"].clone()).unwrap();
     transport::decrypt_envelope(&session_key, &envelope)
         .expect("the session still holds the key it was minted with");
 
-    drop(to_device_tx);
+    drop(to_device);
     bridge.abort();
 }
 
@@ -522,43 +512,31 @@ async fn a_session_init_under_a_different_key_is_refused() {
 /// normal exit, and the sessions riding that socket must end all the same.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
-    let identity = DeviceIdentity {
-        device_id: "dev-1".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-        transport: transport::generate_transport_keypair(),
-    };
+    let identity = device_identity();
     let (handler, mut frames) = reporting_handler();
-    let intake = FrameIntake::new(handler);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
-    let (to_device_tx, to_device_rx) = mpsc::channel::<Value>(16);
-    let (from_device_tx, mut from_device_rx) = mpsc::channel::<Value>(16);
-    let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);
-    tokio::spawn(mock_relay(listener, to_device_rx, from_device_tx, tkey_tx));
-    let bridge = {
-        let identity = identity.clone();
-        let intake = intake.clone();
-        tokio::spawn(async move { relay::run(&url, &identity, intake).await })
-    };
-
-    let device_transport_pub =
-        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-            .await
-            .expect("transport key arrives")
-            .unwrap();
+    let ConnectedDevice {
+        to_device,
+        mut from_device,
+        transport_public_key,
+        bridge,
+        relay_socket: _,
+    } = connected_device(
+        FrameIntake::new(handler, identity.transport.clone()),
+        &identity,
+    )
+    .await;
     let session_id = "sess-cut";
     let session_key = transport::generate_session_key();
-    to_device_tx
+    to_device
         .send(session_init_message(
             session_id,
-            &device_transport_pub,
+            &transport_public_key,
             &session_key,
         ))
         .await
         .unwrap();
-    assert_eq!(recv(&mut from_device_rx).await["type"], "session_accept");
-    to_device_tx
+    assert_eq!(recv(&mut from_device).await["type"], "session_accept");
+    to_device
         .send(request_message(
             &session_key,
             session_id,

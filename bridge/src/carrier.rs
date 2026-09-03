@@ -330,8 +330,7 @@ impl FrameIntake {
     ) -> Result<(), CarrierError> {
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
         if frame.frame_type == "close" {
-            self.close_ended(self.registry.end(&envelope.session_id))
-                .await;
+            self.close_ended(self.registry.end(&envelope.session_id));
             return Ok(());
         }
         self.dispatcher.dispatch(sender, frame).await;
@@ -340,20 +339,18 @@ impl FrameIntake {
 
     /// This carrier stops carrying this session — the relay's `session_closed`,
     /// or a channel that closed under one session.
-    pub async fn close_session(&self, session_id: &str, carrier: CarrierId) {
-        self.close_ended(self.registry.release_session(session_id, carrier))
-            .await;
+    pub fn close_session(&self, session_id: &str, carrier: CarrierId) {
+        self.close_ended(self.registry.release_session(session_id, carrier));
     }
 
     /// This carrier is gone.
-    pub async fn close_carrier(&self, carrier: CarrierId) {
-        self.close_ended(self.registry.release_carrier(carrier))
-            .await;
+    pub fn close_carrier(&self, carrier: CarrierId) {
+        self.close_ended(self.registry.release_carrier(carrier));
     }
 
-    async fn close_ended(&self, ended: Vec<String>) {
+    fn close_ended(&self, ended: Vec<String>) {
         for session_id in ended {
-            self.dispatcher.close_session(&session_id).await;
+            self.dispatcher.close_session(&session_id);
         }
     }
 }
@@ -645,9 +642,11 @@ impl Dispatcher {
     /// This is the session's last frame and it is treated as one — it runs only
     /// after every frame that arrived before it, or an attach still sitting on a
     /// lane would register a sender into a session already closed and push
-    /// terminal output at a browser that is gone.
-    async fn close_session(&self, session_id: &str) {
-        let mut fences = Vec::new();
+    /// terminal output at a browser that is gone. Taking the lanes out of the
+    /// map is all of that this call does: draining them is a wait on however
+    /// slow the terminal's handler is, and the carrier teardown that reports the
+    /// end — the one a relay reconnect is queued behind — never waits on it.
+    fn close_session(&self, session_id: &str) {
         let session_lanes: Vec<mpsc::Sender<LaneMessage>> = {
             let mut lanes = self.lanes.lock().unwrap();
             let keys: Vec<(String, String)> = lanes
@@ -657,19 +656,16 @@ impl Dispatcher {
                 .collect();
             keys.iter().filter_map(|key| lanes.remove(key)).collect()
         };
-        for lane in session_lanes {
-            let (reply, wait) = tokio::sync::oneshot::channel();
-            if lane.send(LaneMessage::Fence(reply)).await.is_ok() {
-                fences.push(wait);
-            }
-            // Dropping the lane sender ends the lane once it has drained.
-        }
 
         let handler = self.handler.clone();
         let session_id = session_id.to_string();
         tokio::spawn(async move {
-            for fence in fences {
-                let _ = fence.await;
+            for lane in session_lanes {
+                let (reply, wait) = tokio::sync::oneshot::channel();
+                if lane.send(LaneMessage::Fence(reply)).await.is_ok() {
+                    let _ = wait.await;
+                }
+                // Dropping the lane sender ends the lane once it has drained.
             }
             let closed = Frame {
                 session_id: session_id.clone(),
@@ -1080,7 +1076,7 @@ mod intake_tests {
         let key = transport::generate_session_key();
         intake.open("s-1", key.clone(), &carrier).unwrap();
 
-        intake.close_carrier(carrier.id()).await;
+        intake.close_carrier(carrier.id());
 
         assert_eq!(next_seen(&mut seen).await, "close:s-1");
     }
@@ -1103,7 +1099,7 @@ mod intake_tests {
 #[cfg(test)]
 mod dispatcher_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::mpsc as blocking_channel;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -1191,6 +1187,54 @@ mod dispatcher_tests {
             // the lock is the point: the worker running us stays occupied.
             let _ = self.release.lock().unwrap().recv();
         }
+    }
+
+    /// Teardown bookkeeping is fast by construction: a lane whose handler is
+    /// wedged fills up, and a carrier ending must not park behind it — the relay
+    /// reconnect that follows is what would never happen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_close_does_not_wait_behind_a_saturated_lane() {
+        let (gate, gated) = HandlerGate::new();
+        let handler: FrameHandler = Arc::new(move |_sender, frame| {
+            if frame.payload["id"] == 0 {
+                gated.hold();
+            }
+            json!({ "ok": true })
+        });
+        let dispatcher = Arc::new(Dispatcher::with_capacity(handler, 16, 4));
+        let (sender, _rx, _key) = SessionSender::observable("s-wedged");
+
+        let dispatched = Arc::new(AtomicUsize::new(0));
+        let feeding = tokio::spawn({
+            let dispatcher = dispatcher.clone();
+            let dispatched = dispatched.clone();
+            async move {
+                for id in 0..(LANE_QUEUE_DEPTH as u64 + 8) {
+                    dispatcher
+                        .dispatch(
+                            sender.clone(),
+                            request(id, "term.input", json!({ "term_id": "term-1" })),
+                        )
+                        .await;
+                    dispatched.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        });
+        gate.wait_until_held();
+        tokio::time::timeout(PATIENTLY, async {
+            while dispatched.load(Ordering::SeqCst) <= LANE_QUEUE_DEPTH {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the wedged lane fills up");
+
+        tokio::time::timeout(PATIENTLY, async { dispatcher.close_session("s-wedged") })
+            .await
+            .expect("the close does not wait on the lane it is tearing down");
+
+        gate.release();
+        feeding.abort();
     }
 
     /// The incident in one test: a handler that takes seconds must not keep the
@@ -1766,7 +1810,7 @@ mod dispatcher_tests {
                 request(1, "term.attach", json!({ "term_id": "term-1" })),
             )
             .await;
-        dispatcher.close_session("s-closing").await;
+        dispatcher.close_session("s-closing");
 
         for _ in 0..100 {
             if seen.lock().unwrap().len() == 2 {

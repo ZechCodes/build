@@ -230,7 +230,7 @@ pub async fn run_with_intake(
                 // another carrier is still riding.
                 "session_closed" => {
                     if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                        intake.close_session(session_id, carrier.id()).await;
+                        intake.close_session(session_id, carrier.id());
                     }
                 }
                 // "response"/"error"/unknown: nothing for the device to do here.
@@ -241,7 +241,7 @@ pub async fn run_with_intake(
     }
     .await;
 
-    intake.close_carrier(carrier.id()).await;
+    intake.close_carrier(carrier.id());
     abort_heartbeat(heartbeat);
     drop(out_tx);
     drop(envelopes_tx);

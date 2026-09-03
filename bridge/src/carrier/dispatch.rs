@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use super::{FrameHandler, SessionSender};
-use crate::transport::Frame;
+use crate::transport::{Frame, CLOSE_FRAME_TYPE};
 
 /// How many handlers may run at once. Handlers are blocking (they take the app
 /// mutex, and some of them walk a worktree with libgit2), so they run on the
@@ -323,8 +323,8 @@ impl Dispatcher {
             let closed = Frame {
                 session_id: session_id.clone(),
                 message_id: String::new(),
-                frame_type: "close".into(),
-                sender: "relay".into(),
+                frame_type: CLOSE_FRAME_TYPE.into(),
+                sender: "device".into(),
                 created_at: String::new(),
                 payload: Value::Null,
             };

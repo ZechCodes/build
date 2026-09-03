@@ -342,7 +342,7 @@ impl FrameIntake {
         carrier: &CarrierHandle,
     ) -> Result<(), CarrierError> {
         let (frame, sender) = self.registry.admit(&envelope, carrier)?;
-        if frame.frame_type == "close" {
+        if frame.frame_type == transport::CLOSE_FRAME_TYPE {
             self.close_ended(self.registry.end(&envelope.session_id));
             return Ok(());
         }

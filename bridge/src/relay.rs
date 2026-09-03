@@ -191,7 +191,7 @@ fn spawn_writer(
                     None => break,
                 },
                 outbound = envelopes_rx.recv() => match outbound {
-                    Some(outbound) => relay_message(&outbound),
+                    Some(outbound) => as_relay_wire_message(&outbound),
                     None => break,
                 },
             };
@@ -346,8 +346,7 @@ fn spawn_heartbeat(
     })
 }
 
-/// The relay's wire wrapper: the one thing this carrier adds to an envelope.
-fn relay_message(outbound: &OutboundEnvelope) -> Message {
+fn as_relay_wire_message(outbound: &OutboundEnvelope) -> Message {
     Message::Text(
         json!({
             "type": "e2ee_envelope",
@@ -393,7 +392,7 @@ mod writer_tests {
             ciphertext: "Y2lwaGVy".into(),
         });
 
-        let Message::Text(text) = relay_message(&outbound) else {
+        let Message::Text(text) = as_relay_wire_message(&outbound) else {
             panic!("the relay carries text frames");
         };
         let wire: Value = serde_json::from_str(&text).expect("the wrapper is JSON");

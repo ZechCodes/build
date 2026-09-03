@@ -55,7 +55,7 @@ use crate::store::{
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
-use crate::transport::Frame;
+use crate::transport::{self, Frame};
 use crate::worktree::{
     bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
     Worktree,
@@ -17383,7 +17383,7 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
     // A session ended (client `close` frame, or the relay's session_closed on
     // browser disconnect): release its attachments so the bridge stops encrypting
     // terminal output into a session nobody will ever read.
-    if frame.frame_type == "close" {
+    if frame.frame_type == transport::CLOSE_FRAME_TYPE {
         let changes = {
             let mut app = state.lock().unwrap();
             app.drop_session(sender.session_id());

@@ -2480,12 +2480,18 @@ impl AppState {
         // considering worktree recovery. The write-ahead record names the exact
         // candidate, and classification refreshes its configured remote ref.
         if let Some(attempt) = active.publication_attempt.clone() {
-            let publication = classify_stage_publication(
-                &repo_path,
-                &active.worktree.branch(),
-                &active.worktree.base_branch,
-                &attempt.candidate_sha,
-            );
+            let publication = project_id
+                .as_deref()
+                .and_then(|id| self.orch_for(id).ok())
+                .map_or(StagePublication::Local, |orch| {
+                    classify_stage_publication(
+                        orch.worktrees(),
+                        &active.worktree.path,
+                        &active.worktree.branch(),
+                        &active.worktree.base_branch,
+                        &attempt.candidate_sha,
+                    )
+                });
             let proven = match attempt.action.as_str() {
                 "push" => matches!(
                     publication,
@@ -13913,7 +13919,7 @@ impl AppState {
     /// worktree record pruned — the record stays as quiet history. `Created` is
     /// exempt (its worktree may legitimately not exist yet).
     fn reconcile_missing_run_worktree(&self, run_id: &str, active: &mut ActiveRun) -> Vec<String> {
-        let repo_path = self
+        let worktrees = self
             .entity_project
             .get(run_id)
             .and_then(|project_id| {
@@ -13921,12 +13927,13 @@ impl AppState {
                     .iter()
                     .find(|project| &project.id == project_id)
             })
-            .map(|project| project.repo_path.clone());
+            .map(|project| project.orch.worktrees());
         let mut affected = Vec::new();
         for progress in &mut active.stages {
-            let publication = match (&repo_path, progress.completion_sha.as_deref()) {
-                (Some(repo_path), Some(completion_sha)) => classify_stage_publication(
-                    repo_path,
+            let publication = match (worktrees, progress.completion_sha.as_deref()) {
+                (Some(worktrees), Some(completion_sha)) => classify_stage_publication(
+                    worktrees,
+                    &active.worktree.path,
                     &active.worktree.branch(),
                     &active.worktree.base_branch,
                     completion_sha,
@@ -16360,12 +16367,27 @@ fn worktrees_of_record(record: &PersistedArchivedWorktree) -> WorktreeManager {
     )
 }
 
+/// How far a stage's completion commit has travelled, read from the project
+/// repo's own refs — which the checkout's branch reaches first, because a
+/// clone's tip is invisible there until it is published. A publish that fails
+/// is no verdict: classification still has to answer, so it is said and passed
+/// over.
 fn classify_stage_publication(
-    repo_path: &std::path::Path,
+    worktrees: &WorktreeManager,
+    checkout: &std::path::Path,
     branch: &str,
     base_branch: &str,
     completion_sha: &str,
 ) -> StagePublication {
+    if checkout.exists() {
+        if let Err(error) = worktrees.publish(checkout, branch) {
+            eprintln!(
+                "classify_stage_publication {branch}: publishing {} failed: {error}",
+                checkout.display()
+            );
+        }
+    }
+    let repo_path = worktrees.repo_path();
     let Ok(repo) = git2::Repository::open(repo_path) else {
         return StagePublication::Local;
     };
@@ -39733,6 +39755,37 @@ mod tests {
             action: WorktreeFinishAction::Merge,
             archived_at: None,
         }
+    }
+
+    /// Stage publication is evidence in the project repo's refs, and putting
+    /// the checkout's branch to them first — nothing at all for a linked
+    /// worktree, whose refs are already the project's — changes no answer it
+    /// gives.
+    #[test]
+    fn stage_publication_of_a_linked_worktree_survives_publishing_first() {
+        let (dir, repo) = init_repo();
+        let worktrees = WorktreeManager::new(&repo, dir.path().join("wt"));
+        let checkout = add_external_worktree(&repo, dir.path(), "staged", "staged");
+        std::fs::write(checkout.join("stage.txt"), "shipped\n").unwrap();
+        git_in(&checkout, &["add", "-A"]);
+        git_in(&checkout, &["commit", "-m", "stage work"]);
+        let completion_sha = git_stdout(&checkout, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string();
+
+        assert_eq!(
+            classify_stage_publication(&worktrees, &checkout, "staged", "main", &completion_sha),
+            StagePublication::Local,
+            "nothing in the project carries the commit yet"
+        );
+
+        git_in(&repo, &["merge", "--no-edit", "--", "staged"]);
+
+        assert_eq!(
+            classify_stage_publication(&worktrees, &checkout, "staged", "main", &completion_sha),
+            StagePublication::Merged,
+        );
     }
 
     #[test]

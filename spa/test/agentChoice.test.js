@@ -28,8 +28,8 @@ const catalog = {
       ],
       efforts: ["low", "high"],
     },
-    { id: "codex_app_server", label: "Codex", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["medium"] },
-    { id: "codex", label: "Codex TUI", models: [], efforts: [] },
+    { id: "codex_app_server", label: "Codex", models: [], efforts: [] },
+    { id: "codex", label: "Codex TUI", models: [{ id: "gpt", label: "GPT", supports_effort: true }], efforts: ["medium"] },
   ],
 };
 
@@ -68,9 +68,9 @@ describe("the panel", () => {
   });
 
   it("offers the catalog's agents, the chosen agent's models, and its efforts", () => {
-    const host = mount(agentChoicePanelHtml(catalog, { provider: "codex_app_server", model: "gpt", effort: "medium" }, { open: true }));
-    expect([...host.querySelectorAll("#agent-choice-provider option")].map((o) => o.value)).toEqual(["claude", "codex_app_server"]);
-    expect(host.querySelector("#agent-choice-provider").value).toBe("codex_app_server");
+    const host = mount(agentChoicePanelHtml(catalog, { provider: "codex", model: "gpt", effort: "medium" }, { open: true }));
+    expect([...host.querySelectorAll("#agent-choice-provider option")].map((o) => o.value)).toEqual(["claude", "codex"]);
+    expect(host.querySelector("#agent-choice-provider").value).toBe("codex");
     expect([...host.querySelectorAll("#agent-choice-model option")].map((o) => o.value)).toEqual(["", "gpt"]);
     expect(host.querySelector("#agent-choice-effort").value).toBe("medium");
   });
@@ -80,13 +80,11 @@ describe("the panel", () => {
     expect(host.querySelector("#agent-choice-effort").disabled).toBe(true);
   });
 
-  // The panel is a create/dispatch surface, so it asks which agent, never which
-  // carrier: the bridge serves four harnesses and the select offers two.
   it("offers the two agents, out of the four harnesses the bridge serves", () => {
     const host = mount(agentChoicePanelHtml(fourHarnesses, NO_AGENT_CHOICE, { open: true }));
 
     const options = [...host.querySelectorAll("#agent-choice-provider option")];
-    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex_app_server"]);
+    expect(options.map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     expect(options.map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
   });
 
@@ -163,8 +161,8 @@ describe("the composer's model menu", () => {
     expect(ids(NO_AGENT_CHOICE).slice(0, 3)).toEqual(["model:", "model:opus", "model:haiku"]);
     expect(options(NO_AGENT_CHOICE)[1].label).toBe("Opus");
     // The agent's OWN catalog: a codex agent is never offered a claude model.
-    expect(ids(NO_AGENT_CHOICE, "codex_app_server")).toContain("model:gpt");
-    expect(ids(NO_AGENT_CHOICE, "codex_app_server")).not.toContain("model:opus");
+    expect(ids(NO_AGENT_CHOICE, "codex")).toContain("model:gpt");
+    expect(ids(NO_AGENT_CHOICE, "codex")).not.toContain("model:opus");
   });
 
   it("never offers a harness — the agent is locked to the one it was made on", () => {

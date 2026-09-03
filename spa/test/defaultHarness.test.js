@@ -65,8 +65,6 @@ describe("the default-agent panel", () => {
     expect(host.textContent).not.toMatch(/carrier/i);
   });
 
-  // Everywhere an agent is created offers two: Claude Code and Codex. This
-  // select is the only place their concrete harnesses appear.
   it("says what choosing Claude Code TUI does, since no other screen can", async () => {
     const host = panel();
     await mountDefaultHarness(host, { callRpc: vi.fn(async () => ({ default_harness: "claude_adk" })) });
@@ -199,10 +197,7 @@ describe("the Settings page", () => {
     expect(document.getElementById("root").textContent).not.toMatch(/headless/i);
   }, SLOW_IMPORT_MS);
 
-  // These defaults are spent creating agents, so they offer what every create
-  // surface offers — the two agents. Which concrete harness each means is the
-  // Default agent panel's question, and it is asked exactly once.
-  it("offers the agent defaults the two agents, not the three harnesses", async () => {
+  it("offers the agent defaults the two agents, not the four harnesses", async () => {
     await renderWith(async (method) => {
       if (method === "project.list") return { projects: [] };
       if (method === "settings.get") return { projects_dir: "/p", default_harness: "claude_adk" };
@@ -221,7 +216,7 @@ describe("the Settings page", () => {
     });
 
     const defaults = document.getElementById("defprovider");
-    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex_app_server"]);
+    expect([...defaults.options].map((option) => option.value)).toEqual(["claude_adk", "codex"]);
     expect([...defaults.options].map((option) => option.textContent)).toEqual(["Claude Code", "Codex"]);
     // The account's own question is still asked, once, in its own panel.
     expect([...document.getElementById("defaultharness").options].map((option) => option.textContent)).toEqual([

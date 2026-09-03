@@ -7,10 +7,6 @@
 // which is the option the chat tab's new-agent view leads with and the one the
 // bridge falls back to when it has to deliver.
 //
-// It is also the only control that names a carrier. A create surface offers two
-// agents — Claude Code and Codex — so which concrete harness opens is asked
-// here, once, by choosing which one this account starts on.
-//
 // The bridge is the authority (settings.get / settings.set, persisted), so
 // every device gets the same answer. The names are the client's one naming
 // table (core/modelPicker.js), so this control and an agent's own bubble can

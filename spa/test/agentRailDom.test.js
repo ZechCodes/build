@@ -316,27 +316,27 @@ describe("the bubble strip", () => {
   // opens the chooser now, seeded with the stored preference; the send is
   // what creates, exactly as on a branch with no agents at all.
   it("opens the harness chooser instead of creating an agent outright", async () => {
-    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex_app_server", model: "", effort: "" }));
+    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
     expect(callsTo("agent.add")).toEqual([]);
     const chooser = railHost().querySelector(".rail-newagent");
     expect(chooser).toBeTruthy();
-    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex_app_server");
+    expect(chooser.querySelector(".chooser-card.chosen").dataset.provider).toBe("codex");
     expect(railHost().querySelector(".rail-who").textContent).toBe("New agent");
     expect(railHost().querySelector("#railinput").placeholder).toContain("start an agent");
   });
 
   it("creates on the first message, with the chosen harness, and opens the new chat", async () => {
-    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex_app_server", model: "", effort: "" }));
+    localStorage.setItem("build.agentDefaults", JSON.stringify({ provider: "codex", model: "", effort: "" }));
     await mount();
     railHost().querySelector('[data-bubble="add"]').click();
     await flush();
     railHost().querySelector("#railinput").value = "start here";
     railHost().querySelector("#railsend").click();
     await flush();
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex_app_server" });
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
     expect(callsTo("thread.post")[0].params).toMatchObject({ entity_id: "run-3", agent_id: "ag-2", body: "start here" });
     expect(railHost().querySelector(".rail-newagent")).toBeNull();
   });
@@ -1420,13 +1420,11 @@ describe("the chat tab of a branch with no agent", () => {
     await flush();
   };
 
-  // Two agents, never four. Which concrete carrier opens is the account's
-  // question, answered once in Settings.
   it("offers the two agents, with the account's default already chosen", async () => {
     payload = agentless();
     await mount();
 
-    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex_app_server"]);
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);
     expect(cards().map((entry) => entry.textContent.trim())).toEqual(["Claude Code", "Codex"]);
     expect(chosenCard().dataset.provider).toBe("claude_adk");
     // No conversation to show: there is no agent whose conversation it would be.
@@ -1459,12 +1457,12 @@ describe("the chat tab of a branch with no agent", () => {
     payload = agentless();
     await mount();
 
-    card("codex_app_server").click();
+    card("codex").click();
     await flush();
-    expect(chosenCard().dataset.provider).toBe("codex_app_server");
+    expect(chosenCard().dataset.provider).toBe("codex");
 
     await send("start here");
-    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex_app_server" });
+    expect(callsTo("agent.add")[0].params).toEqual({ entity_id: "run-3", provider: "codex" });
   });
 
   it("adopts a checkout Build owns nothing in before it creates the agent", async () => {
@@ -1504,7 +1502,7 @@ describe("the chat tab of a branch with no agent", () => {
     payload = agentless();
     await mount();
 
-    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude", "codex_app_server"]);
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude", "codex"]);
     expect(cards().map((entry) => entry.textContent.trim())).toEqual(["Claude Code", "Codex"]);
     expect(chosenCard().dataset.provider).toBe("claude");
 
@@ -1526,7 +1524,7 @@ describe("the chat tab of a branch with no agent", () => {
     App.modelCatalog = CATALOG;
     await mount();
 
-    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex_app_server"]);
+    expect(cards().map((entry) => entry.dataset.provider)).toEqual(["claude_adk", "codex"]);
     expect(cards().filter((entry) => entry.classList.contains("chosen"))).toHaveLength(1);
     expect(chosenCard().dataset.provider).toBe("claude_adk");
 

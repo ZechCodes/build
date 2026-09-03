@@ -199,7 +199,7 @@ describe("the assignment's agent select and the dispatch under it", () => {
   it("offers the two agents, painting a stale carrier as the one it clamps to", () => {
     const html = assignmentPanelHtml({ assignment: stale, catalog: fourHarnesses });
     expect(html).toContain('<option value="claude_adk" selected>Claude Code</option>');
-    expect(html).toContain('<option value="codex_app_server">Codex</option>');
+    expect(html).toContain('<option value="codex">Codex</option>');
     expect(html).not.toContain("Claude Code TUI");
   });
 

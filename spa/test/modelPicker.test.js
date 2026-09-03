@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import * as modelPicker from "../src/core/modelPicker.js";
 import {
   catalogForProvider,
   modelOptionsHtml,
@@ -10,7 +9,6 @@ import {
   providerLabel,
   providerOptionsHtml,
   creatableCatalog,
-  concreteProviderId,
   matchCatalogModel,
   STARTABLE_PROVIDERS,
 } from "../src/core/modelPicker.js";
@@ -63,11 +61,6 @@ describe("the harnesses an agent can be created on", () => {
     expect(providerLabel("codex")).toBe("Codex TUI");
   });
 
-  it("keeps no alias between the two claude harnesses — each one is an agent", () => {
-    expect(modelPicker.genericProviderId).toBeUndefined();
-    expect(modelPicker.DEFAULT_START_PROVIDER).toBeUndefined();
-  });
-
   it("says what an unnamed or unknown provider is, rather than nothing", () => {
     expect(providerLabel("")).toBe("Agent");
     expect(providerLabel("gemini")).toBe("gemini");
@@ -85,8 +78,6 @@ describe("the harnesses an agent can be created on", () => {
   });
 });
 
-// What a create surface offers is two agents, never four harnesses. Which
-// concrete carrier opens is the account's question, answered once in Settings.
 describe("the catalog a create surface offers", () => {
   const fourProviders = (defaultProvider) => ({
     default_provider: defaultProvider,
@@ -98,12 +89,33 @@ describe("the catalog a create surface offers", () => {
     ],
   });
 
+  it("keeps Codex on the TUI for a bridge with a flat catalog", () => {
+    const offered = creatableCatalog(normalizeModelCatalog({
+      default_provider: "codex_app_server",
+      models: MODELS,
+      efforts: EFFORTS,
+    }));
+
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+  });
+
+  it("keeps Codex on the TUI for a bridge that lists only the original three providers", () => {
+    const offered = creatableCatalog({
+      default_provider: "codex_app_server",
+      providers: [
+        { id: "claude_adk", label: "Claude Code", models: MODELS, efforts: EFFORTS },
+        { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+      ],
+    });
+
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
+  });
+
   it("offers two generic agents out of the four concrete harnesses the bridge serves", () => {
     const offered = creatableCatalog(fourProviders("claude_adk"));
 
-    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex_app_server"]);
-    // The labels are the client's one naming table, so an older bridge that
-    // called both claude carriers the same thing cannot show the name twice.
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
     expect(offered.providers.map((provider) => provider.label)).toEqual(["Claude Code", "Codex"]);
   });
 
@@ -111,32 +123,24 @@ describe("the catalog a create surface offers", () => {
     const claudeIds = (defaultProvider) =>
       creatableCatalog(fourProviders(defaultProvider)).providers.map((provider) => provider.id);
 
-    expect(claudeIds("claude")).toEqual(["claude", "codex_app_server"]);
-    expect(claudeIds("claude_adk")).toEqual(["claude_adk", "codex_app_server"]);
-    // Under a Codex default, "Claude Code" means the plain name's own carrier.
+    expect(claudeIds("claude")).toEqual(["claude", "codex"]);
+    expect(claudeIds("claude_adk")).toEqual(["claude_adk", "codex"]);
     expect(claudeIds("codex")).toEqual(["claude_adk", "codex"]);
+    expect(claudeIds("codex_app_server")).toEqual(["claude_adk", "codex_app_server"]);
   });
 
-  it("resolves both generic agents through one concrete-carrier rule", () => {
-    expect(concreteProviderId("claude_adk", "claude")).toBe("claude");
-    expect(concreteProviderId("claude_adk", "codex")).toBe("claude_adk");
-    expect(concreteProviderId("codex_app_server", "codex")).toBe("codex");
-    expect(concreteProviderId("codex_app_server", "claude")).toBe("codex_app_server");
-    expect(() => concreteProviderId("gemini", "gemini")).toThrow(/gemini/);
-  });
-
-  it("gives the Codex card the TUI carrier only when that is the account default", () => {
+  it("gives the Codex card the app-server carrier only when that is the account default", () => {
     const codexId = (defaultProvider) =>
       creatableCatalog(fourProviders(defaultProvider)).providers[1].id;
 
     expect(codexId("codex")).toBe("codex");
     expect(codexId("codex_app_server")).toBe("codex_app_server");
-    expect(codexId("claude")).toBe("codex_app_server");
-    expect(codexId("claude_adk")).toBe("codex_app_server");
+    expect(codexId("claude")).toBe("codex");
+    expect(codexId("claude_adk")).toBe("codex");
   });
 
   it("carries each agent the models the bridge listed for the carrier behind it", () => {
-    const appServerOffered = creatableCatalog(fourProviders("claude_adk"));
+    const appServerOffered = creatableCatalog(fourProviders("codex_app_server"));
     const tuiOffered = creatableCatalog(fourProviders("codex"));
 
     expect(appServerOffered.providers[0].models).toEqual(MODELS);
@@ -147,12 +151,10 @@ describe("the catalog a create surface offers", () => {
     expect(tuiOffered.providers[1].efforts).toEqual(["low"]);
   });
 
-  // Creating an agent needs only a harness, and the cards paint before the
-  // models.list round trip answers — so the offer is two either way.
   it("offers both agents before the bridge has listed a single model", () => {
     const offered = creatableCatalog({});
 
-    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex_app_server"]);
+    expect(offered.providers.map((provider) => provider.id)).toEqual(["claude_adk", "codex"]);
     expect(offered.providers.every((provider) => provider.models.length === 0)).toBe(true);
   });
 

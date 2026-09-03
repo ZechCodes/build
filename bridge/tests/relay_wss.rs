@@ -6,10 +6,10 @@
 //! certificate injected as the trust root:
 //!
 //! - `wss_connects_to_tls_server_with_injected_root` runs the *real*
-//!   `relay::run_with_connector` over a genuine TLS handshake and checks the
-//!   signed device-auth headers arrive.
+//!   `relay::run` with an injected connector over a genuine TLS handshake and
+//!   checks the signed device-auth headers arrive.
 //! - `wss_scheme_is_supported_without_injected_connector` proves the default
-//!   `relay::run` path (webpki roots) recognizes the `wss` scheme — the failure
+//!   connector (webpki roots) recognizes the `wss` scheme — the failure
 //!   against an unreachable port is a network error, never tungstenite's
 //!   "TLS support not compiled in".
 //!
@@ -30,6 +30,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
+use build_bridge::carrier::{FrameIntake, SessionRegistry};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::transport;
 
@@ -138,7 +139,12 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run_with_connector(&url, &identity, handler, Some(connector)),
+        relay::run(
+            &url,
+            &identity,
+            FrameIntake::new(Arc::new(SessionRegistry::new()), handler),
+            Some(connector),
+        ),
     )
     .await
     .expect("no timeout");
@@ -166,7 +172,12 @@ async fn wss_scheme_is_supported_without_injected_connector() {
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(&url, &identity, handler),
+        relay::run(
+            &url,
+            &identity,
+            FrameIntake::new(Arc::new(SessionRegistry::new()), handler),
+            None,
+        ),
     )
     .await
     .expect("no timeout")

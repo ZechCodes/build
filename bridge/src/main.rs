@@ -313,7 +313,7 @@ async fn serve() {
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run_with_intake(&device_url, &identity, intake.clone(), None).await {
+        match relay::run(&device_url, &identity, intake.clone(), None).await {
             Ok(()) => eprintln!(
                 "relay disconnected; reconnecting in {}s",
                 backoff.current().as_secs()

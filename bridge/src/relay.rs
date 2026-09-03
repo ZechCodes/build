@@ -25,7 +25,7 @@ use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
 pub use crate::carrier::FrameHandler;
-use crate::carrier::{CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope, SessionRegistry};
+use crate::carrier::{CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
 use crate::transport::{self, Envelope, KeyPairB64, SessionInit};
 
 /// The signed-challenge path the relay expects (`{ts}.GET./ws/device`).
@@ -104,40 +104,15 @@ fn auth_request(url: &str, identity: &DeviceIdentity) -> Result<Request<()>, Rel
 ///
 /// Handles both plain-`ws` URLs (local/dev) and `wss://` (production, e.g.
 /// `wss://relay.getbuild.ing/ws/device`) — TLS is rustls with bundled webpki
-/// roots (the crate's only TLS feature, so the default connector below can never
-/// silently pick native-tls). Decrypted client request frames are passed to
-/// `handler`; its returned payload is encrypted and sent back as an
-/// `e2ee_envelope`.
-pub async fn run(
-    url: &str,
-    identity: &DeviceIdentity,
-    handler: FrameHandler,
-) -> Result<(), RelayError> {
-    run_with_connector(url, identity, handler, None).await
-}
-
-/// [`run`], with an explicit TLS connector. `None` uses the default (rustls +
-/// webpki roots for `wss://`, plain TCP for `ws` URLs); tests inject
-/// `Connector::Rustls` trusting a self-signed root to exercise real TLS locally.
+/// roots (the crate's only TLS feature, so the default `None` connector can never
+/// silently pick native-tls); tests pass a `Connector::Rustls` trusting a
+/// self-signed root to exercise real TLS locally.
 ///
-/// The sessions minted here go in a registry of this call's own, so they end
-/// with this socket. A device whose sessions outlive a socket passes its own
-/// intake to [`run_with_intake`].
-pub async fn run_with_connector(
-    url: &str,
-    identity: &DeviceIdentity,
-    handler: FrameHandler,
-    tls_connector: Option<tokio_tungstenite::Connector>,
-) -> Result<(), RelayError> {
-    let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
-    run_with_intake(url, identity, intake, tls_connector).await
-}
-
-/// [`run`] against an intake that outlives the socket: this connection is one
-/// carrier of the device's sessions, and every session it mints is reachable
-/// from every other carrier that intake serves. When the socket ends, the
-/// carrier is released — the sessions that rode nothing else end with it.
-pub async fn run_with_intake(
+/// This socket is one carrier of the intake's sessions: every session minted
+/// here is reachable from every other carrier that intake serves, and when the
+/// socket ends the carrier is released — the sessions that rode nothing else end
+/// with it.
+pub async fn run(
     url: &str,
     identity: &DeviceIdentity,
     intake: Arc<FrameIntake>,
@@ -147,19 +122,63 @@ pub async fn run_with_intake(
     let (stream, _resp) =
         tokio_tungstenite::connect_async_tls_with_config(request, None, false, tls_connector)
             .await?;
-    let (mut sink, mut source) = stream.split();
+    let (sink, mut source) = stream.split();
 
-    // One writer owns the sink; everything else queues to it. Two queues meet
-    // here: the relay's own control messages, already wire-shaped, and the
-    // envelopes the app pushes to sessions, which know nothing of this wire.
-    // Unbounded so pushes (terminal output bursts) never block the app under a
-    // lock.
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
-    let (envelopes_tx, mut envelopes_rx) = mpsc::unbounded_channel::<OutboundEnvelope>();
-    let writer = tokio::spawn(async move {
+    // Unbounded so terminal output bursts never block the app under a lock.
+    let (control_tx, control_rx) = mpsc::unbounded_channel::<Message>();
+    let (envelopes_tx, envelopes_rx) = mpsc::unbounded_channel::<OutboundEnvelope>();
+    let writer = spawn_writer(sink, control_rx, envelopes_rx);
+    let mut connection = RelayConnection::new(control_tx.clone(), identity, &intake, &envelopes_tx);
+
+    // Handlers run in the intake, not on this task: below, the loop only reads
+    // and hands over, so no handler can stop the socket from being drained.
+    let outcome: Result<(), RelayError> = async {
+        let mut deadline = silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S);
+        loop {
+            let Ok(next) = tokio::time::timeout(deadline, source.next()).await else {
+                return Err(RelayError::Silent(deadline));
+            };
+            let Some(message) = next else { break };
+            let text = match message? {
+                Message::Text(text) => text,
+                Message::Close(_) => break,
+                _ => continue,
+            };
+            let Ok(msg) = serde_json::from_str::<Value>(&text) else {
+                continue;
+            };
+            if let Some(next_deadline) = connection.accept(&msg).await {
+                deadline = next_deadline;
+            }
+        }
+        Ok(())
+    }
+    .await;
+
+    connection.close();
+    drop(control_tx);
+    drop(envelopes_tx);
+    let _ = writer.await;
+    outcome
+}
+
+/// One task owns the sink; everything else queues to it. Two queues meet here:
+/// the relay's own control messages, already wire-shaped, and the envelopes the
+/// app pushes to sessions, which know nothing of this wire.
+fn spawn_writer(
+    mut sink: futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+        Message,
+    >,
+    mut control_rx: mpsc::UnboundedReceiver<Message>,
+    mut envelopes_rx: mpsc::UnboundedReceiver<OutboundEnvelope>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         loop {
             let message = tokio::select! {
-                control = out_rx.recv() => match control {
+                control = control_rx.recv() => match control {
                     Some(message) => message,
                     None => break,
                 },
@@ -172,154 +191,146 @@ pub async fn run_with_intake(
                 break;
             }
         }
-    });
+    })
+}
 
-    let carrier = CarrierHandle::new(envelopes_tx.clone());
-    let mut heartbeat: Option<tokio::task::JoinHandle<()>> = None;
+/// This socket generation as a carrier: what a relay message may act on, and the
+/// heartbeat that keeps the relay believing in the device.
+struct RelayConnection<'a> {
+    control_tx: mpsc::UnboundedSender<Message>,
+    identity: &'a DeviceIdentity,
+    intake: &'a FrameIntake,
+    carrier: CarrierHandle,
+    heartbeat: Option<tokio::task::JoinHandle<()>>,
+}
 
-    // Handlers run in the intake, not on this task: below, the loop only reads
-    // and hands over, so no handler can stop the socket from being drained.
-    let outcome: Result<(), RelayError> = async {
-        let mut deadline = silence_deadline(DEFAULT_HEARTBEAT_INTERVAL_S);
-        loop {
-            let Ok(next) = tokio::time::timeout(deadline, source.next()).await else {
-                return Err(RelayError::Silent(deadline));
-            };
-            let Some(message) = next else { break };
-            let message = message?;
-            let text = match message {
-                Message::Text(t) => t,
-                Message::Ping(_) | Message::Pong(_) => continue,
-                Message::Close(_) => break,
-                _ => continue,
-            };
-            let Ok(msg) = serde_json::from_str::<Value>(&text) else {
-                continue;
-            };
-
-            match msg.get("type").and_then(Value::as_str).unwrap_or("") {
-                "authenticated" => {
-                    let interval = msg
-                        .get("heartbeat_interval_s")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
-                    deadline = silence_deadline(interval);
-                    // Upload our transport public key so clients can wrap to it.
-                    send(
-                        &out_tx,
-                        json!({
-                            "type": "transport_key",
-                            "transport_public_key": identity.transport.public_key_b64,
-                        }),
-                    );
-                    heartbeat = Some(spawn_heartbeat(out_tx.clone(), interval));
-                }
-                "session_init" => {
-                    if let Err(e) = handle_session_init(&out_tx, identity, &intake, &carrier, &msg)
-                    {
-                        tracing_protocol_error(&e);
-                    }
-                }
-                "e2ee_envelope" => {
-                    if let Err(e) = handle_envelope(&intake, &carrier, &msg).await {
-                        tracing_protocol_error(&e);
-                    }
-                }
-                // The relay says the browser behind this session is gone: this
-                // carrier stops carrying it, and the session ends with it unless
-                // another carrier is still riding.
-                "session_closed" => {
-                    if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
-                        intake.close_session(session_id, carrier.id());
-                    }
-                }
-                // "response"/"error"/unknown: nothing for the device to do here.
-                _ => {}
-            }
+impl<'a> RelayConnection<'a> {
+    fn new(
+        control_tx: mpsc::UnboundedSender<Message>,
+        identity: &'a DeviceIdentity,
+        intake: &'a FrameIntake,
+        envelopes_tx: &mpsc::UnboundedSender<OutboundEnvelope>,
+    ) -> Self {
+        RelayConnection {
+            control_tx,
+            identity,
+            intake,
+            carrier: CarrierHandle::new(envelopes_tx.clone()),
+            heartbeat: None,
         }
+    }
+
+    /// One relay message, honoured. Returns the silence deadline the message
+    /// sets, which only `authenticated` does — it carries the interval.
+    async fn accept(&mut self, msg: &Value) -> Option<Duration> {
+        match msg.get("type").and_then(Value::as_str).unwrap_or("") {
+            "authenticated" => return Some(self.authenticated(msg)),
+            "session_init" => {
+                if let Err(e) = self.open_session(msg) {
+                    log_protocol_error(&e);
+                }
+            }
+            "e2ee_envelope" => {
+                if let Err(e) = self.take_envelope(msg).await {
+                    log_protocol_error(&e);
+                }
+            }
+            "session_closed" => {
+                if let Some(session_id) = msg.get("session_id").and_then(Value::as_str) {
+                    self.intake.close_session(session_id, self.carrier.id());
+                }
+            }
+            // "response"/"error"/unknown: nothing for the device to do here.
+            _ => {}
+        }
+        None
+    }
+
+    /// The relay took the signed challenge: upload the transport public key
+    /// clients wrap session keys to, and start heartbeating at its interval.
+    fn authenticated(&mut self, msg: &Value) -> Duration {
+        let interval = msg
+            .get("heartbeat_interval_s")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL_S);
+        send(
+            &self.control_tx,
+            json!({
+                "type": "transport_key",
+                "transport_public_key": self.identity.transport.public_key_b64,
+            }),
+        );
+        self.heartbeat = Some(spawn_heartbeat(self.control_tx.clone(), interval));
+        silence_deadline(interval)
+    }
+
+    /// A client opened a session: unwrap its session key, register it against
+    /// this carrier and prove receipt with an encrypted `session_accept`.
+    fn open_session(&self, msg: &Value) -> Result<(), RelayError> {
+        let session_id = field_str(msg, "session_id")?;
+        let init: SessionInit = serde_json::from_value(
+            msg.get("session_init")
+                .cloned()
+                .ok_or_else(|| RelayError::Protocol("session_init payload missing".into()))?,
+        )
+        .map_err(|e| RelayError::Protocol(format!("bad session_init: {e}")))?;
+
+        let opened = transport::open_session_init(&self.identity.transport.private_key_b64, &init)?;
+        self.intake
+            .open(&session_id, opened.session_key_b64.clone(), &self.carrier)?;
+
+        let accept = transport::build_session_accept(
+            &opened.session_key_b64,
+            &session_id,
+            &transport::session_route(&session_id),
+            None,
+        )?;
+        send(
+            &self.control_tx,
+            json!({
+                "type": "session_accept",
+                "session_id": session_id,
+                "envelope": accept,
+            }),
+        );
         Ok(())
     }
-    .await;
 
-    intake.close_carrier(carrier.id());
-    abort_heartbeat(heartbeat);
-    drop(out_tx);
-    drop(envelopes_tx);
-    let _ = writer.await;
-    outcome
-}
-
-fn abort_heartbeat(heartbeat: Option<tokio::task::JoinHandle<()>>) {
-    if let Some(task) = heartbeat {
-        task.abort();
+    /// A client sent an encrypted frame on this carrier. Everything past parsing
+    /// it off the relay wire — the key, the close rule, dispatch — belongs to the
+    /// intake, which answers to every carrier alike.
+    async fn take_envelope(&self, msg: &Value) -> Result<(), RelayError> {
+        let envelope: Envelope = serde_json::from_value(
+            msg.get("envelope")
+                .cloned()
+                .ok_or_else(|| RelayError::Protocol("envelope missing".into()))?,
+        )
+        .map_err(|e| RelayError::Protocol(format!("bad envelope: {e}")))?;
+        self.intake.accept(envelope, &self.carrier).await?;
+        Ok(())
     }
-}
 
-/// A client opened a session: unwrap its session key, register it against this
-/// carrier and prove receipt with an encrypted `session_accept`.
-fn handle_session_init(
-    out_tx: &mpsc::UnboundedSender<Message>,
-    identity: &DeviceIdentity,
-    intake: &FrameIntake,
-    carrier: &CarrierHandle,
-    msg: &Value,
-) -> Result<(), RelayError> {
-    let session_id = field_str(msg, "session_id")?;
-    let init: SessionInit = serde_json::from_value(
-        msg.get("session_init")
-            .cloned()
-            .ok_or_else(|| RelayError::Protocol("session_init payload missing".into()))?,
-    )
-    .map_err(|e| RelayError::Protocol(format!("bad session_init: {e}")))?;
-
-    let opened = transport::open_session_init(&identity.transport.private_key_b64, &init)?;
-    intake.open(&session_id, opened.session_key_b64.clone(), carrier)?;
-
-    let accept = transport::build_session_accept(
-        &opened.session_key_b64,
-        &session_id,
-        &transport::session_route(&session_id),
-        None,
-    )?;
-    send(
-        out_tx,
-        json!({
-            "type": "session_accept",
-            "session_id": session_id,
-            "envelope": accept,
-        }),
-    );
-    Ok(())
-}
-
-/// A client sent an encrypted frame on this carrier. Everything past parsing it
-/// off the relay wire — the key, the close rule, dispatch — belongs to the
-/// intake, which answers to every carrier alike.
-async fn handle_envelope(
-    intake: &FrameIntake,
-    carrier: &CarrierHandle,
-    msg: &Value,
-) -> Result<(), RelayError> {
-    let envelope: Envelope = serde_json::from_value(
-        msg.get("envelope")
-            .cloned()
-            .ok_or_else(|| RelayError::Protocol("envelope missing".into()))?,
-    )
-    .map_err(|e| RelayError::Protocol(format!("bad envelope: {e}")))?;
-    intake.accept(envelope, carrier).await?;
-    Ok(())
+    /// The socket is gone: this carrier carries nothing more, the heartbeat that
+    /// fed it stops with it, and its hold on the writer's queue goes with it.
+    fn close(mut self) {
+        self.intake.close_carrier(self.carrier.id());
+        if let Some(task) = self.heartbeat.take() {
+            task.abort();
+        }
+    }
 }
 
 fn spawn_heartbeat(
-    out_tx: mpsc::UnboundedSender<Message>,
+    control_tx: mpsc::UnboundedSender<Message>,
     interval_s: u64,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(interval_s.max(1)));
         loop {
             ticker.tick().await;
-            let heartbeat = out_tx.send(Message::Text(json!({"type": "heartbeat"}).to_string()));
-            let ping = out_tx.send(Message::Ping(Vec::new()));
+            let heartbeat =
+                control_tx.send(Message::Text(json!({"type": "heartbeat"}).to_string()));
+            let ping = control_tx.send(Message::Ping(Vec::new()));
             if heartbeat.is_err() || ping.is_err() {
                 break;
             }
@@ -339,8 +350,8 @@ fn relay_message(outbound: &OutboundEnvelope) -> Message {
     )
 }
 
-fn send(out_tx: &mpsc::UnboundedSender<Message>, value: Value) {
-    let _ = out_tx.send(Message::Text(value.to_string()));
+fn send(control_tx: &mpsc::UnboundedSender<Message>, value: Value) {
+    let _ = control_tx.send(Message::Text(value.to_string()));
 }
 
 fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
@@ -350,10 +361,11 @@ fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
         .ok_or_else(|| RelayError::Protocol(format!("{key} missing")))
 }
 
-fn tracing_protocol_error(err: &RelayError) {
-    // Protocol errors on a single frame must not kill the connection; a real
-    // build wires this to `tracing`. Kept minimal here.
-    let _ = err;
+/// A frame the device could not honour. Never fatal to the socket, and never
+/// silent: a refused `session_init` or a frame for a session nobody knows is
+/// what a browser sees as a call that never came back.
+fn log_protocol_error(err: &RelayError) {
+    eprintln!("relay protocol error: {err}");
 }
 
 #[cfg(test)]

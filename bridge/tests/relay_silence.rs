@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use build_bridge::carrier::{FrameIntake, SessionRegistry};
 use build_bridge::relay::{self, DeviceIdentity, RelayError};
 use build_bridge::transport;
 use futures_util::{SinkExt, StreamExt};
@@ -66,7 +67,12 @@ async fn a_relay_that_goes_silent_is_treated_as_disconnected() {
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(HEARTBEAT_INTERVAL_S * 3 + 5),
-        relay::run(&url, &test_identity(), idle_handler()),
+        relay::run(
+            &url,
+            &test_identity(),
+            FrameIntake::new(Arc::new(SessionRegistry::new()), idle_handler()),
+            None,
+        ),
     )
     .await
     .expect("the client gives up on a silent relay instead of waiting forever");
@@ -86,7 +92,12 @@ async fn a_quiet_relay_that_still_answers_pings_keeps_the_session() {
 
     let still_running = tokio::time::timeout(
         Duration::from_secs(HEARTBEAT_INTERVAL_S * 3 + 3),
-        relay::run(&url, &test_identity(), idle_handler()),
+        relay::run(
+            &url,
+            &test_identity(),
+            FrameIntake::new(Arc::new(SessionRegistry::new()), idle_handler()),
+            None,
+        ),
     )
     .await
     .is_err();

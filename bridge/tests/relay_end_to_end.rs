@@ -7,6 +7,7 @@
 
 use std::sync::Arc;
 
+use build_bridge::carrier::{FrameIntake, SessionRegistry};
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
 use futures_util::{SinkExt, StreamExt};
@@ -98,7 +99,8 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         Arc::new(|_sender, frame| json!({ "echo": frame.payload, "ok": true }));
     let bridge = {
         let identity = identity.clone();
-        tokio::spawn(async move { relay::run(&url, &identity, handler).await })
+        let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
+        tokio::spawn(async move { relay::run(&url, &identity, intake, None).await })
     };
 
     // 1. The device uploaded its transport key; the browser learns it.
@@ -204,7 +206,8 @@ async fn a_slow_handler_does_not_stall_the_socket() {
     });
     let bridge = {
         let identity = identity.clone();
-        tokio::spawn(async move { relay::run(&url, &identity, handler).await })
+        let intake = FrameIntake::new(Arc::new(SessionRegistry::new()), handler);
+        tokio::spawn(async move { relay::run(&url, &identity, intake, None).await })
     };
 
     let device_transport_pub =

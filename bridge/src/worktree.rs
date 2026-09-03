@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 use crate::git_process::run_git;
 use crate::isolation::{
     checkout_name, Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend,
-    NO_BACKEND_IN_THIS_BUILD,
 };
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
@@ -465,7 +464,9 @@ impl WorktreeManager {
         self.backends().into_iter().flatten()
     }
 
-    /// The backend that makes `isolation`, or why this volume cannot.
+    /// The backend that makes `isolation`, or why this volume cannot. An
+    /// isolation with no backend is one [`IsolationAvailability`] locks, so the
+    /// refusal is its sentence and there is no other.
     fn backend(&self, isolation: Isolation) -> Result<&dyn IsolationBackend, WorktreeError> {
         self.every_backend()
             .find(|backend| backend.kind() == isolation)
@@ -473,7 +474,9 @@ impl WorktreeManager {
                 WorktreeError::IsolationUnavailable(
                     self.availability()
                         .lock_reason(isolation)
-                        .unwrap_or(NO_BACKEND_IN_THIS_BUILD)
+                        .expect(
+                            "an isolation with no backend must be locked by IsolationAvailability",
+                        )
                         .to_string(),
                 )
             })

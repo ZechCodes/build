@@ -516,16 +516,23 @@ mod dispatcher_tests {
 
     /// Teardown bookkeeping is fast by construction: a lane whose handler is
     /// wedged fills up, and a carrier ending must not park behind it — the relay
-    /// reconnect that follows is what would never happen.
+    /// reconnect that follows is what would never happen. The close itself still
+    /// arrives, once the lane has drained.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_close_does_not_wait_behind_a_saturated_lane() {
         let (gate, gated) = HandlerGate::new();
-        let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            if frame.payload["id"] == 0 {
-                gated.hold();
-            }
-            json!({ "ok": true })
-        });
+        let closed = Arc::new(AtomicBool::new(false));
+        let handler: FrameHandler = {
+            let closed = closed.clone();
+            Arc::new(move |_sender, frame| {
+                if frame.frame_type == CLOSE_FRAME_TYPE {
+                    closed.store(true, Ordering::SeqCst);
+                } else if frame.payload["id"] == 0 {
+                    gated.hold();
+                }
+                json!({ "ok": true })
+            })
+        };
         let dispatcher = Arc::new(Dispatcher::with_capacity(handler, 16, 4));
         let (sender, _rx, _key) = SessionSender::observable("s-wedged");
 
@@ -554,11 +561,23 @@ mod dispatcher_tests {
         .await
         .expect("the wedged lane fills up");
 
-        tokio::time::timeout(PATIENTLY, async { dispatcher.close_session("s-wedged") })
-            .await
-            .expect("the close does not wait on the lane it is tearing down");
+        let closing = dispatcher.clone();
+        tokio::time::timeout(
+            PATIENTLY,
+            tokio::task::spawn_blocking(move || closing.close_session("s-wedged")),
+        )
+        .await
+        .expect("the close does not wait on the lane it is tearing down")
+        .expect("the closing thread finished");
 
         gate.release();
+        tokio::time::timeout(PATIENTLY, async {
+            while !closed.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the session's close reached the handler once the lane drained");
         feeding.abort();
     }
 

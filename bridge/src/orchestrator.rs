@@ -37,12 +37,12 @@
 //! forwards (the caller routes each report by owner lookup).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use portable_pty::PtySize;
 
 use crate::agent::AgentRoster;
 use crate::diff::{diff_against_base, diff_against_merge_base, DiffError, WorktreeDiff};
+use crate::git_process::{run_git, GitError};
 use crate::harness::HarnessError;
 use crate::isolation::Isolation;
 use crate::mcp::{DonePhase, DoneReport, DoneStatus};
@@ -100,6 +100,15 @@ pub enum OrchestratorError {
     /// stays in review because the merge never happened.
     #[error("merge_failed: {0}")]
     MergeFailed(String),
+}
+
+impl From<GitError> for OrchestratorError {
+    fn from(error: GitError) -> Self {
+        match error {
+            GitError::Unstartable(io) => OrchestratorError::Io(io),
+            GitError::Failed(detail) => OrchestratorError::Git(detail),
+        }
+    }
 }
 
 /// Convert any git failure hit during a merge approval into [`OrchestratorError::MergeFailed`]
@@ -1619,8 +1628,7 @@ impl Orchestrator {
     ) -> Result<String, OrchestratorError> {
         store.materialize_plan_docs(&plan.plan.id.0, &worktree.path)?;
         self.commit_all_with_message(&worktree.path, &format!("plan: {goal}"))?;
-        Ok(self
-            .git(&worktree.path, &["rev-parse", "HEAD"])?
+        Ok(run_git(&worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string())
     }
@@ -1905,8 +1913,7 @@ impl Orchestrator {
             &active.worktree.path,
             &format!("Build: stage {stage_id} — checkpoint (swept by Build)"),
         )?;
-        let built_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let built_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         // Commit/rev-parse are fallible. Only move Building → Built after both
@@ -1995,11 +2002,10 @@ impl Orchestrator {
                     "stage {stage_id} has no pinned built_sha; validation cannot establish a stable boundary"
                 ))
             })?;
-        let head = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let head = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
-        let dirty = self.git(
+        let dirty = run_git(
             &active.worktree.path,
             &["status", "--porcelain", "--untracked-files=all"],
         )?;
@@ -2112,8 +2118,7 @@ impl Orchestrator {
 
         // Probe the candidate boundary before mutating the run machine. A
         // vanished/corrupt checkout must leave StageGate intact for recovery.
-        let start_sha = self
-            .git(&active.worktree.path, &["rev-parse", "HEAD"])?
+        let start_sha = run_git(&active.worktree.path, &["rev-parse", "HEAD"])?
             .trim()
             .to_string();
         active.run.apply(RunEvent::Dispatch)?;
@@ -2511,7 +2516,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &active.worktree.branch())
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(
+        run_git(
             &active.worktree.path,
             // `--` stops option parsing so option-shaped names remain opaque.
             &["push", "-u", &remote, "--", &active.worktree.branch()],
@@ -2528,7 +2533,7 @@ impl Orchestrator {
             .map_err(|error| OrchestratorError::Git(error.to_string()))?;
         let remote = configured_remote_for_branch(&repo, &base)
             .ok_or_else(|| OrchestratorError::Git("no configured push remote".to_string()))?;
-        self.git(&self.repo_path, &["push", &remote, &base])?;
+        run_git(&self.repo_path, &["push", &remote, &base])?;
         Ok(())
     }
 
@@ -2834,8 +2839,7 @@ impl Orchestrator {
     /// left alone.
     fn exclude_build_machinery_repo_locally(&self) -> Result<(), OrchestratorError> {
         const RULES: [&str; 2] = [".build/mcp*.json", ".build/attachments/"];
-        let git_dir = self
-            .git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
+        let git_dir = run_git(&self.repo_path, &["rev-parse", "--git-common-dir"])?
             .trim()
             .to_string();
         let git_dir = self.repo_path.join(git_dir);
@@ -2934,33 +2938,14 @@ impl Orchestrator {
         // time), which `git add -A` honors silently — and which also guards the
         // agent's own commits. (A `:(exclude)` pathspec here would instead ERROR,
         // since it names an ignored path explicitly.)
-        self.git(worktree_path, &["add", "-A", "--", "."])?;
+        run_git(worktree_path, &["add", "-A", "--", "."])?;
         // Only commit if something is staged (the MCP config alone must not
         // produce a commit).
-        let staged = self.git(worktree_path, &["diff", "--cached", "--name-only"])?;
+        let staged = run_git(worktree_path, &["diff", "--cached", "--name-only"])?;
         if !staged.trim().is_empty() {
-            self.git(worktree_path, &["commit", "-m", message])?;
+            run_git(worktree_path, &["commit", "-m", message])?;
         }
         Ok(())
-    }
-
-    fn git(&self, dir: &Path, args: &[&str]) -> Result<String, OrchestratorError> {
-        let out = Command::new("git").args(args).current_dir(dir).output()?;
-        if !out.status.success() {
-            // git splits its story across streams (a conflicting merge reports
-            // "CONFLICT …" on stdout); surface both so the user sees why.
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-                .into_iter()
-                .filter(|s| !s.is_empty())
-                .collect();
-            return Err(OrchestratorError::Git(format!(
-                "git {args:?}: {}",
-                detail.join("\n")
-            )));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 }
 
@@ -2968,6 +2953,7 @@ impl Orchestrator {
 mod tests {
     use super::*;
     use crate::mcp::DoneOutputs;
+    use std::process::Command;
 
     fn init_repo() -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -5413,6 +5399,20 @@ mod tests {
             last_commit_subject(&external.path),
             "Checkpoint: adopted by Build"
         );
+    }
+
+    /// git's failures reach the orchestrator through one door, keeping the
+    /// message the RPC surfaces the same one the child gave.
+    #[test]
+    fn a_failed_git_child_arrives_as_a_git_failure() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let failure: OrchestratorError = run_git(dir.path(), &["rev-parse", "--verify", "HEAD"])
+            .unwrap_err()
+            .into();
+
+        assert!(matches!(failure, OrchestratorError::Git(_)), "{failure}");
+        assert!(failure.to_string().contains("rev-parse"), "{failure}");
     }
 
     /// A refusal the manager composed itself is already the sentence to show:

@@ -12,6 +12,7 @@
 pub mod worktree;
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 pub use worktree::WorktreeBackend;
 
@@ -26,6 +27,26 @@ pub enum WorktreeError {
     Command(String),
     #[error("not a Build checkout: {0}")]
     NotABuildCheckout(PathBuf),
+}
+
+/// One git command in `dir`, its output or why it failed. git splits its story
+/// across streams (a conflicting merge reports "CONFLICT …" on stdout), so a
+/// failure carries both.
+pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
+    let out = Command::new("git").args(args).current_dir(dir).output()?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect();
+        return Err(WorktreeError::Command(format!(
+            "git {args:?}: {}",
+            detail.join("\n")
+        )));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// How a checkout is isolated from the project it came from.

@@ -2,9 +2,8 @@
 //! the bridge that speaks to git's worktree registry.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use super::{Isolation, IsolationBackend, WorktreeError};
+use super::{run_git, Isolation, IsolationBackend, WorktreeError};
 
 /// Materializes a checkout as a git linked worktree of the project repository.
 /// The project repo already holds every ref, so publishing and base-syncing are
@@ -92,7 +91,7 @@ impl IsolationBackend for WorktreeBackend {
         project: &Path,
         _worktrees_root: &Path,
     ) -> Result<Vec<PathBuf>, WorktreeError> {
-        let listed = git(project, &["worktree", "list", "--porcelain"])?;
+        let listed = run_git(project, &["worktree", "list", "--porcelain"])?;
         let primary = std::fs::canonicalize(project)?;
         Ok(listed
             .split("\n\n")
@@ -102,7 +101,7 @@ impl IsolationBackend for WorktreeBackend {
     }
 
     fn prune(&self, project: &Path) -> Result<(), WorktreeError> {
-        git(project, &["worktree", "prune"]).map(|_| ())
+        run_git(project, &["worktree", "prune"]).map(|_| ())
     }
 
     fn holds_record(&self, project: &Path, name: &str) -> Result<bool, WorktreeError> {
@@ -135,14 +134,4 @@ fn checkout_path_in(block: &str) -> Option<PathBuf> {
         }
     }
     std::fs::canonicalize(path?).ok()
-}
-
-fn git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
-    let output = Command::new("git").args(args).current_dir(dir).output()?;
-    if !output.status.success() {
-        return Err(WorktreeError::Command(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }

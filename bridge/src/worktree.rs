@@ -9,7 +9,9 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use crate::isolation::{Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend};
+use crate::isolation::{
+    run_git, Isolation, IsolationAvailability, IsolationBackend, WorktreeBackend,
+};
 
 /// The branch-name prefix for every run/task branch: `build/<slug>`.
 pub const BRANCH_PREFIX: &str = "build";
@@ -618,29 +620,6 @@ fn unix_now() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_secs() as i64)
         .unwrap_or(0)
-}
-
-/// One git command in `dir`, its output or why it failed.
-fn run_git(dir: &Path, args: &[&str]) -> Result<String, WorktreeError> {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()?;
-    if !out.status.success() {
-        // git splits its story across streams (a conflicting merge reports
-        // "CONFLICT …" on stdout); surface both so the user sees why.
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        return Err(WorktreeError::Command(format!(
-            "git {args:?}: {}",
-            detail.join("\n")
-        )));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 pub(crate) fn configured_remote_for_branch(

@@ -1082,6 +1082,43 @@ mod intake_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_session_closed_ends_a_session_riding_only_that_carrier() {
+        let (intake, registry, mut seen) = watching_intake();
+        let (carrier, _out) = test_carrier();
+        let key = transport::generate_session_key();
+        intake.open("s-1", key.clone(), &carrier).unwrap();
+
+        intake.close_session("s-1", carrier.id());
+
+        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+        assert!(matches!(
+            registry.admit(&client_envelope(&key, "s-1", "data"), &carrier),
+            Err(CarrierError::UnknownSession(_))
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_session_closed_leaves_a_session_a_second_carrier_still_rides() {
+        let (intake, registry, mut seen) = watching_intake();
+        let (relay, _relay_out) = test_carrier();
+        let (peer, _peer_out) = test_carrier();
+        let key = transport::generate_session_key();
+        intake.open("s-1", key.clone(), &relay).unwrap();
+        intake.open("s-1", key.clone(), &peer).unwrap();
+
+        intake.close_session("s-1", relay.id());
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            seen.try_recv().is_err(),
+            "the session is still carried, so nothing closed"
+        );
+        assert!(registry
+            .admit(&client_envelope(&key, "s-1", "data"), &peer)
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_frame_for_an_unknown_session_reaches_no_handler() {
         let (intake, _registry, mut seen) = watching_intake();
         let (carrier, _out) = test_carrier();

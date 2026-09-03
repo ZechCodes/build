@@ -915,6 +915,14 @@ fn strip_trailing_digit_run(segment: &str) -> String {
 /// Enumerate every checkout of `repo_path` that is neither the project's own
 /// nor in `excluded_paths`, with a review summary each. A seam kept in this
 /// shape until the app holds a [`WorktreeManager`] of its own.
+///
+/// The manager is built with the repository as its worktrees root, which is a
+/// placeholder: the app does not carry a project's real worktrees root to this
+/// seam. Only a backend that ignores the root may be reached through here, and
+/// [`crate::isolation::WorktreeBackend`] does — it finds checkouts in git's
+/// records, never by reading the root. A backend that scans the root would
+/// walk the whole project directory instead, so it cannot be added while this
+/// wrapper stands; stage 2 retires it by giving the app its own manager.
 pub fn discover_external_worktrees(
     repo_path: &Path,
     base_branch: &str,
@@ -924,7 +932,9 @@ pub fn discover_external_worktrees(
 }
 
 /// The primary checkout described in the shape adoption takes for an external
-/// worktree. The same seam, kept in the same shape.
+/// worktree. The same seam, kept in the same shape, with the same placeholder
+/// worktrees root and the same constraint on which backends may be reached
+/// through it (see [`discover_external_worktrees`]).
 pub fn describe_primary_checkout(
     repo_path: &Path,
     base_branch: &str,

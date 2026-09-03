@@ -106,10 +106,7 @@ pub enum OrchestratorError {
 /// so the RPC message carries the contract's `merge_failed:` prefix.
 fn as_merge_failure(error: OrchestratorError) -> OrchestratorError {
     match error {
-        OrchestratorError::Git(reason)
-        | OrchestratorError::Worktree(WorktreeError::Command(reason)) => {
-            OrchestratorError::MergeFailed(reason)
-        }
+        OrchestratorError::Git(reason) => OrchestratorError::MergeFailed(reason),
         already @ OrchestratorError::MergeFailed(_) => already,
         other => OrchestratorError::MergeFailed(other.to_string()),
     }
@@ -5418,6 +5415,21 @@ mod tests {
         );
     }
 
+    /// A refusal the manager composed itself is already the sentence to show:
+    /// wrapping it in a merge failure adds the prefix the web client keys on
+    /// and nothing else.
+    #[test]
+    fn a_refused_merge_reads_as_the_refusal_itself() {
+        let refusal = OrchestratorError::Worktree(WorktreeError::Refused(
+            "primary checkout is on \"elsewhere\"".to_string(),
+        ));
+
+        assert_eq!(
+            as_merge_failure(refusal).to_string(),
+            "merge_failed: primary checkout is on \"elsewhere\""
+        );
+    }
+
     #[tokio::test]
     async fn run_finishers_commit_merge_and_report_conflicts() {
         let (dir, repo) = init_repo();
@@ -5463,6 +5475,10 @@ mod tests {
             .run_approve_merge(&mut second)
             .expect_err("the second write conflicts");
         assert!(err.to_string().starts_with("merge_failed:"), "{err}");
+        assert!(
+            err.to_string().contains("CONFLICT"),
+            "a failed merge carries git's own words: {err}"
+        );
         assert_eq!(second.run.state, RunState::Review);
         assert!(
             !repo.join(".git/MERGE_HEAD").exists(),

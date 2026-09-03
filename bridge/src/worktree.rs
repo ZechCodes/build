@@ -199,7 +199,7 @@ impl WorktreeManager {
         isolation: Isolation,
     ) -> Result<NamedBranchCheckout, WorktreeError> {
         if !is_usable_branch_name(branch) {
-            return Err(WorktreeError::Command(format!(
+            return Err(WorktreeError::Refused(format!(
                 "{branch:?} is not a branch name"
             )));
         }
@@ -320,7 +320,7 @@ impl WorktreeManager {
             .trim()
             .to_string();
         if head != base_branch {
-            return Err(WorktreeError::Command(format!(
+            return Err(WorktreeError::Refused(format!(
                 "primary checkout is on {head:?}, not the base branch {base_branch:?} — \
                  check out {base_branch:?} (or commit/stash your work) and approve again"
             )));
@@ -386,7 +386,7 @@ impl WorktreeManager {
         let primary = std::fs::canonicalize(&self.repo_path)?;
         let isolation = Isolation::of(&primary).unwrap_or_default();
         summarize_checkout(&primary, isolation, base_branch, unix_now()).ok_or_else(|| {
-            WorktreeError::Command(format!(
+            WorktreeError::Refused(format!(
                 "the primary checkout at {} cannot be described — a bare or detached repository \
                  has no branch to adopt",
                 primary.display()
@@ -573,7 +573,7 @@ impl WorktreeManager {
             || worktree.name.is_empty()
             || worktree.name.contains(['/', '\\'])
         {
-            return Err(WorktreeError::Command(
+            return Err(WorktreeError::Refused(
                 "refusing to restore a worktree outside its managed root".to_string(),
             ));
         }
@@ -591,7 +591,7 @@ impl WorktreeManager {
     ) -> Result<(), WorktreeError> {
         let local_ref = format!("refs/heads/{branch}");
         if !git2::Reference::is_valid_name(&local_ref) {
-            return Err(WorktreeError::Command(format!(
+            return Err(WorktreeError::Refused(format!(
                 "invalid persisted branch: {branch:?}"
             )));
         }
@@ -624,7 +624,7 @@ impl WorktreeManager {
         let actual = std::fs::canonicalize(&worktree.path)?;
         let expected = std::fs::canonicalize(expected_path)?;
         if actual != expected {
-            return Err(WorktreeError::Command(
+            return Err(WorktreeError::Refused(
                 "refusing to trust a worktree outside its canonical managed path".to_string(),
             ));
         }
@@ -635,21 +635,21 @@ impl WorktreeManager {
         let checkout = git2::Repository::open(&actual)?;
         let head = checkout.head()?;
         if !head.is_branch() || head.shorthand() != Some(worktree.recorded_branch.as_str()) {
-            return Err(WorktreeError::Command(format!(
+            return Err(WorktreeError::Refused(format!(
                 "worktree is not on the exact persisted branch {:?}",
                 worktree.recorded_branch
             )));
         }
         let head_oid = head.target().ok_or_else(|| {
-            WorktreeError::Command("worktree HEAD has no direct commit".to_string())
+            WorktreeError::Refused("worktree HEAD has no direct commit".to_string())
         })?;
         let primary = git2::Repository::open(&self.repo_path)?;
         let branch_oid = primary
             .find_reference(&format!("refs/heads/{}", worktree.recorded_branch))?
             .target()
-            .ok_or_else(|| WorktreeError::Command("persisted branch has no commit".to_string()))?;
+            .ok_or_else(|| WorktreeError::Refused("persisted branch has no commit".to_string()))?;
         if head_oid != branch_oid {
-            return Err(WorktreeError::Command(
+            return Err(WorktreeError::Refused(
                 "worktree HEAD does not match the persisted branch tip".to_string(),
             ));
         }
@@ -658,7 +658,7 @@ impl WorktreeManager {
             .peel_to_commit()?
             .id();
         primary.merge_base(base_oid, head_oid).map_err(|_| {
-            WorktreeError::Command(format!(
+            WorktreeError::Refused(format!(
                 "worktree branch has no verified ancestry with {:?}",
                 worktree.base_branch
             ))
@@ -1829,6 +1829,10 @@ mod tests {
             .to_string();
 
         assert!(refused.contains("not the base branch"), "{refused}");
+        assert!(
+            !refused.contains("git command failed"),
+            "the merge never ran, so the refusal must not read as git's failure: {refused}"
+        );
         git_in(&repo, &["checkout", "main"]);
         mgr.merge_into_base(&wt.path, &wt.recorded_branch, "main")
             .unwrap();

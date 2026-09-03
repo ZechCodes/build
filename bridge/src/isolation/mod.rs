@@ -24,8 +24,13 @@ pub enum WorktreeError {
     Git(#[from] git2::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    /// A git command ran and failed, in git's own words.
     #[error("git command failed: {0}")]
     Command(String),
+    /// Something the manager will not do, in the sentence it says it with. No
+    /// git command ran, so it must not read as one having failed.
+    #[error("{0}")]
+    Refused(String),
     #[error("not a Build checkout: {0}")]
     NotABuildCheckout(PathBuf),
     /// An isolation this project cannot be checked out with here, in the words

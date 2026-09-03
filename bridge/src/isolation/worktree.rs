@@ -31,12 +31,12 @@ impl IsolationBackend for WorktreeBackend {
         let name = directory_name(&actual)?;
         let primary = git2::Repository::open(project)?;
         let registered = primary.find_worktree(&name).map_err(|_| {
-            WorktreeError::Command(format!(
+            WorktreeError::Refused(format!(
                 "existing path is not the registered worktree {name:?}"
             ))
         })?;
         if std::fs::canonicalize(registered.path())? != actual {
-            return Err(WorktreeError::Command(
+            return Err(WorktreeError::Refused(
                 "registered worktree path does not match the persisted path".to_string(),
             ));
         }
@@ -44,7 +44,7 @@ impl IsolationBackend for WorktreeBackend {
         if std::fs::canonicalize(checkout.commondir())?
             != std::fs::canonicalize(primary.commondir())?
         {
-            return Err(WorktreeError::Command(
+            return Err(WorktreeError::Refused(
                 "existing path belongs to a different git common directory".to_string(),
             ));
         }
@@ -118,7 +118,7 @@ fn directory_name(path: &Path) -> Result<String, WorktreeError> {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .ok_or_else(|| {
-            WorktreeError::Command(format!(
+            WorktreeError::Refused(format!(
                 "checkout path has no directory name: {}",
                 path.display()
             ))

@@ -31,6 +31,7 @@ use crate::pty::{HarnessSpec, PtySession};
 pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod codex_app_server;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]
@@ -314,6 +315,7 @@ pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
         AgentProvider::Claude => &claude::ClaudeHarness,
         AgentProvider::Codex => &codex::CodexHarness,
         AgentProvider::ClaudeAdk => &adk::AdkHarness,
+        AgentProvider::CodexAppServer => &codex_app_server::CodexAppServerHarness,
     }
 }
 
@@ -389,6 +391,7 @@ mod tests {
             assert!(harness_for(provider).has_terminal(), "{provider:?}");
         }
         assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
+        assert!(!harness_for(AgentProvider::CodexAppServer).has_terminal());
     }
 
     /// The alternatives hold their shape: a carrier Build can only see the
@@ -417,12 +420,23 @@ mod tests {
     fn an_id_no_provider_holds_is_not_spent_by_any_of_them() {
         let home = tempfile::tempdir().expect("temp home");
         let cwd = tempfile::tempdir().expect("temp worktree");
-        for provider in AgentProvider::ALL {
+        for provider in AgentProvider::ALL
+            .into_iter()
+            .filter(|provider| *provider != AgentProvider::CodexAppServer)
+        {
             assert!(
                 !harness_for(provider).holds_conversation(home.path(), cwd.path(), "sess-1"),
                 "{provider:?}"
             );
         }
+        assert!(
+            harness_for(AgentProvider::CodexAppServer).holds_conversation(
+                home.path(),
+                cwd.path(),
+                "sess-1"
+            ),
+            "app-server conversation ids are verified by exact resume, not a transcript guess"
+        );
 
         // Both claude carriers write and read the ONE tree, so an id captured
         // under either verifies under both.
@@ -600,18 +614,10 @@ mod tests {
             let opened = open_session(provider, protocol_open_request(provider, root.path()))
                 .expect("the provider opens its session");
 
-            assert_eq!(
-                opened.session.terminal().is_some(),
-                provider != AgentProvider::ClaudeAdk
-            );
-            assert_eq!(
-                opened.output.bytes.is_some(),
-                provider != AgentProvider::ClaudeAdk
-            );
-            assert_eq!(
-                opened.output.activity.is_some(),
-                provider == AgentProvider::ClaudeAdk
-            );
+            let terminal = harness_for(provider).has_terminal();
+            assert_eq!(opened.session.terminal().is_some(), terminal);
+            assert_eq!(opened.output.bytes.is_some(), terminal);
+            assert_eq!(opened.output.activity.is_some(), !terminal);
             opened.session.end();
         }
     }

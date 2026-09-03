@@ -102,6 +102,7 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

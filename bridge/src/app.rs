@@ -6599,7 +6599,7 @@ impl AppState {
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
-            "codex_mode": models::CODEX_ONLY_MODE,
+            "codex_mode": models::codex_mode_of_harness(self.default_harness),
         })
     }
 
@@ -6631,24 +6631,26 @@ impl AppState {
                 let named = named.as_str().unwrap_or_default();
                 Some(AgentProvider::from_wire(named).ok_or_else(|| {
                     format!(
-                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
-                         or \"codex\")"
+                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                         \"codex\" or \"codex_app_server\")"
                     )
                 })?)
             }
-            None => harness_named_as_a_claude_mode,
+            None => None,
         };
-        // Wired like a real field so the Account page has one idiom, hard-locked
-        // because there is no other Codex to open.
-        let codex_mode = params.get("codex_mode");
-        if let Some(named) = codex_mode {
-            if named.as_str() != Some(models::CODEX_ONLY_MODE) {
-                return Err(
-                    "codex_mode accepts only \"tui\" — Codex has no other mode yet".to_string(),
-                );
+        let harness_named_as_a_codex_mode = match params.get("codex_mode") {
+            Some(named) => {
+                let named = named.as_str().unwrap_or_default();
+                Some(models::carrier_of_codex_mode(named).ok_or_else(|| {
+                    format!("unknown codex_mode {named:?} (expected \"headless\" or \"tui\")")
+                })?)
             }
-        }
-        if projects_dir.is_none() && default_harness.is_none() && codex_mode.is_none() {
+            None => None,
+        };
+        let default_harness = default_harness
+            .or(harness_named_as_a_codex_mode)
+            .or(harness_named_as_a_claude_mode);
+        if projects_dir.is_none() && default_harness.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
         if let Some(dir) = projects_dir {
@@ -19279,7 +19281,7 @@ mod tests {
         let settings = state.handle(req("settings.get", json!({})))["result"].clone();
         assert_eq!(settings["default_harness"], "claude_adk");
         assert_eq!(settings["claude_mode"], "headless");
-        assert_eq!(settings["codex_mode"], "tui");
+        assert_eq!(settings["codex_mode"], "headless");
     }
 
     /// The default outlives the process it was chosen in — it is an account
@@ -19351,8 +19353,8 @@ mod tests {
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert_eq!(
             refused["error"].as_str().unwrap(),
-            "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\" or \
-             \"codex\")"
+            "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\", \
+             \"codex\" or \"codex_app_server\")"
         );
         assert_eq!(
             state.handle(req("settings.get", json!({})))["result"],
@@ -19429,10 +19431,9 @@ mod tests {
         );
     }
 
-    /// Codex has one mode, so the field exists and accepts exactly it — the
-    /// day a second one exists the lock comes off and nothing has to migrate.
+    /// The old Codex mode field remains an alias for the concrete provider.
     #[test]
-    fn codex_mode_accepts_only_tui() {
+    fn codex_mode_selects_each_concrete_codex_carrier() {
         let (dir, repo) = init_repo();
         let mut state = AppState::new(
             repo,
@@ -19444,12 +19445,18 @@ mod tests {
         let accepted = state.handle(req("settings.set", json!({ "codex_mode": "tui" })));
         assert_eq!(accepted["ok"], true, "{accepted:?}");
         assert_eq!(accepted["result"]["codex_mode"], "tui");
+        assert_eq!(accepted["result"]["default_harness"], "codex");
 
-        let refused = state.handle(req("settings.set", json!({ "codex_mode": "headless" })));
+        let headless = state.handle(req("settings.set", json!({ "codex_mode": "headless" })));
+        assert_eq!(headless["ok"], true, "{headless:?}");
+        assert_eq!(headless["result"]["codex_mode"], "headless");
+        assert_eq!(headless["result"]["default_harness"], "codex_app_server");
+
+        let refused = state.handle(req("settings.set", json!({ "codex_mode": "future" })));
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert_eq!(
             refused["error"].as_str().unwrap(),
-            "codex_mode accepts only \"tui\" — Codex has no other mode yet"
+            "unknown codex_mode \"future\" (expected \"headless\" or \"tui\")"
         );
     }
 
@@ -19525,6 +19532,7 @@ mod tests {
             ("claude", AgentProvider::Claude),
             ("claude_adk", AgentProvider::ClaudeAdk),
             ("codex", AgentProvider::Codex),
+            ("codex_app_server", AgentProvider::CodexAppServer),
         ] {
             assert_eq!(
                 carrier_of(
@@ -19553,7 +19561,7 @@ mod tests {
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
-        for default in ["claude_adk", "claude", "codex"] {
+        for default in ["claude_adk", "claude", "codex", "codex_app_server"] {
             let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
@@ -19592,16 +19600,15 @@ mod tests {
         );
     }
 
-    /// Routing is a headless-shaped job — one decision long, no terminal for
-    /// anyone to watch — and there is exactly one headless carrier. So it pins
-    /// that one: a human who makes Codex their default must not strand every
-    /// capture on a harness the router cannot drive.
+    /// Routing remains pinned to the Claude protocol carrier: adding another
+    /// headless carrier must not silently move existing router work to a
+    /// different provider or model family.
     #[test]
     fn the_router_pins_the_headless_carrier_under_every_default() {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
-        for default in ["claude", "codex", "claude_adk"] {
+        for default in ["claude", "codex", "claude_adk", "codex_app_server"] {
             state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(
                 state.default_agent_provider(),
@@ -21506,6 +21513,14 @@ mod tests {
         assert!(efforts.iter().any(|e| e == "xhigh"));
         let providers = res["result"]["providers"].as_array().unwrap();
         let codex = providers.iter().find(|p| p["id"] == "codex").unwrap();
+        let app_server = providers
+            .iter()
+            .find(|provider| provider["id"] == "codex_app_server")
+            .unwrap();
+        assert_eq!(codex["label"], "Codex TUI");
+        assert_eq!(app_server["label"], "Codex");
+        assert_eq!(codex["models"], app_server["models"]);
+        assert_eq!(codex["efforts"], app_server["efforts"]);
         assert!(codex["models"]
             .as_array()
             .unwrap()

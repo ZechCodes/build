@@ -30,6 +30,8 @@ pub enum AgentProvider {
     /// carrier a spawn opens is what a provider answers.
     #[serde(rename = "claude_adk")]
     ClaudeAdk,
+    #[serde(rename = "codex_app_server")]
+    CodexAppServer,
 }
 
 impl AgentProvider {
@@ -37,10 +39,11 @@ impl AgentProvider {
     /// anything that has to visit them all — the catalog RPC, the tests that
     /// hold each harness to the same contract — reads this rather than writing
     /// the list out again.
-    pub const ALL: [AgentProvider; 3] = [
+    pub const ALL: [AgentProvider; 4] = [
         AgentProvider::Claude,
         AgentProvider::Codex,
         AgentProvider::ClaudeAdk,
+        AgentProvider::CodexAppServer,
     ];
 
     /// How a provider is spelled on the wire and in the store. Matches the
@@ -50,6 +53,7 @@ impl AgentProvider {
             AgentProvider::Claude => "claude",
             AgentProvider::Codex => "codex",
             AgentProvider::ClaudeAdk => "claude_adk",
+            AgentProvider::CodexAppServer => "codex_app_server",
         }
     }
 
@@ -66,11 +70,6 @@ impl AgentProvider {
         harness_for(self).label()
     }
 }
-
-/// The only mode Codex has. The setting is wired like Claude's so the Account
-/// page has one idiom, but there is no codex headless to choose: this is the
-/// answer `settings.get` synthesizes and the only value `settings.set` takes.
-pub const CODEX_ONLY_MODE: &str = "tui";
 
 /// The two words the older `claude_mode` setting spoke, and the carriers they
 /// name. Kept as a compat alias, not as a second vocabulary: the account
@@ -92,6 +91,21 @@ pub fn carrier_of_claude_mode(mode: &str) -> Option<AgentProvider> {
 pub fn claude_mode_of_harness(harness: AgentProvider) -> &'static str {
     match harness {
         AgentProvider::Claude => "tui",
+        _ => "headless",
+    }
+}
+
+pub fn carrier_of_codex_mode(mode: &str) -> Option<AgentProvider> {
+    match mode {
+        "headless" => Some(AgentProvider::CodexAppServer),
+        "tui" => Some(AgentProvider::Codex),
+        _ => None,
+    }
+}
+
+pub fn codex_mode_of_harness(harness: AgentProvider) -> &'static str {
+    match harness {
+        AgentProvider::Codex => "tui",
         _ => "headless",
     }
 }
@@ -295,7 +309,7 @@ mod tests {
             .iter()
             .find(|model| model.id == "gpt-5.6-sol")
             .unwrap();
-        assert_eq!(codex.label, "Codex");
+        assert_eq!(codex.label, "Codex TUI");
         assert!(sol.efforts.contains(&"ultra"));
         let luna = codex
             .models
@@ -337,7 +351,22 @@ mod tests {
             .contains("does not support effort ultra"));
     }
 
-    /// An agent is locked to its harness, so the three harnesses sit side by
+    #[test]
+    fn both_codex_carriers_share_one_catalog() {
+        let tui = catalog_of(AgentProvider::Codex);
+        let app_server = catalog_of(AgentProvider::CodexAppServer);
+        assert_eq!(
+            tui.models.iter().map(|model| model.id).collect::<Vec<_>>(),
+            app_server
+                .models
+                .iter()
+                .map(|model| model.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(tui.efforts, app_server.efforts);
+    }
+
+    /// An agent is locked to its harness, so the harnesses sit side by
     /// side and each needs a name of its own. The default carrier owns the
     /// plain name; the word the code uses for the difference stays out of every
     /// label a human reads.
@@ -357,7 +386,22 @@ mod tests {
         assert_eq!(distinct.len(), labels.len(), "{labels:?} are not distinct");
         assert_eq!(AgentProvider::ClaudeAdk.label(), "Claude Code");
         assert_eq!(AgentProvider::Claude.label(), "Claude Code TUI");
-        assert_eq!(AgentProvider::Codex.label(), "Codex");
+        assert_eq!(AgentProvider::Codex.label(), "Codex TUI");
+        assert_eq!(AgentProvider::CodexAppServer.label(), "Codex");
+    }
+
+    #[test]
+    fn legacy_codex_and_app_server_are_distinct_persisted_providers() {
+        let old: AgentProvider = serde_json::from_str(r#""codex""#).unwrap();
+        let app_server: AgentProvider = serde_json::from_str(r#""codex_app_server""#).unwrap();
+
+        assert_eq!(old, AgentProvider::Codex);
+        assert_eq!(app_server, AgentProvider::CodexAppServer);
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#""codex""#);
+        assert_eq!(
+            serde_json::to_string(&app_server).unwrap(),
+            r#""codex_app_server""#
+        );
     }
 
     const CLAUDE_CARRIERS: [AgentProvider; 2] = [AgentProvider::Claude, AgentProvider::ClaudeAdk];
@@ -425,6 +469,21 @@ mod tests {
             );
         }
         assert_eq!(claude_mode_of_harness(AgentProvider::Codex), "headless");
+    }
+
+    #[test]
+    fn the_old_codex_mode_words_map_to_concrete_carriers() {
+        assert_eq!(carrier_of_codex_mode("tui"), Some(AgentProvider::Codex));
+        assert_eq!(
+            carrier_of_codex_mode("headless"),
+            Some(AgentProvider::CodexAppServer)
+        );
+        assert_eq!(carrier_of_codex_mode("unknown"), None);
+        assert_eq!(codex_mode_of_harness(AgentProvider::Codex), "tui");
+        assert_eq!(
+            codex_mode_of_harness(AgentProvider::CodexAppServer),
+            "headless"
+        );
     }
 
     #[test]

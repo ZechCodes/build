@@ -1,0 +1,4 @@
+{"direction":"client","message":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"build_fixture","title":"Build fixture","version":"0.1.0"},"capabilities":{}}}}
+{"direction":"server","message":{"id":1,"result":{"userAgent":"build_fixture/0.153.0 (<redacted-os>; arm64) Superconductor/0.1.0 (build_fixture; 0.1.0)","codexHome":"<redacted-home>/.codex","platformFamily":"unix","platformOs":"macos"}}}
+{"direction":"client","message":{"method":"initialized"}}
+{"direction":"server","message":{"method":"remoteControl/status/changed","params":{"status":"disabled","serverName":"<redacted-host>","installationId":"<redacted-installation-id>","environmentId":null},"emittedAtMs":0}}

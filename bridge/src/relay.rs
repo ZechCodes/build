@@ -135,9 +135,9 @@ pub async fn run_with_connector(
 
     // Unbounded so terminal output bursts never block the app under a lock.
     let (control_tx, control_rx) = mpsc::unbounded_channel::<Message>();
-    let (envelopes_tx, envelopes_rx) = mpsc::unbounded_channel::<OutboundEnvelope>();
+    let (carrier, envelopes_rx) = CarrierHandle::open();
     let writer = spawn_writer(sink, control_rx, envelopes_rx);
-    let mut connection = RelayConnection::new(control_tx.clone(), identity, &intake, &envelopes_tx);
+    let mut connection = RelayConnection::new(control_tx.clone(), identity, &intake, carrier);
 
     // Handlers run in the intake, not on this task: below, the loop only reads
     // and hands over, so no handler can stop the socket from being drained.
@@ -166,7 +166,6 @@ pub async fn run_with_connector(
 
     connection.close();
     drop(control_tx);
-    drop(envelopes_tx);
     let _ = writer.await;
     outcome
 }
@@ -218,13 +217,13 @@ impl<'a> RelayConnection<'a> {
         control_tx: mpsc::UnboundedSender<Message>,
         identity: &'a DeviceIdentity,
         intake: &'a FrameIntake,
-        envelopes_tx: &mpsc::UnboundedSender<OutboundEnvelope>,
+        carrier: CarrierHandle,
     ) -> Self {
         RelayConnection {
             control_tx,
             identity,
             intake,
-            carrier: CarrierHandle::new(envelopes_tx.clone()),
+            carrier,
             heartbeat: None,
         }
     }

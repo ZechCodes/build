@@ -10,16 +10,19 @@
 //      answers session_accept, and from then on frames are opaque e2ee_envelopes
 //   4. {type:"device_offline", device_id} tells us a device dropped
 //
-// One object per live session. RPC replies resolve through a pending map with
-// timeouts so calls fail fast instead of hanging on a dead session.
+// One object per live session. What the session then IS — its key, its frames,
+// its pending calls and its demux — is core/sessionRpc.js, the same machinery
+// the terminal session runs on; what is here is the relay handshake that mints
+// it and the interface the app calls it through.
 //
 // The socket the handshake ran on is this session's FIRST carrier, not its only
 // one: `peer(carrier)` hands it a DataChannel to ride instead, and the session
-// ends when its last carrier is gone (see sessionSwitch.js). The key, the
-// frames and the pending map are the same either way — a carrier is a wire.
+// ends when its last carrier is gone (see sessionSwitch.js). Everything above
+// the wire is the same either way — a carrier is a wire.
 
 import { openCarrier } from "./carrier.js";
 import { relayInbox } from "./relayInbox.js";
+import { createSessionRpc } from "./sessionRpc.js";
 import { createSessionSwitch } from "./sessionSwitch.js";
 
 const DEFAULT_DEVICE_WAIT_MS = 8000;
@@ -55,42 +58,7 @@ export async function openRelaySession({
   const token = await fetchToken();
   const ws = new WebSocketImpl(`${relayUrl}/ws/client`);
 
-  let lost = false;
-  let sessionKey = null;
   let deviceId = null;
-  const pending = new Map();
-  let requestId = 0;
-
-  const severSession = () => {
-    if (lost) return;
-    lost = true;
-    for (const { reject } of pending.values()) reject(new Error("your device went offline"));
-    pending.clear();
-    onLost();
-  };
-
-  /** One decrypted frame off whichever carrier brought it: somebody's answer,
-   *  or the bridge telling us something moved. */
-  const takeEnvelope = async (envelope) => {
-    let frame;
-    try {
-      frame = await transport.decryptEnvelope({ sessionKeyB64: sessionKey, envelope });
-    } catch {
-      return;
-    }
-    const payload = frame.payload;
-    const pend = payload && payload.id !== undefined ? pending.get(payload.id) : null;
-    if (pend) {
-      pending.delete(payload.id);
-      payload.ok ? pend.resolve(payload.result) : pend.reject(new Error(payload.error));
-      return;
-    }
-    // Nobody asked for this: the bridge is telling us something moved. A frame
-    // with no request behind it and a `type` is a push (board.changed,
-    // entity.changed); anything else is a reply to a call that already timed
-    // out, and has nowhere left to go.
-    if (payload && payload.type) onPush(payload);
-  };
 
   // Every device_key / device_offline push (handshake or live) keeps the
   // caller's device store current, whichever device the session targets.
@@ -149,7 +117,7 @@ export async function openRelaySession({
     if (acceptOrOffline.type === "device_offline") throw new Error("device went offline during the handshake");
     await transport.openSessionAccept({ sessionKeyB64, envelope: acceptOrOffline.envelope });
   } catch (error) {
-    lost = true; // a failed handshake never fires onLost — the caller retries
+    // A failed handshake never fires onLost — the caller retries.
     try {
       ws.close();
     } catch {
@@ -157,21 +125,27 @@ export async function openRelaySession({
     }
     throw error;
   }
-  sessionKey = sessionKeyB64;
+  const rpc = createSessionRpc({
+    transport,
+    sessionId,
+    sessionKeyB64,
+    deviceId,
+    noCarrier: () => new Error("your device went offline"),
+  });
+  rpc.onPush(onPush);
 
-  let carrier = null;
+  let severed = false;
+  /** Nothing is carrying this session any more. The caller hears it once. */
+  const severSession = () => {
+    if (severed) return;
+    severed = true;
+    rpc.fail(new Error("your device went offline"));
+    onLost();
+  };
+
   let onCarrierChange = () => {};
   const carrierSwitch = createSessionSwitch({
-    session: {
-      // Every carrier this session holds is read from, not only the one it
-      // sends on: signaling is pinned to the relay carrier, so its answers
-      // arrive there while a channel carries everything else. Registering the
-      // same reader twice is registering it once.
-      rideOn: (taken) => {
-        carrier = taken;
-        taken?.onEnvelope(takeEnvelope);
-      },
-    },
+    session: rpc,
     onActive: () => onCarrierChange(),
     onIdle: severSession,
   });
@@ -184,36 +158,11 @@ export async function openRelaySession({
     .matching((m) => m.type === "device_offline" && m.device_id === deviceId)
     .then((dropped) => dropped && carrierSwitch.relay(null));
 
-  /** One encrypted frame out over `wire`, and the reply it is waiting for. */
-  async function request(wire, method, params, timeoutMs) {
-    if (lost || !wire) throw new Error("your device went offline");
-    const rid = "r" + ++requestId;
-    const envelope = await transport.encryptFrame({
-      sessionKeyB64,
-      outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-      frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } },
-    });
-    const reply = new Promise((resolve, reject) => pending.set(rid, { resolve, reject }));
-    // A frame that never crossed the wire has no answer coming: the call fails
-    // now rather than waiting out a timeout for a reply nobody will send.
-    try {
-      await wire.send(envelope);
-    } catch (error) {
-      pending.delete(rid);
-      throw error;
-    }
-    return Promise.race([
-      reply,
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs)),
-    ]).finally(() => pending.delete(rid));
-  }
-
   /** Sever this session deliberately (e.g. switching devices) — no onLost. */
   function close() {
     carrierSwitch.close();
-    lost = true;
-    for (const { reject } of pending.values()) reject(new Error("session closed"));
-    pending.clear();
+    severed = true;
+    rpc.close(new Error("session closed"));
     try {
       ws.close();
     } catch {
@@ -226,14 +175,14 @@ export async function openRelaySession({
     call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
       isPaused()
         ? Promise.reject(new Error("your device is offline — reconnecting…"))
-        : request(carrier, method, params, timeoutMs),
+        : rpc.call(method, params, { timeoutMs }),
     /** Signaling is pinned to the relay carrier: `rtc.*` never rides the
      *  channel it negotiates, so an ICE restart works while the channels are
      *  down (spec §Signaling). It runs whether or not the app is paused: the
      *  pause holds the user's actions back, and this is the machinery that
      *  looks for a better wire under them. */
     signal: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
-      request(carrierSwitch.relayCarrier(), method, params, timeoutMs),
+      rpc.call(method, params, { timeoutMs, carrier: carrierSwitch.relayCarrier() }),
     /** Ride this DataChannel instead of the relay, or `null` to fall back. */
     peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
     /** What re-establishes this session on a carrier it has just taken —

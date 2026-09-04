@@ -5,9 +5,9 @@
 // head-of-line blocking of RPCs). It:
 //   - bootstraps an E2EE session straight through the relay's /ws/client
 //     (authenticate with a gateway token, then wait for the target device_key),
-//   - demuxes incoming frames into RPC responses (by id) and live terminal
-//     pushes (`term.output` / `term.reset` / `term.closed`) routed by `term_id`
-//     to the registered terminal,
+//   - routes what core/sessionRpc.js hands it — every frame that answers no
+//     call of its own — to the terminal the frame names (`term.output` /
+//     `term.reset` / `term.closed`, by `term_id`),
 //   - applies a screen SNAPSHOT on every (re)attach, then live-tails — snapshot
 //     resync, not byte replay — deduping output/reset on `cursor` PER term_id,
 //   - auto-reconnects with backoff and RE-ATTACHES every registered terminal,
@@ -22,6 +22,7 @@
 
 import { openCarrier } from "../core/carrier.js";
 import { relayInbox } from "../core/relayInbox.js";
+import { createSessionRpc } from "../core/sessionRpc.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
 
 const textEncoder = new TextEncoder();
@@ -95,8 +96,10 @@ export class TerminalSocket {
     this._sessionId = null;
     this._key = null;
     this._sessionDeviceId = null;
-    this._pending = new Map();
-    this._reqId = 0;
+    // This session's crypto and correlation: the pending calls, the frames and
+    // the demux, over whichever carrier the switch has it riding. A fresh
+    // session is a fresh one of these (see _sessionInitFor).
+    this._rpc = null;
     this._onStatus = noop;
     this._closed = false;
     this._backoff = 400;
@@ -111,24 +114,11 @@ export class TerminalSocket {
     this._orphanFrames = new Map();
     this._agentAttachesInFlight = 0;
     this._agentAttachSeq = 0;
-    // When the last frame decrypted on the CURRENT connection (0 = none yet).
-    this._lastFrameAt = 0;
-    // The wire this session sends on, and the relay socket's own carrier. Both
-    // are the switch's to set: a carrier is a wire, and which one is riding is
-    // the one thing every method below asks about.
-    this._carrier = null;
+    // The relay socket's own carrier. Which wire is riding is the switch's to
+    // say, and every method below asks it rather than remembering.
     this._relayCarrier = null;
-    // Every carrier this session holds is read from, not only the one it sends
-    // on, and one reader is registered once however many times it is handed the
-    // same wire.
-    this._readEnvelope = (envelope) => this._onEnvelope(envelope);
     this._switch = createSessionSwitch({
-      session: {
-        rideOn: (carrier) => {
-          this._carrier = carrier;
-          carrier?.onEnvelope(this._readEnvelope);
-        },
-      },
+      session: { rideOn: (carrier) => this._rpc?.rideOn(carrier) },
       onActive: () => this._reattachAll(),
       onIdle: () => this._reportLost(),
     });
@@ -387,7 +377,7 @@ export class TerminalSocket {
   close() {
     this._closed = true;
     this._switch.close();
-    this._carrier = null;
+    this._rpc?.rideOn(null); // nothing is asked or answered on this session again
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     // Nobody is waiting for a connection that will never be attempted again.
     this._failConnectWaiters("closed");
@@ -407,7 +397,6 @@ export class TerminalSocket {
       this._connected = false;
       this._onStatus("connecting");
     }
-    this._lastFrameAt = 0; // the old connection's traffic vouches for nothing here
     try {
       if (this.transport.ready) await this.transport.ready();
     } catch (e) {
@@ -516,7 +505,22 @@ export class TerminalSocket {
     this._sessionId = sessionId;
     this._key = init.sessionKeyB64;
     this._sessionDeviceId = this.deviceId;
+    if (!reattaching) this._rpc = this._openRpc();
     return init.sessionInit;
+  }
+
+  /** This session's crypto and correlation. A push is a live terminal frame:
+   *  everything a reply is not is routed to the screen it names. */
+  _openRpc() {
+    const rpc = createSessionRpc({
+      transport: this.transport,
+      sessionId: this._sessionId,
+      sessionKeyB64: this._key,
+      deviceId: this.deviceId,
+      noCarrier: () => new TerminalSocketLost(this._closed ? "closed" : "disconnected"),
+    });
+    rpc.onPush((payload) => this._applyPush(payload));
+    return rpc;
   }
 
   /// Re-attach every registered terminal after a (re)connect. User terminals go
@@ -560,24 +564,10 @@ export class TerminalSocket {
     if (dropped && this._gen === gen) this._onLost(gen);
   }
 
-  /** One encrypted frame off whichever carrier brought it: an RPC response, or
-   *  a live push routed to the terminal it names. */
-  async _onEnvelope(envelope) {
-    let frame;
-    try {
-      frame = await this.transport.decryptEnvelope({ sessionKeyB64: this._key, envelope });
-    } catch { return; }
-    this._lastFrameAt = Date.now(); // whatever it says, the bridge reached us
-    const p = frame.payload;
-    if (p && p.id !== undefined && p.ok !== undefined) {
-      const pend = this._pending.get(p.id);
-      if (pend) {
-        this._pending.delete(p.id);
-        p.ok ? pend.resolve(p.result) : pend.reject(new Error(p.error));
-      }
-      return;
-    }
-    if (!p || !p.term_id) return;
+  /** One live frame off whichever carrier brought it, routed to the terminal
+   *  it names. */
+  _applyPush(p) {
+    if (!p.term_id) return;
     // An id nothing answers to is either the agent this client is waiting to
     // be born (follow it) or a screen we don't render.
     const entry = this._terms.get(p.term_id) || this._adoptAgentBirth(p);
@@ -678,8 +668,8 @@ export class TerminalSocket {
     while (this._gen === gen && !this._closed) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       if (this._gen !== gen || this._closed) return;
-      if (Date.now() - this._lastFrameAt < FRAME_PROOF_OF_LIFE_MS) continue;
-      const wire = this._carrier;
+      if (Date.now() - this._rpc.lastFrameAt() < FRAME_PROOF_OF_LIFE_MS) continue;
+      const wire = this._switch.active();
       try {
         await this._call("ping", {}, 3000);
       } catch {
@@ -693,29 +683,10 @@ export class TerminalSocket {
     }
   }
 
-  async _call(method, params = {}, timeoutMs = 12000) {
-    const id = "r" + ++this._reqId;
-    const envelope = await this.transport.encryptFrame({
-      sessionKeyB64: this._key,
-      outerFields: { session_id: this._sessionId, route_to: `device:${this.deviceId}` },
-      frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
-    });
-    const carrier = this._carrier;
-    if (!carrier) throw new TerminalSocketLost(this._closed ? "closed" : "disconnected");
-    const result = new Promise((resolve, reject) => this._pending.set(id, { resolve, reject }));
-    // A frame that never crossed the wire has no answer coming: the call fails
-    // now rather than waiting out its timeout for a reply nobody will send.
-    try {
-      await carrier.send(envelope);
-    } catch (error) {
-      this._pending.delete(id);
-      throw error;
-    }
-    // However this settles, nothing is waiting for it any more: a call that
-    // timed out must not leave an entry for a later loss to reject at nobody.
-    return Promise.race([result, timeout(timeoutMs, `rpc ${method} timeout`)]).finally(() =>
-      this._pending.delete(id),
-    );
+  _call(method, params = {}, timeoutMs) {
+    const rpc = this._rpc;
+    if (!rpc) return Promise.reject(new TerminalSocketLost(this._closed ? "closed" : "disconnected"));
+    return rpc.call(method, params, { timeoutMs });
   }
 
   /// Connection `gen` was lost. Invalidate it and reconnect with backoff.
@@ -732,7 +703,7 @@ export class TerminalSocket {
     // The switch reports the loss when the wire that died was the one carrying;
     // a connect that failed before anything carried has no transition to make,
     // and its waiters are owed the same answer.
-    const wasCarrying = this._carrier;
+    const wasCarrying = this._switch.active();
     this._switch.relay(null);
     if (!wasCarrying) this._reportLost();
     const delay = this._backoff;
@@ -749,8 +720,7 @@ export class TerminalSocket {
   _reportLost() {
     this._connected = false;
     this._onStatus("disconnected");
-    for (const { reject } of this._pending.values()) reject(new TerminalSocketLost("disconnected"));
-    this._pending.clear();
+    this._rpc?.fail(new TerminalSocketLost("disconnected"));
     this._failConnectWaiters("disconnected");
   }
 }

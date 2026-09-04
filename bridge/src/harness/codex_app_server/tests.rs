@@ -11,8 +11,8 @@ use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundServerRequest, ParentThreadFilter,
-    ParentThreadRoute, PendingOperation, RoutedServerRequest, RpcError, ServerNotification,
-    ServerRequest, TurnCompletion,
+    ParentThreadRoute, PendingOperation, RequestId, RoutedServerRequest, RpcError,
+    ServerNotification, ServerRequest, TurnCompletion,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::{
@@ -140,6 +140,14 @@ fn decode(
         .map(|event| event.expect("a complete frame yields one event"))
 }
 
+fn request_one(connection: &AppServerConnection, operation: PendingOperation) -> RequestId {
+    connection.request(operation).unwrap();
+    let [request_id] = connection.pending_ids()[..] else {
+        panic!("one correlated request is pending");
+    };
+    request_id
+}
+
 #[test]
 fn correlation_resolves_out_of_order_to_typed_operations() {
     let connection = AppServerConnection::memory(limits().connection());
@@ -196,10 +204,7 @@ fn a_response_body_that_does_not_match_its_operation_fails_the_connection() {
         (PendingOperation::Initialize, json!([])),
     ] {
         let connection = AppServerConnection::memory(limits().connection());
-        connection.request(operation.clone()).unwrap();
-        let [request_id] = connection.pending_ids()[..] else {
-            panic!("one correlated request is pending");
-        };
+        let request_id = request_one(&connection, operation.clone());
 
         let error = decode(
             &connection,
@@ -219,10 +224,7 @@ fn a_response_body_that_does_not_match_its_operation_fails_the_connection() {
 #[test]
 fn a_second_response_on_a_resolved_id_is_unknown() {
     let connection = AppServerConnection::memory(limits().connection());
-    connection.request(PendingOperation::Initialize).unwrap();
-    let [request_id] = connection.pending_ids()[..] else {
-        panic!("one correlated request is pending");
-    };
+    let request_id = request_one(&connection, PendingOperation::Initialize);
     let response = json!({"id":request_id,"result":{"userAgent":"build_bridge/0.153.0"}});
 
     decode(&connection, response.clone()).unwrap();

@@ -7372,8 +7372,10 @@ impl AppState {
         }
         let project_id = require_str(params, "project_id")?;
         let base_branch = self.base_for(&project_id)?;
-        // Best-effort: a scan failure here costs the switcher its "adopt from
-        // here" affordance, not the branch list itself.
+        // Best-effort, here and for the primary checkout below: a scan failure
+        // costs the switcher its "adopt from here" affordance — and a bare or
+        // detached repository has no primary branch to hold anything — not the
+        // branch list itself.
         let external_branches = self
             .external_worktrees(&project_id, false)
             .unwrap_or_default()

@@ -11,10 +11,15 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 /// How long a git child may run before it is killed as timed out (spec §2).
 const GIT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How often the deadline is checked while the child runs. The pipes are read
+/// by their own threads, so nothing but the kill waits on this.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Why one git child did not answer.
 #[derive(Debug, thiserror::Error)]
@@ -34,18 +39,23 @@ pub fn run_git(dir: &Path, args: &[&str]) -> Result<String, GitError> {
     let os_args: Vec<&OsStr> = args.iter().map(|arg| arg.as_ref()).collect();
     let out = run_git_with_deadline(dir, &os_args)?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        return Err(GitError::Failed(format!(
-            "git {args:?}: {}",
-            detail.join("\n")
-        )));
+        return Err(git_failure(&os_args, &out));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// What a git child that ran and failed said: the command, and everything on
+/// both streams. Callers that read a raw [`Output`] turn a failure into an
+/// error through here, so `From<GitError>` stays the one maker of a git-failure
+/// sentence and no caller composes one of its own.
+pub fn git_failure(args: &[&OsStr], out: &Output) -> GitError {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect();
+    GitError::Failed(format!("git {args:?}: {}", detail.join("\n")))
 }
 
 /// One git child in `dir` with terminal prompts disabled, both pipes drained,
@@ -67,6 +77,8 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
         .stderr(Stdio::piped())
         .current_dir(dir)
         .spawn()?;
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
     let expiry = Instant::now() + deadline;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -80,21 +92,33 @@ fn run_git_bounded(dir: &Path, args: &[&OsStr], deadline: Duration) -> std::io::
                 format!("git {args:?} did not return within {}s", deadline.as_secs()),
             ));
         }
-        std::thread::sleep(Duration::from_millis(25));
+        std::thread::sleep(POLL_INTERVAL);
     };
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    if let Some(mut pipe) = child.stdout.take() {
-        pipe.read_to_end(&mut stdout)?;
-    }
-    if let Some(mut pipe) = child.stderr.take() {
-        pipe.read_to_end(&mut stderr)?;
-    }
     Ok(Output {
         status,
-        stdout,
-        stderr,
+        stdout: collected(stdout)?,
+        stderr: collected(stderr)?,
     })
+}
+
+/// Read one of the child's pipes on its own thread, so both are emptied while
+/// the child is still writing. git blocks once a pipe buffer fills, so a reader
+/// that waits for the exit first would wait for a child that is waiting for it.
+fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut collected = Vec::new();
+        if let Some(mut pipe) = pipe {
+            pipe.read_to_end(&mut collected)?;
+        }
+        Ok(collected)
+    })
+}
+
+/// Everything one drained pipe carried, once the child is done with it.
+fn collected(reader: JoinHandle<std::io::Result<Vec<u8>>>) -> std::io::Result<Vec<u8>> {
+    reader
+        .join()
+        .map_err(|_| std::io::Error::other("reading a git pipe panicked"))?
 }
 
 #[cfg(test)]
@@ -138,6 +162,29 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
         assert!(started.elapsed() < Duration::from_secs(5), "was not killed");
+    }
+
+    /// A child that writes more than one pipe buffer must be drained while it
+    /// runs: a reader that waits for the exit first deadlocks against a git
+    /// blocked on a full pipe, and the deadline turns that into a timeout that
+    /// has nothing to do with git being slow.
+    #[test]
+    fn output_larger_than_a_pipe_buffer_comes_back_whole() {
+        let (_dir, repo) = crate::git_fixture::init_repo();
+        let payload = "a line of output that fills the pipe\n".repeat(32768);
+        std::fs::write(repo.join("big.txt"), &payload).unwrap();
+        crate::git_fixture::git_in(&repo, &["add", "big.txt"]);
+        crate::git_fixture::git_in(&repo, &["commit", "-m", "big"]);
+
+        let started = Instant::now();
+        let shown = run_git(&repo, &["show", "HEAD:big.txt"]).unwrap();
+
+        assert_eq!(shown.len(), payload.len(), "the output came back truncated");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "draining waited for the exit: {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

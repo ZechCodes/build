@@ -11,7 +11,7 @@ use super::{
     cow_marker_names, local_branch_ref, write_cow_marker, Isolation, IsolationBackend,
     WorktreeError,
 };
-use crate::git_process::{run_git, run_git_with_deadline};
+use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -210,17 +210,7 @@ fn fetch_branch(into: &Path, source: &Path, branch: &str) -> Result<(), Worktree
     ];
     let output = run_git_with_deadline(into, &args)?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let detail: Vec<&str> = [stderr.trim(), stdout.trim()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect();
-        return Err(WorktreeError::Command(format!(
-            "git fetch {} {branch}: {}",
-            source.display(),
-            detail.join("\n")
-        )));
+        return Err(git_failure(&args, &output).into());
     }
     Ok(())
 }

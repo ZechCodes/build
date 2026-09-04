@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-use crate::git_process::{run_git, run_git_with_deadline};
+use crate::git_process::{git_failure, run_git, run_git_with_deadline};
 use crate::isolation::cow::CowBackend;
 use crate::isolation::{
     checkout_name, local_branch_ref, Isolation, IsolationAvailability, IsolationBackend,
@@ -610,18 +610,11 @@ impl WorktreeManager {
         }
         let remote =
             configured_remote_for_branch(repo, branch).unwrap_or_else(|| "origin".to_string());
-        let fetched = bounded_git_fetch(
+        bounded_git_fetch(
             &self.repo_path,
             &remote,
             &format!("+{local_ref}:{local_ref}"),
-        )?;
-        if fetched.status.success() {
-            return Ok(());
-        }
-        Err(WorktreeError::Command(format!(
-            "branch {branch:?} was not found locally or on configured remote: {}",
-            String::from_utf8_lossy(&fetched.stderr).trim()
-        )))
+        )
     }
 
     /// The checks a restore makes on a checkout that is still there, in the
@@ -752,18 +745,25 @@ pub(crate) fn configured_remote_for_branch(
         .flatten()
 }
 
+/// Fetch exactly `refspec` from `remote` into the repository at `repo_path`,
+/// bounded and never prompting. A git that ran and failed says why in its own
+/// words, through the one composer of a git-failure sentence.
 pub(crate) fn bounded_git_fetch(
     repo_path: &Path,
     remote: &str,
     refspec: &str,
-) -> Result<std::process::Output, WorktreeError> {
+) -> Result<(), WorktreeError> {
     let args = [
         OsStr::new("fetch"),
         OsStr::new("--"),
         OsStr::new(remote),
         OsStr::new(refspec),
     ];
-    Ok(run_git_with_deadline(repo_path, &args)?)
+    let fetched = run_git_with_deadline(repo_path, &args)?;
+    if !fetched.status.success() {
+        return Err(git_failure(&args, &fetched).into());
+    }
+    Ok(())
 }
 
 /// One git worktree of the project repo that Build did not create (or no longer

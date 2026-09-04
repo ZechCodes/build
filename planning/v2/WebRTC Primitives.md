@@ -187,9 +187,8 @@ failure, DTLS close, `rtc.close`) calls `FrameIntake::close_carrier`, where the 
 ended with it.
 **Hides** chunking and backpressure; **extends** the relay writer task's job to a second wire. It registers no senders
 itself: a migrating browser re-sends `session.hello` and re-attaches its terminals over the channel, and
-`TermScreen::register` (`app.rs:394`) replaces the prior sender for that session id exactly as on a reconnect. That
-refines the spec's "on channel open, register a DataChannel `SessionSender`" bullet — same registration, same
-`app.rs:394`, reached at policy 3's re-attach, so a carrier still binds to no session.
+`TermScreen::register` (`app.rs:394`) replaces the prior sender for that session id exactly as on a reconnect — the
+spec's §Bridge peer bullet, reached at policy 3's re-attach, so a carrier still binds to no session.
 
 ## SPA (JavaScript)
 ### `Carrier` and `openCarrier` — the interface and its single construction point, `spa/src/core/carrier.js` (new, stage 5)

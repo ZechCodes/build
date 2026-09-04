@@ -200,10 +200,11 @@ applies unchanged on both carriers.
 - The bridge is always the answerer. Per session: build the peer connection from the
   offer's `ice_servers`, create the two negotiated channels, set remote offer, create and
   return the answer, then trickle candidates through the `rtc.ice` push.
-- On `app`/`term` channel open, register a DataChannel `SessionSender` for that session.
-  The app's existing `register` (`bridge/src/app.rs:394`) replaces a prior sender with the
-  same `session_id`, which is how push traffic migrates to the new carrier when the SPA
-  re-attaches.
+- A channel registers no senders when it opens. A migrating browser re-sends
+  `session.hello` and re-attaches its terminals over the channel, and admitting those
+  frames is what puts the session on the channel carrier: the app's existing `register`
+  (`bridge/src/app.rs:394`) replaces the prior sender for that `session_id` exactly as it
+  does on a reconnect, which is how push traffic migrates to the new carrier.
 - Peer connection close (ICE failure, DTLS close, `rtc.close`, or session end) drops the
   DataChannel senders; the next push fails and the app reaps them exactly as it does for
   a dead relay socket today.

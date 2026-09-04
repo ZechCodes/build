@@ -3,22 +3,24 @@
 // ONE socket per browser tab multiplexes every terminal (user shells + agent
 // screens) by `term_id`, keeping PTY floods off the app RPC session (no
 // head-of-line blocking of RPCs). It:
-//   - bootstraps an E2EE session straight through the relay's /ws/client
-//     (authenticate with a gateway token, then wait for the target device_key),
 //   - routes what core/sessionRpc.js hands it — every frame that answers no
 //     call of its own — to the terminal the frame names (`term.output` /
 //     `term.reset` / `term.closed`, by `term_id`),
 //   - applies a screen SNAPSHOT on every (re)attach, then live-tails — snapshot
 //     resync, not byte replay — deduping output/reset on `cursor` PER term_id,
-//   - auto-reconnects with backoff and RE-ATTACHES every registered terminal,
+//   - RE-ATTACHES every registered terminal whenever a wire starts carrying,
 //     reporting status so the UI can show a disconnected state.
+//
+// The relay socket under it — the handshake, the backoff reconnect, the session
+// that outlives both — is core/relayLink.js, and which wire is riding is
+// core/sessionSwitch.js. Nothing in this file opens a socket.
 //
 // Connecting no longer implies attaching: `start()` brings the socket up; each
 // tab calls attachTerminal/attachAgent to register + attach its own term_id.
 //
 // The socket it handshakes on is this session's FIRST carrier, not its only
 // one: `peer(carrier)` hands it the `term` DataChannel to ride instead, and
-// every method above the wire is unchanged (see core/sessionSwitch.js).
+// every method above the wire is unchanged.
 
 import { createRelayLink } from "../core/relayLink.js";
 import { createSessionRpc } from "../core/sessionRpc.js";

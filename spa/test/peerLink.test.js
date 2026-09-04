@@ -161,7 +161,7 @@ describe("openPeerLink", () => {
         throw new Error("could not mint ICE servers");
       },
       RTCPeerConnectionImpl: FakePeerConnection,
-      remoteCandidates: () => () => {},
+      onPush: () => () => {},
     });
     await expect(failing).rejects.toThrow("could not mint ICE servers");
     expect(FakePeerConnection.instances).toEqual([]);

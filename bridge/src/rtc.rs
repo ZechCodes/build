@@ -21,7 +21,7 @@ use webrtc::peer_connection::{
     StatsSelector,
 };
 
-use crate::carrier::{CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
+use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
 
 pub mod chunk;
 
@@ -533,7 +533,7 @@ impl DataChannelCarrier {
         let (carrier, envelopes) = CarrierHandle::open();
         DataChannelCarrier {
             writer: tokio::spawn(write_envelopes(channel.clone(), envelopes)),
-            reader: tokio::spawn(read_messages(channel, intake, carrier)),
+            reader: tokio::spawn(pump_channel_events(channel, intake, carrier)),
         }
     }
 }
@@ -567,10 +567,11 @@ async fn write_envelopes(
     }
 }
 
-/// The channel's inbound half: messages reassembled into envelopes and handed
-/// to the intake, which owns what a frame means. A reassembly that cannot be
-/// finished closes the channel — the parts carry no way to ask for one again.
-async fn read_messages(
+/// The channel's inbound half: what the wire says happened, in the wire's own
+/// vocabulary. A message goes to the carrier that rides this channel; a
+/// reassembly it cannot finish closes the channel, because the parts carry no
+/// way to ask for the missing one again.
+async fn pump_channel_events(
     channel: Arc<dyn DataChannel>,
     intake: Arc<FrameIntake>,
     carrier: CarrierHandle,
@@ -580,17 +581,10 @@ async fn read_messages(
     while let Some(event) = channel.poll().await {
         match event {
             DataChannelEvent::OnMessage(message) => {
-                let Ok(text) = std::str::from_utf8(&message.data) else {
-                    continue;
-                };
-                match reassembler.accept(text) {
-                    Ok(Some(envelope)) => riding.deliver(&envelope).await,
-                    Ok(None) => {}
-                    Err(e) => {
-                        eprintln!("rtc: channel closed mid-message: {e}");
-                        let _ = channel.close().await;
-                        break;
-                    }
+                if let Err(e) = riding.accept(&mut reassembler, &message.data).await {
+                    eprintln!("rtc: channel closed mid-message: {e}");
+                    let _ = channel.close().await;
+                    break;
                 }
             }
             DataChannelEvent::OnClose => break,
@@ -609,11 +603,30 @@ struct RidingChannel {
 }
 
 impl RidingChannel {
-    async fn deliver(&self, envelope_json: &str) {
-        let Ok(envelope) = serde_json::from_str(envelope_json) else {
-            return;
+    /// One message off this channel, as far as it goes: the text of a part or
+    /// of a whole envelope, then the reassembly it completes, then the intake,
+    /// which owns what a frame means. A message that is not an envelope this
+    /// carrier can honour is dropped by the frame module's rule; only a
+    /// reassembly that cannot be finished comes back as an error, and that one
+    /// is fatal to the channel.
+    async fn accept(
+        &self,
+        reassembler: &mut chunk::Reassembler,
+        message: &[u8],
+    ) -> Result<(), chunk::ChunkError> {
+        let Ok(text) = std::str::from_utf8(message) else {
+            return Ok(());
         };
-        let _ = self.intake.accept(envelope, &self.carrier).await;
+        let Some(envelope_json) = reassembler.accept(text)? else {
+            return Ok(());
+        };
+        let Ok(envelope) = serde_json::from_str(&envelope_json) else {
+            return Ok(());
+        };
+        if let Err(refused) = self.intake.accept(envelope, &self.carrier).await {
+            carrier::drop_frame_error(&refused);
+        }
+        Ok(())
     }
 }
 

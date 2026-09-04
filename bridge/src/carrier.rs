@@ -174,6 +174,19 @@ pub enum CarrierError {
     Transport(#[from] transport::TransportError),
 }
 
+/// What a carrier does with a frame it cannot honour: drop it and carry on,
+/// silently but for the one refusal the spec logs (§Shared session registry) —
+/// a client contesting a live session someone else holds. Written here because
+/// both carriers drop frames, so the next error that must be heard is added
+/// once.
+pub(crate) fn drop_frame_error(err: &CarrierError) {
+    if let CarrierError::KeyMismatch(session_id) = err {
+        eprintln!(
+            "carrier: session_init for {session_id} refused: the session is open under another key"
+        );
+    }
+}
+
 /// A carrier, as the registry knows one: process-unique, so "which carriers does
 /// this session ride" has an answer that outlives any one of them. Minted only
 /// by [`CarrierHandle::open`], and never named outside this module — a caller

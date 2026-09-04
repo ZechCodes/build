@@ -24,7 +24,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::{HeaderValue, Request};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::carrier::{CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
+use crate::carrier::{self, CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
 use crate::transport::{self, Envelope, SessionInit};
 
 /// The signed-challenge path the relay expects (`{ts}.GET./ws/device`).
@@ -359,14 +359,12 @@ fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
         .ok_or_else(|| RelayError::Protocol(format!("{key} missing")))
 }
 
-/// A frame the device could not honour. Never fatal to the socket, and silent
-/// but for the one refusal the spec logs (§Shared session registry): a
-/// `session_init` contesting a live session under a foreign key.
+/// A frame the device could not honour. Never fatal to the socket: a malformed
+/// relay message is this carrier's own business, and what a frame the carrier
+/// boundary refused is worth saying belongs to the module that owns frames.
 fn drop_protocol_error(err: &RelayError) {
-    if let RelayError::Carrier(CarrierError::KeyMismatch(session_id)) = err {
-        eprintln!(
-            "relay: session_init for {session_id} refused: the session is open under another key"
-        );
+    if let RelayError::Carrier(refused) = err {
+        carrier::drop_frame_error(refused);
     }
 }
 

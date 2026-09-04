@@ -23502,11 +23502,23 @@ mod tests {
         repo: &std::path::Path,
         dir: &std::path::Path,
     ) -> (Arc<Mutex<AppState>>, FrameHandler) {
-        let mut app = qa_state(repo, dir);
-        app.term_shell = "/bin/bash".into();
-        let state = app.shared();
+        let state = qa_state_timed_by(FrameClock::new(), repo, dir);
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler)
+    }
+
+    /// The same daemon, timed by the clock the test means to read back — the
+    /// one entry point the MCP control socket has, since it answers with no
+    /// frame handler behind it.
+    fn qa_state_timed_by(
+        clock: Arc<FrameClock>,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> Arc<Mutex<AppState>> {
+        let mut app = qa_state(repo, dir);
+        app.term_shell = "/bin/bash".into();
+        app.frame_clock = clock;
+        app.shared()
     }
 
     /// One RPC over the frame handler.
@@ -27364,6 +27376,93 @@ mod tests {
             "the agent that built the stage is the one asked to validate it"
         );
         assert_eq!(s.tabs.len(), 1, "one worktree, one agent");
+    }
+
+    /// A `done` off the control socket is a frame like any other: it takes the
+    /// same mutex a browser frame does and its delivery spawns the same
+    /// harnesses, so it is timed and counted — under a method of its own, since
+    /// nothing on the wire named it. Untimed, a daemon wedged by a harness's
+    /// report would report that wedge as nobody's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_done_over_the_socket_is_timed_under_its_own_method() {
+        let (dir, repo) = init_repo();
+        let (clock, lines) = recording_clock();
+        let state = qa_state_timed_by(Arc::clone(&clock), &repo, dir.path());
+        on_the_terminal_carrier(&state);
+        let (agent_id, session_token) = {
+            let mut s = state.lock().unwrap();
+            let (run_id, _root) = run_awaiting_a_real_stage_build(&mut s, "report over the socket");
+            // The capability is minted at spawn. Handing one out without a
+            // spawn is what leaves the run's agent cold, so the report's
+            // delivery is the one that opens a harness.
+            let agent_id = s.runs[&run_id].agents.primary().unwrap().id.clone();
+            let session_token = uuid::Uuid::new_v4().to_string();
+            s.mcp_session_tokens
+                .insert(agent_id.clone(), session_token.clone());
+            (agent_id, session_token)
+        };
+        // A spawn builds its session locator with the app mutex held, so a
+        // factory that takes its time is a hold of a length the test chose.
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            None
+        });
+
+        let socket_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(
+            Arc::clone(&state),
+            socket_path.to_string_lossy().into_owned(),
+        );
+        let mut socket = connect_when_bound(&socket_path).await;
+        let report = json!({
+            "task_id": agent_id,
+            "session_token": session_token,
+            "report": {
+                "phase": "build",
+                "status": "completed",
+                "summary": "stage one is built",
+                "outputs": {},
+            },
+        });
+        socket
+            .write_all(format!("{report}\n").as_bytes())
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+
+        let line = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                let logged = lines
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .find(|line| line.starts_with("slow frame mcp.control "))
+                    .cloned();
+                if let Some(line) = logged {
+                    return line;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "the report's frame logged nothing under mcp.control: {:?}",
+                lines.lock().unwrap()
+            )
+        });
+
+        assert!(
+            slow_frame_millis(&line, "held=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's hold is the reporting frame's own: {line}"
+        );
+        let stats = clock.stats();
+        assert!(
+            stats["methods"]["mcp.control"]["served"]
+                .as_u64()
+                .is_some_and(|served| served >= 1),
+            "the socket's frames are counted since boot: {stats}"
+        );
     }
 
     /// A second daemon pointed at a live control socket must not steal it: the

@@ -237,7 +237,8 @@ from the design above.
   `bridge_stats_answers_while_another_frame_holds_the_app_mutex`,
   `bridge_stats_count_every_frame_under_its_own_method`,
   `a_frames_delivery_path_reports_its_hold_and_names_its_method`,
-  `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock`.
+  `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock`,
+  `a_done_over_the_socket_is_timed_under_its_own_method`.
 
 ## 2. `ScreenHandle` — the per-tab screen
 

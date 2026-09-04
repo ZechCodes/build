@@ -1002,6 +1002,9 @@ struct Project {
     repo_path: std::path::PathBuf,
     base_branch: String,
     orch: Orchestrator,
+    /// Which isolation this project's new checkouts are made with, when the
+    /// account's answer is not the one wanted here. `None` inherits it.
+    isolation: Option<Isolation>,
     /// Cached external-worktree scan, refreshed at most every
     /// `EXTERNAL_SCAN_INTERVAL` (or on demand via `force`).
     external_scan: Option<ExternalScanCache>,
@@ -1852,6 +1855,21 @@ struct ConversationNews {
     attention_reason: Option<&'static str>,
 }
 
+/// The isolation `entry`'s `"isolation"` key names, or `None` when it names
+/// none. A word this bridge does not know is logged under `field` and read as
+/// absent — a config written by a newer bridge is not a reason to fail boot,
+/// the same answer an unknown `default_harness` gets.
+fn configured_isolation(entry: &Value, field: &str) -> Option<Isolation> {
+    let named = entry.get("isolation").and_then(Value::as_str)?;
+    match Isolation::from_wire(named) {
+        Some(isolation) => Some(isolation),
+        None => {
+            eprintln!("config {field}: unknown {named:?}; using the default");
+            None
+        }
+    }
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     /// Registered projects (repos) plans and runs can be dispatched to.
@@ -1872,6 +1890,10 @@ pub struct AppState {
     /// page and spent at creation — never re-read to move an agent that
     /// already exists.
     default_harness: AgentProvider,
+    /// How a new checkout is isolated from the project it comes from, for
+    /// every project that names no isolation of its own. Spent at creation,
+    /// like `default_harness`: an existing checkout says what it is itself.
+    isolation: Isolation,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
     agent: Agent,
@@ -2134,6 +2156,7 @@ impl AppState {
             worktrees_root: worktrees_root.into(),
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
+            isolation: Isolation::default(),
             config_path: None,
             agent: build_agent(qa_agent, mcp_socket.into()),
             harness,
@@ -2246,6 +2269,9 @@ impl AppState {
                         }
                     }
                 }
+                if let Some(isolation) = configured_isolation(&cfg, "isolation") {
+                    self.isolation = isolation;
+                }
                 // Routing runs on the account default at low effort unless this
                 // names something else. A choice the harness would refuse is
                 // dropped rather than kept: a router that cannot spawn would
@@ -2274,7 +2300,13 @@ impl AppState {
                             .to_string();
                         let repo = std::path::PathBuf::from(repo);
                         if repo.exists() {
-                            self.add_project(repo, base);
+                            let id = self.add_project(repo, base);
+                            let isolation = configured_isolation(p, "project isolation");
+                            if let Some(project) =
+                                self.projects.iter_mut().find(|project| project.id == id)
+                            {
+                                project.isolation = isolation;
+                            }
                         }
                     }
                 }
@@ -3604,11 +3636,18 @@ impl AppState {
         let cfg = json!({
             "projects_dir": self.projects_dir.display().to_string(),
             "default_harness": self.default_harness,
+            "isolation": self.isolation,
             "router_model": self.router_choice,
-            "projects": self.projects.iter().map(|p| json!({
-                "path": p.repo_path.display().to_string(),
-                "base_branch": p.base_branch,
-            })).collect::<Vec<_>>(),
+            "projects": self.projects.iter().map(|p| {
+                let mut entry = json!({
+                    "path": p.repo_path.display().to_string(),
+                    "base_branch": p.base_branch,
+                });
+                if let Some(isolation) = p.isolation {
+                    entry["isolation"] = json!(isolation);
+                }
+                entry
+            }).collect::<Vec<_>>(),
         });
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -3643,6 +3682,7 @@ impl AppState {
             repo_path,
             base_branch,
             orch,
+            isolation: None,
             external_scan: None,
             primary_summary: None,
         });
@@ -3650,6 +3690,28 @@ impl AppState {
         // its checkouts stand behind.
         self.note_board_changed();
         id
+    }
+
+    /// The isolation a new checkout of `project_id` is made with, and the
+    /// sentence announcing a downgrade when there is one. The project's own
+    /// answer, or the account's when it names none, put to what this volume
+    /// can actually make: a request it cannot honour comes back as the
+    /// isolation every volume can, with the reason for whoever tells the human.
+    /// The one place a setting becomes a decision — nothing else reads either.
+    pub fn resolved_isolation(&self, project_id: &str) -> (Isolation, Option<String>) {
+        let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
+            return (Isolation::default(), None);
+        };
+        let requested = project.isolation.unwrap_or(self.isolation);
+        match project
+            .orch
+            .worktrees()
+            .availability()
+            .lock_reason(requested)
+        {
+            None => (requested, None),
+            Some(reason) => (Isolation::default(), Some(reason.to_string())),
+        }
     }
 
     /// Canonical paths of every Build-bound worktree — one per run: they are
@@ -19426,6 +19488,147 @@ mod tests {
         assert_eq!(
             empty["error"].as_str().unwrap(),
             "settings.set: nothing to set"
+        );
+    }
+
+    /// Which isolation new checkouts get is an account setting with a
+    /// per-project override, and both outlive the process that chose them. A
+    /// project that inherits writes nothing: the absent key is what inheriting
+    /// looks like on disk.
+    #[test]
+    fn the_account_isolation_and_a_project_override_survive_a_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let inheriting = crate::git_fixture::init_repo_named(tmp.path(), "inheriting");
+        let cfg = tmp.path().join("config.json");
+        let load = |cfg: &std::path::Path| {
+            AppState::new(
+                repo.clone(),
+                tmp.path().join("wt"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(cfg)
+        };
+        {
+            let mut state = load(&cfg);
+            state.add_project(inheriting.clone(), "main".to_string());
+            state.isolation = Isolation::Cow;
+            state.projects[0].isolation = Some(Isolation::Worktree);
+            state.persist();
+        }
+
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(written["isolation"], "cow", "{written:?}");
+        assert_eq!(
+            written["projects"][0]["isolation"], "worktree",
+            "{written:?}"
+        );
+        assert!(
+            written["projects"][1].get("isolation").is_none(),
+            "a project that inherits the account setting persists no override: {written:?}"
+        );
+
+        let reloaded = load(&cfg);
+        assert_eq!(reloaded.isolation, Isolation::Cow);
+        assert_eq!(reloaded.projects[0].isolation, Some(Isolation::Worktree));
+        assert_eq!(
+            reloaded.projects[1].isolation, None,
+            "an absent key loads as inheriting, not as a choice"
+        );
+    }
+
+    /// A config naming an isolation this bridge has never heard of is a config
+    /// from a newer bridge, not a reason to fail boot: the word is logged and
+    /// read as absent, exactly as an unknown `default_harness` is.
+    #[test]
+    fn an_unknown_persisted_isolation_loads_as_the_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_dir, repo) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        std::fs::write(
+            &cfg,
+            json!({
+                "isolation": "telepathy",
+                "projects": [ {
+                    "path": repo.display().to_string(),
+                    "base_branch": "main",
+                    "isolation": "telekinesis",
+                } ],
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let state = AppState::new(
+            repo,
+            tmp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&cfg);
+        assert_eq!(state.isolation, Isolation::Worktree);
+        assert_eq!(state.projects[0].isolation, None);
+    }
+
+    /// The project's own answer is the one asked first: an override of the
+    /// linked worktree beats an account default of cloning, and no volume has
+    /// to be consulted to honour it.
+    #[test]
+    fn a_project_override_beats_the_account_isolation() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        state.isolation = Isolation::Cow;
+        state.projects[0].isolation = Some(Isolation::Worktree);
+
+        let project_id = state.projects[0].id.clone();
+        assert_eq!(
+            state.resolved_isolation(&project_id),
+            (Isolation::Worktree, None)
+        );
+    }
+
+    /// An override the other way is kept the same way: the account asks for a
+    /// linked worktree, this project asks to be cloned, and a volume that can
+    /// clone answers with the project's choice and nothing to announce.
+    #[test]
+    fn a_project_asking_to_be_cloned_is_cloned_where_the_volume_can() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        state.projects[0].isolation = Some(Isolation::Cow);
+
+        let project_id = state.projects[0].id.clone();
+        assert_eq!(
+            state.resolved_isolation(&project_id),
+            (Isolation::Cow, None)
+        );
+    }
+
+    /// A volume that cannot clone does not fail the create: the request is
+    /// downgraded to the isolation every volume can make, and the resolver
+    /// hands back the sentence that says why, for whoever announces it.
+    #[test]
+    fn a_clone_no_volume_can_make_is_downgraded_with_its_reason() {
+        let (dir, repo) = init_repo();
+        let linked = dir.path().join("linked");
+        crate::git_fixture::git_in(
+            &repo,
+            &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+        );
+        let mut state = qa_state(&repo, dir.path());
+        state.isolation = Isolation::Cow;
+        let project_id = state.add_project(linked, "feature".to_string());
+
+        let (isolation, reason) = state.resolved_isolation(&project_id);
+        assert_eq!(isolation, Isolation::Worktree);
+        assert!(
+            reason.unwrap_or_default().contains("linked worktree"),
+            "the downgrade carries the probe's own sentence"
         );
     }
 

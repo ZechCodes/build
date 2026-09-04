@@ -20,16 +20,18 @@
 // one: `peer(carrier)` hands it the `term` DataChannel to ride instead, and
 // every method above the wire is unchanged (see core/sessionSwitch.js).
 
-import { openCarrier } from "../core/carrier.js";
-import { relayInbox } from "../core/relayInbox.js";
+import { createRelayLink } from "../core/relayLink.js";
 import { createSessionRpc } from "../core/sessionRpc.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
 
 const textEncoder = new TextEncoder();
 const b64encodeBytes = (u8) => btoa(String.fromCharCode(...u8));
 const b64decodeBytes = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt(0));
-const timeout = (ms, msg) => new Promise((_, reject) => setTimeout(() => reject(new Error(msg)), ms));
 const noop = () => {};
+
+/** How long the device has to accept the session this socket presents. A
+ *  bridge that is still coming up fails fast and the link tries again. */
+const HANDSHAKE_TIMEOUT_MS = 6000;
 
 /** How many frames one not-yet-named agent screen may hold while its attach is
  *  in flight. A repainting TUI is a handful of coalesced frames in that window;
@@ -79,30 +81,13 @@ export const isTerminalSocketLost = (error) => error instanceof TerminalSocketLo
 
 export class TerminalSocket {
   constructor({ url, transport, WebSocketImpl, getToken, getPinnedDeviceKey, preferDeviceId = () => null }) {
-    if (typeof getPinnedDeviceKey !== "function") {
-      throw new Error("getPinnedDeviceKey is required — refusing to trust relay-supplied device keys");
-    }
-    this.url = url;
     this.transport = transport;
-    this.WS = WebSocketImpl;
-    this.getToken = getToken; // async () => gateway token, for the relay handshake
-    // async (deviceId) => the api-pinned transport key. The relay's device_key
-    // push is a routing hint only — we never seal to a key the broker chose.
-    this.getPinnedDeviceKey = getPinnedDeviceKey;
-    this.preferDeviceId = preferDeviceId; // () => device id or null (any device)
-    this.deviceId = null;
-    // This session's id, key, and the device it was sealed to. They outlive the
-    // socket that minted them (see _sessionInitFor).
-    this._sessionId = null;
-    this._key = null;
-    this._sessionDeviceId = null;
     // This session's crypto and correlation: the pending calls, the frames and
     // the demux, over whichever carrier the switch has it riding. A fresh
-    // session is a fresh one of these (see _sessionInitFor).
+    // session is a fresh one of these.
     this._rpc = null;
     this._onStatus = noop;
     this._closed = false;
-    this._backoff = 400;
     // termId → { kind, attachParams, termId, cols, rows, lastCursor, ackTimer,
     //            onOutput, onSnapshot, onClosed, onLive }
     this._terms = new Map();
@@ -114,14 +99,36 @@ export class TerminalSocket {
     this._orphanFrames = new Map();
     this._agentAttachesInFlight = 0;
     this._agentAttachSeq = 0;
-    // The relay socket's own carrier. Which wire is riding is the switch's to
-    // say, and every method below asks it rather than remembering.
-    this._relayCarrier = null;
+    // Which wire is riding is the switch's to say, and every method below asks
+    // it rather than remembering.
     this._switch = createSessionSwitch({
       session: { rideOn: (carrier) => this._rpc?.rideOn(carrier) },
       onActive: () => this._reattachAll(),
       onIdle: () => this._reportLost(),
     });
+    // The relay socket, whole: the handshake, the presence pushes, and the
+    // backoff reconnect that re-presents this session while the channel carries
+    // it. Nothing below this line knows a socket exists.
+    this._link = createRelayLink({
+      relayUrl: url,
+      transport,
+      WebSocketImpl,
+      fetchToken: getToken,
+      getPinnedDeviceKey,
+      // The terminals follow the app session's device, re-read on every
+      // connect; a device switch is answered by the next socket.
+      preferDeviceId,
+      acceptTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+      carrying: () => this._switch.active(),
+      onConnecting: () => this._reportConnecting(),
+      onSession: (opened) => this._openSession(opened),
+      onRelay: (carrier) => this._relayChanged(carrier),
+    });
+  }
+
+  /** The device this socket's session is with. */
+  get deviceId() {
+    return this._link.deviceId();
   }
 
   /** Ride the `term` DataChannel instead of the relay socket, or `null` to fall
@@ -134,7 +141,7 @@ export class TerminalSocket {
 
   async start() {
     this._closed = false;
-    await this._connect();
+    await this._link.start();
   }
 
   /**
@@ -381,146 +388,66 @@ export class TerminalSocket {
     for (const entry of this._terms.values()) this._cancelPendingAck(entry);
     // Nobody is waiting for a connection that will never be attempted again.
     this._failConnectWaiters("closed");
-    try { this._ws && this._ws.close(); } catch { /* ignore */ }
+    this._link.close();
   }
 
   /** Drop the socket but allow auto-reconnect (device retarget / reconnect test). */
   simulateDrop() {
-    try { this._ws && this._ws.close(); } catch { /* ignore */ }
+    this._link.dropSocket();
   }
 
-  async _connect() {
-    const gen = (this._gen = (this._gen || 0) + 1);
-    // A live channel is still a connection: only a session with nothing
-    // carrying it is one the panes should be shown reconnecting.
-    if (!this._switch.active()) {
-      this._connected = false;
-      this._onStatus("connecting");
-    }
-    try {
-      if (this.transport.ready) await this.transport.ready();
-    } catch (e) {
-      // No socket was ever opened, so no close event will report this: say it
-      // here, or every waiter hangs on a connect that already gave up.
-      this._onLost(gen);
-      throw e;
-    }
-
-    const ws = new this.WS(`${this.url}/ws/client`);
-    this._ws = ws;
-    const inbox = relayInbox(ws);
-    // Until there is a carrier, this socket's close is the only thing that can
-    // report the loss; from then on the carrier reports it, exactly once.
-    ws.addEventListener("close", () => {
-      if (!this._relayCarrier) this._onLost(gen);
-    });
-
-    try {
-      await Promise.race([
-        new Promise((resolve, reject) => {
-          ws.addEventListener("open", resolve);
-          ws.addEventListener("error", reject);
-        }),
-        timeout(8000, "open timeout"),
-      ]);
-      await this._handshake(ws, inbox);
-      this._watchRelayControl(inbox, gen); // device_offline; envelopes ride the carrier
-
-      this._relayCarrier = openCarrier({ socket: ws, sessionId: this._sessionId });
-      this._relayCarrier.onClose(() => this._onLost(gen));
-      // Taking the relay slot re-attaches every registered terminal when this
-      // socket is what carries the session. When a channel already carries it,
-      // the session did not change and neither did its terminals.
-      await this._switch.relay(this._relayCarrier);
-
-      this._onStatus("connected");
-      this._backoff = 400;
-      this._connected = true;
-      this._connectWaiters.splice(0).forEach(({ resolve }) => resolve());
-      this._startLiveness(gen);
-    } catch (e) {
-      try { ws.close(); } catch { /* ignore */ }
-      // A close event normally lands the loss (and the retry) for us, but a
-      // connect that dies before the socket opens — or before there is a socket
-      // at all — has no event to ride: without this, its waiters hang and
-      // nothing ever reconnects.
-      this._onLost(gen);
-      throw e;
-    }
+  /** A fresh socket is on its way. A live channel is still a connection: only
+   *  a session with nothing carrying it is one the panes should be shown
+   *  reconnecting. */
+  _reportConnecting() {
+    if (this._switch.active()) return;
+    this._connected = false;
+    this._onStatus("connecting");
   }
 
-  /** Authenticate this socket to the relay and put this session on it. */
-  async _handshake(ws, inbox) {
-    // A gateway token so the relay routes us only to our own devices; it acks,
-    // then pushes device_key per online device.
-    ws.send(JSON.stringify({ type: "authenticate", token: await this.getToken() }));
-    // Time-boxed so a still-down bridge fails fast → retry. Control frames
-    // (authenticated, other devices' keys) go past until the target's arrives.
-    const wanted = this.preferDeviceId();
-    const hello = await inbox.matching(
-      (m) => m.type === "device_key" && (!wanted || m.device_id === wanted),
-      8000,
-      "no device online",
-    );
-    if (!hello) throw new Error("connection closed");
-    this.deviceId = hello.device_id;
-    // Seal to the api-pinned key; a relay-pushed key that differs means the
-    // broker is substituting keys — abort instead of handing it the session.
-    const pinnedKeyB64 = await this.getPinnedDeviceKey(this.deviceId);
-    if (!pinnedKeyB64) throw new Error(`no pinned transport key for device ${this.deviceId}`);
-    if (hello.transport_public_key !== pinnedKeyB64) {
-      throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
-    }
-
-    const sessionInit = await this._sessionInitFor(pinnedKeyB64);
-    ws.send(JSON.stringify({
-      type: "session_init", session_id: this._sessionId, route_to: `device:${this.deviceId}`, session_init: sessionInit,
-    }));
-    const accept = await inbox.matching((m) => m.type === "session_accept", 6000, "handshake timeout");
-    if (!accept) throw new Error("connection closed");
-    await this.transport.openSessionAccept({ sessionKeyB64: this._key, envelope: accept.envelope });
-  }
-
-  /** What this socket presents to claim its session.
-   *
-   *  A session's id and key are minted once per session, not once per socket
-   *  (spec §SPA carrier and migration policy, 6). While a DataChannel is still
-   *  carrying, a reconnecting relay socket re-presents the SAME session_init,
-   *  which the bridge takes as a carrier re-attach: re-keying under a live
-   *  channel would strand every frame already in flight on it and every call
-   *  issued before the new accept landed. With nothing carrying, the session
-   *  ended with its last carrier and this mints the next one — and whatever is
-   *  riding a session this socket is not gets handed back first. */
-  async _sessionInitFor(pinnedKeyB64) {
-    const carried = this._switch.active();
-    const reattaching = Boolean(carried && this._key && this._sessionDeviceId === this.deviceId);
-    if (carried && !reattaching) this._switch.peer(null);
-    const sessionId = reattaching ? this._sessionId : "sess-" + Math.random().toString(36).slice(2, 10);
-    const init = await this.transport.createSessionInit({
-      sessionId,
-      deviceId: this.deviceId,
-      deviceTransportPublicKeyB64: pinnedKeyB64,
-      sessionKeyB64: reattaching ? this._key : undefined,
-    });
-    this._sessionId = sessionId;
-    this._key = init.sessionKeyB64;
-    this._sessionDeviceId = this.deviceId;
-    if (!reattaching) this._rpc = this._openRpc();
-    return init.sessionInit;
-  }
-
-  /** This session's crypto and correlation. A push is a live terminal frame:
-   *  everything a reply is not is routed to the screen it names. */
-  _openRpc() {
-    const rpc = createSessionRpc({
+  /** The link minted a session: whatever was riding the one before it is not
+   *  riding this one, and this one gets its own crypto and correlation. */
+  _openSession({ sessionId, sessionKeyB64, deviceId }) {
+    this._switch.peer(null);
+    this._rpc = createSessionRpc({
       transport: this.transport,
-      sessionId: this._sessionId,
-      sessionKeyB64: this._key,
-      deviceId: this.deviceId,
+      sessionId,
+      sessionKeyB64,
+      deviceId,
       noCarrier: () => new TerminalSocketLost(this._closed ? "closed" : "disconnected"),
     });
-    rpc.onPush((payload) => this._applyPush(payload));
-    return rpc;
+    // A push is a live terminal frame: everything a reply is not is routed to
+    // the screen it names.
+    this._rpc.onPush((payload) => this._applyPush(payload));
+  }
+
+  /**
+   * The relay slot changed: a carrier while a socket carries this session,
+   * `null` the moment none does.
+   *
+   * Taking the slot re-attaches every registered terminal when the socket is
+   * what carries the session; when a channel already carries it, the session
+   * did not change and neither did its terminals. Losing it is a disconnect
+   * only if nothing else was carrying — which is the switch's call, not this
+   * method's, except for the connect that failed before anything carried at
+   * all: it has no transition to make, and its waiters are owed the same
+   * answer.
+   */
+  async _relayChanged(carrier) {
+    if (!carrier) {
+      // Every pending ack was read on the connection that just died: the bridge
+      // it would report to is gone, and the re-attach rebases each cursor anyway.
+      for (const entry of this._terms.values()) this._cancelPendingAck(entry);
+      const wasCarrying = this._switch.active();
+      this._switch.relay(null);
+      if (!wasCarrying) this._reportLost();
+      return;
+    }
+    await this._switch.relay(carrier);
+    this._onStatus("connected");
+    this._connected = true;
+    this._connectWaiters.splice(0).forEach(({ resolve }) => resolve());
+    this._watchLiveness();
   }
 
   /// Re-attach every registered terminal after a (re)connect. User terminals go
@@ -554,14 +481,6 @@ export class TerminalSocket {
         // Other failures leave the entry registered — the next reconnect retries.
       }
     }
-  }
-
-  /** The relay socket's own messages. Envelopes reach this session through
-   *  whichever carrier brought them; what is left here is the relay telling us
-   *  our device dropped off it, which detaches the relay carrier. */
-  async _watchRelayControl(inbox, gen) {
-    const dropped = await inbox.matching((m) => m.type === "device_offline" && m.device_id === this.deviceId);
-    if (dropped && this._gen === gen) this._onLost(gen);
   }
 
   /** One live frame off whichever carrier brought it, routed to the terminal
@@ -664,12 +583,14 @@ export class TerminalSocket {
   // recently decrypted frame already proves the path, so it suppresses the
   // probe (see FRAME_PROOF_OF_LIFE_MS); only silence is probed, and a failed
   // ping means the path to the bridge is down → show disconnected and reconnect.
-  async _startLiveness(gen) {
-    while (this._gen === gen && !this._closed) {
+  async _watchLiveness() {
+    const mine = (this._liveness = {}); // one watch per connection, the newest
+    while (this._liveness === mine && !this._closed) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
-      if (this._gen !== gen || this._closed) return;
+      if (this._liveness !== mine || this._closed) return;
       if (Date.now() - this._rpc.lastFrameAt() < FRAME_PROOF_OF_LIFE_MS) continue;
       const wire = this._switch.active();
+      if (!wire) return;
       try {
         await this._call("ping", {}, 3000);
       } catch {
@@ -677,7 +598,7 @@ export class TerminalSocket {
         // is how either kind reports itself gone, and the switch decides what
         // that costs — a channel falls back to the relay, a relay socket
         // reconnects.
-        if (this._gen === gen) wire?.close();
+        if (this._liveness === mine) wire.close();
         return;
       }
     }
@@ -687,30 +608,6 @@ export class TerminalSocket {
     const rpc = this._rpc;
     if (!rpc) return Promise.reject(new TerminalSocketLost(this._closed ? "closed" : "disconnected"));
     return rpc.call(method, params, { timeoutMs });
-  }
-
-  /// Connection `gen` was lost. Invalidate it and reconnect with backoff.
-  /// Stale generations are ignored (no double-reconnect). Whether the loss is a
-  /// DISCONNECT is the switch's call: a live channel keeps this session working
-  /// while the relay comes back for signaling and presence.
-  _onLost(gen) {
-    if (this._closed || gen !== this._gen) return;
-    this._gen++; // invalidate this connection so its control loop/liveness stop
-    // Every pending ack was read on the connection that just died: the bridge
-    // it would report to is gone, and the re-attach rebases each cursor anyway.
-    for (const entry of this._terms.values()) this._cancelPendingAck(entry);
-    this._relayCarrier = null;
-    // The switch reports the loss when the wire that died was the one carrying;
-    // a connect that failed before anything carried has no transition to make,
-    // and its waiters are owed the same answer.
-    const wasCarrying = this._switch.active();
-    this._switch.relay(null);
-    if (!wasCarrying) this._reportLost();
-    const delay = this._backoff;
-    this._backoff = Math.min(this._backoff * 2, 8000);
-    setTimeout(() => {
-      if (!this._closed) this._connect().catch(() => this._onLost(this._gen));
-    }, delay);
   }
 
   /// Nothing is carrying this session any more: say so, and end every wait that

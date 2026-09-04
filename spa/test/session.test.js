@@ -473,4 +473,45 @@ describe("a session that rides two carriers", () => {
 
     await expect(session.call("board.list", {}, 60000)).rejects.toThrow(/the channel closed/);
   });
+
+  // Spec §SPA carrier and migration policy, 6: a relay loss under a live
+  // channel is not "offline". The link reconnects in the background and
+  // re-presents the same session, which the bridge takes as a carrier
+  // re-attach — the session id and key are minted once per session, not once
+  // per socket.
+  it("keeps the session over a live channel when the relay goes, and re-presents it when the relay is back", async () => {
+    const { promise, ws, events } = await startOpen();
+    const init = await completeHandshake(ws, "dev-a");
+    const session = await promise;
+    const channel = fakeCarrier();
+    session.peer(channel);
+    const sockets = FakeWebSocket.instances.length;
+
+    vi.useFakeTimers();
+    try {
+      ws.close();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(events.lost).toBe(0); // nothing ended: the channel is still carrying
+
+      const working = session.call("board.list", {});
+      await vi.advanceTimersByTimeAsync(0);
+      channel.reply({ id: replyTo(channel).id, ok: true, result: { boards: [] } });
+      await expect(working).resolves.toEqual({ boards: [] });
+
+      // …and the relay comes back on its own, for the same session.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(FakeWebSocket.instances.length).toBeGreaterThan(sockets);
+      const next = FakeWebSocket.instances.at(-1);
+      next.emit("open");
+      await vi.advanceTimersByTimeAsync(0);
+      next.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-dev-a" });
+      await vi.advanceTimersByTimeAsync(0);
+      const again = next.sent.find((m) => m.type === "session_init");
+      expect(again.session_id).toBe(init.session_id);
+      expect(events.lost).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    session.close();
+  });
 });

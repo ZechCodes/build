@@ -51,6 +51,18 @@ pub enum BranchSource {
     ExternalWorktree,
 }
 
+impl BranchSource {
+    /// What this kind of holder is called, for a user being told which one has
+    /// the branch they asked for.
+    pub fn holder_noun(self) -> &'static str {
+        match self {
+            BranchSource::Run => "run",
+            BranchSource::PrimaryCheckout => "the primary checkout",
+            BranchSource::ExternalWorktree => "worktree",
+        }
+    }
+}
+
 /// The identity rows fold on.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum WorkItemKey {

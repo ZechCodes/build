@@ -7496,44 +7496,112 @@ impl AppState {
 
     /// Read-only browse of one external worktree's dirty diff (spec §5.4) —
     /// never adopts.
-    /// Mint a bare worktree on a fresh branch off the project's base — no run,
-    /// no agent, no session. It is the "somewhere to work" affordance beside
-    /// issue creation: the human opens a terminal or an agent tab in it, and it
-    /// stays unbound (the scan reports it like any hand-made worktree) until a
-    /// mutating action adopts it.
+    /// Mint a bare worktree — no run, no agent, no session. It is the
+    /// "somewhere to work" affordance beside issue creation: the human opens a
+    /// terminal or an agent tab in it, and it stays unbound (the scan reports
+    /// it like any hand-made worktree) until a mutating action adopts it.
     ///
-    /// `name` is what the human typed, and it decides both the directory and the
-    /// branch. It is UNTRUSTED text on its way to a path and a `git` argv, so it
-    /// goes through the same slugifier every branch name does: ASCII alphanumerics
-    /// and single hyphens, nothing else, so no separator, dot-segment or leading
-    /// dash can survive it. A name that would slugify away to nothing is refused
-    /// rather than silently replaced — being handed a worktree you did not name is
-    /// worse than being told the name will not do.
+    /// The two slots mean opposite things, and exactly one is given. `branch`
+    /// names a branch that already exists — here or on a remote — and Build
+    /// borrows it a directory, cutting nothing. `name` is words to cut a new
+    /// branch after, and no branch of that spelling is consulted.
     fn worktree_create(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
-        let name = require_str(params, "name")?;
+        let checkout = match (
+            params.get("branch").and_then(Value::as_str),
+            params.get("name").and_then(Value::as_str),
+        ) {
+            (Some(branch), None) => self.checkout_worktree_on_branch(&project_id, branch)?,
+            (None, Some(name)) => self.cut_worktree_named(&project_id, name)?,
+            _ => {
+                return Err(
+                    "worktree.create takes exactly one of branch (a branch that \
+                            already exists) and name (words to cut a new branch after)"
+                        .to_string(),
+                )
+            }
+        };
+        Ok(self.created_worktree_json(&project_id, checkout))
+    }
+
+    /// Cut `build/<slug>` off the project's base and add a worktree for it.
+    ///
+    /// `name` is what the human typed. It is UNTRUSTED text on its way to a
+    /// path and a `git` argv, so it goes through the same slugifier every
+    /// branch name does: ASCII alphanumerics and single hyphens, nothing else,
+    /// so no separator, dot-segment or leading dash can survive it. A name that
+    /// would slugify away to nothing is refused rather than silently replaced —
+    /// being handed a worktree you did not name is worse than being told the
+    /// name will not do.
+    fn cut_worktree_named(
+        &mut self,
+        project_id: &str,
+        name: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
         if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
             return Err("a worktree name needs at least one letter or number".to_string());
         }
-        let slug = crate::worktree::slugify(&name);
-        let base = self.base_for(&project_id)?;
-        let worktree = self
-            .orch_for(&project_id)?
-            .create_bare_worktree(&slug, &base)
-            .map_err(err)?;
+        let slug = crate::worktree::slugify(name);
+        let base = self.base_for(project_id)?;
+        Ok(crate::worktree::NamedBranchCheckout {
+            worktree: self
+                .orch_for(project_id)?
+                .create_bare_worktree(&slug, &base)
+                .map_err(err)?,
+            teardown: crate::worktree::BranchTeardown::DeletesBranch,
+        })
+    }
+
+    /// Add a worktree for a branch that already exists, so the human can work
+    /// on it without losing what it carries: a local branch is checked out as
+    /// it stands, and one only a remote has is fetched and made local with its
+    /// upstream set.
+    ///
+    /// Git refuses to check one branch out twice, and its refusal names
+    /// nothing the client can act on, so the checkout already holding the
+    /// branch is named here instead — the run to open, the worktree to adopt,
+    /// or the repository's own checkout. The listing the picker reads carries
+    /// the same three stamps and is where a user should learn this; the guard
+    /// is for what changed between the listing and the press.
+    fn checkout_worktree_on_branch(
+        &mut self,
+        project_id: &str,
+        branch: &str,
+    ) -> Result<crate::worktree::NamedBranchCheckout, String> {
+        if !crate::worktree::is_ref_name(branch) {
+            return Err(format!("{branch:?} is not a branch name"));
+        }
+        let ownership = self.project_checkouts(project_id, true)?.holders()?;
+        if let Some(refusal) = BranchHolder::of(&ownership, branch).refusal(branch) {
+            return Err(refusal);
+        }
+        let base = self.base_for(project_id)?;
+        self.orch_for(project_id)?
+            .create_worktree_on_named_branch(branch, &base, crate::worktree::AbsentBranch::Refuse)
+            .map_err(err)
+    }
+
+    /// The answer every `worktree.create` gives, and the invalidation that
+    /// makes the checkout it describes visible to the very next board poll
+    /// rather than up to a scan interval later.
+    fn created_worktree_json(
+        &mut self,
+        project_id: &str,
+        checkout: crate::worktree::NamedBranchCheckout,
+    ) -> Value {
         // The scan keys worktrees by canonical path; mirror that here so the
         // caller can navigate to the surface without waiting for a rescan.
+        let worktree = checkout.worktree;
         let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
-        // The new worktree must be visible to the very next board poll, not up
-        // to EXTERNAL_SCAN_INTERVAL later.
-        self.invalidate_external_scan(&project_id);
-        Ok(json!({
+        self.invalidate_external_scan(project_id);
+        json!({
             "project_id": project_id,
             "worktree_id": crate::worktree::external_worktree_id(&canonical),
             "branch": worktree.branch(),
             "name": worktree.name,
             "path": canonical.display().to_string(),
-        }))
+            "branch_was_cut": checkout.teardown == crate::worktree::BranchTeardown::DeletesBranch,
+        })
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -15533,6 +15601,17 @@ impl BranchHolder {
             .map(|(_, id)| id.as_str())
     }
 
+    /// Why a branch this one holds cannot be checked out somewhere new, naming
+    /// what holds it so the client can offer the verb that does apply.
+    fn refusal(&self, branch: &str) -> Option<String> {
+        self.holder.as_ref().map(|(source, id)| {
+            format!(
+                "branch {branch:?} is already checked out by {} {id}",
+                source.holder_noun()
+            )
+        })
+    }
+
     fn into_json(self) -> Value {
         json!({
             "run_id": self.held_by(crate::branch::BranchSource::Run),
@@ -16326,13 +16405,22 @@ fn run_finish_git_steps(
                 ));
             }
             if worktree_path.exists() {
+                // Read before the removal below prunes the admin directory the
+                // answer lives in. A checkout Build only borrowed a branch for
+                // hands it back: the action still merges, only the deletion is
+                // withheld.
+                let teardown = crate::worktree::branch_teardown(&worktree_path)
+                    .map_err(|error| error.to_string())?;
+                let deletes_branch = teardown == crate::worktree::BranchTeardown::DeletesBranch;
                 let deleted_branch =
                     if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
                         if merging {
                             merge_external_branch(project_path, branch, base_branch)?;
                         }
-                        delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                        true
+                        if deletes_branch {
+                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+                        }
+                        deletes_branch
                     } else {
                         false
                     };
@@ -34649,6 +34737,253 @@ mod tests {
             state.handle(req("worktree.create", json!({ "project_id": project_id })))["ok"]
                 == false
         );
+    }
+
+    /// The create modal's other half: a branch that already exists is checked
+    /// out into a Build-managed worktree, with nothing cut and no commit of
+    /// its lost. The branch is somebody's work; Build is only borrowing it a
+    /// directory.
+    #[test]
+    fn worktree_create_checks_out_an_existing_local_branch_without_cutting() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["checkout", "-q", "-b", "theirs"]);
+        std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "their work"]);
+        git_in_dir(&repo, &["checkout", "-q", "main"]);
+        let tip = git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("theirs", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["branch"], "theirs", "{result:?}");
+        assert_eq!(result["branch_was_cut"], false, "{result:?}");
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
+        assert_eq!(
+            std::fs::read_to_string(path.join("theirs.txt")).unwrap(),
+            "their work\n",
+            "the checkout carries the branch's own work"
+        );
+        assert_eq!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_branch("theirs", git2::BranchType::Local)
+                .unwrap()
+                .get()
+                .target()
+                .unwrap(),
+            tip,
+            "the branch itself was not moved"
+        );
+        assert!(state.runs.is_empty(), "a checkout is not a run");
+        let listed = state.external_worktrees(&project_id, true).unwrap();
+        assert!(listed
+            .iter()
+            .any(|w| w.id == result["worktree_id"].as_str().unwrap()));
+    }
+
+    /// A branch only a remote carries is fetched and made local with its
+    /// upstream set — the bug this affordance exists to fix was cutting an
+    /// empty branch of the same name over the top of the team's work.
+    #[test]
+    fn worktree_create_fetches_a_branch_only_a_remote_carries() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let clone = origin_with_pushed_branch(&dir, &origin, "feature-x");
+        let mut state = qa_state(&clone, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "feature-x" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let result = &created["result"];
+        assert_eq!(result["branch"], "feature-x", "{result:?}");
+        assert_eq!(result["branch_was_cut"], false, "{result:?}");
+        let path = std::path::PathBuf::from(result["path"].as_str().unwrap());
+        assert!(
+            path.join("work.rs").is_file(),
+            "the remote work came with it"
+        );
+        let config = git2::Repository::open(&clone).unwrap().config().unwrap();
+        assert_eq!(
+            config.get_string("branch.feature-x.remote").unwrap(),
+            "origin"
+        );
+        assert_eq!(
+            config.get_string("branch.feature-x.merge").unwrap(),
+            "refs/heads/feature-x"
+        );
+    }
+
+    /// Git refuses to check one branch out twice, and the raw refusal tells
+    /// the user nothing they can act on. Every checkout that could be holding
+    /// it is named instead — the run to open, the worktree to adopt, or the
+    /// repository's own checkout.
+    #[test]
+    fn worktree_create_names_the_checkout_already_holding_a_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "run-owned");
+        add_external_worktree(&repo, dir.path(), "by-hand", "by-hand");
+        let external_worktree_id = external_id(&mut state, &project_id, Some("by-hand"));
+        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
+            .unwrap()
+            .unwrap()
+            .id;
+
+        for (branch, holder) in [
+            ("run-owned", run_id.as_str()),
+            ("by-hand", external_worktree_id.as_str()),
+            ("main", primary_id.as_str()),
+        ] {
+            let refused = state.handle(req(
+                "worktree.create",
+                json!({ "project_id": project_id, "branch": branch }),
+            ));
+            assert_eq!(refused["ok"], false, "{branch}: {refused:?}");
+            let error = refused["error"].as_str().unwrap();
+            assert!(error.contains(branch), "{branch}: {error}");
+            assert!(
+                error.contains(holder),
+                "{branch}: {error} names no checkout to act on"
+            );
+        }
+    }
+
+    /// Naming a branch means that branch. A name nothing anywhere holds is a
+    /// mistake to be told about, never a fresh empty branch wearing it —
+    /// cutting one from base is what `name` is for.
+    #[test]
+    fn worktree_create_refuses_a_branch_no_ref_holds() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "nobody-cut-this" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("nobody-cut-this", git2::BranchType::Local)
+            .is_err());
+
+        for spelling in ["HEAD", "-dashed", "not a ref name", ""] {
+            let refused = state.handle(req(
+                "worktree.create",
+                json!({ "project_id": project_id, "branch": spelling }),
+            ));
+            assert_eq!(refused["ok"], false, "{spelling:?}: {refused:?}");
+        }
+    }
+
+    /// The two slots mean opposite things — a branch that exists, or words to
+    /// cut a new one after — so a call that gives both has said nothing.
+    #[test]
+    fn worktree_create_takes_exactly_one_of_branch_and_name() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs", "name": "theirs" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+    }
+
+    /// The whole point of not cutting: finishing the checkout hands the branch
+    /// back. A worktree Build cut its own branch for is finished the way it
+    /// always was, and the branch goes with it.
+    #[test]
+    fn finishing_a_borrowed_checkout_keeps_its_branch_and_a_cut_one_does_not() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let borrowed = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(borrowed["ok"], true, "{borrowed:?}");
+        let cut = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "ours" }),
+        ));
+        assert_eq!(cut["ok"], true, "{cut:?}");
+
+        for created in [&borrowed, &cut] {
+            let finished = state.handle(req(
+                "worktree.finish",
+                json!({
+                    "project_id": project_id,
+                    "worktree_id": created["result"]["worktree_id"],
+                    "action": "delete",
+                }),
+            ));
+            assert_eq!(finished["ok"], true, "{finished:?}");
+        }
+
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("theirs", git2::BranchType::Local).is_ok(),
+            "a branch Build only borrowed survives the checkout it lent"
+        );
+        assert!(
+            r.find_branch("build/ours", git2::BranchType::Local)
+                .is_err(),
+            "a branch Build cut goes with it"
+        );
+    }
+
+    /// The finish reads whose branch it is from the checkout, and a checkout
+    /// that cannot answer stops the finish. Guessing there deletes a ref
+    /// nobody asked Build to touch, so nothing is removed and nothing is
+    /// deleted.
+    #[test]
+    fn finishing_a_checkout_that_cannot_say_whose_branch_it_is_aborts() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "name": "unreadable" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let path = std::path::PathBuf::from(created["result"]["path"].as_str().unwrap());
+        std::fs::write(path.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": created["result"]["worktree_id"],
+                "action": "delete",
+            }),
+        ));
+
+        assert_eq!(finished["ok"], false, "{finished:?}");
+        assert!(path.exists(), "nothing was removed");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_branch("build/unreadable", git2::BranchType::Local)
+            .is_ok());
     }
 
     #[test]

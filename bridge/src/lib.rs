@@ -70,5 +70,6 @@ pub mod service;
 pub mod store;
 pub mod templates;
 pub mod thread;
+pub mod timing;
 pub mod transport;
 pub mod worktree;

@@ -47,16 +47,19 @@ the bridge inside the sealed session, so the bridge needs no Cloudflare access.
 
 | Env key | Where it comes from | What it is |
 |---|---|---|
-| `CF_TURN_KEY_ID` | `build-app` Secret | Cloudflare TURN key the api mints short-lived per-user credentials from |
+| `CF_TURN_KEY_ID` | `build-app` Secret | Cloudflare TURN key the api mints per-user credentials from; their lifetime is `TTL_SECONDS` in `skriftapp/buildapp/ice_servers.py` |
 | `CF_TURN_KEY_API_TOKEN` | `build-app` Secret | That key's API token. Never returned to a browser or a bridge |
 
 Both are optional (`optional: true` in [`k8s/app.yaml`](k8s/app.yaml);
-[`k8s/bootstrap-secrets.sh`](k8s/bootstrap-secrets.sh) patches them in when they
-are exported and reports their absence instead of failing). With neither set —
-which is how `compose.real.yml` runs — the route answers a STUN-only list and
-direct host candidates carry localhost sessions, so the local stack needs no
-Cloudflare account. A deployment without the key is supported too: peers that
-cannot hole-punch simply keep working over the relay.
+[`k8s/bootstrap-secrets.sh`](k8s/bootstrap-secrets.sh) patches them in when
+they are exported and reports their absence instead of failing). With
+neither set — which is how `compose.real.yml` runs — the route answers a
+STUN-only list and direct host candidates carry localhost sessions, so the
+local stack needs no Cloudflare account. That STUN-only list is
+`stun:stun.cloudflare.com:3478` — unauthenticated, no account, and
+unreachable-tolerant: with it down or the machine offline, host candidates
+still carry localhost sessions. A deployment without the key is supported
+too: peers that cannot hole-punch simply keep working over the relay.
 
 TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
 

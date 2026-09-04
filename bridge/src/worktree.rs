@@ -89,6 +89,22 @@ pub fn slugify(goal: &str) -> String {
     }
 }
 
+/// Whether git would hold a branch under this name.
+///
+/// Git's own ref grammar, plus the two narrowings `git check-ref-format
+/// --branch` makes that `is_valid_name` alone does not: a leading `-` would be
+/// read as a flag wherever a name reaches an argv slot, and `HEAD` names the
+/// pointer rather than a branch. Everything past this guard is a spelling git
+/// could hold a branch under — which is the precondition
+/// [`crate::gitgui::branch_origin`] needs. It says nothing about whether the
+/// branch exists.
+pub fn is_ref_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && name != "HEAD"
+        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+}
+
 /// Whether a caller-supplied branch name can be cut exactly as it was given.
 ///
 /// A dispatch's `branch` is either a name or a description of one, and the two
@@ -110,8 +126,7 @@ pub fn is_usable_branch_name(name: &str) -> bool {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     };
-    segments.iter().all(segment_is_usable)
-        && git2::Reference::is_valid_name(&format!("refs/heads/{name}"))
+    segments.iter().all(segment_is_usable) && is_ref_name(name)
 }
 
 /// A checkout added for a branch named in full, and whether that branch is one
@@ -982,6 +997,37 @@ mod tests {
 
     fn manager(dir: &tempfile::TempDir, repo: &Path) -> WorktreeManager {
         WorktreeManager::new(repo, dir.path().join("worktrees"))
+    }
+
+    /// Git's own branch-name rule, which is wider than the one Build cuts
+    /// under: anything `git branch` would accept is a name git can hold a
+    /// branch under, and so a name a checkout can be asked for.
+    #[test]
+    fn a_ref_name_is_one_git_branch_would_accept() {
+        for name in [
+            "build/csv-export",
+            "wip@2",
+            "feature/foo+bar",
+            "release-1.2",
+            "ünïcode",
+        ] {
+            assert!(is_ref_name(name), "{name:?} is a name git would take");
+        }
+        for name in [
+            "",
+            "HEAD",
+            "-dashed",
+            "add a csv export",
+            "build/",
+            "build//x",
+            "build/..",
+            "back\\slash",
+            "star*",
+            "tilde~1",
+            "at@{brace}",
+        ] {
+            assert!(!is_ref_name(name), "{name:?} is not a branch name");
+        }
     }
 
     #[test]

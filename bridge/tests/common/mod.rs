@@ -47,12 +47,10 @@ pub fn request_message(session_key: &str, session_id: &str, payload: Value) -> V
     })
 }
 
-/// Receive the next value or fail the test on a 10s timeout.
+/// Receive the next value or fail the test, on the one deadline every fixture
+/// waits out.
 pub async fn recv(rx: &mut mpsc::Receiver<Value>) -> Value {
-    tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
-        .await
-        .expect("no timeout")
-        .expect("channel open")
+    testing::within_patience(rx.recv()).await
 }
 
 /// The heartbeat a relay asks a device for unless the test is about the
@@ -169,11 +167,7 @@ pub async fn connected_device(
         let identity = identity.clone();
         tokio::spawn(async move { relay::run(&url, &identity, intake).await })
     };
-    let transport_public_key =
-        tokio::time::timeout(std::time::Duration::from_secs(10), tkey_rx.recv())
-            .await
-            .expect("transport key arrives")
-            .unwrap();
+    let transport_public_key = testing::within_patience(tkey_rx.recv()).await;
     ConnectedDevice {
         to_device,
         from_device,

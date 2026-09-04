@@ -5,6 +5,7 @@
 //! that drive a real relay socket state each shape once. Compiled for tests
 //! only, never into the daemon.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -61,7 +62,7 @@ pub fn client_request(
 
 /// `handler`, with every frame it is given reported as
 /// `<frame_type>:<session_id>` — the synthetic `close` a session gets when it
-/// ends among them. Read the reports with [`next_report`].
+/// ends among them. Read the reports with [`within_patience`].
 ///
 /// The one home of that shape: a test that only needs to see what arrived uses
 /// [`reporting_handler`], and one that needs the device to answer too wraps its
@@ -80,10 +81,23 @@ pub fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
     reporting(Arc::new(|_sender, _frame| json!({ "ok": true })))
 }
 
-/// The next frame [`reporting_handler`] saw, or a failed test.
-pub async fn next_report(reports: &mut mpsc::UnboundedReceiver<String>) -> String {
-    tokio::time::timeout(Duration::from_secs(10), reports.recv())
+/// How long a test waits on the code under test before the run has hung rather
+/// than failed. One home for that number, whatever channel is being read.
+pub const PATIENCE: Duration = Duration::from_secs(10);
+
+/// The next value off a channel, or a failed test.
+pub async fn within_patience<T>(next: impl Future<Output = Option<T>>) -> T {
+    settled(next).await.expect("the channel is open")
+}
+
+/// Whether the channel being read closed rather than answering — the shape of
+/// "the device took this wire down", which is a value a test waits for too.
+pub async fn closed_within_patience<T>(next: impl Future<Output = Option<T>>) -> bool {
+    settled(next).await.is_none()
+}
+
+async fn settled<T>(next: impl Future<Output = Option<T>>) -> Option<T> {
+    tokio::time::timeout(PATIENCE, next)
         .await
-        .expect("the handler ran in time")
-        .expect("the reports channel is open")
+        .expect("the code under test answered in time")
 }

@@ -11,7 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::carrier::testing::{client_request, next_report, reporting};
+use build_bridge::carrier::testing::{
+    client_request, closed_within_patience, reporting, within_patience,
+};
 use build_bridge::carrier::FrameIntake;
 use build_bridge::rtc::{chunk, negotiated_channel, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
 use build_bridge::transport::{self, Envelope, DATA_FRAME_TYPE};
@@ -26,10 +28,6 @@ use webrtc::peer_connection::{
 };
 
 mod common;
-
-/// Nothing in the negotiation may take this long on one machine; past it the
-/// test has hung rather than failed.
-const PATIENCE: Duration = Duration::from_secs(20);
 
 /// The browser's end of one E2EE session over the relay: what it sends, and
 /// the two things that come back — replies to its own requests, and the
@@ -48,10 +46,7 @@ impl RelaySession {
     async fn call(&mut self, method: &str, params: Value) -> Value {
         let id = self.ask(method, params).await;
         loop {
-            let reply = tokio::time::timeout(PATIENCE, self.replies.recv())
-                .await
-                .expect("the device answered in time")
-                .expect("the relay session is open");
+            let reply = within_patience(self.replies.recv()).await;
             if reply["id"] == json!(id) {
                 return reply;
             }
@@ -189,11 +184,7 @@ impl BrowserChannel {
                 .expect("the channel takes the request");
         }
         loop {
-            match tokio::time::timeout(PATIENCE, self.events.recv())
-                .await
-                .expect("the device answered over the channel")
-                .expect("the channel is open")
-            {
+            match within_patience(self.events.recv()).await {
                 ChannelEvent::Envelope(json) => {
                     let envelope: Envelope =
                         serde_json::from_str(&json).expect("the device sends envelopes");
@@ -448,10 +439,7 @@ async fn a_part_of_a_message_that_never_started_closes_the_channel() {
         .expect("the channel takes it");
 
     assert!(
-        tokio::time::timeout(PATIENCE, peer.app.events.recv())
-            .await
-            .expect("the device closed the channel in time")
-            .is_none(),
+        closed_within_patience(peer.app.events.recv()).await,
         "the channel a reassembly was lost on is closed"
     );
     let after = session.call("project.list", json!({})).await;
@@ -502,7 +490,7 @@ async fn a_channel_that_carried_last_ends_the_session_with_it() {
         .expect("the browser closes the channel it was riding");
 
     assert_eq!(
-        next_report(&mut reports).await,
+        within_patience(reports.recv()).await,
         format!("close:{}", session.session_id),
         "the last carrier takes the session with it"
     );

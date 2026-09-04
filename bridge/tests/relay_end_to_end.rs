@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use build_bridge::carrier::testing::{next_report, reporting_handler};
+use build_bridge::carrier::testing::{reporting_handler, within_patience};
 use build_bridge::carrier::FrameHandler;
 use build_bridge::transport::{self, Envelope};
 use common::{
@@ -190,14 +190,17 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         ))
         .await
         .unwrap();
-    assert_eq!(next_report(&mut frames).await, format!("data:{session_id}"));
+    assert_eq!(
+        within_patience(frames.recv()).await,
+        format!("data:{session_id}")
+    );
 
     // The socket goes, with no session_closed and no client close frame.
     relay_socket.abort();
     let _ = bridge.await;
 
     assert_eq!(
-        next_report(&mut frames).await,
+        within_patience(frames.recv()).await,
         format!("close:{session_id}"),
         "the session that rode only that socket ended with it"
     );
@@ -325,14 +328,17 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         ))
         .await
         .unwrap();
-    assert_eq!(next_report(&mut frames).await, format!("data:{session_id}"));
+    assert_eq!(
+        within_patience(frames.recv()).await,
+        format!("data:{session_id}")
+    );
 
     // The run future is dropped mid-session, the socket still up.
     bridge.abort();
     let _ = bridge.await;
 
     assert_eq!(
-        next_report(&mut frames).await,
+        within_patience(frames.recv()).await,
         format!("close:{session_id}"),
         "the session that rode the cancelled socket ended with it"
     );

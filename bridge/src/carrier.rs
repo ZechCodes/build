@@ -823,7 +823,7 @@ mod registry_tests {
 #[cfg(test)]
 mod intake_tests {
     use super::registry_tests::*;
-    use super::testing::{client_request, next_report, reporting_handler};
+    use super::testing::{client_request, reporting_handler, within_patience};
     use super::*;
     use serde_json::json;
     use std::sync::LazyLock;
@@ -905,7 +905,7 @@ mod intake_tests {
             .await
             .expect("a close frame is accepted");
 
-        assert_eq!(next_report(&mut seen).await, "close:s-1");
+        assert_eq!(within_patience(seen.recv()).await, "close:s-1");
         assert!(matches!(
             intake
                 .registry
@@ -925,7 +925,7 @@ mod intake_tests {
 
         intake.close_carrier(&carrier);
 
-        assert_eq!(next_report(&mut seen).await, "close:s-1");
+        assert_eq!(within_patience(seen.recv()).await, "close:s-1");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -939,7 +939,7 @@ mod intake_tests {
 
         intake.close_session("s-1", &carrier);
 
-        assert_eq!(next_report(&mut seen).await, "close:s-1");
+        assert_eq!(within_patience(seen.recv()).await, "close:s-1");
         assert!(matches!(
             intake
                 .registry
@@ -972,7 +972,7 @@ mod intake_tests {
             .accept(client_envelope(&key, "s-1", "data"), &peer)
             .await
             .unwrap();
-        assert_eq!(next_report(&mut seen).await, "data:s-1");
+        assert_eq!(within_patience(seen.recv()).await, "data:s-1");
 
         intake.close_session("s-1", &relay);
 
@@ -1024,7 +1024,7 @@ mod intake_tests {
             )
             .await
             .unwrap();
-        assert_eq!(next_report(&mut frames).await, "data:s-1");
+        assert_eq!(within_patience(frames.recv()).await, "data:s-1");
 
         intake.close_carrier(&first);
         intake
@@ -1036,7 +1036,7 @@ mod intake_tests {
             .accept(client_envelope(&key, "s-1", "data"), &second)
             .await
             .expect("the reopened session takes frames");
-        assert_eq!(next_report(&mut frames).await, "data:s-1");
+        assert_eq!(within_patience(frames.recv()).await, "data:s-1");
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
             frames.try_recv().is_err(),
@@ -1084,7 +1084,7 @@ mod intake_tests {
             .expect("the frame was admitted while the session was open");
 
         intake.close_carrier(&carrier);
-        assert_eq!(next_report(&mut seen).await, "close:s-1");
+        assert_eq!(within_patience(seen.recv()).await, "close:s-1");
 
         intake.dispatcher.dispatch(sender, attach).await;
 

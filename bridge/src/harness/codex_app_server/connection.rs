@@ -3,12 +3,12 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use super::limits::AppServerLimits;
 use super::protocol::{
-    ClientNotification, ConnectionEvent, PendingOperation, RequestId, RpcError, ServerNotification,
-    ServerRequest, ServerResponse,
+    ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
+    PendingOperation, RequestId, RpcError, ServerResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -73,7 +73,7 @@ impl AppServerConnection {
         AppServerConnection::new(Box::new(Fails), limits)
     }
 
-    pub fn request(&self, operation: PendingOperation) -> Result<RequestId, ConnectionError> {
+    pub fn request(&self, operation: PendingOperation) -> Result<(), ConnectionError> {
         let mut pending = self.pending.lock().unwrap();
         if pending.len() >= self.limits.pending_requests {
             return Err(ConnectionError::PendingLimit(self.limits.pending_requests));
@@ -84,7 +84,7 @@ impl AppServerConnection {
             pending.remove(&request_id);
             return Err(error);
         }
-        Ok(request_id)
+        Ok(())
     }
 
     fn allocate_request_id(&self) -> Result<RequestId, ConnectionError> {
@@ -205,6 +205,11 @@ impl AppServerConnection {
     }
 
     #[cfg(test)]
+    pub fn pending_ids(&self) -> Vec<RequestId> {
+        self.pending.lock().unwrap().keys().copied().collect()
+    }
+
+    #[cfg(test)]
     pub fn set_next_id(&self, next_id: RequestId) {
         *self.next_id.lock().unwrap() = next_id;
     }
@@ -253,13 +258,11 @@ fn decode_server_request(
     let method = method.as_str().ok_or_else(|| {
         ConnectionError::Protocol("server request method is not a string".to_string())
     })?;
-    ServerRequest::decode(
-        id.clone(),
-        method,
-        params.cloned().unwrap_or_else(|| json!({})),
-    )
-    .map(ConnectionEvent::Request)
-    .map_err(ConnectionError::Protocol)
+    Ok(ConnectionEvent::Request(InboundServerRequest {
+        id: id.clone(),
+        method: method.to_string(),
+        params: params.cloned().unwrap_or(Value::Null),
+    }))
 }
 
 fn decode_notification(
@@ -269,9 +272,10 @@ fn decode_notification(
     let method = method.as_str().ok_or_else(|| {
         ConnectionError::Protocol("notification method is not a string".to_string())
     })?;
-    ServerNotification::decode(method, params.cloned().unwrap_or_else(|| json!({})))
-        .map(ConnectionEvent::Notification)
-        .map_err(ConnectionError::Protocol)
+    Ok(ConnectionEvent::Notification(InboundNotification {
+        method: method.to_string(),
+        params: params.cloned().unwrap_or(Value::Null),
+    }))
 }
 
 pub fn read_jsonl_frame(
@@ -295,27 +299,33 @@ fn read_jsonl_bytes(
             0 if frame.is_empty() => return Ok(None),
             0 => return Err(ConnectionError::UnterminatedFrame),
             _ if byte[0] == b'\n' => break,
-            _ => {
-                if frame.len() == limit && byte[0] != b'\r' {
-                    return Err(ConnectionError::FrameTooLarge(limit));
-                }
-                if frame.len() > limit {
-                    return Err(ConnectionError::FrameTooLarge(limit));
-                }
-                frame.push(byte[0]);
+            _ if frame.len() == limit && byte[0] != b'\r' => {
+                return discard_oversized_frame(reader, limit)
             }
+            _ => frame.push(byte[0]),
         }
     }
     if frame.last() == Some(&b'\r') {
         frame.pop();
     }
-    if frame.len() > limit {
-        return Err(ConnectionError::FrameTooLarge(limit));
-    }
     if frame.is_empty() {
         return Err(ConnectionError::Protocol("blank JSONL frame".to_string()));
     }
     Ok(Some(frame))
+}
+
+fn discard_oversized_frame(
+    reader: &mut dyn Read,
+    limit: usize,
+) -> Result<Option<Vec<u8>>, ConnectionError> {
+    let mut byte = [0_u8; 1];
+    loop {
+        match reader.read(&mut byte)? {
+            0 => return Err(ConnectionError::FrameTooLarge(limit)),
+            _ if byte[0] == b'\n' => return Err(ConnectionError::FrameTooLarge(limit)),
+            _ => continue,
+        }
+    }
 }
 
 fn decode_json_frame(frame: &[u8]) -> Result<Value, ConnectionError> {
@@ -327,8 +337,10 @@ pub type SharedConnection = Arc<AppServerConnection>;
 
 #[cfg(test)]
 mod tests {
-    use std::io::{Error, ErrorKind};
+    use std::io::{Cursor, Error, ErrorKind};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::json;
 
     use super::*;
 
@@ -395,5 +407,15 @@ mod tests {
             .to_string()
             .contains("exact flush error"));
         assert_eq!(flushes.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn oversized_frame_is_discarded_through_newline_before_the_error_returns() {
+        let mut reader = Cursor::new(b"12345-not-another-frame\n{}\n");
+        assert!(matches!(
+            read_jsonl_frame(&mut reader, 4),
+            Err(ConnectionError::FrameTooLarge(4))
+        ));
+        assert_eq!(read_jsonl_frame(&mut reader, 4).unwrap(), Some(json!({})));
     }
 }

@@ -273,8 +273,21 @@ pub enum ConnectionEvent {
         operation: PendingOperation,
         result: Result<OperationResult, RpcError>,
     },
-    Notification(ServerNotification),
-    Request(ServerRequest),
+    Notification(InboundNotification),
+    Request(InboundServerRequest),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboundNotification {
+    pub method: String,
+    pub params: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InboundServerRequest {
+    pub id: Value,
+    pub method: String,
+    pub params: Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,46 +336,175 @@ pub enum ItemLifecycle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemType {
-    Reasoning,
-    AgentMessage,
-    CommandExecution,
+pub enum ToolSummaryCategory {
+    Command,
     FileChange,
-    BuildMcpToolCall,
-    McpToolCall,
+    Mcp,
     WebSearch,
     ImageView,
     Sleep,
     ImageGeneration,
-    CollabAgentToolCall,
-    SubAgentActivity,
-    ContextCompaction,
-    DynamicToolCall,
-    Unknown,
+    Collaboration,
 }
 
-impl ItemType {
-    fn decode(value: &Value) -> ItemType {
-        match value["type"].as_str() {
-            Some("reasoning") => ItemType::Reasoning,
-            Some("agentMessage") => ItemType::AgentMessage,
-            Some("commandExecution") => ItemType::CommandExecution,
-            Some("fileChange") => ItemType::FileChange,
-            Some("mcpToolCall") if value["server"].as_str() == Some("build") => {
-                ItemType::BuildMcpToolCall
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemReportKind {
+    Reasoning,
+    Narration,
+    SubAgentActivity,
+    ContextCompaction,
+    EnteredReviewMode,
+    ExitedReviewMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuppressionReason {
+    UserMessageEcho,
+    HookPrompt,
+    FunctionCallOutput,
+    ExperimentalPlan,
+    BuildMcp,
+    DeferredDynamicTool,
+    UnknownItem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemClassification {
+    TrackedTool { summary: ToolSummaryCategory },
+    Emitting { report: ItemReportKind },
+    Suppressed { reason: SuppressionReason },
+}
+
+const ITEM_CLASSIFICATIONS: &[(&str, ItemClassification)] = &[
+    (
+        "agentMessage",
+        ItemClassification::Emitting {
+            report: ItemReportKind::Narration,
+        },
+    ),
+    (
+        "reasoning",
+        ItemClassification::Emitting {
+            report: ItemReportKind::Reasoning,
+        },
+    ),
+    (
+        "commandExecution",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Command,
+        },
+    ),
+    (
+        "fileChange",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::FileChange,
+        },
+    ),
+    (
+        "collabAgentToolCall",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Collaboration,
+        },
+    ),
+    (
+        "subAgentActivity",
+        ItemClassification::Emitting {
+            report: ItemReportKind::SubAgentActivity,
+        },
+    ),
+    (
+        "webSearch",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::WebSearch,
+        },
+    ),
+    (
+        "imageView",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::ImageView,
+        },
+    ),
+    (
+        "sleep",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Sleep,
+        },
+    ),
+    (
+        "imageGeneration",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::ImageGeneration,
+        },
+    ),
+    (
+        "contextCompaction",
+        ItemClassification::Emitting {
+            report: ItemReportKind::ContextCompaction,
+        },
+    ),
+    (
+        "userMessage",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::UserMessageEcho,
+        },
+    ),
+    (
+        "hookPrompt",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::HookPrompt,
+        },
+    ),
+    (
+        "functionCallOutput",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::FunctionCallOutput,
+        },
+    ),
+    (
+        "plan",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::ExperimentalPlan,
+        },
+    ),
+    (
+        "enteredReviewMode",
+        ItemClassification::Emitting {
+            report: ItemReportKind::EnteredReviewMode,
+        },
+    ),
+    (
+        "exitedReviewMode",
+        ItemClassification::Emitting {
+            report: ItemReportKind::ExitedReviewMode,
+        },
+    ),
+    (
+        "dynamicToolCall",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::DeferredDynamicTool,
+        },
+    ),
+];
+
+pub fn classify_item(item: &Value) -> ItemClassification {
+    let item_type = item["type"].as_str().unwrap_or_default();
+    if item_type == "mcpToolCall" {
+        return if item["server"].as_str() == Some("build") {
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::BuildMcp,
             }
-            Some("mcpToolCall") => ItemType::McpToolCall,
-            Some("webSearch") => ItemType::WebSearch,
-            Some("imageView") => ItemType::ImageView,
-            Some("sleep") => ItemType::Sleep,
-            Some("imageGeneration") => ItemType::ImageGeneration,
-            Some("collabAgentToolCall") => ItemType::CollabAgentToolCall,
-            Some("subAgentActivity") => ItemType::SubAgentActivity,
-            Some("contextCompaction") => ItemType::ContextCompaction,
-            Some("dynamicToolCall") => ItemType::DynamicToolCall,
-            _ => ItemType::Unknown,
-        }
+        } else {
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Mcp,
+            }
+        };
     }
+    ITEM_CLASSIFICATIONS
+        .iter()
+        .find_map(|(known, classification)| (*known == item_type).then_some(*classification))
+        .unwrap_or(ItemClassification::Suppressed {
+            reason: SuppressionReason::UnknownItem,
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -370,7 +512,7 @@ pub struct ItemNotification {
     pub lifecycle: ItemLifecycle,
     pub thread_id: String,
     pub turn_id: String,
-    pub item_type: ItemType,
+    pub classification: ItemClassification,
     pub item: Value,
 }
 
@@ -410,48 +552,258 @@ pub enum ServerNotification {
 
 impl ServerNotification {
     pub fn decode(method: &str, params: Value) -> Result<ServerNotification, String> {
+        let method = NotificationMethod::from_name(method);
         match method {
-            "thread/started" => Ok(ServerNotification::ThreadStarted {
+            NotificationMethod::ThreadStarted => Ok(ServerNotification::ThreadStarted {
                 thread_id: required_string(&params, "/thread/id", "thread/started thread id")?,
                 parent_thread_id: params
                     .pointer("/thread/parentThreadId")
                     .and_then(Value::as_str)
                     .map(str::to_string),
             }),
-            "turn/started" => Ok(ServerNotification::TurnStarted {
+            NotificationMethod::TurnStarted => Ok(ServerNotification::TurnStarted {
                 thread_id: required_string(&params, "/threadId", "turn/started thread id")?,
                 turn_id: required_string(&params, "/turn/id", "turn/started turn id")?,
             }),
-            "turn/completed" => Ok(ServerNotification::TurnCompleted {
+            NotificationMethod::TurnCompleted => Ok(ServerNotification::TurnCompleted {
                 thread_id: required_string(&params, "/threadId", "turn/completed thread id")?,
                 completion: TurnCompletion::from_params(&params)?,
             }),
-            "item/started" | "item/completed" => {
+            NotificationMethod::ItemStarted | NotificationMethod::ItemCompleted => {
                 let item = params
                     .get("item")
                     .filter(|item| item.is_object())
                     .cloned()
-                    .ok_or_else(|| format!("{method} item is missing"))?;
+                    .ok_or_else(|| format!("{} item is missing", method.name()))?;
                 Ok(ServerNotification::Item(ItemNotification {
-                    lifecycle: if method == "item/started" {
+                    lifecycle: if method == NotificationMethod::ItemStarted {
                         ItemLifecycle::Started
                     } else {
                         ItemLifecycle::Completed
                     },
                     thread_id: required_string(&params, "/threadId", "item thread id")?,
                     turn_id: required_string(&params, "/turnId", "item turn id")?,
-                    item_type: ItemType::decode(&item),
+                    classification: classify_item(&item),
                     item,
                 }))
             }
-            "error" => decode(&params).map(ServerNotification::Error),
-            "item/agentMessage/delta"
-            | "item/commandExecution/outputDelta"
-            | "item/fileChange/outputDelta"
-            | "item/reasoning/summaryTextDelta"
-            | "item/reasoning/textDelta" => Ok(ServerNotification::Delta),
-            _ => Ok(ServerNotification::Unknown),
+            NotificationMethod::Error => decode(&params).map(ServerNotification::Error),
+            NotificationMethod::Delta => Ok(ServerNotification::Delta),
+            NotificationMethod::Unknown => Ok(ServerNotification::Unknown),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotificationMethod {
+    ThreadStarted,
+    TurnStarted,
+    TurnCompleted,
+    ItemStarted,
+    ItemCompleted,
+    Error,
+    Delta,
+    Unknown,
+}
+
+const NOTIFICATION_METHODS: &[(&str, NotificationMethod)] = &[
+    ("thread/started", NotificationMethod::ThreadStarted),
+    ("turn/started", NotificationMethod::TurnStarted),
+    ("turn/completed", NotificationMethod::TurnCompleted),
+    ("item/started", NotificationMethod::ItemStarted),
+    ("item/completed", NotificationMethod::ItemCompleted),
+    ("error", NotificationMethod::Error),
+    ("item/agentMessage/delta", NotificationMethod::Delta),
+    (
+        "item/commandExecution/outputDelta",
+        NotificationMethod::Delta,
+    ),
+    ("item/fileChange/outputDelta", NotificationMethod::Delta),
+    ("item/reasoning/summaryTextDelta", NotificationMethod::Delta),
+    ("item/reasoning/textDelta", NotificationMethod::Delta),
+];
+
+impl NotificationMethod {
+    fn from_name(method: &str) -> NotificationMethod {
+        NOTIFICATION_METHODS
+            .iter()
+            .find_map(|(known, kind)| (*known == method).then_some(*kind))
+            .unwrap_or(NotificationMethod::Unknown)
+    }
+
+    fn name(self) -> &'static str {
+        NOTIFICATION_METHODS
+            .iter()
+            .find_map(|(name, kind)| (*kind == self).then_some(*name))
+            .unwrap_or("unknown notification")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerRequestMethod {
+    CommandApproval,
+    FileApproval,
+    LegacyCommandApproval,
+    LegacyPatchApproval,
+    Elicitation,
+    UserInput,
+    Permissions,
+    DynamicTool,
+    RefreshAuth,
+    Attestation,
+    CurrentTime,
+}
+
+const SERVER_REQUEST_METHODS: &[(&str, ServerRequestMethod)] = &[
+    (
+        "item/commandExecution/requestApproval",
+        ServerRequestMethod::CommandApproval,
+    ),
+    (
+        "item/fileChange/requestApproval",
+        ServerRequestMethod::FileApproval,
+    ),
+    (
+        "execCommandApproval",
+        ServerRequestMethod::LegacyCommandApproval,
+    ),
+    (
+        "applyPatchApproval",
+        ServerRequestMethod::LegacyPatchApproval,
+    ),
+    (
+        "mcpServer/elicitation/request",
+        ServerRequestMethod::Elicitation,
+    ),
+    ("item/tool/requestUserInput", ServerRequestMethod::UserInput),
+    (
+        "item/permissions/requestApproval",
+        ServerRequestMethod::Permissions,
+    ),
+    ("item/tool/call", ServerRequestMethod::DynamicTool),
+    (
+        "account/chatgptAuthTokens/refresh",
+        ServerRequestMethod::RefreshAuth,
+    ),
+    ("attestation/generate", ServerRequestMethod::Attestation),
+    ("currentTime/read", ServerRequestMethod::CurrentTime),
+];
+
+impl ServerRequestMethod {
+    pub fn from_name(method: &str) -> Option<ServerRequestMethod> {
+        SERVER_REQUEST_METHODS
+            .iter()
+            .find_map(|(known, kind)| (*known == method).then_some(*kind))
+    }
+
+    fn routing_pointer(self) -> Option<&'static str> {
+        match self {
+            ServerRequestMethod::LegacyCommandApproval
+            | ServerRequestMethod::LegacyPatchApproval => Some("/conversationId"),
+            ServerRequestMethod::RefreshAuth | ServerRequestMethod::Attestation => None,
+            _ => Some("/threadId"),
+        }
+    }
+
+    fn build(
+        self,
+        id: Value,
+        params: &Value,
+        route: ParentThreadRoute,
+    ) -> Result<ServerRequest, String> {
+        if route != ParentThreadRoute::Child {
+            self.decode_params(params)?;
+        }
+        Ok(match self {
+            ServerRequestMethod::CommandApproval => ServerRequest::CommandApproval { id },
+            ServerRequestMethod::FileApproval => ServerRequest::FileApproval { id },
+            ServerRequestMethod::LegacyCommandApproval => {
+                ServerRequest::LegacyCommandApproval { id }
+            }
+            ServerRequestMethod::LegacyPatchApproval => ServerRequest::LegacyPatchApproval { id },
+            ServerRequestMethod::Elicitation => ServerRequest::Elicitation { id },
+            ServerRequestMethod::UserInput => ServerRequest::UserInput { id },
+            ServerRequestMethod::Permissions => ServerRequest::Permissions { id },
+            ServerRequestMethod::DynamicTool => ServerRequest::DynamicTool { id },
+            ServerRequestMethod::RefreshAuth => ServerRequest::RefreshAuth { id },
+            ServerRequestMethod::Attestation => ServerRequest::Attestation { id },
+            ServerRequestMethod::CurrentTime => ServerRequest::CurrentTime { id },
+        })
+    }
+
+    fn decode_params(self, params: &Value) -> Result<(), String> {
+        if !params.is_object() {
+            return Err(format!("{} params are not an object", self.name()));
+        }
+        match self.routing_pointer() {
+            Some(pointer) => {
+                required_string(params, pointer, &format!("{} routing id", self.name())).map(|_| ())
+            }
+            None => Ok(()),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        SERVER_REQUEST_METHODS
+            .iter()
+            .find_map(|(name, kind)| (*kind == self).then_some(*name))
+            .expect("every typed server request method has a wire name")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParentThreadRoute {
+    Parent,
+    Child,
+    Unscoped,
+}
+
+pub struct ParentThreadFilter;
+
+impl ParentThreadFilter {
+    pub fn notification(
+        method: &str,
+        params: &Value,
+        expected_parent: Option<&str>,
+    ) -> ParentThreadRoute {
+        if method == "thread/started" {
+            if params
+                .pointer("/thread/parentThreadId")
+                .is_some_and(|parent| !parent.is_null())
+            {
+                return ParentThreadRoute::Child;
+            }
+            return route_id(
+                params.pointer("/thread/id").and_then(Value::as_str),
+                expected_parent,
+            );
+        }
+        route_id(
+            params.pointer("/threadId").and_then(Value::as_str),
+            expected_parent,
+        )
+    }
+
+    pub fn server_request(
+        method: ServerRequestMethod,
+        params: &Value,
+        expected_parent: Option<&str>,
+    ) -> ParentThreadRoute {
+        let Some(pointer) = method.routing_pointer() else {
+            return ParentThreadRoute::Unscoped;
+        };
+        route_id(
+            params.pointer(pointer).and_then(Value::as_str),
+            expected_parent,
+        )
+    }
+}
+
+fn route_id(candidate: Option<&str>, expected_parent: Option<&str>) -> ParentThreadRoute {
+    match (candidate, expected_parent) {
+        (Some(candidate), Some(expected)) if candidate != expected => ParentThreadRoute::Child,
+        (Some(_), _) => ParentThreadRoute::Parent,
+        (None, _) => ParentThreadRoute::Unscoped,
     }
 }
 
@@ -471,34 +823,31 @@ pub enum ServerRequest {
     Unknown { id: Value, method: String },
 }
 
-impl ServerRequest {
-    pub fn decode(id: Value, method: &str, params: Value) -> Result<ServerRequest, String> {
-        if !params.is_object() {
-            return Err(format!("{method} params are not an object"));
-        }
-        Ok(match method {
-            "item/commandExecution/requestApproval" => ServerRequest::CommandApproval { id },
-            "item/fileChange/requestApproval" => ServerRequest::FileApproval { id },
-            "execCommandApproval" => ServerRequest::LegacyCommandApproval { id },
-            "applyPatchApproval" => ServerRequest::LegacyPatchApproval { id },
-            "mcpServer/elicitation/request" => ServerRequest::Elicitation { id },
-            "item/tool/requestUserInput" => ServerRequest::UserInput { id },
-            "item/permissions/requestApproval" => ServerRequest::Permissions { id },
-            "item/tool/call" => ServerRequest::DynamicTool { id },
-            "account/chatgptAuthTokens/refresh" => ServerRequest::RefreshAuth { id },
-            "attestation/generate" => ServerRequest::Attestation { id },
-            "currentTime/read" => ServerRequest::CurrentTime { id },
-            _ => ServerRequest::Unknown {
-                id,
-                method: method.to_string(),
-            },
-        })
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoutedServerRequest {
+    pub request: ServerRequest,
+    pub route: ParentThreadRoute,
+}
 
-    #[cfg(test)]
-    pub fn new(id: Value, method: impl Into<String>, params: Value) -> ServerRequest {
-        let method = method.into();
-        ServerRequest::decode(id, &method, params).expect("test request params are objects")
+impl RoutedServerRequest {
+    pub fn decode(
+        inbound: &InboundServerRequest,
+        expected_parent: Option<&str>,
+    ) -> Result<RoutedServerRequest, String> {
+        let Some(method) = ServerRequestMethod::from_name(&inbound.method) else {
+            return Ok(RoutedServerRequest {
+                request: ServerRequest::Unknown {
+                    id: inbound.id.clone(),
+                    method: inbound.method.clone(),
+                },
+                route: ParentThreadRoute::Unscoped,
+            });
+        };
+        let route = ParentThreadFilter::server_request(method, &inbound.params, expected_parent);
+        Ok(RoutedServerRequest {
+            request: method.build(inbound.id.clone(), &inbound.params, route)?,
+            route,
+        })
     }
 }
 

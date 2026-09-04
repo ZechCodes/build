@@ -1,4 +1,4 @@
-use super::protocol::{ServerRequest, ServerResponse};
+use super::protocol::{ParentThreadRoute, ServerRequest, ServerResponse};
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity};
 
@@ -19,7 +19,23 @@ pub struct ServerRequestDecision {
 pub struct ServerRequestPolicy;
 
 impl ServerRequestPolicy {
-    pub fn decide(request: ServerRequest, current_unix_seconds: i64) -> ServerRequestDecision {
+    pub fn decide(
+        request: ServerRequest,
+        route: ParentThreadRoute,
+        current_unix_seconds: i64,
+    ) -> ServerRequestDecision {
+        let decision = ServerRequestPolicy::parent_decision(request, current_unix_seconds);
+        match route {
+            ParentThreadRoute::Child => ServerRequestDecision {
+                response: decision.response,
+                after_response: AfterResponse::Continue,
+                report: None,
+            },
+            ParentThreadRoute::Parent | ParentThreadRoute::Unscoped => decision,
+        }
+    }
+
+    fn parent_decision(request: ServerRequest, current_unix_seconds: i64) -> ServerRequestDecision {
         match request {
             ServerRequest::CommandApproval { id } | ServerRequest::FileApproval { id } => {
                 report_decision(

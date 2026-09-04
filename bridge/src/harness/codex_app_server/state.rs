@@ -1068,15 +1068,19 @@ impl CodexSessionState {
         self.thread_id.clone()
     }
 
+    pub fn expected_parent_thread(&self) -> Option<String> {
+        self.thread_id.clone().or_else(|| match &self.phase {
+            Phase::OpeningThread {
+                observed_id: Some(observed),
+                ..
+            } => Some(observed.clone()),
+            _ => None,
+        })
+    }
+
+    #[cfg(test)]
     pub fn parent_thread_matches(&self, thread_id: &str) -> bool {
-        self.thread_id.as_deref() == Some(thread_id)
-            || matches!(
-                &self.phase,
-                Phase::OpeningThread {
-                    observed_id: Some(observed),
-                    ..
-                } if observed == thread_id
-            )
+        self.expected_parent_thread().as_deref() == Some(thread_id)
     }
 
     pub fn active_model(&self) -> Option<String> {

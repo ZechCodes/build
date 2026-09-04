@@ -10,8 +10,10 @@ use super::connection::{read_jsonl_frame, AppServerConnection};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
-    ClientNotification, ConnectionEvent, ItemType, PendingOperation, RpcError, ServerNotification,
-    ServerRequest, TurnCompletion,
+    classify_item, ClientNotification, ConnectionEvent, InboundServerRequest, ItemClassification,
+    ItemReportKind, ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
+    RpcError, ServerNotification, ServerRequest, SuppressionReason, ToolSummaryCategory,
+    TurnCompletion,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
@@ -128,8 +130,11 @@ fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
 #[test]
 fn correlation_resolves_out_of_order_to_typed_operations() {
     let connection = AppServerConnection::memory(limits());
-    let first = connection.request(PendingOperation::Initialize).unwrap();
-    let second = connection.request(start_thread()).unwrap();
+    connection.request(PendingOperation::Initialize).unwrap();
+    connection.request(start_thread()).unwrap();
+    let [first, second] = connection.pending_ids()[..] else {
+        panic!("two correlated requests are pending");
+    };
 
     let second_event = connection
         .decode(json!({"id":second,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":null,"cwd":"/tmp","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}))
@@ -1229,6 +1234,32 @@ fn reconciliation_timeout_fails_instead_of_guessing() {
         .is_err());
 }
 
+fn routed_request(id: Value, method: &str, params: Value) -> RoutedServerRequest {
+    RoutedServerRequest::decode(
+        &InboundServerRequest {
+            id,
+            method: method.to_string(),
+            params,
+        },
+        Some("thread-parent"),
+    )
+    .expect("a well formed server request routes")
+}
+
+fn parent_decision(
+    id: Value,
+    method: &str,
+    current_unix_seconds: i64,
+) -> super::policy::ServerRequestDecision {
+    let routed = routed_request(
+        id,
+        method,
+        json!({"threadId":"thread-parent","conversationId":"thread-parent"}),
+    );
+    assert_ne!(routed.route, ParentThreadRoute::Child, "{method}");
+    ServerRequestPolicy::decide(routed.request, routed.route, current_unix_seconds)
+}
+
 #[test]
 fn every_server_request_has_a_refusing_or_read_only_policy() {
     let cases = [
@@ -1264,8 +1295,7 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         ),
     ];
     for (method, expected, after_response) in cases {
-        let decision =
-            ServerRequestPolicy::decide(ServerRequest::new(json!(7), method, json!({})), 1234);
+        let decision = parent_decision(json!(7), method, 1234);
         assert_eq!(
             decision.response.to_value(),
             json!({"id":7,"result":expected})
@@ -1287,8 +1317,7 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         "item/permissions/requestApproval",
         "item/tool/call",
     ] {
-        let decision =
-            ServerRequestPolicy::decide(ServerRequest::new(json!(8), method, json!({})), 0);
+        let decision = parent_decision(json!(8), method, 0);
         assert_eq!(decision.response.error_code(), Some(-32601));
         assert_eq!(
             decision.response.to_value(),
@@ -1304,8 +1333,7 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
         "attestation/generate",
         "future/request",
     ] {
-        let decision =
-            ServerRequestPolicy::decide(ServerRequest::new(json!(9), method, json!({})), 0);
+        let decision = parent_decision(json!(9), method, 0);
         assert_eq!(decision.response.error_code(), Some(-32601));
         assert_eq!(
             decision.response.to_value(),
@@ -1320,21 +1348,34 @@ fn every_server_request_has_a_refusing_or_read_only_policy() {
 
 #[test]
 fn server_request_decoder_types_known_requests_and_retains_only_unknown_methods() {
+    let approval = routed_request(
+        json!(1),
+        "item/commandExecution/requestApproval",
+        json!({"threadId":"thread-parent"}),
+    );
+    assert_eq!(approval.route, ParentThreadRoute::Parent);
     assert!(matches!(
-        ServerRequest::decode(
-            json!(1),
-            "item/commandExecution/requestApproval",
-            json!({"threadId":"thread-1"})
-        )
-        .unwrap(),
+        approval.request,
         ServerRequest::CommandApproval { id } if id == json!(1)
     ));
+
+    let unknown = routed_request(json!(2), "future/request", json!({}));
+    assert_eq!(unknown.route, ParentThreadRoute::Unscoped);
     assert!(matches!(
-        ServerRequest::decode(json!(2), "future/request", json!({})).unwrap(),
+        unknown.request,
         ServerRequest::Unknown { id, method }
             if id == json!(2) && method == "future/request"
     ));
-    assert!(ServerRequest::decode(json!(3), "currentTime/read", json!([])).is_err());
+
+    assert!(RoutedServerRequest::decode(
+        &InboundServerRequest {
+            id: json!(3),
+            method: "currentTime/read".to_string(),
+            params: json!([]),
+        },
+        Some("thread-parent"),
+    )
+    .is_err());
 }
 
 #[test]
@@ -1361,6 +1402,327 @@ fn error_notifications_require_the_typed_liveness_shape() {
         json!({"error":{"message":"missing lifecycle fields"}})
     )
     .is_err());
+}
+
+#[test]
+fn unknown_server_requests_ignore_arbitrary_params_before_policy() {
+    for params in [
+        None,
+        Some(json!({"anything":true})),
+        Some(json!([1, 2, 3])),
+        Some(json!("scalar")),
+        Some(json!(null)),
+    ] {
+        let routed = routed_request(json!(44), "future/request", params.unwrap_or(Value::Null));
+        assert_eq!(routed.route, ParentThreadRoute::Unscoped);
+        let decision = ServerRequestPolicy::decide(routed.request, routed.route, 1234);
+        assert_eq!(
+            decision.response.to_value(),
+            json!({"id":44,"error":{"code":-32601,"message":"method not found"}})
+        );
+        assert!(matches!(
+            decision.after_response,
+            AfterResponse::FailSession(_)
+        ));
+    }
+}
+
+#[test]
+fn parent_thread_filter_isolates_every_child_notification_before_decoding() {
+    let child_thread = "thread-child";
+    let cases = [
+        (
+            "thread/started",
+            json!({"thread":{"id":child_thread,"parentThreadId":"thread-parent"}}),
+        ),
+        (
+            "turn/started",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+        (
+            "turn/completed",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+        (
+            "item/started",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+        (
+            "item/completed",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+        (
+            "item/agentMessage/delta",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+        ("error", json!({"threadId":child_thread,"malformed":true})),
+        (
+            "future/notification",
+            json!({"threadId":child_thread,"malformed":true}),
+        ),
+    ];
+    for (method, params) in cases {
+        assert_eq!(
+            ParentThreadFilter::notification(method, &params, Some("thread-parent")),
+            ParentThreadRoute::Child,
+            "{method}"
+        );
+    }
+}
+
+#[test]
+fn every_known_child_thread_request_receives_a_safe_continue_response() {
+    let cases = [
+        (
+            "item/commandExecution/requestApproval",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"result":{"decision":"decline"}}),
+        ),
+        (
+            "item/fileChange/requestApproval",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"result":{"decision":"decline"}}),
+        ),
+        (
+            "execCommandApproval",
+            json!({"conversationId":"thread-child"}),
+            json!({"id":7,"result":{"decision":{"denied":{"rejection":"Build does not approve commands"}}}}),
+        ),
+        (
+            "applyPatchApproval",
+            json!({"conversationId":"thread-child"}),
+            json!({"id":7,"result":{"decision":{"denied":{"rejection":"Build does not approve file changes"}}}}),
+        ),
+        (
+            "mcpServer/elicitation/request",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"result":{"action":"decline"}}),
+        ),
+        (
+            "item/tool/requestUserInput",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
+        ),
+        (
+            "item/permissions/requestApproval",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
+        ),
+        (
+            "item/tool/call",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
+        ),
+        (
+            "currentTime/read",
+            json!({"threadId":"thread-child"}),
+            json!({"id":7,"result":{"currentTimeAt":1234}}),
+        ),
+    ];
+    for (method, params, expected_response) in cases {
+        let routed = routed_request(json!(7), method, params);
+        assert_eq!(routed.route, ParentThreadRoute::Child, "{method}");
+        let decision = ServerRequestPolicy::decide(routed.request, routed.route, 1234);
+        assert_eq!(decision.response.to_value(), expected_response, "{method}");
+        assert_eq!(decision.after_response, AfterResponse::Continue, "{method}");
+        assert!(decision.report.is_none(), "{method}");
+    }
+}
+
+#[test]
+fn child_requests_with_malformed_non_routing_params_still_receive_the_safe_response() {
+    let routed = routed_request(
+        json!(11),
+        "item/commandExecution/requestApproval",
+        json!({"threadId":"thread-child","command":42,"cwd":[]}),
+    );
+    assert_eq!(routed.route, ParentThreadRoute::Child);
+    let decision = ServerRequestPolicy::decide(routed.request, routed.route, 0);
+    assert_eq!(
+        decision.response.to_value(),
+        json!({"id":11,"result":{"decision":"decline"}})
+    );
+    assert_eq!(decision.after_response, AfterResponse::Continue);
+    assert!(decision.report.is_none());
+}
+
+#[test]
+fn unscoped_requests_keep_their_tabled_session_failure_on_every_route() {
+    for method in ["account/chatgptAuthTokens/refresh", "attestation/generate"] {
+        let routed = routed_request(json!(12), method, json!({"threadId":"thread-child"}));
+        assert_eq!(routed.route, ParentThreadRoute::Unscoped, "{method}");
+        let decision = ServerRequestPolicy::decide(routed.request, routed.route, 0);
+        assert!(matches!(
+            decision.after_response,
+            AfterResponse::FailSession(_)
+        ));
+    }
+}
+
+#[test]
+fn every_schema_known_item_has_one_explicit_classification() {
+    let cases = [
+        (
+            json!({"type":"agentMessage"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::Narration,
+            },
+        ),
+        (
+            json!({"type":"reasoning"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::Reasoning,
+            },
+        ),
+        (
+            json!({"type":"commandExecution"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Command,
+            },
+        ),
+        (
+            json!({"type":"fileChange"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::FileChange,
+            },
+        ),
+        (
+            json!({"type":"mcpToolCall","server":"other"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Mcp,
+            },
+        ),
+        (
+            json!({"type":"collabAgentToolCall"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Collaboration,
+            },
+        ),
+        (
+            json!({"type":"subAgentActivity"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::SubAgentActivity,
+            },
+        ),
+        (
+            json!({"type":"webSearch"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::WebSearch,
+            },
+        ),
+        (
+            json!({"type":"imageView"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::ImageView,
+            },
+        ),
+        (
+            json!({"type":"sleep"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Sleep,
+            },
+        ),
+        (
+            json!({"type":"imageGeneration"}),
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::ImageGeneration,
+            },
+        ),
+        (
+            json!({"type":"contextCompaction"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::ContextCompaction,
+            },
+        ),
+        (
+            json!({"type":"userMessage"}),
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::UserMessageEcho,
+            },
+        ),
+        (
+            json!({"type":"hookPrompt"}),
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::HookPrompt,
+            },
+        ),
+        (
+            json!({"type":"functionCallOutput"}),
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::FunctionCallOutput,
+            },
+        ),
+        (
+            json!({"type":"plan"}),
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::ExperimentalPlan,
+            },
+        ),
+        (
+            json!({"type":"enteredReviewMode"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::EnteredReviewMode,
+            },
+        ),
+        (
+            json!({"type":"exitedReviewMode"}),
+            ItemClassification::Emitting {
+                report: ItemReportKind::ExitedReviewMode,
+            },
+        ),
+        (
+            json!({"type":"dynamicToolCall"}),
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::DeferredDynamicTool,
+            },
+        ),
+    ];
+    for (item, expected) in cases {
+        assert_eq!(classify_item(&item), expected, "{item:?}");
+    }
+    assert_eq!(
+        classify_item(&json!({"type":"futureItem"})),
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::UnknownItem,
+        }
+    );
+    assert_eq!(
+        classify_item(&json!({"type":"mcpToolCall","server":"build"})),
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::BuildMcp,
+        }
+    );
+}
+
+#[test]
+fn suppressed_items_need_no_id_and_consume_no_ledgers() {
+    let mut bounded = limits();
+    bounded.open_items = 1;
+    bounded.open_item_bytes = 1;
+    bounded.completed_items = 1;
+    bounded.completed_item_bytes = 1;
+    let mut translator = CodexActivityTranslator::new(bounded);
+    for item in [
+        json!({"type":"mcpToolCall","server":"build"}),
+        json!({"type":"dynamicToolCall"}),
+        json!({"type":"plan"}),
+        json!({"type":"futureItem"}),
+        json!({"type":"userMessage"}),
+        json!({"type":"hookPrompt"}),
+        json!({"type":"functionCallOutput"}),
+    ] {
+        for method in ["item/started", "item/completed"] {
+            assert!(translator
+                .translate(
+                    method,
+                    &json!({"threadId":"thread-1","turnId":"turn-1","item":item})
+                )
+                .unwrap()
+                .is_empty());
+        }
+    }
+    assert_eq!(translator.open_item_count(), 0);
+    assert_eq!(translator.completed_item_count(), 0);
 }
 
 #[test]
@@ -1446,7 +1808,7 @@ fn duplicate_completed_items_emit_once_and_cannot_reopen_tools() {
 }
 
 #[test]
-fn completed_item_deduplication_is_bounded_and_resets_for_a_new_turn() {
+fn completed_item_deduplication_is_bounded_and_only_turn_close_clears_keys() {
     let mut bounded = limits();
     bounded.completed_items = 2;
     bounded.completed_item_bytes = 16;
@@ -1468,9 +1830,13 @@ fn completed_item_deduplication_is_bounded_and_resets_for_a_new_turn() {
             1
         );
     }
-    assert!(translator
-        .translate("item/completed", &completed("turn-1", "c"))
-        .is_err());
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed("turn-1", "c"))
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(translator.completed_item_count(), 2);
     assert_eq!(
         translator
@@ -1479,7 +1845,78 @@ fn completed_item_deduplication_is_bounded_and_resets_for_a_new_turn() {
             .len(),
         1
     );
+    assert_eq!(translator.completed_item_count(), 2);
+    translator.close_turn("turn-1").unwrap();
     assert_eq!(translator.completed_item_count(), 1);
+}
+
+#[test]
+fn completed_item_lru_evicts_non_fatally_and_refreshes_duplicates() {
+    let mut bounded = limits();
+    bounded.completed_items = 2;
+    bounded.completed_item_bytes = 64;
+    let mut translator = CodexActivityTranslator::new(bounded);
+    let completed = |id: &str| {
+        json!({
+            "threadId":"thread-1",
+            "turnId":"turn-1",
+            "item":{"id":id,"type":"agentMessage","text":id}
+        })
+    };
+
+    for id in ["a", "b"] {
+        assert_eq!(
+            translator
+                .translate("item/completed", &completed(id))
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert!(translator
+        .translate("item/completed", &completed("a"))
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed("c"))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        translator
+            .translate("item/completed", &completed("b"))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(translator.completed_item_count(), 2);
+}
+
+#[test]
+fn more_than_256_valid_completions_remain_live_and_turn_close_clears_keys() {
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default());
+    for index in 0..300 {
+        let reports = translator
+            .translate(
+                "item/completed",
+                &json!({
+                    "threadId":"thread-1",
+                    "turnId":"turn-1",
+                    "item":{
+                        "id":format!("message-{index}"),
+                        "type":"agentMessage",
+                        "text":format!("message {index}")
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(reports.len(), 1);
+    }
+    assert_eq!(translator.completed_item_count(), 256);
+    translator.close_turn("turn-1").unwrap();
+    assert_eq!(translator.completed_item_count(), 0);
 }
 
 #[test]
@@ -1547,7 +1984,12 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         panic!("expected a typed parent item");
     };
     assert!(state.parent_thread_matches(&parent_item.thread_id));
-    assert_eq!(parent_item.item_type, ItemType::SubAgentActivity);
+    assert_eq!(
+        parent_item.classification,
+        ItemClassification::Emitting {
+            report: ItemReportKind::SubAgentActivity,
+        }
+    );
     assert!(state
         .transition(
             SessionEvent::TurnStarted(parent_item.turn_id.clone()),
@@ -1658,7 +2100,7 @@ fn open_tools_close_unanswered_and_release_limits() {
     for id in ["a", "b"] {
         translator.translate("item/started", &json!({"threadId":"thread-1","turnId":"turn-1","item":{"id":id,"type":"webSearch","query":"not retained"}})).unwrap();
     }
-    let closed = translator.close_turn("turn-1");
+    let closed = translator.close_turn("turn-1").unwrap();
     assert_eq!(closed.len(), 2);
     assert!(closed.iter().all(|report| matches!(
         report.activity,
@@ -1727,35 +2169,217 @@ fn app_server_spec_reuses_codex_mcp_config_without_experimental_flags() {
         .any(|arg| arg.contains("experimental") || arg.contains("multi_agent")));
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FixtureActivity {
+    Reasoning,
+    Narration,
+    ToolUse(String),
+    ToolResult(String, ToolOutcome),
+}
+
+struct FixtureReplay {
+    activities: Vec<FixtureActivity>,
+    correlated_methods: Vec<&'static str>,
+    completed_turns: Vec<String>,
+    reports: Vec<crate::harness::ActivityReport>,
+}
+
+fn replay_observed_fixture(fixture: &str) -> FixtureReplay {
+    let connection = AppServerConnection::memory(AppServerLimits::default());
+    let mut translator = CodexActivityTranslator::new(AppServerLimits::default());
+    let mut correlated_methods = Vec::new();
+    let mut completed_turns = Vec::new();
+    let mut reports = Vec::new();
+    for line in fixture.lines() {
+        let envelope: Value = serde_json::from_str(line).unwrap();
+        let message = &envelope["message"];
+        if envelope["direction"] == "client" {
+            if message.get("id").is_some() {
+                connection.request(fixture_operation(message)).unwrap();
+            }
+            continue;
+        }
+        let event = connection.decode(message.clone()).unwrap();
+        match event {
+            ConnectionEvent::Response { operation, .. } => {
+                correlated_methods.push(operation.method())
+            }
+            ConnectionEvent::Notification(inbound) => {
+                let notification =
+                    ServerNotification::decode(&inbound.method, inbound.params).unwrap();
+                if let ServerNotification::TurnCompleted { completion, .. } = &notification {
+                    completed_turns.push(completion.turn_id.clone());
+                    reports.extend(translator.close_turn(&completion.turn_id).unwrap());
+                } else {
+                    reports.extend(translator.translate_notification(&notification).unwrap());
+                }
+            }
+            ConnectionEvent::Request(_) => panic!("observed fixture contains no server requests"),
+        }
+    }
+    let activities = reports
+        .iter()
+        .filter_map(|report| match &report.activity {
+            AgentActivity::Reasoning { .. } => Some(FixtureActivity::Reasoning),
+            AgentActivity::Narration { .. } => Some(FixtureActivity::Narration),
+            AgentActivity::ToolUse { call_id, .. } => {
+                Some(FixtureActivity::ToolUse(call_id.clone()))
+            }
+            AgentActivity::ToolResult {
+                call_id, outcome, ..
+            } => Some(FixtureActivity::ToolResult(call_id.clone(), *outcome)),
+            AgentActivity::TaskUpdate { .. } => None,
+        })
+        .collect();
+    FixtureReplay {
+        activities,
+        correlated_methods,
+        completed_turns,
+        reports,
+    }
+}
+
+fn fixture_operation(message: &Value) -> PendingOperation {
+    let params = &message["params"];
+    let optional = |field: &str| params[field].as_str().map(str::to_string);
+    match message["method"].as_str().unwrap() {
+        "initialize" => PendingOperation::Initialize,
+        "thread/start" => PendingOperation::StartThread {
+            cwd: params["cwd"].as_str().unwrap().to_string(),
+            model: optional("model"),
+        },
+        "thread/resume" => PendingOperation::ResumeThread {
+            thread_id: params["threadId"].as_str().unwrap().to_string(),
+            cwd: params["cwd"].as_str().unwrap().to_string(),
+            model: optional("model"),
+        },
+        "turn/start" => PendingOperation::StartTurn {
+            thread_id: params["threadId"].as_str().unwrap().to_string(),
+            input: params["input"][0]["text"].as_str().unwrap().to_string(),
+            model: optional("model"),
+            effort: optional("effort"),
+        },
+        "turn/steer" => PendingOperation::SteerTurn {
+            thread_id: params["threadId"].as_str().unwrap().to_string(),
+            turn_id: params["expectedTurnId"].as_str().unwrap().to_string(),
+            input: params["input"][0]["text"].as_str().unwrap().to_string(),
+        },
+        "turn/interrupt" => PendingOperation::InterruptTurn {
+            thread_id: params["threadId"].as_str().unwrap().to_string(),
+            turn_id: params["turnId"].as_str().unwrap().to_string(),
+        },
+        method => panic!("unsupported fixture client method {method}"),
+    }
+}
+
 #[test]
-fn synthetic_fixture_replays_all_required_item_kinds() {
+fn observed_start_fixture_replays_as_one_correlated_stream() {
+    let replay = replay_observed_fixture(include_str!(
+        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
+    ));
+    assert_eq!(
+        replay.correlated_methods,
+        [
+            "initialize",
+            "thread/start",
+            "turn/start",
+            "thread/resume",
+            "turn/start",
+            "turn/steer",
+            "turn/interrupt"
+        ]
+    );
+    assert_eq!(replay.completed_turns, ["turn-1", "turn-2"]);
+    assert_eq!(
+        replay.activities,
+        [
+            FixtureActivity::Reasoning,
+            FixtureActivity::Narration,
+            FixtureActivity::ToolUse("command-1".to_string()),
+            FixtureActivity::ToolResult("command-1".to_string(), ToolOutcome::Ok),
+            FixtureActivity::Narration,
+            FixtureActivity::Narration,
+            FixtureActivity::ToolUse("command-2".to_string()),
+            FixtureActivity::ToolResult("command-2".to_string(), ToolOutcome::Unanswered),
+        ]
+    );
+}
+
+#[test]
+fn observed_resume_fixture_replays_as_one_correlated_stream() {
+    let replay = replay_observed_fixture(include_str!(
+        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
+    ));
+    assert_eq!(
+        replay.correlated_methods,
+        ["initialize", "thread/resume", "turn/start"]
+    );
+    assert_eq!(replay.completed_turns, ["turn-3"]);
+    assert_eq!(
+        replay.activities,
+        [
+            FixtureActivity::Reasoning,
+            FixtureActivity::Narration,
+            FixtureActivity::ToolUse("file-change-1".to_string()),
+            FixtureActivity::ToolResult("file-change-1".to_string(), ToolOutcome::Ok),
+            FixtureActivity::ToolUse("command-3".to_string()),
+            FixtureActivity::ToolResult("command-3".to_string(), ToolOutcome::Error),
+            FixtureActivity::Narration,
+        ]
+    );
+}
+
+#[test]
+fn observed_mcp_fixture_suppresses_build_and_pairs_non_build_activity() {
+    let replay = replay_observed_fixture(include_str!(
+        "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"
+    ));
+    assert_eq!(
+        replay.correlated_methods,
+        ["initialize", "thread/start", "turn/start"]
+    );
+    assert_eq!(replay.completed_turns, ["turn-mcp-1"]);
+    assert_eq!(
+        replay.activities,
+        [
+            FixtureActivity::Reasoning,
+            FixtureActivity::ToolUse("mcp-fixture-1".to_string()),
+            FixtureActivity::ToolResult("mcp-fixture-1".to_string(), ToolOutcome::Ok),
+            FixtureActivity::Narration,
+        ]
+    );
+    assert!(!replay.reports.iter().any(|report| match &report.activity {
+        AgentActivity::ToolUse { call_id, .. } | AgentActivity::ToolResult { call_id, .. } =>
+            call_id == "mcp-build-1",
+        _ => false,
+    }));
+}
+
+#[test]
+fn synthetic_retry_and_terminal_errors_emit_separate_reports() {
     let fixture = include_str!(
         "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
     );
     let mut translator = CodexActivityTranslator::new(AppServerLimits::default());
     let reports = fixture
         .lines()
-        .flat_map(|line| {
+        .filter_map(|line| {
             let envelope: Value = serde_json::from_str(line).unwrap();
+            (envelope["method"] == "error").then_some(envelope)
+        })
+        .flat_map(|envelope| {
             translator
                 .translate(envelope["method"].as_str().unwrap(), &envelope["params"])
                 .unwrap()
         })
         .collect::<Vec<_>>();
-    assert!(reports
-        .iter()
-        .any(|report| matches!(report.activity, AgentActivity::Reasoning { .. })));
-    assert!(reports
-        .iter()
-        .any(|report| matches!(report.activity, AgentActivity::Narration { .. })));
-    assert!(reports
-        .iter()
-        .any(|report| matches!(report.activity, AgentActivity::TaskUpdate { .. })));
-    assert!(reports.iter().any(|report| matches!(
-        report.activity,
-        AgentActivity::ToolResult {
-            outcome: ToolOutcome::Error,
-            ..
-        }
-    )));
+    assert_eq!(reports.len(), 2);
+    assert!(matches!(
+        &reports[0].activity,
+        AgentActivity::TaskUpdate { summary } if summary.contains("Temporary")
+    ));
+    assert!(matches!(
+        &reports[1].activity,
+        AgentActivity::TaskUpdate { summary } if summary.contains("Terminal")
+    ));
 }

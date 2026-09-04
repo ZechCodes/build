@@ -3,12 +3,15 @@ use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use super::limits::AppServerLimits;
+use super::session::{TerminalEventSink, TerminalSourceEvent};
 use crate::harness::HarnessError;
 use crate::pty::HarnessSpec;
+
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 pub struct ConnectionPipes {
     pub stdin: ChildStdin,
@@ -16,8 +19,12 @@ pub struct ConnectionPipes {
 }
 
 pub struct AppServerProcess {
+    slot: Arc<ProcessSlot>,
+}
+
+struct ProcessSlot {
     state: Mutex<ProcessState>,
-    stderr: Arc<Mutex<StderrTail>>,
+    reaped: Condvar,
 }
 
 struct ProcessState {
@@ -55,6 +62,7 @@ impl AppServerProcess {
         spec: &HarnessSpec,
         root: PathBuf,
         limits: &AppServerLimits,
+        events: TerminalEventSink,
     ) -> Result<(AppServerProcess, ConnectionPipes), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
         command.args(&spec.args).current_dir(root);
@@ -81,95 +89,64 @@ impl AppServerProcess {
             .stderr
             .take()
             .ok_or_else(|| HarnessError::Session("Codex stderr was not piped".to_string()))?;
-        let retained = Arc::new(Mutex::new(StderrTail::new(
-            limits.stderr_line_bytes,
-            limits.stderr_total_bytes,
-        )));
-        drain_stderr(stderr, Arc::clone(&retained));
-        Ok((
-            AppServerProcess::new(Box::new(child), retained),
-            ConnectionPipes { stdin, stdout },
-        ))
-    }
-
-    fn new(child: Box<dyn ChildControl>, stderr: Arc<Mutex<StderrTail>>) -> AppServerProcess {
-        AppServerProcess {
-            state: Mutex::new(ProcessState {
-                child: Some(child),
-                exit_code: None,
-                reaped: false,
-                kill_sent: false,
-                poll_failed: false,
-                process_error: None,
-                shutdown_error: None,
-            }),
+        drain_stderr(
             stderr,
+            StderrTail::new(limits.stderr_line_bytes, limits.stderr_total_bytes),
+            Arc::clone(&events),
+        );
+        let process = AppServerProcess::new(Box::new(child));
+        process.start_monitor(events);
+        Ok((process, ConnectionPipes { stdin, stdout }))
+    }
+
+    fn new(child: Box<dyn ChildControl>) -> AppServerProcess {
+        AppServerProcess {
+            slot: Arc::new(ProcessSlot {
+                state: Mutex::new(ProcessState {
+                    child: Some(child),
+                    exit_code: None,
+                    reaped: false,
+                    kill_sent: false,
+                    poll_failed: false,
+                    process_error: None,
+                    shutdown_error: None,
+                }),
+                reaped: Condvar::new(),
+            }),
         }
     }
 
-    pub fn exit_code(&self) -> Option<i32> {
-        let mut state = self.state.lock().unwrap();
-        if state.exit_code.is_some() || state.reaped || state.poll_failed {
-            return state.exit_code;
-        }
-        let Some(child) = state.child.as_mut() else {
-            return state.exit_code;
-        };
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let code = observed_code(status);
-                state.exit_code = Some(code);
-                state.reaped = true;
-                state.child = None;
-                Some(code)
-            }
-            Ok(None) => None,
-            Err(error) => {
-                state.poll_failed = true;
-                record_process_error(&mut state, format!("Codex try_wait failed: {error}"));
-                None
-            }
-        }
-    }
-
-    pub fn liveness_failed(&self) -> bool {
-        self.state.lock().unwrap().process_error.is_some()
-            || self.stderr.lock().unwrap().read_error.is_some()
+    pub fn start_monitor(&self, events: TerminalEventSink) {
+        let slot = Arc::clone(&self.slot);
+        std::thread::spawn(move || {
+            let settled = loop {
+                if let Some(settled) = poll_settlement(&slot) {
+                    break settled;
+                }
+                std::thread::sleep(EXIT_POLL_INTERVAL);
+            };
+            events(settled);
+        });
     }
 
     pub fn exited_within(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if self.exit_code().is_some() || self.liveness_failed() {
-                return true;
-            }
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    pub fn stderr_epitaph(&self) -> Option<String> {
-        self.stderr.lock().unwrap().epitaph()
-    }
-
-    pub fn error_epitaph(&self) -> Option<String> {
-        self.state
-            .lock()
-            .unwrap()
-            .process_error
-            .clone()
-            .or_else(|| self.stderr.lock().unwrap().read_error.clone())
+        let state = self.slot.state.lock().unwrap();
+        let (state, _) = self
+            .slot
+            .reaped
+            .wait_timeout_while(state, timeout, |state| !state.reaped)
+            .unwrap();
+        state.reaped
     }
 
     pub fn shutdown(&self) -> Result<(), HarnessError> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.slot.state.lock().unwrap();
         if state.reaped {
             return cached_shutdown_result(&state);
         }
         let Some(mut child) = state.child.take() else {
             state.reaped = true;
+            self.slot.reaped.notify_all();
             return cached_shutdown_result(&state);
         };
 
@@ -187,6 +164,7 @@ impl AppServerProcess {
         if let Some(status) = already_exited {
             state.exit_code = Some(observed_code(status));
             state.reaped = true;
+            self.slot.reaped.notify_all();
             return cached_shutdown_result(&state);
         }
 
@@ -211,7 +189,38 @@ impl AppServerProcess {
             }
         }
         state.reaped = true;
+        self.slot.reaped.notify_all();
         cached_shutdown_result(&state)
+    }
+}
+
+fn poll_settlement(slot: &ProcessSlot) -> Option<TerminalSourceEvent> {
+    let mut state = slot.state.lock().unwrap();
+    if state.reaped || state.poll_failed {
+        return Some(settled_event(&state));
+    }
+    match state.child.as_mut().map(|child| child.try_wait()) {
+        Some(Ok(None)) => None,
+        Some(Ok(Some(status))) => {
+            state.exit_code = Some(observed_code(status));
+            state.reaped = true;
+            state.child = None;
+            slot.reaped.notify_all();
+            Some(settled_event(&state))
+        }
+        Some(Err(error)) => {
+            state.poll_failed = true;
+            record_process_error(&mut state, format!("Codex try_wait failed: {error}"));
+            Some(settled_event(&state))
+        }
+        None => Some(settled_event(&state)),
+    }
+}
+
+fn settled_event(state: &ProcessState) -> TerminalSourceEvent {
+    TerminalSourceEvent::ProcessSettled {
+        exit_code: state.exit_code,
+        monitor_error: state.process_error.clone(),
     }
 }
 
@@ -239,30 +248,29 @@ fn observed_code(status: ExitStatus) -> i32 {
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
 }
 
-fn drain_stderr(reader: impl Read + Send + 'static, retained: Arc<Mutex<StderrTail>>) {
-    std::thread::spawn(move || drain_stderr_reader(reader, retained));
+fn drain_stderr(reader: impl Read + Send + 'static, tail: StderrTail, events: TerminalEventSink) {
+    std::thread::spawn(move || events(drain_stderr_reader(reader, tail)));
 }
 
-fn drain_stderr_reader(mut reader: impl Read, retained: Arc<Mutex<StderrTail>>) {
+fn drain_stderr_reader(mut reader: impl Read, mut tail: StderrTail) -> TerminalSourceEvent {
     let mut buffer = [0_u8; 4096];
-    loop {
+    let drainer_error = loop {
         match reader.read(&mut buffer) {
             Ok(0) => {
-                retained.lock().unwrap().finish_line();
-                return;
+                tail.finish_line();
+                break None;
             }
             Ok(read) => {
-                let mut tail = retained.lock().unwrap();
                 for byte in &buffer[..read] {
                     tail.push(*byte);
                 }
             }
-            Err(error) => {
-                retained.lock().unwrap().read_error =
-                    Some(format!("Codex stderr read failed: {error}"));
-                return;
-            }
+            Err(error) => break Some(format!("Codex stderr read failed: {error}")),
         }
+    };
+    TerminalSourceEvent::StderrSettled {
+        retained_tail: tail.epitaph(),
+        drainer_error,
     }
 }
 
@@ -271,7 +279,6 @@ struct StderrTail {
     total_limit: usize,
     current: Vec<u8>,
     retained: VecDeque<u8>,
-    read_error: Option<String>,
 }
 
 impl StderrTail {
@@ -281,7 +288,6 @@ impl StderrTail {
             total_limit,
             current: Vec::with_capacity(line_limit),
             retained: VecDeque::with_capacity(total_limit),
-            read_error: None,
         }
     }
 
@@ -330,9 +336,10 @@ impl StderrTail {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Error;
+    use std::io::{Cursor, Error};
     use std::os::unix::process::ExitStatusExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
 
     use super::*;
 
@@ -349,33 +356,44 @@ mod tests {
     }
 
     #[test]
-    fn shutdown_is_idempotent_and_reaps_the_child() {
+    fn shutdown_is_idempotent_and_reaps_the_child_exactly_once() {
         let root = tempfile::tempdir().unwrap();
         let spec = HarnessSpec::new("sh").arg("-c").arg("cat >/dev/null");
+        let (sender, receiver) = mpsc::channel();
+        let events: TerminalEventSink = Arc::new(move |event| {
+            let _ = sender.send(event);
+        });
         let (process, pipes) = AppServerProcess::spawn(
             &spec,
             root.path().to_path_buf(),
             &AppServerLimits::default(),
+            events,
         )
         .unwrap();
         drop(pipes);
         process.shutdown().unwrap();
-        let first = process.exit_code();
         process.shutdown().unwrap();
-        assert_eq!(process.exit_code(), first);
-        assert!(first.is_some());
+        assert!(process.exited_within(Duration::ZERO));
+        let mut process_settlements = 0;
+        while let Ok(event) = receiver.recv_timeout(Duration::from_secs(2)) {
+            if matches!(event, TerminalSourceEvent::ProcessSettled { .. }) {
+                process_settlements += 1;
+                break;
+            }
+        }
+        assert_eq!(process_settlements, 1);
     }
 
     #[test]
-    fn concurrent_status_and_shutdown_kill_once_and_reap_once() {
+    fn concurrent_shutdowns_kill_once_and_reap_once() {
         let calls = Arc::new(FakeCalls::default());
         let process = Arc::new(fake_process(FakeChild::running(Arc::clone(&calls))));
-        let status_process = Arc::clone(&process);
-        let status = std::thread::spawn(move || status_process.exit_code());
-        let end_process = Arc::clone(&process);
-        let end = std::thread::spawn(move || end_process.shutdown());
-        assert!(matches!(status.join().unwrap(), None | Some(0)));
-        end.join().unwrap().unwrap();
+        let first_process = Arc::clone(&process);
+        let first = std::thread::spawn(move || first_process.shutdown());
+        let second_process = Arc::clone(&process);
+        let second = std::thread::spawn(move || second_process.shutdown());
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
         process.shutdown().unwrap();
         assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
         assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
@@ -390,37 +408,67 @@ mod tests {
     }
 
     #[test]
-    fn try_wait_and_stderr_read_errors_are_retained_exactly() {
+    fn process_monitor_reports_try_wait_failure_without_status_polling() {
         let calls = Arc::new(FakeCalls::default());
         let process = fake_process(FakeChild::try_wait_error(Arc::clone(&calls)));
-        assert_eq!(process.exit_code(), None);
-        assert_eq!(
-            process.error_epitaph().as_deref(),
-            Some("Codex try_wait failed: exact poll error")
-        );
-        assert!(process.exited_within(Duration::ZERO));
+        let (sender, receiver) = mpsc::channel();
+        let events: TerminalEventSink = Arc::new(move |event| {
+            let _ = sender.send(event);
+        });
+
+        process.start_monitor(events);
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_secs(1)).unwrap(),
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: None,
+                monitor_error: Some(error),
+            } if error == "Codex try_wait failed: exact poll error"
+        ));
+        assert!(calls.polls.load(Ordering::SeqCst) > 0);
         assert!(process.shutdown().is_err());
         assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
         assert_eq!(calls.waits.load(Ordering::SeqCst), 1);
+    }
 
+    #[test]
+    fn reap_lag_is_the_only_fact_a_caller_can_read_from_the_process() {
+        let calls = Arc::new(FakeCalls::default());
+        let process = fake_process(FakeChild::running(Arc::clone(&calls)));
+
+        assert!(!process.exited_within(Duration::from_millis(10)));
+        assert_eq!(calls.polls.load(Ordering::SeqCst), 0);
+        process.shutdown().unwrap();
+        assert!(process.exited_within(Duration::ZERO));
+    }
+
+    #[test]
+    fn stderr_drainer_settles_with_its_read_failure() {
         struct FailedReader;
         impl Read for FailedReader {
             fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
                 Err(Error::other("exact drain error"))
             }
         }
-        let retained = Arc::new(Mutex::new(StderrTail::new(16, 32)));
-        drain_stderr_reader(FailedReader, Arc::clone(&retained));
-        assert_eq!(
-            retained.lock().unwrap().read_error.as_deref(),
-            Some("Codex stderr read failed: exact drain error")
-        );
 
-        let process = AppServerProcess::new(
-            Box::new(FakeChild::running(Arc::new(FakeCalls::default()))),
-            retained,
-        );
-        assert!(process.liveness_failed());
+        assert!(matches!(
+            drain_stderr_reader(FailedReader, StderrTail::new(16, 32)),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: None,
+                drainer_error: Some(error),
+            } if error == "Codex stderr read failed: exact drain error"
+        ));
+    }
+
+    #[test]
+    fn stderr_drainer_settles_with_the_retained_tail() {
+        assert!(matches!(
+            drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(16, 32)),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some(tail),
+                drainer_error: None,
+            } if tail == "first\nsecond"
+        ));
     }
 
     #[test]
@@ -434,18 +482,16 @@ mod tests {
         assert!(process.shutdown().is_err());
         assert_eq!(calls.kills.load(Ordering::SeqCst), 1);
         assert_eq!(calls.waits.load(Ordering::SeqCst), 2);
-        assert!(process.exit_code().is_some());
+        assert!(process.exited_within(Duration::ZERO));
     }
 
     fn fake_process(child: FakeChild) -> AppServerProcess {
-        AppServerProcess::new(
-            Box::new(child),
-            Arc::new(Mutex::new(StderrTail::new(16, 32))),
-        )
+        AppServerProcess::new(Box::new(child))
     }
 
     #[derive(Default)]
     struct FakeCalls {
+        polls: AtomicUsize,
         kills: AtomicUsize,
         waits: AtomicUsize,
     }
@@ -484,6 +530,7 @@ mod tests {
 
     impl ChildControl for FakeChild {
         fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            self.calls.polls.fetch_add(1, Ordering::SeqCst);
             if self.poll_error {
                 Err(Error::other("exact poll error"))
             } else {

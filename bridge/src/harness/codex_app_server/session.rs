@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -9,7 +10,10 @@ use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection}
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::AppServerProcess;
-use super::protocol::{ClientNotification, ConnectionEvent, ServerNotification};
+use super::protocol::{
+    ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
+    ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
+};
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
 use super::translator::CodexActivityTranslator;
 use crate::harness::{ActivityReport, AgentSession, AgentStatus, HarnessError, Turn};
@@ -17,6 +21,134 @@ use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
 const ACTIVITY_BACKLOG: usize = 1024;
+
+pub type TerminalEventSink = Arc<dyn Fn(TerminalSourceEvent) + Send + Sync>;
+
+/// One settlement of the stdout reader, the process monitor, or the stderr drainer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub enum TerminalSourceEvent {
+    StdoutSettled {
+        reader_error: Option<String>,
+    },
+    ProcessSettled {
+        exit_code: Option<i32>,
+        monitor_error: Option<String>,
+    },
+    StderrSettled {
+        retained_tail: Option<String>,
+        drainer_error: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CoordinatorTerminalEvent {
+    SourceSettled(TerminalSourceEvent),
+    TerminalError(String),
+}
+
+impl CoordinatorTerminalEvent {
+    fn demands_shutdown(&self) -> bool {
+        match self {
+            CoordinatorTerminalEvent::TerminalError(_)
+            | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
+                ..
+            })
+            | CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
+                ..
+            }) => true,
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled {
+                drainer_error,
+                ..
+            }) => drainer_error.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalOutcome {
+    pub exit_code: Option<i32>,
+    pub epitaph: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessOutcome {
+    exit_code: Option<i32>,
+    monitor_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StderrOutcome {
+    retained_tail: Option<String>,
+    drainer_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TerminalSnapshot {
+    stdout_settled: bool,
+    process: Option<ProcessOutcome>,
+    stderr: Option<StderrOutcome>,
+    terminal_error: Option<String>,
+}
+
+impl TerminalSnapshot {
+    pub fn with_terminal_event(&self, event: CoordinatorTerminalEvent) -> TerminalSnapshot {
+        let mut next = self.clone();
+        match event {
+            CoordinatorTerminalEvent::TerminalError(reason) => next.retain_terminal_error(reason),
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
+                reader_error,
+            }) => {
+                if !next.stdout_settled {
+                    next.stdout_settled = true;
+                    if let Some(reason) = reader_error {
+                        next.retain_terminal_error(reason);
+                    }
+                }
+            }
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
+                exit_code,
+                monitor_error,
+            }) => {
+                next.process.get_or_insert(ProcessOutcome {
+                    exit_code,
+                    monitor_error,
+                });
+            }
+            CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StderrSettled {
+                retained_tail,
+                drainer_error,
+            }) => {
+                next.stderr.get_or_insert(StderrOutcome {
+                    retained_tail,
+                    drainer_error,
+                });
+            }
+        }
+        next
+    }
+
+    pub fn outcome(&self) -> Option<TerminalOutcome> {
+        let process = self.process.as_ref()?;
+        let stderr = self.stderr.as_ref()?;
+        if !self.stdout_settled {
+            return None;
+        }
+        Some(TerminalOutcome {
+            exit_code: process.exit_code,
+            epitaph: self
+                .terminal_error
+                .clone()
+                .or_else(|| process.monitor_error.clone())
+                .or_else(|| stderr.drainer_error.clone())
+                .or_else(|| stderr.retained_tail.clone()),
+        })
+    }
+
+    fn retain_terminal_error(&mut self, reason: String) {
+        self.terminal_error.get_or_insert(reason);
+    }
+}
 
 pub struct CodexAppServerSession {
     core: Arc<SessionCore>,
@@ -28,12 +160,13 @@ struct SessionCore {
     state: Mutex<CodexSessionState>,
     translator: Mutex<CodexActivityTranslator>,
     activity: Mutex<Option<broadcast::Sender<ActivityReport>>>,
-    protocol_error: Mutex<Option<String>>,
+    terminal: Mutex<TerminalSnapshot>,
+    published: Mutex<Option<TerminalOutcome>>,
     last_message: Mutex<Instant>,
     started: Instant,
     limits: AppServerLimits,
     binary: PathBuf,
-    ended: AtomicBool,
+    shutting_down: AtomicBool,
     reconciliation_timer: ReconciliationTimer,
 }
 
@@ -46,7 +179,12 @@ impl CodexAppServerSession {
         limits: AppServerLimits,
     ) -> Result<(CodexAppServerSession, broadcast::Receiver<ActivityReport>), HarnessError> {
         let binary = crate::pty::resolve_binary(spec)?;
-        let (process, pipes) = AppServerProcess::spawn(spec, root.clone(), &limits)?;
+        let (terminal_sender, terminal_events) = mpsc::channel();
+        let events: TerminalEventSink = Arc::new(move |event| {
+            let _ = terminal_sender.send(event);
+        });
+        let (process, pipes) =
+            AppServerProcess::spawn(spec, root.clone(), &limits, Arc::clone(&events))?;
         let connection = Arc::new(AppServerConnection::new(
             Box::new(pipes.stdin),
             limits.clone(),
@@ -63,16 +201,18 @@ impl CodexAppServerSession {
             )),
             translator: Mutex::new(CodexActivityTranslator::new(limits.clone())),
             activity: Mutex::new(Some(sender)),
-            protocol_error: Mutex::new(None),
+            terminal: Mutex::new(TerminalSnapshot::default()),
+            published: Mutex::new(None),
             last_message: Mutex::new(Instant::now()),
             started: Instant::now(),
             limits,
             binary,
-            ended: AtomicBool::new(false),
+            shutting_down: AtomicBool::new(false),
             reconciliation_timer: ReconciliationTimer::new(),
         });
         core.reconciliation_timer.start(Arc::downgrade(&core));
-        start_reader(Arc::downgrade(&core), pipes.stdout);
+        start_terminal_pump(Arc::downgrade(&core), terminal_events);
+        start_reader(Arc::downgrade(&core), pipes.stdout, events);
         core.apply_state(SessionEvent::Start)?;
         Ok((CodexAppServerSession { core }, receiver))
     }
@@ -114,12 +254,15 @@ impl SessionCore {
             *state = transition.state;
             (
                 require_version,
-                should_close,
+                should_close.then(|| state.epitaph()),
                 state.reconciliation_pending(),
             )
         };
-        if should_close {
-            self.terminate();
+        if let Some(reason) = should_close {
+            if let Some(reason) = reason {
+                self.record_terminal_error(reason);
+            }
+            self.begin_shutdown();
         }
         if require_version {
             self.apply_state(SessionEvent::VersionEvidence(
@@ -144,7 +287,12 @@ impl SessionCore {
                 .map_err(|error| HarnessError::Session(error.to_string()))?,
             SessionEffect::ThreadReady(_) => {}
             SessionEffect::CloseTurn(turn_id) => {
-                let reports = self.translator.lock().unwrap().close_turn(turn_id);
+                let reports = self
+                    .translator
+                    .lock()
+                    .unwrap()
+                    .close_turn(turn_id)
+                    .map_err(|error| HarnessError::Session(error.to_string()))?;
                 self.report_all(reports);
             }
             SessionEffect::Report(report) => self.report(report.clone()),
@@ -155,109 +303,108 @@ impl SessionCore {
     }
 
     fn handle_connection(self: &Arc<Self>, event: ConnectionEvent) -> Result<(), HarnessError> {
-        *self.last_message.lock().unwrap() = Instant::now();
         match event {
             response @ ConnectionEvent::Response { .. } => {
+                self.accept_parent_message();
                 self.apply_state(SessionEvent::Connection(response))
             }
             ConnectionEvent::Notification(notification) => self.handle_notification(notification),
-            ConnectionEvent::Request(request) => {
-                let decision = ServerRequestPolicy::decide(request, unix_seconds_now());
-                let decision = write_server_response(&self.connection, decision)?;
-                if let Some(report) = decision.report {
-                    self.report(report);
-                }
-                match decision.after_response {
-                    AfterResponse::Continue => Ok(()),
-                    AfterResponse::FailTurn(reason) => {
-                        self.apply_state(SessionEvent::FailTurn(reason))
-                    }
-                    AfterResponse::FailSession(reason) => {
-                        self.apply_state(SessionEvent::FailSession(reason))
-                    }
-                }
-            }
+            ConnectionEvent::Request(request) => self.handle_server_request(request),
         }
     }
 
     fn handle_notification(
         self: &Arc<Self>,
-        notification: ServerNotification,
+        inbound: InboundNotification,
     ) -> Result<(), HarnessError> {
-        match &notification {
-            ServerNotification::ThreadStarted {
-                thread_id,
-                parent_thread_id,
-            } => {
-                let active_parent = self.state.lock().unwrap().session_id();
-                if is_child_thread_notification(
-                    thread_id,
-                    parent_thread_id.as_deref(),
-                    active_parent.as_deref(),
-                ) {
-                    return Ok(());
-                }
-                self.apply_state(SessionEvent::ThreadStarted(thread_id.clone()))
-            }
-            ServerNotification::TurnStarted { thread_id, turn_id } => {
-                if !self.parent_thread_matches(thread_id) {
-                    return Ok(());
-                }
-                self.apply_state(SessionEvent::TurnStarted(turn_id.clone()))
-            }
-            ServerNotification::TurnCompleted {
-                thread_id,
-                completion,
-            } => {
-                if !self.parent_thread_matches(thread_id) {
-                    return Ok(());
-                }
-                self.apply_state(SessionEvent::ObservedCompletion(completion.clone()))
-            }
-            ServerNotification::Item(item) => {
-                if !self.parent_thread_matches(&item.thread_id) {
-                    return Ok(());
-                }
-                self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
-                let reports = self
-                    .translator
-                    .lock()
-                    .unwrap()
-                    .translate_notification(&notification)
-                    .map_err(|error| HarnessError::Session(error.to_string()))?;
-                self.report_all(reports);
-                Ok(())
-            }
-            ServerNotification::Error(params) => {
-                let reports = self
-                    .translator
-                    .lock()
-                    .unwrap()
-                    .translate_notification(&notification)
-                    .map_err(|error| HarnessError::Session(error.to_string()))?;
-                self.report_all(reports);
-                if !params.will_retry {
-                    self.protocol_error
-                        .lock()
-                        .unwrap()
-                        .get_or_insert_with(|| params.error.message.clone());
-                }
-                Ok(())
-            }
-            ServerNotification::Delta => Ok(()),
-            ServerNotification::Unknown => {
-                self.translator
-                    .lock()
-                    .unwrap()
-                    .translate_notification(&notification)
-                    .map_err(|error| HarnessError::Session(error.to_string()))?;
-                Ok(())
+        let expected_parent = self.expected_parent_thread();
+        if ParentThreadFilter::notification(
+            &inbound.method,
+            &inbound.params,
+            expected_parent.as_deref(),
+        ) == ParentThreadRoute::Child
+        {
+            return Ok(());
+        }
+        self.accept_parent_message();
+        let notification = ServerNotification::decode(&inbound.method, inbound.params)
+            .map_err(HarnessError::Session)?;
+        self.dispatch_notification(notification)
+    }
+
+    fn handle_server_request(
+        self: &Arc<Self>,
+        inbound: InboundServerRequest,
+    ) -> Result<(), HarnessError> {
+        let expected_parent = self.expected_parent_thread();
+        let routed = RoutedServerRequest::decode(&inbound, expected_parent.as_deref())
+            .map_err(HarnessError::Session)?;
+        let decision =
+            ServerRequestPolicy::decide(routed.request, routed.route, unix_seconds_now());
+        let decision = write_server_response(&self.connection, decision)?;
+        if routed.route == ParentThreadRoute::Child {
+            return Ok(());
+        }
+        self.accept_parent_message();
+        if let Some(report) = decision.report {
+            self.report(report);
+        }
+        match decision.after_response {
+            AfterResponse::Continue => Ok(()),
+            AfterResponse::FailTurn(reason) => self.apply_state(SessionEvent::FailTurn(reason)),
+            AfterResponse::FailSession(reason) => {
+                self.apply_state(SessionEvent::FailSession(reason))
             }
         }
     }
 
-    fn parent_thread_matches(&self, thread_id: &str) -> bool {
-        self.state.lock().unwrap().parent_thread_matches(thread_id)
+    fn dispatch_notification(
+        self: &Arc<Self>,
+        notification: ServerNotification,
+    ) -> Result<(), HarnessError> {
+        match &notification {
+            ServerNotification::ThreadStarted { thread_id, .. } => {
+                self.apply_state(SessionEvent::ThreadStarted(thread_id.clone()))
+            }
+            ServerNotification::TurnStarted { turn_id, .. } => {
+                self.apply_state(SessionEvent::TurnStarted(turn_id.clone()))
+            }
+            ServerNotification::TurnCompleted { completion, .. } => {
+                self.apply_state(SessionEvent::ObservedCompletion(completion.clone()))
+            }
+            ServerNotification::Item(item) => {
+                self.apply_state(SessionEvent::TurnStarted(item.turn_id.clone()))?;
+                self.translate(&notification)
+            }
+            ServerNotification::Error(params) => {
+                self.translate(&notification)?;
+                if params.will_retry {
+                    return Ok(());
+                }
+                self.apply_state(SessionEvent::FailSession(params.error.message.clone()))
+            }
+            ServerNotification::Delta => Ok(()),
+            ServerNotification::Unknown => self.translate(&notification),
+        }
+    }
+
+    fn translate(&self, notification: &ServerNotification) -> Result<(), HarnessError> {
+        let reports = self
+            .translator
+            .lock()
+            .unwrap()
+            .translate_notification(notification)
+            .map_err(|error| HarnessError::Session(error.to_string()))?;
+        self.report_all(reports);
+        Ok(())
+    }
+
+    fn expected_parent_thread(&self) -> Option<String> {
+        self.state.lock().unwrap().expected_parent_thread()
+    }
+
+    fn accept_parent_message(&self) {
+        *self.last_message.lock().unwrap() = Instant::now();
     }
 
     fn report(&self, report: ActivityReport) {
@@ -276,39 +423,51 @@ impl SessionCore {
         self.activity.lock().unwrap().take();
     }
 
+    fn apply_terminal(&self, event: CoordinatorTerminalEvent) {
+        let demands_shutdown = event.demands_shutdown();
+        {
+            let mut snapshot = self.terminal.lock().unwrap();
+            *snapshot = snapshot.with_terminal_event(event);
+        }
+        if demands_shutdown {
+            self.begin_shutdown();
+        }
+        let outcome = self.terminal.lock().unwrap().outcome();
+        if let Some(outcome) = outcome {
+            self.publish_terminal(outcome);
+        }
+    }
+
+    fn publish_terminal(&self, outcome: TerminalOutcome) {
+        let mut published = self.published.lock().unwrap();
+        if published.is_some() {
+            return;
+        }
+        *published = Some(outcome);
+        drop(published);
+        self.report_all(self.translator.lock().unwrap().close_all());
+        self.close_activity();
+    }
+
+    fn record_terminal_error(&self, reason: String) {
+        self.apply_terminal(CoordinatorTerminalEvent::TerminalError(reason));
+    }
+
     fn fail(&self, reason: String) {
-        self.protocol_error.lock().unwrap().get_or_insert(reason);
-        self.terminate();
+        self.record_terminal_error(reason);
     }
 
-    fn end(&self) {
-        self.terminate();
-    }
-
-    fn terminate(&self) {
-        if self.ended.swap(true, Ordering::AcqRel) {
+    fn begin_shutdown(&self) {
+        if self.shutting_down.swap(true, Ordering::AcqRel) {
             return;
         }
         self.reconciliation_timer.stop();
-        self.report_all(self.translator.lock().unwrap().close_all());
-        self.close_activity();
         if let Err(error) = self.connection.close() {
-            self.protocol_error
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| error.to_string());
+            self.record_terminal_error(error.to_string());
         }
         if let Err(error) = self.process.shutdown() {
-            self.protocol_error
-                .lock()
-                .unwrap()
-                .get_or_insert_with(|| error.to_string());
+            self.record_terminal_error(error.to_string());
         }
-    }
-
-    fn eof(self: &Arc<Self>) {
-        let _ = self.apply_state(SessionEvent::Eof);
-        self.terminate();
     }
 }
 
@@ -319,14 +478,10 @@ impl AgentSession for CodexAppServerSession {
     }
 
     fn status(&self) -> AgentStatus {
-        if let Some(code) = self.core.process.exit_code() {
-            return AgentStatus::Ended { code: Some(code) };
-        }
-        if self.core.process.liveness_failed() {
-            if let Some(error) = self.core.process.error_epitaph() {
-                self.core.fail(error);
-            }
-            return AgentStatus::Ended { code: None };
+        if let Some(outcome) = self.core.published.lock().unwrap().as_ref() {
+            return AgentStatus::Ended {
+                code: outcome.exit_code,
+            };
         }
         self.core.state.lock().unwrap().status()
     }
@@ -340,18 +495,16 @@ impl AgentSession for CodexAppServerSession {
     }
 
     fn end(&self) {
-        self.core.end();
+        self.core.begin_shutdown();
     }
 
     fn epitaph(&self) -> Option<String> {
         self.core
-            .protocol_error
+            .published
             .lock()
             .unwrap()
-            .clone()
-            .or_else(|| self.core.state.lock().unwrap().epitaph())
-            .or_else(|| self.core.process.error_epitaph())
-            .or_else(|| self.core.process.stderr_epitaph())
+            .as_ref()
+            .and_then(|outcome| outcome.epitaph.clone())
     }
 
     fn activity(&self) -> Option<broadcast::Receiver<ActivityReport>> {
@@ -391,38 +544,55 @@ impl AgentSession for CodexAppServerSession {
 
 impl Drop for CodexAppServerSession {
     fn drop(&mut self) {
-        self.core.end();
+        self.core.begin_shutdown();
     }
 }
 
-fn start_reader(core: Weak<SessionCore>, mut stdout: std::process::ChildStdout) {
-    std::thread::spawn(move || loop {
-        let Some(core) = core.upgrade() else {
-            return;
-        };
-        match read_jsonl_frame(&mut stdout, core.limits.inbound_frame_bytes) {
-            Ok(Some(value)) => match core.connection.decode(value) {
-                Ok(event) => {
-                    if let Err(error) = core.handle_connection(event) {
-                        core.fail(error.to_string());
-                        return;
-                    }
-                }
-                Err(error) => {
-                    core.fail(error.to_string());
-                    return;
-                }
-            },
-            Ok(None) => {
-                core.eof();
+fn start_terminal_pump(core: Weak<SessionCore>, events: mpsc::Receiver<TerminalSourceEvent>) {
+    std::thread::spawn(move || {
+        for event in events {
+            let Some(core) = core.upgrade() else {
                 return;
-            }
-            Err(error) => {
-                core.fail(error.to_string());
-                return;
-            }
+            };
+            core.apply_terminal(CoordinatorTerminalEvent::SourceSettled(event));
         }
     });
+}
+
+fn start_reader(
+    core: Weak<SessionCore>,
+    mut stdout: std::process::ChildStdout,
+    events: TerminalEventSink,
+) {
+    std::thread::spawn(move || {
+        let reader_error = read_until_settled(&core, &mut stdout);
+        events(TerminalSourceEvent::StdoutSettled { reader_error });
+    });
+}
+
+fn read_until_settled(
+    core: &Weak<SessionCore>,
+    stdout: &mut std::process::ChildStdout,
+) -> Option<String> {
+    loop {
+        let core = core.upgrade()?;
+        let frame = match read_jsonl_frame(stdout, core.limits.inbound_frame_bytes) {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
+                let _ = core.apply_state(SessionEvent::Eof);
+                return None;
+            }
+            Err(error) => return Some(error.to_string()),
+        };
+        let event = match core.connection.decode(frame) {
+            Ok(event) => event,
+            Err(error) => return Some(error.to_string()),
+        };
+        if let Err(error) = core.handle_connection(event) {
+            core.fail(error.to_string());
+            return None;
+        }
+    }
 }
 
 fn unix_seconds_now() -> i64 {
@@ -430,14 +600,6 @@ fn unix_seconds_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("clock after epoch")
         .as_secs() as i64
-}
-
-fn is_child_thread_notification(
-    thread_id: &str,
-    parent_thread_id: Option<&str>,
-    active_parent: Option<&str>,
-) -> bool {
-    parent_thread_id.is_some() || active_parent.is_some_and(|parent| parent != thread_id)
 }
 
 fn write_server_response(
@@ -565,22 +727,28 @@ mod tests {
     }
 
     #[test]
-    fn child_thread_start_is_ignored_before_and_after_parent_readiness() {
-        assert!(is_child_thread_notification(
-            "thread-child",
-            Some("thread-parent"),
-            None,
-        ));
-        assert!(is_child_thread_notification(
-            "thread-child",
-            None,
-            Some("thread-parent"),
-        ));
-        assert!(!is_child_thread_notification(
-            "thread-parent",
-            None,
-            Some("thread-parent"),
-        ));
+    fn child_thread_start_is_routed_away_before_and_after_parent_readiness() {
+        let child_start = json!({"thread":{"id":"thread-child","parentThreadId":"thread-parent"}});
+        assert_eq!(
+            ParentThreadFilter::notification("thread/started", &child_start, None),
+            ParentThreadRoute::Child
+        );
+        assert_eq!(
+            ParentThreadFilter::notification(
+                "turn/started",
+                &json!({"threadId":"thread-child"}),
+                Some("thread-parent"),
+            ),
+            ParentThreadRoute::Child
+        );
+        assert_eq!(
+            ParentThreadFilter::notification(
+                "thread/started",
+                &json!({"thread":{"id":"thread-parent"}}),
+                None,
+            ),
+            ParentThreadRoute::Parent
+        );
     }
 
     #[test]
@@ -596,6 +764,176 @@ mod tests {
             )),
         };
         assert!(write_server_response(&connection, decision).is_err());
+    }
+
+    fn settled(snapshot: &TerminalSnapshot, event: TerminalSourceEvent) -> TerminalSnapshot {
+        snapshot.with_terminal_event(CoordinatorTerminalEvent::SourceSettled(event))
+    }
+
+    #[test]
+    fn terminal_publication_waits_for_stdout_process_and_stderr_in_every_order() {
+        let events = [
+            TerminalSourceEvent::StdoutSettled { reader_error: None },
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: Some(17),
+                monitor_error: None,
+            },
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("stderr tail".to_string()),
+                drainer_error: None,
+            },
+        ];
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let mut snapshot = TerminalSnapshot::default();
+            for index in &order[..2] {
+                snapshot = settled(&snapshot, events[*index].clone());
+                assert!(snapshot.outcome().is_none(), "{order:?}");
+            }
+            snapshot = settled(&snapshot, events[order[2]].clone());
+            let outcome = snapshot.outcome().unwrap();
+            assert_eq!(outcome.exit_code, Some(17));
+            assert_eq!(outcome.epitaph.as_deref(), Some("stderr tail"));
+        }
+    }
+
+    #[test]
+    fn terminal_error_precedence_is_stable_when_failures_follow_reader_finished() {
+        let mut snapshot = settled(
+            &TerminalSnapshot::default(),
+            TerminalSourceEvent::StdoutSettled {
+                reader_error: Some("buffered protocol error".to_string()),
+            },
+        );
+        assert!(snapshot.outcome().is_none());
+        snapshot = settled(
+            &snapshot,
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: None,
+                monitor_error: Some("later process error".to_string()),
+            },
+        );
+        assert!(snapshot.outcome().is_none());
+        snapshot = settled(
+            &snapshot,
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("stderr fallback".to_string()),
+                drainer_error: Some("later drainer error".to_string()),
+            },
+        );
+        assert_eq!(
+            snapshot.outcome().unwrap().epitaph.as_deref(),
+            Some("buffered protocol error")
+        );
+
+        let mut process_first = settled(
+            &TerminalSnapshot::default(),
+            TerminalSourceEvent::StdoutSettled { reader_error: None },
+        );
+        process_first = settled(
+            &process_first,
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("tail".to_string()),
+                drainer_error: Some("drainer".to_string()),
+            },
+        );
+        process_first = settled(
+            &process_first,
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: None,
+                monitor_error: Some("process".to_string()),
+            },
+        );
+        assert_eq!(
+            process_first.outcome().unwrap().epitaph.as_deref(),
+            Some("process")
+        );
+
+        let drainer_first = settled(
+            &settled(
+                &settled(
+                    &TerminalSnapshot::default(),
+                    TerminalSourceEvent::StdoutSettled { reader_error: None },
+                ),
+                TerminalSourceEvent::ProcessSettled {
+                    exit_code: Some(0),
+                    monitor_error: None,
+                },
+            ),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("tail".to_string()),
+                drainer_error: Some("drainer".to_string()),
+            },
+        );
+        assert_eq!(
+            drainer_first.outcome().unwrap().epitaph.as_deref(),
+            Some("drainer")
+        );
+    }
+
+    #[test]
+    fn first_protocol_error_wins_even_when_recorded_after_reader_settlement() {
+        let mut snapshot = settled(
+            &TerminalSnapshot::default(),
+            TerminalSourceEvent::StdoutSettled { reader_error: None },
+        );
+        for reason in ["first protocol error", "second protocol error"] {
+            snapshot = snapshot
+                .with_terminal_event(CoordinatorTerminalEvent::TerminalError(reason.to_string()));
+        }
+        snapshot = settled(
+            &snapshot,
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: Some(1),
+                monitor_error: Some("process error".to_string()),
+            },
+        );
+        snapshot = settled(
+            &snapshot,
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: None,
+                drainer_error: None,
+            },
+        );
+        assert_eq!(
+            snapshot.outcome().unwrap().epitaph.as_deref(),
+            Some("first protocol error")
+        );
+    }
+
+    #[test]
+    fn each_terminal_source_settles_exactly_once() {
+        let events = [
+            TerminalSourceEvent::StdoutSettled { reader_error: None },
+            TerminalSourceEvent::ProcessSettled {
+                exit_code: Some(0),
+                monitor_error: None,
+            },
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: None,
+                drainer_error: None,
+            },
+        ];
+        let mut snapshot = TerminalSnapshot::default();
+        for event in &events[..2] {
+            snapshot = settled(&snapshot, event.clone());
+            snapshot = settled(&snapshot, event.clone());
+            assert!(snapshot.outcome().is_none());
+        }
+        let resettled = settled(
+            &settled(&snapshot, events[2].clone()),
+            TerminalSourceEvent::StderrSettled {
+                retained_tail: Some("late tail".to_string()),
+                drainer_error: Some("late drainer".to_string()),
+            },
+        );
+        assert_eq!(resettled.outcome().unwrap().epitaph, None);
     }
 
     #[test]
@@ -685,6 +1023,64 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn child_thread_traffic_never_contaminates_the_parent_session() {
+        let root = tempfile::tempdir().unwrap();
+        let thread_response = format!(
+            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
+            root.path().display()
+        );
+        let command = format!(
+            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}'; read hold",
+            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
+            thread_response,
+            r#"{"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":"thread-1"}}}"#,
+            r#"{"method":"error","params":{"threadId":"thread-child","malformed":true}}"#,
+            r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
+            r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
+            r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
+            r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+        );
+        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
+        let (session, mut activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some("high".to_string()),
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+
+        let mut reports = Vec::new();
+        for _ in 0..200 {
+            match activity.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("activity receive failed: {error}"),
+            }
+            if !reports.is_empty() {
+                break;
+            }
+        }
+        assert!(matches!(
+            reports.as_slice(),
+            [ActivityReport {
+                activity: crate::harness::AgentActivity::TaskUpdate { summary },
+                ..
+            }] if summary == "parent stays alive"
+        ));
+        assert_eq!(session.epitaph(), None);
+        assert_eq!(session.status(), AgentStatus::Waiting);
+        assert_eq!(session.session_id().as_deref(), Some("thread-1"));
+        session.end();
     }
 
     #[test]

@@ -1,10 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
 use super::limits::AppServerLimits;
 use super::protocol::{
-    ErrorNotification, ItemLifecycle, ItemNotification, ItemType, ServerNotification,
+    ErrorNotification, ItemClassification, ItemLifecycle, ItemNotification, ItemReportKind,
+    ServerNotification, ToolSummaryCategory,
 };
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
@@ -17,39 +18,120 @@ pub enum TranslationError {
     ItemCountLimit(usize),
     #[error("Codex open item byte limit exceeded ({0})")]
     ItemBytesLimit(usize),
-    #[error("Codex completed item limit exceeded ({0})")]
-    CompletedItemCountLimit(usize),
-    #[error("Codex completed item byte limit exceeded ({0})")]
-    CompletedItemBytesLimit(usize),
 }
 
 #[derive(Debug, Clone)]
 struct OpenTool {
     turn_id: String,
     summary: String,
-    suppressed: bool,
     charge: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CompletedItemKey {
+    turn_id: String,
+    item_id: String,
+}
+
+struct CompletedItemLedger {
+    keys: BTreeSet<CompletedItemKey>,
+    order: VecDeque<CompletedItemKey>,
+    retained_bytes: usize,
+    key_limit: usize,
+    byte_limit: usize,
+}
+
+impl CompletedItemLedger {
+    fn new(key_limit: usize, byte_limit: usize) -> CompletedItemLedger {
+        CompletedItemLedger {
+            keys: BTreeSet::new(),
+            order: VecDeque::new(),
+            retained_bytes: 0,
+            key_limit,
+            byte_limit,
+        }
+    }
+
+    fn contains_and_refresh(&mut self, turn_id: &str, item_id: &str) -> bool {
+        let key = completed_key(turn_id, item_id);
+        if !self.keys.contains(&key) {
+            return false;
+        }
+        if let Some(index) = self.order.iter().position(|existing| existing == &key) {
+            self.order.remove(index);
+        }
+        self.order.push_back(key);
+        true
+    }
+
+    fn insert(&mut self, turn_id: &str, item_id: &str) {
+        let key = completed_key(turn_id, item_id);
+        let charge = key_charge(&key);
+        if self.key_limit == 0 || charge > self.byte_limit {
+            return;
+        }
+        while self.keys.len() >= self.key_limit
+            || self.retained_bytes.saturating_add(charge) > self.byte_limit
+        {
+            let Some(expired) = self.order.pop_front() else {
+                return;
+            };
+            self.retained_bytes -= key_charge(&expired);
+            self.keys.remove(&expired);
+        }
+        self.retained_bytes += charge;
+        self.keys.insert(key.clone());
+        self.order.push_back(key);
+    }
+
+    fn clear_turn(&mut self, turn_id: &str) {
+        self.order.retain(|key| {
+            if key.turn_id == turn_id {
+                self.retained_bytes -= key_charge(key);
+                self.keys.remove(key);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    fn clear(&mut self) {
+        self.keys.clear();
+        self.order.clear();
+        self.retained_bytes = 0;
+    }
+}
+
+fn completed_key(turn_id: &str, item_id: &str) -> CompletedItemKey {
+    CompletedItemKey {
+        turn_id: turn_id.to_string(),
+        item_id: item_id.to_string(),
+    }
+}
+
+fn key_charge(key: &CompletedItemKey) -> usize {
+    key.turn_id.len() + key.item_id.len()
 }
 
 pub struct CodexActivityTranslator {
     limits: AppServerLimits,
     open_tools: BTreeMap<String, OpenTool>,
     open_bytes: usize,
-    completed_turn_id: Option<String>,
-    completed_items: BTreeSet<String>,
-    completed_bytes: usize,
+    completed: CompletedItemLedger,
     unknown_events: u64,
 }
 
 impl CodexActivityTranslator {
     pub fn new(limits: AppServerLimits) -> CodexActivityTranslator {
         CodexActivityTranslator {
+            completed: CompletedItemLedger::new(
+                limits.completed_items,
+                limits.completed_item_bytes,
+            ),
             limits,
             open_tools: BTreeMap::new(),
             open_bytes: 0,
-            completed_turn_id: None,
-            completed_items: BTreeSet::new(),
-            completed_bytes: 0,
             unknown_events: 0,
         }
     }
@@ -60,7 +142,7 @@ impl CodexActivityTranslator {
     ) -> Result<Vec<ActivityReport>, TranslationError> {
         match notification {
             ServerNotification::Item(item) => self.translate_item(item),
-            ServerNotification::Error(params) => Ok(error_report(params).into_iter().collect()),
+            ServerNotification::Error(error) => Ok(error_report(error).into_iter().collect()),
             ServerNotification::Unknown => {
                 self.unknown_events = self.unknown_events.saturating_add(1);
                 Ok(Vec::new())
@@ -87,99 +169,41 @@ impl CodexActivityTranslator {
         &mut self,
         notification: &ItemNotification,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
-        self.select_completed_turn(&notification.turn_id);
-        let id = required(&notification.item, "id")?;
-        if self.completed_items.contains(id) {
+        if matches!(
+            notification.classification,
+            ItemClassification::Suppressed { .. }
+        ) {
             return Ok(Vec::new());
         }
-        match notification.lifecycle {
-            ItemLifecycle::Started => self.item_started(notification),
-            ItemLifecycle::Completed => {
-                self.ensure_completed_capacity(id)?;
-                let reports = self.item_completed(notification);
-                self.remember_completed(id);
-                Ok(reports)
+        let id = required(&notification.item, "id")?;
+        if self
+            .completed
+            .contains_and_refresh(&notification.turn_id, id)
+        {
+            return Ok(Vec::new());
+        }
+        let reports = match (notification.lifecycle, notification.classification) {
+            (ItemLifecycle::Started, ItemClassification::TrackedTool { summary }) => {
+                self.open_tool(notification, summary)?
             }
-        }
-    }
-
-    fn select_completed_turn(&mut self, turn_id: &str) {
-        if self.completed_turn_id.as_deref() == Some(turn_id) {
-            return;
-        }
-        self.completed_turn_id = Some(turn_id.to_string());
-        self.completed_items.clear();
-        self.completed_bytes = 0;
-    }
-
-    fn ensure_completed_capacity(&self, id: &str) -> Result<(), TranslationError> {
-        if self.completed_items.len() >= self.limits.completed_items {
-            return Err(TranslationError::CompletedItemCountLimit(
-                self.limits.completed_items,
-            ));
-        }
-        if self.completed_bytes.saturating_add(id.len()) > self.limits.completed_item_bytes {
-            return Err(TranslationError::CompletedItemBytesLimit(
-                self.limits.completed_item_bytes,
-            ));
-        }
-        Ok(())
-    }
-
-    fn remember_completed(&mut self, id: &str) {
-        self.completed_items.insert(id.to_string());
-        self.completed_bytes += id.len();
-    }
-
-    fn item_started(
-        &mut self,
-        notification: &ItemNotification,
-    ) -> Result<Vec<ActivityReport>, TranslationError> {
-        match notification.item_type {
-            ItemType::CommandExecution
-            | ItemType::FileChange
-            | ItemType::McpToolCall
-            | ItemType::WebSearch
-            | ItemType::ImageView
-            | ItemType::Sleep
-            | ItemType::ImageGeneration
-            | ItemType::CollabAgentToolCall => self.open_tool(notification, false),
-            ItemType::BuildMcpToolCall => self.open_tool(notification, true),
-            ItemType::SubAgentActivity | ItemType::ContextCompaction => {
-                Ok(task_report(notification, "started").into_iter().collect())
+            (ItemLifecycle::Completed, ItemClassification::TrackedTool { .. }) => {
+                self.complete_tool(&notification.item)
             }
-            ItemType::Reasoning
-            | ItemType::AgentMessage
-            | ItemType::DynamicToolCall
-            | ItemType::Unknown => Ok(Vec::new()),
-        }
-    }
-
-    fn item_completed(&mut self, notification: &ItemNotification) -> Vec<ActivityReport> {
-        match notification.item_type {
-            ItemType::Reasoning | ItemType::AgentMessage => {
-                speech_report(notification).into_iter().collect()
+            (lifecycle, ItemClassification::Emitting { report }) => {
+                emit_item(notification, lifecycle, report)
             }
-            ItemType::CommandExecution
-            | ItemType::FileChange
-            | ItemType::BuildMcpToolCall
-            | ItemType::McpToolCall
-            | ItemType::WebSearch
-            | ItemType::ImageView
-            | ItemType::Sleep
-            | ItemType::ImageGeneration
-            | ItemType::CollabAgentToolCall => self.complete_tool(&notification.item),
-            ItemType::SubAgentActivity | ItemType::ContextCompaction => {
-                task_report(notification, "completed").into_iter().collect()
-            }
-            ItemType::DynamicToolCall | ItemType::Unknown => Vec::new(),
+            (_, ItemClassification::Suppressed { .. }) => unreachable!(),
+        };
+        if notification.lifecycle == ItemLifecycle::Completed {
+            self.completed.insert(&notification.turn_id, id);
         }
+        Ok(reports)
     }
 
     fn open_tool(
         &mut self,
         notification: &ItemNotification,
-        suppressed: bool,
+        category: ToolSummaryCategory,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
         let item = &notification.item;
         let id = required(item, "id")?;
@@ -189,7 +213,7 @@ impl CodexActivityTranslator {
         if self.open_tools.len() >= self.limits.open_items {
             return Err(TranslationError::ItemCountLimit(self.limits.open_items));
         }
-        let summary = tool_summary(notification.item_type, item);
+        let summary = tool_summary(category, item);
         let charge = id.len() + notification.turn_id.len() + summary.len();
         if self.open_bytes.saturating_add(charge) > self.limits.open_item_bytes {
             return Err(TranslationError::ItemBytesLimit(
@@ -201,14 +225,10 @@ impl CodexActivityTranslator {
             OpenTool {
                 turn_id: notification.turn_id.clone(),
                 summary: summary.clone(),
-                suppressed,
                 charge,
             },
         );
         self.open_bytes += charge;
-        if suppressed {
-            return Ok(Vec::new());
-        }
         Ok(vec![ActivityReport::own_work(AgentActivity::ToolUse {
             call_id: id.to_string(),
             summary,
@@ -223,49 +243,42 @@ impl CodexActivityTranslator {
             return Vec::new();
         };
         self.open_bytes -= open.charge;
-        if open.suppressed {
-            return Vec::new();
-        }
         let outcome = tool_outcome(item);
         vec![ActivityReport::own_work(AgentActivity::ToolResult {
             call_id: id.to_string(),
             outcome,
             summary: one_line(
-                &format!(
-                    "{} {}",
-                    open.summary,
-                    match outcome {
-                        ToolOutcome::Ok => "completed",
-                        ToolOutcome::Error => "failed",
-                        ToolOutcome::Unanswered => "unanswered",
-                    }
-                ),
+                &format!("{} {}", open.summary, outcome_word(outcome)),
                 TOOL_SUMMARY_LIMIT,
             ),
         })]
     }
 
-    pub fn close_turn(&mut self, turn_id: &str) -> Vec<ActivityReport> {
+    pub fn close_turn(&mut self, turn_id: &str) -> Result<Vec<ActivityReport>, TranslationError> {
+        Ok(self.drain_turn(turn_id))
+    }
+
+    fn drain_turn(&mut self, turn_id: &str) -> Vec<ActivityReport> {
         let closing = self
             .open_tools
             .iter()
             .filter(|(_, open)| open.turn_id == turn_id)
             .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
-        closing
+        let reports = closing
             .into_iter()
             .filter_map(|id| {
                 let open = self.open_tools.remove(&id)?;
                 self.open_bytes -= open.charge;
-                (!open.suppressed).then(|| {
-                    ActivityReport::own_work(AgentActivity::ToolResult {
-                        call_id: id,
-                        outcome: ToolOutcome::Unanswered,
-                        summary: String::new(),
-                    })
-                })
+                Some(ActivityReport::own_work(AgentActivity::ToolResult {
+                    call_id: id,
+                    outcome: ToolOutcome::Unanswered,
+                    summary: String::new(),
+                }))
             })
-            .collect()
+            .collect();
+        self.completed.clear_turn(turn_id);
+        reports
     }
 
     pub fn close_all(&mut self) -> Vec<ActivityReport> {
@@ -273,11 +286,13 @@ impl CodexActivityTranslator {
             .open_tools
             .values()
             .map(|open| open.turn_id.clone())
-            .collect::<std::collections::BTreeSet<_>>();
-        turns
+            .collect::<BTreeSet<_>>();
+        let reports = turns
             .into_iter()
-            .flat_map(|turn_id| self.close_turn(&turn_id))
-            .collect()
+            .flat_map(|turn_id| self.drain_turn(&turn_id))
+            .collect();
+        self.completed.clear();
+        reports
     }
 
     #[cfg(test)]
@@ -287,7 +302,7 @@ impl CodexActivityTranslator {
 
     #[cfg(test)]
     pub fn completed_item_count(&self) -> usize {
-        self.completed_items.len()
+        self.completed.keys.len()
     }
 }
 
@@ -297,60 +312,110 @@ fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str, TranslationErr
         .ok_or_else(|| TranslationError::Malformed(format!("{field} is missing")))
 }
 
-fn speech_report(notification: &ItemNotification) -> Option<ActivityReport> {
-    let summary = match notification.item_type {
-        ItemType::Reasoning => notification.item["summary"]
-            .as_array()
-            .map(|parts| {
-                parts
-                    .iter()
-                    .filter_map(|part| {
-                        part.as_str()
-                            .or_else(|| part["text"].as_str())
-                            .map(str::trim)
-                            .filter(|text| !text.is_empty())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default(),
-        ItemType::AgentMessage => notification.item["text"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
-        _ => return None,
-    };
-    if summary.is_empty() {
-        return None;
+fn emit_item(
+    notification: &ItemNotification,
+    lifecycle: ItemLifecycle,
+    report: ItemReportKind,
+) -> Vec<ActivityReport> {
+    match report {
+        ItemReportKind::Reasoning if lifecycle == ItemLifecycle::Completed => {
+            reasoning_report(&notification.item).into_iter().collect()
+        }
+        ItemReportKind::Narration if lifecycle == ItemLifecycle::Completed => {
+            narration_report(&notification.item).into_iter().collect()
+        }
+        ItemReportKind::SubAgentActivity => subagent_report(&notification.item, lifecycle)
+            .into_iter()
+            .collect(),
+        ItemReportKind::ContextCompaction => vec![task_update(format!(
+            "Context compaction {}",
+            lifecycle_word(lifecycle)
+        ))],
+        ItemReportKind::EnteredReviewMode if lifecycle == ItemLifecycle::Completed => {
+            vec![task_update("Entered review mode".to_string())]
+        }
+        ItemReportKind::ExitedReviewMode if lifecycle == ItemLifecycle::Completed => {
+            vec![task_update("Exited review mode".to_string())]
+        }
+        _ => Vec::new(),
     }
-    let summary = one_line(&summary, TOOL_SUMMARY_LIMIT);
-    let activity = match notification.item_type {
-        ItemType::Reasoning => AgentActivity::Reasoning { summary },
-        ItemType::AgentMessage => AgentActivity::Narration { summary },
-        _ => unreachable!(),
-    };
-    Some(ActivityReport::own_work(activity))
 }
 
-fn tool_summary(item_type: ItemType, item: &Value) -> String {
-    let summary = match item_type {
-        ItemType::CommandExecution => "Command".to_string(),
-        ItemType::FileChange => "File change".to_string(),
-        ItemType::BuildMcpToolCall | ItemType::McpToolCall => format!(
+fn reasoning_report(item: &Value) -> Option<ActivityReport> {
+    let summary = item["summary"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter_map(|part| {
+                    part.as_str()
+                        .or_else(|| part["text"].as_str())
+                        .map(str::trim)
+                        .filter(|text| !text.is_empty())
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    (!summary.is_empty()).then(|| {
+        ActivityReport::own_work(AgentActivity::Reasoning {
+            summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
+        })
+    })
+}
+
+fn narration_report(item: &Value) -> Option<ActivityReport> {
+    let summary = item["text"].as_str().unwrap_or_default().trim();
+    (!summary.is_empty()).then(|| {
+        ActivityReport::own_work(AgentActivity::Narration {
+            summary: one_line(summary, TOOL_SUMMARY_LIMIT),
+        })
+    })
+}
+
+fn subagent_report(item: &Value, lifecycle: ItemLifecycle) -> Option<ActivityReport> {
+    let summary = format!(
+        "{} - {}",
+        item["agentPath"].as_str().unwrap_or("Sub-agent"),
+        item["kind"]
+            .as_str()
+            .unwrap_or_else(|| lifecycle_word(lifecycle))
+    );
+    Some(task_update(summary))
+}
+
+fn lifecycle_word(lifecycle: ItemLifecycle) -> &'static str {
+    match lifecycle {
+        ItemLifecycle::Started => "started",
+        ItemLifecycle::Completed => "completed",
+    }
+}
+
+fn outcome_word(outcome: ToolOutcome) -> &'static str {
+    match outcome {
+        ToolOutcome::Ok => "completed",
+        ToolOutcome::Error => "failed",
+        ToolOutcome::Unanswered => "unanswered",
+    }
+}
+
+fn tool_summary(category: ToolSummaryCategory, item: &Value) -> String {
+    let summary = match category {
+        ToolSummaryCategory::Command => "Command".to_string(),
+        ToolSummaryCategory::FileChange => "File change".to_string(),
+        ToolSummaryCategory::Mcp => format!(
             "MCP {}.{}",
             item["server"].as_str().unwrap_or("server"),
             item["tool"].as_str().unwrap_or("tool")
         ),
-        ItemType::WebSearch => "Web search".to_string(),
-        ItemType::ImageView => "Image view".to_string(),
-        ItemType::Sleep => "Sleep".to_string(),
-        ItemType::ImageGeneration => "Image generation".to_string(),
-        ItemType::CollabAgentToolCall => format!(
+        ToolSummaryCategory::WebSearch => "Web search".to_string(),
+        ToolSummaryCategory::ImageView => "Image view".to_string(),
+        ToolSummaryCategory::Sleep => "Sleep".to_string(),
+        ToolSummaryCategory::ImageGeneration => "Image generation".to_string(),
+        ToolSummaryCategory::Collaboration => format!(
             "Collaboration {}",
             item["tool"].as_str().unwrap_or("activity")
         ),
-        _ => "Tool".to_string(),
     };
     one_line(&summary, TOOL_SUMMARY_LIMIT)
 }
@@ -368,28 +433,13 @@ fn tool_outcome(item: &Value) -> ToolOutcome {
     }
 }
 
-fn task_report(notification: &ItemNotification, lifecycle: &str) -> Option<ActivityReport> {
-    let summary = match notification.item_type {
-        ItemType::SubAgentActivity => format!(
-            "{} - {}",
-            notification.item["agentPath"]
-                .as_str()
-                .unwrap_or("Sub-agent"),
-            notification.item["kind"].as_str().unwrap_or(lifecycle)
-        ),
-        ItemType::ContextCompaction => format!("Context compaction {lifecycle}"),
-        _ => return None,
-    };
-    Some(ActivityReport::own_work(AgentActivity::TaskUpdate {
+fn task_update(summary: String) -> ActivityReport {
+    ActivityReport::own_work(AgentActivity::TaskUpdate {
         summary: one_line(&summary, TOOL_SUMMARY_LIMIT),
-    }))
+    })
 }
 
 fn error_report(notification: &ErrorNotification) -> Option<ActivityReport> {
     let message = notification.error.message.trim();
-    (!message.is_empty()).then(|| {
-        ActivityReport::own_work(AgentActivity::TaskUpdate {
-            summary: one_line(message, TOOL_SUMMARY_LIMIT),
-        })
-    })
+    (!message.is_empty()).then(|| task_update(message.to_string()))
 }

@@ -350,6 +350,18 @@ describe("a session that rides two carriers", () => {
     await expect(reply).resolves.toEqual({ tasks: [] });
   });
 
+  it("signals even while the app is paused — the pause holds user actions, not the upgrade", async () => {
+    let paused = false;
+    const { promise, ws } = await startOpen({ isPaused: () => paused });
+    await completeHandshake(ws);
+    const session = await promise;
+    paused = true;
+    session.signal("rtc.offer", { sdp: "v=0" }).catch(() => {});
+    await tick();
+    expect(ws.sent.at(-1).envelope.frameFields.payload.method).toBe("rtc.offer");
+    await expect(session.call("board.list", {})).rejects.toThrow(/offline/);
+  });
+
   it("keeps signaling on the relay carrier while the peer carries", async () => {
     const { promise, ws } = await startOpen();
     await completeHandshake(ws);

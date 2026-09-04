@@ -201,7 +201,6 @@ export async function openRelaySession({
 
   /** One encrypted frame out over `wire`, and the reply it is waiting for. */
   async function request(wire, method, params, timeoutMs) {
-    if (isPaused()) throw new Error("your device is offline — reconnecting…");
     if (lost || !wire) throw new Error("your device went offline");
     const rid = "r" + ++requestId;
     const envelope = await transport.encryptFrame({
@@ -237,10 +236,15 @@ export async function openRelaySession({
 
   return {
     deviceId,
-    call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) => request(carrier, method, params, timeoutMs),
+    call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
+      isPaused()
+        ? Promise.reject(new Error("your device is offline — reconnecting…"))
+        : request(carrier, method, params, timeoutMs),
     /** Signaling is pinned to the relay carrier: `rtc.*` never rides the
      *  channel it negotiates, so an ICE restart works while the channels are
-     *  down (spec §Signaling). */
+     *  down (spec §Signaling). It runs whether or not the app is paused: the
+     *  pause holds the user's actions back, and this is the machinery that
+     *  looks for a better wire under them. */
     signal: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
       request(carrierSwitch.relayCarrier(), method, params, timeoutMs),
     /** Ride this DataChannel instead of the relay, or `null` to fall back. */

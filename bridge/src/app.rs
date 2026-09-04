@@ -34986,6 +34986,32 @@ mod tests {
             .is_ok());
     }
 
+    /// With a checkout's registration pruned, nothing on disk says whether
+    /// teardown owns its branch, and the run either knows or does not. A run
+    /// Build dispatched works in a checkout Build cut, so it can vouch. An
+    /// adopted run's checkout may be one Build only borrowed, so it cannot,
+    /// and its recovery stops rather than restoring under a guess that would
+    /// hand somebody's branch to the next teardown.
+    #[test]
+    fn only_a_run_build_cut_its_own_checkout_for_vouches_for_its_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "borrowed");
+
+        assert_eq!(
+            unregistered_restore_for(state.runs.get(&run_id).unwrap()),
+            crate::worktree::UnregisteredRestore::Refuse
+        );
+
+        state.runs.get_mut(&run_id).unwrap().adopted = false;
+        assert_eq!(
+            unregistered_restore_for(state.runs.get(&run_id).unwrap()),
+            crate::worktree::UnregisteredRestore::Write(
+                crate::worktree::BranchTeardown::DeletesBranch
+            )
+        );
+    }
+
     #[test]
     fn worktree_create_rejects_an_unknown_project() {
         let (dir, repo) = init_repo();

@@ -11,42 +11,43 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::carrier::testing::{
-    client_request, closed_within_patience, reporting, within_patience,
-};
+use build_bridge::carrier::testing::{reporting, within_patience};
 use build_bridge::carrier::FrameIntake;
-use build_bridge::rtc::{chunk, negotiated_channel, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
-use build_bridge::transport::{self, Envelope, DATA_FRAME_TYPE};
+use build_bridge::rtc::testing::{
+    browser_peer, orphan_part, past_one_message, BrowserPeer, RelaySignaling,
+};
+use build_bridge::rtc::WebrtcPeerFactory;
+use build_bridge::transport::{self, Envelope};
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
 use serde_json::{json, Value};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
-use webrtc::data_channel::{DataChannel, DataChannelEvent};
-use webrtc::peer_connection::{
-    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCIceCandidateInit,
-    RTCPeerConnectionIceEvent, RTCSessionDescription,
-};
 
 mod common;
 
 /// The browser's end of one E2EE session over the relay: what it sends, and
 /// the two things that come back — replies to its own requests, and the
 /// device's pushes, which is where the bridge's trickled candidates arrive.
+///
+/// Every read is behind its own lock because the upgrade waits on a reply and
+/// on a push at the same time, as a browser signaling over one socket does.
 struct RelaySession {
     session_id: String,
     session_key: String,
     to_device: mpsc::Sender<Value>,
-    replies: mpsc::UnboundedReceiver<Value>,
+    replies: Mutex<mpsc::UnboundedReceiver<Value>>,
+    pushes: Mutex<mpsc::UnboundedReceiver<Value>>,
     next_id: AtomicU64,
 }
 
 impl RelaySession {
     /// Send one request and wait for its own reply, skipping any reply that
     /// belongs to a request trickling alongside it.
-    async fn call(&mut self, method: &str, params: Value) -> Value {
+    async fn call(&self, method: &str, params: Value) -> Value {
         let id = self.ask(method, params).await;
+        let mut replies = self.replies.lock().await;
         loop {
-            let reply = within_patience(self.replies.recv()).await;
+            let reply = within_patience(replies.recv()).await;
             if reply["id"] == json!(id) {
                 return reply;
             }
@@ -69,12 +70,39 @@ impl RelaySession {
     }
 }
 
+/// Signaling is pinned to the relay carrier (spec §Signaling): the browser's
+/// offer and both sides' candidates ride this session, never the channels they
+/// negotiate.
+#[async_trait::async_trait]
+impl RelaySignaling for RelaySession {
+    async fn offer(&self, sdp: String) -> String {
+        let answered = self
+            .call("rtc.offer", json!({ "sdp": sdp, "ice_servers": [] }))
+            .await;
+        assert_eq!(answered["ok"], true, "{answered}");
+        answered["result"]["sdp"]
+            .as_str()
+            .expect("the device answers with an SDP")
+            .to_string()
+    }
+
+    async fn trickle(&self, candidate: Value) {
+        self.ask("rtc.ice", json!({ "candidate": candidate })).await;
+    }
+
+    async fn device_candidate(&self) -> Value {
+        let pushed = within_patience(self.pushes.lock().await.recv()).await;
+        assert_eq!(pushed["type"], "rtc.ice", "{pushed}");
+        pushed["candidate"].clone()
+    }
+}
+
 /// Mint a session over the relay and split what comes back: replies from
 /// pushes, decrypted, as a browser's session module does.
 async fn browser_session(
     session_id: &str,
     intake: Arc<FrameIntake>,
-) -> (RelaySession, mpsc::UnboundedReceiver<Value>, JoinHandle<()>) {
+) -> (RelaySession, JoinHandle<()>) {
     let identity = device_identity();
     let device = connected_device(intake, &identity).await;
     let mut from_device = device.from_device;
@@ -116,145 +144,12 @@ async fn browser_session(
             session_id: session_id.to_string(),
             session_key,
             to_device: device.to_device,
-            replies,
+            replies: Mutex::new(replies),
+            pushes: Mutex::new(pushes),
             next_id: AtomicU64::new(1),
         },
-        pushes,
         demux,
     )
-}
-
-/// What one of the browser's channels reports. The device's channels are the
-/// same two, so what a test reads here is what the SPA's carrier will.
-enum ChannelEvent {
-    Opened,
-    Envelope(String),
-}
-
-/// One negotiated channel as the browser holds it: messages reassembled the
-/// way `spa/src/core/chunk.js` will, over the same shape the device wrote.
-struct BrowserChannel {
-    channel: Arc<dyn DataChannel>,
-    events: mpsc::UnboundedReceiver<ChannelEvent>,
-}
-
-impl BrowserChannel {
-    fn watching(channel: Arc<dyn DataChannel>) -> Self {
-        let (reported, events) = mpsc::unbounded_channel();
-        let polled = channel.clone();
-        tokio::spawn(async move {
-            let mut reassembler = chunk::Reassembler::default();
-            while let Some(event) = polled.poll().await {
-                let reported_event = match event {
-                    DataChannelEvent::OnOpen => ChannelEvent::Opened,
-                    DataChannelEvent::OnMessage(message) => {
-                        let text = std::str::from_utf8(&message.data).expect("text messages");
-                        match reassembler
-                            .accept(text)
-                            .expect("the device chunks correctly")
-                        {
-                            Some(envelope) => ChannelEvent::Envelope(envelope),
-                            None => continue,
-                        }
-                    }
-                    DataChannelEvent::OnClose => break,
-                    _ => continue,
-                };
-                if reported.send(reported_event).is_err() {
-                    break;
-                }
-            }
-        });
-        BrowserChannel { channel, events }
-    }
-
-    /// One request over this channel, answered over this channel.
-    async fn call(&mut self, session: &RelaySession, method: &str, params: Value) -> Value {
-        let envelope = client_request(
-            &session.session_key,
-            &session.session_id,
-            DATA_FRAME_TYPE,
-            json!({ "id": 1, "method": method, "params": params }),
-        );
-        let json = serde_json::to_string(&envelope).expect("an envelope serializes");
-        for message in chunk::split(&json) {
-            self.channel
-                .send_text(&message)
-                .await
-                .expect("the channel takes the request");
-        }
-        loop {
-            match within_patience(self.events.recv()).await {
-                ChannelEvent::Envelope(json) => {
-                    let envelope: Envelope =
-                        serde_json::from_str(&json).expect("the device sends envelopes");
-                    return transport::decrypt_envelope(&session.session_key, &envelope)
-                        .expect("the session key opens what the channel carried")
-                        .payload;
-                }
-                ChannelEvent::Opened => continue,
-            }
-        }
-    }
-}
-
-/// The browser's peer connection: the offerer, with the same two negotiated
-/// channels the device creates.
-struct BrowserPeer {
-    connection: Arc<dyn PeerConnection>,
-    app: BrowserChannel,
-    term: BrowserChannel,
-    candidates: mpsc::UnboundedReceiver<Value>,
-}
-
-struct BrowserEvents {
-    gathered: mpsc::UnboundedSender<Value>,
-}
-
-#[async_trait::async_trait]
-impl PeerConnectionEventHandler for BrowserEvents {
-    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
-        let candidate = event.candidate.to_json().expect("a gathered candidate");
-        let _ = self.gathered.send(json!(candidate));
-    }
-}
-
-impl BrowserPeer {
-    async fn offering() -> Self {
-        let (gathered, candidates) = mpsc::unbounded_channel();
-        let connection: Arc<dyn PeerConnection> = Arc::new(
-            PeerConnectionBuilder::new()
-                .with_handler(Arc::new(BrowserEvents { gathered }))
-                .with_udp_addrs(vec!["127.0.0.1:0".to_string()])
-                .build()
-                .await
-                .expect("the browser opens a peer connection"),
-        );
-        let mut opened = Vec::new();
-        for (label, id) in NEGOTIATED_CHANNELS {
-            opened.push(BrowserChannel::watching(
-                negotiated(&connection, label, id).await,
-            ));
-        }
-        let mut opened = opened.into_iter();
-        BrowserPeer {
-            connection,
-            app: opened.next().expect("the app channel is the first"),
-            term: opened.next().expect("the terminal channel is the second"),
-            candidates,
-        }
-    }
-}
-
-async fn negotiated(
-    connection: &Arc<dyn PeerConnection>,
-    label: &str,
-    id: u16,
-) -> Arc<dyn DataChannel> {
-    connection
-        .create_data_channel(label, Some(negotiated_channel(id)))
-        .await
-        .expect("a negotiated channel needs no handshake")
 }
 
 /// A bridge with the real peer transport: one intake, the app behind it, and
@@ -277,83 +172,11 @@ fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::Unbounde
     (intake, reports)
 }
 
-/// The upgrade the spec's policy performs: the browser offers over the relay,
-/// both sides trickle over it too, and the two negotiated channels open.
-async fn upgraded(
-    session: &mut RelaySession,
-    pushes: &mut mpsc::UnboundedReceiver<Value>,
-) -> BrowserPeer {
-    let mut peer = BrowserPeer::offering().await;
-    let offer = peer
-        .connection
-        .create_offer(None)
-        .await
-        .expect("the browser offers");
-    peer.connection
-        .set_local_description(offer.clone())
-        .await
-        .expect("the browser's own offer");
-
-    let answered = session
-        .call(
-            "rtc.offer",
-            json!({ "sdp": offer.sdp, "ice_servers": no_ice_servers() }),
-        )
-        .await;
-    assert_eq!(answered["ok"], true, "{answered}");
-    let answer = answered["result"]["sdp"]
-        .as_str()
-        .expect("the device answers with an SDP")
-        .to_string();
-    peer.connection
-        .set_remote_description(
-            RTCSessionDescription::answer(answer).expect("the device's answer parses"),
-        )
-        .await
-        .expect("the device's answer");
-
-    let mut open_channels = 0;
-    while open_channels < 2 {
-        tokio::select! {
-            mine = peer.candidates.recv() => {
-                session
-                    .ask("rtc.ice", json!({ "candidate": mine.expect("the browser gathers") }))
-                    .await;
-            }
-            pushed = pushes.recv() => {
-                let pushed = pushed.expect("the relay carries the device's pushes");
-                assert_eq!(pushed["type"], "rtc.ice", "{pushed}");
-                let candidate: RTCIceCandidateInit =
-                    serde_json::from_value(pushed["candidate"].clone())
-                        .expect("the device trickles candidates");
-                peer.connection
-                    .add_ice_candidate(candidate)
-                    .await
-                    .expect("the browser takes the device's candidate");
-            }
-            app = peer.app.events.recv() => {
-                open_channels += opened(app);
-            }
-            term = peer.term.events.recv() => {
-                open_channels += opened(term);
-            }
-        }
-    }
-    peer
-}
-
-fn opened(event: Option<ChannelEvent>) -> usize {
-    match event.expect("a channel of a live peer connection reports") {
-        ChannelEvent::Opened => 1,
-        ChannelEvent::Envelope(_) => 0,
-    }
-}
-
-/// The ICE servers a browser forwards when it could reach no api at all. The
-/// device gathers its host candidates and nothing in this test leaves the
-/// machine.
-fn no_ice_servers() -> Value {
-    json!([])
+/// The upgrade the spec's policy performs, over the session that just went
+/// live: the browser offers over the relay, both sides trickle over it too, and
+/// the two negotiated channels open.
+async fn upgraded(session: &RelaySession) -> BrowserPeer {
+    browser_peer(&session.session_id, &session.session_key, session).await
 }
 
 /// The spec's whole claim about the second carrier: one session, two wires,
@@ -363,25 +186,25 @@ fn no_ice_servers() -> Value {
 async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, _reports) = peer_bridge(state_dir.path());
-    let (mut session, mut pushes, _demux) = browser_session("sess-peer", intake).await;
+    let (session, _demux) = browser_session("sess-peer", intake).await;
 
-    let mut peer = upgraded(&mut session, &mut pushes).await;
+    let mut peer = upgraded(&session).await;
 
     // Migration, as the SPA performs it: the app session greets over its new
     // wire, which is what moves this session's pushes onto the channel.
-    let greeted = peer.app.call(&session, "session.hello", json!({})).await;
+    let greeted = peer.app.call("session.hello", json!({})).await;
     assert_eq!(greeted["ok"], true, "{greeted}");
     assert_eq!(greeted["result"]["push_events"], true);
 
     let over_the_relay = session.call("project.list", json!({})).await;
-    let over_the_peer = peer.app.call(&session, "project.list", json!({})).await;
+    let over_the_peer = peer.app.call("project.list", json!({})).await;
     assert_eq!(over_the_relay["ok"], true, "{over_the_relay}");
     assert_eq!(
         over_the_peer["result"], over_the_relay["result"],
         "the same session answers the same over either carrier"
     );
 
-    let over_the_terminal_channel = peer.term.call(&session, "project.list", json!({})).await;
+    let over_the_terminal_channel = peer.term.call("project.list", json!({})).await;
     assert_eq!(
         over_the_terminal_channel["result"], over_the_relay["result"],
         "both channels carry the one session"
@@ -405,11 +228,11 @@ async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
 async fn a_request_too_large_for_one_message_crosses_in_parts() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, _reports) = peer_bridge(state_dir.path());
-    let (mut session, mut pushes, _demux) = browser_session("sess-chunked", intake).await;
-    let mut peer = upgraded(&mut session, &mut pushes).await;
+    let (session, _demux) = browser_session("sess-chunked", intake).await;
+    let mut peer = upgraded(&session).await;
 
-    let oversized = "m".repeat(chunk::CHUNK_BYTES * 3);
-    let refused = peer.app.call(&session, &oversized, json!({})).await;
+    let oversized = past_one_message('m');
+    let refused = peer.app.call(&oversized, json!({})).await;
 
     assert_eq!(refused["ok"], false, "an unknown method is refused");
     assert_eq!(
@@ -426,20 +249,13 @@ async fn a_request_too_large_for_one_message_crosses_in_parts() {
 async fn a_part_of_a_message_that_never_started_closes_the_channel() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, _reports) = peer_bridge(state_dir.path());
-    let (mut session, mut pushes, _demux) = browser_session("sess-gap", intake).await;
-    let mut peer = upgraded(&mut session, &mut pushes).await;
+    let (session, _demux) = browser_session("sess-gap", intake).await;
+    let mut peer = upgraded(&session).await;
 
-    let orphan = chunk::split(&"o".repeat(chunk::CHUNK_BYTES * 2))
-        .pop()
-        .expect("a message that large is parts");
-    peer.app
-        .channel
-        .send_text(&orphan)
-        .await
-        .expect("the channel takes it");
+    peer.app.send_text(&orphan_part()).await;
 
     assert!(
-        closed_within_patience(peer.app.events.recv()).await,
+        peer.app.closed().await,
         "the channel a reassembly was lost on is closed"
     );
     let after = session.call("project.list", json!({})).await;
@@ -463,10 +279,10 @@ fn drain_reports(reports: &mut mpsc::UnboundedReceiver<String>) {
 async fn a_channel_that_carried_last_ends_the_session_with_it() {
     let state_dir = tempfile::tempdir().expect("a state dir");
     let (intake, mut reports) = peer_bridge(state_dir.path());
-    let (mut session, mut pushes, _demux) = browser_session("sess-last", intake).await;
-    let mut peer = upgraded(&mut session, &mut pushes).await;
+    let (session, _demux) = browser_session("sess-last", intake).await;
+    let mut peer = upgraded(&session).await;
 
-    let greeted = peer.app.call(&session, "session.hello", json!({})).await;
+    let greeted = peer.app.call("session.hello", json!({})).await;
     assert_eq!(greeted["ok"], true, "{greeted}");
     drain_reports(&mut reports);
 
@@ -483,11 +299,7 @@ async fn a_channel_that_carried_last_ends_the_session_with_it() {
         "the session did not end with the relay carrier the channel outlived"
     );
 
-    peer.app
-        .channel
-        .close()
-        .await
-        .expect("the browser closes the channel it was riding");
+    peer.app.close().await;
 
     assert_eq!(
         within_patience(reports.recv()).await,

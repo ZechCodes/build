@@ -23,7 +23,10 @@ use webrtc::peer_connection::{
 
 use crate::carrier::{self, CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
 
-pub mod chunk;
+pub(crate) mod chunk;
+
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 /// What a peer connection could not do. Never fatal to the session: a refused
 /// offer leaves the client working over the relay carrier, which the spec's
@@ -225,21 +228,18 @@ pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
 /// fails the moment the channel is closing. The envelope queue behind it is
 /// unbounded, so parking a writer trades the channel's send buffer for device
 /// heap while a client that will not drain is attached.
-pub const DC_BUFFERED_HIGH: usize = 1024 * 1024;
+const DC_BUFFERED_HIGH: usize = 1024 * 1024;
 
 /// The two channels every peer carries, created identically on both sides with
 /// explicit ids so no in-band open handshake is needed (spec §DataChannels).
 /// They mirror today's two relay sockets: SCTP streams are independent, so a
 /// terminal flood does not head-of-line block an RPC reply.
-///
-/// Public because the other side of every one of these channels is written
-/// against the same two labels and ids, and one of those sides is a test.
-pub const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
+pub(crate) const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
 
 /// How one of [`NEGOTIATED_CHANNELS`] is created, on whichever side is
 /// creating it: ordered, and negotiated on the id both sides already agreed.
 /// Both ends of a channel must ask for the same thing, so both ends ask here.
-pub fn negotiated_channel(id: u16) -> RTCDataChannelInit {
+pub(crate) fn negotiated_channel(id: u16) -> RTCDataChannelInit {
     RTCDataChannelInit {
         ordered: true,
         negotiated: Some(id),

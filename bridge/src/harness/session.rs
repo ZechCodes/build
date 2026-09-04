@@ -331,6 +331,10 @@ pub struct SessionOutput {
     pub bytes: Option<broadcast::Receiver<Vec<u8>>>,
     /// The session's own account of its work, for one that keeps it.
     pub activity: Option<broadcast::Receiver<ActivityReport>>,
+    /// The session's notice that its surfaces moved, for one that keeps them
+    /// ([`AgentSession::surfaces_changed`]). Carried here so the pump that
+    /// watches it never has to read the session back off a registry.
+    pub surfaces: Option<watch::Receiver<u64>>,
 }
 
 impl SessionOutput {
@@ -339,14 +343,19 @@ impl SessionOutput {
         SessionOutput {
             bytes: Some(bytes),
             activity: None,
+            surfaces: None,
         }
     }
 
     /// The output of a session that reports what it is doing.
-    pub fn reporting(activity: broadcast::Receiver<ActivityReport>) -> SessionOutput {
+    pub fn reporting(
+        activity: broadcast::Receiver<ActivityReport>,
+        surfaces: Option<watch::Receiver<u64>>,
+    ) -> SessionOutput {
         SessionOutput {
             bytes: None,
             activity: Some(activity),
+            surfaces,
         }
     }
 
@@ -356,6 +365,7 @@ impl SessionOutput {
         SessionOutput {
             bytes: None,
             activity: None,
+            surfaces: None,
         }
     }
 }

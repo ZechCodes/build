@@ -201,14 +201,23 @@ from the design above.
   the longest holds are, so leaving it bare would have made this step's
   before/after number for §3 read as no hold to remove, and left `lock_holder`
   saying nobody held the mutex while a spawn's probe and scaffold held it for
-  seconds.
+  seconds. The one acquisition on the frame's thread that is not timed is
+  deleted instead: `spawn_activity_pump`, which `term_create` and
+  `ensure_agent_tab` reach through `spawn_tab_pumps` one statement after their
+  own lock block releases, took the mutex bare to read the new tab's
+  `surfaces_changed()` back off the registry. `SessionOutput` now carries that
+  receiver (`surfaces`, subscribed in `open_session` beside the bytes and the
+  activity stream, harness/session.rs:329), so the pumps start touching no
+  lock and a `term.create` or a fresh `agent.start` makes no acquisition its
+  timer cannot see.
 - **The MCP control socket is a frame too.** It reaches the same delivery path
   with no relay frame behind it, so it mints its own timer per socket line off
   the state's clock and records under `mcp.control` (app.rs:4462) — a name of
   its own, since it is not a wire method.
 - **What is deliberately not timed.** The pump, the diff-refresh publish and the
   idle sweep are background threads: their holds belong to no frame, and a
-  timer minted per chunk would count a pump as a frame served.
+  timer minted per chunk would count a pump as a frame served. A pump's
+  *start* is on the frame's thread and is not on this list: it takes no lock.
 - **Owns frame latency, not every clock.** The timestamps that decide
   staleness keep their own `Instant`s: `TermScreen.last_flood_snapshot_at`
   (app.rs:243), `Tab.last_delivered_at` (701), `ExternalScanCache.scanned_at`
@@ -238,6 +247,7 @@ from the design above.
   `bridge_stats_count_every_frame_under_its_own_method`,
   `a_frames_delivery_path_reports_its_hold_and_names_its_method`,
   `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock`,
+  `a_tabs_pumps_start_while_another_frame_holds_the_app_mutex`,
   `a_done_over_the_socket_is_timed_under_its_own_method`.
 
 ## 2. `ScreenHandle` — the per-tab screen

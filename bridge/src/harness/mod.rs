@@ -290,7 +290,11 @@ pub fn open_session(
         }
         Carrier::Protocol => {
             let (session, activity) = adk::AdkSession::spawn(spec, Some(root))?;
-            (Arc::new(session), SessionOutput::reporting(activity))
+            let surfaces = session.surfaces_changed();
+            (
+                Arc::new(session),
+                SessionOutput::reporting(activity, surfaces),
+            )
         }
     };
     refuse_a_session_nobody_can_watch(session.as_ref())?;

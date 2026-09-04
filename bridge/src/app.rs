@@ -18398,7 +18398,7 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>, timer: &FrameTimer)
 /// closing ([`open_session`] refuses a session with no stream at all).
 fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, output: SessionOutput) {
     spawn_tab_pump(state, key.clone(), output.bytes);
-    spawn_activity_pump(state, key, output.activity);
+    spawn_activity_pump(state, key, output.activity, output.surfaces);
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
@@ -18542,6 +18542,7 @@ fn spawn_activity_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
     rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+    mut surfaces_changed: Option<tokio::sync::watch::Receiver<u64>>,
 ) {
     let Some(mut rx) = rx else {
         return;
@@ -18551,12 +18552,6 @@ fn spawn_activity_pump(
         // nothing to spawn the pump onto.
         return;
     }
-    let mut surfaces_changed = state
-        .lock()
-        .unwrap()
-        .tabs
-        .get(&key)
-        .and_then(|tab| tab.session.surfaces_changed());
     let state = Arc::clone(state);
     tokio::spawn(async move {
         loop {
@@ -19007,18 +19002,38 @@ mod tests {
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
     use crate::timing::{recording_clock, SLOW_FRAME};
 
-    /// The delivery path as a test that is not measuring a frame calls it.
+    /// The frame path as a test that is not measuring a frame calls it.
     ///
-    /// Every acquisition these three make belongs to the frame that asked for
-    /// them, so they take that frame's timer. A test calling them directly has
-    /// no frame, so it gets one of its own and these shadow the real functions
-    /// for the rest of the module. A test that IS about the timing calls
-    /// `super::` and passes the timer it means.
+    /// Every acquisition the delivery path makes belongs to the frame that
+    /// asked for it, so it takes that frame's timer. A test calling it directly
+    /// has no frame, so it gets one of its own and these shadow the real
+    /// functions for the rest of the module. A test that IS about the timing
+    /// calls `super::` and passes the timer it means.
+    ///
+    /// The activity pump makes no acquisition at all: it is handed its session's
+    /// revision channel with the rest of the session output. A test that put a
+    /// dictated tab in the registry has no session output, so its shadow reads
+    /// the channel back off the tab — under a bare lock, which no frame holds
+    /// here because no frame is running.
     mod untimed {
         use super::*;
 
         fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
             Arc::clone(&state.lock().unwrap().frame_clock).frame("test")
+        }
+
+        pub(super) fn spawn_activity_pump(
+            state: &Arc<Mutex<AppState>>,
+            key: TabKey,
+            rx: Option<broadcast::Receiver<crate::harness::ActivityReport>>,
+        ) {
+            let surfaces_changed = state
+                .lock()
+                .unwrap()
+                .tabs
+                .get(&key)
+                .and_then(|tab| tab.session.surfaces_changed());
+            super::super::spawn_activity_pump(state, key, rx, surfaces_changed)
         }
 
         pub(super) fn ensure_agent_tab(
@@ -19064,7 +19079,7 @@ mod tests {
             super::super::deliver_pending_agent_turns(state, &a_frame(state))
         }
     }
-    use untimed::{deliver, deliver_pending_agent_turns, ensure_agent_tab};
+    use untimed::{deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump};
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -19983,6 +19998,38 @@ mod tests {
             slow_frame_millis(line, "lock_wait=") > 0.0,
             "the waiting frame's own acquisitions went unrecorded: {line}"
         );
+    }
+
+    /// A frame that inserts a tab starts its pumps one statement after its own
+    /// lock block releases, on the frame's thread. An acquisition there is the
+    /// frame's — charged to nothing and named as nobody's if it is bare — so
+    /// the pumps take what they need from the session output they are handed
+    /// and touch no lock at all: they start while another frame holds it.
+    #[tokio::test]
+    async fn a_tabs_pumps_start_while_another_frame_holds_the_app_mutex() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let key = derived_agent_key(dir.path(), "run-pumped");
+        let (_activity, subscribed) = broadcast::channel(4);
+        let (_revision, watched) = tokio::sync::watch::channel(0u64);
+        let held = state.lock().unwrap();
+
+        let runtime = tokio::runtime::Handle::current();
+        let starting = Arc::clone(&state);
+        let (started, start) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _in_runtime = runtime.enter();
+            spawn_tab_pumps(
+                &starting,
+                key,
+                SessionOutput::reporting(subscribed, Some(watched)),
+            );
+            let _ = started.send(());
+        });
+        start
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the pumps started with the app mutex held by another frame");
+        drop(held);
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history

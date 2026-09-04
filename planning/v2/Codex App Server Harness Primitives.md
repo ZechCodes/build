@@ -134,29 +134,40 @@ under one writer lock, flushes, and returns its exact I/O or encoding error.
 
 ### `ServerRequestPolicy`
 
-- **Boundary:** Purely maps a typed server request and coordinator-supplied time to
-  `ServerRequestDecision { response, after_response }`. The connection writes
-  `response` first; only after that `Result` succeeds may the session apply
-  `Continue`, `FailTurn(reason)`, or `FailSession(reason)`.
-- **Interface:** `decide(ServerRequest, current_unix_seconds: i64) ->
-  ServerRequestDecision`.
-- **Hides:** Every known app-server callback and the required-now no-UI policy.
+- **Boundary:** Purely maps a typed server request, its `ParentThreadRoute`, and
+  coordinator-supplied time to `ServerRequestDecision { response,
+  after_response }`. It is the only owner of the safe response for every known
+  method, on either route. The connection writes `response` first; only after
+  that `Result` succeeds may the session apply `Continue`, `FailTurn(reason)`,
+  or `FailSession(reason)`.
+- **Interface:** `decide(ServerRequest, ParentThreadRoute,
+  current_unix_seconds: i64) -> ServerRequestDecision`.
+- **Hides:** Every known app-server callback, the required-now no-UI policy, and
+  the route's effect on the after-response decision.
 
 The session coordinator samples whole Unix seconds and passes that value to
 `decide`; `ServerRequestPolicy` never reads a clock.
 
-Request decoding classifies the method before validating method-specific
-params. A known thread-scoped method enters `ParentThreadFilter` before its
-focused typed params decoder; other known methods enter only their focused typed
-decoder. Any unknown method becomes `ServerRequest::Unknown { id, method }`
-without inspecting `params`; absent params and arbitrary valid JSON params,
-including scalars and arrays, therefore receive JSON-RPC `-32601`
-method-not-found and then the `FailSession` policy below. Malformed JSON-RPC
-envelopes still fail before policy.
+Every inbound server request is decoded into `ServerRequest` exactly once, at
+one construction point, and `decide` is the only dispatch over that enum. The
+static method lookup table selects the variant and its focused params decoder;
+a known thread-scoped method takes its `ParentThreadRoute` from
+`ParentThreadFilter` first, and the route selects which decoder that one
+construction point runs. `ParentThreadRoute::Parent` and `Unscoped` run the
+focused typed params decoder and build the variant with typed params;
+`ParentThreadRoute::Child` builds the same variant without validating any
+non-routing param, because no child response depends on one. There is no second
+match on the method tag after construction, and no separate child policy.
+
+Any unknown method becomes `ServerRequest::Unknown { id, method }` without
+inspecting `params`; absent params and arbitrary valid JSON params, including
+scalars and arrays, therefore receive JSON-RPC `-32601` method-not-found and
+then the `FailSession` policy below. Malformed JSON-RPC envelopes still fail
+before policy.
 
 The exhaustive 0.153.0 policy is:
 
-| Server request | Response | Decision after successful write |
+| Server request | Response | Parent or unscoped decision after successful write |
 | --- | --- | --- |
 | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | typed `decline` | Continue; report one bounded `TaskUpdate` |
 | legacy `execCommandApproval`, `applyPatchApproval` | typed denied decision | Continue; report one bounded `TaskUpdate` |
@@ -168,6 +179,15 @@ The exhaustive 0.153.0 policy is:
 | `attestation/generate` | JSON-RPC `-32601` unsupported | FailSession; Build did not advertise attestation support |
 | `currentTime/read` | `{ "currentTimeAt": <i64> }` | Continue |
 | unknown method | JSON-RPC `-32601` method-not-found | FailSession after replying |
+
+The `Response` column is the whole response fact for both routes; only the
+decision column is route-dependent. For `ParentThreadRoute::Child`,
+`after_response` is always `Continue` with no report, so a child request whose
+parent decision is `FailTurn` or `FailSession` never interrupts, fails, or
+otherwise targets the parent session. `Child` reaches `decide` only for the
+thread-scoped known methods; `ParentThreadFilter` returns `Unscoped` for
+`account/chatgptAuthTokens/refresh`, `attestation/generate`, and unknown
+methods, which therefore keep the tabled decision.
 
 The launch requests `approvalPolicy: "never"`, so approval callbacks are
 unexpected but still answered. Nothing is auto-approved and no request waits for
@@ -185,19 +205,23 @@ fails, connection failure wins and none of these follow-up actions runs.
   It hands stdin/stdout to `AppServerConnection` exactly once and never parses
   protocol messages or allocates request ids.
 - **Interface:** `spawn(spec, root, process_events) ->
-  Result<(AppServerProcess, ConnectionPipes), HarnessError>`, `exit_code()`,
-  `exited_within(timeout)`, `stderr_epitaph()`, and `shutdown() ->
-  Result<(), HarnessError>`.
+  Result<(AppServerProcess, ConnectionPipes), HarnessError>`,
+  `exited_within(timeout)`, and `shutdown() -> Result<(), HarnessError>`.
 - **Hides:** Spawn setup, pipe extraction, signal-derived exit codes, wait/reap
   races, and stderr retention.
 
 The process monitor and stderr drainer each push exactly one typed terminal
 source event asynchronously to the session coordinator:
 `TerminalSourceEvent::ProcessSettled { exit_code, monitor_error }` and
-`TerminalSourceEvent::StderrSettled { retained_tail, drainer_error }`. Failure
-is carried in that source's settled event; neither source waits for
+`TerminalSourceEvent::StderrSettled { retained_tail, drainer_error }`. That
+event pair is the only delivery path for the exit code and the retained stderr
+tail; `AppServerProcess` exposes no accessor for either fact, so the coordinator
+cannot read one value from an event and a second from the process. Failure is
+carried in that source's settled event; neither source waits for
 `AgentSession::status()` to discover it or mutates `CodexSessionState` itself.
 The coordinator owns the resulting failure transition and shutdown.
+`exited_within` reports only reap lag for the existing `AgentSession` method and
+never reports an exit code or an epitaph.
 
 `CodexAppServerSession::end` first calls idempotent `connection.close()` to send
 EOF, then idempotent `process.shutdown()`. Shutdown returns the cached result if
@@ -212,7 +236,9 @@ second process owner.
 
 - **Boundary:** The only owner of initialization, thread, active-turn, pending
   turn reconciliation, ordered user input, pending interrupt, liveness, active
-  model, and last reported error state.
+  model, and last reported error state. Every parent-owned error notification is
+  a lifecycle event delivered here, so one primitive decides both what an error
+  reports and whether it is terminal.
 - **Interface:** Pure transitions over lifecycle `ConnectionEvent` and
   `SessionCommand` values, returning `SessionEffect` values for JSON-RPC writes,
   session-fact updates, bounded operational reports, or close. Item
@@ -292,23 +318,13 @@ The filter reads only the method's routing field. During thread opening, a
 establish the candidate parent id; after opening, a thread-scoped inbound value
 is parent-owned only when its exact `threadId` or legacy `conversationId`
 matches the active parent. Notification `Child` returns before full params
-decoding. A known server-request `Child` enters `ChildServerRequestPolicy`
-without validating any non-routing param.
+decoding.
 
-`ChildServerRequestPolicy` produces a typed response from the already classified
-known method:
-
-| Known child request | Safe response |
-| --- | --- |
-| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | typed `decline` |
-| `execCommandApproval`, `applyPatchApproval` | corresponding typed denied decision |
-| `mcpServer/elicitation/request` | `{ action: "decline" }` |
-| `item/tool/requestUserInput`, `item/permissions/requestApproval`, `item/tool/call` | JSON-RPC `-32601` unsupported |
-| `currentTime/read` | `{ "currentTimeAt": <coordinator-supplied i64> }` |
-
-Every child decision is `Continue` with no report. In particular, a child method
-whose parent policy is `FailTurn` never interrupts or otherwise targets the
-parent turn.
+The filter never chooses a response. A known server-request `Child` is built
+into the same `ServerRequest` variant as its parent counterpart, without
+validating any non-routing param, and `ServerRequestPolicy::decide` receives
+the route; that one policy owns the safe response and the always-`Continue`
+child decision, so no child method is matched a second time here.
 
 Apart from writing that required response, `Child` returns before any parent
 lifecycle, quiet clock, activity, error, epitaph, diagnostic, open-item,
@@ -318,21 +334,31 @@ parent session. A response-write failure remains the ordinary connection-level
 failure. A `subAgentActivity` item emitted on the parent thread remains parent
 activity even though its payload describes a child agent.
 
-### Turn controller
+### `TurnCommandAdapter`
 
-- **Boundary:** Implements the existing `AgentSession::{send_turn,
-  can_interrupt, interrupt}` contract from `CodexSessionState`.
-- **Interface:** `send_turn(Turn)` returns when the session accepts the command,
-  never when the model finishes; `interrupt()` returns after writing or queuing
-  the cancellation.
-- **Hides:** The choice among Codex turn methods and the active thread/turn ids.
+- **Boundary:** The `AgentSession`-facing adapter for the existing
+  `AgentSession::{send_turn, can_interrupt, interrupt}` contract. It converts a
+  call into one `SessionCommand::{SendTurn, Interrupt}` value handed to
+  `CodexSessionState`, and reads that state's published acceptance to answer
+  `can_interrupt`. It holds no turn state, decides no Codex method, and applies
+  no transition rule.
+- **Interface:** `send_turn(Turn)` returns when the state accepts the command,
+  never when the model finishes; `interrupt()` returns once the state has
+  accepted the cancellation command.
+- **Hides:** That an `AgentSession` call becomes a `SessionCommand` at all.
+  Callers never name a Codex method, a thread id, or a turn id.
 
-In `Waiting`, `send_turn` retains the input in `PendingOperation::StartTurn`,
-writes `turn/start`, and enters `StartingTurn`. In `Working`, it retains the
-input in `PendingOperation::SteerTurn` and writes `turn/steer` with `threadId`
-and the exact active `expectedTurnId`. At most one steer request is in flight;
-later inputs enter the ordered bounded queue and are not written until that
-steer is reconciled. This serializes steers and preserves user order.
+Every rule below is a `CodexSessionState` transition over those commands;
+`CodexSessionState` remains the only owner of the active turn, the pending turn
+reconciliation, the ordered input queue, and the pending interrupt.
+
+On `SessionCommand::SendTurn` in `Waiting`, the state retains the input in
+`PendingOperation::StartTurn`, writes `turn/start`, and enters `StartingTurn`.
+In `Working`, it retains the input in `PendingOperation::SteerTurn` and writes
+`turn/steer` with `threadId` and the exact active `expectedTurnId`. At most one
+steer request is in flight; later inputs enter the ordered bounded queue and are
+not written until that steer is reconciled. This serializes steers and preserves
+user order.
 
 `StartingTurn` resolves every legal ordering:
 
@@ -384,15 +410,15 @@ the turn but does not send another queued input until the response establishes
 whether the retained steer was accepted or must be replayed. Thus
 completion-before-response cannot duplicate or lose a message.
 
-`can_interrupt` is true only while one turn is active and no interrupt is
-pending. `interrupt` sends `turn/interrupt { threadId, turnId }`; it never kills
-the process. A turn submitted after an interrupt request is held in a bounded
-session-owned queue and starts only after `turn/completed`, so it cannot steer a
-turn the user just cancelled. A completion before the interrupt response is
-retained against the pending operation; later success or `-32600` no-active-turn
-is satisfied, while another error is reported without reopening the completed
-turn. `turn/completed` is never Build completion: `done` remains the only
-lifecycle report.
+`can_interrupt` is true only while the state holds one active turn and no
+pending interrupt. `SessionCommand::Interrupt` sends `turn/interrupt {
+threadId, turnId }`; it never kills the process. A turn submitted after an
+interrupt request is held in a bounded session-owned queue and starts only after
+`turn/completed`, so it cannot steer a turn the user just cancelled. A
+completion before the interrupt response is retained against the pending
+operation; later success or `-32600` no-active-turn is satisfied, while another
+error is reported without reopening the completed turn. `turn/completed` is
+never Build completion: `done` remains the only lifecycle report.
 
 ### `CodexActivityTranslator`
 
@@ -432,10 +458,12 @@ The exhaustive classification and report mapping is one place:
 | unknown item | `Suppressed { reason: UnknownItem }` |
 
 Delta notifications update the quiet clock but allocate no transcript and do
-not mint one conversation row per token. Error notifications are outside item
-classification: each emits a bounded `TaskUpdate`, and a terminal parent error
-also becomes the session epitaph. An open tracked tool is removed on completion;
-tracked tools still open at `turn/completed` emit `Unanswered`.
+not mint one conversation row per token. Error notifications are not item
+notifications and never reach the translator: they are lifecycle events, so
+`CodexSessionState` receives each one, returns its bounded `TaskUpdate` as a
+`SessionEffect`, and is the only primitive that decides whether a terminal
+parent error becomes the session epitaph. An open tracked tool is removed on
+completion; tracked tools still open at `turn/completed` emit `Unanswered`.
 
 `CompletedItemLedger` is a provider-owned, per-session LRU of `(turn_id,
 item_id)` keys. Production retains at most 256 keys and 128 KiB of aggregate
@@ -513,17 +541,34 @@ inspect drainer health, transition state, close activity, or initiate shutdown.
 Process and drainer failures arrive through `TerminalSourceEvent` and are
 handled by the coordinator even if no caller polls status.
 
-The coordinator owns a `TerminalSnapshot` with independently pending/settled
-stdout-reader, process-monitor, and stderr-drainer outcomes, plus the first
-terminal protocol/session error. The protocol reader sends decoded events in
-wire order and then exactly one `TerminalSourceEvent::StdoutSettled {
-reader_error }` after EOF or its terminal decode error. Any terminal trigger may
-begin idempotent process shutdown immediately, but the coordinator does not
-publish `Ended`, close the activity sender, or publish the final epitaph until
-all three source outcomes are settled. A clean settled source remains part of
-the barrier; reader completion alone is insufficient.
+`TerminalSnapshot` is the coordinator's owner of terminal settlement and
+epitaph selection:
 
-Once the barrier is complete, final epitaph selection has this fixed priority:
+- **Boundary:** Constructed once per session with all three sources pending. It
+  owns the barrier over the stdout-reader, process-monitor, and stderr-drainer
+  outcomes, the first terminal protocol/session error, and the epitaph choice
+  among them. It performs no I/O, reads no clock, holds no process handle, and
+  never publishes; the coordinator alone publishes what the snapshot returns.
+- **Interface:** `with_terminal_event(CoordinatorTerminalEvent) ->
+  TerminalSnapshot` returns the next snapshot for one source settlement or one
+  terminal protocol/session error, and `outcome() -> Option<TerminalOutcome {
+  exit_code, epitaph }>` returns `Some` only once all three sources are settled.
+  Those two operations are the whole surface; the coordinator applies each
+  terminal event and publishes `Ended` when `outcome()` first returns `Some`.
+- **Hides:** Per-source pending/settled bookkeeping, first-error retention,
+  exit-code extraction from the process outcome, and the priority ladder below.
+  The coordinator never counts settled sources or compares two epitaph
+  candidates.
+
+The protocol reader sends decoded events in wire order and then exactly one
+`TerminalSourceEvent::StdoutSettled { reader_error }` after EOF or its terminal
+decode error. Any terminal trigger may begin idempotent process shutdown
+immediately, but the coordinator does not publish `Ended`, close the activity
+sender, or publish the final epitaph until `outcome()` returns `Some`. A clean
+settled source remains part of the barrier; reader completion alone is
+insufficient.
+
+Epitaph selection inside `TerminalSnapshot` has this fixed priority:
 
 | Priority | Epitaph source |
 | ---: | --- |
@@ -533,16 +578,29 @@ Once the barrier is complete, final epitaph selection has this fixed priority:
 | 4 | retained non-empty stderr tail |
 | 5 | no epitaph |
 
-The process outcome independently supplies the stable exit code. Because final
-publication uses the completed snapshot rather than event arrival order, a
-process-monitor or stderr-drainer failure that arrives after stdout settlement
-is still included, while a buffered stdout protocol error always outranks
-process failure, drainer failure, and stderr fallback.
+`TerminalOutcome.exit_code` comes from the process outcome independently of that
+ladder. Because final publication uses the completed snapshot rather than event
+arrival order, a process-monitor or stderr-drainer failure that arrives after
+stdout settlement is still included, while a buffered stdout protocol error
+always outranks process failure, drainer failure, and stderr fallback.
 
 ### Bounds and forward compatibility
 
-`AppServerLimits` is the one value passed to process, connection, state, and
-translator. Production uses these conservative defaults:
+`AppServerLimits` is the one bounds value shared by process, connection, state,
+and translator:
+
+- **Boundary:** `CodexAppServerHarness` constructs exactly one `AppServerLimits`
+  per session from the defaults below and passes it down; no other component
+  constructs limits, reads a global, or mutates a limit after construction.
+- **Interface:** One immutable `Copy` value whose per-component accessors
+  (`connection()`, `process()`, `state()`, `translator()`) hand each consumer
+  only the limits it enforces, so a component cannot read a limit it does not
+  own. Tests override production values by constructing one value at the
+  harness, never by reaching into a component.
+- **Hides:** The defaults table, the grouping of limits per consumer, and the
+  units each limit is counted in.
+
+Production uses these conservative defaults:
 
 | Limit | Value |
 | --- | ---: |
@@ -673,12 +731,12 @@ Implementation follows TDD. Each matrix row starts as a failing test:
 | Steer completion race | completion then `-32600` and `-32600` then completion each replay retained input exactly once as a new turn; success after completion never replays; missing completion reaches the five-second failure |
 | Non-steerable turn | `activeTurnNotSteerable` does not pretend completion; retained input waits behind the same turn and starts once after its matching completion |
 | Interrupt | duplicate interrupt is a no-op; completion before response plus later success or `-32600` stays completed; queued post-interrupt input starts only after completion; interrupt never kills the process |
-| Server requests | one table-driven case for every `ServerRequest` variant asserts exact response bytes and after-response decision; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown methods with absent, object, array, scalar, or null params reply `-32601` before session failure, while malformed known-method params fail typed decoding; no path approves |
+| Server requests | one table-driven case for every (`ServerRequest` variant, `ParentThreadRoute`) pair asserts exact response bytes from the one policy and the after-response decision, `Continue` on every child route; injected time produces `{ "currentTimeAt": <i64> }` without a clock read; response-write failure prevents the decision; unknown methods with absent, object, array, scalar, or null params reply `-32601` before session failure, while malformed known-method params fail typed decoding; no path approves |
 | Parent isolation | child lifecycle, item, delta, malformed error, terminal error, and unknown notifications cause no state, quiet-clock, activity, error, epitaph, diagnostic, ledger, or limit mutation; every schema-known thread-scoped child request, including malformed non-routing params, receives its exact typed safe response with `Continue` and no report or parent mutation; child `currentTime/read` returns `{ "currentTimeAt": <coordinator-supplied i64> }`; child user-input, permission, and dynamic-tool requests never produce a parent `FailTurn`; root `thread/started` still establishes the candidate parent; parent-thread `subAgentActivity` remains visible |
 | Translation | one table-driven case for each of the 19 `ThreadItem` discriminators in the generated 0.153.0 schema, plus separate Build/non-Build `mcpToolCall` and unknown-fallback cases, asserts the exact `ItemClassification`, lifecycle behavior, and tool summary category; each required item emits the stated report once; tool result pairs by item id; natural collaboration events and review-mode transitions remain visible; all suppressed items require no id and consume no ledger capacity; experimental `plan` remains suppressed/deferred; open calls close `Unanswered` at turn end |
 | Completed-item ledger | duplicates suppress completion and late start while retained and refresh recency; count and byte pressure evict oldest keys without failure; individually oversized keys process without retention; long turns exceeding the window remain live; evicted duplicates document the finite-window tradeoff; turn close clears only that turn's keys |
 | Bounds/decoder | exact-limit frames pass; limit-plus-one is discarded through newline at fixed capacity before one terminal error; an oversized suffix is never decoded as another frame; no-newline, invalid UTF-8, invalid/trailing JSON, and blank frames fail at bounded allocation; aggregate queue/open-item limits release bytes on removal; stderr drains while retained bytes stay capped |
-| Process/liveness | all permutations of stdout, process, and stderr settlement publish `Ended`, close activity, and expose the epitaph only after all three settle; process-monitor and stderr-drainer failures arriving after stdout settlement are retained in the final snapshot; fixed precedence is protocol/session error, process-monitor failure, stderr-drainer failure, stderr tail, then none; process exit and both failures reach the coordinator without status polling; `status()` is a pure read; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
+| Process/liveness | all permutations of stdout, process, and stderr settlement publish `Ended`, close activity, and expose the epitaph only after all three settle; process-monitor and stderr-drainer failures arriving after stdout settlement are retained in the final snapshot; fixed precedence is protocol/session error, process-monitor failure, stderr-drainer failure, stderr tail, then none; process exit and the retained stderr tail reach the coordinator only through the settled events, with no process accessor for either; both failures reach the coordinator without status polling; `status()` is a pure read; close/end/drop kill at most once and reap exactly once; signal exits have stable codes |
 | Dispatch shape | method lookup selects focused typed request and notification handlers; the single item classifier selects lifecycle behavior and summary category; each dispatch function remains under the `~10-path` complexity target |
 | Compatibility/UI | existing activity pump, idle sweep, resume persistence, store fixtures, and MCP `done` tests pass; settings lists the new provider; only allowed provider/default wiring changes in the SPA |
 

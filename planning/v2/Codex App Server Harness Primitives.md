@@ -113,8 +113,12 @@ multiplexing across owners, and keeps each MCP token scoped to one agent.
   requires.
 - **Interface:** `request(PendingOperation) -> Result<(), ConnectionError>`,
   `notify(ClientNotification) -> Result<(), ConnectionError>`,
-  `respond(ServerResponse) -> Result<(), ConnectionError>`, and `close() ->
-  Result<(), ConnectionError>`. No other component writes app-server stdin.
+  `respond(ServerResponse) -> Result<(), ConnectionError>`, `close() ->
+  Result<(), ConnectionError>`, and `read_event(&mut dyn Read) ->
+  Result<Option<ConnectionEvent>, ConnectionError>`, which reads one bounded
+  JSONL frame and decodes it in a single operation, returning `None` at end of
+  stream. No other component writes app-server stdin, and `read_event` is the
+  only reader of app-server stdout: raw frames never leave the connection.
 - **Hides:** Monotonic checked request-id allocation, serialization, the bounded
   `RequestId -> PendingOperation` map, and out-of-order response matching.
   `RequestId` is internal to the connection: it is never returned from

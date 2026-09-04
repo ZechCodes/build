@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::connection::AppServerConnection;
+use super::connection::{AppServerConnection, ConnectionError};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
@@ -129,6 +129,17 @@ fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
         .state
 }
 
+fn decode(
+    connection: &AppServerConnection,
+    message: Value,
+) -> Result<ConnectionEvent, ConnectionError> {
+    let mut line = serde_json::to_vec(&message).unwrap();
+    line.push(b'\n');
+    connection
+        .read_event(&mut Cursor::new(line))
+        .map(|event| event.expect("a complete frame yields one event"))
+}
+
 #[test]
 fn correlation_resolves_out_of_order_to_typed_operations() {
     let connection = AppServerConnection::memory(limits().connection());
@@ -138,12 +149,13 @@ fn correlation_resolves_out_of_order_to_typed_operations() {
         panic!("two correlated requests are pending");
     };
 
-    let second_event = connection
-        .decode(json!({"id":second,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":null,"cwd":"/tmp","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}))
+    let second_event = decode(&connection, json!({"id":second,"result":{"thread":{"id":"t"},"model":"m","reasoningEffort":null,"cwd":"/tmp","approvalPolicy":"never","sandbox":{"type":"dangerFullAccess"}}}))
         .unwrap();
-    let first_event = connection
-        .decode(json!({"id":first,"result":{"userAgent":"build_bridge/0.153.0"}}))
-        .unwrap();
+    let first_event = decode(
+        &connection,
+        json!({"id":first,"result":{"userAgent":"build_bridge/0.153.0"}}),
+    )
+    .unwrap();
 
     assert!(matches!(
         second_event,
@@ -170,7 +182,7 @@ fn malformed_and_unknown_responses_fail_without_stealing_another_request() {
     ] {
         let connection = AppServerConnection::memory(limits().connection());
         connection.request(PendingOperation::Initialize).unwrap();
-        assert!(connection.decode(response).is_err());
+        assert!(decode(&connection, response).is_err());
     }
 }
 
@@ -186,11 +198,13 @@ fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
     let failed = AppServerConnection::failing_writer(limits().connection());
     assert!(failed.request(PendingOperation::Initialize).is_err());
     assert_eq!(failed.pending_count(), 0);
-    assert!(failed
-        .decode(json!({"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}))
-        .unwrap_err()
-        .to_string()
-        .contains("unknown response id 1"));
+    assert!(decode(
+        &failed,
+        json!({"id":1,"result":{"userAgent":"build_bridge/0.153.0"}})
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("unknown response id 1"));
 
     let exhausted = AppServerConnection::memory(limits().connection());
     exhausted.set_next_id(u64::MAX);
@@ -274,50 +288,13 @@ fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
     assert!(connection.notify(ClientNotification::Initialized).is_err());
 }
 
-fn frame_reader(inbound_frame_bytes: usize) -> AppServerConnection {
-    AppServerConnection::memory(
-        AppServerLimits {
-            inbound_frame_bytes,
-            ..limits()
-        }
-        .connection(),
-    )
-}
-
 #[test]
-fn jsonl_decoder_accepts_crlf_and_exact_limit_but_rejects_bad_frames() {
-    let valid = b"{\"method\":\"initialized\"}\r\n";
-    assert_eq!(
-        frame_reader(valid.len())
-            .read_frame(&mut Cursor::new(valid))
-            .unwrap(),
-        Some(json!({"method":"initialized"}))
-    );
-
-    for bad in [
-        b"\n".to_vec(),
-        b"{bad}\n".to_vec(),
-        b"{} trailing\n".to_vec(),
-        vec![0xff, b'\n'],
-        b"{}".to_vec(),
-    ] {
-        assert!(
-            frame_reader(bad.len() + 2)
-                .read_frame(&mut Cursor::new(bad.clone()))
-                .is_err(),
-            "{bad:?}"
-        );
-    }
-    assert!(frame_reader(4)
-        .read_frame(&mut Cursor::new(b"12345\n"))
-        .is_err());
-    let exact_crlf = b"1234\r\n";
-    assert_eq!(
-        frame_reader(4)
-            .read_frame(&mut Cursor::new(exact_crlf))
-            .unwrap(),
-        Some(json!(1234))
-    );
+fn app_server_eof_ends_the_session_with_a_close_effect() {
+    let transition = advance_to_waiting(initialized_state())
+        .transition(SessionEvent::Eof, Duration::ZERO, limits().state())
+        .unwrap();
+    assert_eq!(transition.effects, vec![SessionEffect::Close]);
+    assert_eq!(transition.state.status(), AgentStatus::Ended { code: None });
 }
 
 #[test]
@@ -2229,7 +2206,7 @@ fn replay_observed_fixture(fixture: &str) -> FixtureReplay {
             }
             continue;
         }
-        let event = connection.decode(message.clone()).unwrap();
+        let event = decode(&connection, message.clone()).unwrap();
         match event {
             ConnectionEvent::Response { operation, .. } => {
                 correlated_methods.push(operation.method())

@@ -557,16 +557,12 @@ fn read_until_settled(
 ) -> Option<String> {
     loop {
         let core = core.upgrade()?;
-        let frame = match core.connection.read_frame(stdout) {
-            Ok(Some(frame)) => frame,
+        let event = match core.connection.read_event(stdout) {
+            Ok(Some(event)) => event,
             Ok(None) => {
                 let _ = core.apply_state(SessionEvent::Eof);
                 return None;
             }
-            Err(error) => return Some(error.to_string()),
-        };
-        let event = match core.connection.decode(frame) {
-            Ok(event) => event,
             Err(error) => return Some(error.to_string()),
         };
         if let Err(error) = core.handle_connection(event) {

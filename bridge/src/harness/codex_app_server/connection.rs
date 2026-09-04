@@ -148,12 +148,19 @@ impl AppServerConnection {
     }
 
     /// Reads one JSONL frame from the app-server's stdout under the inbound bound
-    /// this connection owns, returning `None` at end of stream.
-    pub fn read_frame(&self, reader: &mut dyn Read) -> Result<Option<Value>, ConnectionError> {
-        read_jsonl_frame(reader, self.limits.inbound_frame_bytes)
+    /// this connection owns and decodes it into a typed event, returning `None`
+    /// at end of stream. This is the only reader of app-server stdout.
+    pub fn read_event(
+        &self,
+        reader: &mut dyn Read,
+    ) -> Result<Option<ConnectionEvent>, ConnectionError> {
+        match read_jsonl_frame(reader, self.limits.inbound_frame_bytes)? {
+            Some(value) => self.decode(value).map(Some),
+            None => Ok(None),
+        }
     }
 
-    pub fn decode(&self, value: Value) -> Result<ConnectionEvent, ConnectionError> {
+    fn decode(&self, value: Value) -> Result<ConnectionEvent, ConnectionError> {
         let object = value.as_object().ok_or_else(|| {
             ConnectionError::Protocol("top-level message is not an object".to_string())
         })?;
@@ -426,22 +433,71 @@ mod tests {
         )
     }
 
-    #[test]
-    fn oversized_frame_is_discarded_through_newline_before_the_error_returns() {
-        let connection = frame_reader(4);
-        let mut reader = Cursor::new(b"12345-not-another-frame\n{}\n");
-        assert!(matches!(
-            connection.read_frame(&mut reader),
-            Err(ConnectionError::FrameTooLarge(4))
-        ));
-        assert_eq!(connection.read_frame(&mut reader).unwrap(), Some(json!({})));
+    fn notification_method(event: Option<ConnectionEvent>) -> String {
+        match event {
+            Some(ConnectionEvent::Notification(inbound)) => inbound.method,
+            other => panic!("expected a notification, got {other:?}"),
+        }
     }
 
     #[test]
-    fn the_inbound_frame_limit_is_enforced_by_the_connection_that_owns_it() {
+    fn end_of_stream_reads_as_no_event() {
+        let mut empty = Cursor::new(b"".as_slice());
+        assert_eq!(frame_reader(64).read_event(&mut empty).unwrap(), None);
+    }
+
+    #[test]
+    fn crlf_frames_decode_up_to_the_exact_inbound_limit() {
+        let crlf = b"{\"method\":\"initialized\"}\r\n";
+        let mut reader = Cursor::new(crlf);
+        assert_eq!(
+            notification_method(frame_reader(crlf.len()).read_event(&mut reader).unwrap()),
+            "initialized"
+        );
+
+        let exact = b"{\"method\":\"exact\"}\r\n";
+        let mut reader = Cursor::new(exact);
+        let payload_length = exact.len() - b"\r\n".len();
+        assert_eq!(
+            notification_method(
+                frame_reader(payload_length)
+                    .read_event(&mut reader)
+                    .unwrap()
+            ),
+            "exact"
+        );
+    }
+
+    #[test]
+    fn malformed_frames_fail_without_being_decoded_as_events() {
+        for bad in [
+            b"\n".to_vec(),
+            b"{bad}\n".to_vec(),
+            b"{} trailing\n".to_vec(),
+            vec![0xff, b'\n'],
+            b"{}".to_vec(),
+            b"{}\n".to_vec(),
+            b"[]\n".to_vec(),
+        ] {
+            let mut reader = Cursor::new(bad.clone());
+            assert!(
+                frame_reader(bad.len() + 2).read_event(&mut reader).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_frame_is_discarded_through_newline_before_the_error_returns() {
+        let connection = frame_reader(20);
+        let mut reader = Cursor::new(b"123456789-not-another-frame\n{\"method\":\"next\"}\n");
         assert!(matches!(
-            frame_reader(4).read_frame(&mut Cursor::new(b"12345\n")),
-            Err(ConnectionError::FrameTooLarge(4))
+            connection.read_event(&mut reader),
+            Err(ConnectionError::FrameTooLarge(20))
         ));
+        assert_eq!(
+            notification_method(connection.read_event(&mut reader).unwrap()),
+            "next"
+        );
     }
 }

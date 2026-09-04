@@ -1415,17 +1415,19 @@ impl Orchestrator {
         Ok(self.worktrees.create(slug, base_branch)?)
     }
 
-    /// The same bare checkout, on a branch the caller named in full. Used when
-    /// a dispatch was given a branch name rather than words to name one after:
-    /// the name is a name, so it is cut exactly as given, `build/` or not — and
-    /// an existing branch is checked out rather than cut a second time, which
-    /// is what the answer's `branch_was_cut` tells teardown.
+    /// The same bare checkout, on a branch the caller named in full. A branch
+    /// that already exists — here or on a remote — is checked out rather than
+    /// cut a second time over the work it holds, and `when_absent` says what a
+    /// name no ref anywhere backs means to this caller.
     pub fn create_worktree_on_named_branch(
         &self,
         branch: &str,
         base_branch: &str,
+        when_absent: crate::worktree::AbsentBranch,
     ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
-        Ok(self.worktrees.create_on_branch(branch, base_branch)?)
+        Ok(self
+            .worktrees
+            .create_on_branch(branch, base_branch, when_absent)?)
     }
 
     /// Dispatch a run: create the `build/<slug>` worktree, scaffold `.build/`
@@ -1470,7 +1472,7 @@ impl Orchestrator {
                 Err(error) => {
                     // Nothing has been handed to the caller; don't leak the
                     // half-prepared worktree.
-                    self.discard_worktree(&worktree);
+                    self.discard_checkout(&worktree);
                     return Err(error);
                 }
             };
@@ -2652,27 +2654,34 @@ impl Orchestrator {
 
     /// Recreate a missing native implementation checkout from its exact
     /// persisted branch, using the verified local ref first and origin second.
-    pub fn restore_run_worktree(&self, worktree: &Worktree) -> Result<Worktree, OrchestratorError> {
-        Ok(self.worktrees.restore(worktree)?)
+    pub fn restore_run_worktree(
+        &self,
+        worktree: &Worktree,
+        when_unregistered: crate::worktree::UnregisteredRestore,
+    ) -> Result<Worktree, OrchestratorError> {
+        Ok(self.worktrees.restore(worktree, when_unregistered)?)
     }
 
-    /// Best-effort teardown of a leftover worktree + branch for a task being
-    /// deleted from the board. A failed cleanup is logged, never fatal — deleting
-    /// the task record is what removes it, and a stray worktree is only clutter.
-    pub fn discard_worktree(&self, worktree: &Worktree) {
-        self.discard_checkout(worktree, /* keep_branch */ false)
-    }
-
-    /// The same teardown, for a checkout whose branch Build did not cut: the
-    /// directory goes and the ref stays. A dispatch that checked out a branch
-    /// somebody else made and then failed must hand that branch back whole.
-    pub fn discard_checkout_keeping_branch(&self, worktree: &Worktree) {
-        self.discard_checkout(worktree, /* keep_branch */ true)
-    }
-
-    fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
+    /// Best-effort teardown of a leftover checkout for work being removed from
+    /// the board. The checkout itself says whether its branch goes with it: one
+    /// Build cut a branch for takes that branch, and one that was only checked
+    /// out over somebody else's branch hands it back whole.
+    ///
+    /// Failure is logged, never fatal — removing the record is what removes the
+    /// work, and a stray directory is only clutter. A checkout that cannot say
+    /// what teardown owns is left exactly as it is: guessing either way is
+    /// worse than clutter.
+    pub fn discard_checkout(&self, worktree: &Worktree) {
+        let teardown = match crate::worktree::branch_teardown(&worktree.path) {
+            Ok(teardown) => teardown,
+            Err(e) => {
+                eprintln!("discard_checkout {}: {e}", worktree.name);
+                return;
+            }
+        };
+        let keep_branch = teardown == crate::worktree::BranchTeardown::KeepsBranch;
         if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
-            eprintln!("discard_worktree {}: {e}", worktree.name);
+            eprintln!("discard_checkout {}: {e}", worktree.name);
         }
     }
 

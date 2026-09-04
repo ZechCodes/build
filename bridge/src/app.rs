@@ -1231,11 +1231,6 @@ struct BranchDispatchCreations {
     /// The checkout `branch.dispatch` cut for itself, when the branch it was
     /// asked for did not exist yet.
     minted_worktree: Option<crate::worktree::Worktree>,
-    /// Whether the branch under that checkout is one this call cut. A dispatch
-    /// onto a named branch that already existed adds a checkout for it and
-    /// nothing more: the branch is somebody's work, so cleanup takes the
-    /// directory and leaves the ref.
-    minted_branch: bool,
     /// The run `branch.dispatch` adopted the checkout into, minted or found.
     adopted_run: Option<String>,
 }
@@ -2526,7 +2521,7 @@ impl AppState {
                 .ok_or_else(|| "the original project/branch is unavailable".to_string())
                 .and_then(|project_id| {
                     self.orch_for(project_id)?
-                        .restore_run_worktree(&active.worktree)
+                        .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                         .map_err(err)
                 });
             match restored {
@@ -5117,7 +5112,7 @@ impl AppState {
             let project_id = self.project_of(run_id)?;
             let worktree = self
                 .orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                 .map_err(err)?;
             let checkout =
                 git2::Repository::open(&worktree.path).map_err(|error| error.to_string())?;
@@ -10030,7 +10025,7 @@ impl AppState {
             )
         } else {
             self.orch_for(&project_id)?
-                .restore_run_worktree(&active.worktree)
+                .restore_run_worktree(&active.worktree, unregistered_restore_for(&active))
                 .map_err(err)
         };
         match restored {
@@ -12240,7 +12235,7 @@ impl AppState {
     /// Prune a merged run's worktree once its `Merged` verdict is durable.
     fn prune_merged_worktree(&self, project_id: &str, worktree: &Worktree) {
         if let Ok(orch) = self.orch_for(project_id) {
-            orch.discard_worktree(worktree);
+            orch.discard_checkout(worktree);
         }
     }
 
@@ -12469,7 +12464,7 @@ impl AppState {
                 .as_deref()
                 .and_then(|pid| self.orch_for(pid).ok())
             {
-                orch.discard_worktree(&worktree);
+                orch.discard_checkout(&worktree);
             }
         }
 
@@ -13573,7 +13568,6 @@ impl AppState {
                                 &Self::canonical_root(&minted.worktree.path),
                             );
                             created.minted_worktree = Some(minted.worktree);
-                            created.minted_branch = minted.branch_was_cut;
                             worktree_id
                         }
                     };
@@ -13678,7 +13672,7 @@ impl AppState {
         let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
             Some(name) => self
                 .orch_for(project_id)?
-                .create_worktree_on_named_branch(name, &base)
+                .create_worktree_on_named_branch(name, &base, crate::worktree::AbsentBranch::Cut)
                 .map_err(err)?,
             None => {
                 let name = branch.unwrap_or(instruction);
@@ -13692,7 +13686,7 @@ impl AppState {
                         .orch_for(project_id)?
                         .create_bare_worktree(&crate::worktree::slugify(name), &base)
                         .map_err(err)?,
-                    branch_was_cut: true,
+                    teardown: crate::worktree::BranchTeardown::DeletesBranch,
                 }
             }
         };
@@ -13717,8 +13711,7 @@ impl AppState {
         }
         if let Some(worktree) = created.minted_worktree {
             match self.orch_for(project_id) {
-                Ok(orch) if created.minted_branch => orch.discard_worktree(&worktree),
-                Ok(orch) => orch.discard_checkout_keeping_branch(&worktree),
+                Ok(orch) => orch.discard_checkout(&worktree),
                 Err(error) => eprintln!("branch.dispatch cleanup: {error}"),
             }
             self.invalidate_external_scan(project_id);
@@ -15546,6 +15539,21 @@ impl BranchHolder {
             "external_worktree_id": self.held_by(crate::branch::BranchSource::ExternalWorktree),
             "primary_worktree_id": self.held_by(crate::branch::BranchSource::PrimaryCheckout),
         })
+    }
+}
+
+/// What a run can prove about its own checkout when git's registration for it
+/// is gone. A run Build dispatched works in a checkout
+/// [`crate::worktree::WorktreeManager::create`] made and nothing else, so the
+/// value the pruned registration carried is known. An adopted run's checkout
+/// may be one Build only checked out over somebody's branch, and with the
+/// registration gone nothing on disk says which — so it is not restored at
+/// all, rather than restored under a guess that could delete the branch.
+fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::UnregisteredRestore {
+    if active.adopted {
+        crate::worktree::UnregisteredRestore::Refuse
+    } else {
+        crate::worktree::UnregisteredRestore::Write(crate::worktree::BranchTeardown::DeletesBranch)
     }
 }
 

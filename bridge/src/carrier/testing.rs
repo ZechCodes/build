@@ -1,0 +1,80 @@
+//! The browser side of the carrier boundary, as a test builds it.
+//!
+//! One home for the frames a client sends the device and for the handler that
+//! reports what arrived, so the crate's own tests and the integration tests
+//! that drive a real relay socket state each shape once. Compiled for tests
+//! only, never into the daemon.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde_json::{json, Value};
+use tokio::sync::mpsc;
+
+use super::{FrameHandler, SessionSender};
+use crate::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
+
+/// The device a test's browser is talking to. Nothing checks it — the session
+/// key proves who holds what — so one value serves every test.
+pub const DEVICE_ID: &str = "dev-1";
+
+/// What a browser sends to open a session: its fresh session key, wrapped to
+/// the device's transport public key.
+pub fn session_init(
+    session_id: &str,
+    transport_public_key: &str,
+    session_key: &str,
+) -> SessionInit {
+    SessionInit {
+        session_id: session_id.to_string(),
+        device_id: DEVICE_ID.into(),
+        wrapped_session_key: transport::wrap_session_key(transport_public_key, session_key)
+            .expect("a browser can wrap to the device's transport key"),
+    }
+}
+
+/// One encrypted frame from the browser, addressed to the device as every
+/// client frame is.
+pub fn client_request(
+    session_key: &str,
+    session_id: &str,
+    frame_type: &str,
+    payload: Value,
+) -> Envelope {
+    transport::encrypt_frame(
+        session_key,
+        &OuterFields {
+            session_id: session_id.to_string(),
+            route_to: format!("device:{DEVICE_ID}"),
+        },
+        &FrameFields {
+            frame_type: frame_type.into(),
+            sender: transport::SENDER_CLIENT.into(),
+            payload,
+            message_id: None,
+            created_at: None,
+        },
+        None,
+    )
+    .expect("the client can encrypt to its own session key")
+}
+
+/// A handler that reports every frame it is given as `<frame_type>:<session_id>`,
+/// including the synthetic `close` a session gets when it ends. Read the
+/// reports with [`next_report`].
+pub fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
+    let (reported, reports) = mpsc::unbounded_channel();
+    let handler: FrameHandler = Arc::new(move |sender: SessionSender, frame| {
+        let _ = reported.send(format!("{}:{}", frame.frame_type, sender.session_id()));
+        json!({ "ok": true })
+    });
+    (handler, reports)
+}
+
+/// The next frame [`reporting_handler`] saw, or a failed test.
+pub async fn next_report(reports: &mut mpsc::UnboundedReceiver<String>) -> String {
+    tokio::time::timeout(Duration::from_secs(10), reports.recv())
+        .await
+        .expect("the handler ran in time")
+        .expect("the reports channel is open")
+}

@@ -16,6 +16,8 @@ use tokio::sync::mpsc;
 use crate::transport::{self, Envelope, Frame, KeyPairB64, OuterFields, SessionInit};
 
 mod dispatch;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 use dispatch::Dispatcher;
 
@@ -497,8 +499,8 @@ mod sender_tests {
 
 #[cfg(test)]
 mod registry_tests {
+    use super::testing::client_request;
     use super::*;
-    use crate::transport::FrameFields;
     use serde_json::json;
 
     pub(super) fn client_envelope(
@@ -516,30 +518,6 @@ mod registry_tests {
 
     pub(super) fn ended_ids(ended: Vec<SessionEnd>) -> Vec<String> {
         ended.into_iter().map(|end| end.session_id).collect()
-    }
-
-    pub(super) fn client_request(
-        session_key: &str,
-        session_id: &str,
-        frame_type: &str,
-        payload: Value,
-    ) -> Envelope {
-        transport::encrypt_frame(
-            session_key,
-            &OuterFields {
-                session_id: session_id.to_string(),
-                route_to: "device:d-1".into(),
-            },
-            &FrameFields {
-                frame_type: frame_type.into(),
-                sender: "client".into(),
-                payload,
-                message_id: None,
-                created_at: None,
-            },
-            None,
-        )
-        .expect("the client can encrypt to its own session key")
     }
 
     #[test]
@@ -832,6 +810,7 @@ mod registry_tests {
 #[cfg(test)]
 mod intake_tests {
     use super::registry_tests::*;
+    use super::testing::{client_request, next_report, reporting_handler};
     use super::*;
     use serde_json::json;
     use std::sync::LazyLock;
@@ -844,33 +823,13 @@ mod intake_tests {
     /// The intake's effect side: a session that ended gets its synthetic `close`
     /// frame, whoever reported the end.
     fn watching_intake() -> (Arc<FrameIntake>, mpsc::UnboundedReceiver<String>) {
-        let (seen, closes) = mpsc::unbounded_channel();
-        let handler: FrameHandler = Arc::new(move |sender, frame| {
-            let _ = seen.send(format!("{}:{}", frame.frame_type, sender.session_id()));
-            json!({ "ok": true })
-        });
-        (FrameIntake::new(handler, TRANSPORT.clone()), closes)
+        let (handler, reports) = reporting_handler();
+        (FrameIntake::new(handler, TRANSPORT.clone()), reports)
     }
 
-    async fn next_seen(closes: &mut mpsc::UnboundedReceiver<String>) -> String {
-        tokio::time::timeout(Duration::from_secs(5), closes.recv())
-            .await
-            .expect("the handler ran in time")
-            .expect("the channel is open")
-    }
-
-    /// What a browser sends to open a session: its fresh key, wrapped to the
-    /// device's transport key.
+    /// What a browser sends to open a session against `watching_intake`'s device.
     fn session_init(session_id: &str, session_key: &str) -> SessionInit {
-        SessionInit {
-            session_id: session_id.to_string(),
-            device_id: "d-1".into(),
-            wrapped_session_key: transport::wrap_session_key(
-                &TRANSPORT.public_key_b64,
-                session_key,
-            )
-            .expect("a browser can wrap to the device's key"),
-        }
+        testing::session_init(session_id, &TRANSPORT.public_key_b64, session_key)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -930,7 +889,7 @@ mod intake_tests {
             .await
             .expect("a close frame is accepted");
 
-        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+        assert_eq!(next_report(&mut seen).await, "close:s-1");
         assert!(matches!(
             intake
                 .registry
@@ -950,7 +909,7 @@ mod intake_tests {
 
         intake.close_carrier(&carrier);
 
-        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+        assert_eq!(next_report(&mut seen).await, "close:s-1");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -964,7 +923,7 @@ mod intake_tests {
 
         intake.close_session("s-1", &carrier);
 
-        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+        assert_eq!(next_report(&mut seen).await, "close:s-1");
         assert!(matches!(
             intake
                 .registry
@@ -997,7 +956,7 @@ mod intake_tests {
             .accept(client_envelope(&key, "s-1", "data"), &peer)
             .await
             .unwrap();
-        assert_eq!(next_seen(&mut seen).await, "data:s-1");
+        assert_eq!(next_report(&mut seen).await, "data:s-1");
 
         intake.close_session("s-1", &relay);
 
@@ -1021,13 +980,14 @@ mod intake_tests {
     async fn a_late_close_from_an_earlier_opening_leaves_the_reopened_session_alone() {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let (seen, mut frames) = mpsc::unbounded_channel();
+        let (report, mut frames) = reporting_handler();
         let handler: FrameHandler = Arc::new(move |sender, frame| {
-            let _ = seen.send(format!("{}:{}", frame.frame_type, sender.session_id()));
-            if frame.payload["method"] == "term.input" {
+            let holds_its_lane = frame.payload["method"] == "term.input";
+            let response = report(sender, frame);
+            if holds_its_lane {
                 let _ = release_rx.lock().unwrap().recv();
             }
-            json!({ "ok": true })
+            response
         });
         let intake = FrameIntake::new(handler, TRANSPORT.clone());
         let (first, _first_out) = CarrierHandle::open();
@@ -1048,7 +1008,7 @@ mod intake_tests {
             )
             .await
             .unwrap();
-        assert_eq!(next_seen(&mut frames).await, "data:s-1");
+        assert_eq!(next_report(&mut frames).await, "data:s-1");
 
         intake.close_carrier(&first);
         intake
@@ -1060,7 +1020,7 @@ mod intake_tests {
             .accept(client_envelope(&key, "s-1", "data"), &second)
             .await
             .expect("the reopened session takes frames");
-        assert_eq!(next_seen(&mut frames).await, "data:s-1");
+        assert_eq!(next_report(&mut frames).await, "data:s-1");
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
             frames.try_recv().is_err(),
@@ -1108,7 +1068,7 @@ mod intake_tests {
             .expect("the frame was admitted while the session was open");
 
         intake.close_carrier(&carrier);
-        assert_eq!(next_seen(&mut seen).await, "close:s-1");
+        assert_eq!(next_report(&mut seen).await, "close:s-1");
 
         intake.dispatcher.dispatch(sender, attach).await;
 

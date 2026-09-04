@@ -7,15 +7,19 @@
 
 use std::sync::Arc;
 
+use build_bridge::carrier::testing::{next_report, reporting_handler};
 use build_bridge::carrier::{FrameHandler, FrameIntake};
 use build_bridge::relay::{self, DeviceIdentity, RelayError};
-use build_bridge::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
+use build_bridge::transport::{self, Envelope};
+use common::{request_message, session_init_message};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
+
+mod common;
 
 /// Receive the next value or fail the test on a 10s timeout.
 async fn recv(rx: &mut mpsc::Receiver<Value>) -> Value {
@@ -150,17 +154,12 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
     // 2. Browser bootstraps a session: wrap a fresh key to the device.
     let session_id = "sess-1";
     let session_key = transport::generate_session_key();
-    let wrapped = transport::wrap_session_key(&transport_public_key, &session_key).unwrap();
     to_device
-        .send(json!({
-            "type": "session_init",
-            "session_id": session_id,
-            "session_init": serde_json::to_value(SessionInit {
-                session_id: session_id.into(),
-                device_id: "dev-1".into(),
-                wrapped_session_key: wrapped,
-            }).unwrap(),
-        }))
+        .send(session_init_message(
+            session_id,
+            &transport_public_key,
+            &session_key,
+        ))
         .await
         .unwrap();
 
@@ -172,28 +171,12 @@ async fn browser_relay_bridge_round_trip_is_e2e_encrypted() {
         .expect("browser verifies session_accept");
 
     // 4. Browser sends an encrypted request frame.
-    let request = transport::encrypt_frame(
-        &session_key,
-        &OuterFields {
-            session_id: session_id.into(),
-            route_to: "device:dev-1".into(),
-        },
-        &FrameFields {
-            frame_type: "data".into(),
-            sender: "client".into(),
-            payload: json!({ "method": "ping", "n": 1 }),
-            message_id: None,
-            created_at: None,
-        },
-        None,
-    )
-    .unwrap();
     to_device
-        .send(json!({
-            "type": "e2ee_envelope",
-            "session_id": session_id,
-            "envelope": serde_json::to_value(&request).unwrap(),
-        }))
+        .send(request_message(
+            &session_key,
+            session_id,
+            json!({ "method": "ping", "n": 1 }),
+        ))
         .await
         .unwrap();
 
@@ -236,44 +219,23 @@ async fn a_slow_handler_does_not_stall_the_socket() {
 
     let session_id = "sess-slow";
     let session_key = transport::generate_session_key();
-    let wrapped = transport::wrap_session_key(&transport_public_key, &session_key).unwrap();
     to_device
-        .send(json!({
-            "type": "session_init",
-            "session_id": session_id,
-            "session_init": serde_json::to_value(SessionInit {
-                session_id: session_id.into(),
-                device_id: "dev-1".into(),
-                wrapped_session_key: wrapped,
-            }).unwrap(),
-        }))
+        .send(session_init_message(
+            session_id,
+            &transport_public_key,
+            &session_key,
+        ))
         .await
         .unwrap();
     let accept = recv(&mut from_device).await;
     assert_eq!(accept["type"], "session_accept");
 
     let ask = |id: u64, method: &str| {
-        let envelope = transport::encrypt_frame(
+        request_message(
             &session_key,
-            &OuterFields {
-                session_id: session_id.into(),
-                route_to: "device:dev-1".into(),
-            },
-            &FrameFields {
-                frame_type: "data".into(),
-                sender: "client".into(),
-                payload: json!({ "id": id, "method": method }),
-                message_id: None,
-                created_at: None,
-            },
-            None,
+            session_id,
+            json!({ "id": id, "method": method }),
         )
-        .unwrap();
-        json!({
-            "type": "e2ee_envelope",
-            "session_id": session_id,
-            "envelope": serde_json::to_value(&envelope).unwrap(),
-        })
     };
 
     to_device.send(ask(0, "slow")).await.unwrap();
@@ -307,62 +269,6 @@ async fn a_slow_handler_does_not_stall_the_socket() {
 
     drop(to_device);
     bridge.abort();
-}
-
-/// A browser opening a session, in the two messages the relay carries for it.
-fn session_init_message(session_id: &str, transport_public_key: &str, session_key: &str) -> Value {
-    let wrapped = transport::wrap_session_key(transport_public_key, session_key).unwrap();
-    json!({
-        "type": "session_init",
-        "session_id": session_id,
-        "session_init": serde_json::to_value(SessionInit {
-            session_id: session_id.into(),
-            device_id: "dev-1".into(),
-            wrapped_session_key: wrapped,
-        }).unwrap(),
-    })
-}
-
-fn request_message(session_key: &str, session_id: &str, payload: Value) -> Value {
-    let envelope = transport::encrypt_frame(
-        session_key,
-        &OuterFields {
-            session_id: session_id.into(),
-            route_to: "device:dev-1".into(),
-        },
-        &FrameFields {
-            frame_type: "data".into(),
-            sender: "client".into(),
-            payload,
-            message_id: None,
-            created_at: None,
-        },
-        None,
-    )
-    .unwrap();
-    json!({
-        "type": "e2ee_envelope",
-        "session_id": session_id,
-        "envelope": serde_json::to_value(&envelope).unwrap(),
-    })
-}
-
-/// A handler that reports every frame it is given as `<frame_type>:<session_id>`,
-/// including the synthetic `close` a session gets when it ends.
-fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
-    let (seen, frames) = mpsc::unbounded_channel();
-    let handler: FrameHandler = Arc::new(move |sender, frame| {
-        let _ = seen.send(format!("{}:{}", frame.frame_type, sender.session_id()));
-        json!({ "ok": true })
-    });
-    (handler, frames)
-}
-
-async fn next_frame(frames: &mut mpsc::UnboundedReceiver<String>) -> String {
-    tokio::time::timeout(std::time::Duration::from_secs(10), frames.recv())
-        .await
-        .expect("the handler ran in time")
-        .expect("channel open")
 }
 
 /// The relay socket is one carrier. When it dies, the sessions that rode nothing
@@ -399,14 +305,14 @@ async fn a_lost_relay_socket_ends_the_sessions_that_rode_only_it() {
         ))
         .await
         .unwrap();
-    assert_eq!(next_frame(&mut frames).await, format!("data:{session_id}"));
+    assert_eq!(next_report(&mut frames).await, format!("data:{session_id}"));
 
     // The socket goes, with no session_closed and no client close frame.
     relay_socket.abort();
     let _ = bridge.await;
 
     assert_eq!(
-        next_frame(&mut frames).await,
+        next_report(&mut frames).await,
         format!("close:{session_id}"),
         "the session that rode only that socket ended with it"
     );
@@ -534,14 +440,14 @@ async fn a_cancelled_run_ends_the_sessions_that_rode_its_socket() {
         ))
         .await
         .unwrap();
-    assert_eq!(next_frame(&mut frames).await, format!("data:{session_id}"));
+    assert_eq!(next_report(&mut frames).await, format!("data:{session_id}"));
 
     // The run future is dropped mid-session, the socket still up.
     bridge.abort();
     let _ = bridge.await;
 
     assert_eq!(
-        next_frame(&mut frames).await,
+        next_report(&mut frames).await,
         format!("close:{session_id}"),
         "the session that rode the cancelled socket ended with it"
     );

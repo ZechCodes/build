@@ -37,7 +37,13 @@ reqwest = { version = "0.13.4", default-features = false, features = ["json", "r
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 
+[features]
+# `carrier::testing`: the browser-side frame fixtures the crate's tests and the
+# integration tests both build from. Never compiled into the daemon.
+testing = []
+
 [dev-dependencies]
+build-bridge = { path = ".", features = ["testing"] }
 tempfile = "3"
 # `test-util` only here: it brings tokio's controllable clock, which lets the
 # timing tests assert which side of a window something falls on instead of

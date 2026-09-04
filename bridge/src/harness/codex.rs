@@ -99,7 +99,7 @@ impl Harness for CodexHarness {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec {
+    ) -> Result<HarnessSpec, crate::harness::HarnessError> {
         let mut spec = HarnessSpec::new("codex")
             .settle(REAL_TUI_SETTLE)
             .submit_delay(REAL_TUI_SUBMIT_DELAY)
@@ -113,12 +113,14 @@ impl Harness for CodexHarness {
         for override_arg in [
             format!(
                 "mcp_servers.build.command={}",
-                serde_json::to_string(&context.bridge_exe).expect("path serializes")
+                serde_json::to_string(&context.bridge_exe.to_string_lossy())
+                    .expect("path serializes")
             ),
             format!("mcp_servers.build.args={mcp_args}"),
             format!(
                 "mcp_servers.build.env.BRIDGE_MCP_SOCKET={}",
-                serde_json::to_string(&context.mcp_socket).expect("socket serializes")
+                serde_json::to_string(&context.mcp_socket.to_string_lossy())
+                    .expect("socket serializes")
             ),
             format!(
                 "mcp_servers.build.env.BRIDGE_MCP_TOKEN={}",
@@ -156,7 +158,7 @@ impl Harness for CodexHarness {
             None if options.continue_session => spec = spec.arg("resume").arg("--last"),
             None => {}
         }
-        spec
+        Ok(spec)
     }
 
     fn has_transcript(&self, home: &Path, cwd: &Path) -> bool {
@@ -448,10 +450,12 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }

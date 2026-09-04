@@ -43,6 +43,16 @@ const threeHarnesses = {
   ],
 };
 
+const piAccountCatalog = {
+  default_provider: "pi",
+  providers: [
+    { id: "pi", label: "Pi", models: [], efforts: [] },
+    { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+    { id: "claude", label: "Claude Code TUI", models: [], efforts: [] },
+    { id: "codex", label: "Codex", models: [], efforts: [] },
+  ],
+};
+
 const mount = (html) => {
   const host = document.createElement("div");
   host.innerHTML = html;
@@ -105,8 +115,8 @@ describe("the panel", () => {
 });
 
 describe("the choice as params", () => {
-  it("omits what was left at the harness's own default", () => {
-    expect(agentChoiceParams(catalog, NO_AGENT_CHOICE)).toEqual({});
+  it("always sends the displayed agent while omitting empty model and effort", () => {
+    expect(agentChoiceParams(catalog, NO_AGENT_CHOICE)).toEqual({ provider: "claude" });
     expect(agentChoiceParams(catalog, { provider: "claude", model: "opus", effort: "high" })).toEqual({
       provider: "claude",
       model: "opus",
@@ -127,7 +137,17 @@ describe("the choice as params", () => {
     expect(agentChoiceParams(threeHarnesses, { provider: "claude", model: "", effort: "" })).toEqual({
       provider: "claude_adk",
     });
-    expect(agentChoiceParams(threeHarnesses, NO_AGENT_CHOICE)).toEqual({});
+    expect(agentChoiceParams(threeHarnesses, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
+  });
+
+  it("sends the agent displayed by the creation catalog when the account default is not offered", () => {
+    const host = mount(agentChoicePanelHtml(piAccountCatalog, NO_AGENT_CHOICE, { open: true }));
+    expect([...host.querySelectorAll("#agent-choice-provider option")].map((option) => option.textContent)).toEqual([
+      "Claude Code",
+      "Codex",
+    ]);
+    expect(host.querySelector("#agent-choice-provider").value).toBe("claude_adk");
+    expect(agentChoiceParams(piAccountCatalog, NO_AGENT_CHOICE)).toEqual({ provider: "claude_adk" });
   });
 });
 

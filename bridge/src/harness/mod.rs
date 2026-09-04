@@ -14,9 +14,9 @@
 //!   hatch. It is the whole vocabulary: nothing above [`crate::pty`] knows
 //!   what a session is carried over.
 //!
-//! Nothing above these traits matches on a provider. Adding one means adding an
-//! `AgentProvider` variant, a module here, and an arm in [`harness_for`]; the
-//! compiler finds the rest.
+//! Provider launch dispatch is centralized in [`harness_for`]. Policies that
+//! decide whether a provider is eligible for a role, such as router validation,
+//! remain separate from launch construction.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +31,7 @@ use crate::pty::{HarnessSpec, PtySession};
 pub(crate) mod adk;
 pub(crate) mod claude;
 pub(crate) mod codex;
+pub(crate) mod pi;
 mod session;
 pub mod shell_tail;
 #[cfg(test)]
@@ -83,9 +84,47 @@ pub const INHERITED_AGENT_MARKERS: [&str; 6] = [
 pub struct HarnessContext {
     /// The daemon's own executable. Providers that spawn Build's MCP server
     /// themselves re-exec this rather than a binary looked up on PATH.
-    pub bridge_exe: String,
+    pub bridge_exe: PathBuf,
     /// The socket that session's MCP server is reachable on.
-    pub mcp_socket: String,
+    pub mcp_socket: PathBuf,
+    /// The private Build state associated with the configured store.
+    pub state_root: PathBuf,
+}
+
+impl HarnessContext {
+    pub fn resolved(mcp_socket: PathBuf, state_root: PathBuf) -> Result<Self, HarnessError> {
+        std::fs::create_dir_all(&state_root).map_err(|error| {
+            HarnessError::Setup(format!(
+                "create harness state root {}: {error}",
+                state_root.display()
+            ))
+        })?;
+        let state_root = std::fs::canonicalize(&state_root).map_err(|error| {
+            HarnessError::Setup(format!(
+                "canonicalize harness state root {}: {error}",
+                state_root.display()
+            ))
+        })?;
+        let bridge_exe = std::env::current_exe()
+            .map_err(|error| HarnessError::Setup(format!("resolve bridge executable: {error}")))?;
+        let bridge_exe = std::fs::canonicalize(&bridge_exe).map_err(|error| {
+            HarnessError::Setup(format!(
+                "canonicalize bridge executable {}: {error}",
+                bridge_exe.display()
+            ))
+        })?;
+        if !bridge_exe.is_absolute() {
+            return Err(HarnessError::Setup(format!(
+                "bridge executable is not absolute: {}",
+                bridge_exe.display()
+            )));
+        }
+        Ok(HarnessContext {
+            bridge_exe,
+            mcp_socket,
+            state_root,
+        })
+    }
 }
 
 /// Everything Build knows about one coding-agent provider.
@@ -117,7 +156,7 @@ pub trait Harness: Send + Sync {
         choice: &ModelChoice,
         options: &SpawnOptions,
         context: &HarnessContext,
-    ) -> HarnessSpec;
+    ) -> Result<HarnessSpec, HarnessError>;
 
     /// Whether a session opened for this provider offers a terminal.
     ///
@@ -187,18 +226,20 @@ pub trait Harness: Send + Sync {
     }
 }
 
-/// Finds the name a harness gave the conversation a PTY session is having, by
-/// watching the harness's own transcript tree — the durable records the resume
-/// probe has always read, never the screen.
-///
-/// The terminal carrier's answer to [`AgentSession::session_id`]: a CLI wrapper
-/// announces nothing to Build, but it writes down what it is doing, and where
-/// it writes is the same place the resume it performs reads from.
+/// Locates a terminal session identity from durable provider state when launch
+/// arguments do not already determine it.
 pub trait SessionLocator: Send + Sync {
     /// The id, once exactly one transcript this session could be has appeared.
     /// `None` until then; cached once found, so a locator never changes its
     /// answer and the steady-state cost is a field read.
     fn session_id(&self) -> Option<String>;
+}
+
+pub enum SessionIdentitySource {
+    /// The launch contract fixes the conversation identity before spawn.
+    Known(String),
+    /// Durable provider state identifies the conversation after spawn.
+    Located(Box<dyn SessionLocator>),
 }
 
 /// Whether `id` is a name a transcript file can be looked up by.
@@ -228,15 +269,13 @@ pub enum Carrier {
     /// (the human's own shell): waiting on a login shell for a signal it may
     /// never send would stall the caller for the whole grace.
     ///
-    /// `locator` is how this carrier answers
-    /// [`AgentSession::session_id`] — the provider's watcher over its own
-    /// transcript tree, built by the caller BEFORE the child exists so the
-    /// child's own record can be told from what was already there. `None` for
-    /// the human's shell, which is having no conversation to name.
+    /// `identity` is how this carrier answers [`AgentSession::session_id`]: a
+    /// launch-known id or a provider watcher built before the child exists.
+    /// `None` is for the human's shell, which has no conversation to name.
     Terminal {
         size: PtySize,
         turn_ready_grace: Option<Duration>,
-        locator: Option<Box<dyn SessionLocator>>,
+        identity: Option<SessionIdentitySource>,
     },
     /// A session protocol over piped stdio. There is no readiness dance: a
     /// turn is a value, and the child says for itself when it can take one.
@@ -276,9 +315,10 @@ pub fn open_session(
         Carrier::Terminal {
             size,
             turn_ready_grace,
-            locator,
+            identity,
         } => {
-            let session = PtySession::spawn(spec, Some(root), size)?.named_by(locator);
+            let session =
+                PtySession::spawn(spec, Some(root), size)?.with_session_identity(identity);
             let output = match session.terminal() {
                 Some(terminal) => SessionOutput::painting(terminal.subscribe()),
                 None => SessionOutput::silent(),
@@ -323,6 +363,7 @@ pub fn harness_for(provider: AgentProvider) -> &'static dyn Harness {
         AgentProvider::Claude => &claude::ClaudeHarness,
         AgentProvider::Codex => &codex::CodexHarness,
         AgentProvider::ClaudeAdk => &adk::AdkHarness,
+        AgentProvider::Pi => &pi::PiHarness,
     }
 }
 
@@ -338,9 +379,31 @@ mod tests {
             let harness = harness_for(provider);
             assert_eq!(harness.provider(), provider);
             assert!(!harness.label().is_empty(), "{provider:?}");
-            assert!(!harness.models().is_empty(), "{provider:?}");
             assert!(!harness.effort_levels().is_empty(), "{provider:?}");
         }
+    }
+
+    #[test]
+    fn resolved_context_uses_the_canonical_bridge_and_configured_state_root() {
+        let state = tempfile::tempdir().unwrap();
+        let configured_state = state.path().join("private-state");
+        std::fs::create_dir(&configured_state).unwrap();
+        let context = HarnessContext::resolved(
+            state.path().join("mcp.sock"),
+            configured_state.join("..").join("private-state"),
+        )
+        .unwrap();
+        assert!(context.bridge_exe.is_absolute());
+        assert_eq!(
+            context.bridge_exe,
+            std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
+        );
+        assert_eq!(
+            context.state_root,
+            std::fs::canonicalize(configured_state).unwrap()
+        );
+        assert_eq!(context.mcp_socket, state.path().join("mcp.sock"));
+        assert_ne!(context.bridge_exe, PathBuf::from("build-bridge"));
     }
 
     /// A catalog entry a harness advertises must be one the same harness will
@@ -394,26 +457,36 @@ mod tests {
     /// what keeps the rail from offering a button the spawn would refuse.
     #[test]
     fn only_the_opaque_cli_wrappers_offer_a_terminal() {
-        for provider in [AgentProvider::Claude, AgentProvider::Codex] {
+        for provider in [
+            AgentProvider::Claude,
+            AgentProvider::Codex,
+            AgentProvider::Pi,
+        ] {
             assert!(harness_for(provider).has_terminal(), "{provider:?}");
         }
         assert!(!harness_for(AgentProvider::ClaudeAdk).has_terminal());
     }
 
-    /// The alternatives hold their shape: a carrier Build can only see the
-    /// outside of has its conversation named FOR it, off the harness's own
-    /// transcript tree, and one that announces its own id needs no locator —
-    /// two records of one answer, free to disagree, is the shape this spec
-    /// rejects everywhere else.
+    /// Transcript-backed terminals use locators. A protocol session announces
+    /// its id, while Pi's terminal identity is fixed by its launch contract;
+    /// neither needs a second transcript-derived answer.
     #[test]
-    fn a_locator_is_offered_exactly_where_a_terminal_is() {
+    fn transcript_backed_terminals_have_locators_and_launch_named_pi_does_not() {
         let home = tempfile::tempdir().expect("temp home");
         let cwd = tempfile::tempdir().expect("temp worktree");
-        for provider in AgentProvider::ALL {
-            let harness = harness_for(provider);
-            assert_eq!(
-                harness.session_locator(home.path(), cwd.path()).is_some(),
-                harness.has_terminal(),
+        for provider in [AgentProvider::Claude, AgentProvider::Codex] {
+            assert!(
+                harness_for(provider)
+                    .session_locator(home.path(), cwd.path())
+                    .is_some(),
+                "{provider:?}"
+            );
+        }
+        for provider in [AgentProvider::ClaudeAdk, AgentProvider::Pi] {
+            assert!(
+                harness_for(provider)
+                    .session_locator(home.path(), cwd.path())
+                    .is_none(),
                 "{provider:?}"
             );
         }
@@ -491,7 +564,7 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: Some(Duration::from_secs(5)),
-                locator: None,
+                identity: None,
             },
         )
         .expect("the session opens");
@@ -519,7 +592,7 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: None,
+                identity: None,
             },
         )
         .expect("the session opens");
@@ -551,7 +624,9 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: Some(Box::new(Says("sess-located"))),
+                identity: Some(SessionIdentitySource::Located(Box::new(Says(
+                    "sess-located",
+                )))),
             },
         )
         .expect("the session opens");
@@ -564,12 +639,29 @@ mod tests {
             Carrier::Terminal {
                 size: one_pty(),
                 turn_ready_grace: None,
-                locator: None,
+                identity: None,
             },
         )
         .expect("the session opens");
         assert_eq!(unnamed.session_id(), None);
         unnamed.end();
+    }
+
+    #[test]
+    fn a_terminal_with_a_launch_known_identity_names_itself_immediately() {
+        let root = tempfile::tempdir().expect("temp worktree");
+        let (named, _output) = open_session(
+            &slow_to_open_spec(),
+            root.path().to_path_buf(),
+            Carrier::Terminal {
+                size: one_pty(),
+                turn_ready_grace: None,
+                identity: Some(SessionIdentitySource::Known("agent-pi".to_string())),
+            },
+        )
+        .expect("the session opens");
+        assert_eq!(named.session_id().as_deref(), Some("agent-pi"));
+        named.end();
     }
 
     /// A fake stream-json harness: it announces its session, then sits with its

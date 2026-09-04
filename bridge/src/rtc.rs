@@ -280,18 +280,19 @@ struct WebrtcPeer {
     negotiation: tokio::sync::Mutex<Option<Negotiation>>,
 }
 
-/// One live peer connection and the channels riding it. Dropping it stops
-/// every task the channels run, which releases their carriers.
+/// One live peer connection, the channels carrying for it, and the one line it
+/// logs about the path that won. Dropping it drops the carriers, which is each
+/// channel released.
 struct Negotiation {
     connection: Arc<dyn PeerConnection>,
-    channels: Vec<tokio::task::JoinHandle<()>>,
+    carriers: Vec<DataChannelCarrier>,
+    path_report: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for Negotiation {
     fn drop(&mut self) {
-        for task in &self.channels {
-            task.abort();
-        }
+        self.carriers.clear();
+        self.path_report.abort();
     }
 }
 
@@ -368,11 +369,12 @@ impl WebrtcPeer {
                 .build()
                 .await?,
         );
-        let mut channels = vec![tokio::spawn(report_negotiated_path(
+        let path_report = tokio::spawn(report_negotiated_path(
             self.session_id.clone(),
             connection.clone(),
             first_connect,
-        ))];
+        ));
+        let mut carriers = Vec::new();
         for (label, id) in NEGOTIATED_CHANNELS {
             let channel = connection
                 .create_data_channel(
@@ -384,11 +386,12 @@ impl WebrtcPeer {
                     }),
                 )
                 .await?;
-            channels.extend(DataChannelCarrier::ride(channel, self.intake.clone()));
+            carriers.push(DataChannelCarrier::ride(channel, self.intake.clone()));
         }
         Ok(Negotiation {
             connection,
-            channels,
+            carriers,
+            path_report,
         })
     }
 }
@@ -520,18 +523,27 @@ fn field_or_empty(offered: &Value, field: &str) -> String {
 /// browser that migrates re-sends `session.hello` and re-attaches its
 /// terminals over the channel, and the frames it does that with are what bind
 /// the session to this carrier.
-struct DataChannelCarrier;
+struct DataChannelCarrier {
+    writer: tokio::task::JoinHandle<()>,
+    reader: tokio::task::JoinHandle<()>,
+}
 
 impl DataChannelCarrier {
-    fn ride(
-        channel: Arc<dyn DataChannel>,
-        intake: Arc<FrameIntake>,
-    ) -> Vec<tokio::task::JoinHandle<()>> {
+    fn ride(channel: Arc<dyn DataChannel>, intake: Arc<FrameIntake>) -> Self {
         let (carrier, envelopes) = CarrierHandle::open();
-        vec![
-            tokio::spawn(write_envelopes(channel.clone(), envelopes)),
-            tokio::spawn(read_messages(channel, intake, carrier)),
-        ]
+        DataChannelCarrier {
+            writer: tokio::spawn(write_envelopes(channel.clone(), envelopes)),
+            reader: tokio::spawn(read_messages(channel, intake, carrier)),
+        }
+    }
+}
+
+/// Dropping the carrier is the channel no longer carrying: both its tasks stop,
+/// and the reader stopping is what releases the wire the intake's sessions ride.
+impl Drop for DataChannelCarrier {
+    fn drop(&mut self) {
+        self.writer.abort();
+        self.reader.abort();
     }
 }
 

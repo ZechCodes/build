@@ -29,7 +29,7 @@ use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
     TerminalView, Turn,
 };
-use crate::isolation::Isolation;
+use crate::isolation::{Isolation, IsolationAvailability};
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
@@ -1870,6 +1870,21 @@ fn configured_isolation(entry: &Value, field: &str) -> Option<Isolation> {
     }
 }
 
+/// The isolation `named` asks for, accepted only when this machine can make
+/// it. The wire word is parsed here and nowhere else in the app, and what a
+/// volume can lock stays [`IsolationAvailability`]'s fact, so a setter refuses
+/// without naming an isolation of its own. Both isolation setters ask it.
+fn accept_isolation(named: &str, available: &IsolationAvailability) -> Result<Isolation, String> {
+    let asked = Isolation::from_wire(named)
+        .ok_or_else(|| format!("unknown isolation {named:?} (expected \"worktree\" or \"cow\")"))?;
+    match available.lock_reason(asked) {
+        None => Ok(asked),
+        Some(reason) => Err(format!(
+            "copy-on-write isolation is unavailable: {reason}; locked to worktrees"
+        )),
+    }
+}
+
 /// Shared application state behind the relay handler.
 pub struct AppState {
     /// Registered projects (repos) plans and runs can be dispatched to.
@@ -3690,6 +3705,19 @@ impl AppState {
         // its checkouts stand behind.
         self.note_board_changed();
         id
+    }
+
+    /// What this machine can make, as the account asks it: one bridge serves
+    /// one worktrees root, so the first registered project answers for the
+    /// account. Whether any project is registered is no fact of a volume, so
+    /// the probe never words it and this does.
+    fn account_availability(&self) -> IsolationAvailability {
+        match self.projects.first() {
+            Some(project) => project.orch.worktrees().availability(),
+            None => IsolationAvailability {
+                cow: Err("no project registered yet".to_string()),
+            },
+        }
     }
 
     /// The isolation a new checkout of `project_id` is made with, and the
@@ -6657,11 +6685,14 @@ impl AppState {
             "default_harness": self.default_harness,
             "claude_mode": models::claude_mode_of_harness(self.default_harness),
             "codex_mode": models::CODEX_ONLY_MODE,
+            "isolation": self.isolation,
+            "isolation_available": self.account_availability(),
         })
     }
 
     /// Set the account settings a client names, and only those: where cloned
-    /// repos land (creating the folder), and which harness a new agent opens on.
+    /// repos land (creating the folder), which harness a new agent opens on,
+    /// and how a new checkout is isolated.
     ///
     /// Every field is parsed before any is applied, so a refusal leaves the
     /// settings exactly as they were rather than half-moved.
@@ -6695,6 +6726,13 @@ impl AppState {
             }
             None => harness_named_as_a_claude_mode,
         };
+        let isolation = match params.get("isolation") {
+            Some(named) => Some(accept_isolation(
+                named.as_str().unwrap_or_default(),
+                &self.account_availability(),
+            )?),
+            None => None,
+        };
         // Wired like a real field so the Account page has one idiom, hard-locked
         // because there is no other Codex to open.
         let codex_mode = params.get("codex_mode");
@@ -6705,7 +6743,11 @@ impl AppState {
                 );
             }
         }
-        if projects_dir.is_none() && default_harness.is_none() && codex_mode.is_none() {
+        if projects_dir.is_none()
+            && default_harness.is_none()
+            && codex_mode.is_none()
+            && isolation.is_none()
+        {
             return Err("settings.set: nothing to set".to_string());
         }
         if let Some(dir) = projects_dir {
@@ -6715,6 +6757,9 @@ impl AppState {
         }
         if let Some(harness) = default_harness {
             self.default_harness = harness;
+        }
+        if let Some(isolation) = isolation {
+            self.isolation = isolation;
         }
         self.persist();
         Ok(self.settings_get())
@@ -19630,6 +19675,129 @@ mod tests {
             reason.unwrap_or_default().contains("linked worktree"),
             "the downgrade carries the probe's own sentence"
         );
+    }
+
+    /// A checkout that is itself a linked worktree can never be cloned, on any
+    /// filesystem: the one project shape that makes this machine's answer
+    /// deterministic wherever the suite runs.
+    fn state_on_an_unclonable_project(dir: &std::path::Path, repo: &std::path::Path) -> AppState {
+        let linked = dir.join("linked");
+        crate::git_fixture::git_in(
+            repo,
+            &["worktree", "add", "-b", "feature", linked.to_str().unwrap()],
+        );
+        qa_state(&linked, dir)
+    }
+
+    /// The account settings carry the isolation new checkouts get and what this
+    /// machine can actually make, so one read tells a control both what is
+    /// chosen and whether the other choice is even offerable.
+    #[test]
+    fn settings_get_reports_the_account_isolation_and_what_this_volume_can_make() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(settings["ok"], true, "{settings:?}");
+        let result = &settings["result"];
+        assert_eq!(result["isolation"], "worktree", "{result:?}");
+        let available = &result["isolation_available"];
+        assert!(available["cow"].is_boolean(), "{result:?}");
+        assert_eq!(
+            available["reason"].is_null(),
+            available["cow"] == true,
+            "a locked clone carries its sentence and an available one carries none: {result:?}"
+        );
+    }
+
+    /// Whether a volume can clone is a project's question, so a bridge with no
+    /// project has no volume to ask — and says exactly that rather than
+    /// reporting a machine limit it never tested.
+    #[test]
+    fn with_no_project_registered_the_clone_answer_names_the_missing_project() {
+        let mut state = AppState::new_unrooted("/tmp/no-such-wt", "main", true, "/tmp/test.sock");
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(
+            settings["result"]["isolation_available"],
+            json!({ "cow": false, "reason": "no project registered yet" }),
+            "{settings:?}"
+        );
+    }
+
+    /// Choosing to clone is kept where the volume can clone, and the answer the
+    /// setter returns is the settings themselves — the control repaints from
+    /// what the bridge holds, never from what it asked for.
+    #[test]
+    fn the_account_can_choose_cloning_where_the_volume_clones() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+
+        let saved = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "cow", "{saved:?}");
+        assert_eq!(
+            state.handle(req("settings.get", json!({})))["result"]["isolation"],
+            "cow"
+        );
+    }
+
+    /// A clone this machine cannot make is refused with the volume's own reason
+    /// before anything is stored, so the setting a client is shown afterwards is
+    /// the one that was already there.
+    #[test]
+    fn a_clone_this_machine_cannot_make_is_refused_and_changes_nothing() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+
+        let refused = state.handle(req("settings.set", json!({ "isolation": "cow" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let sentence = refused["error"].as_str().unwrap().to_string();
+        assert!(
+            sentence.starts_with("copy-on-write isolation is unavailable: ")
+                && sentence.contains("linked worktree")
+                && sentence.ends_with("; locked to worktrees"),
+            "{sentence}"
+        );
+
+        let settings = state.handle(req("settings.get", json!({})));
+        assert_eq!(settings["result"]["isolation"], "worktree", "{settings:?}");
+        assert_eq!(
+            settings["result"]["isolation_available"]["cow"], false,
+            "{settings:?}"
+        );
+        assert_eq!(
+            settings["result"]["isolation_available"]["reason"]
+                .as_str()
+                .unwrap(),
+            sentence
+                .trim_start_matches("copy-on-write isolation is unavailable: ")
+                .trim_end_matches("; locked to worktrees"),
+            "the refusal quotes the reason the same read reports: {settings:?}"
+        );
+    }
+
+    /// An isolation only a newer bridge knows is refused by name, and naming
+    /// the isolation alone is something to set: the emptiness check counts it
+    /// like every other field.
+    #[test]
+    fn an_unknown_isolation_is_refused_and_a_known_one_is_not_an_empty_set() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+
+        let refused = state.handle(req("settings.set", json!({ "isolation": "telepathy" })));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        assert_eq!(
+            refused["error"].as_str().unwrap(),
+            "unknown isolation \"telepathy\" (expected \"worktree\" or \"cow\")"
+        );
+
+        let saved = state.handle(req("settings.set", json!({ "isolation": "worktree" })));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
     }
 
     /// Naming no provider means "the account's default harness"; naming one

@@ -736,8 +736,8 @@ pub fn push(repo_path: &Path, force: bool) -> Result<(), String> {
 }
 
 /// Where the ref behind a branch name lives: the repository's own
-/// `refs/heads/<name>`, or — for a branch that has never been checked out here
-/// — a remote's `refs/remotes/<remote>/<name>`.
+/// `refs/heads/<name>`, a remote's `refs/remotes/<remote>/<name>` for a branch
+/// that has never been checked out here, or nowhere at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BranchOrigin {
     Local,
@@ -745,14 +745,16 @@ pub enum BranchOrigin {
         remote: String,
         tracking_ref: String,
     },
+    Absent,
 }
 
 impl BranchOrigin {
     /// The full ref name a branch of this origin is read through — never the
-    /// bare branch name, which git would resolve as a revspec.
+    /// bare branch name, which git would resolve as a revspec. A branch with
+    /// no ref yet is named by the local ref it would be cut as.
     fn ref_name(&self, branch: &str) -> String {
         match self {
-            BranchOrigin::Local => format!("refs/heads/{branch}"),
+            BranchOrigin::Local | BranchOrigin::Absent => format!("refs/heads/{branch}"),
             BranchOrigin::Remote { tracking_ref, .. } => tracking_ref.clone(),
         }
     }
@@ -760,10 +762,54 @@ impl BranchOrigin {
     /// The remote a branch that exists only there would be fetched from.
     fn remote(&self) -> Option<&str> {
         match self {
-            BranchOrigin::Local => None,
+            BranchOrigin::Local | BranchOrigin::Absent => None,
             BranchOrigin::Remote { remote, .. } => Some(remote),
         }
     }
+}
+
+/// The reference `name` names, when one is there and is a branch.
+///
+/// A symbolic reference is a pointer at a branch, not a branch: every clone
+/// carries `refs/remotes/origin/HEAD`, and treating it as one would offer a
+/// `HEAD` branch no remote can serve. It reads here exactly as a missing ref
+/// does, so the listing and [`branch_origin`] never disagree about what a
+/// remote branch is.
+fn direct_reference<'repo>(
+    repo: &'repo git2::Repository,
+    name: &str,
+) -> Result<Option<git2::Reference<'repo>>, git2::Error> {
+    match repo.find_reference(name) {
+        Ok(reference) if reference.kind() == Some(git2::ReferenceType::Direct) => {
+            Ok(Some(reference))
+        }
+        Ok(_) => Ok(None),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Where the ref behind `branch` lives — the one answer to "is this branch
+/// here, on a remote, or nowhere", which decides whether a checkout needs a
+/// fetch first and whether teardown owns the branch afterwards.
+///
+/// Only a missing ref means [`BranchOrigin::Absent`]. Every other git failure
+/// is returned: callers guarantee `branch` is a name git could hold a branch
+/// under, so a spec error here is a bug and not an answer.
+pub fn branch_origin(repo: &git2::Repository, branch: &str) -> Result<BranchOrigin, git2::Error> {
+    if direct_reference(repo, &format!("refs/heads/{branch}"))?.is_some() {
+        return Ok(BranchOrigin::Local);
+    }
+    for remote in remotes_in_fetch_precedence(repo)? {
+        let tracking_ref = format!("refs/remotes/{remote}/{branch}");
+        if direct_reference(repo, &tracking_ref)?.is_some() {
+            return Ok(BranchOrigin::Remote {
+                remote,
+                tracking_ref,
+            });
+        }
+    }
+    Ok(BranchOrigin::Absent)
 }
 
 /// One branch's git facts for [`branch_list`]: where its ref lives, the sync
@@ -892,8 +938,8 @@ fn local_branch_row(
 
 /// The order a branch that exists only on remotes is fetched from: `origin`
 /// when the repository has one, then the rest in git's own (sorted) order.
-fn remotes_in_fetch_precedence(repo: &git2::Repository) -> Result<Vec<String>, String> {
-    let remotes = repo.remotes().map_err(|e| e.to_string())?;
+fn remotes_in_fetch_precedence(repo: &git2::Repository) -> Result<Vec<String>, git2::Error> {
+    let remotes = repo.remotes()?;
     let mut names: Vec<String> = remotes.iter().flatten().map(str::to_string).collect();
     names.sort_by_key(|name| name != "origin");
     Ok(names)
@@ -969,7 +1015,7 @@ pub fn branch_list(repo_path: &Path, base_branch: &str) -> Result<BranchListing,
         rows.push(local_branch_row(&repo, repo_path, base_branch, &branch)?);
     }
     let mut listed: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
-    for remote in remotes_in_fetch_precedence(&repo)? {
+    for remote in remotes_in_fetch_precedence(&repo).map_err(|e| e.to_string())? {
         let remote_rows = remote_branch_rows(&repo, repo_path, base_branch, &remote, &listed)?;
         listed.extend(remote_rows.iter().map(|row| row.name.clone()));
         rows.extend(remote_rows);
@@ -1117,6 +1163,7 @@ pub fn discard_paths(repo_path: &Path, paths: &[String]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn hash_prefix_validation_accepts_only_lowercase_hex_of_4_to_40() {
@@ -1460,5 +1507,133 @@ mod tests {
         assert_eq!(map_repository_state(Bisect), "bisecting");
         assert_eq!(map_repository_state(ApplyMailbox), "other");
         assert_eq!(map_repository_state(ApplyMailboxOrRebase), "other");
+    }
+
+    /// A clone of a bare origin that carries `main` and `feature-x`, with no
+    /// local `feature-x` — the shape a fresh clone of a team's repository has,
+    /// down to the symbolic `origin/HEAD` every clone writes.
+    fn clone_of_an_origin_carrying_feature_x(dir: &Path) -> PathBuf {
+        let source = dir.join("source");
+        std::fs::create_dir(&source).unwrap();
+        init_repo(&source);
+        git_ok(&source, &["checkout", "-q", "-b", "feature-x"]);
+        write(&source, "g.txt", "x\n");
+        git_ok(&source, &["add", "."]);
+        git_ok(&source, &["commit", "-q", "-m", "feature"]);
+        git_ok(&source, &["checkout", "-q", "main"]);
+        let origin = dir.join("origin.git");
+        git_ok(
+            dir,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                source.to_str().unwrap(),
+                origin.to_str().unwrap(),
+            ],
+        );
+        let clone = dir.join("clone");
+        git_ok(
+            dir,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        clone
+    }
+
+    /// A branch the repository holds itself is local, whatever its remotes
+    /// also carry: the local ref is the one a checkout would use, and no fetch
+    /// can be needed for it.
+    #[test]
+    fn branch_origin_reads_the_local_ref_before_any_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+        git_ok(
+            &clone,
+            &["checkout", "-q", "-b", "feature-x", "origin/feature-x"],
+        );
+        let repo = git2::Repository::open(&clone).unwrap();
+
+        assert_eq!(
+            branch_origin(&repo, "feature-x").unwrap(),
+            BranchOrigin::Local
+        );
+        assert_eq!(branch_origin(&repo, "main").unwrap(), BranchOrigin::Local);
+    }
+
+    /// A branch only a remote carries names the remote it would be fetched
+    /// from and the tracking ref it would be cut at.
+    #[test]
+    fn branch_origin_finds_a_branch_only_a_remote_carries() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+        let repo = git2::Repository::open(&clone).unwrap();
+
+        assert_eq!(
+            branch_origin(&repo, "feature-x").unwrap(),
+            BranchOrigin::Remote {
+                remote: "origin".to_string(),
+                tracking_ref: "refs/remotes/origin/feature-x".to_string(),
+            }
+        );
+    }
+
+    /// Two remotes carrying one branch answer with the one a fetch comes from,
+    /// which is the same precedence the listing offers it under — `origin`
+    /// first, whatever the other remote sorts as.
+    #[test]
+    fn branch_origin_prefers_origin_over_another_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+        let origin_path = dir.path().join("origin.git");
+        git_ok(
+            &clone,
+            &["remote", "add", "fork", origin_path.to_str().unwrap()],
+        );
+        git_ok(&clone, &["fetch", "-q", "fork"]);
+        let repo = git2::Repository::open(&clone).unwrap();
+
+        assert_eq!(
+            branch_origin(&repo, "feature-x").unwrap(),
+            BranchOrigin::Remote {
+                remote: "origin".to_string(),
+                tracking_ref: "refs/remotes/origin/feature-x".to_string(),
+            }
+        );
+    }
+
+    /// A name no ref of any kind backs is absent — and so is `HEAD`, whose
+    /// `refs/remotes/origin/HEAD` is a pointer at a branch, not a branch. A
+    /// fetch of it would ask every remote for a ref none of them has.
+    #[test]
+    fn branch_origin_is_absent_for_an_unknown_name_and_for_a_symbolic_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+        let repo = git2::Repository::open(&clone).unwrap();
+        assert!(
+            repo.find_reference("refs/remotes/origin/HEAD").is_ok(),
+            "the clone has the symbolic ref this test is about"
+        );
+
+        assert_eq!(
+            branch_origin(&repo, "nobody-cut-this").unwrap(),
+            BranchOrigin::Absent
+        );
+        assert_eq!(branch_origin(&repo, "HEAD").unwrap(), BranchOrigin::Absent);
+    }
+
+    /// Only a missing ref means absent. A name git cannot even parse as a ref
+    /// is a caller's bug, and it is surfaced rather than answered.
+    #[test]
+    fn branch_origin_surfaces_an_error_that_is_not_a_missing_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let clone = clone_of_an_origin_carrying_feature_x(dir.path());
+        let repo = git2::Repository::open(&clone).unwrap();
+
+        assert!(branch_origin(&repo, "not a ref name").is_err());
     }
 }

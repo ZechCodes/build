@@ -315,3 +315,120 @@ describe("openRelaySession", () => {
     }
   });
 });
+
+// ---- two carriers ------------------------------------------------------------
+
+/** A carrier a test drives: what it was handed, and what it hands back. */
+function fakeCarrier() {
+  let onEnvelope = () => {};
+  let onClose = () => {};
+  const carrier = {
+    sent: [],
+    send: (envelope) => carrier.sent.push(envelope),
+    onEnvelope: (fn) => (onEnvelope = fn),
+    onClose: (fn) => (onClose = fn),
+    close: () => onClose(),
+    reply: (payload) => onEnvelope({ frameFields: { payload } }),
+  };
+  return carrier;
+}
+
+const replyTo = (carrier, index = -1) => carrier.sent.at(index).frameFields.payload;
+
+describe("a session that rides two carriers", () => {
+  it("sends over the peer carrier once it is riding one, and answers from it", async () => {
+    const { promise, ws } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    const peer = fakeCarrier();
+    session.peer(peer);
+
+    const reply = session.call("board.list", {});
+    await tick();
+    expect(peer.sent).toHaveLength(1);
+    peer.reply({ id: replyTo(peer).id, ok: true, result: { tasks: [] } });
+    await expect(reply).resolves.toEqual({ tasks: [] });
+  });
+
+  it("keeps signaling on the relay carrier while the peer carries", async () => {
+    const { promise, ws } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    const peer = fakeCarrier();
+    session.peer(peer);
+
+    const answered = session.signal("rtc.offer", { sdp: "v=0" });
+    await tick();
+    const sent = ws.sent.at(-1);
+    expect(sent.type).toBe("e2ee_envelope");
+    expect(sent.envelope.frameFields.payload.method).toBe("rtc.offer");
+    expect(peer.sent).toHaveLength(0);
+    ws.serverSend({
+      type: "e2ee_envelope",
+      envelope: { frameFields: { payload: { id: sent.envelope.frameFields.payload.id, ok: true, result: { sdp: "v=0 a" } } } },
+    });
+    await expect(answered).resolves.toEqual({ sdp: "v=0 a" });
+  });
+
+  it("is not lost when the relay drops under a live peer — the device is still reachable", async () => {
+    const { promise, ws, events } = await startOpen();
+    await completeHandshake(ws, "dev-a");
+    const session = await promise;
+    session.peer(fakeCarrier());
+
+    ws.close();
+    ws.serverSend({ type: "device_offline", device_id: "dev-a" });
+    await tick();
+    expect(events.lost).toBe(0);
+    const reply = session.call("board.list", {});
+    await tick();
+    expect(reply).toBeInstanceOf(Promise);
+    reply.catch(() => {});
+  });
+
+  it("falls back to the relay when the channel is lost, and re-establishes there", async () => {
+    const { promise, ws } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    const carrierChanges = [];
+    session.onCarrier(() => carrierChanges.push("changed"));
+    const peer = fakeCarrier();
+    session.peer(peer);
+    expect(carrierChanges).toHaveLength(1);
+
+    session.peer(null);
+    expect(carrierChanges).toHaveLength(2);
+    session.call("board.list", {}).catch(() => {});
+    await tick();
+    expect(ws.sent.at(-1).type).toBe("e2ee_envelope");
+    expect(peer.sent).toHaveLength(0);
+  });
+
+  it("is lost once its last carrier is gone", async () => {
+    const { promise, ws, events } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    session.peer(fakeCarrier());
+    ws.close();
+    const pending = session.call("board.list", {});
+    await tick();
+    expect(events.lost).toBe(0);
+
+    session.peer(null);
+    await expect(pending).rejects.toThrow(/offline/);
+    expect(events.lost).toBe(1);
+    await expect(session.call("board.list", {})).rejects.toThrow(/offline/);
+  });
+
+  it("says nothing about carriers dropping after a deliberate close", async () => {
+    const { promise, ws, events } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    const peer = fakeCarrier();
+    session.peer(peer);
+    session.close();
+    peer.close();
+    ws.close();
+    expect(events.lost).toBe(0);
+  });
+});

@@ -91,6 +91,15 @@ describe("createSessionSwitch", () => {
     expect(carrierSwitch.active()).toBeNull();
   });
 
+  it("keeps naming the relay slot while the peer carries, so signaling can pin to it", () => {
+    const { carrierSwitch, relay, peer } = stand();
+    carrierSwitch.relay(relay);
+    carrierSwitch.peer(peer);
+    expect(carrierSwitch.relayCarrier()).toBe(relay);
+    carrierSwitch.relay(null);
+    expect(carrierSwitch.relayCarrier()).toBeNull();
+  });
+
   it("re-establishes on a fresh relay carrier that replaces the old one", () => {
     const { carrierSwitch, rode, onActive, relay, second } = stand();
     carrierSwitch.relay(relay);

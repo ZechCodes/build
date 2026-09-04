@@ -12,6 +12,14 @@
 //
 // One object per live session. RPC replies resolve through a pending map with
 // timeouts so calls fail fast instead of hanging on a dead session.
+//
+// The socket the handshake ran on is this session's FIRST carrier, not its only
+// one: `peer(carrier)` hands it a DataChannel to ride instead, and the session
+// ends when its last carrier is gone (see sessionSwitch.js). The key, the
+// frames and the pending map are the same either way — a carrier is a wire.
+
+import { openCarrier } from "./carrier.js";
+import { createSessionSwitch } from "./sessionSwitch.js";
 
 const DEFAULT_DEVICE_WAIT_MS = 8000;
 const DEFAULT_RPC_TIMEOUT_MS = 12000;
@@ -63,23 +71,12 @@ export async function openRelaySession({
     onLost();
   };
 
-  const deliver = (message) => (waiters.length ? waiters.shift()(message) : queue.push(message));
-  ws.addEventListener("message", async (event) => {
-    const message = JSON.parse(event.data);
-    // Every device_key / device_offline push (handshake or live) keeps the
-    // caller's device store current, whichever device the session targets.
-    if (message.type === "device_key") onDeviceKey(message.device_id, message.transport_public_key);
-    if (message.type === "device_offline") onDeviceOffline(message.device_id);
-    if (!live) return deliver(message); // handshake phase: recvType drains the queue
-    // Live phase: control frames drive offline handling; envelopes resolve RPCs.
-    if (message.type === "device_offline") {
-      if (message.device_id === deviceId) severSession();
-      return;
-    }
-    if (message.type !== "e2ee_envelope") return;
+  /** One decrypted frame off whichever carrier brought it: somebody's answer,
+   *  or the bridge telling us something moved. */
+  const takeEnvelope = async (envelope) => {
     let frame;
     try {
-      frame = await transport.decryptEnvelope({ sessionKeyB64: sessionKey, envelope: message.envelope });
+      frame = await transport.decryptEnvelope({ sessionKeyB64: sessionKey, envelope });
     } catch {
       return;
     }
@@ -95,10 +92,22 @@ export async function openRelaySession({
     // entity.changed); anything else is a reply to a call that already timed
     // out, and has nowhere left to go.
     if (payload && payload.type) onPush(payload);
+  };
+
+  const deliver = (message) => (waiters.length ? waiters.shift()(message) : queue.push(message));
+  ws.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    // Every device_key / device_offline push (handshake or live) keeps the
+    // caller's device store current, whichever device the session targets.
+    if (message.type === "device_key") onDeviceKey(message.device_id, message.transport_public_key);
+    if (message.type === "device_offline") onDeviceOffline(message.device_id);
+    if (!live) return deliver(message); // handshake phase: recvType drains the queue
+    // Our device dropping off the relay detaches the relay carrier. Whether
+    // that ends the session is the switch's call: a peer path may still carry.
+    if (message.type === "device_offline" && message.device_id === deviceId) carrierSwitch.relay(null);
   });
   ws.addEventListener("close", () => {
     if (!live) deliver({ type: "__closed" }); // fail the handshake cleanly
-    else severSession(); // relay/network dropped us
   });
 
   const recv = () => new Promise((resolve) => (queue.length ? resolve(queue.shift()) : waiters.push(resolve)));
@@ -174,9 +183,26 @@ export async function openRelaySession({
   sessionKey = sessionKeyB64;
   live = true;
 
-  async function call(method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) {
+  let carrier = null;
+  let onCarrierChange = () => {};
+  const carrierSwitch = createSessionSwitch({
+    session: {
+      rideOn: (taken) => {
+        carrier = taken;
+        taken?.onEnvelope(takeEnvelope);
+      },
+    },
+    onActive: () => onCarrierChange(),
+    onIdle: severSession,
+  });
+  const relayCarrier = openCarrier({ socket: ws, sessionId });
+  relayCarrier.onClose(() => carrierSwitch.relay(null));
+  carrierSwitch.relay(relayCarrier);
+
+  /** One encrypted frame out over `wire`, and the reply it is waiting for. */
+  async function request(wire, method, params, timeoutMs) {
     if (isPaused()) throw new Error("your device is offline — reconnecting…");
-    if (lost) throw new Error("your device went offline");
+    if (lost || !wire) throw new Error("your device went offline");
     const rid = "r" + ++requestId;
     const envelope = await transport.encryptFrame({
       sessionKeyB64,
@@ -184,7 +210,7 @@ export async function openRelaySession({
       frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } },
     });
     const reply = new Promise((resolve, reject) => pending.set(rid, { resolve, reject }));
-    send({ type: "e2ee_envelope", session_id: sessionId, envelope });
+    wire.send(envelope);
     return Promise.race([
       reply,
       new Promise((_, reject) =>
@@ -198,6 +224,7 @@ export async function openRelaySession({
 
   /** Sever this session deliberately (e.g. switching devices) — no onLost. */
   function close() {
+    carrierSwitch.close();
     lost = true;
     for (const { reject } of pending.values()) reject(new Error("session closed"));
     pending.clear();
@@ -208,5 +235,21 @@ export async function openRelaySession({
     }
   }
 
-  return { call, deviceId, close };
+  return {
+    deviceId,
+    call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) => request(carrier, method, params, timeoutMs),
+    /** Signaling is pinned to the relay carrier: `rtc.*` never rides the
+     *  channel it negotiates, so an ICE restart works while the channels are
+     *  down (spec §Signaling). */
+    signal: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
+      request(carrierSwitch.relayCarrier(), method, params, timeoutMs),
+    /** Ride this DataChannel instead of the relay, or `null` to fall back. */
+    peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
+    /** What re-establishes this session on a carrier it has just taken —
+     *  `session.hello` and a read of every mounted surface. Registered after
+     *  the session is handed over, so the first relay attach is the caller's
+     *  own greeting, not a second one. */
+    onCarrier: (fn) => (onCarrierChange = fn),
+    close,
+  };
 }

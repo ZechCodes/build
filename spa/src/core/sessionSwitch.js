@@ -41,6 +41,10 @@ export function createSessionSwitch({ session, onActive = () => {}, onIdle = () 
       return settle();
     },
     active: () => active,
+    /** The relay slot. Signaling is pinned to it: `rtc.*` never rides the
+     *  channel it negotiates, so an ICE restart works while that channel is
+     *  down (spec §Signaling). */
+    relayCarrier: () => relay,
     /** The client said so: no later carrier loss is this session's end. */
     close() {
       closed = true;

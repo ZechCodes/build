@@ -18,6 +18,7 @@ from litestar.response import Redirect
 from skrift.auth.session_keys import SESSION_USER_ID
 
 from buildapp.controllers import BuildController
+from buildapp.desktop_auth import build_auth_guard
 
 
 def _route_handlers() -> list[HTTPRouteHandler]:
@@ -47,6 +48,13 @@ def test_index_reads_the_session_through_the_shared_helper():
     source = inspect.getsource(BuildController.index.fn)
     assert 'session.get("user_id")' not in source, "inline session auth is forbidden"
     assert "session_user_id" in source
+
+
+def test_desktop_shell_uses_the_reusable_oauth_guard():
+    desktop = next(
+        handler for handler in _route_handlers() if "/desktop" in handler.paths
+    )
+    assert build_auth_guard in (desktop.guards or [])
 
 
 def test_no_async_handler_carries_sync_to_thread():

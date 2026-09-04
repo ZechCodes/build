@@ -8,7 +8,7 @@ production) so the key the browser subscribes with is exactly the key notify
 signs with.
 
 Two audiences, mirroring ``devices_controller``:
-- **authenticated** (browser/session, ``auth_guard``): subscribe/unsubscribe this
+- **authenticated** (browser session/desktop OAuth): subscribe/unsubscribe this
   browser's push subscription, and read the VAPID public key to subscribe with.
 - **public** (bridge-facing): ``/api/push/notify`` — no session; authenticated by
   an Ed25519 signature over a timestamped challenge, verified against the
@@ -36,11 +36,11 @@ from litestar.response import Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from skrift.auth.guards import auth_guard
 from skrift.db.models.push_subscription import PushSubscription
 from skrift.push import save_subscription
 
 from buildapp import pairing_crypto, web_push
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.models import Device
 from buildapp.request_body import require_json_object
 from buildapp.session_auth import require_user
@@ -84,13 +84,13 @@ class PushController(Controller):
 
     # ----- authenticated (browser/session) -----------------------------------
 
-    @get("/api/push/vapid-public-key", guards=[auth_guard])
+    @get("/api/push/vapid-public-key", guards=[build_auth_guard])
     async def vapid_public_key(self, request: Request) -> Response:
         """The application server key the browser subscribes with."""
         require_user(request)
         return Response({"public_key": _vapid_public_key()})
 
-    @post("/api/push/subscribe", guards=[auth_guard])
+    @post("/api/push/subscribe", guards=[build_auth_guard])
     async def subscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Store (or take over) this browser's push subscription for the current
         user. The endpoint is unique per browser+origin, so an existing row for it
@@ -110,7 +110,7 @@ class PushController(Controller):
         await save_subscription(db_session, str(user_id), endpoint, p256dh_key, auth_key)
         return Response({"ok": True}, status_code=201)
 
-    @post("/api/push/unsubscribe", guards=[auth_guard])
+    @post("/api/push/unsubscribe", guards=[build_auth_guard])
     async def unsubscribe(self, request: Request, db_session: AsyncSession) -> Response:
         """Remove this browser's subscription — only if the current user owns it."""
         user_id = require_user(request)

@@ -3,8 +3,8 @@
 Three audiences, three guard styles:
 - **public** (bridge-facing): ``/api/devices/register`` + ``/status`` — no session, but
   registration requires an Ed25519 signature proving key possession.
-- **authenticated** (browser/session): ``/api/devices/...`` lookup/approve/list/revoke +
-  ``/api/gateway-token`` — guarded by ``auth_guard``.
+- **authenticated** (browser session/desktop OAuth): ``/api/devices/...`` and
+  ``/api/gateway-token`` — guarded by ``build_auth_guard``.
 - **internal** (relay-facing): ``/internal/...`` — the relay reads device keys/approval
   and validates gateway tokens. Guarded by ``internal_auth_guard`` (``X-Internal-Secret``
   shared secret; dev config may allow localhost callers instead).
@@ -27,9 +27,8 @@ from litestar.response import Response
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from skrift.auth.guards import auth_guard
-
 from buildapp import pairing_crypto
+from buildapp.desktop_auth import build_auth_guard
 from buildapp.internal_auth import internal_auth_guard
 from buildapp.models import Device, EphemeralToken
 from buildapp.request_body import require_json_object
@@ -145,7 +144,7 @@ class DevicesController(Controller):
 
     # ----- authenticated (browser/session) -----------------------------------
 
-    @post("/api/devices/lookup", guards=[auth_guard])
+    @post("/api/devices/lookup", guards=[build_auth_guard])
     async def lookup(self, request: Request, db_session: AsyncSession) -> Response:
         """Resolve a pairing code to a pending device so the human can compare its
         fingerprint before approving."""
@@ -166,7 +165,7 @@ class DevicesController(Controller):
             }
         )
 
-    @post("/api/devices/approve", guards=[auth_guard])
+    @post("/api/devices/approve", guards=[build_auth_guard])
     async def approve(self, request: Request, db_session: AsyncSession) -> Response:
         """Bind a pending device (located by its pairing code) to the current user."""
         user_id = require_user(request)
@@ -183,7 +182,7 @@ class DevicesController(Controller):
         await db_session.commit()
         return Response({"device_id": str(device.id), "approved": True})
 
-    @get("/api/devices", guards=[auth_guard])
+    @get("/api/devices", guards=[build_auth_guard])
     async def list_devices(self, request: Request, db_session: AsyncSession) -> Response:
         """List the current user's approved devices."""
         user_id = require_user(request)
@@ -196,7 +195,7 @@ class DevicesController(Controller):
         ).scalars().all()
         return Response({"devices": [device_summary(d) for d in rows]})
 
-    @post("/api/devices/{device_id:uuid}/revoke", guards=[auth_guard])
+    @post("/api/devices/{device_id:uuid}/revoke", guards=[build_auth_guard])
     async def revoke(
         self, device_id: UUID, request: Request, db_session: AsyncSession
     ) -> Response:
@@ -210,7 +209,7 @@ class DevicesController(Controller):
         await db_session.commit()
         return Response({"device_id": str(device_id), "approved": False})
 
-    @post("/api/gateway-token", guards=[auth_guard])
+    @post("/api/gateway-token", guards=[build_auth_guard])
     async def gateway_token(self, request: Request, db_session: AsyncSession) -> Response:
         """Mint a short-TTL token the browser presents to the relay so it can be scoped
         to this user's devices."""

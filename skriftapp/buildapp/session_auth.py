@@ -1,8 +1,4 @@
-"""Shared session helpers — the one canonical read of the Skrift session's user
-id. ``session_user_id`` answers "who, if anyone, is logged in" (for handlers that
-redirect anonymous visitors); ``require_user`` is the belt-and-suspenders read for
-routes behind ``auth_guard``. A malformed session value means "not logged in" —
-never an unhandled ``ValueError`` → 500."""
+"""Shared helpers for the user established by a session or reusable auth guard."""
 
 from __future__ import annotations
 
@@ -12,6 +8,8 @@ from litestar import Request
 from litestar.exceptions import NotAuthorizedException
 
 from skrift.auth.session_keys import SESSION_USER_ID
+
+DESKTOP_USER_STATE_KEY = "build_user_id"
 
 
 def session_user_id(request: Request) -> UUID | None:
@@ -25,10 +23,19 @@ def session_user_id(request: Request) -> UUID | None:
         return None
 
 
+def guarded_desktop_user_id(request: Request) -> UUID | None:
+    raw_user_id = request.scope.get("state", {}).get(DESKTOP_USER_STATE_KEY)
+    if not raw_user_id:
+        return None
+    try:
+        return UUID(str(raw_user_id))
+    except ValueError:
+        return None
+
+
 def require_user(request: Request) -> UUID:
-    """The current session's user id. Routes are guarded by ``auth_guard``; this
-    is the belt-and-suspenders read of what the guard verified."""
-    user_id = session_user_id(request)
+    """The user established by the session or the route's reusable guard."""
+    user_id = session_user_id(request) or guarded_desktop_user_id(request)
     if user_id is None:
         raise NotAuthorizedException("Authentication required")
     return user_id

@@ -17,6 +17,7 @@ auth:
     dummy:
       type: dummy
       label: Demo Login
+oauth2_enabled: true
 rate_limit:
   enabled: false
 email:

@@ -38,6 +38,7 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       relay: ${{ steps.filter.outputs.relay }}
       e2e: ${{ steps.filter.outputs.e2e }}
+      desktop: ${{ steps.filter.outputs.desktop }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -67,6 +68,7 @@ jobs:
           }
           touched '^(spa|skriftapp)/|^deploy/k8s/app\.yaml$' && app=true || app=false
           touched '^bridge/|^deploy/k8s/relay\.yaml$' && relay=true || relay=false
+          touched '^desktop/' && desktop=true || desktop=false
           # The end-to-end job also has to run when the harness itself moves —
           # the QA client under web/ or the compose stack it drives — or a
           # change to the test would skip the test.
@@ -75,7 +77,8 @@ jobs:
           echo "app=$app" >> "$GITHUB_OUTPUT"
           echo "relay=$relay" >> "$GITHUB_OUTPUT"
           echo "e2e=$e2e" >> "$GITHUB_OUTPUT"
-          echo "app=$app relay=$relay e2e=$e2e"
+          echo "desktop=$desktop" >> "$GITHUB_OUTPUT"
+          echo "app=$app relay=$relay e2e=$e2e desktop=$desktop"
 
   bridge:
     name: Rust bridge
@@ -181,10 +184,32 @@ jobs:
             --prefix "${{ github.workspace }}/../build-secure-transport/js"
       - name: Install
         working-directory: spa
-        run: npm install --no-audit --no-fund
+        run: npm install --legacy-peer-deps --no-audit --no-fund
       - name: vitest
         working-directory: spa
         run: npx vitest run
+
+  desktop:
+    name: Desktop client
+    needs: [changes]
+    if: ${{ needs.changes.outputs.desktop == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Test
+        run: npm test
+      - name: Package Linux application
+        run: npm run pack
 
   secrets:
     name: Secret scan

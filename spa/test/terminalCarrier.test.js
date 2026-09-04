@@ -48,14 +48,16 @@ const settle = async () => {
 
 /** A DataChannel carrier the test drives, answering every RPC the way the
  *  bridge would so a migration can finish. */
-function fakeCarrier() {
+function fakeCarrier({ deafTo = [] } = {}) {
   let onEnvelope = () => {};
   let onClose = () => {};
   const carrier = {
     sent: [],
+    closed: false,
     send(envelope) {
       carrier.sent.push(envelope);
       const { method, id } = envelope.frameFields.payload;
+      if (deafTo.includes(method)) return;
       const result =
         method === "term.attach" || method === "agent.attach"
           ? { snapshot: "", cursor: 7, term_id: envelope.frameFields.payload.params.term_id }
@@ -64,14 +66,17 @@ function fakeCarrier() {
     },
     onEnvelope: (fn) => (onEnvelope = fn),
     onClose: (fn) => (onClose = fn),
-    close: () => onClose(),
+    close: () => {
+      carrier.closed = true;
+      onClose();
+    },
     push: (payload) => onEnvelope({ frameFields: { payload } }),
     calls: (method) => carrier.sent.map((e) => e.frameFields.payload).filter((p) => p.method === method),
   };
   return carrier;
 }
 
-async function connected() {
+async function connected(settle = tick) {
   FakeWebSocket.instances.length = 0;
   const socket = new TerminalSocket({
     url: "wss://relay.test",
@@ -85,13 +90,13 @@ async function connected() {
   socket.onStatus((s) => statuses.push(s));
   const started = socket.start();
   started.catch(() => {});
-  await tick();
+  await settle();
   const ws = FakeWebSocket.instances.at(-1);
   ws.emit("open");
-  await tick();
+  await settle();
   ws.serverSend({ type: "authenticated" });
   ws.serverSend({ type: "device_key", device_id: "dev-b", transport_public_key: "pk-b" });
-  await tick();
+  await settle();
   const init = ws.sent.find((m) => m.type === "session_init");
   ws.serverSend({ type: "session_accept", session_id: init.session_id, envelope: {} });
   await started;
@@ -195,6 +200,34 @@ describe("a terminal socket that rides two carriers", () => {
     await tick();
     expect(statuses).toContain("disconnected");
     socket.close();
+  });
+
+  it("drops the wire whose liveness ping went unanswered, not the other one", async () => {
+    vi.useFakeTimers();
+    try {
+      const settle = () => vi.advanceTimersByTimeAsync(0);
+      const { socket, ws } = await connected(settle);
+      const carrier = fakeCarrier({ deafTo: ["ping"] });
+      // Its owner is what hands the channel over and takes it back, exactly as
+      // terminal/manager.js does for the peer link's `term` half.
+      carrier.onClose(() => socket.peer(null));
+      await socket.peer(carrier);
+      const sockets = FakeWebSocket.instances.length;
+
+      // Two seconds of silence buys a ping; three more without an answer says
+      // the wire is gone — and the wire is the channel, not the relay socket.
+      await vi.advanceTimersByTimeAsync(6000);
+
+      expect(carrier.closed).toBe(true);
+      expect(FakeWebSocket.instances).toHaveLength(sockets);
+      const listing = socket.listTerminals({ project_id: "p" });
+      listing.catch(() => {});
+      await settle();
+      expect(ws.sent.at(-1).envelope.frameFields.payload.method).toBe("term.list");
+      socket.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects what was in flight on the wire that died, once nothing is carrying", async () => {

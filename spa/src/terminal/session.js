@@ -667,10 +667,15 @@ export class TerminalSocket {
       await new Promise((resolve) => setTimeout(resolve, 2000));
       if (this._gen !== gen || this._closed) return;
       if (Date.now() - this._lastFrameAt < FRAME_PROOF_OF_LIFE_MS) continue;
+      const wire = this._carrier;
       try {
         await this._call("ping", {}, 3000);
       } catch {
-        if (this._gen === gen) this._onLost(gen);
+        // The wire that did not answer is the one that goes: closing a carrier
+        // is how either kind reports itself gone, and the switch decides what
+        // that costs — a channel falls back to the relay, a relay socket
+        // reconnects.
+        if (this._gen === gen) wire?.close();
         return;
       }
     }

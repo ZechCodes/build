@@ -213,7 +213,8 @@ locked.
   impl AppState {
       fn defer_lifecycle(&mut self, job: WorktreeLifecycleJob) -> Value;   // placeholder
       fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String>;
-  }  ```
+  }
+  ```
 
 - **Hides** every shell-out and libgit2 call a lifecycle verb makes, the
   scaffold-after-create ordering, the rollback. `WorktreeManager` gains
@@ -245,5 +246,4 @@ Step 5 (SPA): the `agent_starting` state goes on the overlay `core/optimistic.js
 already owns, and the four views that read a tab id out of a reply
 (`thread.post`, `agent.start`, `branch.dispatch`, `worktree.create`) read the
 entity's fields from the next push instead. The spec's load test,
-`bridge/tests/concurrency_load.rs`, is the only test that measures a number; the
-tests named above prove a lock is free.
+`bridge/tests/concurrency_load.rs`, is the only one that measures a number.

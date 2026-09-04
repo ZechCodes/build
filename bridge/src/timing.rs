@@ -392,19 +392,21 @@ fn as_millis(micros: u64) -> f64 {
     (micros as f64) / 1000.0
 }
 
+/// A clock plus the slow-frame lines it has written, for the tests of every
+/// module that watches what the clock reports.
+#[cfg(test)]
+pub(crate) fn recording_clock() -> (Arc<FrameClock>, Arc<Mutex<Vec<String>>>) {
+    let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&lines);
+    let clock = FrameClock::reporting_to(Arc::new(move |line: &str| {
+        sink.lock().unwrap().push(line.to_string());
+    }));
+    (clock, lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A clock plus the lines it has written.
-    fn recording_clock() -> (Arc<FrameClock>, Arc<Mutex<Vec<String>>>) {
-        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&lines);
-        let clock = FrameClock::reporting_to(Arc::new(move |line: &str| {
-            sink.lock().unwrap().push(line.to_string());
-        }));
-        (clock, lines)
-    }
 
     #[test]
     fn a_frame_is_counted_under_its_own_method() {

@@ -947,6 +947,7 @@ mod silence_tests {
 #[cfg(test)]
 mod dispatcher_tests {
     use super::*;
+    use crate::timing::{recording_clock, SLOW_FRAME};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc as blocking_channel;
     use std::sync::Mutex;
@@ -1618,18 +1619,6 @@ mod dispatcher_tests {
             vec!["1".to_string(), "close".to_string()],
             "the close ran last"
         );
-    }
-
-    use crate::timing::SLOW_FRAME;
-
-    /// A clock plus the slow-frame lines it has written.
-    fn recording_clock() -> (Arc<FrameClock>, Arc<Mutex<Vec<String>>>) {
-        let lines: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let sink = lines.clone();
-        let clock = FrameClock::reporting_to(Arc::new(move |line: &str| {
-            sink.lock().unwrap().push(line.to_string());
-        }));
-        (clock, lines)
     }
 
     /// The number `bridge.stats` reports as the queue depth is the frames that

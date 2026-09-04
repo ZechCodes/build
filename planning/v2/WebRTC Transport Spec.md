@@ -183,10 +183,14 @@ An unchunked envelope is sent as-is; a receiver distinguishes the two by the pre
 cap); an over-limit or gap-having reassembly closes the channel. The channel is ordered,
 so parts cannot interleave across ids from one sender.
 
-**Backpressure.** The bridge's DataChannel writer stops draining its outbound queue while
-`buffered_amount` exceeds `DC_BUFFERED_HIGH = 1 MiB` and resumes on the
-buffered-amount-low callback. The existing bridge-side `term.ack` budget
-(`TERM_UNACKED_BUDGET_BYTES`, `bridge/src/app.rs`) applies unchanged on both carriers.
+**Backpressure.** The peer connection holds each channel's writer at
+`DC_BUFFERED_HIGH = 1 MiB` of that channel's own buffered bytes: a send past the limit
+waits until the peer has taken enough of what the channel already holds, and fails once
+the channel is closing. The limit is per channel, so a terminal flood still cannot stall
+an RPC reply. The envelope queue behind the writer is unbounded, so a client that will
+not drain trades the channel's send buffer for device heap while it stays attached. The
+existing bridge-side `term.ack` budget (`TERM_UNACKED_BUDGET_BYTES`, `bridge/src/app.rs`)
+applies unchanged on both carriers.
 
 ### Bridge peer (`bridge/src/rtc.rs`)
 
@@ -311,5 +315,12 @@ for stage gates.
 ## Open questions for review
 
 1. TURN credential TTL: 24 h as specified, or shorter with a scheduled ICE restart?
-2. Should the bridge log the negotiated candidate pair type (host / srflx / relay) so we
-   can measure how often TURN is actually used before the free tier matters?
+
+## Decisions taken during the build
+
+- **The bridge logs the negotiated candidate pair type** (open question 2, closed in
+  stage 4): one line per session, the moment its peer connection first carries, naming
+  the winning local candidate's type — `host` and `srflx` are direct and free, `relay` is
+  TURN egress that is billed. One line per session is what makes "how often is TURN
+  actually used" answerable from the logs without a metrics pipeline. It goes to stderr,
+  where everything else `rtc.rs` says goes.

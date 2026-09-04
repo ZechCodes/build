@@ -121,6 +121,9 @@ pub trait SessionPeer: Send + Sync {
   finishes shortly after `answer` and an ICE restart re-answers with a fresh sender.
 - **Hides** webrtc-rs, DTLS, ICE state, the negotiated channels, chunking, backpressure and the winning candidate-pair
   type; `app.rs` sees three async methods and an SDP string, so stage 2 ships against a recording stub.
+- **`report_negotiated_path` (stage 4)** is the one thing the peer says about itself: when its connection first
+  carries, one stderr line naming the winning local candidate's type (`host` / `srflx` / `relay`). It closes the spec's
+  open question 2 and stays inside the peer — nothing above it learns which path won, only the log does.
 
 ### `SessionPeerFactory` — the single construction point, `bridge/src/rtc.rs` (stage 2)
 ```rust
@@ -174,10 +177,14 @@ twice, in two languages (`spa/src/core/chunk.js`), with the spec's table as its 
 
 ### `DataChannelCarrier` — `bridge/src/rtc.rs` (stage 4)
 **Boundary** one channel's two tasks over one `CarrierHandle`: a writer draining its
-`UnboundedReceiver<OutboundEnvelope>` through `chunk::split`, parked while `buffered_amount > DC_BUFFERED_HIGH` and
-woken by buffered-amount-low; a reader reassembling into `FrameIntake::accept`. A `ChunkError` closes the channel, as
-the spec requires — a reassembly that lost a part cannot be resumed — and any close (that, ICE failure, DTLS close,
-`rtc.close`) calls `FrameIntake::close_carrier`, where the teardown rule decides whether a session ended with it.
+`UnboundedReceiver<OutboundEnvelope>` through `chunk::split`, and a reader reassembling into `FrameIntake::accept`.
+The pacing is the peer connection's, not the writer's: it holds each channel's send at `DC_BUFFERED_HIGH` of that
+channel's own buffered bytes and fails it once the channel is closing, so the two channels cannot head-of-line block
+each other and no buffered-amount-low callback is written here. The envelope queue behind the writer is unbounded, so a
+client that will not drain trades the channel's send buffer for device heap while it stays attached. A `ChunkError`
+closes the channel, as the spec requires — a reassembly that lost a part cannot be resumed — and any close (that, ICE
+failure, DTLS close, `rtc.close`) calls `FrameIntake::close_carrier`, where the teardown rule decides whether a session
+ended with it.
 **Hides** chunking and backpressure; **extends** the relay writer task's job to a second wire. It registers no senders
 itself: a migrating browser re-sends `session.hello` and re-attaches its terminals over the channel, and
 `TermScreen::register` (`app.rs:394`) replaces the prior sender for that session id exactly as on a reconnect. That

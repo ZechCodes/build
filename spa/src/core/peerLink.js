@@ -30,8 +30,9 @@ const OPEN_TIMEOUT_MS = 15000;
  *   channels are down.
  * @param fetchIceServers mints a fresh list; called once per offer, including
  *   every ICE restart, which is how expiring TURN credentials are replaced.
- * @param remoteCandidates subscribes to the bridge's trickled candidates:
- *   `(deliver) => unsubscribe`.
+ * @param remoteCandidates subscribes to the bridge's pushes: `(take) =>
+ *   unsubscribe`, where `take(push)` answers whether the push was this link's.
+ *   The `rtc.ice` shape is stated here and nowhere else.
  */
 export async function openPeerLink({
   signal,
@@ -46,10 +47,12 @@ export async function openPeerLink({
     peer.createDataChannel(label, { negotiated: true, id, ordered: true }),
   );
   const carriers = channels.map((channel) => openCarrier({ channel }));
-  const unsubscribe = remoteCandidates((candidate) => {
-    peer.addIceCandidate(candidate).catch(() => {
+  const unsubscribe = remoteCandidates((push) => {
+    if (push.type !== "rtc.ice") return false;
+    peer.addIceCandidate(push.candidate).catch(() => {
       /* a candidate the peer will not take costs one path, not the link */
     });
+    return true;
   });
 
   let torn = false;
@@ -99,24 +102,37 @@ async function offer(peer, signal, iceServers, options) {
   await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
 }
 
-/** Settle once both channels carry, or fail the upgrade. */
+/** Settle once both channels carry, or fail the upgrade. However it settles it
+ *  leaves nothing behind: a deadline still ticking or a state listener still
+ *  registered would outlive the answer it was asked for, and the second would
+ *  hand every later failure to a promise that is already settled. */
 function bothOpen(peer, channels, openTimeoutMs) {
   return new Promise((resolve, reject) => {
     let waiting = channels.length;
+    const settle = (answer) => {
+      clearTimeout(deadline);
+      peer.removeEventListener("connectionstatechange", giveUpOnFailure);
+      for (const channel of channels) channel.removeEventListener("open", opened);
+      answer();
+    };
     const opened = () => {
       waiting -= 1;
-      if (waiting === 0) resolve();
+      if (waiting === 0) settle(resolve);
     };
+    const giveUpOnFailure = () => {
+      if (peer.connectionState === "failed" || peer.connectionState === "closed") {
+        settle(() => reject(new Error(`the peer connection ${peer.connectionState} before its channels opened`)));
+      }
+    };
+    const deadline = setTimeout(
+      () => settle(() => reject(new Error("the peer connection did not open its channels"))),
+      openTimeoutMs,
+    );
+    peer.addEventListener("connectionstatechange", giveUpOnFailure);
     for (const channel of channels) {
       if (channel.readyState === "open") opened();
       else channel.addEventListener("open", opened);
     }
-    peer.addEventListener("connectionstatechange", () => {
-      if (peer.connectionState === "failed" || peer.connectionState === "closed") {
-        reject(new Error(`the peer connection ${peer.connectionState} before its channels opened`));
-      }
-    });
-    setTimeout(() => reject(new Error("the peer connection did not open its channels")), openTimeoutMs);
   });
 }
 

@@ -52,16 +52,29 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     onLost: goOffline,
     // The bridge saying something moved. A frame nobody asked for reaches the
     // surface showing that state, which is what lets the polls stand down —
-    // except the peer connection's own trickle, which is the upgrade talking.
-    onPush: (payload) =>
-      payload.type === "rtc.ice" ? deliverBridgeCandidate(payload.candidate) : dispatchChangeEvent(payload),
+    // unless a live upgrade claims it first, as the peer connection's own
+    // trickle is claimed by the link that is negotiating it.
+    onPush: (payload) => {
+      if (!claimedByAnUpgrade(payload)) dispatchChangeEvent(payload);
+    },
   });
 }
 
 // ---- the peer path (spec §SPA carrier and migration policy) ------------------
 
 let peerLink = null;
-let deliverBridgeCandidate = () => {};
+
+/** The pushes an upgrade in flight is listening for. Each link registers its own
+ *  handler and takes it back by identity when it is torn down, so an upgrade
+ *  that overtakes another never has the one it replaced unsubscribe it. What a
+ *  push has to look like to be claimed is the link's business, not this
+ *  layer's. */
+const upgradesListening = new Set();
+const subscribeToPushes = (take) => {
+  upgradesListening.add(take);
+  return () => upgradesListening.delete(take);
+};
+const claimedByAnUpgrade = (payload) => [...upgradesListening].some((take) => take(payload));
 
 /**
  * Upgrade a live session onto a direct peer path, in the background.
@@ -79,15 +92,18 @@ async function upgradeToPeer(session) {
     link = await openPeerLink({
       signal: (method, params) => session.signal(method, params),
       fetchIceServers,
-      remoteCandidates: (deliver) => {
-        deliverBridgeCandidate = deliver;
-        return () => (deliverBridgeCandidate = () => {});
-      },
+      remoteCandidates: subscribeToPushes,
     });
   } catch (error) {
     console.warn("staying on the relay:", error.message);
     return;
   }
+  adoptPeerLink(session, link);
+}
+
+/** Put both streams on the connection that just opened — unless the session it
+ *  was opened for is not the one the app is on any more. */
+function adoptPeerLink(session, link) {
   if (App.session !== session) {
     link.close(); // a device switch overtook the upgrade
     return;
@@ -95,14 +111,18 @@ async function upgradeToPeer(session) {
   peerLink = link;
   // The two channels are one connection: whichever goes first takes the other,
   // and both streams migrate back to the relay together.
-  link.app.onClose(() => {
-    if (peerLink === link) dropPeerLink();
-  });
+  for (const carrier of [link.app, link.term]) {
+    carrier.onClose(() => {
+      if (peerLink === link) dropPeerLink();
+    });
+  }
   session.peer(link.app);
   terminalsRideOn(link.term);
 }
 
-/** Give up the peer path and go back to the relay. */
+/** Idempotent, and the single point where both streams are handed back at once:
+ *  nothing may end up on the relay while the other half still rides a peer
+ *  connection that is going away. */
 function dropPeerLink() {
   const link = peerLink;
   if (!link) return;

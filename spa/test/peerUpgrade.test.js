@@ -72,6 +72,15 @@ function fakeLink() {
   return link;
 }
 
+/** What openPeerLink registers: a push handler that answers whether the push
+ *  was its own. The `rtc.ice` shape lives in peerLink, so the policy layer is
+ *  exercised through a handler that owns it exactly as the real one does. */
+const takeCandidate = (deliver) => (push) => {
+  if (push.type !== "rtc.ice") return false;
+  deliver(push.candidate);
+  return true;
+};
+
 beforeEach(() => {
   document.body.innerHTML = '<div id="offbar"><span id="offbar-text"></span></div><div id="conn"></div>';
   changed.length = 0;
@@ -155,7 +164,7 @@ describe("the upgrade policy", () => {
     const link = fakeLink();
     let deliverCandidate;
     peerLink.open.mockImplementation(async ({ remoteCandidates }) => {
-      remoteCandidates((candidate) => (deliverCandidate = candidate));
+      link.close.mockImplementation(remoteCandidates(takeCandidate((c) => (deliverCandidate = c))));
       return link;
     });
     const session = fakeSession();
@@ -181,5 +190,49 @@ describe("the upgrade policy", () => {
     adoptSession(fakeSession());
     await tick();
     expect(peerLink.open).not.toHaveBeenCalled();
+  });
+
+  it("migrates back when the terminal's half of the connection is the one that goes", async () => {
+    const link = fakeLink();
+    peerLink.open.mockResolvedValue(link);
+    const session = fakeSession();
+    adoptSession(session);
+    await tick();
+    session.peer.mockClear();
+    terminals.terminalsRideOn.mockClear();
+
+    link.term.drop();
+
+    expect(session.peer).toHaveBeenCalledWith(null);
+    expect(terminals.terminalsRideOn).toHaveBeenCalledWith(null);
+    expect(link.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps each upgrade's candidates its own when one overtakes another", async () => {
+    const links = [fakeLink(), fakeLink()];
+    const delivered = [];
+    let opened = 0;
+    peerLink.open.mockImplementation(async ({ remoteCandidates }) => {
+      const mine = opened++;
+      // A real link gives its subscription back when it is torn down, and takes
+      // back its own and nobody else's.
+      links[mine].close.mockImplementation(remoteCandidates(takeCandidate((c) => delivered.push([mine, c]))));
+      return links[mine];
+    });
+    const sessions = [fakeSession(), fakeSession()];
+    const options = [];
+    relay.openRelaySession.mockImplementation(async (o) => {
+      options.push(o);
+      return sessions[0];
+    });
+    await openAppSession();
+
+    adoptSession(sessions[0]);
+    await tick();
+    adoptSession(sessions[1]); // the first link is torn down as this one is adopted
+    await tick();
+
+    options[0].onPush({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
+    expect(delivered).toEqual([[1, { candidate: "candidate:9 1 udp" }]]);
   });
 });

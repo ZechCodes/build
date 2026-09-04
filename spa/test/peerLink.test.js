@@ -14,6 +14,12 @@ class FakeEventTarget {
   addEventListener(type, fn) {
     (this.listeners[type] ||= []).push(fn);
   }
+  removeEventListener(type, fn) {
+    this.listeners[type] = (this.listeners[type] || []).filter((listener) => listener !== fn);
+  }
+  listenerCount(type) {
+    return (this.listeners[type] || []).length;
+  }
   emit(type, event = {}) {
     (this.listeners[type] || []).forEach((fn) => fn(event));
   }
@@ -142,7 +148,7 @@ describe("openPeerLink", () => {
     expect(signalled.filter(([method]) => method === "rtc.ice")).toEqual([
       ["rtc.ice", { candidate: { candidate: "candidate:1 1 udp" } }],
     ]);
-    candidateSinks[0]({ candidate: "candidate:2 1 udp" });
+    expect(candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:2 1 udp" } })).toBe(true);
     await tick();
     expect(peer.remoteCandidates).toEqual([{ candidate: "candidate:2 1 udp" }]);
   });
@@ -234,5 +240,31 @@ describe("openPeerLink", () => {
     expect(peer.closed).toBe(true);
     expect(lost.sort()).toEqual(["app", "term"]);
     expect(signalled.map(([method]) => method)).toContain("rtc.close");
+  });
+
+  it("takes the bridge's candidates off the push stream and leaves everything else on it", async () => {
+    const { peer, candidateSinks } = await upgrade();
+
+    expect(candidateSinks[0]({ type: "entity.changed", id: "run-7" })).toBe(false);
+    await tick();
+    expect(peer.remoteCandidates).toEqual([]);
+  });
+
+  it("leaves nothing waiting on the connection it settled", async () => {
+    vi.useFakeTimers();
+    try {
+      const stood = stand();
+      await vi.advanceTimersByTimeAsync(0);
+      const peer = stood.peer();
+      peer.channels.get("app").open();
+      peer.channels.get("term").open();
+      await stood.link;
+
+      expect(vi.getTimerCount()).toBe(0); // the open deadline is not still ticking
+      expect(peer.listenerCount("connectionstatechange")).toBe(1); // only the restart watcher
+      for (const channel of peer.channels.values()) expect(channel.listenerCount("open")).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

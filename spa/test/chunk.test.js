@@ -98,4 +98,24 @@ describe("createReassembler", () => {
     expect(() => createReassembler().accept('{"part":{"id":1},"data":"x"}')).toThrow();
     expect(() => createReassembler().accept('{"part":{"id":1,"index":0,"count":0},"data":"x"}')).toThrow();
   });
+
+  it("cuts in the bytes the wire counts, never through a character", () => {
+    // Every code point size UTF-8 has, so no slice boundary can avoid one.
+    const text = "é☃𝄞a".repeat(CHUNK_BYTES / 2);
+    const parts = splitEnvelope(text);
+
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      const { data } = JSON.parse(part);
+      expect(new TextEncoder().encode(data).length).toBeLessThanOrEqual(CHUNK_BYTES);
+      expect(JSON.stringify(data)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i); // no half a surrogate pair
+    }
+    expect(reassemble(parts)).toBe(text);
+  });
+
+  it("counts an envelope that fits in bytes, not in string units", () => {
+    const text = "𝄞".repeat(CHUNK_BYTES / 2); // half the units, twice the bytes each
+
+    expect(splitEnvelope(text).length).toBeGreaterThan(1);
+  });
 });

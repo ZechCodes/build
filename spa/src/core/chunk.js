@@ -12,9 +12,8 @@
  *  conservative floor every implementation clears rather than a measured
  *  maximum. An envelope at or under it crosses whole.
  *
- *  Measured in string units: an envelope is JSON of base64 and ids, so a unit
- *  is a byte, and text that is not leaves a slice smaller than the cap rather
- *  than larger. */
+ *  Measured in the UTF-8 bytes the wire carries, which is what the negotiated
+ *  message limit counts and what bridge/src/rtc/chunk.rs measures. */
 export const CHUNK_BYTES = 16 * 1024;
 
 /** The largest envelope a reassembly may add up to — the relay's own frame cap,
@@ -40,19 +39,61 @@ export class ChunkError extends Error {
   }
 }
 
+/** How many bytes the code point at `index` takes in UTF-8. A high surrogate
+ *  with a low one behind it is one code point of four bytes spanning two string
+ *  units — the only place a naive cut can land inside a character, where it
+ *  would leave a half JSON.stringify writes as an escape no strict parser
+ *  accepts. */
+function utf8SizeAt(text, index) {
+  const unit = text.charCodeAt(index);
+  if (unit < 0x80) return 1;
+  if (unit < 0x800) return 2;
+  const low = unit >= 0xd800 && unit <= 0xdbff ? text.charCodeAt(index + 1) : 0;
+  if (low >= 0xdc00 && low <= 0xdfff) return 4;
+  return 3;
+}
+
+/** The string units one code point of `size` bytes spans. */
+const unitsFor = (size) => (size === 4 ? 2 : 1);
+
+/** What the wire counts. */
+function utf8Length(text) {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += unitsFor(utf8SizeAt(text, index))) {
+    bytes += utf8SizeAt(text, index);
+  }
+  return bytes;
+}
+
+/** The text cut at code-point boundaries, no slice past CHUNK_BYTES of UTF-8,
+ *  and one slice when the whole of it fits. */
+function slices(text) {
+  const cut = [];
+  let start = 0;
+  let bytes = 0;
+  let index = 0;
+  while (index < text.length) {
+    const size = utf8SizeAt(text, index);
+    if (bytes + size > CHUNK_BYTES) {
+      cut.push(text.slice(start, index));
+      start = index;
+      bytes = 0;
+    }
+    bytes += size;
+    index += unitsFor(size);
+  }
+  cut.push(text.slice(start));
+  return cut;
+}
+
 /** One envelope as the messages that carry it: itself, when it fits, else its
  *  ordered parts. Every part of one envelope shares an id, so a receiver that
  *  is handed a part of another message knows before it appends. */
 export function splitEnvelope(envelopeJson) {
-  if (envelopeJson.length <= CHUNK_BYTES) return [envelopeJson];
+  const parts = slices(envelopeJson);
+  if (parts.length === 1) return parts;
   const id = nextMessageId++;
-  const slices = [];
-  for (let start = 0; start < envelopeJson.length; start += CHUNK_BYTES) {
-    slices.push(envelopeJson.slice(start, start + CHUNK_BYTES));
-  }
-  return slices.map((data, index) =>
-    JSON.stringify({ part: { id, index, count: slices.length }, data }),
-  );
+  return parts.map((data, index) => JSON.stringify({ part: { id, index, count: parts.length }, data }));
 }
 
 /**
@@ -77,7 +118,7 @@ export function createReassembler() {
     if (part.index !== 0) {
       throw new ChunkError(`part ${part.index} of message ${part.id} arrived where part 0 was due`);
     }
-    return { id: part.id, count: part.count, nextIndex: 0, envelope: "" };
+    return { id: part.id, count: part.count, nextIndex: 0, bytes: 0, envelope: "" };
   };
 
   return {
@@ -94,8 +135,9 @@ export function createReassembler() {
         throw new ChunkError(`a part that is not one: ${text.slice(0, 64)}`);
       }
       const open = due(part);
-      if (open.envelope.length + data.length > MAX_REASSEMBLED_BYTES) {
-        throw new ChunkError(`a message past the ${MAX_REASSEMBLED_BYTES} unit reassembly limit`);
+      open.bytes += utf8Length(data);
+      if (open.bytes > MAX_REASSEMBLED_BYTES) {
+        throw new ChunkError(`a message past the ${MAX_REASSEMBLED_BYTES} byte reassembly limit`);
       }
       open.envelope += data;
       open.nextIndex += 1;

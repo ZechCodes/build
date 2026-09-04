@@ -9,7 +9,7 @@
 // Every carrier in the SPA is built by openCarrier, and the test that picks the
 // implementation lives in it and nowhere else.
 
-import { createReassembler, splitEnvelope } from "./chunk.js";
+import { ChunkError, createReassembler, splitEnvelope } from "./chunk.js";
 
 /** How many bytes a channel may hold undelivered before its writer waits (spec
  *  §Backpressure). The limit is per channel, so a terminal flood cannot stall
@@ -29,23 +29,34 @@ export function openCarrier({ socket, channel, sessionId }) {
 }
 
 /** What every carrier shares: one envelope sink, one close report that fires
- *  at most once, however the wire ended. */
+ *  at most once, however the wire ended.
+ *
+ *  Both slots are subscriptions, not settings: a carrier is held by more than
+ *  one owner at a time — the session riding it and the link that opened it —
+ *  and neither may silently unregister the other. Each returns the
+ *  unsubscribe that is the only way off. */
 function carrierCore() {
-  let onEnvelope = () => {};
-  let onClose = () => {};
+  const envelopeListeners = new Set();
+  const closeListeners = new Set();
   let ended = false;
+  const subscribe = (listeners) => (fn) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
   return {
-    deliver: (envelope) => onEnvelope(envelope),
+    deliver: (envelope) => {
+      for (const listener of [...envelopeListeners]) listener(envelope);
+    },
     end: () => {
       if (ended) return false;
       ended = true;
-      onClose();
+      for (const listener of [...closeListeners]) listener();
       return true;
     },
     gone: () => ended,
     interface: {
-      onEnvelope: (fn) => (onEnvelope = fn),
-      onClose: (fn) => (onClose = fn),
+      onEnvelope: subscribe(envelopeListeners),
+      onClose: subscribe(closeListeners),
     },
   };
 }
@@ -82,16 +93,23 @@ function channelCarrier(channel) {
   channel.addEventListener("error", shutDown);
   channel.addEventListener("message", (event) => {
     const text = typeof event.data === "string" ? event.data : new TextDecoder().decode(event.data);
-    let envelopeJson;
+    let envelope;
     try {
-      envelopeJson = reassembler.accept(text);
-    } catch {
-      // A reassembly that lost a part cannot be resumed: the channel goes, and
-      // the session falls back to whatever else is carrying it.
+      const envelopeJson = reassembler.accept(text);
+      if (envelopeJson === null) return;
+      envelope = JSON.parse(envelopeJson);
+    } catch (error) {
+      // The two things a peer can say that this channel cannot come back from:
+      // parts that do not add up, and parts that add up to something that is
+      // not an envelope. Neither can be resumed — parts carry no way to ask for
+      // one again — so the channel goes and the session falls back to whatever
+      // else is carrying it. Anything else thrown here is a bug in the
+      // reassembler and belongs to whoever reads the stack.
+      if (!(error instanceof ChunkError) && !(error instanceof SyntaxError)) throw error;
       shutDown();
       return;
     }
-    if (envelopeJson !== null) core.deliver(JSON.parse(envelopeJson));
+    core.deliver(envelope);
   });
 
   channel.bufferedAmountLowThreshold = DC_BUFFERED_HIGH;

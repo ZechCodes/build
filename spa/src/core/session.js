@@ -187,6 +187,10 @@ export async function openRelaySession({
   let onCarrierChange = () => {};
   const carrierSwitch = createSessionSwitch({
     session: {
+      // Every carrier this session holds is read from, not only the one it
+      // sends on: signaling is pinned to the relay carrier, so its answers
+      // arrive there while a channel carries everything else. Registering the
+      // same reader twice is registering it once.
       rideOn: (taken) => {
         carrier = taken;
         taken?.onEnvelope(takeEnvelope);
@@ -209,16 +213,18 @@ export async function openRelaySession({
       frameFields: { frame_type: "data", sender: "client", payload: { method, id: rid, params } },
     });
     const reply = new Promise((resolve, reject) => pending.set(rid, { resolve, reject }));
-    wire.send(envelope);
+    // A frame that never crossed the wire has no answer coming: the call fails
+    // now rather than waiting out a timeout for a reply nobody will send.
+    try {
+      await wire.send(envelope);
+    } catch (error) {
+      pending.delete(rid);
+      throw error;
+    }
     return Promise.race([
       reply,
-      new Promise((_, reject) =>
-        setTimeout(() => {
-          pending.delete(rid);
-          reject(new Error(`${method} timed out`));
-        }, timeoutMs),
-      ),
-    ]);
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs)),
+    ]).finally(() => pending.delete(rid));
   }
 
   /** Sever this session deliberately (e.g. switching devices) — no onLost. */

@@ -169,3 +169,47 @@ describe("the DataChannel carrier", () => {
     await expect(parked).rejects.toThrow();
   });
 });
+
+describe("a carrier's listeners", () => {
+  it("delivers to every envelope listener, and to none that unsubscribed", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const first = [];
+    const second = [];
+    carrier.onEnvelope((e) => first.push(e));
+    const stopSecond = carrier.onEnvelope((e) => second.push(e));
+    channel.deliver(JSON.stringify(envelope));
+    stopSecond();
+    channel.deliver(JSON.stringify(envelope));
+    expect(first).toHaveLength(2);
+    expect(second).toHaveLength(1);
+  });
+
+  it("reports the wire gone to every close listener, not only the last one", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const owners = [vi.fn(), vi.fn()];
+    for (const owner of owners) carrier.onClose(owner);
+    channel.close();
+    for (const owner of owners) expect(owner).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the channel on a reassembly that completes into something that is not an envelope", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    const closed = vi.fn();
+    carrier.onClose(closed);
+    channel.deliver("not json at all");
+    expect(channel.readyState).toBe("closed");
+    expect(closed).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets a bug in the reassembler out rather than passing it off as a protocol violation", () => {
+    const channel = new FakeChannel();
+    const carrier = openCarrier({ channel });
+    carrier.onEnvelope(() => {
+      throw new RangeError("a listener that is broken");
+    });
+    expect(() => channel.deliver(JSON.stringify(envelope))).toThrow(RangeError);
+  });
+});

@@ -318,17 +318,25 @@ describe("openRelaySession", () => {
 
 // ---- two carriers ------------------------------------------------------------
 
-/** A carrier a test drives: what it was handed, and what it hands back. */
-function fakeCarrier() {
-  let onEnvelope = () => {};
-  let onClose = () => {};
+/** A carrier a test drives: what it was handed, and what it hands back. Its
+ *  listener slots are subscriptions, as the real carrier's are. */
+function fakeCarrier({ sendFails = null } = {}) {
+  const envelopeListeners = new Set();
+  const closeListeners = new Set();
+  const subscribe = (listeners) => (fn) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
   const carrier = {
     sent: [],
-    send: (envelope) => carrier.sent.push(envelope),
-    onEnvelope: (fn) => (onEnvelope = fn),
-    onClose: (fn) => (onClose = fn),
-    close: () => onClose(),
-    reply: (payload) => onEnvelope({ frameFields: { payload } }),
+    send: async (envelope) => {
+      if (sendFails) throw new Error(sendFails);
+      carrier.sent.push(envelope);
+    },
+    onEnvelope: subscribe(envelopeListeners),
+    onClose: subscribe(closeListeners),
+    close: () => closeListeners.forEach((fn) => fn()),
+    reply: (payload) => envelopeListeners.forEach((fn) => fn({ frameFields: { payload } })),
   };
   return carrier;
 }
@@ -442,5 +450,27 @@ describe("a session that rides two carriers", () => {
     peer.close();
     ws.close();
     expect(events.lost).toBe(0);
+  });
+
+  it("hands one frame up once, however many wires it has ridden", async () => {
+    const pushes = [];
+    const { promise, ws } = await startOpen({ onPush: (payload) => pushes.push(payload) });
+    await completeHandshake(ws);
+    const session = await promise;
+    session.peer(fakeCarrier());
+    session.peer(null); // back on the relay carrier it started on
+
+    ws.serverSend({ type: "e2ee_envelope", envelope: { frameFields: { payload: { type: "board.changed" } } } });
+    await tick();
+    expect(pushes).toEqual([{ type: "board.changed" }]);
+  });
+
+  it("fails a call whose envelope never crossed the wire, rather than waiting out its timeout", async () => {
+    const { promise, ws } = await startOpen();
+    await completeHandshake(ws);
+    const session = await promise;
+    session.peer(fakeCarrier({ sendFails: "the channel closed" }));
+
+    await expect(session.call("board.list", {}, 60000)).rejects.toThrow(/the channel closed/);
   });
 });

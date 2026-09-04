@@ -632,21 +632,6 @@ pub fn find_primary_checkout(
     Ok(describe_checkouts(repo_path, base_branch, &target)?.pop())
 }
 
-/// [`find_primary_checkout`] for a caller that has a checkout to adopt or
-/// nothing to do. Read-only.
-pub fn describe_primary_checkout(
-    repo_path: &Path,
-    base_branch: &str,
-) -> Result<ExternalWorktree, WorktreeError> {
-    find_primary_checkout(repo_path, base_branch)?.ok_or_else(|| {
-        WorktreeError::Command(format!(
-            "the primary checkout at {} cannot be described — a bare repository has no \
-             working tree to adopt",
-            repo_path.display()
-        ))
-    })
-}
-
 /// Which of the repository's checkouts a scan describes. The membership test
 /// runs BEFORE any summary is computed: a summary costs several git
 /// invocations per checkout and the external scan runs on a poll.
@@ -1290,6 +1275,24 @@ mod tests {
         assert_ne!(id_a1, id_b);
         assert!(id_a1.starts_with("wt-"));
         assert_eq!(id_a1.len(), 15);
+    }
+
+    /// `Ok(None)` is reserved for a repository that really has no working
+    /// tree. A path git cannot read as a repository at all is broken, and
+    /// saying so is what keeps a caller from reading "nothing holds this
+    /// branch" off a repository that answered nothing.
+    #[test]
+    fn find_primary_checkout_errors_on_a_directory_that_is_not_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_repo = dir.path().join("plain");
+        std::fs::create_dir(&not_a_repo).unwrap();
+
+        let found = find_primary_checkout(&not_a_repo, "main");
+
+        assert!(
+            found.is_err(),
+            "a directory git cannot read is broken, not checkout-less: {found:?}"
+        );
     }
 
     #[test]

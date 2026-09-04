@@ -7178,12 +7178,7 @@ impl AppState {
         work: fn(&GitScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let scope = self.resolve_git_scope(params)?;
-        Ok(self.defer_git_work(
-            GitTarget::Checkout(scope),
-            GitWork::Checkout(work),
-            params,
-            invalidates,
-        ))
+        Ok(self.defer_git_work(DeferredGitCall::Checkout(scope, work), params, invalidates))
     }
 
     /// [`AppState::defer_git`] for the verbs that address the repository's
@@ -7196,8 +7191,7 @@ impl AppState {
     ) -> Result<Value, String> {
         let scope = self.resolve_branch_scope(params)?;
         Ok(self.defer_git_work(
-            GitTarget::Branch(Box::new(scope)),
-            GitWork::Branch(work),
+            DeferredGitCall::Branch(Box::new(scope), work),
             params,
             invalidates,
         ))
@@ -7213,13 +7207,19 @@ impl AppState {
         work: fn(&BranchListingScope, &Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
         let checkout = self.resolve_branch_scope(params)?;
-        let ownership = self.branch_ownership_index(&checkout.project_id, &checkout.base_branch)?;
+        let ownership = self.branch_ownership_index(
+            &checkout.project_id,
+            &checkout.base_branch,
+            ScanFreshness::Cached,
+        )?;
         Ok(self.defer_git_work(
-            GitTarget::BranchListing(Box::new(BranchListingScope {
-                checkout,
-                ownership,
-            })),
-            GitWork::BranchListing(work),
+            DeferredGitCall::BranchListing(
+                Box::new(BranchListingScope {
+                    checkout,
+                    ownership,
+                }),
+                work,
+            ),
             params,
             invalidates,
         ))
@@ -7240,15 +7240,13 @@ impl AppState {
 
     fn defer_git_work(
         &mut self,
-        scope: GitTarget,
-        work: GitWork,
+        call: DeferredGitCall,
         params: &Value,
         invalidates: bool,
     ) -> Value {
         self.deferred_work = Some(DeferredWork::Git(Box::new(DeferredGit {
-            scope,
+            call,
             params: params.clone(),
-            work,
             invalidates,
             #[cfg(test)]
             gate: self.off_lock_gate.clone(),
@@ -7271,15 +7269,7 @@ impl AppState {
         if !git.invalidates || result.is_err() {
             return result;
         }
-        match &git.scope {
-            GitTarget::Checkout(scope) => {
-                if self.git_scope_is_current(scope) {
-                    self.invalidate_git_scope_caches(scope);
-                }
-            }
-            GitTarget::Branch(scope) => self.invalidate_branch_scope_caches(scope),
-            GitTarget::BranchListing(scope) => self.invalidate_branch_scope_caches(&scope.checkout),
-        }
+        git.call.invalidate(self);
         result
     }
 
@@ -7434,14 +7424,15 @@ impl AppState {
     /// The ownership lookups a branch listing stamps its rows from, for a
     /// project whose base branch the caller has already resolved. See
     /// [`BranchOwnershipIndex`] for what a failed lookup costs and what it
-    /// does not.
+    /// does not, and [`ScanFreshness`] for what a caller pays to be sure.
     fn branch_ownership_index(
         &mut self,
         project_id: &str,
         base_branch: &str,
+        freshness: ScanFreshness,
     ) -> Result<BranchOwnershipIndex, String> {
         let external_branches = self
-            .external_worktrees(project_id, false)
+            .external_worktrees(project_id, matches!(freshness, ScanFreshness::Forced))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
@@ -12582,8 +12573,14 @@ impl AppState {
             }
             let repo_path = self.repo_path_for(&project_id)?;
             (
-                crate::worktree::describe_primary_checkout(&repo_path, &base)
-                    .map_err(|e| e.to_string())?,
+                crate::worktree::find_primary_checkout(&repo_path, &base)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "the primary checkout at {} has no working tree to adopt",
+                            repo_path.display()
+                        )
+                    })?,
                 AdoptionScope::PrimaryCheckout,
             )
         } else {
@@ -15517,6 +15514,20 @@ struct BranchOwnershipIndex {
     primary_checkout: Option<crate::worktree::ExternalWorktree>,
 }
 
+/// How current a caller needs [`BranchOwnershipIndex`]'s external scan to be.
+///
+/// A listing renders what the board already believes and pays nothing extra
+/// for it; a verb about to act on one of those branches re-reads the disk
+/// first, since a stale card is what sends it into a checkout git refuses.
+enum ScanFreshness {
+    Cached,
+    #[expect(
+        dead_code,
+        reason = "the acting verb that forces the scan is branch.start"
+    )]
+    Forced,
+}
+
 /// A branch verb that answers with the project's branches: the checkout it
 /// was scoped to, plus the ownership the rows are stamped from.
 struct BranchListingScope {
@@ -15531,12 +15542,12 @@ struct BranchListingScope {
 /// [`crate::branch::BranchSource`]'s own order says which of them speaks for
 /// it, so a row names exactly one thing to press. `None` is a branch nothing
 /// holds, free to check out somewhere new.
-struct BranchFacts {
+struct BranchHolder {
     holder: Option<(crate::branch::BranchSource, String)>,
 }
 
-impl BranchFacts {
-    fn resolve(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
+impl BranchHolder {
+    fn of(ownership: &BranchOwnershipIndex, branch: &str) -> Self {
         let holders = [
             (
                 crate::branch::BranchSource::Run,
@@ -15598,9 +15609,9 @@ fn stamped_branch_list(scope: &BranchListingScope) -> Result<Value, String> {
         .rows
         .into_iter()
         .map(|row| {
-            let facts = BranchFacts::resolve(&scope.ownership, &row.name);
+            let holder = BranchHolder::of(&scope.ownership, &row.name);
             let mut fields = object_fields(row.into_json());
-            fields.extend(object_fields(facts.into_json()));
+            fields.extend(object_fields(holder.into_json()));
             Value::Object(fields)
         })
         .collect();
@@ -16079,43 +16090,61 @@ fn diff_file_rows(diff: &crate::diff::WorktreeDiff) -> Vec<Value> {
 /// A `git status` walks the whole worktree and a `git fetch` waits on a
 /// network; the review surfaces poll both. Neither may hold the daemon still.
 struct DeferredGit {
-    scope: GitTarget,
+    call: DeferredGitCall,
     params: Value,
-    work: GitWork,
     /// Whether a successful call made the scope's cached summaries stale.
     invalidates: bool,
     #[cfg(test)]
     gate: Option<OffLockGate>,
 }
 
-/// Which resolution a git verb asked for: the checkout's own scope, or the
-/// repository-wide branch scope.
-enum GitTarget {
-    Checkout(GitScope),
-    Branch(Box<BranchScope>),
-    BranchListing(Box<BranchListingScope>),
+/// Which resolution a git verb asked for, holding the call to make there
+/// beside it: the checkout's own scope, the repository-wide branch scope, or
+/// that scope plus the ownership a listing stamps its rows from.
+///
+/// The scope and the function are one value because they are one decision —
+/// the verb that defers the work picks both at once, and no other pairing can
+/// be spelled. The call itself is a plain function of the scope and the
+/// request, so it holds no state and cannot reach the daemon while it runs.
+enum DeferredGitCall {
+    Checkout(GitScope, fn(&GitScope, &Value) -> Result<Value, String>),
+    Branch(
+        Box<BranchScope>,
+        fn(&BranchScope, &Value) -> Result<Value, String>,
+    ),
+    BranchListing(
+        Box<BranchListingScope>,
+        fn(&BranchListingScope, &Value) -> Result<Value, String>,
+    ),
 }
 
-/// The git call itself, as a plain function of the checkout and the request —
-/// it holds no state, so it cannot reach the daemon while it runs.
-enum GitWork {
-    Checkout(fn(&GitScope, &Value) -> Result<Value, String>),
-    Branch(fn(&BranchScope, &Value) -> Result<Value, String>),
-    BranchListing(fn(&BranchListingScope, &Value) -> Result<Value, String>),
+impl DeferredGitCall {
+    fn run(&self, params: &Value) -> Result<Value, String> {
+        match self {
+            Self::Checkout(scope, work) => work(scope, params),
+            Self::Branch(scope, work) => work(scope, params),
+            Self::BranchListing(scope, work) => work(scope, params),
+        }
+    }
+
+    /// Drop the cached summaries this call's scope described, now that the
+    /// call has changed the tree underneath them.
+    fn invalidate(&self, app: &mut AppState) {
+        match self {
+            Self::Checkout(scope, _) => {
+                if app.git_scope_is_current(scope) {
+                    app.invalidate_git_scope_caches(scope);
+                }
+            }
+            Self::Branch(scope, _) => app.invalidate_branch_scope_caches(scope),
+            Self::BranchListing(scope, _) => app.invalidate_branch_scope_caches(&scope.checkout),
+        }
+    }
 }
 
 impl DeferredGit {
     fn run(&self) -> Result<Value, String> {
-        match (&self.scope, &self.work) {
-            (GitTarget::Checkout(scope), GitWork::Checkout(work)) => work(scope, &self.params),
-            (GitTarget::Branch(scope), GitWork::Branch(work)) => work(scope, &self.params),
-            (GitTarget::BranchListing(scope), GitWork::BranchListing(work)) => {
-                work(scope, &self.params)
-            }
-            // Unreachable by construction: `defer_git` and `defer_branch_git`
-            // are the only ways to build one, and each pairs its own halves.
-            _ => Err("git scope and git work disagree".to_string()),
-        }
+        self.call.run(&self.params)
     }
 }
 
@@ -23155,6 +23184,43 @@ mod tests {
         assert_eq!(mains[0]["upstream"], "origin/main", "{mains:?}");
     }
 
+    /// A remote branch whose name has a slash is one branch named
+    /// `feature/nested`, not a branch `nested` under some other heading: the
+    /// name is everything after `refs/remotes/<remote>/`, however many
+    /// segments that is. Nested names are the common case for a team's
+    /// branches, so a listing that dropped them would offer the user almost
+    /// nothing.
+    #[test]
+    fn git_branches_lists_a_remote_only_branch_whose_name_has_a_slash() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        git_in_dir(&other, &["checkout", "-b", "feature/nested"]);
+        std::fs::write(other.join("nested.rs"), "one\n").unwrap();
+        git_in_dir(&other, &["add", "."]);
+        git_in_dir(&other, &["commit", "-m", "nested work"]);
+        git_in_dir(&other, &["push", "origin", "feature/nested"]);
+        let clone = dir.path().join("clone");
+        clone_working(&origin, &clone);
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+
+        let nested: Vec<&Value> = branches
+            .iter()
+            .filter(|b| b["name"] == "feature/nested")
+            .collect();
+        assert_eq!(nested.len(), 1, "{branches:?}");
+        assert_eq!(nested[0]["remote"], "origin", "{nested:?}");
+        assert!(
+            !branches.iter().any(|b| b["name"] == "nested"),
+            "the name is the whole suffix, not its last segment: {branches:?}"
+        );
+    }
+
     /// A branch two remotes both carry is still one branch to offer. It is
     /// listed once, from the remote a fetch would come from: `origin` when
     /// origin has it, whatever the other remote is called — git lists remotes
@@ -23220,7 +23286,8 @@ mod tests {
         git_in_dir(&repo, &["branch", "feature-idle"]);
         let mut state = git_gui_state(&dir, &repo);
         let project_id = state.projects[0].id.clone();
-        let primary_id = crate::worktree::describe_primary_checkout(&repo, "main")
+        let primary_id = crate::worktree::find_primary_checkout(&repo, "main")
+            .unwrap()
             .unwrap()
             .id;
 
@@ -23287,6 +23354,30 @@ mod tests {
         assert!(
             branches.iter().all(|b| b["primary_worktree_id"].is_null()),
             "a detached primary holds no branch: {branches:?}"
+        );
+    }
+
+    /// A repository that cannot be read refuses the listing rather than
+    /// answering with rows nothing is stamped on. "Nothing holds this branch"
+    /// is the answer that sends the user into a checkout git refuses, so it
+    /// is never invented from a failed lookup.
+    #[test]
+    fn git_branches_refuses_a_project_whose_repository_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_repo = dir.path().join("plain");
+        std::fs::create_dir(&not_a_repo).unwrap();
+        let mut state = git_gui_state(&dir, &not_a_repo);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+
+        assert_eq!(res["ok"], false, "{res:?}");
+        assert!(
+            res["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not a git repository"),
+            "git's own refusal reaches the caller: {res:?}"
         );
     }
 

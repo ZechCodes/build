@@ -21525,7 +21525,7 @@ mod tests {
         let close = Frame {
             session_id: "s-dead".into(),
             message_id: String::new(),
-            frame_type: "close".into(),
+            frame_type: transport::CLOSE_FRAME_TYPE.into(),
             sender: transport::SENDER_DEVICE.into(),
             created_at: String::new(),
             payload: Value::Null,
@@ -45366,7 +45366,7 @@ mod tests {
         let close = Frame {
             session_id: "browser".into(),
             message_id: String::new(),
-            frame_type: "close".into(),
+            frame_type: transport::CLOSE_FRAME_TYPE.into(),
             sender: transport::SENDER_DEVICE.into(),
             created_at: String::new(),
             payload: Value::Null,

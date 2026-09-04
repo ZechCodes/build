@@ -1173,8 +1173,8 @@ mod dispatcher_tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let recorder = seen.clone();
         let handler: FrameHandler = Arc::new(move |_sender, frame| {
-            if frame.frame_type == "close" {
-                recorder.lock().unwrap().push("close".into());
+            if frame.frame_type == CLOSE_FRAME_TYPE {
+                recorder.lock().unwrap().push(CLOSE_FRAME_TYPE.into());
                 return json!({ "ok": true });
             }
             std::thread::sleep(Duration::from_millis(200));
@@ -1203,7 +1203,7 @@ mod dispatcher_tests {
         }
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["1".to_string(), "close".to_string()],
+            vec!["1".to_string(), CLOSE_FRAME_TYPE.to_string()],
             "the close ran last"
         );
     }
@@ -1219,7 +1219,7 @@ mod dispatcher_tests {
         let recorder = seen.clone();
         let handler: FrameHandler = Arc::new(move |_sender, frame| {
             let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
-                "close".to_string()
+                CLOSE_FRAME_TYPE.to_string()
             } else {
                 frame.payload["id"].to_string()
             };
@@ -1251,7 +1251,7 @@ mod dispatcher_tests {
             .await;
 
         for _ in 0..100 {
-            if seen.lock().unwrap().contains(&"close".to_string()) {
+            if seen.lock().unwrap().contains(&CLOSE_FRAME_TYPE.to_string()) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1259,7 +1259,7 @@ mod dispatcher_tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(
             *seen.lock().unwrap(),
-            vec!["1".to_string(), "close".to_string()],
+            vec!["1".to_string(), CLOSE_FRAME_TYPE.to_string()],
             "the attach dispatched behind the close was never run"
         );
     }
@@ -1291,7 +1291,7 @@ mod dispatcher_tests {
                 gated.hold();
             }
             let ran = if frame.frame_type == CLOSE_FRAME_TYPE {
-                "close".to_string()
+                CLOSE_FRAME_TYPE.to_string()
             } else {
                 frame.payload["method"].as_str().unwrap_or("").to_string()
             };
@@ -1313,7 +1313,7 @@ mod dispatcher_tests {
         gate.release();
 
         for _ in 0..100 {
-            if seen.lock().unwrap().contains(&"close".to_string()) {
+            if seen.lock().unwrap().contains(&CLOSE_FRAME_TYPE.to_string()) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1323,7 +1323,7 @@ mod dispatcher_tests {
         ran.sort();
         assert_eq!(
             ran,
-            vec!["close".to_string(), "hold".to_string()],
+            vec![CLOSE_FRAME_TYPE.to_string(), "hold".to_string()],
             "the {method} queued behind the close never ran"
         );
     }

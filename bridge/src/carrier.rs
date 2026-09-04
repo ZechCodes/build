@@ -898,7 +898,10 @@ mod intake_tests {
             .unwrap();
 
         intake
-            .accept(client_envelope(&key, "s-1", "close"), &carrier)
+            .accept(
+                client_envelope(&key, "s-1", transport::CLOSE_FRAME_TYPE),
+                &carrier,
+            )
             .await
             .expect("a close frame is accepted");
 

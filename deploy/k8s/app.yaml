@@ -80,14 +80,7 @@ spec:
                   name: build-app
                   key: VAPID_SUBJECT
                   optional: true
-            # Cloudflare TURN, the relay for WebRTC peers that cannot hole-punch.
-            # The key mints short-lived per-user credentials and never leaves the
-            # api: no browser and no bridge holds it. `optional: true` because
-            # the ICE-servers route answers a STUN-only list without it, which is
-            # a working direct-path deployment — a missing key must not
-            # CreateContainerConfigError the whole app. Add real values with
-            # bootstrap-secrets.sh (CF_TURN_KEY_ID / CF_TURN_KEY_API_TOKEN
-            # exported from the Cloudflare dashboard).
+            # Cloudflare TURN key (optional: absent = STUN-only). See bootstrap-secrets.sh.
             - name: CF_TURN_KEY_ID
               valueFrom:
                 secretKeyRef:

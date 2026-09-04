@@ -36,10 +36,7 @@ class RtcController(Controller):
 
     @post(ICE_SERVERS_ROUTE_PATH, guards=[auth_guard])
     async def mint_ice_servers(self, request: Request) -> Response:
-        """Freshly minted TURN credentials for this user, or the STUN-only list
-        when no TURN key is configured. A Cloudflare failure is a 502: quietly
-        answering STUN would look like a working peer connection until the first
-        client that cannot hole-punch."""
+        """The ICE servers this user's peer connection should use."""
         require_user(request)
         key_id = os.environ.get(ice_servers.CF_TURN_KEY_ID_ENV, "")
         api_token = os.environ.get(ice_servers.CF_TURN_KEY_API_TOKEN_ENV, "")

@@ -4,11 +4,179 @@ use serde_json::Value;
 
 use super::limits::AppServerLimits;
 use super::protocol::{
-    ErrorNotification, ItemClassification, ItemLifecycle, ItemNotification, ItemReportKind,
-    ServerNotification, ToolSummaryCategory,
+    tag_for, ErrorNotification, ItemLifecycle, ItemNotification, ServerNotification,
 };
 use crate::harness::adk::{one_line, TOOL_SUMMARY_LIMIT};
 use crate::harness::{ActivityReport, AgentActivity, ToolOutcome};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSummaryCategory {
+    Command,
+    FileChange,
+    Mcp,
+    WebSearch,
+    ImageView,
+    Sleep,
+    ImageGeneration,
+    Collaboration,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemReportKind {
+    Reasoning,
+    Narration,
+    SubAgentActivity,
+    ContextCompaction,
+    EnteredReviewMode,
+    ExitedReviewMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuppressionReason {
+    UserMessageEcho,
+    HookPrompt,
+    FunctionCallOutput,
+    ExperimentalPlan,
+    BuildMcp,
+    DeferredDynamicTool,
+    UnknownItem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemClassification {
+    TrackedTool { summary: ToolSummaryCategory },
+    Emitting { report: ItemReportKind },
+    Suppressed { reason: SuppressionReason },
+}
+
+const ITEM_CLASSIFICATIONS: &[(&str, ItemClassification)] = &[
+    (
+        "agentMessage",
+        ItemClassification::Emitting {
+            report: ItemReportKind::Narration,
+        },
+    ),
+    (
+        "reasoning",
+        ItemClassification::Emitting {
+            report: ItemReportKind::Reasoning,
+        },
+    ),
+    (
+        "commandExecution",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Command,
+        },
+    ),
+    (
+        "fileChange",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::FileChange,
+        },
+    ),
+    (
+        "collabAgentToolCall",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Collaboration,
+        },
+    ),
+    (
+        "subAgentActivity",
+        ItemClassification::Emitting {
+            report: ItemReportKind::SubAgentActivity,
+        },
+    ),
+    (
+        "webSearch",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::WebSearch,
+        },
+    ),
+    (
+        "imageView",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::ImageView,
+        },
+    ),
+    (
+        "sleep",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::Sleep,
+        },
+    ),
+    (
+        "imageGeneration",
+        ItemClassification::TrackedTool {
+            summary: ToolSummaryCategory::ImageGeneration,
+        },
+    ),
+    (
+        "contextCompaction",
+        ItemClassification::Emitting {
+            report: ItemReportKind::ContextCompaction,
+        },
+    ),
+    (
+        "userMessage",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::UserMessageEcho,
+        },
+    ),
+    (
+        "hookPrompt",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::HookPrompt,
+        },
+    ),
+    (
+        "functionCallOutput",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::FunctionCallOutput,
+        },
+    ),
+    (
+        "plan",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::ExperimentalPlan,
+        },
+    ),
+    (
+        "enteredReviewMode",
+        ItemClassification::Emitting {
+            report: ItemReportKind::EnteredReviewMode,
+        },
+    ),
+    (
+        "exitedReviewMode",
+        ItemClassification::Emitting {
+            report: ItemReportKind::ExitedReviewMode,
+        },
+    ),
+    (
+        "dynamicToolCall",
+        ItemClassification::Suppressed {
+            reason: SuppressionReason::DeferredDynamicTool,
+        },
+    ),
+];
+
+pub fn classify_item(item: &Value) -> ItemClassification {
+    let item_type = item["type"].as_str().unwrap_or_default();
+    if item_type == "mcpToolCall" {
+        return if item["server"].as_str() == Some("build") {
+            ItemClassification::Suppressed {
+                reason: SuppressionReason::BuildMcp,
+            }
+        } else {
+            ItemClassification::TrackedTool {
+                summary: ToolSummaryCategory::Mcp,
+            }
+        };
+    }
+    tag_for(ITEM_CLASSIFICATIONS, item_type).unwrap_or(ItemClassification::Suppressed {
+        reason: SuppressionReason::UnknownItem,
+    })
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TranslationError {
@@ -169,10 +337,8 @@ impl CodexActivityTranslator {
         &mut self,
         notification: &ItemNotification,
     ) -> Result<Vec<ActivityReport>, TranslationError> {
-        if matches!(
-            notification.classification,
-            ItemClassification::Suppressed { .. }
-        ) {
+        let classification = classify_item(&notification.item);
+        if matches!(classification, ItemClassification::Suppressed { .. }) {
             return Ok(Vec::new());
         }
         let id = required(&notification.item, "id")?;
@@ -182,7 +348,7 @@ impl CodexActivityTranslator {
         {
             return Ok(Vec::new());
         }
-        let reports = match (notification.lifecycle, notification.classification) {
+        let reports = match (notification.lifecycle, classification) {
             (ItemLifecycle::Started, ItemClassification::TrackedTool { summary }) => {
                 self.open_tool(notification, summary)?
             }

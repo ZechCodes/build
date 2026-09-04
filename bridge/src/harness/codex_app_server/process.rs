@@ -7,11 +7,29 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use super::limits::AppServerLimits;
-use super::session::{TerminalEventSink, TerminalSourceEvent};
 use crate::harness::HarnessError;
 use crate::pty::HarnessSpec;
 
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+pub type TerminalEventSink = Arc<dyn Fn(TerminalSourceEvent) + Send + Sync>;
+
+/// One settlement of the stdout reader, the process monitor, or the stderr drainer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
+pub enum TerminalSourceEvent {
+    StdoutSettled {
+        reader_error: Option<String>,
+    },
+    ProcessSettled {
+        exit_code: Option<i32>,
+        monitor_error: Option<String>,
+    },
+    StderrSettled {
+        retained_tail: Option<String>,
+        drainer_error: Option<String>,
+    },
+}
 
 pub struct ConnectionPipes {
     pub stdin: ChildStdin,
@@ -116,7 +134,7 @@ impl AppServerProcess {
         }
     }
 
-    pub fn start_monitor(&self, events: TerminalEventSink) {
+    fn start_monitor(&self, events: TerminalEventSink) {
         let slot = Arc::clone(&self.slot);
         std::thread::spawn(move || {
             let settled = loop {

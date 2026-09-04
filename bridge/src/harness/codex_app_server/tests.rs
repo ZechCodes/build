@@ -10,13 +10,15 @@ use super::connection::{read_jsonl_frame, AppServerConnection};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
-    classify_item, ClientNotification, ConnectionEvent, InboundServerRequest, ItemClassification,
-    ItemReportKind, ParentThreadFilter, ParentThreadRoute, PendingOperation, RoutedServerRequest,
-    RpcError, ServerNotification, ServerRequest, SuppressionReason, ToolSummaryCategory,
-    TurnCompletion,
+    ClientNotification, ConnectionEvent, InboundServerRequest, ParentThreadFilter,
+    ParentThreadRoute, PendingOperation, RoutedServerRequest, RpcError, ServerNotification,
+    ServerRequest, TurnCompletion,
 };
 use super::state::{CodexSessionState, SessionEffect, SessionEvent};
-use super::translator::CodexActivityTranslator;
+use super::translator::{
+    classify_item, CodexActivityTranslator, ItemClassification, ItemReportKind, SuppressionReason,
+    ToolSummaryCategory,
+};
 use crate::harness::{AgentActivity, AgentStatus, ToolOutcome};
 use crate::harness::{Harness, HarnessContext};
 use crate::orchestrator::SpawnOptions;
@@ -1549,13 +1551,24 @@ fn child_requests_with_malformed_non_routing_params_still_receive_the_safe_respo
 #[test]
 fn unscoped_requests_keep_their_tabled_session_failure_on_every_route() {
     for method in ["account/chatgptAuthTokens/refresh", "attestation/generate"] {
-        let routed = routed_request(json!(12), method, json!({"threadId":"thread-child"}));
-        assert_eq!(routed.route, ParentThreadRoute::Unscoped, "{method}");
-        let decision = ServerRequestPolicy::decide(routed.request, routed.route, 0);
-        assert!(matches!(
-            decision.after_response,
-            AfterResponse::FailSession(_)
-        ));
+        for params in [json!({"threadId":"thread-child"}), Value::Null, json!([])] {
+            let routed = routed_request(json!(12), method, params.clone());
+            assert_eq!(
+                routed.route,
+                ParentThreadRoute::Unscoped,
+                "{method} {params}"
+            );
+            let decision = ServerRequestPolicy::decide(routed.request, routed.route, 0);
+            assert_eq!(
+                decision.response.to_value(),
+                json!({"id":12,"error":{"code":-32601,"message":"method not found"}}),
+                "{method} {params}"
+            );
+            assert!(
+                matches!(decision.after_response, AfterResponse::FailSession(_)),
+                "{method} {params}"
+            );
+        }
     }
 }
 
@@ -1984,12 +1997,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         panic!("expected a typed parent item");
     };
     assert!(state.parent_thread_matches(&parent_item.thread_id));
-    assert_eq!(
-        parent_item.classification,
-        ItemClassification::Emitting {
-            report: ItemReportKind::SubAgentActivity,
-        }
-    );
+    assert_eq!(parent_item.item["type"], "subAgentActivity");
     assert!(state
         .transition(
             SessionEvent::TurnStarted(parent_item.turn_id.clone()),

@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection};
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
-use super::process::AppServerProcess;
+use super::process::{AppServerProcess, TerminalEventSink, TerminalSourceEvent};
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
     ParentThreadFilter, ParentThreadRoute, RoutedServerRequest, ServerNotification,
@@ -21,25 +21,6 @@ use crate::models::ModelChoice;
 use crate::pty::HarnessSpec;
 
 const ACTIVITY_BACKLOG: usize = 1024;
-
-pub type TerminalEventSink = Arc<dyn Fn(TerminalSourceEvent) + Send + Sync>;
-
-/// One settlement of the stdout reader, the process monitor, or the stderr drainer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(clippy::enum_variant_names)]
-pub enum TerminalSourceEvent {
-    StdoutSettled {
-        reader_error: Option<String>,
-    },
-    ProcessSettled {
-        exit_code: Option<i32>,
-        monitor_error: Option<String>,
-    },
-    StderrSettled {
-        retained_tail: Option<String>,
-        drainer_error: Option<String>,
-    },
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoordinatorTerminalEvent {
@@ -1033,7 +1014,7 @@ mod tests {
             root.path().display()
         );
         let command = format!(
-            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}'; read hold",
+            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}' '{}'; read child_response; read hold",
             r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
             thread_response,
             r#"{"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":"thread-1"}}}"#,
@@ -1041,6 +1022,7 @@ mod tests {
             r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
             r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
             r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
+            r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
             r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
         );
         let spec = HarnessSpec::new("sh").arg("-c").arg(command);
@@ -1080,6 +1062,79 @@ mod tests {
         assert_eq!(session.epitaph(), None);
         assert_eq!(session.status(), AgentStatus::Waiting);
         assert_eq!(session.session_id().as_deref(), Some("thread-1"));
+        session.end();
+    }
+
+    #[test]
+    fn child_traffic_never_advances_the_parent_quiet_clock() {
+        let root = tempfile::tempdir().unwrap();
+        let thread_response = format!(
+            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
+            root.path().display()
+        );
+        let command = format!(
+            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}'; read turn; printf '%s\n' '{}' '{}' '{}'; read child_response",
+            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
+            thread_response,
+            r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+            r#"{"method":"item/started","params":{"threadId":"thread-child","turnId":"turn-child","item":{"id":"tool-child","type":"webSearch"}}}"#,
+            r#"{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}"#,
+            r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
+        );
+        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
+        let (session, mut activity) = CodexAppServerSession::spawn(
+            &spec,
+            root.path().to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some("high".to_string()),
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap();
+
+        let mut reports = Vec::new();
+        for _ in 0..200 {
+            match activity.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("activity receive failed: {error}"),
+            }
+            if !reports.is_empty() {
+                break;
+            }
+        }
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(session.quiet_for() < Duration::from_secs(60));
+
+        session.backdate_last_output(Duration::from_secs(60));
+        session
+            .send_turn(&Turn {
+                text: "go".to_string(),
+            })
+            .unwrap();
+
+        for _ in 0..200 {
+            match activity.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("activity receive failed: {error}"),
+            }
+        }
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        assert!(
+            session.quiet_for() >= Duration::from_secs(60),
+            "{:?}",
+            session.quiet_for()
+        );
+        assert_eq!(session.epitaph(), None);
         session.end();
     }
 

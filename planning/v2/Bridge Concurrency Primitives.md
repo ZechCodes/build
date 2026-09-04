@@ -118,43 +118,111 @@ hands the guard back while it waits.
 
 ## 1. `FrameClock` — the timing guard
 
-- **Boundary** `bridge/src/timing.rs` (new), between the relay's worker pool and
-  the app. `FrameHandler` becomes
-  `Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>`: the
-  queue wait is `relay::run_job`'s, the lock wait `dispatch_frame`'s, and one
-  record must carry both.
+Built. `bridge/src/timing.rs`, wired through `bridge/src/relay.rs` and
+`dispatch_frame`; `bridge.stats` answers. What shipped, and where it differs
+from the design above.
+
+- **Boundary** `bridge/src/timing.rs`, between the relay's worker pool and the
+  app: the queue wait is the dispatcher's, the lock wait and hold are
+  `dispatch_frame`'s, and one record carries all four durations.
+- **`FrameHandler` is a struct, not a function pointer.** The alias could not
+  hold the clock, and the clock has to outlive a relay reconnect — `relay::run`
+  is called again per reconnect with the same handler cloned, so a clock built
+  inside the dispatcher would reset the counters every time the socket dropped.
+  It carries the closure and the clock together:
+
+  ```rust
+  #[derive(Clone)]
+  pub struct FrameHandler { clock: Arc<FrameClock>, dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync> }
+  impl FrameHandler {
+      pub fn new(clock: Arc<FrameClock>, dispatch: impl Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync + 'static) -> FrameHandler;
+      pub fn clock(&self) -> &Arc<FrameClock>;
+      pub fn call(&self, sender: SessionSender, frame: Frame) -> Value;   // never queued
+      fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value;
+  }
+  ```
+
 - **Interface**
 
   ```rust
   pub struct FrameClock;                     // shared: Arc<FrameClock>
   impl FrameClock {
-      pub fn frame(self: &Arc<Self>, method: &str, queued_for: Duration) -> FrameTimer;
+      pub fn new() -> Arc<FrameClock>;                    // slow frames to stderr
+      pub fn reporting_to(sink: SlowFrameSink) -> Arc<FrameClock>;
+      pub fn queued(self: &Arc<Self>) -> QueuedFrame;     // joined the dispatch queue
+      pub fn frame(self: &Arc<Self>, method: &str) -> FrameTimer;   // never queued
       pub fn stats(&self) -> Value;          // the `bridge.stats` reply
   }
+  pub struct QueuedFrame;                    // a place in the queue; Drop leaves it
+  impl QueuedFrame { pub fn start(self, method: &str) -> FrameTimer; }
   pub struct FrameTimer;                     // one frame's record, published on Drop
-  impl FrameTimer { pub fn lock<'a>(&self, s: &'a Arc<Mutex<AppState>>) -> LockedFor<'a>; }
-  pub struct LockedFor<'a>;                  // Deref/DerefMut to AppState
+  impl FrameTimer {
+      pub fn lock<'a, T>(&'a self, s: &'a Arc<Mutex<T>>) -> LockedFor<'a, T>;
+      pub fn stats(&self) -> Value;          // `bridge.stats`, from this frame's clock
+  }
+  pub struct LockedFor<'a, T>;               // Deref/DerefMut to T
   ```
 
-- **Hides** the clocks, the per-method p50/p95/max reservoirs, the slow-frame log
-  line (over 200 ms: method, four durations, queue depth), the holder slot, the
-  queue depth.
-- **Replaces** every bare `state.lock().unwrap()` on the dispatch path
-  (`dispatch_frame`, `term_*`, `agent_attach`) with `timer.lock(state)`.
+  `LockedFor` is generic over what it guards rather than naming `AppState`, so
+  `timing.rs` depends on nothing in the daemon and its tests measure a
+  `Mutex<u32>`.
+- **A frame's total starts when it arrives, not when a worker takes it.** The
+  browser's 12 s timer starts when it sends, so a `board.list` that sat 300 ms
+  behind seven others is a slow frame however fast its handler was. `total` is
+  queue wait plus handler, the histograms record it, and the 200 ms line fires
+  on it — which is what makes a backed-up daemon legible instead of reading as
+  "every handler was fine".
+- **Hides** the clocks, the per-method histogram, the slow-frame line (over
+  200 ms: method, four durations, frames still waiting), the holder slot, the
+  queue depth. Nothing on the frame path calls `Instant::now` for itself.
+- **The record is fixed-size per method.** 18 shared bucket ceilings, a count
+  and a max, allocated once the first time a method is seen and reached through
+  an `Arc` after that: no allocation per frame. p50/p95 are the bucket ceiling
+  the share falls in, capped by the largest frame actually recorded. The method
+  name comes off the wire, so the map is bounded at 128 and everything past it
+  is counted together under `other`.
+- **The slow-frame sink is a strategy object**, `Arc<dyn Fn(&str)>`: the daemon
+  passes `eprintln!`, a test passes a buffer and reads the line back. One
+  formatter, `slow_frame_line`, and no `#[cfg(test)]` branch in the code that
+  ships.
+- **Replaces** every bare `state.lock().unwrap()` in `dispatch_frame` and the
+  verbs it calls directly — `session_hello`, `stream_start`, `term_create`,
+  `term_attach`, `term_ack`, `agent_attach`, `agent_start`, `warm_diff_caches` —
+  with `timer.lock(state)`.
+- **What is deliberately not timed yet.** `deliver`, `ensure_agent_tab` and
+  `deliver_pending_agent_turns` are shared with the MCP done socket, which has
+  no frame and no timer, so their acquisitions stay bare and a cold
+  `agent.start` reports a large `total` against a small `held`. §3 moves them
+  off the frame's thread entirely, at which point their holds are not the
+  frame's to report. The pump, the diff-refresh publish and the idle sweep are
+  background threads for the same reason.
 - **Owns frame latency, not every clock.** The timestamps that decide
   staleness keep their own `Instant`s: `TermScreen.last_flood_snapshot_at`
   (app.rs:242), `Tab.last_delivered_at` (700), `ExternalScanCache.scanned_at`
   (1324), the `(Instant, Value)` stamps on `run_stat_cache` (1923) and
   `primary_summary` (1011).
 - **Lock discipline** `LockedFor` holds its `MutexGuard` in an `Option`. Its
-  `Drop` takes the guard out, drops it, and only then records hold time — a
-  `Drop` impl runs before its fields drop, so field order alone would record
-  with the guard held. The histogram write is `FrameClock`'s own leaf, the one
-  the lock order above permits; the holder stamp is the only write made under
-  the app mutex. `bridge.stats` answers from `FrameClock` alone — a wedged
-  daemon must still say who is wedging it.
-- **Tests** `a_slow_frame_logs_its_four_durations`,
-  `bridge_stats_answers_while_another_frame_holds_the_app_mutex`.
+  `Drop` clears the holder slot while the mutex is still held — clearing it
+  after the release would wipe the claim of whichever frame acquired next —
+  then takes the guard out, drops it, and only then records hold time; a `Drop`
+  impl runs before its fields drop, so field order alone would record with the
+  guard held. The histogram write is `FrameClock`'s own leaf, the one the lock
+  order above permits; the holder stamp is the only write made under the app
+  mutex. `bridge.stats` answers from `FrameClock` alone — a wedged daemon must
+  still say who is wedging it.
+- **Tests** in `timing.rs`: `a_slow_frame_logs_its_four_durations`,
+  `a_quick_frame_logs_nothing`, `a_frame_is_counted_under_its_own_method`,
+  `stats_name_the_method_holding_the_state_lock`,
+  `a_queued_frame_counts_against_the_depth_until_it_starts`,
+  `a_frames_lock_time_is_summed_across_its_acquisitions`,
+  `a_flood_of_invented_methods_collapses_into_one_record`,
+  `quantiles_span_the_recorded_frames`,
+  `a_method_nobody_has_called_reports_nothing`. In `relay.rs`:
+  `stats_count_the_frames_waiting_for_a_worker`,
+  `a_frame_that_waited_for_a_worker_counts_the_wait_as_its_own`,
+  `folded_reads_cost_the_queue_one_slot`. In `app.rs`:
+  `bridge_stats_answers_while_another_frame_holds_the_app_mutex`,
+  `bridge_stats_count_every_frame_under_its_own_method`.
 
 ## 2. `ScreenHandle` — the per-tab screen
 

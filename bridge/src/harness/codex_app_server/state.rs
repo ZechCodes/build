@@ -393,7 +393,11 @@ impl CodexSessionState {
                 "version evidence arrived out of order".to_string(),
             ));
         }
-        let observed = evidence.map_err(StateError)?;
+        let observed = evidence.map_err(|failure| {
+            version_rejection(format!(
+                "could not obtain Codex version evidence: {failure}"
+            ))
+        })?;
         let version = observed
             .strip_prefix("codex-cli ")
             .and_then(parse_version)

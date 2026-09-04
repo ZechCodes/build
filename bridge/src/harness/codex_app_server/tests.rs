@@ -420,14 +420,7 @@ fn initialize_error_fails_the_session() {
 
 #[test]
 fn a_below_floor_user_agent_fails_without_asking_the_probe() {
-    let refused = state_awaiting_initialize_response().transition(
-        correlated(
-            PendingOperation::Initialize,
-            Ok(json!({"userAgent":"build_bridge/0.152.9"})),
-        ),
-        Duration::ZERO,
-        limits().state(),
-    );
+    let refused = initialize_transition("build_bridge/0.152.9");
     let asked_probe = refused.as_ref().is_ok_and(|transition| {
         transition
             .effects
@@ -522,8 +515,10 @@ fn version_probe_evidence_accepts_the_floor_and_preserves_every_failure() {
             Duration::ZERO,
             limits().state(),
         )
-        .unwrap_err();
-    assert!(failure.to_string().contains("exact probe failure"));
+        .unwrap_err()
+        .to_string();
+    assert!(failure.contains("exact probe failure"), "{failure}");
+    assert!(failure.contains("0.153.0"), "{failure}");
 }
 
 #[test]

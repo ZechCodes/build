@@ -11,11 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::carrier::testing::{client_request, next_report};
+use build_bridge::carrier::testing::{client_request, next_report, reporting};
 use build_bridge::carrier::FrameIntake;
-use build_bridge::carrier::{FrameHandler, SessionSender};
 use build_bridge::rtc::{chunk, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
-use build_bridge::transport::{self, Envelope, Frame, DATA_FRAME_TYPE};
+use build_bridge::transport::{self, Envelope, DATA_FRAME_TYPE};
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -292,18 +291,6 @@ fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::Unbounde
         .unwrap()
         .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
     (intake, reports)
-}
-
-/// `handler`, with every frame it is given named the way
-/// `carrier::testing::reporting_handler` names one — over a handler that still
-/// answers, which the signaling this test upgrades over needs.
-fn reporting(handler: FrameHandler) -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
-    let (reported, reports) = mpsc::unbounded_channel();
-    let watched: FrameHandler = Arc::new(move |sender: SessionSender, frame: Frame| {
-        let _ = reported.send(format!("{}:{}", frame.frame_type, frame.session_id));
-        handler(sender, frame)
-    });
-    (watched, reports)
 }
 
 /// The upgrade the spec's policy performs: the browser offers over the relay,

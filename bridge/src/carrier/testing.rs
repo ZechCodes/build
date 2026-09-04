@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
 use super::{FrameHandler, SessionSender};
-use crate::transport::{self, Envelope, FrameFields, OuterFields, SessionInit};
+use crate::transport::{self, Envelope, Frame, FrameFields, OuterFields, SessionInit};
 
 /// The device a test's browser is talking to. Nothing checks it — the session
 /// key proves who holds what — so one value serves every test.
@@ -59,16 +59,25 @@ pub fn client_request(
     .expect("the client can encrypt to its own session key")
 }
 
-/// A handler that reports every frame it is given as `<frame_type>:<session_id>`,
-/// including the synthetic `close` a session gets when it ends. Read the
-/// reports with [`next_report`].
-pub fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
+/// `handler`, with every frame it is given reported as
+/// `<frame_type>:<session_id>` — the synthetic `close` a session gets when it
+/// ends among them. Read the reports with [`next_report`].
+///
+/// The one home of that shape: a test that only needs to see what arrived uses
+/// [`reporting_handler`], and one that needs the device to answer too wraps its
+/// own handler here.
+pub fn reporting(handler: FrameHandler) -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
     let (reported, reports) = mpsc::unbounded_channel();
-    let handler: FrameHandler = Arc::new(move |sender: SessionSender, frame| {
-        let _ = reported.send(format!("{}:{}", frame.frame_type, sender.session_id()));
-        json!({ "ok": true })
+    let watched: FrameHandler = Arc::new(move |sender: SessionSender, frame: Frame| {
+        let _ = reported.send(format!("{}:{}", frame.frame_type, frame.session_id));
+        handler(sender, frame)
     });
-    (handler, reports)
+    (watched, reports)
+}
+
+/// [`reporting`] over a handler that answers and does nothing else.
+pub fn reporting_handler() -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
+    reporting(Arc::new(|_sender, _frame| json!({ "ok": true })))
 }
 
 /// The next frame [`reporting_handler`] saw, or a failed test.

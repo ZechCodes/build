@@ -55,6 +55,40 @@ pub async fn recv(rx: &mut mpsc::Receiver<Value>) -> Value {
         .expect("channel open")
 }
 
+/// The heartbeat a relay asks a device for unless the test is about the
+/// heartbeat itself.
+pub const HEARTBEAT_INTERVAL_S: u64 = 30;
+
+/// A socket for a mock relay, and the URL the device reaches it on.
+pub async fn bind_relay() -> (TcpListener, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
+    (listener, url)
+}
+
+/// Take the device's connection and greet it as the relay does, so it uploads
+/// its transport key and starts heartbeating at `heartbeat_interval_s`.
+pub async fn greet_device(
+    listener: TcpListener,
+    heartbeat_interval_s: u64,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    let (tcp, _) = listener.accept().await.expect("device connects");
+    let mut ws = tokio_tungstenite::accept_async(tcp)
+        .await
+        .expect("ws handshake");
+    ws.send(Message::Text(
+        json!({
+            "type": "authenticated",
+            "device_id": testing::DEVICE_ID,
+            "heartbeat_interval_s": heartbeat_interval_s,
+        })
+        .to_string(),
+    ))
+    .await
+    .unwrap();
+    ws
+}
+
 /// A mock relay that proxies between the connected device and the test's browser
 /// channels. It never inspects the encrypted envelopes — exactly like the real one.
 async fn mock_relay(
@@ -63,19 +97,7 @@ async fn mock_relay(
     device_to_browser: mpsc::Sender<Value>,
     transport_key: mpsc::Sender<String>,
 ) {
-    let (tcp, _) = listener.accept().await.expect("device connects");
-    let ws = tokio_tungstenite::accept_async(tcp)
-        .await
-        .expect("ws handshake");
-    let (mut sink, mut source) = ws.split();
-
-    // Greet the device so it uploads its transport key and starts heartbeating.
-    sink.send(Message::Text(
-        json!({"type": "authenticated", "device_id": "dev-1", "heartbeat_interval_s": 30})
-            .to_string(),
-    ))
-    .await
-    .unwrap();
+    let (mut sink, mut source) = greet_device(listener, HEARTBEAT_INTERVAL_S).await.split();
 
     let mut inject_open = true;
     loop {
@@ -109,7 +131,7 @@ async fn mock_relay(
 /// The device's stable identity, freshly minted.
 pub fn device_identity() -> DeviceIdentity {
     DeviceIdentity {
-        device_id: "dev-1".into(),
+        device_id: testing::DEVICE_ID.into(),
         identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
     }
 }
@@ -138,8 +160,7 @@ pub async fn connected_device(
     intake: Arc<FrameIntake>,
     identity: &DeviceIdentity,
 ) -> ConnectedDevice {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("ws://{}/ws/device", listener.local_addr().unwrap());
+    let (listener, url) = bind_relay().await;
     let (to_device, to_device_rx) = mpsc::channel::<Value>(64);
     let (from_device_tx, from_device) = mpsc::channel::<Value>(64);
     let (tkey_tx, mut tkey_rx) = mpsc::channel::<String>(1);

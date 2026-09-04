@@ -30,16 +30,11 @@ use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
-use build_bridge::carrier::{FrameHandler, FrameIntake};
-use build_bridge::relay::{self, DeviceIdentity};
-use build_bridge::transport;
+use build_bridge::carrier::FrameHandler;
+use build_bridge::relay;
+use common::{device_identity, test_intake};
 
-fn test_identity() -> DeviceIdentity {
-    DeviceIdentity {
-        device_id: "wss-test-device".into(),
-        identity_private_key_b64: transport::generate_identity_keypair().private_key_b64,
-    }
-}
+mod common;
 
 /// rustls 0.23 requires a process crypto provider when more than one provider
 /// feature is unified into the build (reqwest enables aws-lc-rs). Installing is
@@ -132,11 +127,11 @@ async fn wss_connects_to_tls_server_with_injected_root() {
         .with_no_client_auth();
     let connector = Connector::Rustls(Arc::new(client_config));
 
-    let identity = test_identity();
+    let identity = device_identity();
     let url = format!("wss://localhost:{port}/ws/device");
     let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
 
-    let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
+    let intake = test_intake(handler);
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
         relay::run_with_connector(&url, &identity, intake.clone(), Some(connector)),
@@ -161,17 +156,13 @@ async fn wss_scheme_is_supported_without_injected_connector() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         listener.local_addr().unwrap().port()
     };
-    let identity = test_identity();
+    let identity = device_identity();
     let url = format!("wss://127.0.0.1:{unused_port}/ws/device");
     let handler: FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),
-        relay::run(
-            &url,
-            &identity,
-            FrameIntake::new(handler, transport::generate_transport_keypair()),
-        ),
+        relay::run(&url, &identity, test_intake(handler)),
     )
     .await
     .expect("no timeout")

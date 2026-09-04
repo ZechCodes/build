@@ -147,9 +147,6 @@ pub fn cow_marker_names(checkout: &Path, project: &Path) -> bool {
     cow_marker_body(project).is_ok_and(|expected| found == expected)
 }
 
-/// Why a clone cannot be made until the clone backend exists.
-const COW_NOT_IN_THIS_BUILD: &str = "copy-on-write isolation is not available in this build";
-
 /// Which isolations can be used for a project on this volume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsolationAvailability {
@@ -161,9 +158,9 @@ pub struct IsolationAvailability {
 impl IsolationAvailability {
     /// What this volume can do for `project`, whose checkouts live under
     /// `worktrees_root`.
-    pub fn of(_project: &Path, _worktrees_root: &Path) -> Self {
+    pub fn of(project: &Path, worktrees_root: &Path) -> Self {
         IsolationAvailability {
-            cow: Err(COW_NOT_IN_THIS_BUILD.to_string()),
+            cow: probe::cow_availability(project, worktrees_root),
         }
     }
 
@@ -313,18 +310,20 @@ mod tests {
         let (dir, repo) = init_repo();
         let availability = IsolationAvailability::of(&repo, &dir.path().join("worktrees"));
 
+        // A linked worktree is never locked, whatever the volume.
         assert_eq!(availability.lock_reason(Isolation::Worktree), None);
-        let reason = availability
-            .lock_reason(Isolation::Cow)
-            .expect("no clone backend in this build");
+        // A clone is locked exactly when the probe could not make one, in the
+        // probe's own words — no platform assumption either way.
         assert_eq!(
+            availability.lock_reason(Isolation::Cow),
             availability.cow.as_ref().err().map(String::as_str),
-            Some(reason)
         );
-
         assert_eq!(
             serde_json::to_value(&availability).unwrap(),
-            serde_json::json!({ "cow": false, "reason": reason }),
+            serde_json::json!({
+                "cow": availability.cow.is_ok(),
+                "reason": availability.cow.as_ref().err(),
+            }),
         );
     }
 }

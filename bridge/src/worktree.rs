@@ -1027,6 +1027,7 @@ fn worktree_status_line_count(worktree_path: &Path) -> Result<usize, WorktreeErr
 mod tests {
     use super::*;
     use crate::git_fixture::{git_in, init_repo, init_repo_named};
+    use crate::isolation::probe::cow_or_skip;
     use std::path::Path;
     use std::process::Command;
 
@@ -2025,22 +2026,6 @@ mod tests {
                 .map(|slot| slot.map(|backend| backend.kind())),
             [Some(Isolation::Worktree), Some(Isolation::Cow)],
         );
-    }
-
-    /// Whether this volume can clone. On failure it prints the reason and
-    /// returns false, so a clone test through the façade says aloud why it did
-    /// nothing rather than passing without exercising anything.
-    fn cow_or_skip(root: &Path) -> bool {
-        let project = root.join("cow-probe-project");
-        std::fs::create_dir_all(project.join(".git")).unwrap();
-        match crate::isolation::probe::cow_availability(&project, &root.join("cow-probe-worktrees"))
-        {
-            Ok(()) => true,
-            Err(reason) => {
-                eprintln!("skipping: {reason}");
-                false
-            }
-        }
     }
 
     /// The whole of a clone create through the façade: the branch is cut in the

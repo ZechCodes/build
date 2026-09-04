@@ -284,25 +284,9 @@ fn discard(dst: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::isolation::probe::cow_availability;
+    use crate::isolation::probe::cow_or_skip;
     #[cfg(target_os = "linux")]
     use std::os::unix::ffi::OsStrExt;
-
-    /// Whether this volume can clone. On failure it prints the reason and
-    /// returns false, so a clone test says aloud why it did nothing rather than
-    /// passing without exercising anything. Every clone test opens with it.
-    fn cow_or_skip(dir: &Path) -> bool {
-        let project = dir.join("probe-project");
-        std::fs::create_dir_all(project.join(".git")).unwrap();
-        let worktrees_root = dir.join("probe-worktrees");
-        match cow_availability(&project, &worktrees_root) {
-            Ok(()) => true,
-            Err(reason) => {
-                eprintln!("skipping: {reason}");
-                false
-            }
-        }
-    }
 
     #[test]
     fn clone_tree_reproduces_a_symlink_and_a_subdirectory() {

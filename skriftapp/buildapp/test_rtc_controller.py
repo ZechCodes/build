@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 from litestar import Litestar
-from litestar.exceptions import NotAuthorizedException
+from litestar.exceptions import HTTPException, NotAuthorizedException
 from litestar.handlers import HTTPRouteHandler
 from litestar.middleware.session.client_side import CookieBackendConfig
 from litestar.status_codes import HTTP_401_UNAUTHORIZED, HTTP_502_BAD_GATEWAY
@@ -96,7 +96,7 @@ def test_a_cloudflare_failure_is_a_502_not_a_degraded_list(monkeypatch):
         raise IceServersUnavailable("cloudflare answered 403 for TURN credentials")
 
     monkeypatch.setattr(ice_servers_module, "ice_servers", failing_ice_servers)
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(HTTPException) as raised:
         _mint(_signed_in())
     assert raised.value.status_code == HTTP_502_BAD_GATEWAY
     assert "403" in raised.value.detail

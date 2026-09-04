@@ -374,8 +374,8 @@ impl CodexSessionState {
         };
         match check_user_agent(&user_agent) {
             VersionCheck::Supported => self.finish_initialize(),
-            VersionCheck::TooOld(observed) => Err(StateError(format!(
-                "Codex {observed} is unsupported; version 0.153.0 or newer is required"
+            VersionCheck::TooOld(observed) => Err(version_rejection(format!(
+                "Codex {observed} is unsupported"
             ))),
             VersionCheck::Unavailable => {
                 self.phase = Phase::AwaitingVersion;
@@ -398,12 +398,10 @@ impl CodexSessionState {
             .strip_prefix("codex-cli ")
             .and_then(parse_version)
             .ok_or_else(|| {
-                StateError(format!("could not parse Codex version from {observed:?}"))
+                version_rejection(format!("could not parse Codex version from {observed:?}"))
             })?;
         if version < minimum_version() {
-            return Err(StateError(format!(
-                "Codex {version} is unsupported; version 0.153.0 or newer is required"
-            )));
+            return Err(version_rejection(format!("Codex {version} is unsupported")));
         }
         self.finish_initialize()
     }
@@ -1255,6 +1253,12 @@ fn check_user_agent(user_agent: &str) -> VersionCheck {
 
 fn parse_version(raw: &str) -> Option<Version> {
     Version::parse(raw).ok()
+}
+
+fn version_rejection(problem: String) -> StateError {
+    StateError(format!(
+        "{problem}; version {MINIMUM_VERSION} or newer is required"
+    ))
 }
 
 fn minimum_version() -> Version {

@@ -14,7 +14,7 @@ use super::protocol::{
     ParentThreadRoute, PendingOperation, RequestId, RoutedServerRequest, RpcError,
     ServerNotification, ServerRequest, TurnCompletion,
 };
-use super::state::{CodexSessionState, SessionEffect, SessionEvent};
+use super::state::{CodexSessionState, SessionEffect, SessionEvent, StateError, StateTransition};
 use super::translator::{
     classify_item, CodexActivityTranslator, ItemClassification, ItemReportKind, SuppressionReason,
     ToolSummaryCategory,
@@ -61,6 +61,13 @@ fn start_thread() -> PendingOperation {
     }
 }
 
+fn initialized_then_opens_thread() -> Vec<SessionEffect> {
+    vec![
+        SessionEffect::NotifyInitialized,
+        SessionEffect::Request(start_thread()),
+    ]
+}
+
 fn resume_thread() -> PendingOperation {
     PendingOperation::ResumeThread {
         thread_id: "thread-exact".to_string(),
@@ -100,20 +107,27 @@ fn state_awaiting_initialize_response() -> CodexSessionState {
         .state
 }
 
+const SUPPORTED_USER_AGENT: &str = "build_bridge/0.153.0 (fixture)";
+
+fn initialize_response(user_agent: &str) -> SessionEvent {
+    correlated(
+        PendingOperation::Initialize,
+        Ok(json!({ "userAgent": user_agent })),
+    )
+}
+
+fn initialize_transition(user_agent: &str) -> Result<StateTransition, StateError> {
+    state_awaiting_initialize_response().transition(
+        initialize_response(user_agent),
+        Duration::ZERO,
+        limits().state(),
+    )
+}
+
 fn advance_to_waiting() -> CodexSessionState {
-    let mut state = state_awaiting_initialize_response();
-    state = state
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({"userAgent":"build_bridge/0.153.0 (fixture)"})),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        )
+    initialize_transition(SUPPORTED_USER_AGENT)
         .unwrap()
-        .state;
-    state
+        .state
         .transition(
             correlated(
                 start_thread(),
@@ -374,24 +388,15 @@ fn initialize_is_first_and_a_turn_waits_for_readiness() {
 
 #[test]
 fn initialize_success_sends_initialized_once_then_opens_the_thread() {
-    let initializing = state_awaiting_initialize_response();
-    let response = correlated(
-        PendingOperation::Initialize,
-        Ok(json!({"userAgent":"build_bridge/0.153.0 (fixture)"})),
-    );
-    let initialized = initializing
-        .transition(response.clone(), Duration::ZERO, limits().state())
-        .unwrap();
-    assert_eq!(
-        initialized.effects,
-        vec![
-            SessionEffect::NotifyInitialized,
-            SessionEffect::Request(start_thread()),
-        ]
-    );
+    let initialized = initialize_transition(SUPPORTED_USER_AGENT).unwrap();
+    assert_eq!(initialized.effects, initialized_then_opens_thread());
     let repeated = initialized
         .state
-        .transition(response, Duration::ZERO, limits().state())
+        .transition(
+            initialize_response(SUPPORTED_USER_AGENT),
+            Duration::ZERO,
+            limits().state(),
+        )
         .unwrap_err();
     assert!(repeated.to_string().contains("out of order"));
 }
@@ -437,15 +442,7 @@ fn a_below_floor_user_agent_fails_without_asking_the_probe() {
 }
 
 fn initialize_effects_for_user_agent(user_agent: &str) -> Vec<SessionEffect> {
-    state_awaiting_initialize_response()
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({ "userAgent": user_agent })),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        )
+    initialize_transition(user_agent)
         .unwrap_or_else(|error| panic!("{user_agent:?}: {error}"))
         .effects
 }
@@ -455,10 +452,7 @@ fn initialize_version_floor_uses_only_the_leading_matching_component() {
     for passing in ["build_bridge/0.153.0", "build_bridge/0.154.1 (0.1.0)"] {
         assert_eq!(
             initialize_effects_for_user_agent(passing),
-            vec![
-                SessionEffect::NotifyInitialized,
-                SessionEffect::Request(start_thread()),
-            ],
+            initialized_then_opens_thread(),
             "{passing}"
         );
     }
@@ -478,16 +472,7 @@ fn initialize_version_floor_uses_only_the_leading_matching_component() {
 
 #[test]
 fn version_probe_evidence_accepts_the_floor_and_preserves_every_failure() {
-    let awaiting = state_awaiting_initialize_response()
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({"userAgent":"unparseable"})),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        )
-        .unwrap();
+    let awaiting = initialize_transition("unparseable").unwrap();
     assert_eq!(
         awaiting.effects,
         vec![SessionEffect::RequireVersionEvidence]
@@ -497,13 +482,7 @@ fn version_probe_evidence_accepts_the_floor_and_preserves_every_failure() {
         Duration::ZERO,
         limits().state(),
     );
-    assert_eq!(
-        accepted.unwrap().effects,
-        vec![
-            SessionEffect::NotifyInitialized,
-            SessionEffect::Request(start_thread()),
-        ]
-    );
+    assert_eq!(accepted.unwrap().effects, initialized_then_opens_thread());
 
     let below_floor = awaiting
         .state
@@ -528,6 +507,7 @@ fn version_probe_evidence_accepts_the_floor_and_preserves_every_failure() {
         .unwrap_err()
         .to_string();
     assert!(unparsable.contains("not-codex 1.0"), "{unparsable}");
+    assert!(unparsable.contains("0.153.0"), "{unparsable}");
 
     let failure = state_awaiting_initialize_response()
         .transition(
@@ -600,17 +580,7 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
 #[test]
 fn thread_notification_and_response_orders_converge_and_ids_must_match() {
-    let opening = state_awaiting_initialize_response()
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({"userAgent":"build_bridge/0.153.0"})),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        )
-        .unwrap()
-        .state;
+    let opening = initialize_transition(SUPPORTED_USER_AGENT).unwrap().state;
     let notified = opening
         .transition(
             SessionEvent::ThreadStarted("thread-1".to_string()),
@@ -741,15 +711,7 @@ fn conflicting_duplicate_completion_is_rejected() {
 
 #[test]
 fn completion_before_start_response_applies_accepted_turn_facts() {
-    let waiting = state_awaiting_initialize_response()
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({"userAgent":"build_bridge/0.153.0"})),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        )
+    let waiting = initialize_transition(SUPPORTED_USER_AGENT)
         .unwrap()
         .state
         .transition(

@@ -17,6 +17,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use crate::git_process::{run_git, run_git_with_deadline};
+use crate::isolation::cow::CowBackend;
 use crate::isolation::{
     checkout_name, local_branch_ref, Isolation, IsolationAvailability, IsolationBackend,
     WorktreeBackend,
@@ -141,6 +142,7 @@ pub struct WorktreeManager {
     repo_path: PathBuf,
     worktrees_root: PathBuf,
     worktree: WorktreeBackend,
+    cow: CowBackend,
 }
 
 impl WorktreeManager {
@@ -152,6 +154,7 @@ impl WorktreeManager {
             repo_path: repo_path.into(),
             worktrees_root: worktrees_root.into(),
             worktree: WorktreeBackend,
+            cow: CowBackend,
         }
     }
 
@@ -460,7 +463,7 @@ impl WorktreeManager {
     /// Keyed to the enum by length, so it is the one list of backends and a new
     /// isolation cannot be added without filling in its slot here.
     fn backends(&self) -> [Option<&dyn IsolationBackend>; Isolation::ALL.len()] {
-        [Some(&self.worktree), None]
+        [Some(&self.worktree), Some(&self.cow)]
     }
 
     /// Every backend this build has, in the order above — what the three walks
@@ -1023,7 +1026,7 @@ fn worktree_status_line_count(worktree_path: &Path) -> Result<usize, WorktreeErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git_fixture::{git_in, init_repo};
+    use crate::git_fixture::{git_in, init_repo, init_repo_named};
     use std::path::Path;
     use std::process::Command;
 
@@ -1987,57 +1990,216 @@ mod tests {
             .to_string()
     }
 
-    /// Until the clone backend exists there is one isolation, and asking for
-    /// the other is refused with the same sentence a control would show.
+    /// Availability now comes from the probe: a linked worktree is never
+    /// locked, and a clone is locked exactly when this volume cannot make one,
+    /// in the probe's own words. The manager owns no reason of its own.
     #[test]
-    fn a_clone_is_refused_with_the_reason_the_controls_show() {
+    fn a_clones_availability_is_the_probes_answer() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
+        let availability = mgr.availability();
 
-        let reason = mgr
-            .availability()
-            .cow
-            .expect_err("no clone backend in this build");
+        assert_eq!(availability.lock_reason(Isolation::Worktree), None);
         assert_eq!(
-            mgr.availability().lock_reason(Isolation::Cow),
-            Some(reason.as_str())
-        );
-        assert_eq!(mgr.availability().lock_reason(Isolation::Worktree), None);
-
-        let refused = mgr
-            .create("cloned", "main", Isolation::Cow)
-            .unwrap_err()
-            .to_string();
-        assert_eq!(
-            refused, reason,
-            "the refusal is the sentence itself, with no git command to blame"
+            availability.lock_reason(Isolation::Cow),
+            availability.cow.as_ref().err().map(String::as_str),
+            "the clone lock is exactly the probe's failure sentence"
         );
     }
 
-    /// Every backend sits at the isolation it makes, so the walk order is the
-    /// order the enum names — and the one empty slot is the one isolation this
-    /// build refuses.
+    /// Every backend sits at the isolation it makes, in the order the enum
+    /// names them — and the clone backend arrived in this stage, so no slot is
+    /// empty and every isolation resolves to a backend.
     #[test]
     fn each_backend_sits_at_the_isolation_it_makes() {
         let (dir, repo) = init_repo();
         let mgr = manager(&dir, &repo);
 
         for (isolation, slot) in Isolation::ALL.into_iter().zip(mgr.backends()) {
-            if let Some(backend) = slot {
-                assert_eq!(backend.kind(), isolation);
-            } else {
-                assert!(
-                    mgr.backend(isolation).is_err(),
-                    "an isolation with no backend is refused, not skipped"
-                );
-            }
+            let backend = slot.expect("every isolation has a backend in this build");
+            assert_eq!(backend.kind(), isolation);
+            assert_eq!(mgr.backend(isolation).unwrap().kind(), isolation);
         }
         assert_eq!(
             mgr.backends()
                 .map(|slot| slot.map(|backend| backend.kind())),
-            [Some(Isolation::Worktree), None],
-            "the clone backend arrives in its own stage"
+            [Some(Isolation::Worktree), Some(Isolation::Cow)],
         );
+    }
+
+    /// Whether this volume can clone. On failure it prints the reason and
+    /// returns false, so a clone test through the façade says aloud why it did
+    /// nothing rather than passing without exercising anything.
+    fn cow_or_skip(root: &Path) -> bool {
+        let project = root.join("cow-probe-project");
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        match crate::isolation::probe::cow_availability(&project, &root.join("cow-probe-worktrees"))
+        {
+            Ok(()) => true,
+            Err(reason) => {
+                eprintln!("skipping: {reason}");
+                false
+            }
+        }
+    }
+
+    /// The whole of a clone create through the façade: the branch is cut in the
+    /// project repo, the working directory is a copy-on-write clone on that
+    /// branch, and `Isolation::of` reads it back as a clone.
+    #[test]
+    fn create_materializes_a_clone_end_to_end() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+
+        let wt = mgr.create("cloned", "main", Isolation::Cow).unwrap();
+
+        assert_eq!(wt.recorded_branch, "build/cloned");
+        assert_eq!(wt.base_branch, "main");
+        assert_eq!(Isolation::of(&wt.path), Some(Isolation::Cow));
+        assert!(wt.path.join("README.md").exists(), "the clone is warm");
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_branch("build/cloned", git2::BranchType::Local)
+                .is_ok(),
+            "the branch was cut in the project repo"
+        );
+        assert_eq!(
+            git2::Repository::open(&wt.path)
+                .unwrap()
+                .head()
+                .unwrap()
+                .shorthand(),
+            Some("build/cloned"),
+            "the clone is on the cut branch"
+        );
+    }
+
+    /// A named branch that already exists is checked out into a clone, not cut
+    /// again — dispatching a clone onto work started by hand reaches it.
+    #[test]
+    fn create_on_branch_clones_onto_an_existing_branch() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+        let r = git2::Repository::open(&repo).unwrap();
+        let head = r.head().unwrap().peel_to_commit().unwrap();
+        r.branch("build/started-by-hand", &head, false).unwrap();
+
+        let added = mgr
+            .create_on_branch("build/started-by-hand", "main", Isolation::Cow)
+            .unwrap();
+
+        assert!(
+            !added.branch_was_cut,
+            "the branch was already there, not cut again"
+        );
+        assert_eq!(Isolation::of(&added.worktree.path), Some(Isolation::Cow));
+        assert_eq!(
+            git2::Repository::open(&added.worktree.path)
+                .unwrap()
+                .head()
+                .unwrap()
+                .shorthand(),
+            Some("build/started-by-hand"),
+        );
+    }
+
+    /// A clone deleted from disk is recreated on its recorded branch as a
+    /// clone: the caller's resolved isolation says what to recreate it as, and
+    /// the branch (published on removal) says where.
+    #[test]
+    fn restore_recreates_a_deleted_clone_on_its_recorded_branch() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+        let wt = mgr.create("recover-clone", "main", Isolation::Cow).unwrap();
+        commit_file(&wt.path, "clone-stage");
+        mgr.remove(&wt, /* keep_branch */ true).unwrap();
+        assert!(!wt.path.exists(), "the clone was removed");
+
+        let restored = mgr.restore(&wt, Isolation::Cow).unwrap();
+
+        assert_eq!(restored, wt);
+        assert_eq!(Isolation::of(&wt.path), Some(Isolation::Cow));
+        assert!(
+            wt.path.join("clone-stage.txt").exists(),
+            "the recreated clone carries the published work"
+        );
+    }
+
+    /// An existing clone passes restore's verify; a clone whose marker names a
+    /// different project is refused for what it is — it is not this project's.
+    #[test]
+    fn restore_verifies_a_clone_and_rejects_one_of_another_project() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+
+        let mine = mgr.create("mine", "main", Isolation::Cow).unwrap();
+        assert_eq!(mgr.restore(&mine, Isolation::Cow).unwrap(), mine);
+
+        let other = init_repo_named(dir.path(), "other");
+        let intruder_path = dir.path().join("worktrees").join("intruder");
+        CowBackend
+            .materialize(&other, "main", &intruder_path)
+            .unwrap();
+        let intruder = Worktree {
+            name: "intruder".into(),
+            path: intruder_path,
+            recorded_branch: "main".into(),
+            base_branch: "main".into(),
+        };
+
+        let refused = mgr
+            .restore(&intruder, Isolation::Cow)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("not a copy-on-write clone of this project"),
+            "{refused}"
+        );
+    }
+
+    /// A clone is a directory, and a directory already under the worktrees root
+    /// makes its name taken whatever made it — so a second create disambiguates.
+    #[test]
+    fn a_clone_directory_makes_its_name_taken() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+
+        let first = mgr.create("dup", "main", Isolation::Cow).unwrap();
+        let second = mgr.create("dup", "main", Isolation::Cow).unwrap();
+
+        assert_eq!(first.name, "dup");
+        assert_eq!(
+            second.name, "dup-2",
+            "the existing clone directory made the name taken"
+        );
+        assert_ne!(first.path, second.path);
+    }
+
+    /// A path that never held a checkout is absent already, and absence is
+    /// success for every backend — the clone backend included.
+    #[test]
+    fn remove_checkout_on_a_missing_path_succeeds() {
+        let (dir, repo) = init_repo();
+        let mgr = manager(&dir, &repo);
+        let ghost = dir.path().join("worktrees").join("never-existed");
+
+        mgr.remove_checkout(&ghost)
+            .expect("absence is success for every backend");
     }
 
     /// A directory that is not a checkout is still a directory the teardown was

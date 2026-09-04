@@ -2069,6 +2069,17 @@ pub struct AppState {
     /// changes holding this state's mutex, and the flusher SENDS them holding
     /// no lock at all. See [`crate::changes`].
     changes: Arc<ChangeBus>,
+    /// What every frame's four durations are recorded against.
+    ///
+    /// It lives on the state rather than beside it because the state is what
+    /// every path that takes this mutex can already reach: the relay's frame
+    /// handler, the MCP done socket, and the delivery path both of them share.
+    /// A clock built per handler would give a relay reconnect a second set of
+    /// "since boot" counters and leave every non-relay caller with none.
+    /// Answering `bridge.stats` never goes through here — a frame parked on
+    /// this mutex is exactly when the counters are needed, so the frame reads
+    /// them off the clock its own timer holds.
+    frame_clock: Arc<FrameClock>,
 }
 
 fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
@@ -2083,6 +2094,11 @@ fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
     }
     difference == 0
 }
+
+/// What a frame off the daemon's control socket — an agent's `done` report or
+/// one of its MCP actions — is timed under. It is not a relay method, so it
+/// gets a name of its own rather than borrowing one from the wire.
+const MCP_CONTROL_METHOD: &str = "mcp.control";
 
 /// Resolve a control frame only when it carries the current per-session
 /// capability, returning the AGENT that sent it. The token is never included in
@@ -2186,6 +2202,7 @@ impl AppState {
             notifier: None,
             notify_throttle: NotifyThrottle::default(),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
+            frame_clock: FrameClock::new(),
         };
         state.add_project(repo_path.into(), base_branch.into());
         state
@@ -4353,8 +4370,13 @@ impl AppState {
     /// The relay's frame handler over a shared state. `stream.start`/`term.attach`
     /// need the shared handle (background producers/pumps), so it dispatches
     /// through [`dispatch_frame`].
+    ///
+    /// The handler is rebuilt on every relay reconnect and the state is not, so
+    /// the clock comes off the state: the counters are since boot, and the MCP
+    /// done socket records against the same ones.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        FrameHandler::new(FrameClock::new(), move |sender, frame, timer| {
+        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
+        FrameHandler::new(clock, move |sender, frame, timer| {
             dispatch_frame(&state, sender, frame, timer)
         })
     }
@@ -4417,17 +4439,24 @@ impl AppState {
                 };
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
+                    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
                     let (read_half, mut write_half) = stream.into_split();
                     let mut lines = tokio::io::BufReader::new(read_half).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
                         let Ok(v) = serde_json::from_str::<Value>(&line) else {
                             continue;
                         };
+                        // A harness's control frame takes the same mutex every
+                        // browser frame does, and its delivery spawns the same
+                        // harnesses, so it is timed the same way — under its own
+                        // method, so a wedge that arrived through here is named
+                        // rather than counted as nobody's.
+                        let timer = clock.frame(MCP_CONTROL_METHOD);
                         // The legacy `task_id` spelling remains opaque and
                         // compatible, but it is not authentication. Only the
                         // current harness process knows the rotated capability.
                         let addressed = {
-                            let guard = state.lock().unwrap();
+                            let guard = timer.lock(&state);
                             authenticated_mcp_owner(&v, &guard.mcp_session_tokens)
                                 .map(str::to_string)
                                 .and_then(|agent_id| guard.addressed_session(agent_id))
@@ -4446,15 +4475,14 @@ impl AppState {
                             if let Ok(report) = serde_json::from_value::<DoneReport>(
                                 v.get("report").cloned().unwrap_or(Value::Null),
                             ) {
-                                state.lock().unwrap().on_router_done(&capture_id, report);
+                                timer.lock(&state).on_router_done(&capture_id, report);
                                 continue;
                             }
                             if let Ok(action) = serde_json::from_value::<BridgeAction>(
                                 v.get("request").cloned().unwrap_or(Value::Null),
                             ) {
-                                let response = match state
-                                    .lock()
-                                    .unwrap()
+                                let response = match timer
+                                    .lock(&state)
                                     .on_router_mcp_action(&capture_id, action)
                                 {
                                     Ok(result) => json!({ "ok": true, "result": result }),
@@ -4462,7 +4490,7 @@ impl AppState {
                                 };
                                 // A dispatch queues the branch agent's first
                                 // turn; sending it needs the lock free.
-                                deliver_pending_agent_turns(&state);
+                                deliver_pending_agent_turns(&state, &timer);
                                 let _ = write_half.write_all(response.to_string().as_bytes()).await;
                                 let _ = write_half.write_all(b"\n").await;
                                 let _ = write_half.flush().await;
@@ -4484,20 +4512,19 @@ impl AppState {
                         if let Ok(report) = serde_json::from_value::<DoneReport>(
                             v.get("report").cloned().unwrap_or(Value::Null),
                         ) {
-                            state.lock().unwrap().on_agent_done(&entity_id, report);
+                            timer.lock(&state).on_agent_done(&entity_id, report);
                             // A report can start the next phase (a built stage
                             // hands itself to validation). The turn is queued
                             // under the lock above; sending it needs the lock
                             // free, exactly as on the relay's frame path.
-                            deliver_pending_agent_turns(&state);
+                            deliver_pending_agent_turns(&state, &timer);
                             continue;
                         }
                         if let Ok(action) = serde_json::from_value::<BridgeAction>(
                             v.get("request").cloned().unwrap_or(Value::Null),
                         ) {
-                            let response = match state
-                                .lock()
-                                .unwrap()
+                            let response = match timer
+                                .lock(&state)
                                 .on_agent_mcp_action(&entity_id, &agent_id, action)
                             {
                                 Ok(result) => json!({ "ok": true, "result": result }),
@@ -17426,7 +17453,7 @@ fn dispatch_frame(
         "session.hello" => session_hello(state, &sender, &timer),
         // Answered from the frame clock alone, never from `AppState`: the frame
         // that asks what is wedging the daemon must not queue behind the wedge.
-        "bridge.stats" => Ok(timer.stats()),
+        "bridge.stats" => Ok(timer.clock().stats()),
         "stream.start" => stream_start(state, &params, &timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
@@ -17496,7 +17523,7 @@ fn dispatch_frame(
             // under the state lock and `deliver` needs that lock free (a cold
             // spawn blocks for seconds on the harness's readiness wait).
             if dispatched.is_ok() {
-                deliver_pending_agent_turns(state);
+                deliver_pending_agent_turns(state, &timer);
             }
             dispatched
         }
@@ -17851,6 +17878,7 @@ fn agent_start(
             &turn.model_choice,
             &turn.cold,
             &turn.warm,
+            timer,
         )?
     } else {
         ensure_agent_tab(
@@ -17859,6 +17887,7 @@ fn agent_start(
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            timer,
         )?
     };
 
@@ -17954,6 +17983,7 @@ fn ensure_agent_tab(
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
+    timer: &FrameTimer,
 ) -> Result<(String, Spawned), String> {
     let root = AppState::canonical_root(root);
     let key = TabKey::agent(&root, agent_id);
@@ -17964,7 +17994,7 @@ fn ensure_agent_tab(
         // harness's readiness wait, and every terminal pump needs this lock),
         // so the reservation is what the losing caller waits on.
         let reserved = {
-            let mut s = state.lock().unwrap();
+            let mut s = timer.lock(state);
             if let Some(tab) = s.tabs.get(&key) {
                 let same_owner = matches!(
                     &tab.role,
@@ -18103,7 +18133,7 @@ fn ensure_agent_tab(
         let (mut tab, rx) = match spawned {
             Ok(spawned) => spawned,
             Err(error) => {
-                let mut state = state.lock().unwrap();
+                let mut state = timer.lock(state);
                 state.agent_spawns_in_flight.remove(&key);
                 if state
                     .mcp_session_tokens
@@ -18137,7 +18167,7 @@ fn ensure_agent_tab(
         }
         let wire_id = tab.wire_id();
         {
-            let mut s = state.lock().unwrap();
+            let mut s = timer.lock(state);
             // Clients that mounted the Agent tab before this worktree had one
             // are attached to a screen with no PTY. Carry them — and the
             // viewport they render at, the same rule an attach to a live tab
@@ -18234,8 +18264,9 @@ fn deliver(
     model_choice: &ModelChoice,
     cold: &str,
     warm: &str,
+    timer: &FrameTimer,
 ) -> Result<(String, Spawned), String> {
-    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice)?;
+    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice, timer)?;
     let prompt = match spawned {
         Spawned::Fresh => cold,
         Spawned::Warm => warm,
@@ -18247,7 +18278,7 @@ fn deliver(
     // its own business — a protocol write to a full pipe, an ack a harness
     // answers late, the exit-race wait below.
     let session = {
-        let s = state.lock().unwrap();
+        let s = timer.lock(state);
         let tab = s.tabs.get(&key).ok_or(TAB_CLOSED_UNDER_A_TURN)?;
         Arc::clone(&tab.session)
     };
@@ -18265,7 +18296,7 @@ fn deliver(
     // before, it now has something to answer for. A tab that closed while the
     // turn was in flight has no clock left to restart — and the turn still
     // travelled, so that is not a delivery failure to report.
-    if let Some(tab) = state.lock().unwrap().tabs.get_mut(&key) {
+    if let Some(tab) = timer.lock(state).tabs.get_mut(&key) {
         tab.last_delivered_at = Some(std::time::Instant::now());
     }
     Ok((wire_id, spawned))
@@ -18277,12 +18308,12 @@ fn deliver(
 /// A cold delivery starts a new harness process, so it opens the conversation's
 /// session lineage — the record the thread reads back as "the revise agent
 /// started here". A warm delivery continues the session already open.
-fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
+fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>, timer: &FrameTimer) {
     // Taking the queue and marking those owners in flight happen under ONE lock
     // acquisition, so there is no instant in which a queued turn is invisible to
     // the idle sweep and its entity looks agentless.
     let queued = {
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         let taken = std::mem::take(&mut s.pending_agent_turns);
         // An issue whose session is over (approved, abandoned) holds no
         // workspace — and its checkout is the project's primary one, which is
@@ -18322,8 +18353,9 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
             &turn.model_choice,
             &turn.cold,
             &turn.warm,
+            timer,
         );
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         match delivered {
             Ok((_, Spawned::Fresh)) => s.record_agent_session_start(&turn),
             Ok((_, Spawned::Warm)) => {}
@@ -18965,6 +18997,66 @@ mod tests {
     use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
+    use crate::timing::{recording_clock, SLOW_FRAME};
+
+    /// The delivery path as a test that is not measuring a frame calls it.
+    ///
+    /// Every acquisition these three make belongs to the frame that asked for
+    /// them, so they take that frame's timer. A test calling them directly has
+    /// no frame, so it gets one of its own and these shadow the real functions
+    /// for the rest of the module. A test that IS about the timing calls
+    /// `super::` and passes the timer it means.
+    mod untimed {
+        use super::*;
+
+        fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
+            Arc::clone(&state.lock().unwrap().frame_clock).frame("test")
+        }
+
+        pub(super) fn ensure_agent_tab(
+            state: &Arc<Mutex<AppState>>,
+            root: &std::path::Path,
+            owner: &str,
+            agent_id: &str,
+            model_choice: &ModelChoice,
+        ) -> Result<(String, Spawned), String> {
+            super::super::ensure_agent_tab(
+                state,
+                root,
+                owner,
+                agent_id,
+                model_choice,
+                &a_frame(state),
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub(super) fn deliver(
+            state: &Arc<Mutex<AppState>>,
+            root: &std::path::Path,
+            owner: &str,
+            agent_id: &str,
+            model_choice: &ModelChoice,
+            cold: &str,
+            warm: &str,
+        ) -> Result<(String, Spawned), String> {
+            super::super::deliver(
+                state,
+                root,
+                owner,
+                agent_id,
+                model_choice,
+                cold,
+                warm,
+                &a_frame(state),
+            )
+        }
+
+        pub(super) fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
+            super::super::deliver_pending_agent_turns(state, &a_frame(state))
+        }
+    }
+    use untimed::{deliver, deliver_pending_agent_turns, ensure_agent_tab};
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -19697,6 +19789,16 @@ mod tests {
         repo: &std::path::Path,
         dir: &std::path::Path,
     ) -> (Arc<Mutex<AppState>>, FrameHandler) {
+        state_and_handler_timed_by(FrameClock::new(), repo, dir)
+    }
+
+    /// The same, on a clock the test chose — the one whose slow-frame lines it
+    /// means to read back.
+    fn state_and_handler_timed_by(
+        clock: Arc<FrameClock>,
+        repo: &std::path::Path,
+        dir: &std::path::Path,
+    ) -> (Arc<Mutex<AppState>>, FrameHandler) {
         let mut app = AppState::new(
             repo.to_path_buf(),
             dir.join("wt"),
@@ -19707,6 +19809,7 @@ mod tests {
         // Deterministic terminals for tests: plain bash regardless of the dev
         // machine's login shell (production resolves the user's own shell).
         app.term_shell = "/bin/bash".into();
+        app.frame_clock = clock;
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler)
@@ -19720,7 +19823,7 @@ mod tests {
     fn bridge_stats_answers_while_another_frame_holds_the_app_mutex() {
         let (dir, repo) = init_repo();
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
-        let clock = Arc::clone(handler.clock());
+        let clock = Arc::clone(&state.lock().unwrap().frame_clock);
 
         let (held, is_held) = std::sync::mpsc::channel();
         let (release, released) = std::sync::mpsc::channel();
@@ -19774,6 +19877,59 @@ mod tests {
         // Three, not four: a frame is published when it ends, and the frame
         // asking is still running.
         assert_eq!(stats["frames_served"], 3, "{stats:?}");
+    }
+
+    /// The `held=` a slow-frame line reports, in milliseconds.
+    fn held_millis(line: &str) -> f64 {
+        line.split_whitespace()
+            .find_map(|field| field.strip_prefix("held="))
+            .and_then(|held| held.strip_suffix("ms"))
+            .and_then(|held| held.parse().ok())
+            .unwrap_or_else(|| panic!("no held= in {line}"))
+    }
+
+    /// This step exists to give the steps after it a before/after number, and
+    /// the longest hold on the frame path is the delivery path's: `agent.start`
+    /// probes, scaffolds and spawns a harness with the app mutex held. A frame
+    /// that spends its time there has to report it as `held` and be named as
+    /// the lock holder while it does — a cold start that reads as seconds of
+    /// `total` against milliseconds of `held`, with `bridge.stats` saying
+    /// nobody holds the lock, describes the opposite of what is happening.
+    #[tokio::test]
+    async fn a_frames_delivery_path_reports_its_hold_and_names_its_method() {
+        let (dir, repo) = init_repo();
+        let (clock, lines) = recording_clock();
+        let (state, handler) = state_and_handler_timed_by(Arc::clone(&clock), &repo, dir.path());
+        insert_run_without_agent(&state, &repo, dir.path().join("side"), "run-timed");
+
+        // The spawn's session locator is built with the app mutex held, so a
+        // factory that takes its time is a hold of a length the test chose.
+        let holder_while_spawning: Arc<Mutex<Value>> = Arc::new(Mutex::new(Value::Null));
+        let sampled = Arc::clone(&holder_while_spawning);
+        let sampling_clock = Arc::clone(&clock);
+        state.lock().unwrap().session_locator_factory = Arc::new(move |_, _| {
+            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            *sampled.lock().unwrap() = sampling_clock.stats()["lock_holder"].clone();
+            None
+        });
+
+        let started = call(&handler, "agent.start", json!({ "id": "run-timed" }));
+        assert_eq!(started["ok"], true, "{started:?}");
+        assert_eq!(
+            *holder_while_spawning.lock().unwrap(),
+            "agent.start",
+            "the stats name the frame whose spawn is holding the app mutex"
+        );
+
+        let lines = lines.lock().unwrap();
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("slow frame agent.start "))
+            .unwrap_or_else(|| panic!("the cold start logged no slow frame: {lines:?}"));
+        assert!(
+            held_millis(line) >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            "the spawn's hold is the frame's own: {line}"
+        );
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history

@@ -266,10 +266,11 @@ impl FrameTimer {
         }
     }
 
-    /// The counters `bridge.stats` answers with, from the clock this frame is
-    /// timed by.
-    pub fn stats(&self) -> Value {
-        self.clock.stats()
+    /// The clock this frame is timed by — where `bridge.stats` reads its
+    /// counters from, so the verb that says what is wedging the daemon never
+    /// touches the state the wedge is holding.
+    pub fn clock(&self) -> &Arc<FrameClock> {
+        &self.clock
     }
 
     fn spent(&self) -> Spent {

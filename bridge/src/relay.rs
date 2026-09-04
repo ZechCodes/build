@@ -187,11 +187,6 @@ impl FrameHandler {
         }
     }
 
-    /// The timing every frame this handler runs is recorded against.
-    pub fn clock(&self) -> &Arc<FrameClock> {
-        &self.clock
-    }
-
     /// Run a frame that never waited for a worker: the relay's own session-close
     /// frame, and the direct calls tests make.
     pub fn call(&self, sender: SessionSender, frame: Frame) -> Value {
@@ -406,7 +401,7 @@ impl Dispatcher {
     /// Hand one decrypted request frame to a worker. Waits only when every
     /// worker is busy and the queue is full.
     async fn dispatch(&mut self, sender: SessionSender, frame: Frame) {
-        let queued = self.handler.clock().queued();
+        let queued = self.handler.clock.queued();
         if let Some(key) = ordered_lane(&sender, &frame) {
             let closing =
                 frame.payload.get("method").and_then(Value::as_str) == Some(TERMINAL_CLOSE_METHOD);
@@ -1633,7 +1628,7 @@ mod dispatcher_tests {
             }
             json!({ "id": frame.payload["id"], "ok": true })
         });
-        let clock = handler.clock().clone();
+        let clock = Arc::clone(&handler.clock);
         // One worker: everything behind the held frame waits.
         let mut dispatcher = Dispatcher::with_capacity(handler, 8, 1);
         let (sender, mut rx, key) = SessionSender::observable("s-depth");
@@ -1715,7 +1710,7 @@ mod dispatcher_tests {
             }
             json!({ "id": frame.payload["id"], "ok": true })
         });
-        let clock = handler.clock().clone();
+        let clock = Arc::clone(&handler.clock);
         let mut dispatcher = Dispatcher::with_capacity(handler, 8, 1);
         let (sender, mut rx, key) = SessionSender::observable("s-fold");
 

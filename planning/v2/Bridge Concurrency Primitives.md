@@ -126,21 +126,25 @@ from the design above.
   app: the queue wait is the dispatcher's, the lock wait and hold are
   `dispatch_frame`'s, and one record carries all four durations.
 - **`FrameHandler` is a struct, not a function pointer.** The alias could not
-  hold the clock, and the clock has to outlive a relay reconnect — `relay::run`
-  is called again per reconnect with the same handler cloned, so a clock built
-  inside the dispatcher would reset the counters every time the socket dropped.
-  It carries the closure and the clock together:
+  hold the clock, and the clock has to reach the dispatcher, which mints the
+  queue ticket. It carries the closure and the clock together:
 
   ```rust
   #[derive(Clone)]
   pub struct FrameHandler { clock: Arc<FrameClock>, dispatch: Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync> }
   impl FrameHandler {
       pub fn new(clock: Arc<FrameClock>, dispatch: impl Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync + 'static) -> FrameHandler;
-      pub fn clock(&self) -> &Arc<FrameClock>;
       pub fn call(&self, sender: SessionSender, frame: Frame) -> Value;   // never queued
       fn run(&self, queued: QueuedFrame, sender: SessionSender, frame: Frame) -> Value;
   }
   ```
+
+- **`AppState` owns the clock; the handler borrows it.** `AppState::new` builds
+  one and `AppState::handler` clones it off the state (app.rs:2082, 4377), so
+  every path that can take the app mutex can reach it: the relay's handler,
+  rebuilt on each reconnect, and the MCP control socket, which has no handler at
+  all. A clock built per handler would give a reconnect a second set of "since
+  boot" counters and leave the socket with none.
 
 - **Interface**
 
@@ -158,7 +162,7 @@ from the design above.
   pub struct FrameTimer;                     // one frame's record, published on Drop
   impl FrameTimer {
       pub fn lock<'a, T>(&'a self, s: &'a Arc<Mutex<T>>) -> LockedFor<'a, T>;
-      pub fn stats(&self) -> Value;          // `bridge.stats`, from this frame's clock
+      pub fn clock(&self) -> &Arc<FrameClock>;   // where `bridge.stats` reads
   }
   pub struct LockedFor<'a, T>;               // Deref/DerefMut to T
   ```
@@ -185,17 +189,23 @@ from the design above.
   passes `eprintln!`, a test passes a buffer and reads the line back. One
   formatter, `slow_frame_line`, and no `#[cfg(test)]` branch in the code that
   ships.
-- **Replaces** every bare `state.lock().unwrap()` in `dispatch_frame` and the
-  verbs it calls directly — `session_hello`, `stream_start`, `term_create`,
-  `term_attach`, `term_ack`, `agent_attach`, `agent_start`, `warm_diff_caches` —
-  with `timer.lock(state)`.
-- **What is deliberately not timed yet.** `deliver`, `ensure_agent_tab` and
-  `deliver_pending_agent_turns` are shared with the MCP done socket, which has
-  no frame and no timer, so their acquisitions stay bare and a cold
-  `agent.start` reports a large `total` against a small `held`. §3 moves them
-  off the frame's thread entirely, at which point their holds are not the
-  frame's to report. The pump, the diff-refresh publish and the idle sweep are
-  background threads for the same reason.
+- **Replaces** every bare `state.lock().unwrap()` in `dispatch_frame` and
+  everything it calls on the frame's own thread — `session_hello`,
+  `stream_start`, `term_create`, `term_attach`, `term_ack`, `agent_attach`,
+  `agent_start`, `warm_diff_caches`, and the delivery path
+  (`deliver_pending_agent_turns`, `deliver`, `ensure_agent_tab`, which take the
+  frame's `&FrameTimer`) — with `timer.lock(state)`. The delivery path is where
+  the longest holds are, so leaving it bare would have made this step's
+  before/after number for §3 read as no hold to remove, and left `lock_holder`
+  saying nobody held the mutex while a spawn's probe and scaffold held it for
+  seconds.
+- **The MCP control socket is a frame too.** It reaches the same delivery path
+  with no relay frame behind it, so it mints its own timer per socket line off
+  the state's clock and records under `mcp.control` (app.rs:4454) — a name of
+  its own, since it is not a wire method.
+- **What is deliberately not timed.** The pump, the diff-refresh publish and the
+  idle sweep are background threads: their holds belong to no frame, and a
+  timer minted per chunk would count a pump as a frame served.
 - **Owns frame latency, not every clock.** The timestamps that decide
   staleness keep their own `Instant`s: `TermScreen.last_flood_snapshot_at`
   (app.rs:242), `Tab.last_delivered_at` (700), `ExternalScanCache.scanned_at`
@@ -222,7 +232,8 @@ from the design above.
   `a_frame_that_waited_for_a_worker_counts_the_wait_as_its_own`,
   `folded_reads_cost_the_queue_one_slot`. In `app.rs`:
   `bridge_stats_answers_while_another_frame_holds_the_app_mutex`,
-  `bridge_stats_count_every_frame_under_its_own_method`.
+  `bridge_stats_count_every_frame_under_its_own_method`,
+  `a_frames_delivery_path_reports_its_hold_and_names_its_method`.
 
 ## 2. `ScreenHandle` — the per-tab screen
 

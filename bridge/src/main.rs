@@ -231,6 +231,7 @@ async fn serve() {
     // otherwise projects arrive via the UI + persisted config. Any extra repos in
     // BRIDGE_PROJECTS are registered alongside. Attention transitions fire a
     // signed, content-free web-push notify at the api.
+    let peer_factory = WebrtcPeerFactory::new();
     let mut app = match &cfg.repo {
         Some(repo) => AppState::new(repo, &worktrees, &base_branch, qa_agent, &mcp_socket),
         None => AppState::new_unrooted(&worktrees, &base_branch, qa_agent, &mcp_socket),
@@ -239,7 +240,10 @@ async fn serve() {
         &api_url,
         &identity.device_id,
         &identity.identity_private_key_b64,
-    ));
+    ))
+    // The peer transport a browser upgrades to, built before the intake it
+    // delivers through: the app's own handler is what that intake runs.
+    .with_peer_factory(peer_factory.clone());
     for entry in std::env::var("BRIDGE_PROJECTS")
         .unwrap_or_default()
         .split(',')
@@ -308,14 +312,10 @@ async fn serve() {
     let handler = AppState::handler(app.clone());
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
-    // on.
+    // on. The peer's channels deliver through this same intake, so a session
+    // reached over either wire is the one session.
     let intake = FrameIntake::new(handler, transport_keypair);
-    // The peer transport a browser upgrades to. Its channels deliver through
-    // the same intake as the relay socket, so a session reached over either is
-    // the one session.
-    app.lock()
-        .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
+    peer_factory.carries(intake.clone());
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted

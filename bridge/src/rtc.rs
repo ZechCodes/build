@@ -251,22 +251,38 @@ impl From<webrtc::error::Error> for RtcError {
 /// backpressure. Everything above it holds three async methods and an SDP
 /// string.
 pub struct WebrtcPeerFactory {
-    intake: Arc<FrameIntake>,
+    intake: std::sync::OnceLock<Arc<FrameIntake>>,
 }
 
 impl WebrtcPeerFactory {
-    /// The one construction point of a real peer. The intake goes in because
-    /// every channel reader delivers what it reassembles through it.
-    pub fn new(intake: Arc<FrameIntake>) -> Arc<Self> {
-        Arc::new(WebrtcPeerFactory { intake })
+    /// The one construction point of a real peer, built before the intake its
+    /// channels deliver through exists — the app builds the handler, the
+    /// handler builds the intake, and the app holds this. Until
+    /// [`carries`](Self::carries) fills that in, the bridge has no peer
+    /// transport and every offer is refused, which is what a client already
+    /// handles by staying on the relay.
+    pub fn new() -> Arc<Self> {
+        Arc::new(WebrtcPeerFactory {
+            intake: std::sync::OnceLock::new(),
+        })
+    }
+
+    /// The intake every channel this factory opens delivers through. Once, at
+    /// boot: a second one would leave peers already carrying on the first.
+    pub fn carries(&self, intake: Arc<FrameIntake>) {
+        assert!(
+            self.intake.set(intake).is_ok(),
+            "the peer transport takes its intake once"
+        );
     }
 }
 
 impl SessionPeerFactory for WebrtcPeerFactory {
     fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        let intake = self.intake.get().ok_or(RtcError::Unavailable)?;
         Ok(Arc::new(WebrtcPeer {
             session_id: session_id.to_string(),
-            intake: self.intake.clone(),
+            intake: intake.clone(),
             signaling: Arc::new(LatestSignaling::default()),
             negotiation: tokio::sync::Mutex::new(None),
         }))
@@ -884,6 +900,17 @@ mod peer_transport_tests {
             vec!["stun:stun.cloudflare.com:3478".to_string()]
         );
         assert!(stun_only.username.is_empty());
+    }
+
+    /// The peer transport exists before the intake its channels deliver
+    /// through does. Until it has one it is a bridge with no peer transport,
+    /// which the client already handles by staying on the relay.
+    #[test]
+    fn a_peer_transport_with_no_intake_yet_refuses_every_offer() {
+        assert!(matches!(
+            WebrtcPeerFactory::new().open("s-1"),
+            Err(RtcError::Unavailable)
+        ));
     }
 
     #[test]

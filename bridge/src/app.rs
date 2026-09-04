@@ -2226,16 +2226,8 @@ impl AppState {
     /// Answer `rtc.offer` with peer connections `factory` builds. Without one
     /// the bridge has no peer transport and every offer is refused.
     pub fn with_peer_factory(mut self, factory: Arc<dyn SessionPeerFactory>) -> Self {
-        self.set_peer_factory(factory);
-        self
-    }
-
-    /// [`with_peer_factory`](Self::with_peer_factory) once the state is
-    /// shared: the real factory is built from the frame intake, which is built
-    /// from this state's own handler, so the daemon can only hand it over
-    /// after both exist.
-    pub fn set_peer_factory(&mut self, factory: Arc<dyn SessionPeerFactory>) {
         self.peers = SessionPeers::with_factory(factory);
+        self
     }
 
     /// Enable persistence at `path`: load any saved projects + projects-dir from it

@@ -271,20 +271,20 @@ async fn negotiated(
 /// A bridge with the real peer transport: one intake, the app behind it, and
 /// the factory that builds a peer connection per session.
 fn peer_bridge(state_dir: &std::path::Path) -> Arc<FrameIntake> {
+    let peer_factory = WebrtcPeerFactory::new();
     let app = AppState::new_unrooted(
         state_dir.join("worktrees"),
         "main",
         false,
         state_dir.join("mcp.sock").to_string_lossy().into_owned(),
     )
+    .with_peer_factory(peer_factory.clone())
     .shared();
     let intake = FrameIntake::new(
-        AppState::handler(app.clone()),
+        AppState::handler(app),
         transport::generate_transport_keypair(),
     );
-    app.lock()
-        .unwrap()
-        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
+    peer_factory.carries(intake.clone());
     intake
 }
 

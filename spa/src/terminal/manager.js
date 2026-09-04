@@ -61,10 +61,14 @@ export function terminalManager() {
  * to the relay socket. The app session's upgrade owns both channels, so this is
  * how the terminal stream learns that its half is open — and, when the peer path
  * goes, that it is back on the relay.
+ *
+ * Nothing is watched here. "The two channels are one connection and fall back
+ * together" is written in `connection.js`, which hears each channel's close and
+ * hands both streams back at once; a second listener on the same carrier would
+ * run that fallback twice, through two owners of one fact.
  */
 export function terminalsRideOn(carrier) {
   peerCarrier = carrier || null;
-  carrier?.onClose(() => terminalsRideOn(null));
   socket?.peer(peerCarrier);
 }
 

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection};
-use super::limits::AppServerLimits;
+use super::limits::{AppServerLimits, ConnectionLimits, StateLimits};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::{AppServerProcess, TerminalEventSink, TerminalSourceEvent};
 use super::protocol::{
@@ -145,7 +145,8 @@ struct SessionCore {
     published: Mutex<Option<TerminalOutcome>>,
     last_message: Mutex<Instant>,
     started: Instant,
-    limits: AppServerLimits,
+    state_limits: StateLimits,
+    connection_limits: ConnectionLimits,
     binary: PathBuf,
     shutting_down: AtomicBool,
     reconciliation_timer: ReconciliationTimer,
@@ -186,7 +187,8 @@ impl CodexAppServerSession {
             published: Mutex::new(None),
             last_message: Mutex::new(Instant::now()),
             started: Instant::now(),
-            limits,
+            state_limits: limits.state(),
+            connection_limits: limits.connection(),
             binary,
             shutting_down: AtomicBool::new(false),
             reconciliation_timer: ReconciliationTimer::new(),
@@ -207,7 +209,7 @@ impl SessionCore {
     fn apply_state(self: &Arc<Self>, event: SessionEvent) -> Result<(), HarnessError> {
         let (require_version, should_close, reconciliation_pending) = {
             let mut state = self.state.lock().unwrap();
-            let transition = match state.transition(event, self.elapsed(), self.limits.state()) {
+            let transition = match state.transition(event, self.elapsed(), self.state_limits) {
                 Ok(transition) => transition,
                 Err(error) => {
                     let error = HarnessError::Session(error.to_string());
@@ -251,7 +253,7 @@ impl SessionCore {
             ))?;
         }
         self.reconciliation_timer
-            .set(reconciliation_pending, self.limits.state().reconciliation);
+            .set(reconciliation_pending, self.state_limits.reconciliation);
         Ok(())
     }
 
@@ -557,7 +559,7 @@ fn read_until_settled(
 ) -> Option<String> {
     loop {
         let core = core.upgrade()?;
-        let frame = match read_jsonl_frame(stdout, core.limits.connection().inbound_frame_bytes) {
+        let frame = match read_jsonl_frame(stdout, core.connection_limits.inbound_frame_bytes) {
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 let _ = core.apply_state(SessionEvent::Eof);

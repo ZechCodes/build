@@ -51,7 +51,7 @@ pub struct TranslatorLimits {
 }
 
 impl AppServerLimits {
-    pub fn connection(&self) -> ConnectionLimits {
+    pub fn connection(self) -> ConnectionLimits {
         ConnectionLimits {
             inbound_frame_bytes: self.inbound_frame_bytes,
             outbound_frame_bytes: self.outbound_frame_bytes,
@@ -59,14 +59,14 @@ impl AppServerLimits {
         }
     }
 
-    pub fn process(&self) -> ProcessLimits {
+    pub fn process(self) -> ProcessLimits {
         ProcessLimits {
             stderr_line_bytes: self.stderr_line_bytes,
             stderr_total_bytes: self.stderr_total_bytes,
         }
     }
 
-    pub fn state(&self) -> StateLimits {
+    pub fn state(self) -> StateLimits {
         StateLimits {
             queued_turns: self.queued_turns,
             queued_turn_bytes: self.queued_turn_bytes,
@@ -74,7 +74,7 @@ impl AppServerLimits {
         }
     }
 
-    pub fn translator(&self) -> TranslatorLimits {
+    pub fn translator(self) -> TranslatorLimits {
         TranslatorLimits {
             open_items: self.open_items,
             open_item_bytes: self.open_item_bytes,

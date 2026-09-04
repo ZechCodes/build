@@ -369,6 +369,80 @@ fn initialize_is_first_and_a_turn_waits_for_readiness() {
 }
 
 #[test]
+fn initialize_success_sends_initialized_once_then_opens_the_thread() {
+    let initializing = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state;
+    let response = correlated(
+        PendingOperation::Initialize,
+        Ok(json!({"userAgent":"build_bridge/0.153.0 (fixture)"})),
+    );
+    let initialized = initializing
+        .transition(response.clone(), Duration::ZERO, limits().state())
+        .unwrap();
+    assert_eq!(
+        initialized.effects,
+        vec![
+            SessionEffect::NotifyInitialized,
+            SessionEffect::Request(start_thread()),
+        ]
+    );
+    let repeated = initialized
+        .state
+        .transition(response, Duration::ZERO, limits().state())
+        .unwrap_err();
+    assert!(repeated.to_string().contains("out of order"));
+}
+
+#[test]
+fn initialize_error_fails_the_session() {
+    let error = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            correlated(
+                PendingOperation::Initialize,
+                Err(RpcError::new(-32603, "initialize refused")),
+            ),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("-32603"), "{error}");
+    assert!(error.contains("initialize refused"), "{error}");
+}
+
+#[test]
+fn a_below_floor_user_agent_fails_without_asking_the_probe() {
+    let refused = initialized_state()
+        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
+        .unwrap()
+        .state
+        .transition(
+            correlated(
+                PendingOperation::Initialize,
+                Ok(json!({"userAgent":"build_bridge/0.152.9"})),
+            ),
+            Duration::ZERO,
+            limits().state(),
+        );
+    let asked_probe = refused.as_ref().is_ok_and(|transition| {
+        transition
+            .effects
+            .contains(&SessionEffect::RequireVersionEvidence)
+    });
+    assert!(!asked_probe);
+    let error = refused
+        .expect_err("a below-floor user agent fails startup")
+        .to_string();
+    assert!(error.contains("0.152.9"), "{error}");
+    assert!(error.contains("0.153.0"), "{error}");
+}
+
+#[test]
 fn initialize_version_floor_uses_only_the_leading_matching_component() {
     for passing in ["build_bridge/0.153.0", "build_bridge/0.154.1 (0.1.0)"] {
         assert!(

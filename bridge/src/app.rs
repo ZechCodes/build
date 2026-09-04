@@ -17424,9 +17424,9 @@ fn merge_cleanup_from(params: &Value, adopted: bool) -> Result<MergeCleanup, Str
 /// the `SessionSender` (to push live output to this client); everything else runs
 /// under a short-held lock.
 fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Frame) -> Value {
-    // A session ended (client `close` frame, or the relay's session_closed on
-    // browser disconnect): release its attachments so the bridge stops encrypting
-    // terminal output into a session nobody will ever read.
+    // The session ended — its client's `close` frame, or its last carrier gone,
+    // which is the teardown rule `carrier.rs` owns — so release what it held and
+    // the bridge stops encrypting terminal output into a session nobody reads.
     if frame.frame_type == transport::CLOSE_FRAME_TYPE {
         let changes = {
             let mut app = state.lock().unwrap();
@@ -21525,7 +21525,7 @@ mod tests {
             session_id: "s-dead".into(),
             message_id: String::new(),
             frame_type: "close".into(),
-            sender: "relay".into(),
+            sender: transport::SENDER_DEVICE.into(),
             created_at: String::new(),
             payload: Value::Null,
         };
@@ -45355,7 +45355,7 @@ mod tests {
         );
     }
 
-    /// The relay says a session closed; nothing is encrypted into it again.
+    /// The session ended; nothing is encrypted into it again.
     #[tokio::test]
     async fn a_closed_session_hears_no_more_changes() {
         let (dir, repo) = init_repo();
@@ -45366,7 +45366,7 @@ mod tests {
             session_id: "browser".into(),
             message_id: String::new(),
             frame_type: "close".into(),
-            sender: "relay".into(),
+            sender: transport::SENDER_DEVICE.into(),
             created_at: String::new(),
             payload: Value::Null,
         };

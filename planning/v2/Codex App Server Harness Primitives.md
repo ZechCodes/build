@@ -111,13 +111,16 @@ multiplexing across owners, and keeps each MCP token scoped to one agent.
   correlation. It does not own the child process, session state, policy, or
   activity translation. Wire messages omit `"jsonrpc":"2.0"`, as Codex
   requires.
-- **Interface:** `request(PendingOperation) -> Result<RequestId,
-  ConnectionError>`, `notify(ClientNotification) -> Result<(),
-  ConnectionError>`, `respond(ServerResponse) -> Result<(), ConnectionError>`,
-  and `close() -> Result<(), ConnectionError>`. No other component writes
-  app-server stdin.
+- **Interface:** `request(PendingOperation) -> Result<(), ConnectionError>`,
+  `notify(ClientNotification) -> Result<(), ConnectionError>`,
+  `respond(ServerResponse) -> Result<(), ConnectionError>`, and `close() ->
+  Result<(), ConnectionError>`. No other component writes app-server stdin.
 - **Hides:** Monotonic checked request-id allocation, serialization, the bounded
   `RequestId -> PendingOperation` map, and out-of-order response matching.
+  `RequestId` is internal to the connection: it is never returned from
+  `request`, never named in a `SessionEffect`, and never reaches the
+  coordinator, so no caller can hold an id with which to build a second
+  correlation map.
 
 `PendingOperation` is a typed enum with `Initialize`, `StartThread`,
 `ResumeThread`, `StartTurn { input }`, `SteerTurn { turn_id, input }`, and
@@ -175,7 +178,7 @@ The exhaustive 0.153.0 policy is:
 | `item/tool/requestUserInput` | JSON-RPC `-32601` unsupported | FailTurn: no answers may be invented |
 | `item/permissions/requestApproval` | JSON-RPC `-32601` unsupported | FailTurn: no permission may be invented |
 | `item/tool/call` | JSON-RPC `-32601` unsupported | FailTurn: dynamic tools are deferred |
-| `account/chatgptAuthTokens/refresh` | JSON-RPC `-32601` unsupported | FailSession with an actionable re-authentication epitaph |
+| `account/chatgptAuthTokens/refresh` | JSON-RPC `-32601` unsupported | FailSession with an actionable re-authentication reason |
 | `attestation/generate` | JSON-RPC `-32601` unsupported | FailSession; Build did not advertise attestation support |
 | `currentTime/read` | `{ "currentTimeAt": <i64> }` | Continue |
 | unknown method | JSON-RPC `-32601` method-not-found | FailSession after replying |
@@ -195,7 +198,7 @@ UI that this feature does not provide.
 
 `Continue` leaves the turn and session open. `FailTurn` records the reason and,
 when a turn is active, issues the ordinary typed `InterruptTurn`; the session
-remains reusable after matching completion. `FailSession` records the epitaph,
+remains reusable after matching completion. `FailSession` records the terminal reason,
 closes activity, and runs the normal idempotent shutdown. If the response write
 fails, connection failure wins and none of these follow-up actions runs.
 
@@ -299,8 +302,8 @@ response-first path becomes `Waiting` immediately and a later matching
 notification is idempotent. A differing id or an error response after a
 successful notification is a protocol contradiction and fails the session.
 
-A failure at initialize or thread open closes the activity stream and exposes
-the correlated JSON-RPC error as the epitaph.
+A failure at initialize or thread open closes the activity stream and emits
+`FailSession(reason)` carrying the correlated JSON-RPC error as the reason.
 
 ### `ParentThreadFilter`
 
@@ -426,10 +429,21 @@ never Build completion: `done` remains the only lifecycle report.
   existing `ActivityReport` vocabulary. It does not mutate a Build thread or
   call app RPCs; the existing activity pump remains the only writer into the
   conversation.
-- **Interface:** `translate(notification) -> Vec<ActivityReport>` plus
-  `close_turn(turn_id) -> Vec<ActivityReport>` for unanswered calls.
+- **Interface:** `translate(notification) -> Result<Vec<ActivityReport>,
+  TranslationError>` plus `close_turn(turn_id) ->
+  Result<Vec<ActivityReport>, TranslationError>` for unanswered calls.
 - **Hides:** Codex item variants, item-id pairing, delta suppression, status
   mapping, completed-item deduplication, and suppression.
+
+`TranslationError` is the translator's whole failure vocabulary and its only
+route out: `ItemCountLimit(limit)` and `ItemBytesLimit(limit)` when open-item
+insertion exceeds the count or aggregate-byte limit
+`AppServerLimits::translator()` supplies, and `Malformed(field)` when a
+`TrackedTool` or `Emitting` notification carries no item id or another field the
+transition requires. The translator neither swallows these nor reaches a side
+channel; it returns `Err`, the coordinator turns that `Err` into
+`FailSession(reason)` naming the limit or the missing field, and that
+`FailSession` is the single delivery route for a translation failure.
 
 `classify_item(item) -> ItemClassification` is the only item-type switch.
 `ItemClassification` is a typed enum with `TrackedTool { summary:
@@ -460,9 +474,10 @@ The exhaustive classification and report mapping is one place:
 Delta notifications update the quiet clock but allocate no transcript and do
 not mint one conversation row per token. Error notifications are not item
 notifications and never reach the translator: they are lifecycle events, so
-`CodexSessionState` receives each one, returns its bounded `TaskUpdate` as a
-`SessionEffect`, and is the only primitive that decides whether a terminal
-parent error becomes the session epitaph. An open tracked tool is removed on
+`CodexSessionState` receives each one and returns its bounded `TaskUpdate` as a
+`SessionEffect`. `CodexSessionState` decides that an error is terminal and emits
+`FailSession(reason)`; `TerminalSnapshot` alone ranks that reason against the
+process and stderr outcomes to select the epitaph. An open tracked tool is removed on
 completion; tracked tools still open at `turn/completed` emit `Unanswered`.
 
 `CompletedItemLedger` is a provider-owned, per-session LRU of `(turn_id,
@@ -547,8 +562,12 @@ epitaph selection:
 - **Boundary:** Constructed once per session with all three sources pending. It
   owns the barrier over the stdout-reader, process-monitor, and stderr-drainer
   outcomes, the first terminal protocol/session error, and the epitaph choice
-  among them. It performs no I/O, reads no clock, holds no process handle, and
-  never publishes; the coordinator alone publishes what the snapshot returns.
+  among them. `CodexSessionState` decides that an error is terminal and emits
+  `FailSession(reason)`; `TerminalSnapshot` alone ranks that reason against the
+  process and stderr outcomes to select the epitaph, and never decides whether
+  an error was terminal. It performs no I/O, reads no clock, holds no process
+  handle, and never publishes; the coordinator alone publishes what the snapshot
+  returns.
 - **Interface:** `with_terminal_event(CoordinatorTerminalEvent) ->
   TerminalSnapshot` returns the next snapshot for one source settlement or one
   terminal protocol/session error, and `outcome() -> Option<TerminalOutcome {
@@ -632,8 +651,9 @@ into a capped buffer before taking the lock.
 
 Queue insertion checks both count and aggregate UTF-8 bytes before mutation.
 Open-item insertion checks both item count and aggregate retained bytes; item
-completion removes its charge. Overflow refuses the new operation and fails the
-session with the named limit. Completed-item insertion instead evicts least
+completion removes its charge. Overflow refuses the new operation and returns
+`TranslationError::ItemCountLimit` or `TranslationError::ItemBytesLimit` naming
+the limit, which the coordinator turns into `FailSession`. Completed-item insertion instead evicts least
 recently used keys to satisfy both ledger limits and never fails the session for
 ledger capacity. Stderr is always drained to prevent child deadlock. Its rolling
 decoder retains at most 16 KiB for one line, discards that line's excess bytes

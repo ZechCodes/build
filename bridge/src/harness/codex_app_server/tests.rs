@@ -187,6 +187,53 @@ fn malformed_and_unknown_responses_fail_without_stealing_another_request() {
 }
 
 #[test]
+fn a_response_body_that_does_not_match_its_operation_fails_the_connection() {
+    for (operation, mistyped_result) in [
+        (start_thread(), json!({"turn":{"id":"t"}})),
+        (start_turn("go"), json!({"thread":{"id":"t"}})),
+        (steer_turn("more"), json!({})),
+        (interrupt_turn(), json!([])),
+        (PendingOperation::Initialize, json!([])),
+    ] {
+        let connection = AppServerConnection::memory(limits().connection());
+        connection.request(operation.clone()).unwrap();
+        let [request_id] = connection.pending_ids()[..] else {
+            panic!("one correlated request is pending");
+        };
+
+        let error = decode(
+            &connection,
+            json!({"id":request_id,"result":mistyped_result}),
+        )
+        .expect_err("a mistyped body cannot resolve the operation");
+
+        let ConnectionError::Protocol(message) = &error else {
+            panic!("expected a protocol violation, got {error:?}");
+        };
+        assert!(message.contains(operation.method()), "{message}");
+        assert!(message.contains("response has the wrong body"), "{message}");
+        assert_eq!(connection.pending_count(), 0);
+    }
+}
+
+#[test]
+fn a_second_response_on_a_resolved_id_is_unknown() {
+    let connection = AppServerConnection::memory(limits().connection());
+    connection.request(PendingOperation::Initialize).unwrap();
+    let [request_id] = connection.pending_ids()[..] else {
+        panic!("one correlated request is pending");
+    };
+    let response = json!({"id":request_id,"result":{"userAgent":"build_bridge/0.153.0"}});
+
+    decode(&connection, response.clone()).unwrap();
+    let error = decode(&connection, response)
+        .expect_err("a resolved id no longer correlates to an operation");
+
+    assert!(error.to_string().contains("unknown response id"), "{error}");
+    assert_eq!(connection.pending_count(), 0);
+}
+
+#[test]
 fn pending_overflow_and_failed_write_leave_correlation_unchanged() {
     let mut small = limits();
     small.pending_requests = 1;

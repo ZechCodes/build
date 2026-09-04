@@ -1105,15 +1105,6 @@ impl CodexSessionState {
     pub fn queued_turn_count(&self) -> usize {
         self.queued_turns.len()
     }
-
-    #[cfg(test)]
-    pub fn validate_user_agent(user_agent: &str) -> Result<(), String> {
-        match check_user_agent(user_agent) {
-            VersionCheck::Supported => Ok(()),
-            VersionCheck::TooOld(version) => Err(format!("Codex {version} is below 0.153.0")),
-            VersionCheck::Unavailable => Err("userAgent has no leading Codex version".to_string()),
-        }
-    }
 }
 
 fn establish_id(held: &mut Option<String>, id: &str, label: &str) -> Result<(), StateError> {

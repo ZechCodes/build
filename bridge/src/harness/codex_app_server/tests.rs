@@ -93,11 +93,15 @@ fn interrupt_turn() -> PendingOperation {
     }
 }
 
-fn advance_to_waiting(mut state: CodexSessionState) -> CodexSessionState {
-    state = state
+fn state_awaiting_initialize_response() -> CodexSessionState {
+    initialized_state()
         .transition(SessionEvent::Start, Duration::ZERO, limits().state())
         .unwrap()
-        .state;
+        .state
+}
+
+fn advance_to_waiting() -> CodexSessionState {
+    let mut state = state_awaiting_initialize_response();
     state = state
         .transition(
             correlated(
@@ -339,7 +343,7 @@ fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
 
 #[test]
 fn app_server_eof_ends_the_session_with_a_close_effect() {
-    let transition = advance_to_waiting(initialized_state())
+    let transition = advance_to_waiting()
         .transition(SessionEvent::Eof, Duration::ZERO, limits().state())
         .unwrap();
     assert_eq!(transition.effects, vec![SessionEffect::Close]);
@@ -370,10 +374,7 @@ fn initialize_is_first_and_a_turn_waits_for_readiness() {
 
 #[test]
 fn initialize_success_sends_initialized_once_then_opens_the_thread() {
-    let initializing = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state;
+    let initializing = state_awaiting_initialize_response();
     let response = correlated(
         PendingOperation::Initialize,
         Ok(json!({"userAgent":"build_bridge/0.153.0 (fixture)"})),
@@ -397,10 +398,7 @@ fn initialize_success_sends_initialized_once_then_opens_the_thread() {
 
 #[test]
 fn initialize_error_fails_the_session() {
-    let error = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
+    let error = state_awaiting_initialize_response()
         .transition(
             correlated(
                 PendingOperation::Initialize,
@@ -417,18 +415,14 @@ fn initialize_error_fails_the_session() {
 
 #[test]
 fn a_below_floor_user_agent_fails_without_asking_the_probe() {
-    let refused = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
-        .transition(
-            correlated(
-                PendingOperation::Initialize,
-                Ok(json!({"userAgent":"build_bridge/0.152.9"})),
-            ),
-            Duration::ZERO,
-            limits().state(),
-        );
+    let refused = state_awaiting_initialize_response().transition(
+        correlated(
+            PendingOperation::Initialize,
+            Ok(json!({"userAgent":"build_bridge/0.152.9"})),
+        ),
+        Duration::ZERO,
+        limits().state(),
+    );
     let asked_probe = refused.as_ref().is_ok_and(|transition| {
         transition
             .effects
@@ -442,11 +436,29 @@ fn a_below_floor_user_agent_fails_without_asking_the_probe() {
     assert!(error.contains("0.153.0"), "{error}");
 }
 
+fn initialize_effects_for_user_agent(user_agent: &str) -> Vec<SessionEffect> {
+    state_awaiting_initialize_response()
+        .transition(
+            correlated(
+                PendingOperation::Initialize,
+                Ok(json!({ "userAgent": user_agent })),
+            ),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap_or_else(|error| panic!("{user_agent:?}: {error}"))
+        .effects
+}
+
 #[test]
 fn initialize_version_floor_uses_only_the_leading_matching_component() {
     for passing in ["build_bridge/0.153.0", "build_bridge/0.154.1 (0.1.0)"] {
-        assert!(
-            CodexSessionState::validate_user_agent(passing).is_ok(),
+        assert_eq!(
+            initialize_effects_for_user_agent(passing),
+            vec![
+                SessionEffect::NotifyInitialized,
+                SessionEffect::Request(start_thread()),
+            ],
             "{passing}"
         );
     }
@@ -456,20 +468,17 @@ fn initialize_version_floor_uses_only_the_leading_matching_component() {
         "0.153.0 build_bridge/0.153.0",
         "",
     ] {
-        assert!(
-            CodexSessionState::validate_user_agent(probe_needed).is_err(),
+        assert_eq!(
+            initialize_effects_for_user_agent(probe_needed),
+            vec![SessionEffect::RequireVersionEvidence],
             "{probe_needed}"
         );
     }
-    assert!(CodexSessionState::validate_user_agent("build_bridge/0.152.9").is_err());
 }
 
 #[test]
-fn version_probe_fallback_accepts_success_and_preserves_failure() {
-    let awaiting = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
+fn version_probe_evidence_accepts_the_floor_and_preserves_every_failure() {
+    let awaiting = state_awaiting_initialize_response()
         .transition(
             correlated(
                 PendingOperation::Initialize,
@@ -483,19 +492,44 @@ fn version_probe_fallback_accepts_success_and_preserves_failure() {
         awaiting.effects,
         vec![SessionEffect::RequireVersionEvidence]
     );
-    assert!(awaiting
+    let accepted = awaiting.state.clone().transition(
+        SessionEvent::VersionEvidence(Ok("codex-cli 0.153.0".to_string())),
+        Duration::ZERO,
+        limits().state(),
+    );
+    assert_eq!(
+        accepted.unwrap().effects,
+        vec![
+            SessionEffect::NotifyInitialized,
+            SessionEffect::Request(start_thread()),
+        ]
+    );
+
+    let below_floor = awaiting
         .state
+        .clone()
         .transition(
-            SessionEvent::VersionEvidence(Ok("codex-cli 0.153.0".to_string())),
+            SessionEvent::VersionEvidence(Ok("codex-cli 0.152.9".to_string())),
             Duration::ZERO,
             limits().state(),
         )
-        .is_ok());
+        .unwrap_err()
+        .to_string();
+    assert!(below_floor.contains("0.152.9"), "{below_floor}");
+    assert!(below_floor.contains("0.153.0"), "{below_floor}");
 
-    let failure = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
+    let unparsable = awaiting
         .state
+        .transition(
+            SessionEvent::VersionEvidence(Ok("not-codex 1.0".to_string())),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(unparsable.contains("not-codex 1.0"), "{unparsable}");
+
+    let failure = state_awaiting_initialize_response()
         .transition(
             correlated(PendingOperation::Initialize, Ok(json!({}))),
             Duration::ZERO,
@@ -566,10 +600,7 @@ fn exact_resume_id_selects_resume_and_fresh_never_guesses() {
 
 #[test]
 fn thread_notification_and_response_orders_converge_and_ids_must_match() {
-    let opening = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
+    let opening = state_awaiting_initialize_response()
         .transition(
             correlated(
                 PendingOperation::Initialize,
@@ -598,7 +629,7 @@ fn thread_notification_and_response_orders_converge_and_ids_must_match() {
 
 #[test]
 fn thread_response_before_notification_is_ready_and_the_duplicate_is_inert() {
-    let waiting = advance_to_waiting(initialized_state());
+    let waiting = advance_to_waiting();
     assert_eq!(waiting.status(), AgentStatus::Waiting);
     let duplicate = waiting
         .transition(
@@ -617,7 +648,7 @@ fn thread_response_before_notification_is_ready_and_the_duplicate_is_inert() {
 
 #[test]
 fn starting_turn_completion_before_response_never_resurrects_working() {
-    let state = advance_to_waiting(initialized_state());
+    let state = advance_to_waiting();
     let starting = state
         .transition(
             SessionEvent::SendTurn("go".to_string()),
@@ -650,7 +681,7 @@ fn starting_turn_completion_before_response_never_resurrects_working() {
 
 #[test]
 fn conflicting_duplicate_completion_is_rejected() {
-    let starting = advance_to_waiting(initialized_state())
+    let starting = advance_to_waiting()
         .transition(
             SessionEvent::SendTurn("go".to_string()),
             Duration::ZERO,
@@ -710,10 +741,7 @@ fn conflicting_duplicate_completion_is_rejected() {
 
 #[test]
 fn completion_before_start_response_applies_accepted_turn_facts() {
-    let waiting = initialized_state()
-        .transition(SessionEvent::Start, Duration::ZERO, limits().state())
-        .unwrap()
-        .state
+    let waiting = state_awaiting_initialize_response()
         .transition(
             correlated(
                 PendingOperation::Initialize,
@@ -775,7 +803,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
 
 #[test]
 fn observed_turn_then_start_error_and_wrong_ids_fail() {
-    let starting = advance_to_waiting(initialized_state())
+    let starting = advance_to_waiting()
         .transition(
             SessionEvent::SendTurn("go".to_string()),
             Duration::ZERO,
@@ -798,7 +826,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
         )
         .is_err());
 
-    let starting = advance_to_waiting(initialized_state())
+    let starting = advance_to_waiting()
         .transition(
             SessionEvent::SendTurn("go".to_string()),
             Duration::ZERO,
@@ -824,7 +852,7 @@ fn observed_turn_then_start_error_and_wrong_ids_fail() {
 
 #[test]
 fn two_sends_during_start_issue_only_one_turn_start() {
-    let state = advance_to_waiting(initialized_state());
+    let state = advance_to_waiting();
     let first = state
         .transition(
             SessionEvent::SendTurn("first".to_string()),
@@ -846,7 +874,7 @@ fn two_sends_during_start_issue_only_one_turn_start() {
 
 #[test]
 fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
-    let starting = advance_to_waiting(initialized_state())
+    let starting = advance_to_waiting()
         .transition(
             SessionEvent::SendTurn("go".to_string()),
             Duration::ZERO,
@@ -883,7 +911,7 @@ fn failed_starting_turn_is_interrupted_after_its_id_is_confirmed() {
 }
 
 fn working_state() -> CodexSessionState {
-    let starting = advance_to_waiting(initialized_state())
+    let starting = advance_to_waiting()
         .transition(
             SessionEvent::SendTurn("go".to_string()),
             Duration::ZERO,

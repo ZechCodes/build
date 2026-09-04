@@ -4379,9 +4379,9 @@ impl AppState {
     /// need the shared handle (background producers/pumps), so it dispatches
     /// through [`dispatch_frame`].
     ///
-    /// The handler is rebuilt on every relay reconnect and the state is not, so
-    /// the clock comes off the state: the counters are since boot, and the MCP
-    /// done socket records against the same ones.
+    /// The clock comes off the state, not the handler: the MCP done socket takes
+    /// this mutex with no handler behind it, and both must record against one
+    /// set of since-boot counters.
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
         let clock = Arc::clone(&state.lock().unwrap().frame_clock);
         FrameHandler::new(clock, move |sender, frame, timer| {

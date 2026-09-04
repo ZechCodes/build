@@ -140,11 +140,11 @@ from the design above.
   ```
 
 - **`AppState` owns the clock; the handler borrows it.** `AppState::new` builds
-  one and `AppState::handler` clones it off the state (app.rs:2082, 4377), so
+  one and `AppState::handler` clones it off the state (app.rs:2090, 4386), so
   every path that can take the app mutex can reach it: the relay's handler,
-  rebuilt on each reconnect, and the MCP control socket, which has no handler at
-  all. A clock built per handler would give a reconnect a second set of "since
-  boot" counters and leave the socket with none.
+  cloned per reconnect (main.rs:301 builds it once, 310 clones it into every
+  connection), and the MCP control socket, which has no handler at all. A clock
+  built per handler would leave the socket's frames counted nowhere.
 
 - **Interface**
 
@@ -204,16 +204,16 @@ from the design above.
   seconds.
 - **The MCP control socket is a frame too.** It reaches the same delivery path
   with no relay frame behind it, so it mints its own timer per socket line off
-  the state's clock and records under `mcp.control` (app.rs:4454) — a name of
+  the state's clock and records under `mcp.control` (app.rs:4462) — a name of
   its own, since it is not a wire method.
 - **What is deliberately not timed.** The pump, the diff-refresh publish and the
   idle sweep are background threads: their holds belong to no frame, and a
   timer minted per chunk would count a pump as a frame served.
 - **Owns frame latency, not every clock.** The timestamps that decide
   staleness keep their own `Instant`s: `TermScreen.last_flood_snapshot_at`
-  (app.rs:242), `Tab.last_delivered_at` (700), `ExternalScanCache.scanned_at`
-  (1324), the `(Instant, Value)` stamps on `run_stat_cache` (1923) and
-  `primary_summary` (1011).
+  (app.rs:243), `Tab.last_delivered_at` (701), `ExternalScanCache.scanned_at`
+  (1325), the `(Instant, Value)` stamps on `run_stat_cache` (1937) and
+  `primary_summary` (1012).
 - **Lock discipline** `LockedFor` holds its `MutexGuard` in an `Option`. Its
   `Drop` clears the holder slot while the mutex is still held — clearing it
   after the release would wipe the claim of whichever frame acquired next —

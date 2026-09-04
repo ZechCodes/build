@@ -739,100 +739,253 @@ pub fn push(repo_path: &Path, force: bool) -> Result<(), String> {
     run_git_network(repo_path, &arg_refs).map(|_| ())
 }
 
-/// One local branch's wire summary for [`branch_list`]: the sync chips
-/// against its own upstream (unrelated to `base_branch`, which is what
-/// `stat` below is measured from), and its own weight — the diffstat a
-/// reviewer would see switching onto it, whether or not it is presently
-/// checked out.
-fn branch_entry_json(
+/// Where the ref behind a branch name lives: the repository's own
+/// `refs/heads/<name>`, or — for a branch that has never been checked out here
+/// — a remote's `refs/remotes/<remote>/<name>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchOrigin {
+    Local,
+    Remote {
+        remote: String,
+        tracking_ref: String,
+    },
+}
+
+impl BranchOrigin {
+    /// The full ref name a branch of this origin is read through — never the
+    /// bare branch name, which git would resolve as a revspec.
+    fn ref_name(&self, branch: &str) -> String {
+        match self {
+            BranchOrigin::Local => format!("refs/heads/{branch}"),
+            BranchOrigin::Remote { tracking_ref, .. } => tracking_ref.clone(),
+        }
+    }
+
+    /// The remote a branch that exists only there would be fetched from.
+    fn remote(&self) -> Option<&str> {
+        match self {
+            BranchOrigin::Local => None,
+            BranchOrigin::Remote { remote, .. } => Some(remote),
+        }
+    }
+}
+
+/// One branch's git facts for [`branch_list`]: where its ref lives, the sync
+/// chips against its own upstream (unrelated to `base_branch`, which is what
+/// `stat` is measured from), and its own weight — the diffstat a reviewer
+/// would see switching onto it, whether or not it is presently checked out.
+pub struct BranchRow {
+    pub name: String,
+    pub is_current: bool,
+    pub origin: BranchOrigin,
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    pub head_subject: String,
+    pub head_time: i64,
+    pub stat: crate::diff::DiffStat,
+}
+
+impl BranchRow {
+    /// The row's git facts as wire fields, for a caller that stamps its own
+    /// beside them.
+    pub fn into_fields(self) -> serde_json::Map<String, Value> {
+        let Value::Object(fields) = json!({
+            "name": self.name,
+            "is_current": self.is_current,
+            "remote": self.origin.remote(),
+            "upstream": self.upstream,
+            "ahead": self.ahead,
+            "behind": self.behind,
+            "head_subject": self.head_subject,
+            "head_time": self.head_time,
+            "stat": {
+                "files_changed": self.stat.files_changed,
+                "insertions": self.stat.insertions,
+                "deletions": self.stat.deletions,
+            },
+        }) else {
+            unreachable!("a json object literal is an object")
+        };
+        fields
+    }
+}
+
+/// The repository's branches and which one its checkout is on.
+pub struct BranchListing {
+    pub current: String,
+    pub rows: Vec<BranchRow>,
+}
+
+/// A local branch's position against its own upstream. A branch with no
+/// upstream is level with nothing.
+#[derive(Default)]
+struct BranchSync {
+    upstream: Option<String>,
+    ahead: u64,
+    behind: u64,
+}
+
+fn upstream_sync(
+    repo: &git2::Repository,
+    branch: &git2::Branch,
+    head: &git2::Commit,
+) -> Result<BranchSync, String> {
+    let Ok(upstream) = branch.upstream() else {
+        return Ok(BranchSync::default());
+    };
+    let name = upstream.name().ok().flatten().map(str::to_string);
+    let (ahead, behind) = match upstream.get().target() {
+        Some(upstream_oid) => repo
+            .graph_ahead_behind(head.id(), upstream_oid)
+            .map_err(|e| e.to_string())?,
+        None => (0, 0),
+    };
+    Ok(BranchSync {
+        upstream: name,
+        ahead: ahead as u64,
+        behind: behind as u64,
+    })
+}
+
+fn branch_row(
+    repo_path: &Path,
+    base_branch: &str,
+    name: String,
+    origin: BranchOrigin,
+    is_current: bool,
+    sync: BranchSync,
+    head: &git2::Commit,
+) -> Result<BranchRow, String> {
+    let (head_subject, _) = truncate_at_utf8_boundary(
+        head.summary().unwrap_or("").to_string(),
+        GIT_SUBJECT_MAX_BYTES,
+    );
+    // The branch's own weight against the project's base — same fork-point
+    // math as every other diffstat in the app, just read for a branch that
+    // may not be the one checked out.
+    let stat =
+        crate::diff::stat_branch_against_base(repo_path, &origin.ref_name(&name), base_branch)
+            .map_err(|e| e.to_string())?;
+    Ok(BranchRow {
+        name,
+        is_current,
+        origin,
+        upstream: sync.upstream,
+        ahead: sync.ahead,
+        behind: sync.behind,
+        head_subject,
+        head_time: head.time().seconds(),
+        stat,
+    })
+}
+
+fn local_branch_row(
     repo: &git2::Repository,
     repo_path: &Path,
     base_branch: &str,
-    external_branches: &std::collections::HashMap<String, String>,
     branch: &git2::Branch,
-) -> Result<Value, String> {
+) -> Result<BranchRow, String> {
     let name = branch
         .name()
         .map_err(|e| e.to_string())?
         .unwrap_or("")
         .to_string();
-    let commit = branch.get().peel_to_commit().map_err(|e| e.to_string())?;
-    let (subject, _) = truncate_at_utf8_boundary(
-        commit.summary().unwrap_or("").to_string(),
-        GIT_SUBJECT_MAX_BYTES,
-    );
-    let (upstream, ahead, behind) = match branch.upstream() {
-        Ok(upstream) => {
-            let up_name = upstream.name().ok().flatten().map(str::to_string);
-            let (ahead, behind) = match upstream.get().target() {
-                Some(up_oid) => repo
-                    .graph_ahead_behind(commit.id(), up_oid)
-                    .map_err(|e| e.to_string())?,
-                None => (0, 0),
-            };
-            (up_name, ahead as u64, behind as u64)
-        }
-        Err(_) => (None, 0, 0),
-    };
-    // The branch's own weight against the project's base — same fork-point
-    // math as every other diffstat in the app, just read for a branch that
-    // may not be the one checked out.
-    let stat = crate::diff::stat_branch_against_base(repo_path, &name, base_branch)
-        .map_err(|e| e.to_string())?;
-    Ok(json!({
-        "name": name,
-        "is_current": branch.is_head(),
-        "upstream": upstream,
-        "ahead": ahead,
-        "behind": behind,
-        "head_subject": subject,
-        "head_time": commit.time().seconds(),
-        "stat": {
-            "files_changed": stat.files_changed,
-            "insertions": stat.insertions,
-            "deletions": stat.deletions,
-        },
-        // Set when this branch is checked out in a worktree Build has not
-        // adopted — picking it in the switcher cannot be a checkout (git
-        // refuses the same branch in two places at once), so the client
-        // adopts this worktree instead.
-        "external_worktree_id": external_branches.get(&name),
-    }))
+    let head = branch.get().peel_to_commit().map_err(|e| e.to_string())?;
+    let sync = upstream_sync(repo, branch, &head)?;
+    branch_row(
+        repo_path,
+        base_branch,
+        name,
+        BranchOrigin::Local,
+        branch.is_head(),
+        sync,
+        &head,
+    )
 }
 
-/// `git.branches`: local branches only, current first then by most-recent head
-/// commit time. Pure git2 reads — no working-tree mutation.
-pub fn branch_list(
+/// The branches one remote carries that the repository has no local ref for.
+///
+/// Two refs under `refs/remotes/<remote>/` are not branches and never become
+/// rows: a symbolic one (every clone has `origin/HEAD`, a pointer at another
+/// branch), and one whose name a local branch already holds — that ref is the
+/// local branch's upstream, which its own row already carries.
+fn remote_branch_rows(
     repo_path: &Path,
     base_branch: &str,
-    external_branches: &std::collections::HashMap<String, String>,
-) -> Result<Value, String> {
+    references: git2::References,
+    remote: &str,
+    local_names: &HashSet<String>,
+) -> Result<Vec<BranchRow>, String> {
+    let prefix = format!("refs/remotes/{remote}/");
+    let mut rows = Vec::new();
+    for reference in references {
+        let reference = reference.map_err(|e| e.to_string())?;
+        if reference.kind() != Some(git2::ReferenceType::Direct) {
+            continue;
+        }
+        let Some(tracking_ref) = reference.name() else {
+            continue;
+        };
+        let Some(name) = tracking_ref.strip_prefix(&prefix) else {
+            continue;
+        };
+        if local_names.contains(name) {
+            continue;
+        }
+        let head = reference.peel_to_commit().map_err(|e| e.to_string())?;
+        rows.push(branch_row(
+            repo_path,
+            base_branch,
+            name.to_string(),
+            BranchOrigin::Remote {
+                remote: remote.to_string(),
+                tracking_ref: tracking_ref.to_string(),
+            },
+            false,
+            BranchSync::default(),
+            &head,
+        )?);
+    }
+    Ok(rows)
+}
+
+/// `git.branches`: every branch the repository can offer, once each — its
+/// local branches, plus the branches its remotes carry that have no local ref
+/// yet, each named by the local branch it would become. Current first, then by
+/// most-recent head commit time. Pure git2 reads — no working-tree mutation.
+pub fn branch_list(repo_path: &Path, base_branch: &str) -> Result<BranchListing, String> {
     let repo = open_repo(repo_path)?;
     let current = current_branch(&repo)?;
-    let mut branches = Vec::new();
+    let mut rows = Vec::new();
     for item in repo
         .branches(Some(git2::BranchType::Local))
         .map_err(|e| e.to_string())?
     {
         let (branch, _) = item.map_err(|e| e.to_string())?;
-        branches.push(branch_entry_json(
-            &repo,
+        rows.push(local_branch_row(&repo, repo_path, base_branch, &branch)?);
+    }
+    let local_names: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
+    // One pass per remote rather than through git2's remote-branch shorthand,
+    // so a remote whose own name contains a slash still splits at the right
+    // place.
+    let remotes = repo.remotes().map_err(|e| e.to_string())?;
+    for remote in remotes.iter().flatten() {
+        let references = repo.references().map_err(|e| e.to_string())?;
+        rows.extend(remote_branch_rows(
             repo_path,
             base_branch,
-            external_branches,
-            &branch,
+            references,
+            remote,
+            &local_names,
         )?);
     }
-    branches.sort_by(|a, b| {
-        let a_current = a["is_current"].as_bool().unwrap_or(false);
-        let b_current = b["is_current"].as_bool().unwrap_or(false);
-        b_current.cmp(&a_current).then_with(|| {
-            let a_time = a["head_time"].as_i64().unwrap_or(0);
-            let b_time = b["head_time"].as_i64().unwrap_or(0);
-            b_time.cmp(&a_time)
-        })
+    rows.sort_by(|a, b| {
+        b.is_current
+            .cmp(&a.is_current)
+            .then_with(|| b.head_time.cmp(&a.head_time))
     });
-    Ok(json!({ "current": current, "branches": branches }))
+    Ok(BranchListing { current, rows })
 }
 
 /// Reject a client-supplied branch name before it reaches an argv slot: an

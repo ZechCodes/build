@@ -4203,14 +4203,21 @@ impl AppState {
 
     /// The live run that owns a branch in a project, if one does.
     fn run_on_branch(&self, project_id: &str, branch: &str) -> Option<String> {
+        self.live_run_branches(project_id).remove(branch)
+    }
+
+    /// Branch name → the live run of this project holding it. The branch comes
+    /// from each run's own checkout, so this is what the environment says now,
+    /// not what a record remembers.
+    fn live_run_branches(&self, project_id: &str) -> HashMap<String, String> {
         self.runs
             .iter()
-            .find(|(run_id, active)| {
+            .filter(|(run_id, active)| {
                 !active.run.state.is_terminal()
-                    && active.worktree.branch() == branch
                     && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
             })
-            .map(|(run_id, _)| run_id.clone())
+            .map(|(run_id, active)| (active.worktree.branch(), run_id.clone()))
+            .collect()
     }
 
     /// The project's external worktrees. Serves the last scan whatever its age
@@ -7179,7 +7186,7 @@ impl AppState {
     ) -> Result<Value, String> {
         let scope = self.resolve_branch_scope(params)?;
         Ok(self.defer_git_work(
-            GitTarget::Branch(scope),
+            GitTarget::Branch(Box::new(scope)),
             GitWork::Branch(work),
             params,
             invalidates,
@@ -7373,6 +7380,12 @@ impl AppState {
             .into_iter()
             .filter_map(|worktree| Some((worktree.branch?, worktree.id)))
             .collect();
+        let run_branches = self.live_run_branches(&project_id);
+        let primary_checkout = crate::worktree::describe_primary_checkout(
+            &self.repo_path_for(&project_id)?,
+            &base_branch,
+        )
+        .ok();
         if let Some(worktree_id) = params.get("worktree_id").and_then(Value::as_str) {
             let external = self.resolve_external_worktree(&project_id, worktree_id)?;
             return Ok(BranchScope {
@@ -7381,6 +7394,8 @@ impl AppState {
                 base_branch,
                 external_worktree: true,
                 external_branches,
+                run_branches,
+                primary_checkout,
             });
         }
         let project = self
@@ -7394,6 +7409,8 @@ impl AppState {
             base_branch,
             external_worktree: false,
             external_branches,
+            run_branches,
+            primary_checkout,
         })
     }
 
@@ -7428,16 +7445,11 @@ impl AppState {
         })
     }
 
-    /// `git.branches` — the local branch list of the scoped checkout (the same
-    /// list either way: branches are the repository's, not one checkout's).
+    /// `git.branches` — every branch the project can offer, once each (the same
+    /// list whichever checkout is scoped: branches are the repository's, not
+    /// one checkout's), each stamped with the checkout that holds it.
     fn git_branches(&mut self, params: &Value) -> Result<Value, String> {
-        self.defer_branch_git(params, false, |scope, _| {
-            crate::gitgui::branch_list(
-                &scope.repo_path,
-                &scope.base_branch,
-                &scope.external_branches,
-            )
-        })
+        self.defer_branch_git(params, false, |scope, _| stamped_branch_list(scope))
     }
 
     /// `git.checkout` — switch the scoped checkout to (or create) a branch,
@@ -7463,11 +7475,7 @@ impl AppState {
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             crate::gitgui::branch_delete(&scope.repo_path, &branch, force)?;
-            crate::gitgui::branch_list(
-                &scope.repo_path,
-                &scope.base_branch,
-                &scope.external_branches,
-            )
+            stamped_branch_list(scope)
         })
     }
 
@@ -15444,6 +15452,63 @@ struct BranchScope {
     /// open" in place of a checkout git would refuse (a branch already
     /// checked out elsewhere).
     external_branches: std::collections::HashMap<String, String>,
+    /// Branch name → the live run of this project holding it. A branch a run
+    /// owns is not a checkout to make; it is a run to open.
+    run_branches: std::collections::HashMap<String, String>,
+    /// The repository's own checkout, which the external scan deliberately
+    /// leaves out — so without it the branch the repo root is on would look
+    /// free to check out a second time, which git refuses.
+    primary_checkout: Option<crate::worktree::ExternalWorktree>,
+}
+
+/// Which of the project's checkouts holds a branch. All three empty means
+/// nothing holds it and it is free to check out somewhere new.
+struct BranchOwnership {
+    run_id: Option<String>,
+    external_worktree_id: Option<String>,
+    primary_worktree_id: Option<String>,
+}
+
+impl BranchOwnership {
+    fn of(scope: &BranchScope, branch: &str) -> Self {
+        Self {
+            run_id: scope.run_branches.get(branch).cloned(),
+            external_worktree_id: scope.external_branches.get(branch).cloned(),
+            primary_worktree_id: scope
+                .primary_checkout
+                .as_ref()
+                .filter(|primary| primary.branch.as_deref() == Some(branch))
+                .map(|primary| primary.id.clone()),
+        }
+    }
+
+    fn fields(&self) -> serde_json::Map<String, Value> {
+        let Value::Object(fields) = json!({
+            "run_id": self.run_id,
+            "external_worktree_id": self.external_worktree_id,
+            "primary_worktree_id": self.primary_worktree_id,
+        }) else {
+            unreachable!("a json object literal is an object")
+        };
+        fields
+    }
+}
+
+/// The answer `git.branches` and `git.branch_delete` share: gitgui's git facts
+/// about every offerable branch, each row stamped with the checkout holding it.
+fn stamped_branch_list(scope: &BranchScope) -> Result<Value, String> {
+    let listing = crate::gitgui::branch_list(&scope.repo_path, &scope.base_branch)?;
+    let branches: Vec<Value> = listing
+        .rows
+        .into_iter()
+        .map(|row| {
+            let ownership = BranchOwnership::of(scope, &row.name);
+            let mut fields = row.into_fields();
+            fields.extend(ownership.fields());
+            Value::Object(fields)
+        })
+        .collect();
+    Ok(json!({ "current": listing.current, "branches": branches }))
 }
 
 /// Parse the required `paths` param of `git.stage`/`git.unstage`: a non-empty
@@ -15931,7 +15996,7 @@ struct DeferredGit {
 /// repository-wide branch scope.
 enum GitTarget {
     Checkout(GitScope),
-    Branch(BranchScope),
+    Branch(Box<BranchScope>),
 }
 
 /// The git call itself, as a plain function of the checkout and the request —
@@ -22940,6 +23005,102 @@ mod tests {
             .find(|b| b["name"] == "feature-adopted")
             .unwrap();
         assert!(adopted["external_worktree_id"].is_null(), "{adopted:?}");
+    }
+
+    /// A branch nobody here has ever checked out is still work the user can
+    /// start: it is listed once, named by the local branch it would become,
+    /// and it says which remote a fetch would come from. The clone's
+    /// `origin/HEAD` is a symbolic pointer at another branch, not a branch —
+    /// it never becomes a row — and `main`, which has both a local ref and a
+    /// remote-tracking ref, is one row carrying its upstream.
+    #[test]
+    fn git_branches_lists_a_remote_only_branch_with_its_remote() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        git_in_dir(&other, &["checkout", "-b", "feature-x"]);
+        std::fs::write(other.join("feature.rs"), "one\n").unwrap();
+        git_in_dir(&other, &["add", "."]);
+        git_in_dir(&other, &["commit", "-m", "remote work"]);
+        git_in_dir(&other, &["push", "origin", "feature-x"]);
+        let clone = dir.path().join("clone");
+        clone_working(&origin, &clone);
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+
+        let feature = branches
+            .iter()
+            .find(|b| b["name"] == "feature-x")
+            .unwrap_or_else(|| panic!("the remote-only branch is offerable: {branches:?}"));
+        assert_eq!(feature["remote"], "origin", "{feature:?}");
+        assert_eq!(feature["is_current"], false, "{feature:?}");
+        assert!(feature["upstream"].is_null(), "{feature:?}");
+        assert!(feature["run_id"].is_null(), "{feature:?}");
+        assert!(feature["external_worktree_id"].is_null(), "{feature:?}");
+        assert!(feature["primary_worktree_id"].is_null(), "{feature:?}");
+        assert_eq!(feature["stat"]["insertions"], 1, "{feature:?}");
+
+        assert!(
+            !branches.iter().any(|b| b["name"] == "HEAD"),
+            "a symbolic remote ref is not a branch: {branches:?}"
+        );
+        let mains: Vec<&Value> = branches.iter().filter(|b| b["name"] == "main").collect();
+        assert_eq!(mains.len(), 1, "{branches:?}");
+        assert!(mains[0]["remote"].is_null(), "{mains:?}");
+        assert_eq!(mains[0]["upstream"], "origin/main", "{mains:?}");
+    }
+
+    /// A branch Build already runs is not a checkout the picker can offer —
+    /// it is a run to open — so the row names the run holding it.
+    #[test]
+    fn git_branches_names_the_run_that_owns_a_branch() {
+        let (dir, repo) = init_repo();
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let run_id = adopted_run(&mut state, &repo, dir.path(), "feature-adopted");
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let adopted = branches
+            .iter()
+            .find(|b| b["name"] == "feature-adopted")
+            .unwrap();
+        assert_eq!(adopted["run_id"], run_id, "{adopted:?}");
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert!(main["run_id"].is_null(), "{main:?}");
+    }
+
+    /// The repository's own checkout is deliberately absent from the external
+    /// scan, so without asking after it the branch it holds would look free to
+    /// check out a second time — which git refuses. The row names it, with the
+    /// worktree id `run.adopt` adopts the primary by.
+    #[test]
+    fn git_branches_names_the_primary_checkout_holding_a_branch() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "feature-idle"]);
+        let mut state = git_gui_state(&dir, &repo);
+        let project_id = state.projects[0].id.clone();
+        let primary_id = crate::worktree::describe_primary_checkout(&repo, "main")
+            .unwrap()
+            .id;
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let main = branches.iter().find(|b| b["name"] == "main").unwrap();
+        assert_eq!(main["primary_worktree_id"], primary_id, "{main:?}");
+        let idle = branches
+            .iter()
+            .find(|b| b["name"] == "feature-idle")
+            .unwrap();
+        assert!(idle["primary_worktree_id"].is_null(), "{idle:?}");
+        assert!(idle["external_worktree_id"].is_null(), "{idle:?}");
+        assert!(idle["run_id"].is_null(), "{idle:?}");
     }
 
     #[test]

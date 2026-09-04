@@ -17560,9 +17560,6 @@ fn rtc_offer(
 ) -> Result<Value, String> {
     let sdp = require_str(params, "sdp")?;
     let ice_servers = require_array(params, "ice_servers")?;
-    if ice_servers.is_empty() {
-        return Err("ice_servers must not be empty".into());
-    }
     let peers = state.lock().unwrap().peers();
     let answer = peers
         .offer(sender.session_id(), &sdp, &ice_servers, sender.clone())
@@ -45709,8 +45706,9 @@ mod tests {
         assert_eq!(state.lock().unwrap().peers().count(), 0);
     }
 
-    /// The offer's two params are both required: a peer configured from no ICE
-    /// servers would silently negotiate host candidates only.
+    /// The offer's two params are both required. What the list they carry has
+    /// to contain is the peer's question, not this handler's: a browser whose
+    /// api answered nothing still offers, and host candidates still pair.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_offer_without_an_sdp_or_ice_servers_is_refused() {
         let (dir, repo) = init_repo();
@@ -45719,18 +45717,9 @@ mod tests {
 
         let no_sdp = signal(&handler, &sender, "rtc.offer", json!({ "ice_servers": [] })).await;
         let no_servers = signal(&handler, &sender, "rtc.offer", json!({ "sdp": "v=0" })).await;
-        let no_entries = signal(
-            &handler,
-            &sender,
-            "rtc.offer",
-            json!({ "sdp": "v=0", "ice_servers": [] }),
-        )
-        .await;
 
         assert_eq!(no_sdp["error"], "missing required param: sdp");
         assert_eq!(no_servers["error"], "missing required param: ice_servers");
-        assert_eq!(no_entries["ok"], false, "{no_entries:?}");
-        assert_eq!(no_entries["error"], "ice_servers must not be empty");
         assert_eq!(factory.opened_count(), 0);
     }
 }

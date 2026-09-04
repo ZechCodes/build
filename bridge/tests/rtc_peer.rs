@@ -326,7 +326,7 @@ async fn upgraded(
     let answered = session
         .call(
             "rtc.offer",
-            json!({ "sdp": offer.sdp, "ice_servers": no_reachable_ice_servers() }),
+            json!({ "sdp": offer.sdp, "ice_servers": no_ice_servers() }),
         )
         .await;
     assert_eq!(answered["ok"], true, "{answered}");
@@ -378,11 +378,11 @@ fn opened(event: Option<ChannelEvent>) -> usize {
     }
 }
 
-/// The ICE servers a browser forwards when the api has no TURN key and no
-/// reachable STUN server: an entry with nowhere to go. The device gathers its
-/// host candidates and nothing in this test leaves the machine.
-fn no_reachable_ice_servers() -> Value {
-    json!([{ "urls": [] }])
+/// The ICE servers a browser forwards when it could reach no api at all. The
+/// device gathers its host candidates and nothing in this test leaves the
+/// machine.
+fn no_ice_servers() -> Value {
+    json!([])
 }
 
 /// The spec's whole claim about the second carrier: one session, two wires,

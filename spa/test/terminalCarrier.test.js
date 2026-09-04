@@ -30,15 +30,21 @@ class FakeWebSocket {
 }
 FakeWebSocket.instances = [];
 
+// Sealed under a key, and readable only under that one: a frame that outlives
+// the session it was written for is a frame this session cannot read, exactly
+// as the real transport would have it.
 const fakeTransport = {
   ready: async () => {},
-  createSessionInit: async ({ sessionId, deviceId }) => ({
-    sessionKeyB64: `key-${sessionId}`,
+  createSessionInit: async ({ sessionId, deviceId, sessionKeyB64 }) => ({
+    sessionKeyB64: sessionKeyB64 || `key-${sessionId}`,
     sessionInit: { session_id: sessionId, device_id: deviceId },
   }),
   openSessionAccept: async () => {},
-  encryptFrame: async ({ outerFields, frameFields }) => ({ outerFields, frameFields }),
-  decryptEnvelope: async ({ envelope }) => ({ payload: envelope.frameFields.payload }),
+  encryptFrame: async ({ sessionKeyB64, outerFields, frameFields }) => ({ key: sessionKeyB64, outerFields, frameFields }),
+  decryptEnvelope: async ({ sessionKeyB64, envelope }) => {
+    if (envelope.key !== sessionKeyB64) throw new Error("not this session's key");
+    return { payload: envelope.frameFields.payload };
+  },
 };
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -48,29 +54,39 @@ const settle = async () => {
 
 /** A DataChannel carrier the test drives, answering every RPC the way the
  *  bridge would so a migration can finish. */
-function fakeCarrier({ deafTo = [] } = {}) {
-  let onEnvelope = () => {};
-  let onClose = () => {};
+function fakeCarrier({ deafTo = [], sendFails = null } = {}) {
+  const envelopeListeners = new Set();
+  const closeListeners = new Set();
+  const subscribe = (listeners) => (fn) => {
+    listeners.add(fn);
+    return () => listeners.delete(fn);
+  };
+  const deliver = (envelope) => envelopeListeners.forEach((fn) => fn(envelope));
   const carrier = {
     sent: [],
     closed: false,
-    send(envelope) {
+    // The key the bridge on the other end of this channel answers under: the
+    // one the session was minted with, and the one it keeps.
+    key: null,
+    async send(envelope) {
+      if (sendFails) throw new Error(sendFails);
       carrier.sent.push(envelope);
+      carrier.key = envelope.key;
       const { method, id } = envelope.frameFields.payload;
       if (deafTo.includes(method)) return;
       const result =
         method === "term.attach" || method === "agent.attach"
           ? { snapshot: "", cursor: 7, term_id: envelope.frameFields.payload.params.term_id }
           : {};
-      Promise.resolve().then(() => onEnvelope({ frameFields: { payload: { id, ok: true, result } } }));
+      Promise.resolve().then(() => deliver({ key: envelope.key, frameFields: { payload: { id, ok: true, result } } }));
     },
-    onEnvelope: (fn) => (onEnvelope = fn),
-    onClose: (fn) => (onClose = fn),
+    onEnvelope: subscribe(envelopeListeners),
+    onClose: subscribe(closeListeners),
     close: () => {
       carrier.closed = true;
-      onClose();
+      closeListeners.forEach((fn) => fn());
     },
-    push: (payload) => onEnvelope({ frameFields: { payload } }),
+    push: (payload) => deliver({ key: carrier.key, frameFields: { payload } }),
     calls: (method) => carrier.sent.map((e) => e.frameFields.payload).filter((p) => p.method === method),
   };
   return carrier;
@@ -104,7 +120,10 @@ async function connected(settle = tick) {
 }
 
 const respond = (ws, id, result) =>
-  ws.serverSend({ type: "e2ee_envelope", envelope: { frameFields: { payload: { id, ok: true, result } } } });
+  ws.serverSend({
+    type: "e2ee_envelope",
+    envelope: { key: ws.sent.at(-1).envelope.key, frameFields: { payload: { id, ok: true, result } } },
+  });
 const lastPayload = (ws) => ws.sent.at(-1).envelope.frameFields.payload;
 
 /** One attached user terminal, its screen collected. */
@@ -238,6 +257,48 @@ describe("a terminal socket that rides two carriers", () => {
     await tick();
     ws.close();
     await expect(pending).rejects.toThrow(/terminal socket/);
+    socket.close();
+  });
+
+  it("keeps its session across relay socket generations while a channel carries", async () => {
+    const { socket, ws, init, statuses } = await connected();
+    const screen = await withTerminal(socket, ws);
+    const carrier = fakeCarrier();
+    await socket.peer(carrier);
+    statuses.length = 0;
+    const sockets = FakeWebSocket.instances.length;
+
+    ws.close();
+    const deadline = Date.now() + 4000;
+    while (FakeWebSocket.instances.length <= sockets && Date.now() < deadline) await tick();
+    const next = FakeWebSocket.instances.at(-1);
+    next.emit("open");
+    await settle();
+    next.serverSend({ type: "device_key", device_id: "dev-b", transport_public_key: "pk-b" });
+    await settle();
+    const reInit = next.sent.find((m) => m.type === "session_init");
+    expect(reInit.session_id).toBe(init.session_id); // the same session, a second carrier
+    next.serverSend({ type: "session_accept", session_id: reInit.session_id, envelope: {} });
+    await settle();
+
+    // Nothing the panes show ever said the session was going anywhere.
+    expect(statuses).not.toContain("disconnected");
+    expect(statuses).not.toContain("connecting");
+    // The channel never stopped carrying: its frames still read, and its calls
+    // still answer, under the key this session has always had.
+    carrier.push({ type: "term.output", term_id: "term-1", cursor: 11, data: btoa("hi") });
+    await settle();
+    expect(screen.output).toEqual(["hi"]);
+    await expect(socket.input("term-1", "x")).resolves.toBeUndefined();
+    socket.close();
+  });
+
+  it("fails a call whose envelope never crossed the wire, rather than waiting out its timeout", async () => {
+    const { socket, ws } = await connected();
+    await withTerminal(socket, ws);
+    socket.peer(fakeCarrier({ sendFails: "the channel closed" }));
+
+    await expect(socket.input("term-1", "x")).rejects.toThrow(/the channel closed/);
     socket.close();
   });
 });

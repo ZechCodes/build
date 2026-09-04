@@ -21,6 +21,7 @@
 // every method above the wire is unchanged (see core/sessionSwitch.js).
 
 import { openCarrier } from "../core/carrier.js";
+import { relayInbox } from "../core/relayInbox.js";
 import { createSessionSwitch } from "../core/sessionSwitch.js";
 
 const textEncoder = new TextEncoder();
@@ -89,6 +90,11 @@ export class TerminalSocket {
     this.getPinnedDeviceKey = getPinnedDeviceKey;
     this.preferDeviceId = preferDeviceId; // () => device id or null (any device)
     this.deviceId = null;
+    // This session's id, key, and the device it was sealed to. They outlive the
+    // socket that minted them (see _sessionInitFor).
+    this._sessionId = null;
+    this._key = null;
+    this._sessionDeviceId = null;
     this._pending = new Map();
     this._reqId = 0;
     this._onStatus = noop;
@@ -112,11 +118,15 @@ export class TerminalSocket {
     // the one thing every method below asks about.
     this._carrier = null;
     this._relayCarrier = null;
+    // Every carrier this session holds is read from, not only the one it sends
+    // on, and one reader is registered once however many times it is handed the
+    // same wire.
+    this._readEnvelope = (envelope) => this._onEnvelope(envelope);
     this._switch = createSessionSwitch({
       session: {
         rideOn: (carrier) => {
           this._carrier = carrier;
-          carrier?.onEnvelope((envelope) => this._onEnvelope(envelope));
+          carrier?.onEnvelope(this._readEnvelope);
         },
       },
       onActive: () => this._reattachAll(),
@@ -391,9 +401,13 @@ export class TerminalSocket {
 
   async _connect() {
     const gen = (this._gen = (this._gen || 0) + 1);
-    if (!this._carrier) this._connected = false; // a live channel is still a connection
+    // A live channel is still a connection: only a session with nothing
+    // carrying it is one the panes should be shown reconnecting.
+    if (!this._switch.active()) {
+      this._connected = false;
+      this._onStatus("connecting");
+    }
     this._lastFrameAt = 0; // the old connection's traffic vouches for nothing here
-    this._onStatus("connecting");
     try {
       if (this.transport.ready) await this.transport.ready();
     } catch (e) {
@@ -405,21 +419,11 @@ export class TerminalSocket {
 
     const ws = new this.WS(`${this.url}/ws/client`);
     this._ws = ws;
-    const inbox = [];
-    const waiters = [];
-    const deliver = (m) => (waiters.length ? waiters.shift()(m) : inbox.push(m));
-    const recvRaw = (ms) =>
-      Promise.race([
-        new Promise((resolve) => (inbox.length ? resolve(inbox.shift()) : waiters.push(resolve))),
-        ms ? timeout(ms, "handshake timeout") : new Promise(() => {}),
-      ]);
-
-    ws.addEventListener("message", (e) => {
-      try { deliver(JSON.parse(typeof e.data === "string" ? e.data : e.data.toString())); } catch { /* ignore */ }
-    });
+    const inbox = relayInbox(ws);
+    // Until there is a carrier, this socket's close is the only thing that can
+    // report the loss; from then on the carrier reports it, exactly once.
     ws.addEventListener("close", () => {
-      waiters.splice(0).forEach((w) => w(null)); // unblock the demux loop
-      this._onLost(gen);
+      if (!this._relayCarrier) this._onLost(gen);
     });
 
     try {
@@ -430,60 +434,15 @@ export class TerminalSocket {
         }),
         timeout(8000, "open timeout"),
       ]);
+      await this._handshake(ws, inbox);
+      this._watchRelayControl(inbox, gen); // device_offline; envelopes ride the carrier
 
-      // Authenticate to the relay with a gateway token so it routes us only to
-      // our own devices; it acks, then pushes device_key per online device.
-      const token = await this.getToken();
-      ws.send(JSON.stringify({ type: "authenticate", token }));
-      // E2EE bootstrap (time-boxed so a still-down bridge fails fast → retry).
-      // Skip control frames (authenticated, other devices' keys) until the
-      // target device's key arrives.
-      const wanted = this.preferDeviceId();
-      const deadline = Date.now() + 8000;
-      let hello;
-      for (;;) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) throw new Error("no device online");
-        const msg = await recvRaw(remaining);
-        if (!msg) throw new Error("connection closed");
-        if (msg.type === "device_key" && (!wanted || msg.device_id === wanted)) {
-          hello = msg;
-          break;
-        }
-      }
-      this.deviceId = hello.device_id;
-      // Seal to the api-pinned key; a relay-pushed key that differs means the
-      // broker is substituting keys — abort instead of handing it the session.
-      const pinnedKeyB64 = await this.getPinnedDeviceKey(this.deviceId);
-      if (!pinnedKeyB64) throw new Error(`no pinned transport key for device ${this.deviceId}`);
-      if (hello.transport_public_key !== pinnedKeyB64) {
-        throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
-      }
-      const sessionId = "sess-" + Math.random().toString(36).slice(2, 10);
-      const { sessionKeyB64, sessionInit } = await this.transport.createSessionInit({
-        sessionId, deviceId: this.deviceId, deviceTransportPublicKeyB64: pinnedKeyB64,
-      });
-      this._sessionId = sessionId;
-      this._key = sessionKeyB64;
-      ws.send(JSON.stringify({ type: "session_init", session_id: sessionId, route_to: `device:${this.deviceId}`, session_init: sessionInit }));
-      let accept;
-      for (;;) {
-        accept = await recvRaw(6000);
-        if (!accept) throw new Error("connection closed");
-        if (accept.type === "session_accept") break;
-      }
-      await this.transport.openSessionAccept({ sessionKeyB64, envelope: accept.envelope });
-
-      this._watchRelayControl(recvRaw, gen); // device_offline; envelopes ride the carrier
-
-      this._relayCarrier = openCarrier({ socket: ws, sessionId });
+      this._relayCarrier = openCarrier({ socket: ws, sessionId: this._sessionId });
       this._relayCarrier.onClose(() => this._onLost(gen));
-      // Re-attach every terminal registered before this (re)connect. On the very
-      // first connect this is empty; after a drop it restores every open tab.
-      // A fresh handshake is a fresh session id and key, so whatever is carrying
-      // is re-attached under them — including a channel the relay slot did not
-      // take the wire back from.
-      await (this._switch.relay(this._relayCarrier) ?? this._reattachAll());
+      // Taking the relay slot re-attaches every registered terminal when this
+      // socket is what carries the session. When a channel already carries it,
+      // the session did not change and neither did its terminals.
+      await this._switch.relay(this._relayCarrier);
 
       this._onStatus("connected");
       this._backoff = 400;
@@ -499,6 +458,65 @@ export class TerminalSocket {
       this._onLost(gen);
       throw e;
     }
+  }
+
+  /** Authenticate this socket to the relay and put this session on it. */
+  async _handshake(ws, inbox) {
+    // A gateway token so the relay routes us only to our own devices; it acks,
+    // then pushes device_key per online device.
+    ws.send(JSON.stringify({ type: "authenticate", token: await this.getToken() }));
+    // Time-boxed so a still-down bridge fails fast → retry. Control frames
+    // (authenticated, other devices' keys) go past until the target's arrives.
+    const wanted = this.preferDeviceId();
+    const hello = await inbox.matching(
+      (m) => m.type === "device_key" && (!wanted || m.device_id === wanted),
+      8000,
+      "no device online",
+    );
+    if (!hello) throw new Error("connection closed");
+    this.deviceId = hello.device_id;
+    // Seal to the api-pinned key; a relay-pushed key that differs means the
+    // broker is substituting keys — abort instead of handing it the session.
+    const pinnedKeyB64 = await this.getPinnedDeviceKey(this.deviceId);
+    if (!pinnedKeyB64) throw new Error(`no pinned transport key for device ${this.deviceId}`);
+    if (hello.transport_public_key !== pinnedKeyB64) {
+      throw new Error("relay-supplied device key does not match the api-pinned key — possible tampering");
+    }
+
+    const sessionInit = await this._sessionInitFor(pinnedKeyB64);
+    ws.send(JSON.stringify({
+      type: "session_init", session_id: this._sessionId, route_to: `device:${this.deviceId}`, session_init: sessionInit,
+    }));
+    const accept = await inbox.matching((m) => m.type === "session_accept", 6000, "handshake timeout");
+    if (!accept) throw new Error("connection closed");
+    await this.transport.openSessionAccept({ sessionKeyB64: this._key, envelope: accept.envelope });
+  }
+
+  /** What this socket presents to claim its session.
+   *
+   *  A session's id and key are minted once per session, not once per socket
+   *  (spec §SPA carrier and migration policy, 6). While a DataChannel is still
+   *  carrying, a reconnecting relay socket re-presents the SAME session_init,
+   *  which the bridge takes as a carrier re-attach: re-keying under a live
+   *  channel would strand every frame already in flight on it and every call
+   *  issued before the new accept landed. With nothing carrying, the session
+   *  ended with its last carrier and this mints the next one — and whatever is
+   *  riding a session this socket is not gets handed back first. */
+  async _sessionInitFor(pinnedKeyB64) {
+    const carried = this._switch.active();
+    const reattaching = Boolean(carried && this._key && this._sessionDeviceId === this.deviceId);
+    if (carried && !reattaching) this._switch.peer(null);
+    const sessionId = reattaching ? this._sessionId : "sess-" + Math.random().toString(36).slice(2, 10);
+    const init = await this.transport.createSessionInit({
+      sessionId,
+      deviceId: this.deviceId,
+      deviceTransportPublicKeyB64: pinnedKeyB64,
+      sessionKeyB64: reattaching ? this._key : undefined,
+    });
+    this._sessionId = sessionId;
+    this._key = init.sessionKeyB64;
+    this._sessionDeviceId = this.deviceId;
+    return init.sessionInit;
   }
 
   /// Re-attach every registered terminal after a (re)connect. User terminals go
@@ -537,15 +555,9 @@ export class TerminalSocket {
   /** The relay socket's own messages. Envelopes reach this session through
    *  whichever carrier brought them; what is left here is the relay telling us
    *  our device dropped off it, which detaches the relay carrier. */
-  async _watchRelayControl(recvRaw, gen) {
-    while (this._gen === gen) {
-      const msg = await recvRaw();
-      if (!msg) return; // socket closed
-      if (msg.type === "device_offline" && msg.device_id === this.deviceId) {
-        this._onLost(gen);
-        return;
-      }
-    }
+  async _watchRelayControl(inbox, gen) {
+    const dropped = await inbox.matching((m) => m.type === "device_offline" && m.device_id === this.deviceId);
+    if (dropped && this._gen === gen) this._onLost(gen);
   }
 
   /** One encrypted frame off whichever carrier brought it: an RPC response, or
@@ -691,7 +703,14 @@ export class TerminalSocket {
     const carrier = this._carrier;
     if (!carrier) throw new TerminalSocketLost(this._closed ? "closed" : "disconnected");
     const result = new Promise((resolve, reject) => this._pending.set(id, { resolve, reject }));
-    carrier.send(envelope);
+    // A frame that never crossed the wire has no answer coming: the call fails
+    // now rather than waiting out its timeout for a reply nobody will send.
+    try {
+      await carrier.send(envelope);
+    } catch (error) {
+      this._pending.delete(id);
+      throw error;
+    }
     // However this settles, nothing is waiting for it any more: a call that
     // timed out must not leave an entry for a later loss to reject at nobody.
     return Promise.race([result, timeout(timeoutMs, `rpc ${method} timeout`)]).finally(() =>

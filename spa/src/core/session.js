@@ -19,6 +19,7 @@
 // frames and the pending map are the same either way — a carrier is a wire.
 
 import { openCarrier } from "./carrier.js";
+import { relayInbox } from "./relayInbox.js";
 import { createSessionSwitch } from "./sessionSwitch.js";
 
 const DEFAULT_DEVICE_WAIT_MS = 8000;
@@ -54,9 +55,6 @@ export async function openRelaySession({
   const token = await fetchToken();
   const ws = new WebSocketImpl(`${relayUrl}/ws/client`);
 
-  const queue = [];
-  const waiters = [];
-  let live = false;
   let lost = false;
   let sessionKey = null;
   let deviceId = null;
@@ -94,29 +92,16 @@ export async function openRelaySession({
     if (payload && payload.type) onPush(payload);
   };
 
-  const deliver = (message) => (waiters.length ? waiters.shift()(message) : queue.push(message));
-  ws.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    // Every device_key / device_offline push (handshake or live) keeps the
-    // caller's device store current, whichever device the session targets.
+  // Every device_key / device_offline push (handshake or live) keeps the
+  // caller's device store current, whichever device the session targets.
+  const inbox = relayInbox(ws, (message) => {
     if (message.type === "device_key") onDeviceKey(message.device_id, message.transport_public_key);
     if (message.type === "device_offline") onDeviceOffline(message.device_id);
-    if (!live) return deliver(message); // handshake phase: recvType drains the queue
-    // Our device dropping off the relay detaches the relay carrier. Whether
-    // that ends the session is the switch's call: a peer path may still carry.
-    if (message.type === "device_offline" && message.device_id === deviceId) carrierSwitch.relay(null);
   });
-  ws.addEventListener("close", () => {
-    if (!live) deliver({ type: "__closed" }); // fail the handshake cleanly
-  });
-
-  const recv = () => new Promise((resolve) => (queue.length ? resolve(queue.shift()) : waiters.push(resolve)));
-  const recvMatching = async (predicate) => {
-    for (;;) {
-      const message = await recv();
-      if (message.type === "__closed") throw new Error("connection closed");
-      if (predicate(message)) return message;
-    }
+  const recvMatching = async (predicate, timeoutMs, timeoutMessage) => {
+    const message = await inbox.matching(predicate, timeoutMs, timeoutMessage);
+    if (!message) throw new Error("connection closed");
+    return message;
   };
   const send = (obj) => ws.send(JSON.stringify(obj));
 
@@ -134,12 +119,7 @@ export async function openRelaySession({
     // this socket IS the "tell me when a device comes back" channel.
     const wantedKey = (m) =>
       m.type === "device_key" && (!preferDeviceId || m.device_id === preferDeviceId);
-    const hello = waitForDevice
-      ? await recvMatching(wantedKey)
-      : await Promise.race([
-          recvMatching(wantedKey),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("no device online")), deviceWaitMs)),
-        ]);
+    const hello = await recvMatching(wantedKey, waitForDevice ? 0 : deviceWaitMs, "no device online");
     deviceId = hello.device_id;
 
     // Seal to the api-pinned key, never the relay-pushed one; a mismatch means
@@ -161,14 +141,11 @@ export async function openRelaySession({
     // Time-box session_accept and honor a device_offline for our target: a
     // device that dies right after its device_key snapshot would otherwise hang
     // this handshake forever (latching the caller's connect/resume flags).
-    const acceptOrOffline = await Promise.race([
-      recvMatching(
-        (m) => m.type === "session_accept" || (m.type === "device_offline" && m.device_id === deviceId),
-      ),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("device did not accept the session")), acceptTimeoutMs),
-      ),
-    ]);
+    const acceptOrOffline = await recvMatching(
+      (m) => m.type === "session_accept" || (m.type === "device_offline" && m.device_id === deviceId),
+      acceptTimeoutMs,
+      "device did not accept the session",
+    );
     if (acceptOrOffline.type === "device_offline") throw new Error("device went offline during the handshake");
     await transport.openSessionAccept({ sessionKeyB64, envelope: acceptOrOffline.envelope });
   } catch (error) {
@@ -181,7 +158,6 @@ export async function openRelaySession({
     throw error;
   }
   sessionKey = sessionKeyB64;
-  live = true;
 
   let carrier = null;
   let onCarrierChange = () => {};
@@ -202,6 +178,11 @@ export async function openRelaySession({
   const relayCarrier = openCarrier({ socket: ws, sessionId });
   relayCarrier.onClose(() => carrierSwitch.relay(null));
   carrierSwitch.relay(relayCarrier);
+  // Our device dropping off the relay detaches the relay carrier. Whether that
+  // ends the session is the switch's call: a peer path may still carry.
+  inbox
+    .matching((m) => m.type === "device_offline" && m.device_id === deviceId)
+    .then((dropped) => dropped && carrierSwitch.relay(null));
 
   /** One encrypted frame out over `wire`, and the reply it is waiting for. */
   async function request(wire, method, params, timeoutMs) {

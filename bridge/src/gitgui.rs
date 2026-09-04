@@ -904,18 +904,28 @@ fn local_branch_row(
     )
 }
 
-/// The branches one remote carries that the repository has no local ref for.
+/// The order a branch that exists only on remotes is fetched from: `origin`
+/// when the repository has one, then the rest in git's own (sorted) order.
+fn remotes_in_fetch_precedence(repo: &git2::Repository) -> Result<Vec<String>, String> {
+    let remotes = repo.remotes().map_err(|e| e.to_string())?;
+    let mut names: Vec<String> = remotes.iter().flatten().map(str::to_string).collect();
+    names.sort_by_key(|name| name != "origin");
+    Ok(names)
+}
+
+/// The branches one remote carries that no earlier pass has listed.
 ///
 /// Two refs under `refs/remotes/<remote>/` are not branches and never become
 /// rows: a symbolic one (every clone has `origin/HEAD`, a pointer at another
-/// branch), and one whose name a local branch already holds — that ref is the
-/// local branch's upstream, which its own row already carries.
+/// branch), and one whose name is already listed — by a local branch, whose
+/// upstream that ref is and whose own row already carries it, or by a remote
+/// earlier in fetch precedence, which is where a fetch would come from.
 fn remote_branch_rows(
     repo_path: &Path,
     base_branch: &str,
     references: git2::References,
     remote: &str,
-    local_names: &HashSet<String>,
+    listed: &HashSet<String>,
 ) -> Result<Vec<BranchRow>, String> {
     let prefix = format!("refs/remotes/{remote}/");
     let mut rows = Vec::new();
@@ -930,7 +940,7 @@ fn remote_branch_rows(
         let Some(name) = tracking_ref.strip_prefix(&prefix) else {
             continue;
         };
-        if local_names.contains(name) {
+        if listed.contains(name) {
             continue;
         }
         let head = reference.peel_to_commit().map_err(|e| e.to_string())?;
@@ -965,20 +975,15 @@ pub fn branch_list(repo_path: &Path, base_branch: &str) -> Result<BranchListing,
         let (branch, _) = item.map_err(|e| e.to_string())?;
         rows.push(local_branch_row(&repo, repo_path, base_branch, &branch)?);
     }
-    let local_names: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
+    let mut listed: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
     // One pass per remote rather than through git2's remote-branch shorthand,
     // so a remote whose own name contains a slash still splits at the right
     // place.
-    let remotes = repo.remotes().map_err(|e| e.to_string())?;
-    for remote in remotes.iter().flatten() {
+    for remote in remotes_in_fetch_precedence(&repo)? {
         let references = repo.references().map_err(|e| e.to_string())?;
-        rows.extend(remote_branch_rows(
-            repo_path,
-            base_branch,
-            references,
-            remote,
-            &local_names,
-        )?);
+        let remote_rows = remote_branch_rows(repo_path, base_branch, references, &remote, &listed)?;
+        listed.extend(remote_rows.iter().map(|row| row.name.clone()));
+        rows.extend(remote_rows);
     }
     rows.sort_by(|a, b| {
         b.is_current

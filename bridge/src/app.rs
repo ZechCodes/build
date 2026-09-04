@@ -23056,6 +23056,40 @@ mod tests {
         assert_eq!(mains[0]["upstream"], "origin/main", "{mains:?}");
     }
 
+    /// A branch two remotes both carry is still one branch to offer. It is
+    /// listed once, from the remote a fetch would come from: `origin` when
+    /// origin has it, whatever the other remote is called — git lists remotes
+    /// alphabetically, and `fork` sorts before `origin`.
+    #[test]
+    fn git_branches_lists_a_branch_two_remotes_carry_once_preferring_origin() {
+        let (dir, _repo, origin) = init_repo_with_origin();
+        let other = dir.path().join("other");
+        clone_working(&origin, &other);
+        git_in_dir(&other, &["checkout", "-b", "feature-x"]);
+        std::fs::write(other.join("feature.rs"), "one\n").unwrap();
+        git_in_dir(&other, &["add", "."]);
+        git_in_dir(&other, &["commit", "-m", "remote work"]);
+        git_in_dir(&other, &["push", "origin", "feature-x"]);
+        let clone = dir.path().join("clone");
+        clone_working(&origin, &clone);
+        git_in_dir(&clone, &["remote", "add", "fork", origin.to_str().unwrap()]);
+        git_in_dir(&clone, &["fetch", "fork"]);
+        let mut state = git_gui_state(&dir, &clone);
+        let project_id = state.projects[0].id.clone();
+
+        let res = state.handle(req("git.branches", json!({ "project_id": project_id })));
+        assert_eq!(res["ok"], true, "{res:?}");
+        let branches = res["result"]["branches"].as_array().unwrap();
+        let features: Vec<&Value> = branches
+            .iter()
+            .filter(|b| b["name"] == "feature-x")
+            .collect();
+        assert_eq!(features.len(), 1, "{branches:?}");
+        assert_eq!(features[0]["remote"], "origin", "{features:?}");
+        let mains: Vec<&Value> = branches.iter().filter(|b| b["name"] == "main").collect();
+        assert_eq!(mains.len(), 1, "{branches:?}");
+    }
+
     /// A branch Build already runs is not a checkout the picker can offer —
     /// it is a run to open — so the row names the run holding it.
     #[test]

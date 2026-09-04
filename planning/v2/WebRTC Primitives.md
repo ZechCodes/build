@@ -199,50 +199,69 @@ holder may ask which implementation it has. `openCarrier({ socket, sessionId })`
 the inline `e2ee_envelope` send and its arm of the message listener in `core/session.js` and `terminal/session.js`.
 
 ### `SessionRpc` — `spa/src/core/sessionRpc.js` (new, stage 5)
-One E2EE session's crypto and correlation, over one carrier at a time. **Hides** the pending map, per-call timeouts,
-encrypt/decrypt, push demux. **Interface** `call(method, params, { timeoutMs, carrier })`, `onPush(fn)`,
-`rideOn(carrier)`, `sessionId`, `deviceId`, `close()`. `rideOn` swaps the wire and keeps the key — "one session, two
-carriers" as one operation; `carrier` pins one call to a wire, which is how signaling stays on the relay. **Replaces**
-`pending` + `call` in `openRelaySession` and `TerminalSocket._call` / `_demux`.
+One E2EE session's crypto and correlation, over one carrier at a time. **Hides** the pending map, the request ids,
+encrypt/decrypt, per-call timeouts, and the rule that tells a reply from a push. **Interface**
+`call(method, params, { timeoutMs, carrier })`, `onPush(fn) -> unsubscribe`, `rideOn(carrier)`, `readFrom(carrier)`,
+`lastFrameAt()`, `fail(error)`, `close(reason)`, `sessionId`, `deviceId`. `rideOn` swaps the wire and keeps the key —
+"one session, two carriers" as one operation; `readFrom` is every wire it *holds*, sending or not, because signaling's
+answers arrive on a relay carrier a channel is carrying over. `carrier` pins one call to a wire, and may be the
+*promise* of one on its way back, in which case the wait is inside that call's own deadline. What a call fails with
+when nothing is carrying is the owner's word (`noCarrier`): the app goes offline, a terminal surface waits its socket
+out. **Replaces** `pending` + `request` in `openRelaySession` and `TerminalSocket._call` / `_onEnvelope`.
 
 ### `RelayLink` — `spa/src/core/relayLink.js` (new, stage 5)
 **Boundary** one relay socket end to end: gateway token, `authenticate`, the device-key wait and pin check,
 `session_init` / `session_accept`, presence pushes, and **its own backoff reconnect, run whether or not a DataChannel is
-carrying**. **Hides** the handshake, the backoff, which socket generation is current. **Interface** `start()`,
-`onSession(fn)`, `onDown(fn)`, `signal(method, params)`, `deviceId`, `close()`; `signal` is `SessionRpc.call` pinned to
-the current relay carrier. It keeps this session's id and key across socket generations and re-presents the *same*
-`session_init`, which `SessionRegistry::open` takes as a carrier re-attach; a relay that refuses is a hard error through
-`onDown`. **Replaces** the handshake body of `openRelaySession` and `TerminalSocket._connect` and the reconnect duty of
-`connection.js::resume()` and `TerminalSocket._onLost` — the two paths policy 6 could not use, each gated on offline.
+carrying**. **Hides** the handshake, the backoff, which socket generation is current; **uses** `relayInbox` for the
+"next message this handshake needs" wait. **Interface** `start()`, `deviceId()`, `dropSocket()`, `close()`, and the
+hooks one wire's life is reported through — `carrying()`, `onConnecting()`, `onSession({ sessionId, sessionKeyB64,
+deviceId })`, `onRelay(carrier | null)` (awaited), `onDeviceKey`, `onDeviceOffline`. It keeps this session's id and key
+across socket generations and re-presents the *same* `session_init` while `carrying()` says something still is, which
+`SessionRegistry::open` takes as a carrier re-attach; a re-attach the device does not answer is not presented again —
+that session is the device's to refuse, and the next socket mints a new one through `onSession`. `start()` reports the
+first failure to its caller and has a retry already scheduled, so a caller that wants none (the app's boot, whose
+failure the gate shows) closes the link it could not start. **Replaces** the handshake body of `openRelaySession` and
+`TerminalSocket._connect` / `_handshake` / `_sessionInitFor` / `_watchRelayControl`, and the whole of
+`TerminalSocket._onLost`. `connection.js::resume()` keeps the path it owns — a session that *ended* is re-opened
+against a re-picked device, with the offline banner up — because that is the case policy 6 is not about.
 
 ### `SessionSwitch` — `spa/src/core/sessionSwitch.js` (new, stage 5)
 Which carrier one session rides, and what runs on every change: the browser end of the teardown rule, written to match
 `SessionRegistry`. **Hides** migration from both session modules — upgrade, fallback, relay reconnect and relay loss are
 one code path in either direction. `createSessionSwitch({ session, onActive, onIdle })` →
-`{ relay(carrier), peer(carrier), active(), close() }`, either slot taking `null` to clear; the rule is one line,
-**active = peer ?? relay**. On every change to a live carrier it calls `session.rideOn(carrier)` then `onActive()`,
-where `session.hello` and `_reattachAll()` live; with both slots empty, `onIdle()`. **Replaces** `goOffline()`'s trigger
-and `_onLost`'s status and pending-rejection duties: `App.offline` becomes exactly "the app session's switch is idle",
-so a relay loss under a live peer reaches neither it nor the bridge as a session end.
+`{ relay(carrier), peer(carrier), active(), wireFor(method), close() }`, either slot taking `null` to clear; the rule is
+one line, **active = peer ?? relay**. On every change to a live carrier it calls `session.rideOn(carrier)` then
+`onActive()`, where `session.hello` and `_reattachAll()` live; every carrier it is handed, riding or not, goes to
+`session.readFrom(carrier)`; with both slots empty, `onIdle()`. It also owns **the one routing rule** — `wireFor(method)`
+is the relay for `rtc.*` (`isSignaling`, exported here and read nowhere else) and the active carrier otherwise, and a
+signaling call made while the relay slot is empty is answered by the *next* relay carrier rather than refused.
+**Replaces** `goOffline()`'s trigger and `_onLost`'s status and pending-rejection duties: `App.offline` becomes exactly
+"the app session's switch is idle", so a relay loss under a live peer reaches neither it nor the bridge as a session
+end.
 
 ### `openPeerLink` — `spa/src/core/peerLink.js` (new, stage 5)
-**Boundary** the upgrade, whole job in one call: `openPeerLink({ signal, fetchIceServers, RTCPeerConnectionImpl })`
-builds the peer connection, creates the two negotiated channels (`app` id 0, `term` id 1), offers and trickles both ways
-over `signal`, and settles once both open. Resolves `{ app, term, close() }` — two `Carrier`s — and rejects on any
-failure, leaving the caller on the relay with no retry loop; `signal` is `relayLink.signal`, so every `rtc.*` RPC rides
-the relay for the peer's life. **The ICE restart is event-driven and reads no TTL**: on the connection going
-`failed` it fetches fresh ICE servers once and re-offers over `signal` on the same channels, one restart at a time, and
-a failed one closes the link so `SessionSwitch` falls back to the relay. How long a credential lives has one home,
-`TTL_SECONDS` in `ice_servers.py`; the spec's open question 1 stays open because nothing here depends on the answer.
-**Hides** SDP, candidates, the `rtc.*` shapes, chunking, `bufferedAmountLow`. **Uses** `spa/src/core/chunk.js` (new) —
-`splitEnvelope(text)`, `createReassembler()`, the mirror of `bridge/src/rtc/chunk.rs` with the same constants.
+**Boundary** the upgrade, whole job in one call: `openPeerLink({ signal, onPush, fetchIceServers,
+RTCPeerConnectionImpl, openTimeoutMs })` builds the peer connection, creates the two negotiated channels (`app` id 0,
+`term` id 1), offers and trickles both ways over `signal`, and settles once both open or `OPEN_TIMEOUT_MS` passes.
+Resolves `{ app, term, close() }` — two `Carrier`s — and rejects on any failure, leaving the caller on the relay with no
+retry loop; `signal` is the session's own `call`, which routes `rtc.*` to the relay for the peer's life, and `onPush` is
+the session's push subscription, off which this link takes the bridge's trickled candidates and nothing else. **The ICE
+restart is event-driven and reads no TTL**: on the connection going `failed` it fetches fresh ICE servers once and
+re-offers over `signal` on the same channels, one restart at a time, and a failed one closes the link so `SessionSwitch`
+falls back to the relay. How long a credential lives has one home, `TTL_SECONDS` in `ice_servers.py`; the spec's open
+question 1 stays open because nothing here depends on the answer. **Hides** SDP, candidates, the `rtc.*` shapes,
+chunking, `bufferedAmountLow`. **Uses** `spa/src/core/chunk.js` (new) — `splitEnvelope(text)`, `createReassembler()`,
+the mirror of `bridge/src/rtc/chunk.rs` with the same constants.
 
 ### The upgrade policy — `spa/src/connection.js`, `spa/src/terminal/manager.js` (extended, stage 5)
 The one place the spec's ordered policy is written: a `RelayLink` per stream (app, terminal), as today's two sockets;
 once the app session is live, fetch ICE servers, `openPeerLink`, then `appSwitch.peer(app)` and
-`terminalSwitch.peer(term)`. A failure logs and stays on the relay until the next relay reconnect. **Extends** `api.js`
+`terminalSwitch.peer(term)`. A failure logs and stays on the relay until the next relay reconnect. It is also the one
+owner of "the two channels are one connection and fall back together": `adoptPeerLink` hears both halves close and
+`dropPeerLink` hands both streams back, so `terminalsRideOn` is a plain setter that watches nothing. **Extends** `api.js`
 with `fetchIceServers()` and `terminal/manager.js` with the terminal's switch; `openRelaySession` keeps
-`{ call, deviceId, close }` and `TerminalSocket` every method, so no `App.call` site changes.
+`{ call, deviceId, close }` (plus `peer`, `onCarrier` and `onPush`, which the upgrade uses) and `TerminalSocket` every
+method, so no `App.call` site changes.
 
 ## api (Python)
 ### `ice_servers` — `skriftapp/buildapp/ice_servers.py` (new, stage 3)

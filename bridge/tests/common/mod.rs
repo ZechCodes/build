@@ -3,7 +3,10 @@
 //!
 //! One home for both, because every carrier test starts the same way — a
 //! device authenticated against a relay, a session minted over it — and only
-//! then diverges into what it is actually about.
+//! then diverges into what it is actually about. Each test binary compiles its
+//! own copy and uses the part it needs, so what another binary uses is not
+//! dead here.
+#![allow(dead_code)]
 
 use std::sync::Arc;
 

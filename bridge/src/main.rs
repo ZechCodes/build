@@ -41,6 +41,7 @@ use build_bridge::backoff::Backoff;
 use build_bridge::carrier::FrameIntake;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::rtc::WebrtcPeerFactory;
 use build_bridge::{identity, pairing, service, transport};
 
 #[tokio::main]
@@ -304,11 +305,17 @@ async fn serve() {
     // Close keyed terminals whose scope vanished out-of-band (e.g. a user
     // rm -rf'ing an external worktree); mutation-driven closure happens inline.
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
-    let handler = AppState::handler(app);
+    let handler = AppState::handler(app.clone());
     // One intake for the life of the daemon: a session is minted once and
     // reachable from every carrier, so it outlives the relay socket it arrived
     // on.
     let intake = FrameIntake::new(handler, transport_keypair);
+    // The peer transport a browser upgrades to. Its channels deliver through
+    // the same intake as the relay socket, so a session reached over either is
+    // the one session.
+    app.lock()
+        .unwrap()
+        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
 
     // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
     // become a tight reconnect loop hammering the server. A connection that lasted

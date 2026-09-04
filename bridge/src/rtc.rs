@@ -8,12 +8,21 @@
 //! the channels they negotiate, which do not exist yet when they are needed.
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
+use tokio::sync::mpsc;
+use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
+use webrtc::peer_connection::{
+    PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCConfiguration,
+    RTCConfigurationBuilder, RTCIceCandidateInit, RTCIceServer, RTCPeerConnectionIceEvent,
+    RTCPeerConnectionState, RTCSessionDescription, RTCStatsReport, RTCStatsReportEntry,
+    StatsSelector,
+};
 
-use crate::carrier::SessionSender;
+use crate::carrier::{CarrierHandle, FrameIntake, OutboundEnvelope, SessionSender};
 
 pub mod chunk;
 
@@ -209,6 +218,455 @@ impl SessionPeerFactory for NoPeerFactory {
 /// shape of that push is written. False once the carrier it was given is gone.
 pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
     signaling.push(json!({ "type": "rtc.ice", "candidate": candidate }))
+}
+
+/// How many bytes a channel may hold undelivered before its writer stops
+/// handing it more (spec §Backpressure). The queue behind it is the app's own
+/// bounded one, so a client that will not drain waits rather than growing the
+/// device's memory.
+pub const DC_BUFFERED_HIGH: usize = 1024 * 1024;
+
+/// How long a parked writer waits before re-reading the channel's buffer when
+/// no buffered-amount-low event has woken it. The peer connection delivers
+/// those events on a bounded queue it may drop under a flood — exactly when a
+/// writer is parked — so the wake is the fast path and this is what keeps a
+/// dropped one costing latency rather than the channel.
+const BUFFER_RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The two channels every peer carries, created identically on both sides with
+/// explicit ids so no in-band open handshake is needed (spec §DataChannels).
+/// They mirror today's two relay sockets: SCTP streams are independent, so a
+/// terminal flood does not head-of-line block an RPC reply.
+const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
+
+/// Where a peer's own candidates are gathered from. Every interface, an
+/// ephemeral port: the browser's offer decides whether a direct pair or a TURN
+/// relay carries, and the device offers every path it has.
+const GATHER_FROM: &str = "0.0.0.0:0";
+
+impl From<webrtc::error::Error> for RtcError {
+    fn from(err: webrtc::error::Error) -> Self {
+        RtcError::Refused(err.to_string())
+    }
+}
+
+/// The peer transport itself: one `RTCPeerConnection` per E2EE session, built
+/// on the offer that needs it.
+///
+/// **Hides** webrtc-rs, DTLS, ICE, the negotiated channels, chunking and
+/// backpressure. Everything above it holds three async methods and an SDP
+/// string.
+pub struct WebrtcPeerFactory {
+    intake: Arc<FrameIntake>,
+}
+
+impl WebrtcPeerFactory {
+    /// The one construction point of a real peer. The intake goes in because
+    /// every channel reader delivers what it reassembles through it.
+    pub fn new(intake: Arc<FrameIntake>) -> Arc<Self> {
+        Arc::new(WebrtcPeerFactory { intake })
+    }
+}
+
+impl SessionPeerFactory for WebrtcPeerFactory {
+    fn open(&self, session_id: &str) -> Result<Arc<dyn SessionPeer>, RtcError> {
+        Ok(Arc::new(WebrtcPeer {
+            session_id: session_id.to_string(),
+            intake: self.intake.clone(),
+            signaling: Arc::new(LatestSignaling::default()),
+            negotiation: tokio::sync::Mutex::new(None),
+        }))
+    }
+}
+
+struct WebrtcPeer {
+    session_id: String,
+    intake: Arc<FrameIntake>,
+    signaling: Arc<LatestSignaling>,
+    negotiation: tokio::sync::Mutex<Option<Negotiation>>,
+}
+
+/// One live peer connection and the channels riding it. Dropping it stops
+/// every task the channels run, which releases their carriers.
+struct Negotiation {
+    connection: Arc<dyn PeerConnection>,
+    channels: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Drop for Negotiation {
+    fn drop(&mut self) {
+        for task in &self.channels {
+            task.abort();
+        }
+    }
+}
+
+#[async_trait]
+impl SessionPeer for WebrtcPeer {
+    async fn answer(
+        &self,
+        offer_sdp: &str,
+        ice_servers: &[Value],
+        signaling: SessionSender,
+    ) -> Result<String, RtcError> {
+        self.signaling.hold(signaling);
+        let configuration = RTCConfigurationBuilder::new()
+            .with_ice_servers(ice_servers.iter().map(offered_server).collect())
+            .build();
+        let mut negotiation = self.negotiation.lock().await;
+        let connection = match negotiation.as_ref() {
+            Some(open) => {
+                open.connection.set_configuration(configuration).await?;
+                open.connection.clone()
+            }
+            None => {
+                let opened = self.connect(configuration).await?;
+                let connection = opened.connection.clone();
+                *negotiation = Some(opened);
+                connection
+            }
+        };
+        let offer = RTCSessionDescription::offer(offer_sdp.to_string())?;
+        connection.set_remote_description(offer).await?;
+        let answer = connection.create_answer(None).await?;
+        let sdp = answer.sdp.clone();
+        connection.set_local_description(answer).await?;
+        Ok(sdp)
+    }
+
+    async fn add_remote_candidate(&self, candidate: Value) -> Result<(), RtcError> {
+        let trickled: RTCIceCandidateInit = serde_json::from_value(candidate)
+            .map_err(|e| RtcError::Refused(format!("not an ICE candidate: {e}")))?;
+        let negotiation = self.negotiation.lock().await;
+        let open = negotiation
+            .as_ref()
+            .ok_or_else(|| RtcError::NoPeer(self.session_id.clone()))?;
+        open.connection.add_ice_candidate(trickled).await?;
+        Ok(())
+    }
+
+    async fn close(&self) {
+        let Some(open) = self.negotiation.lock().await.take() else {
+            return;
+        };
+        if let Err(e) = open.connection.close().await {
+            eprintln!("rtc: session {} peer close: {e}", self.session_id);
+        }
+    }
+}
+
+impl WebrtcPeer {
+    /// Build this session's peer connection: the two negotiated channels, the
+    /// candidates it trickles back, and the one line it logs about the path
+    /// that won.
+    async fn connect(&self, configuration: RTCConfiguration) -> Result<Negotiation, RtcError> {
+        let (connected, first_connect) = mpsc::unbounded_channel();
+        let connection: Arc<dyn PeerConnection> = Arc::new(
+            PeerConnectionBuilder::new()
+                .with_configuration(configuration)
+                .with_handler(Arc::new(PeerEvents {
+                    session_id: self.session_id.clone(),
+                    signaling: self.signaling.clone(),
+                    connected,
+                }))
+                .with_udp_addrs(vec![GATHER_FROM.to_string()])
+                .build()
+                .await?,
+        );
+        let mut channels = vec![tokio::spawn(report_negotiated_path(
+            self.session_id.clone(),
+            connection.clone(),
+            first_connect,
+        ))];
+        for (label, id) in NEGOTIATED_CHANNELS {
+            let channel = connection
+                .create_data_channel(
+                    label,
+                    Some(RTCDataChannelInit {
+                        ordered: true,
+                        negotiated: Some(id),
+                        ..Default::default()
+                    }),
+                )
+                .await?;
+            channel
+                .set_buffered_amount_low_threshold(DC_BUFFERED_HIGH as u32)
+                .await?;
+            channels.extend(DataChannelCarrier::ride(channel, self.intake.clone()));
+        }
+        Ok(Negotiation {
+            connection,
+            channels,
+        })
+    }
+}
+
+/// The carrier the latest offer arrived on. A peer that captured one at
+/// construction would trickle into a relay socket generation that has since
+/// been replaced, so only the newest is kept.
+#[derive(Default)]
+struct LatestSignaling(Mutex<Option<SessionSender>>);
+
+impl LatestSignaling {
+    fn hold(&self, signaling: SessionSender) {
+        *self.0.lock().unwrap() = Some(signaling);
+    }
+
+    fn trickle(&self, candidate: Value) {
+        let signaling = self.0.lock().unwrap().clone();
+        if let Some(signaling) = signaling {
+            trickle_candidate(&signaling, candidate);
+        }
+    }
+}
+
+/// What the peer connection tells this session about itself: its own gathered
+/// candidates, which go back over the signaling carrier, and the moment it is
+/// carrying.
+struct PeerEvents {
+    session_id: String,
+    signaling: Arc<LatestSignaling>,
+    connected: mpsc::UnboundedSender<()>,
+}
+
+#[async_trait]
+impl PeerConnectionEventHandler for PeerEvents {
+    async fn on_ice_candidate(&self, event: RTCPeerConnectionIceEvent) {
+        match event.candidate.to_json() {
+            Ok(candidate) => self.signaling.trickle(json!(candidate)),
+            Err(e) => eprintln!(
+                "rtc: session {} dropped its own candidate: {e}",
+                self.session_id
+            ),
+        }
+    }
+
+    async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
+        if state == RTCPeerConnectionState::Connected {
+            let _ = self.connected.send(());
+        }
+    }
+}
+
+/// Say once, when a session's peer starts carrying, which kind of path won:
+/// `host` and `srflx` are direct and free, `relay` is TURN egress somebody
+/// pays for. One line per session is what makes "how often is TURN actually
+/// used" answerable from the logs.
+async fn report_negotiated_path(
+    session_id: String,
+    connection: Arc<dyn PeerConnection>,
+    mut first_connect: mpsc::UnboundedReceiver<()>,
+) {
+    if first_connect.recv().await.is_none() {
+        return;
+    }
+    let report = connection
+        .get_stats(std::time::Instant::now(), StatsSelector::None)
+        .await;
+    println!(
+        "rtc: session {session_id} carrying over {} candidates",
+        negotiated_path(&report)
+    );
+}
+
+/// Which kind of local candidate the nominated pair won on. The pair names the
+/// candidate by the id ICE gave it and the report keys the candidate under a
+/// prefixed form of that same id, so the entry is found by the id it ends
+/// with rather than by a key built from a convention this module does not own.
+fn negotiated_path(report: &RTCStatsReport) -> String {
+    let unknown = || "unknown".to_string();
+    let Some(pair) = report.candidate_pairs().find(|pair| pair.nominated) else {
+        return unknown();
+    };
+    report
+        .iter()
+        .find_map(|entry| match entry {
+            RTCStatsReportEntry::LocalCandidate(local)
+                if local.stats.id.ends_with(&pair.local_candidate_id) =>
+            {
+                Some(local.candidate_type.to_string())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(unknown)
+}
+
+/// One ICE server as the browser fetched it from the api, as this crate takes
+/// one. Tolerant on purpose: Cloudflare answers a credentialed entry and a
+/// device with no TURN key configured answers a bare STUN url, and both are
+/// the same array to everything above the peer.
+fn offered_server(offered: &Value) -> RTCIceServer {
+    let urls = match offered.get("urls") {
+        Some(Value::String(url)) => vec![url.clone()],
+        Some(Value::Array(urls)) => urls
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    RTCIceServer {
+        urls,
+        username: field_or_empty(offered, "username"),
+        credential: field_or_empty(offered, "credential"),
+    }
+}
+
+fn field_or_empty(offered: &Value, field: &str) -> String {
+    offered
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// One negotiated channel doing a carrier's whole job: a writer draining the
+/// session envelopes bound for it, chunked and paced against the channel's
+/// buffer, and a reader reassembling what arrives into the intake.
+///
+/// **Hides** chunking and backpressure. It registers no senders itself — a
+/// browser that migrates re-sends `session.hello` and re-attaches its
+/// terminals over the channel, and the frames it does that with are what bind
+/// the session to this carrier.
+struct DataChannelCarrier;
+
+impl DataChannelCarrier {
+    fn ride(
+        channel: Arc<dyn DataChannel>,
+        intake: Arc<FrameIntake>,
+    ) -> Vec<tokio::task::JoinHandle<()>> {
+        let (carrier, envelopes) = CarrierHandle::open();
+        let gate = Arc::new(WriteGate::default());
+        vec![
+            tokio::spawn(write_envelopes(channel.clone(), envelopes, gate.clone())),
+            tokio::spawn(read_messages(channel, intake, carrier, gate)),
+        ]
+    }
+}
+
+/// The channel's outbound half: every envelope for every session riding this
+/// carrier, split into messages the channel can carry and handed over no
+/// faster than it drains.
+async fn write_envelopes(
+    channel: Arc<dyn DataChannel>,
+    mut envelopes: mpsc::UnboundedReceiver<OutboundEnvelope>,
+    gate: Arc<WriteGate>,
+) {
+    while let Some(outbound) = envelopes.recv().await {
+        let Ok(json) = serde_json::to_string(outbound.envelope()) else {
+            continue;
+        };
+        for message in chunk::split(&json) {
+            until_writable(channel.as_ref(), &gate).await;
+            if channel.send_text(&message).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// The channel's inbound half: messages reassembled into envelopes and handed
+/// to the intake, which owns what a frame means. A reassembly that cannot be
+/// finished closes the channel — the parts carry no way to ask for one again.
+async fn read_messages(
+    channel: Arc<dyn DataChannel>,
+    intake: Arc<FrameIntake>,
+    carrier: CarrierHandle,
+    gate: Arc<WriteGate>,
+) {
+    let riding = RidingChannel { intake, carrier };
+    let mut reassembler = chunk::Reassembler::default();
+    while let Some(event) = channel.poll().await {
+        match event {
+            DataChannelEvent::OnMessage(message) => {
+                let Ok(text) = std::str::from_utf8(&message.data) else {
+                    continue;
+                };
+                match reassembler.accept(text) {
+                    Ok(Some(envelope)) => riding.deliver(&envelope).await,
+                    Ok(None) => {}
+                    Err(e) => {
+                        eprintln!("rtc: channel closed mid-message: {e}");
+                        let _ = channel.close().await;
+                        break;
+                    }
+                }
+            }
+            DataChannelEvent::OnBufferedAmountLow => gate.drained(),
+            DataChannelEvent::OnClose => break,
+            _ => {}
+        }
+    }
+    gate.shut();
+}
+
+/// This channel as one of the wires the intake's sessions ride. Dropping it —
+/// the channel closing, the peer being torn down, the task being aborted — is
+/// one carrier released, and the teardown rule decides from there whether a
+/// session ended with it.
+struct RidingChannel {
+    intake: Arc<FrameIntake>,
+    carrier: CarrierHandle,
+}
+
+impl RidingChannel {
+    async fn deliver(&self, envelope_json: &str) {
+        let Ok(envelope) = serde_json::from_str(envelope_json) else {
+            return;
+        };
+        let _ = self.intake.accept(envelope, &self.carrier).await;
+    }
+}
+
+impl Drop for RidingChannel {
+    fn drop(&mut self) {
+        self.intake.close_carrier(&self.carrier);
+    }
+}
+
+/// Whether a channel can take more right now.
+///
+/// **Hides** the backpressure rule: a writer asks to be let through and is
+/// held while the channel is over [`DC_BUFFERED_HIGH`], woken by the
+/// buffered-amount-low event the reader hears. A shut gate lets everyone
+/// through, so a closing channel never leaves a writer parked on a buffer that
+/// will not drain again.
+#[derive(Default)]
+struct WriteGate {
+    drained: tokio::sync::Notify,
+    shut: std::sync::atomic::AtomicBool,
+}
+
+impl WriteGate {
+    /// Hold the writer until the channel may have drained. False once the gate
+    /// is shut, which is the writer's cue to stop parking at all.
+    async fn park(&self) -> bool {
+        if self.shut.load(Ordering::SeqCst) {
+            return false;
+        }
+        let _ = tokio::time::timeout(BUFFER_RECHECK, self.drained.notified()).await;
+        !self.shut.load(Ordering::SeqCst)
+    }
+
+    fn drained(&self) {
+        self.drained.notify_one();
+    }
+
+    fn shut(&self) {
+        self.shut.store(true, Ordering::SeqCst);
+        self.drained.notify_one();
+    }
+}
+
+/// Let one message through: the channel takes it once what it already holds is
+/// back under [`DC_BUFFERED_HIGH`], and a channel that can no longer say takes
+/// it now and fails on the send.
+async fn until_writable(channel: &dyn DataChannel, gate: &WriteGate) {
+    while matches!(channel.outstanding_bytes().await, Ok(buffered) if buffered > DC_BUFFERED_HIGH) {
+        if !gate.park().await {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -430,5 +888,72 @@ mod trickle_tests {
             NoPeerFactory.open("s-1"),
             Err(RtcError::Unavailable)
         ));
+    }
+}
+
+#[cfg(test)]
+mod peer_transport_tests {
+    use super::*;
+
+    /// The api answers Cloudflare's array verbatim when a TURN key is
+    /// configured and a bare STUN entry when none is; both reach the peer as
+    /// the same list, so neither shape may be the one that parses.
+    #[test]
+    fn a_credentialed_server_and_a_bare_stun_one_are_both_taken() {
+        let credentialed = offered_server(&json!({
+            "urls": ["turn:turn.cloudflare.com:3478?transport=udp"],
+            "username": "user-1",
+            "credential": "secret-1",
+        }));
+        assert_eq!(
+            credentialed.urls,
+            vec!["turn:turn.cloudflare.com:3478?transport=udp".to_string()]
+        );
+        assert_eq!(credentialed.username, "user-1");
+
+        let stun_only = offered_server(&json!({ "urls": ["stun:stun.cloudflare.com:3478"] }));
+        assert_eq!(
+            stun_only.urls,
+            vec!["stun:stun.cloudflare.com:3478".to_string()]
+        );
+        assert!(stun_only.username.is_empty());
+    }
+
+    #[test]
+    fn a_single_url_is_the_same_server_as_a_list_of_one() {
+        let one = offered_server(&json!({ "urls": "stun:stun.cloudflare.com:3478" }));
+
+        assert_eq!(one.urls, vec!["stun:stun.cloudflare.com:3478".to_string()]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_parked_writer_waits_for_the_channel_to_drain() {
+        let gate = Arc::new(WriteGate::default());
+
+        let parked = tokio::spawn({
+            let gate = gate.clone();
+            async move { gate.park().await }
+        });
+        tokio::task::yield_now().await;
+        gate.drained();
+
+        assert!(parked.await.unwrap(), "a drained channel takes more");
+    }
+
+    /// A buffered-amount-low event that never arrives — the peer connection
+    /// drops them under load — must cost the writer latency, not the channel.
+    #[tokio::test(start_paused = true)]
+    async fn a_writer_nobody_wakes_looks_again_by_itself() {
+        let gate = WriteGate::default();
+
+        assert!(gate.park().await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_shut_gate_never_parks_a_writer_again() {
+        let gate = WriteGate::default();
+        gate.shut();
+
+        assert!(!gate.park().await, "a closing channel parks nobody");
     }
 }

@@ -7512,7 +7512,7 @@ impl AppState {
             params.get("name").and_then(Value::as_str),
         ) {
             (Some(branch), None) => self.checkout_worktree_on_branch(&project_id, branch)?,
-            (None, Some(name)) => self.cut_worktree_named(&project_id, name)?,
+            (None, Some(name)) => self.create_bare_worktree_for(&project_id, name)?,
             _ => {
                 return Err(
                     "worktree.create takes exactly one of branch (a branch that \
@@ -7521,19 +7521,25 @@ impl AppState {
                 )
             }
         };
-        Ok(self.created_worktree_json(&project_id, checkout))
+        let canonical = self.register_created_checkout(&project_id, &checkout.worktree);
+        Ok(created_worktree_json(&project_id, &checkout, &canonical))
     }
 
-    /// Cut `build/<slug>` off the project's base and add a worktree for it.
+    /// Cut `build/<slug>` off the project's base and add a worktree for it —
+    /// the one way Build cuts a branch for itself, for every caller that has
+    /// words rather than a branch.
     ///
-    /// `name` is what the human typed. It is UNTRUSTED text on its way to a
-    /// path and a `git` argv, so it goes through the same slugifier every
-    /// branch name does: ASCII alphanumerics and single hyphens, nothing else,
-    /// so no separator, dot-segment or leading dash can survive it. A name that
-    /// would slugify away to nothing is refused rather than silently replaced —
-    /// being handed a worktree you did not name is worse than being told the
-    /// name will not do.
-    fn cut_worktree_named(
+    /// `name` is what the human (or the router) typed. It is UNTRUSTED text on
+    /// its way to a path and a `git` argv, so it goes through the same
+    /// slugifier every branch name does: ASCII alphanumerics and single
+    /// hyphens, nothing else, so no separator, dot-segment or leading dash can
+    /// survive it. A name that would slugify away to nothing is refused rather
+    /// than silently replaced — being handed a worktree you did not name is
+    /// worse than being told the name will not do.
+    ///
+    /// The checkout is made visible to the very next board poll, and to any
+    /// adoption that follows it, rather than up to a scan interval later.
+    fn create_bare_worktree_for(
         &mut self,
         project_id: &str,
         name: &str,
@@ -7541,15 +7547,13 @@ impl AppState {
         if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
             return Err("a worktree name needs at least one letter or number".to_string());
         }
-        let slug = crate::worktree::slugify(name);
         let base = self.base_for(project_id)?;
-        Ok(crate::worktree::NamedBranchCheckout {
-            worktree: self
-                .orch_for(project_id)?
-                .create_bare_worktree(&slug, &base)
-                .map_err(err)?,
-            teardown: crate::worktree::BranchTeardown::DeletesBranch,
-        })
+        let checkout = self
+            .orch_for(project_id)?
+            .create_bare_worktree(&crate::worktree::slugify(name), &base)
+            .map_err(err)?;
+        self.invalidate_external_scan(project_id);
+        Ok(checkout)
     }
 
     /// Add a worktree for a branch that already exists, so the human can work
@@ -7581,27 +7585,18 @@ impl AppState {
             .map_err(err)
     }
 
-    /// The answer every `worktree.create` gives, and the invalidation that
-    /// makes the checkout it describes visible to the very next board poll
-    /// rather than up to a scan interval later.
-    fn created_worktree_json(
+    /// Make a checkout that was just created visible to the very next board
+    /// poll rather than up to a scan interval later, and answer with the path
+    /// the scan keys it by: its canonical one.
+    fn register_created_checkout(
         &mut self,
         project_id: &str,
-        checkout: crate::worktree::NamedBranchCheckout,
-    ) -> Value {
-        // The scan keys worktrees by canonical path; mirror that here so the
-        // caller can navigate to the surface without waiting for a rescan.
-        let worktree = checkout.worktree;
-        let canonical = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
+        worktree: &crate::worktree::Worktree,
+    ) -> std::path::PathBuf {
+        let canonical =
+            std::fs::canonicalize(&worktree.path).unwrap_or_else(|_| worktree.path.clone());
         self.invalidate_external_scan(project_id);
-        json!({
-            "project_id": project_id,
-            "worktree_id": crate::worktree::external_worktree_id(&canonical),
-            "branch": worktree.branch(),
-            "name": worktree.name,
-            "path": canonical.display().to_string(),
-            "branch_was_cut": checkout.teardown == crate::worktree::BranchTeardown::DeletesBranch,
-        })
+        canonical
     }
 
     /// Finish an external worktree selected only by server-resolved ids.
@@ -13736,32 +13731,22 @@ impl AppState {
         branch: Option<&str>,
         instruction: &str,
     ) -> Result<crate::worktree::NamedBranchCheckout, String> {
-        let base = self.base_for(project_id)?;
-        let checkout = match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
-            Some(name) => self
-                .orch_for(project_id)?
-                .create_worktree_on_named_branch(name, &base, crate::worktree::AbsentBranch::Cut)
-                .map_err(err)?,
-            None => {
-                let name = branch.unwrap_or(instruction);
-                if !name.chars().any(|c| c.is_ascii_alphanumeric()) {
-                    return Err(format!(
-                        "branch.dispatch: {name:?} has no letter or number to name a branch after"
-                    ));
-                }
-                crate::worktree::NamedBranchCheckout {
-                    worktree: self
-                        .orch_for(project_id)?
-                        .create_bare_worktree(&crate::worktree::slugify(name), &base)
-                        .map_err(err)?,
-                    teardown: crate::worktree::BranchTeardown::DeletesBranch,
-                }
+        match branch.filter(|name| crate::worktree::is_usable_branch_name(name)) {
+            Some(name) => {
+                let base = self.base_for(project_id)?;
+                let checkout = self
+                    .orch_for(project_id)?
+                    .create_worktree_on_named_branch(
+                        name,
+                        &base,
+                        crate::worktree::AbsentBranch::Cut,
+                    )
+                    .map_err(err)?;
+                self.invalidate_external_scan(project_id);
+                Ok(checkout)
             }
-        };
-        // The checkout must be visible to the adoption that follows it, and to
-        // the very next board poll, rather than up to a scan interval later.
-        self.invalidate_external_scan(project_id);
-        Ok(checkout)
+            None => self.create_bare_worktree_for(project_id, branch.unwrap_or(instruction)),
+        }
     }
 
     /// Put back what a failed `branch.dispatch` created, newest first.
@@ -15628,6 +15613,23 @@ impl BranchHolder {
 /// may be one Build only checked out over somebody's branch, and with the
 /// registration gone nothing on disk says which — so it is not restored at
 /// all, rather than restored under a guess that could delete the branch.
+/// The answer every `worktree.create` gives, over the checkout it made and the
+/// canonical path the scan will find it at.
+fn created_worktree_json(
+    project_id: &str,
+    checkout: &crate::worktree::NamedBranchCheckout,
+    canonical: &std::path::Path,
+) -> Value {
+    json!({
+        "project_id": project_id,
+        "worktree_id": crate::worktree::external_worktree_id(canonical),
+        "branch": checkout.worktree.branch(),
+        "name": checkout.worktree.name,
+        "path": canonical.display().to_string(),
+        "branch_was_cut": checkout.teardown.deletes_branch(),
+    })
+}
+
 fn unregistered_restore_for(active: &ActiveRun) -> crate::worktree::UnregisteredRestore {
     if active.adopted {
         crate::worktree::UnregisteredRestore::Refuse
@@ -16369,74 +16371,127 @@ impl WorktreeFinishJob {
     }
 }
 
-/// The destructive half of a finish: push or merge what the action promised to
-/// keep, delete the branch, and remove the checkout. The record is the only
-/// authority for what is acted on — a client path never reaches here.
+/// The destructive half of a finish, over the steps the chosen action owns.
+/// The record is the only authority for what is acted on — a client path never
+/// reaches here.
 fn run_finish_git_steps(
     project_path: &std::path::Path,
     base_branch: &str,
     record: &PersistedArchivedWorktree,
 ) -> Result<(), String> {
     let worktree_path = validate_finish_record_path(record, project_path)?;
-    match record.action {
-        WorktreeFinishAction::Cleanup => {
-            if worktree_path.exists() {
-                remove_registered_worktree(project_path, &worktree_path, false)?;
-            }
+    (record.action.git_steps())(project_path, base_branch, record, &worktree_path)
+}
+
+/// What one finish action does to the repository, once its checkout has been
+/// resolved.
+type FinishGitSteps =
+    fn(&std::path::Path, &str, &PersistedArchivedWorktree, &std::path::Path) -> Result<(), String>;
+
+impl WorktreeFinishAction {
+    /// The steps this action owns — the one place a finish action decides
+    /// anything from its own kind.
+    fn git_steps(self) -> FinishGitSteps {
+        match self {
+            WorktreeFinishAction::Cleanup => remove_finished_checkout,
+            WorktreeFinishAction::Push => push_then_remove_finished_checkout,
+            WorktreeFinishAction::Merge => merge_finished_checkout,
+            WorktreeFinishAction::Delete => delete_finished_checkout,
         }
-        WorktreeFinishAction::Push => {
-            if worktree_path.exists() {
-                crate::gitgui::push(&worktree_path, false)?;
-                remove_registered_worktree(project_path, &worktree_path, false)?;
+    }
+}
+
+fn remove_finished_checkout(
+    project_path: &std::path::Path,
+    _base_branch: &str,
+    _record: &PersistedArchivedWorktree,
+    worktree_path: &std::path::Path,
+) -> Result<(), String> {
+    if worktree_path.exists() {
+        remove_registered_worktree(project_path, worktree_path, false)?;
+    }
+    Ok(())
+}
+
+fn push_then_remove_finished_checkout(
+    project_path: &std::path::Path,
+    _base_branch: &str,
+    _record: &PersistedArchivedWorktree,
+    worktree_path: &std::path::Path,
+) -> Result<(), String> {
+    if worktree_path.exists() {
+        crate::gitgui::push(worktree_path, false)?;
+        remove_registered_worktree(project_path, worktree_path, false)?;
+    }
+    Ok(())
+}
+
+fn merge_finished_checkout(
+    project_path: &std::path::Path,
+    base_branch: &str,
+    record: &PersistedArchivedWorktree,
+    worktree_path: &std::path::Path,
+) -> Result<(), String> {
+    finish_by_merging_or_deleting(project_path, base_branch, record, worktree_path, true)
+}
+
+fn delete_finished_checkout(
+    project_path: &std::path::Path,
+    base_branch: &str,
+    record: &PersistedArchivedWorktree,
+    worktree_path: &std::path::Path,
+) -> Result<(), String> {
+    finish_by_merging_or_deleting(project_path, base_branch, record, worktree_path, false)
+}
+
+/// Land what the action promised to keep, then take the checkout away — and
+/// its branch with it when the checkout says teardown owns it.
+///
+/// The teardown is read before `remove_registered_worktree` prunes the admin
+/// directory the answer lives in.
+fn finish_by_merging_or_deleting(
+    project_path: &std::path::Path,
+    base_branch: &str,
+    record: &PersistedArchivedWorktree,
+    worktree_path: &std::path::Path,
+    merging: bool,
+) -> Result<(), String> {
+    let branch = match record.branch.as_deref() {
+        Some(branch) => local_branch_exists(project_path, branch)?.then_some(branch),
+        None => None,
+    };
+    if !worktree_path.exists() {
+        let verb = if merging { "merge" } else { "delete" };
+        return match branch {
+            Some(_) => Err(format!(
+                "worktree.finish {verb} lost its worktree before branch deletion"
+            )),
+            None => Ok(()),
+        };
+    }
+    let deletes_branch = crate::worktree::branch_teardown(worktree_path)
+        .map_err(|error| error.to_string())?
+        .deletes_branch();
+    let deleted_branch = match branch {
+        Some(branch) => {
+            if merging {
+                merge_external_branch(project_path, branch, base_branch)?;
             }
+            if deletes_branch {
+                delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
+            }
+            deletes_branch
         }
-        WorktreeFinishAction::Merge | WorktreeFinishAction::Delete => {
-            let merging = record.action == WorktreeFinishAction::Merge;
-            let verb = if merging { "merge" } else { "delete" };
-            let branch_exists = record
-                .branch
-                .as_deref()
-                .map(|branch| local_branch_exists(project_path, branch))
-                .transpose()?
-                .unwrap_or(false);
-            if !worktree_path.exists() && branch_exists {
-                return Err(format!(
-                    "worktree.finish {verb} lost its worktree before branch deletion"
-                ));
-            }
-            if worktree_path.exists() {
-                // Read before the removal below prunes the admin directory the
-                // answer lives in. A checkout Build only borrowed a branch for
-                // hands it back: the action still merges, only the deletion is
-                // withheld.
-                let teardown = crate::worktree::branch_teardown(&worktree_path)
-                    .map_err(|error| error.to_string())?;
-                let deletes_branch = teardown == crate::worktree::BranchTeardown::DeletesBranch;
-                let deleted_branch =
-                    if let Some(branch) = record.branch.as_deref().filter(|_| branch_exists) {
-                        if merging {
-                            merge_external_branch(project_path, branch, base_branch)?;
-                        }
-                        if deletes_branch {
-                            delete_local_branch_for_finish(project_path, branch, &record.head_sha)?;
-                        }
-                        deletes_branch
-                    } else {
-                        false
-                    };
-                if let Err(remove_error) =
-                    remove_registered_worktree(project_path, &worktree_path, true)
-                {
-                    restore_finish_branch_after_removal_failure(
-                        project_path,
-                        record,
-                        deleted_branch,
-                        &remove_error,
-                    )?;
-                    return Err(remove_error);
-                }
-            }
-        }
+        None => false,
+    };
+    if let Err(remove_error) = remove_registered_worktree(project_path, worktree_path, true) {
+        restore_finish_branch_after_removal_failure(
+            project_path,
+            record,
+            deleted_branch,
+            &remove_error,
+        )?;
+        return Err(remove_error);
     }
     Ok(())
 }
@@ -34952,6 +35007,57 @@ mod tests {
         );
     }
 
+    /// Merge still merges: withholding the deletion is the whole difference a
+    /// borrowed branch makes, so the work lands on the base and the branch is
+    /// left exactly where it was.
+    #[test]
+    fn finishing_a_borrowed_checkout_with_merge_merges_and_keeps_the_branch() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["checkout", "-b", "theirs"]);
+        std::fs::write(repo.join("theirs.txt"), "their work\n").unwrap();
+        git_in_dir(&repo, &["add", "."]);
+        git_in_dir(&repo, &["commit", "-m", "their work"]);
+        git_in_dir(&repo, &["checkout", "main"]);
+        let r = git2::Repository::open(&repo).unwrap();
+        let tip = r
+            .find_branch("theirs", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .target()
+            .unwrap();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let borrowed = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(borrowed["ok"], true, "{borrowed:?}");
+
+        let finished = state.handle(req(
+            "worktree.finish",
+            json!({
+                "project_id": project_id,
+                "worktree_id": borrowed["result"]["worktree_id"],
+                "action": "merge",
+            }),
+        ));
+
+        assert_eq!(finished["ok"], true, "{finished:?}");
+        assert!(
+            repo.join("theirs.txt").is_file(),
+            "the work merged into the base"
+        );
+        assert_eq!(
+            r.find_branch("theirs", git2::BranchType::Local)
+                .expect("the branch Build only borrowed is still here")
+                .get()
+                .target()
+                .unwrap(),
+            tip,
+            "and still where its owner left it"
+        );
+    }
+
     /// The finish reads whose branch it is from the checkout, and a checkout
     /// that cannot answer stops the finish. Guessing there deletes a ref
     /// nobody asked Build to touch, so nothing is removed and nothing is
@@ -35009,6 +35115,104 @@ mod tests {
             crate::worktree::UnregisteredRestore::Write(
                 crate::worktree::BranchTeardown::DeletesBranch
             )
+        );
+    }
+
+    /// The same rule at the call site that acts on it: an adopted run's
+    /// checkout may be one Build only borrowed, so with its registration gone
+    /// recovery stops instead of re-adding it under a guess that would hand
+    /// somebody's branch to the next teardown.
+    #[test]
+    fn recovering_an_adopted_checkout_whose_registration_is_gone_refuses() {
+        let (dir, repo) = init_repo();
+        git_in_dir(&repo, &["branch", "theirs"]);
+        // Adoption records the checkout's canonical path, and the managed-root
+        // guard compares it to the configured root, so the test's root is the
+        // canonical one a real install has.
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        let mut state = qa_state(&repo, &root);
+        let project_id = state.projects[0].id.clone();
+        let created = state.handle(req(
+            "worktree.create",
+            json!({ "project_id": project_id, "branch": "theirs" }),
+        ));
+        assert_eq!(created["ok"], true, "{created:?}");
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({
+                "project_id": project_id,
+                "worktree_id": created["result"]["worktree_id"],
+            }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+        let worktree = state.runs[&run_id].worktree.clone();
+        let head_sha = git2::Repository::open(&repo)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string();
+        git_in_dir(
+            &repo,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                "--",
+                worktree.path.to_str().unwrap(),
+            ],
+        );
+        let recovery_id = "recovery-adopted".to_string();
+        state.runs.get_mut(&run_id).unwrap().recovery = Some(crate::run::RecoveryAttempt {
+            id: recovery_id.clone(),
+            requested_stage_id: String::new(),
+            branch: worktree.recorded_branch.clone(),
+            state: crate::run::RecoveryState::Started,
+            report: None,
+            started_at: now_rfc3339(),
+            completed_at: None,
+        });
+
+        state.on_agent_done(
+            &run_id,
+            DoneReport {
+                phase: DonePhase::Recover,
+                status: DoneStatus::Completed,
+                summary: "exact branch recovered".into(),
+                outputs: DoneOutputs {
+                    recovery: Some(crate::mcp::RecoveryReport {
+                        recovery_id,
+                        recovered: true,
+                        branch: worktree.recorded_branch.clone(),
+                        head_sha,
+                        findings: "the branch is still here".into(),
+                    }),
+                    ..DoneOutputs::default()
+                },
+            },
+        );
+
+        let active = &state.runs[&run_id];
+        assert_eq!(
+            active.recovery.as_ref().unwrap().state,
+            crate::run::RecoveryState::Failed
+        );
+        let error = active.last_error.clone().unwrap_or_default();
+        assert!(error.contains("registration is gone"), "{error}");
+        assert!(!worktree.path.exists(), "nothing was re-added");
+        assert!(git2::Repository::open(&repo)
+            .unwrap()
+            .find_worktree(&worktree.name)
+            .is_err());
+        assert!(
+            git2::Repository::open(&repo)
+                .unwrap()
+                .find_branch("theirs", git2::BranchType::Local)
+                .is_ok(),
+            "the branch it borrowed is untouched"
         );
     }
 

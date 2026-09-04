@@ -1411,7 +1411,7 @@ impl Orchestrator {
         &self,
         slug: &str,
         base_branch: &str,
-    ) -> Result<Worktree, OrchestratorError> {
+    ) -> Result<crate::worktree::NamedBranchCheckout, OrchestratorError> {
         Ok(self.worktrees.create(slug, base_branch)?)
     }
 
@@ -1464,7 +1464,7 @@ impl Orchestrator {
         let goal = plan_link.plan.goal.clone();
 
         let slug = slugify(&goal);
-        let worktree = self.worktrees.create(&slug, base_branch)?;
+        let worktree = self.worktrees.create(&slug, base_branch)?.worktree;
         self.scaffold_build_dir(&worktree, &id.0)?;
         let base_sha =
             match self.materialize_and_commit_plan_docs(plan_link, &worktree, &goal, store) {
@@ -2527,10 +2527,7 @@ impl Orchestrator {
     /// abandon (the lifecycle verdict is what must persist).
     pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
         self.abandon_run_keeping_checkout(active)?;
-        if let Err(cleanup) = self
-            .worktrees
-            .remove(&active.worktree, /* keep_branch */ true)
-        {
+        if let Err(cleanup) = self.worktrees.remove_keeping_branch(&active.worktree) {
             eprintln!(
                 "abandon run {}: run abandoned but worktree cleanup failed: {cleanup}",
                 active.worktree.name
@@ -2668,19 +2665,9 @@ impl Orchestrator {
     /// out over somebody else's branch hands it back whole.
     ///
     /// Failure is logged, never fatal — removing the record is what removes the
-    /// work, and a stray directory is only clutter. A checkout that cannot say
-    /// what teardown owns is left exactly as it is: guessing either way is
-    /// worse than clutter.
+    /// work, and a stray directory is only clutter.
     pub fn discard_checkout(&self, worktree: &Worktree) {
-        let teardown = match crate::worktree::branch_teardown(&worktree.path) {
-            Ok(teardown) => teardown,
-            Err(e) => {
-                eprintln!("discard_checkout {}: {e}", worktree.name);
-                return;
-            }
-        };
-        let keep_branch = teardown == crate::worktree::BranchTeardown::KeepsBranch;
-        if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
+        if let Err(e) = self.worktrees.remove(worktree) {
             eprintln!("discard_checkout {}: {e}", worktree.name);
         }
     }
@@ -3030,6 +3017,37 @@ mod tests {
             Agent::Warm(warm_harness()),
             Templates::default(),
         )
+    }
+
+    /// A checkout whose directory a human already removed still says whose
+    /// branch it is: the answer lives beside the registration in the main
+    /// repository, not behind the pointer in the missing directory. Reading it
+    /// through the pointer left the registration and the branch behind.
+    #[test]
+    fn discarding_a_checkout_whose_directory_is_gone_still_takes_its_branch() {
+        let (dir, repo) = init_repo();
+        let orch = orchestrator(&dir, &repo);
+        let worktree = orch
+            .create_bare_worktree("vanished", "main")
+            .unwrap()
+            .worktree;
+        std::fs::remove_dir_all(&worktree.path).unwrap();
+
+        orch.discard_checkout(&worktree);
+
+        let r = git2::Repository::open(&repo).unwrap();
+        assert!(
+            r.find_worktree("vanished")
+                .err()
+                .map(|error| error.code() == git2::ErrorCode::NotFound)
+                .unwrap_or(false),
+            "the stale registration is pruned"
+        );
+        assert!(
+            r.find_branch("build/vanished", git2::BranchType::Local)
+                .is_err(),
+            "the branch Build cut goes with it"
+        );
     }
 
     fn done(phase: DonePhase, status: DoneStatus, plan_path: Option<&str>) -> DoneReport {

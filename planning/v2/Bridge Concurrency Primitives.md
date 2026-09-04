@@ -2,128 +2,124 @@
 
 Status: design, 2026-09-04. The component list for `Bridge Concurrency Spec.md`,
 branch `fix/bridge-concurrent-requests`. Read with the spec open; where they
-disagree the spec wins. It says what must stop happening — this names the five
-components built so it stops, one per step, plus the one primitive the rule
-itself costs.
+disagree the spec wins, except the one deviation argued in §5 (`PendingRow` is
+not persisted). Five components, one per step, plus the two primitives the
+rule itself costs.
 
 ## The one rule every component obeys
 
 **The `AppState` mutex is held only for bounded in-memory bookkeeping.** Nothing
 whose duration another process, another machine, or a disk decides runs while it
 is held: no process wait, no pipe or socket read, no filesystem walk, no git
-shell-out, no sleep. Every component below is one job split the same way —
-decide under the lock, run with it released, apply under it again.
+shell-out or libgit2 call, no sleep. Every component below is one job split the
+same way — decide under the lock, run with it released, apply under it again.
 
-The rule is stated in terms of unbounded work because two writes stay under the
-lock deliberately and the spec already cleared them: the SQLite store (WAL,
-`synchronous = NORMAL`, sub-millisecond) and `persist`'s single config write.
-Both are bounded by this machine's own disk with nothing to wait behind. A
-filesystem *walk* is not — `transcript_stems` lists a directory that grows with
-every conversation — and a process wait is the worst of all, which is why the
-kill has a carrier of its own below.
+Two writes stay under the lock deliberately and the spec cleared them: the
+SQLite store (WAL, `synchronous = NORMAL`, sub-millisecond) and `persist`'s
+single config write. A filesystem *walk* is not bounded (`transcript_stems`
+lists a directory that grows with every conversation); a process wait is not
+at all.
 
-So stated, the rule has no exceptions, and it costs three changes to the code it
-constrains.
-
-`Orchestrator` gains `#[derive(Clone)]` (two `PathBuf`s, a `WorktreeManager` of
-two more, `Templates`, the `Agent` closure, `PtySize`). A verb clones its
-project's orchestrator under the lock and calls it with the lock released. What
-stays under the lock is the part of `Orchestrator` that touches no disk: the run
-and plan state machines (`RunEvent::Abandon` and its siblings), never the git
-around them. Two methods that today straddle both halves are split so the line
-can hold:
+The rule costs `Orchestrator` a `#[derive(Clone)]` (two `PathBuf`s, a
+`WorktreeManager` of two more, `Templates`, the `Agent` closure, `PtySize`). A
+verb clones its project's orchestrator under the lock and calls it with the
+lock released; the run and plan state machines stay under the lock, never the
+git around them. Two methods that straddle both halves are split:
 
 - `Orchestrator::abandon_run` (orchestrator.rs:2526) is deleted. It is
-  `abandon_run_keeping_checkout` — the lifecycle verdict, pure bookkeeping —
-  plus `self.worktrees.remove(..)`, which is `git worktree remove` and
-  `remove_dir_all`. The verdict stays under the lock, the removal becomes
-  §5's `DiscardCheckout` mutation, and no caller can take both at once again.
+  `abandon_run_keeping_checkout` (the lifecycle verdict, pure bookkeeping) plus
+  `self.worktrees.remove(..)` (worktree.rs:377: `remove_dir_all`, a libgit2
+  prune, the branch delete). The verdict stays under the lock; the removal
+  becomes §5's `DiscardCheckout`.
 - `Orchestrator::adopt_run` (orchestrator.rs:2392) keeps its `ActiveRun`
-  construction and loses both its disk steps — `commit_all_with_message` (the
-  adoption checkpoint) and `scaffold_build_dir` — to §5's `AdoptCheckout`
-  mutation. Its three refusals leave too, into `AdoptableCheckout` (§5), so the
-  verdict still precedes the checkpoint. The run id is minted in the decide
-  phase and carried into the run phase, because the scaffold is written per
-  owner.
+  construction and loses `commit_all_with_message`, `scaffold_build_dir` and
+  its three refusals to §5's `adopt` and `AdoptableCheckout`.
 
-### `SessionReaper` — ending a tab, off the lock
+### `Retirement` — ending a tab, off the lock
 
 `AgentSession::end` is `child.kill()` then `child.wait()` for both carriers
 (`PtySession::kill_and_reap`, pty.rs:683; `AdkSession::end`, harness/adk.rs:723).
 SIGKILL does not land on a child wedged in uninterruptible I/O until that I/O
-returns, so `wait()` is an unbounded process wait — the plainest violation of
-the rule there is, and today every one of its eight callers holds the app mutex:
-`close_agent_tab` (app.rs:3900), `term_close` (6013), the vanished-worktree
-reaper (6130), `retire_agent` (8328), `abandon_router_session` (9567),
-`ensure_agent_tab`'s dead-tab replacement (17950) and stale-owner sweep (17973),
-and `spawn_tab_pump`'s shell EOF (18436).
+returns, so `wait()` is an unbounded process wait, and today every one of its
+eight callers holds the app mutex: `close_agent_tab` (app.rs:3900), `term_close`
+(6013), `reap_orphaned_terminals` (6130), `retire_agent` (8328),
+`abandon_router_session` (9567), `ensure_agent_tab`'s dead-tab replacement
+(17950) and stale-owner sweep (17973), and `spawn_tab_pump`'s shell EOF (18436).
 
-All eight do the same three things in the same order — take the tab out of the
-registry, end its session, tell its clients — so they become one call, and the
-two halves that are not bookkeeping move to a thread that holds nothing:
+Seven of the eight take the tab out of the registry, tell its clients, and end
+its session. The dead-tab replacement ends the session and **keeps the
+screen**: `dead.screen` is `carried` into the new session (app.rs:17949-17952,
+18087-18103) and the attached clients are told nothing, which is what keeps a
+browser's terminal attached across an agent restart. So there are two calls,
+and the signature says which half of the tab the caller keeps:
 
 ```rust
 // bridge/src/reaper.rs (new)
-pub struct SessionReaper;                 // one std::thread, no runtime needed
-impl SessionReaper {
-    /// Push the close to the tab's clients and kill and reap its process, both
-    /// on the reaper's thread. Returns before either has happened.
-    pub fn retire(&self, tab: RetiredTab) -> Retirement;
-}
-pub struct RetiredTab {
-    session: Arc<dyn AgentSession>, screen: Option<ScreenHandle>,
-    wire_id: String, reason: &'static str,
-}
 pub struct Retirement;                    // Clone
 impl Retirement {
+    /// Kill and reap `session` on a std::thread of its own. Returns before
+    /// either has happened. One thread per call, never a queue: a child wedged
+    /// in uninterruptible I/O parks its own thread and nobody else's.
+    pub fn begin(session: Arc<dyn AgentSession>) -> Retirement;
     /// True once the process is reaped. Callable only with the app mutex
     /// released — it is the wait the rule forbids, made explicit.
     pub fn wait(&self, timeout: Duration) -> bool;
 }
 
 impl AppState {
-    /// Remove one tab and retire it. The only way a tab stops existing.
+    /// Remove one tab, tell its clients `reason`, and retire its process.
     fn retire_tab(&mut self, key: &TabKey, reason: &'static str) -> Option<Retirement>;
+    /// Remove one tab and retire its process, keeping its screen for the
+    /// session that replaces it. The clients are told nothing and stay
+    /// attached. `ensure_agent_tab`'s dead-tab replacement, and nothing else.
+    fn retire_tab_keeping_screen(&mut self, key: &TabKey)
+        -> Option<(Retirement, Option<ScreenHandle>)>;
     fn retire_agent_tabs(&mut self, root: &Path) -> Vec<Retirement>;   // was close_agent_tab
 }
 ```
 
-An `std::thread` and not a spawned task, because the synchronous unit tests run
-with no runtime under them and a tab still has to end there.
+The close push stays in `retire_tab`, under the lock, because it is bounded:
+`ScreenHandle::close` is the screen's leaf lock plus one `SessionSender::push`
+per client — an encrypt and an unbounded `mpsc` send (relay.rs:135-160) —
+which is what every `push_closed` under the app mutex is today. Only the kill
+and the wait leave, onto a thread that holds nothing. A `std::thread` and not
+a spawned task, because the synchronous unit tests run with no runtime under
+them and a tab still has to end there.
 
-Almost every caller drops the receipt: the tab is out of the registry, which is
-what stops the agent being addressable, and the process dying a moment later
-changes nothing. **One caller waits**, and it is why `Retirement` exists:
-`DiscardCheckout::perform` (§5) waits out the agents `run.abandon`'s decide
-phase retired before it runs `git worktree remove` on the directory they had as
-their cwd. That wait happens in the run phase, holding nothing — which is the
-whole point, since today the same ordering is bought by killing under the lock.
+Every caller but one drops the receipt: the tab is out of the registry, which
+is what stops the agent being addressable. `DiscardCheckout` (§5) waits, for a
+reason argued there on its own merits — it is not today's order.
+
+With the kill asynchronous, a replaced session's EOF can arrive after the
+replacement tab is in the registry. `spawn_tab_pump` carries the `Arc` of the
+session it pumps and at EOF acts only when `Arc::ptr_eq` matches the registry
+tab's session; today's pump (app.rs:18396) has no such check, and the
+synchronous kill was what made it unnecessary.
 
 ## Lock order, daemon-wide
 
 The app mutex is above every other lock. Under it, two leaves may be taken:
 `FrameClock`'s counters (§1), to stamp the current holder, and `ChangeBus`'s
 `pending` set — `note_board_changed` / `note_entity_changed` (app.rs:4337-4345)
-are `AppState` methods called with the app mutex held throughout, by
-`add_project` (3644), `store_diff_entry` (4163), `apply_deferred` (5806-5808)
-and §5's `apply_lifecycle`. That is safe and deliberate, and `ChangeBus::note`
-(changes.rs:157) says so in its own words: one leaf mutex, an insert into a set,
-a `notify_one`, return. The flusher that sends never takes the app mutex, so the
-order is app mutex → `pending`, never the reverse.
+are `AppState` methods called with the app mutex held, by `add_project`
+(3644), `store_diff_entry` (4163), `apply_deferred` (5806-5808) and §5's
+`apply_lifecycle`. `ChangeBus::note` (changes.rs:157) documents itself as safe
+there: one leaf mutex, an insert into a set, a `notify_one`. The flusher never
+takes the app mutex, so the order is app mutex → `pending`, never the reverse.
 
-`ScreenHandle` (§2) is absent from the order because it is never nested: the app
-mutex resolves the handle, releases, and only then is the screen locked. Two
-screens are never locked at once either — the one carry that reads two of them
-(`carry_clients_from`) drains the waiting screen under its own lock, releases
-it, and only then locks its own. The reaper's thread locks a screen and a child,
-never `AppState`. The one lock taken *with* the app mutex in hand is §3's spawn
-condvar, which is what a condvar is: it hands the guard back while it waits.
+`ScreenHandle` (§2) is a leaf: the app mutex resolves the handle, releases, and
+only then is the screen locked, except `retire_tab`'s close push, which locks
+the screen under the app mutex as `push_closed` does today — app mutex →
+screen, never the reverse. Two screens are never locked at once:
+`carry_clients_from` drains the waiting screen under its own lock, releases,
+then locks its own. A `Retirement`'s thread locks a child, never `AppState`.
+The one lock taken *with* the app mutex in hand is §3's spawn condvar, which
+hands the guard back while it waits.
 
 ## 1. `FrameClock` — the timing guard
 
 - **Boundary** `bridge/src/timing.rs` (new), between the relay's worker pool and
-  the app. The only thing that knows how long a frame took, and nothing about
-  what a verb means. `FrameHandler` becomes
+  the app. `FrameHandler` becomes
   `Arc<dyn Fn(SessionSender, Frame, FrameTimer) -> Value + Send + Sync>`: the
   queue wait is `relay::run_job`'s, the lock wait `dispatch_frame`'s, and one
   record must carry both.
@@ -144,19 +140,18 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   line (over 200 ms: method, four durations, queue depth), the holder slot, the
   queue depth.
 - **Replaces** every bare `state.lock().unwrap()` on the dispatch path
-  (`dispatch_frame`, `term_*`, `agent_attach`) with `timer.lock(state)`;
-  `LockedFor` derefs to `AppState`, so nothing else moves.
-- **Owns frame latency, not every clock.** The durable timestamps that decide
-  staleness and rate limits keep their own `Instant`s and are none of
-  `FrameClock`'s business: `TermScreen.last_flood_snapshot_at` (app.rs:242),
-  `Tab.last_delivered_at` (app.rs:700), `ExternalScanCache.scanned_at`
-  (app.rs:1324), and the `(Instant, Value)` stamps on `run_stat_cache`
-  (app.rs:1923) and `primary_summary` (app.rs:1011). Those answer "is this entry
-  old"; `FrameClock` answers "how long did this frame take", and only frames flow
-  through it.
-- **Lock discipline** `LockedFor` declares its `MutexGuard` first, so hold time
-  and the histogram are recorded after release; only the holder stamp is written
-  under the app mutex. `bridge.stats` answers from `FrameClock` alone — a wedged
+  (`dispatch_frame`, `term_*`, `agent_attach`) with `timer.lock(state)`.
+- **Owns frame latency, not every clock.** The timestamps that decide
+  staleness keep their own `Instant`s: `TermScreen.last_flood_snapshot_at`
+  (app.rs:242), `Tab.last_delivered_at` (700), `ExternalScanCache.scanned_at`
+  (1324), the `(Instant, Value)` stamps on `run_stat_cache` (1923) and
+  `primary_summary` (1011).
+- **Lock discipline** `LockedFor` holds its `MutexGuard` in an `Option`. Its
+  `Drop` takes the guard out, drops it, and only then records hold time — a
+  `Drop` impl runs before its fields drop, so field order alone would record
+  with the guard held. The histogram write is `FrameClock`'s own leaf, the one
+  the lock order above permits; the holder stamp is the only write made under
+  the app mutex. `bridge.stats` answers from `FrameClock` alone — a wedged
   daemon must still say who is wedging it.
 - **Tests** `a_slow_frame_logs_its_four_durations`,
   `bridge_stats_answers_while_another_frame_holds_the_app_mutex`.
@@ -166,8 +161,7 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
 - **Boundary** `bridge/src/screen.rs` (new; `TermScreen`, `AttachedClient` and
   the flow-control constants move out of `app.rs`): one tab's grid and its
   attached clients. The module cannot see `AppState`, which makes "the pump never
-  takes the app mutex" structural rather than a habit. It emits no reply JSON
-  either — the wire shape of an attach is the app's, not the screen's.
+  takes the app mutex" structural, and emits no reply JSON.
 - **Interface**
 
   ```rust
@@ -183,7 +177,7 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
       pub fn restart(&self);                 // new session: fresh parser, same cursor
       pub fn resize(&self, cols: u16, rows: u16);
       pub fn carry_clients_from(&self, waiting: &ScreenHandle);
-      pub fn close(&self, reason: &str);
+      pub fn close(&self, reason: &str);     // bounded: leaf lock + one push per client
   }
   pub struct AttachSnapshot { snapshot: String, cursor: u64, cols: u16, rows: u16 }
   pub struct TerminalHandle { session: Arc<dyn AgentSession>, screen: ScreenHandle }
@@ -197,24 +191,20 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
 - **Hides** the vt100 parser, the cursor, the coalescing buffer, the unacked-byte
   budget, the flood-collapse rate limit, dead-sender pruning, every `term.*` push
   shape.
-- **The attach reply exists once, in the app.** An attach answers with two
-  things: what the screen knows (`AttachSnapshot`) and what the tab knows
-  (`term_id`, `live`, `provider`). One app-side function joins them —
-  `fn attach_view(tab: TabFacts, screen: AttachSnapshot) -> Value`, where
-  `TabFacts` is `{ term_id, live, provider }` — and it is the only place that
-  JSON is written. All three attach paths call it: `attach_to_tab`
-  (app.rs:17863), `agent_attach`'s no-tab branch (app.rs:17702, which passes
-  `TabFacts { term_id: agent_tab_id(agent), live: false, provider: None }`), and
-  `term.attach`. The screen module never sees a `Value`.
-- **A session's last reading is taken off the lock, like every other.** The
-  pump's EOF path is the one place a *reading* still happens under the mutex:
-  `note_session_self_report` (app.rs:18620) → `named_conversation` →
-  `AgentSession::session_id`, which for the terminal carrier is
-  `ClaudeSessionLocator::session_id` (harness/claude.rs:182) listing the
-  transcript directory through `transcript_stems` whenever the name was never
-  captured. `capture_conversation_names` (app.rs:18639) already has the right
-  shape — take the session out, ask with the lock released, write back — and it
-  becomes the only shape, named once:
+- **The attach reply exists once, in the app.** `fn attach_view(tab: TabFacts,
+  screen: AttachSnapshot) -> Value`, `TabFacts { term_id, live, provider }`, is
+  the only place that JSON is written. All three attach paths call it:
+  `attach_to_tab` (app.rs:17863), `agent_attach`'s no-tab branch (17702,
+  `TabFacts { term_id: agent_tab_id(agent), live: false, provider: None }`),
+  and `term.attach`.
+- **A session's last reading is taken off the lock.** The pump's EOF path still
+  reads under the mutex: `note_session_self_report` (app.rs:18620) →
+  `named_conversation` → `AgentSession::session_id`, which for the terminal
+  carrier is `ClaudeSessionLocator::session_id` (harness/claude.rs:182) listing
+  the transcript directory through `transcript_stems` whenever the name was
+  never captured. `capture_conversation_names` (app.rs:18639) already has the
+  right shape — take the session out, ask with the lock released, write back —
+  and becomes the only shape:
 
   ```rust
   pub struct SelfReport { named: Option<String>, model: Option<String> }
@@ -232,9 +222,7 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   `note_session_self_report`, `note_named_conversation`, `note_announced_model`,
   `named_conversation` and `announced_model` are deleted: the first three are
   `note_self_report`, and the last two read a session *through* `state.tabs`,
-  which is exactly the borrow that kept the read under the lock. The sweep and
-  the pump's EOF are then the same two lines in a different order, and neither
-  can drift from the other.
+  the borrow that kept the read under the lock.
 - **Replaces** `Tab.screen: Option<TermScreen>` → `Option<ScreenHandle>`;
   `agent_screens_awaiting_spawn` → `HashMap<TabKey, ScreenHandle>`;
   `Tab::require_terminal_and_screen` (a borrow of `AppState`) →
@@ -242,33 +230,29 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   `ScreenHandle::close`; the two hand-built attach payloads → `attach_view`; the
   shell EOF's `tab.session.end()` → `AppState::retire_tab`.
 - **Lock discipline** app mutex → resolve `TabKey` → clone the handle →
-  **release** → lock the screen; never held together. `carry_clients_from` locks
-  two screens in sequence and never at once: it takes the waiting screen's lock,
-  drains its clients and viewport out (leaving it empty), releases, then locks
-  its own and registers them — so the two orders a deadlock needs cannot both
-  exist. `spawn_tab_pump` takes the app mutex three times in a tab's life — at
-  start to look the handle up, and twice at EOF with the reading between them:
-  **take** the session `Arc` and the tab's role out; **release**, then
-  `SelfReport::read` (the transcript listing) and, for a shell, `retire_tab`'s
-  kill on the reaper's thread; **re-acquire** for `note_self_report` and
-  `record_agent_session_end`. Every chunk and flush in between is screen-lock
-  only, and the screen's `flush` / `push_closed` need no app mutex at all.
-  `term.input`/`term.resize` clone a `TerminalHandle`, release, then write, so a
-  pty nobody drains blocks one worker. The screen lock is a leaf:
-  `SessionSender::push` is all that runs there.
+  **release** → lock the screen. `spawn_tab_pump` takes the app mutex three
+  times in a tab's life — at start to look the handle up, and twice at EOF with
+  the reading between them: **take** the session `Arc` and the tab's role out
+  (only if `Arc::ptr_eq` with the session it pumps); **release**, then
+  `SelfReport::read` and, for a shell, `retire_tab`; **re-acquire** for
+  `note_self_report` and `record_agent_session_end`. Every chunk and flush in
+  between is screen-lock only. `term.input`/`term.resize` clone a
+  `TerminalHandle`, release, then write, so a pty nobody drains blocks one
+  worker. `SessionSender::push` is all that runs under the screen lock.
 - **Tests** `a_streaming_pty_never_takes_the_app_mutex`,
   `a_board_read_answers_while_three_screens_are_flooding`,
   `term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free`,
   `carrying_clients_between_two_screens_holds_one_lock_at_a_time`,
   `an_agent_tabs_last_reading_leaves_the_app_mutex_free`,
-  `killing_a_wedged_harness_never_holds_the_app_mutex`.
+  `killing_a_wedged_harness_never_holds_the_app_mutex`,
+  `a_close_after_a_wedged_kill_still_reaches_its_clients`,
+  `a_replaced_sessions_late_eof_leaves_the_replacement_tab_alone`.
 
 ## 3. `DeliveryRunner` — the background delivery runner
 
 - **Boundary** `bridge/src/delivery.rs` (new; `deliver`,
   `deliver_pending_agent_turns` and `ensure_agent_tab` move here), between a
-  verb's durable state change and the agent process that hears about it. Two
-  public calls, and every path to a harness goes through one of them.
+  verb's durable state change and the agent process that hears about it.
 - **Interface**
 
   ```rust
@@ -287,31 +271,26 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   ) -> Result<(String, Spawned), String>;
   ```
 
-- **A turn's message is optional, so there is one delivery path, not two.**
-  `PendingAgentTurn.cold` / `.warm` become
-  `say: Option<TurnText>` (`TurnText { cold: String, warm: String }`). A turn
-  with something to say is what `thread.post` and `branch.dispatch` queue; a
-  turn with `None` is what `agent.start` queues when nothing is unread — the
-  tab is opened and nothing is written to it. `agent_start` (app.rs:17744) stops
-  branching between `deliver` and a bare `ensure_agent_tab` and queues one turn
-  either way, so the turnless spawn has the same owner as every other.
-- **Hides** which half of a turn travels (cold/warm), the readiness wait, the
+- **A turn's message is optional, so there is one delivery path.**
+  `PendingAgentTurn.cold` / `.warm` become `say: Option<TurnText>`
+  (`TurnText { cold: String, warm: String }`); `agent.start` (app.rs:17744)
+  queues `None` when nothing is unread and stops branching between `deliver`
+  and a bare `ensure_agent_tab`.
+- **Hides** which half of a turn travels, the readiness wait, the
   `PROMPT_WRITE_EXIT_GRACE` exit race, the in-flight bookkeeping, the
   resume/transcript/locator order — no verb knows a harness exists.
 - **Replaces** every site that drains the queue on the caller's thread:
-  `dispatch_frame`'s inline `deliver_pending_agent_turns` (app.rs:17483), and
-  the MCP done socket's two (app.rs:4457, the router action that dispatches a
-  branch, and app.rs:4484, the report that starts the next phase) →
-  `DeliveryRunner::spawn`, so the reply and the socket's ack go out as soon as
-  the store write lands. `ensure_agent_tab`'s `sleep(25 ms)` loop against
-  `AGENT_SPAWN_WAIT` → the condvar wait below. Its two `session.end()` calls →
-  `AppState::retire_tab`. `scaffold_agent_worktree`, `resume_id_probe`,
-  `transcript_probe`, `session_locator_factory` and `agent_harness_spec` leave
-  the reservation block for `probe_and_scaffold`.
-- **The spawn plan carries what builds a spec, not a spec.** The spec's inputs
-  (`continue_session`, `resume_session_id`) are the probes' outputs, and the
-  probes are disk reads that must not run under the lock — so the plan cannot
-  hold a `HarnessSpec`, and holds the means to build one instead:
+  `dispatch_frame`'s inline `deliver_pending_agent_turns` (app.rs:17483) and
+  the MCP done socket's two (4457, 4484) → `DeliveryRunner::spawn`.
+  `ensure_agent_tab`'s `sleep(25 ms)` loop against `AGENT_SPAWN_WAIT` → the
+  condvar wait below; its dead-tab `session.end()` →
+  `retire_tab_keeping_screen`; its stale-owner sweep's → `retire_tab`.
+  `scaffold_agent_worktree`, `resume_id_probe`, `transcript_probe`,
+  `session_locator_factory` and `agent_harness_spec` leave the reservation
+  block for `probe_and_scaffold`.
+- **The spawn plan carries what builds a spec, not a spec**, because the spec's
+  inputs (`continue_session`, `resume_session_id`) are the probes' outputs and
+  the probes are disk reads:
 
   ```rust
   struct AgentSpawnPlan {
@@ -321,13 +300,13 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
       may_pick_up_a_conversation: bool,
       probes: SessionProbes,          // the three Arc closures, cloned
       session_token: String,
-      carried: Option<ScreenHandle>,
+      carried: Option<ScreenHandle>,  // from retire_tab_keeping_screen
       claim: SpawnClaim,
   }
   impl AgentSpawnPlan { fn probe_and_scaffold(self) -> Result<ReadyToSpawn, String>; }
 
   /// The pick-up rule — resume an exact name, else `--continue` a transcript,
-  /// else fresh — in one place instead of inline in the reservation block.
+  /// else fresh — in one place.
   pub struct SessionProbes;           // Clone
   impl SessionProbes {
       fn pickup(&self, root: &Path, provider: Provider, recorded: Option<String>,
@@ -347,43 +326,40 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
                         claim: SpawnClaim }
   ```
 
-- **The single-flight claim has no public surface.** There is no
-  `reserve`/`release` for a caller to pair and no bare `Condvar` for a caller to
-  wait on: `ensure_agent_tab` owns both ends. Under one acquisition it either
-  returns the live tab, or takes the claim (`AppState.agent_spawns_in_flight`,
-  which must be read in the same acquisition as the tab registry or two callers
-  spawn two harnesses), or hands the guard to `AppState.agent_spawn_finished:
-  Arc<Condvar>` and looks again when a spawn ends. `SpawnClaim` is the claim
-  itself: it travels through the plan and is consumed by the acquisition that
-  inserts the tab, and its `Drop` releases the claim and notifies every waiter
-  on any path that never got there — a panic included. The waiters wake on a
-  notify, not on a 25 ms timer, and `AGENT_SPAWN_WAIT` becomes the condvar's
-  timeout rather than a deadline a sleep loop counts toward.
-- **Lock discipline** Three acquisitions, no more. **Take**: the queue, the
-  in-flight marks, the reserved tab id, and `retire_tab` for the dead tab this
-  spawn replaces and for the stale-owner sweep — one acquisition, exactly as
-  today, so the idle sweep never sees a gap. The retirements' receipts are
-  dropped here: the tabs are out of the registry, and their processes die on the
-  reaper's thread. **Run**: probe, scaffold, build the spec, spawn, `send_turn`
-  — none. **Apply**: insert the tab, consume the claim,
+- **The single-flight claim has no public surface.** `ensure_agent_tab` owns
+  both ends. Under one acquisition it returns the live tab, or takes the claim
+  (`AppState.agent_spawns_in_flight`, read in the same acquisition as the tab
+  registry or two callers spawn two harnesses), or hands the guard to
+  `AppState.agent_spawn_finished: Arc<Condvar>` and looks again when a spawn
+  ends. `SpawnClaim` travels through the plan and is consumed by the acquisition
+  that inserts the tab; its `Drop` releases the claim and notifies every waiter
+  on any path that never got there, a panic included. `AGENT_SPAWN_WAIT` is the
+  condvar's timeout.
+- **Lock discipline** Three acquisitions. **Take**: the queue, the in-flight
+  marks, the reserved tab id, `retire_tab_keeping_screen` for the dead tab this
+  spawn replaces and `retire_tab` for the stale-owner sweep — one acquisition,
+  as today, so the idle sweep never sees a gap; the receipts are dropped.
+  **Run**: probe, scaffold, build the spec, spawn, `send_turn` — none.
+  **Apply**: insert the tab, consume the claim,
   `record_agent_resume_id(.., None)` when `recorded_name_is_gone`,
   `record_agent_session_start` / `record_agent_delivery_failure`,
-  `note_entity_changed`. The condvar wait is the one taken with a guard in hand.
-  A verb that queues a turn answers with the tab id reserved under the lock; the
-  outcome reaches the browser through the entity's push event, not the reply.
+  `note_entity_changed`. A verb that queues a turn answers with the tab id
+  reserved under the lock; the outcome reaches the browser through the
+  entity's push event.
 - **Tests** `a_message_is_answered_before_its_agent_has_spawned`,
   `agent_start_answers_with_the_reserved_tab_before_the_harness_is_up`,
   `a_board_read_completes_while_a_cold_spawn_waits_for_readiness`,
   `two_callers_of_one_tab_spawn_one_harness_without_spinning`,
   `a_dead_recorded_resume_name_is_forgotten_in_the_apply_phase`,
-  `a_spawn_that_replaces_a_wedged_tab_answers_before_it_dies`.
+  `a_spawn_that_replaces_a_wedged_tab_answers_before_it_dies`,
+  `a_restarted_agent_keeps_its_attached_terminal`.
 
 ## 4. The diff cache — one read, one owner
 
 - **Boundary** `bridge/src/app.rs`, beside `DiffCacheKey`: between a poll surface
   and the git work its numbers come from. Three typed reads are the only way a
-  verb touches a diff cache, and each does the whole job — serve what is there,
-  judge it, claim and start the refresh it needs, and never compute.
+  verb touches a diff cache; each serves what is there, claims the refresh it
+  needs, and never computes.
 - **Interface**
 
   ```rust
@@ -394,106 +370,88 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
       fn note_worktree_appeared(&mut self, project_id: &str, worktree: ExternalWorktree);
       fn note_worktree_gone(&mut self, project_id: &str, path: &Path);
 
-      /// Claim and spawn `refresh` unless what it would replace is younger than
-      /// `ttl`. The caller passes the stamp it just answered from, so nothing
-      /// here looks a timestamp up by kind. Private; the three reads above are
-      /// its only callers.
+      /// Claim and spawn `refresh` unless one is already running. Single-flight,
+      /// non-blocking, no age test: the caller has decided it wants a scan.
+      fn refresh_now(&mut self, refresh: DiffCacheRefresh);
+      /// `refresh_now` unless what it would replace is younger than `ttl`. The
+      /// caller passes the stamp it just answered from, so nothing here looks a
+      /// timestamp up by kind. Private; the three reads above are its callers.
       fn refresh_if_stale(&mut self, computed_at: Option<Instant>, ttl: Duration,
                           refresh: DiffCacheRefresh);
   }
   pub struct ScanRead { worktrees: Vec<ExternalWorktree>, ever_scanned: bool }
   ```
 
-- **The stamp comes from the caller, because the caller has it.** The three
-  timestamps live in three places and stay there — `run_stat_cache:
-  HashMap<String, (Instant, Value)>` (app.rs:1923),
+- **The stamp and the TTL come from the caller, because the caller has them.**
+  `run_stat_cache: HashMap<String, (Instant, Value)>` (app.rs:1923),
   `Project.external_scan.scanned_at` (1324), `Project.primary_summary:
-  Option<(Instant, Value)>` (1011) — and each typed read has already touched its
-  own entry to answer from it. Handing that `Instant` on is one move; looking it
-  up again by key would be a match on `DiffCacheKey`, which is what this design
-  refuses. The TTL travels the same way: `TASK_STAT_TTL`, `EXTERNAL_SCAN_INTERVAL`
-  and `PRIMARY_SUMMARY_TTL` are each declared beside the cache they govern and
-  passed by the read that owns it — one fact, one place, no `ttl()` match.
-  `refresh_if_stale` is then three lines with no knowledge of kinds: compare,
-  claim, spawn.
+  Option<(Instant, Value)>` (1011); `TASK_STAT_TTL` (1316),
+  `EXTERNAL_SCAN_INTERVAL` (1017), `PRIMARY_SUMMARY_TTL` (1320), each declared
+  beside the cache it governs. `refresh_if_stale` is compare, then
+  `refresh_now`; `refresh_now` is claim, then spawn.
 - **The one match left on `DiffCacheRefresh` is the one the rules allow.**
-  `key()` and `compute()` (app.rs:1513) are the single construction point where
-  a refresh names itself and picks its git work. Nothing else in the path
-  branches on a variant.
+  `key()` and `compute()` (app.rs:1501, 1513) are the single construction point
+  where a refresh names itself and picks its git work.
 - **Hides** staleness, the single-flight claim, the spawn. Every miss and every
-  stale entry end alike: an answer now, a `spawn_diff_refresh` behind it,
-  `publish_diff_refresh` + `note_board_changed` when it lands.
-- **No cache read returns a variant to be matched.** Each read is typed to its
-  own key and hands back the domain answer: a stat or `None`, the scan and
-  whether one has ever landed, a summary or `None`. Nothing carries two
-  impossible arms, and nothing sequences a build-then-read-then-placeholder.
-- **Emptiness is rendered, not stored.** `scanning_placeholder` does not exist:
-  `ever_scanned == false` becomes `{"worktrees": [], "scanning": true}` in
-  `external_worktrees_json` (app.rs:6909), and `None` becomes `null` where
-  `run_view` and the sidebar build their JSON. The cache key stays a domain type
-  and no reply shape is written on it.
+  stale entry end alike: an answer now, `spawn_diff_refresh` behind it,
+  `publish_diff_refresh` + `note_board_changed` when it lands. No read returns
+  a variant to be matched: a stat or `None`, the scan and whether one has ever
+  landed, a summary or `None`.
+  Emptiness is rendered, not stored: `ever_scanned == false` becomes
+  `{"worktrees": [], "scanning": true}` in `external_worktrees_json`
+  (app.rs:6909); `None` becomes `null` where `run_view` and the sidebar build
+  their JSON.
 - **Replaces** the whole second owner of staleness. Deleted: `warm_diff_caches`
-  (app.rs:1725), `diff_caches_read_by`, `DiffCacheScope`,
-  `claim_stale_diff_refreshes`, `stale_run_stat_work`, `stale_external_scan_work`,
-  `stale_primary_summary_work`, `diff_cache_work`, `DiffCacheWork`,
-  `ClaimedRefresh.blocking` and the `blocking` parameter,
-  `DiffCacheWork::AwaitFirstValue`, `wait_for_first_diff_value`,
-  `FIRST_COMPUTE_WAIT`. Also deleted: the compute-of-last-resort inside
-  `run_stat` and `external_worktrees` and the primary-summary read, and the
-  `force` parameter with it. `trigger_diff_refresh` folds into
-  `refresh_if_stale`. `invalidate_external_scan` → `note_worktree_appeared` /
+  (app.rs:1725), `diff_caches_read_by`, `DiffCacheScope` (1441),
+  `claim_stale_diff_refreshes` (3987), `stale_run_stat_work`,
+  `stale_external_scan_work`, `stale_primary_summary_work`, `diff_cache_work`,
+  `DiffCacheWork`, `ClaimedRefresh.blocking` and the `blocking` parameter,
+  `DiffCacheWork::AwaitFirstValue`, `wait_for_first_diff_value` (1761),
+  `FIRST_COMPUTE_WAIT` (1498). Also deleted: the compute-of-last-resort inside
+  `run_stat` (14519-14540) and `external_worktrees` (4222-4270), and the
+  `force` parameter with it. `trigger_diff_refresh` (4106) is `refresh_now`.
+  `invalidate_external_scan` (4273) → `note_worktree_appeared` /
   `note_worktree_gone`, so a create no longer empties a project's whole scan.
-  With no pre-warm and no blocking read there is nothing left that decides an
-  entry is stale except the read of that entry.
-- **The two verbs that decided from a number keep deciding from the truth.**
-  `DiffCacheScope::Run` and `Branch` existed so `run.finish` / `branch.finish`
-  would not judge uncommitted work from a stale stat. They do not need a
-  blocking cache read: the finish's own lock-free preflight already forces a
-  rescan and rechecks eligibility inside `WorktreeFinishJob::run` (app.rs:16012),
-  which is §5's run phase. The decision moves there entirely, where the numbers
-  are fresh by construction.
-- **`force: true` has two callers, and both become run phases.**
-  `resolve_external_worktree` (app.rs:4296) scans forced when its first read
-  misses; `bare_checkout_on_branch` (app.rs:13663) scans forced so a dispatch
-  decides against the checkouts that exist now. Both scans move off the lock into
-  §5 mutations: `AdoptCheckout::perform` runs `discover_external_worktrees` and
-  resolves `run.adopt`'s id against that scan, and `DispatchCheckout::perform`
-  runs one scan and decides from it whether to adopt the bare checkout on the
-  named branch or cut a new one. Neither verb can act on a stale card, and
-  neither scans under the mutex.
+- **`run.finish` / `branch.finish` decide from the truth, not a number.**
+  `DiffCacheScope::Run` and `Branch` existed so they would not judge
+  uncommitted work from a stale stat; the finish's own lock-free preflight
+  already forces a rescan and rechecks eligibility inside
+  `WorktreeFinishJob::run` (app.rs:16002), §5's run phase.
+- **`force: true` has three callers.** `run_adopt` itself (app.rs:12551) →
+  `AdoptExternalCheckout::perform` (§5); `bare_checkout_on_branch` (13663) →
+  `DispatchCheckout::perform` (§5); `resolve_external_worktree`'s forced retry
+  (4296) → deleted, below. `resolve_external_worktree` is not on `run.adopt`'s
+  path: it serves the four non-lifecycle callers.
 - **A cache miss elsewhere is an error, not a scan.** `resolve_external_worktree`
-  keeps its four non-lifecycle callers — `TermScope::ExternalWorktree` for
-  `term.create` / `fs.tree` (app.rs:214), git scope resolution (7105),
-  `resolve_branch_scope` (7377), `worktree.diff` (8451) — and becomes one cached
-  read plus a `find`: no second scan, no compute. Build's own creates and removals
-  are in the cache the moment they land (`note_worktree_appeared` /
-  `note_worktree_gone`), so the only id that can miss is one for a worktree
-  created outside Build since the last scan. That id is unresolvable for at most
-  `EXTERNAL_SCAN_INTERVAL`: the read that missed has already claimed the refresh
-  on its way past, and the error says so —
-  `unknown worktree_id: <id> (a worktree created outside Build is resolvable
-  after the next scan)` — so the client's retry succeeds rather than the daemon
-  blocking every caller for a scan one of them asked for.
+  keeps its four callers — `TermScope::ExternalWorktree` for `term.create` /
+  `fs.tree` (app.rs:214), git scope resolution (7105), `resolve_branch_scope`
+  (7377), `worktree.diff` (8451) — and becomes one cached read plus a `find`.
+  Build's own creates and removals are in the cache the moment they land, so
+  the only id that can miss is one for a worktree created outside Build since
+  the last scan. A miss calls `refresh_now` unconditionally — a miss against a
+  fresh cache must not wait out `EXTERNAL_SCAN_INTERVAL`, so the retry window
+  is one scan's duration — and the error says so: `unknown worktree_id: <id>
+  (a worktree created outside Build is resolvable once the scan now running
+  lands)`.
 - **Lock discipline** all three reads are pure bookkeeping: read the map, maybe
-  insert a claim, hand back a value. The compute runs on `spawn_blocking` holding
-  nothing; publishing takes the app mutex on its own.
+  insert a claim, hand back a value. The compute runs on `spawn_blocking`
+  holding nothing; publishing takes the app mutex on its own.
 - **Tests** `board_list_answers_scanning_when_nothing_has_ever_been_computed`,
   `a_first_scan_never_runs_under_the_app_mutex`,
   `a_created_worktree_joins_the_scan_cache_instead_of_clearing_it`,
   `run_finish_refuses_uncommitted_work_found_by_its_own_preflight`,
-  `an_out_of_band_worktree_id_is_refused_until_the_next_scan_lands`.
+  `an_out_of_band_worktree_id_is_refused_and_claims_one_scan`.
 
 ## 5. `WorktreeLifecycleJob` — worktree work off the lock
 
 - **Boundary** `bridge/src/lifecycle.rs` (new; `WorktreeFinishJob` moves here as
   one mutation), between a lifecycle verb's decision and the git that carries it
-  out — for create, dispatch, implement, adopt, release, abandon, clone, finish
-  and rollback alike.
+  out.
 - **Interface**
 
   ```rust
   pub struct WorktreeLifecycleJob {
-      reservation: Box<dyn Reservation>,      // what the decide phase persisted
+      reservation: Box<dyn Reservation>,      // what the decide phase reserved
       mutation: Box<dyn WorktreeMutation>,    // carries its own inputs, whole
       #[cfg(test)] gate: Option<OffLockGate>,
   }
@@ -501,10 +459,9 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
 
   /// The run half. One impl per verb, chosen at the one construction point.
   pub trait WorktreeMutation: Send {
-      /// Lock-free, and self-contained: whatever this verb needs — a cloned
+      /// Lock-free and self-contained: whatever this verb needs — a cloned
       /// `Orchestrator`, a base branch, a URL and a destination — is this impl's
-      /// own field, because not every verb has the same ones. Consumes itself
-      /// into the apply half, typed, so nothing downstream matches on a kind.
+      /// own field. Consumes itself into the apply half, typed.
       fn perform(self: Box<Self>) -> Result<Performed, String>;
   }
 
@@ -524,37 +481,52 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   }
   ```
 
-- **No fixed field the trait cannot fill.** `project.add` / `project.clone` is
-  why: there is no `Orchestrator` before the repo exists (`add_project`,
-  app.rs:3614, constructs one from the landed path) and no base branch to pass
-  (`register_clone` reads it off the clone with `git_default_branch(&dest)`,
-  app.rs:6700). So the job holds no `project` and no `base_branch` and each
-  mutation holds what it needs:
+- **No fixed field the trait cannot fill.** The job holds no `project` and no
+  `base_branch`; each mutation holds what it needs:
 
   ```rust
-  struct CreateWorktree  { project: Orchestrator, base_branch: String, name: String, .. }
-  struct AdoptCheckout   { project: Orchestrator, base_branch: String, run_id: RunId,
-                           worktree_id: String, excluded: HashSet<PathBuf>,
-                           scope: AdoptionScope, model_choice: ModelChoice }
-  struct DispatchCheckout{ project: Orchestrator, base_branch: String, run_id: RunId,
-                           branch: Option<String>, instruction: String, .. }
-  struct DiscardCheckout { project: Orchestrator, worktree: Worktree,
-                           retirements: Vec<Retirement> }
-  struct CloneRepo       { url: String, dest: PathBuf, project_id: String,
-                           requested_base: Option<String> }
+  struct CreateWorktree        { project: Orchestrator, base_branch: String, slug: String, .. }
+  struct AdoptExternalCheckout { project: Orchestrator, base_branch: String, run_id: RunId,
+                                 worktree_id: String, excluded: Vec<PathBuf>,
+                                 model_choice: ModelChoice }
+  struct AdoptPrimaryCheckout  { project: Orchestrator, base_branch: String, run_id: RunId,
+                                 repo_path: PathBuf, model_choice: ModelChoice }
+  struct DispatchCheckout      { project: Orchestrator, base_branch: String, run_id: RunId,
+                                 branch: Option<String>, instruction: String, excluded: Vec<PathBuf>, .. }
+  struct DiscardCheckout       { project: Orchestrator, worktree: Worktree,
+                                 retirements: Vec<Retirement> }
+  struct OpenRepo              { path: PathBuf, requested_base: Option<String>, minted: String }
+  struct CloneRepo             { url: String, dest: PathBuf, requested_base: Option<String>,
+                                 minted: String }
   ```
 
-  `CloneRepo::perform` clones, then reads the landed clone's default branch and
-  hands it to `ProjectAdded`, which builds the `Orchestrator` under the lock —
-  `Orchestrator::new` (orchestrator.rs:811) touches no disk, so that is
-  bookkeeping. `add_project` splits to match: `mint_project_id` in the decide
-  phase (the id the placeholder row is keyed by) and
-  `register_project(id, path, base)` in the epilogue.
-- **`AdoptableCheckout` — the verdict before the checkpoint.** `adopt_run`'s
-  three refusals (detached HEAD, the base branch checked out, a `-`-prefixed
-  branch name; orchestrator.rs:2400-2427) all read `checkout.branch`, which
-  exists only once `perform` has resolved the id against its fresh scan. So they
-  move out of `adopt_run` and become the thing that scan produces:
+- **`project.add` opens; `project.clone` clones, or opens.** `project_add`
+  (app.rs:6427) has no URL and no destination: it `git2::Repository::open`s an
+  existing path, reads `git_default_branch` (15155, a `git rev-parse`
+  shell-out) when no base was named, and `revparse_single`s the base — all
+  under the lock today. That is `OpenRepo::perform`, which also canonicalizes
+  the path (`add_project`, 3615, does it under the lock today). `project_clone`
+  (6650) has two arms — `dest.exists()` → `git_remote_origin` (15128, a
+  shell-out) must match the URL, then register the existing checkout
+  (6666-6683); else `git clone`, then register — and `CloneRepo::perform` is
+  those two arms followed by the same `open_repo(path, requested_base)`
+  function `OpenRepo::perform` is, so both produce one `ProjectAdded { minted,
+  path, base }`. A clone that fails after creating `dest` removes it in
+  `perform`'s own error path. `add_project` splits: `mint_project_id` in the
+  decide phase (`proj-<next_project>`) and `register_project(minted, path,
+  base)` in the epilogue, which builds the `Orchestrator` (`Orchestrator::new`,
+  orchestrator.rs:811, touches no disk), keeps today's idempotency — a
+  canonical path already registered answers with its existing id and the
+  minted one is dropped — and `persist`s.
+- **`run.adopt` has two arms, so it has two mutations.** `run_adopt`
+  (app.rs:12514) picks by `primary: true` at 12518, which is the construction
+  point: `AdoptPrimaryCheckout::perform` runs `describe_primary_checkout`
+  (worktree.rs:621 — `git worktree list --porcelain` plus libgit2 reads, under
+  the lock today at app.rs:12534); `AdoptExternalCheckout::perform` runs
+  `discover_external_worktrees` and finds `worktree_id` in it (the forced scan
+  at 12551 today). Each canonicalizes `excluded` itself
+  (`bound_worktree_paths`, 3651, canonicalizes under the lock today). Both hand
+  the `ExternalWorktree` they produced to one free function:
 
   ```rust
   /// A checkout that passed all three refusals. Construction IS the validation,
@@ -562,36 +534,48 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   pub struct AdoptableCheckout { path: PathBuf, name: String, branch: String,
                                  head_subject: String }
   impl AdoptableCheckout {
+      /// `adopt_run`'s three refusals (orchestrator.rs:2400-2427): detached
+      /// HEAD; the base branch checked out, for `ExternalWorktree` only; a
+      /// `-`-prefixed branch name. Pure.
       pub fn judge(checkout: &ExternalWorktree, base_branch: &str, scope: AdoptionScope)
-          -> Result<AdoptableCheckout, OrchestratorError>;   // pure
+          -> Result<AdoptableCheckout, OrchestratorError>;
   }
+  /// judge, checkpoint (`commit_all_with_message`), `scaffold_build_dir`, and
+  /// the `RunAdopted` epilogue. Shared by both adopt mutations and by
+  /// `DispatchCheckout`'s adopted arm.
+  fn adopt(project: &Orchestrator, checkout: ExternalWorktree, base_branch: &str,
+           scope: AdoptionScope, run_id: RunId, model_choice: ModelChoice)
+      -> Result<Performed, String>;
   impl Orchestrator {
       pub fn adopt_run(&self, id: RunId, checkout: &AdoptableCheckout,
                        base_branch: &str, model_choice: ModelChoice) -> ActiveRun;
   }
   ```
 
-  `AdoptCheckout::perform` scans, finds the id, calls `judge` — all before it
-  writes anything — and only then runs `commit_all_with_message` and
-  `scaffold_build_dir`. A refusal returns `Err` with nothing on disk touched and
-  nothing persisted, which is today's order preserved. `adopt_run` in the
-  epilogue takes an `AdoptableCheckout` and therefore cannot fail on a verdict at
-  all. `DispatchCheckout::perform` produces the same type from either arm — the
-  bare checkout it adopted or the branch it just cut — so `BranchDispatched`
-  has one shape to handle.
-- **`Reservation` — what the decide phase persisted, and what undoes it.** Every
-  verb's decide phase puts one placeholder row on the board and, for some verbs,
-  takes something out of the registry. The row is the same fact for all of them,
-  so it lives in one place; the rest is the verb's own, so it lives behind the
-  trait:
+  A refusal returns `Err` with nothing on disk touched and nothing persisted —
+  today's order preserved — and `adopt_run` in the epilogue cannot fail on a
+  verdict. `DispatchCheckout::perform` produces the same type from either arm
+  (the bare checkout it adopted or the branch it just cut), so
+  `BranchDispatched` has one shape. The decide phase keeps `run_adopt`'s two
+  early returns (`primary_run_of`, `run_owning_worktree_id`: an owner exists,
+  answer with its view) and adds one: a pending row already claiming this
+  checkout answers with that row, so two `run.adopt primary:true` from two
+  browsers converge on one run — the invariant 12508-12512 enforces today.
+- **`Reservation` — what the decide phase reserved, and what undoes it.** Every
+  verb's decide phase puts one placeholder on the board and, for some verbs,
+  takes something out of the registry. The row is the same fact for all of
+  them; the rest is the verb's own:
 
   ```rust
-  /// The board's carrier for a verb in flight. There is no such record today —
-  /// `Creating`/`Discarding` exist nowhere in `src/`, and external worktrees are
-  /// scan-discovered — so this is new state, and it is the whole of what makes
-  /// the spec's `Creating` row visible during the run phase.
+  /// The board's carrier for a verb in flight. New state: `Creating`/`Discarding`
+  /// exist nowhere in `src/` today, and external worktrees are scan-discovered.
   pub struct PendingRow { entity_id: String, project_id: String, title: String,
-                          state: PendingState, since: Instant }
+                          state: PendingState,
+                          /// The existing card this verb acts on, when there is
+                          /// one (adopt, abandon, dispatch onto a branch): the
+                          /// state is rendered on it, not as a second row.
+                          checkout_id: Option<String>,
+                          since: Instant }
   pub enum PendingState { Creating, Discarding }   // rendered, never branched on
 
   pub trait Reservation: Send {
@@ -609,27 +593,40 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   }
   ```
 
-  Three impls today, one per thing a decide phase can hold: `ReservedName` (the
-  row plus the worktree name it reserved — every create verb), `TakenRun` (the
-  row plus the `ActiveRun` `take_run` removed, whose `roll_back` puts it back —
-  `run.abandon`, `run.release`), `MintedProject` (the row plus the project id
-  minted for a clone, whose `roll_back` drops it; ids are not dense and nothing
-  reads the gap). None of them removes anything from disk: a partial clone or a
-  half-cut branch is removed by the run phase that made it, in its own error
-  path.
-
-  `pending_rows_json` is read where the board builds a project's rows, beside
-  `external_worktrees_json` (app.rs:6909), so a `Creating` row is on the board
-  from the decide phase's acquisition until the epilogue replaces it. Its
-  `entity_id` is the id the epilogue will use, which is the id the SPA's
-  optimistic overlay already keys on — the placeholder and the optimistic row are
-  one row, not two.
-- **Every verb's apply is a named type.** `apply_lifecycle` does the half that is
-  the same for all of them — `release_row`, `note_worktree_appeared` /
-  `note_worktree_gone` for the change, stamp interaction, `note_entity_changed` —
-  and then either `epilogue.apply(self)` or `reservation.roll_back(self)`. The
-  epilogues, one per verb, each carrying its own typed payload and building its
-  own reply off `AppState`:
+  Four impls, one per thing a decide phase can hold: `ReservedName` (the slug
+  — every create verb; a second create of the same slug in the same project is
+  refused while the row stands), `ReservedCheckout` (the checkout id — adopt,
+  dispatch onto a named branch), `TakenRun` (the `ActiveRun` `take_run`
+  (app.rs:8493) removed, put back by `roll_back` — `run.abandon`),
+  `MintedProject` (the minted id, dropped by `roll_back`; ids are not dense).
+  None removes anything from disk: a partial clone or a half-cut branch is
+  removed by the run phase that made it, in its own error path.
+  `pending_rows_json` is read beside `external_worktrees_json` (app.rs:6909),
+  so a `Creating` row is on the board from the decide phase's acquisition until
+  the epilogue replaces it.
+- **The pending row is not persisted. This deviates from spec step 4.** The
+  spec says "persist that state"; here `PendingRow` lives only in `AppState`
+  and the store is written by the epilogue — for `run.abandon` not before:
+  `take_run` removes from the map and never touches the store, and
+  `persist_run_record` (2839) runs inside `answer_run_mutation`, the
+  epilogue's. What a crash between decide and apply leaves, per reservation:
+  `ReservedName` — a bare worktree on disk, which the next scan discovers as
+  an external card, exactly what a finished create produces; `ReservedCheckout`
+  — a checkpoint commit on a checkout the store never bound, a bare card with
+  one extra commit; `TakenRun` — the store still says active, so boot loads
+  the run as it was, and `archive_runs_with_deleted_worktrees` (13948, run by
+  every `board.list`) archives it if the removal had finished; `MintedProject`
+  — a directory under `projects_dir` that `project_clone`'s register-existing
+  arm (6666) adopts on retry, or refuses as not a git repo if the clone was
+  cut short. Nothing is left that git and the store cannot re-derive;
+  persisting the row would need a store table plus a boot reconciliation whose
+  only job is to delete what the scan already ignores. `since` is for the
+  board (a row pending longer than a scan interval reads as stuck), not for
+  recovery.
+- **Every verb's apply is a named type.** `apply_lifecycle` does the shared half
+  (`release_row`, `note_worktree_appeared` / `note_worktree_gone`, stamp
+  interaction, `note_entity_changed`), then `epilogue.apply(self)` or
+  `reservation.roll_back(self)`:
 
   | verb | mutation | epilogue | what only it does |
   | --- | --- | --- | --- |
@@ -637,73 +634,98 @@ condvar, which is what a condvar is: it hands the guard back while it waits.
   | `branch.dispatch` | `DispatchCheckout` | `BranchDispatched` | `RunAdopted`'s work on the `AdoptableCheckout` it was handed, then mint the agent and queue its first turn |
   | `run.create` / `issue.implement_*` | `CreateWorktree` | `ImplementationOpened` | bind the run to its issue |
   | `plan.create` | `CreateWorktree` | `PlanWorkspaceOpened` | attach the docs dir to the plan |
-  | `run.adopt` | `AdoptCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
-  | `run.release` | `ReleaseCheckout` | `RunReleased` | give the checkout back as a bare row |
+  | `run.adopt` | `AdoptExternalCheckout` / `AdoptPrimaryCheckout` | `RunAdopted` | `adopt_run`'s record, `forget_row_dismissals`, `answer_run_mutation` / `run_view` |
   | `run.abandon` | `DiscardCheckout` | `RunAbandoned` | `abandon_run_keeping_checkout`, close the lineage, mirror to the issue |
   | `worktree.finish` | `FinishWorktree` | `WorktreeArchived` | the archive record |
   | `run.finish` | `FinishWorktree` | `RunFinished` | retire the run (`active: Box<ActiveRun>`) |
   | `branch.finish` | `FinishWorktree` | `BranchFinished` | retire the run and settle the issue |
-  | `project.add` / `project.clone` | `CloneRepo` | `ProjectAdded` | build the `Orchestrator` from the landed path, `register_project`, `persist` |
+  | `project.add` | `OpenRepo` | `ProjectAdded` | `register_project`, `persist` |
+  | `project.clone` | `CloneRepo` | `ProjectAdded` | the same |
 
   A reply that needs `AppState` — `run.adopt`'s `run_view`, every
-  `answer_run_mutation` — is built in the epilogue, which has it. That is why
-  `WorktreeChange` carries no `reply`: nothing off the lock can write one.
-- **The agents go before the directory does.** `run.abandon` and `run.release`
-  retire their worktree's agent tabs in the decide phase —
-  `retire_agent_tabs(root)`, pure bookkeeping, returning the receipts — and
-  `run.abandon` carries them into `DiscardCheckout`, which waits each one out
-  (bounded by a timeout, holding no lock) before `git worktree remove`. That is
-  today's kill-then-remove ordering with the wait moved to where an unbounded
-  wait is allowed to be. `run.release` drops its receipts: it hands the checkout
-  back rather than deleting it, so nothing is waiting on the processes to go.
+  `answer_run_mutation` — is built in the epilogue, which is why
+  `WorktreeChange` carries no `reply`.
+- **`run.release` builds no job.** Spec finding 2 lists it, but `run_release`
+  (app.rs:12741) runs no git: a store delete, a map remove, `close_agent_tab`,
+  `invalidate_external_scan`. Its one unbounded step was the kill, which
+  `retire_agent_tabs` (receipts dropped) removes; `invalidate_external_scan`
+  becomes `note_worktree_appeared` for the checkout it hands back.
+- **`DiscardCheckout` waits for the agents before it removes the directory.
+  That is a new order, argued here.** Today `run_abandon` (app.rs:12340-12351)
+  removes first — `abandon_run` → `WorktreeManager::remove`, which opens with
+  `remove_dir_all` (worktree.rs:377-389) — and kills after, and its own comment
+  calls the removal best-effort. A child still writing into a directory
+  `remove_dir_all` is walking fails the walk (a file created behind it leaves a
+  non-empty directory), so the order that makes the removal reliable is kill,
+  reap, remove. The decide phase issues the kill (`retire_agent_tabs`,
+  receipts returned); `DiscardCheckout::perform` waits each receipt out with
+  `CHECKOUT_REAP_WAIT` (5 s, declared beside `HARNESS_READY_GRACE` in
+  orchestrator.rs) and then removes. On expiry it logs the tab that would not
+  die and removes anyway — best-effort, as today, and the verdict stands. The
+  cost is nothing on the normal path (a SIGKILLed harness reaps in
+  milliseconds) and at most 5 s off the lock on a wedged one, which today is
+  served under the app mutex.
+- **`worktree.create`'s placeholder id.** `external_worktree_id`
+  (worktree.rs:541) hashes the canonical path, and `worktree_create` (7538)
+  canonicalizes after the directory exists. The decide phase has no directory,
+  so it hashes `worktrees_root.join(project_id).join(slug)` with
+  `worktrees_root` canonicalized once at boot (main.rs:144, where
+  `cfg.worktrees` is read; a `create_dir_all` + `canonicalize` there, new).
+  That is the epilogue's id unless `WorktreeManager::create` (worktree.rs:147)
+  suffixes the slug because `name_taken` found a branch, a worktree or a
+  directory in the way — a git and filesystem read the decide phase cannot
+  make. Then `release_row` retires the placeholder by its own id and the
+  entity push carries both ids, so the SPA overlay rekeys (`runOptimistic`'s
+  `handle.rekey`, optimistic.js:138).
 - **Hides** every shell-out and libgit2 call a lifecycle verb makes, the
   scaffold-after-create ordering, the fresh scan an adoption or a dispatch
-  resolves against. `WorktreeManager` gains `#[derive(Clone)]` (two `PathBuf`s)
-  so `Orchestrator` can derive it too, and each mutation carries its own copy.
+  resolves against. `WorktreeManager` gains `#[derive(Clone)]` (two `PathBuf`s).
 - **Replaces** `DeferredWork::Finish` collapses into `DeferredWork::Lifecycle`;
-  `FinishEpilogue` and `FinishKind{Worktree,Run,Branch}` (app.rs:15959-15977) are
-  deleted outright — they were the kind match this trait replaces, and their
-  three arms become `WorktreeArchived`, `RunFinished`, `BranchFinished`.
-  `BranchDispatchCreations` + `undo_branch_dispatch` split by phase: what the run
-  phase cut, the run phase removes in its own error path (the git is there, and a
-  failure fails fast where it happened); what the decide phase wrote,
-  `Reservation::roll_back` removes. `bare_checkout_on_branch` (app.rs:13663)
-  folds into `DispatchCheckout::perform`. `worktree_create`,
-  `cut_branch_for_dispatch`, `ensure_issue_implementation_worktree`,
-  `open_implementation_run`, `plan_create`'s planning worktree, `run_adopt`,
-  `run_release`, `run_abandon`, `project_add` and `project_clone` each stop
-  calling git and return a job.
-- **Lock discipline** decide (validate what can be validated without disk, mint
-  the id, reserve the row, take the run out, clone the orchestrator, retire the
-  agent tabs, build the job) under the app mutex; run (the scan, the git, the
-  checkpoint, the scaffold, the reap wait) holding nothing; apply (the shared
-  bookkeeping, then the epilogue, or roll the reservation back) under it again.
-  `perform` takes no `&AppState` and no argument at all, so a mutation cannot
-  reach state it is not allowed to touch. The drain in `dispatch_frame` is
-  unchanged: it already runs `DeferredWork` between two acquisitions, and a
-  `BranchDispatched` epilogue's queued turn leaves it through
-  `DeliveryRunner::spawn` like any other.
+  `FinishEpilogue` and `FinishKind{Worktree,Run,Branch}` (app.rs:15959-15977)
+  are deleted — their three arms become `WorktreeArchived`, `RunFinished`,
+  `BranchFinished`. `BranchDispatchCreations` (1230) + `undo_branch_dispatch`
+  (13717) split by phase: what the run phase cut, the run phase removes in its
+  own error path; what the decide phase wrote, `Reservation::roll_back`
+  removes. `bare_checkout_on_branch` (13663) folds into
+  `DispatchCheckout::perform`. `worktree_create`, `cut_branch_for_dispatch`,
+  `ensure_issue_implementation_worktree`, `open_implementation_run`,
+  `plan_create`'s planning worktree, `run_adopt`, `run_abandon`, `project_add`
+  and `project_clone` each stop calling git and return a job.
+- **Lock discipline** decide (validate without disk, mint the id, reserve the
+  row, take the run out, clone the orchestrator, retire the agent tabs, build
+  the job) under the app mutex; run (the scan, the git, the checkpoint, the
+  scaffold, the reap wait) holding nothing; apply (the shared bookkeeping, then
+  the epilogue, or roll the reservation back) under it again. `perform` takes
+  no argument, so a mutation cannot reach state it is not allowed to touch. The
+  drain in `dispatch_frame` is unchanged: it already runs `DeferredWork`
+  between two acquisitions, and a `BranchDispatched` epilogue's queued turn
+  leaves it through `DeliveryRunner::spawn`.
 - **Tests** `worktree_create_runs_git_worktree_add_with_the_state_lock_free`,
   `run_abandon_removes_its_checkout_with_the_state_lock_free`,
   `run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout`,
+  `run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die`,
   `a_creating_worktree_is_on_the_board_before_its_git_returns`,
   `a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row`,
+  `a_suffixed_slug_settles_the_placeholder_under_its_real_id`,
   `run_adopt_refuses_a_detached_head_before_it_writes_a_checkpoint`,
+  `run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free`,
+  `two_adopts_of_one_checkout_converge_on_one_run`,
+  `project_add_reads_the_default_branch_with_the_state_lock_free`,
   `project_clone_registers_its_project_from_the_landed_path`,
   `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`.
 
 ## What builds no primitive
 
 `agent.choose` (app.rs:8200) opens no tab and spawns nothing: it validates a
-model choice against the agent's locked harness, writes it, and answers with the
-choice. Spec step 2 lists it beside `agent.start` as a verb whose reply embeds a
-spawned tab; it has none, so there is nothing there to change. Recorded so the
-absence reads as an answer rather than a gap.
+model choice against the agent's locked harness, writes it, and answers.
 
 Step 5 (SPA): the `agent_starting` state goes on the overlay `core/optimistic.js`
 already owns, and the four views that read a tab id out of a reply
 (`thread.post`, `agent.start`, `branch.dispatch`, `worktree.create`) read the
 entity's fields from the next push instead — including the `live` and `spawned`
-that `agent.start` used to answer with, which nothing can know at reply time once
-the spawn is behind the reply. The spec's load test,
+that `agent.start` used to answer with. `createBranch`
+(spa/src/core/createWork.js:87) today awaits the reply and inserts no
+provisional row; step 5 gives it one, keyed by the placeholder id the reply
+carries and rekeyed by the settling push, so the board's `Creating` row and
+the overlay's are one row. The spec's load test,
 `bridge/tests/concurrency_load.rs`, is the only one that measures a number.

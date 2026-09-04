@@ -211,9 +211,10 @@ describe("the assignment's agent select and the dispatch under it", () => {
     });
   });
 
-  it("leaves a dispatch that named no agent on the harness's own default", () => {
+  it("dispatches an untouched assignment with the agent the select displays", () => {
     expect(implementParams("issue-1", { ...assignment, provider: "" }, { catalog: threeHarnesses })).toEqual({
       issue_id: "issue-1",
+      provider: "claude_adk",
     });
   });
 });

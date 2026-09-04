@@ -38,6 +38,8 @@ use std::time::Duration;
 
 use build_bridge::app::AppState;
 use build_bridge::backoff::Backoff;
+use build_bridge::config::BridgeConfig;
+use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::{identity, pairing, service, transport};
@@ -119,10 +121,23 @@ fn provision() {
 }
 
 async fn serve() {
-    // launchd starts agents with a bare PATH, so coding-agent harnesses and
-    // everything a terminal expects don't resolve. Adopt
-    // the login shell's PATH up front (the terminal-emulator trick), before
-    // any PTY or harness spawns. BRIDGE_PATH_FROM_SHELL=0 disables.
+    adopt_login_path();
+    let runtime = match resolve_runtime_paths() {
+        Ok(runtime) => runtime,
+        Err(error) => exit_startup(error),
+    };
+    let identity = match load_device_identity(&runtime.config).await {
+        Ok(identity) => identity,
+        Err(error) => exit_startup(error),
+    };
+    let app = match construct_app(&runtime, &identity) {
+        Ok(app) => app,
+        Err(error) => exit_startup(error),
+    };
+    run_daemon(runtime, identity, app).await;
+}
+
+fn adopt_login_path() {
     if std::env::var("BRIDGE_PATH_FROM_SHELL").as_deref() != Ok("0") {
         let shell = build_bridge::app::resolve_term_shell();
         match build_bridge::app::capture_login_path(&shell, Duration::from_secs(5)) {
@@ -136,103 +151,130 @@ async fn serve() {
             ),
         }
     }
+}
 
-    // Production-by-default: with no environment at all this connects to
-    // getbuild.ing and keeps all state under ~/.build. Dev stacks override.
-    let cfg = bridge_config();
-    let relay_url = cfg.relay_url.clone();
-    let worktrees = cfg.worktrees.to_string_lossy().into_owned();
-    let base_branch = cfg.base_branch.clone();
+struct RuntimePaths {
+    config: BridgeConfig,
+    device_url: String,
+    worktrees: String,
+    tasks_dir: std::path::PathBuf,
+    config_path: std::path::PathBuf,
+    harness_context: HarnessContext,
+    mcp_socket: String,
+    qa_agent: bool,
+}
+
+fn resolve_runtime_paths() -> Result<RuntimePaths, String> {
+    let config = bridge_config();
+    let device_url = format!("{}/ws/device", config.relay_url.trim_end_matches('/'));
     let qa_agent = matches!(
         std::env::var("BRIDGE_QA_AGENT").as_deref(),
         Ok("1") | Ok("true")
     );
-    let device_url = format!("{}/ws/device", relay_url.trim_end_matches('/'));
-    let api_url = cfg.api_url.clone();
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let tasks_dir =
+        std::path::PathBuf::from(env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks")));
+    let state_root = tasks_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let harness_context = HarnessContext::resolved(config.mcp_socket.clone(), state_root.into())
+        .map_err(|error| format!("cannot resolve harness runtime: {error}"))?;
+    Ok(RuntimePaths {
+        device_url,
+        worktrees: config.worktrees.to_string_lossy().into_owned(),
+        config_path: env("BRIDGE_CONFIG", &format!("{home}/.build/config.json")).into(),
+        mcp_socket: config.mcp_socket.to_string_lossy().into_owned(),
+        config,
+        tasks_dir,
+        harness_context,
+        qa_agent,
+    })
+}
 
-    // Identity. A provisioned identity in the environment (matches the relay DB seed)
-    // is a prod/seed override that is treated as already approved and skips pairing.
-    // Otherwise the bridge loads-or-generates a durable identity and pairs it to a user
-    // account: register as pending, print the pairing code + fingerprint, wait for the
-    // human to approve in the web app, then connect.
-    let identity = match (
+async fn load_device_identity(config: &BridgeConfig) -> Result<DeviceIdentity, String> {
+    match (
         std::env::var("BRIDGE_IDENTITY_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PRIV"),
         std::env::var("BRIDGE_TRANSPORT_PUB"),
     ) {
-        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => DeviceIdentity {
+        (Ok(id_priv), Ok(tp_priv), Ok(tp_pub)) => Ok(DeviceIdentity {
             device_id: env("BRIDGE_DEVICE_ID", "bridge-dev"),
             identity_private_key_b64: id_priv,
             transport: transport::KeyPairB64 {
                 public_key_b64: tp_pub,
                 private_key_b64: tp_priv,
             },
-        },
+        }),
         _ => {
-            let identity_path = cfg.identity_file.clone();
+            let identity_path = config.identity_file.clone();
             let stored = match identity::load(&identity_path) {
                 Ok(Some(stored)) => stored,
                 Ok(None) => {
                     let fresh = identity::generate(&env("BRIDGE_DEVICE_NAME", &hostname()));
-                    if let Err(e) = identity::save(&identity_path, &fresh) {
-                        eprintln!("could not persist identity to {identity_path:?}: {e}");
-                        std::process::exit(1);
-                    }
+                    identity::save(&identity_path, &fresh).map_err(|error| {
+                        format!("could not persist identity to {identity_path:?}: {error}")
+                    })?;
                     fresh
                 }
-                Err(e) => {
-                    eprintln!("could not load identity from {identity_path:?}: {e}");
-                    std::process::exit(1);
+                Err(error) => {
+                    return Err(format!(
+                        "could not load identity from {identity_path:?}: {error}"
+                    ))
                 }
             };
-            let web_url = cfg.web_url.clone();
-            // Dev/compose automation only: pair with a known code so a scripted
-            // approver can complete the real flow. Humans get a random code.
             let pairing_code_override = std::env::var("BRIDGE_PAIRING_CODE").ok();
             let client = reqwest::Client::new();
-            let approved = match pairing::ensure_paired(
+            let approved = pairing::ensure_paired(
                 &client,
-                &api_url,
-                &web_url,
+                &config.api_url,
+                &config.web_url,
                 &identity_path,
                 stored,
                 Duration::from_secs(2),
                 pairing_code_override.as_deref(),
             )
             .await
-            {
-                Ok(approved) => approved,
-                Err(e) => {
-                    eprintln!("pairing failed: {e}");
-                    std::process::exit(1);
-                }
-            };
-            identity::to_device_identity(&approved)
+            .map_err(|error| format!("pairing failed: {error}"))?;
+            Ok(identity::to_device_identity(&approved))
         }
-    };
+    }
+}
 
-    // The control socket real agents forward `done` to (and the daemon listens on).
-    let mcp_socket = cfg.mcp_socket.to_string_lossy().into_owned();
-
-    let repo_display = cfg.repo.clone().unwrap_or_else(|| "<none>".to_string());
-    println!(
-        "bridge serve → {device_url}  (repo={repo_display} worktrees={worktrees} base={base_branch} qa_agent={qa_agent} mcp_socket={mcp_socket})"
-    );
-
-    // Shared state: the relay handler and the done-socket listener drive the same
-    // tasks; state survives reconnects. BRIDGE_REPO (when set) is project one;
-    // otherwise projects arrive via the UI + persisted config. Any extra repos in
-    // BRIDGE_PROJECTS are registered alongside. Attention transitions fire a
-    // signed, content-free web-push notify at the api.
-    let mut app = match &cfg.repo {
-        Some(repo) => AppState::new(repo, &worktrees, &base_branch, qa_agent, &mcp_socket),
-        None => AppState::new_unrooted(&worktrees, &base_branch, qa_agent, &mcp_socket),
+fn construct_app(runtime: &RuntimePaths, identity: &DeviceIdentity) -> Result<AppState, String> {
+    let config = &runtime.config;
+    let app = match &config.repo {
+        Some(repo) => AppState::new_configured(
+            repo,
+            &runtime.worktrees,
+            &config.base_branch,
+            runtime.qa_agent,
+            runtime.harness_context.clone(),
+        ),
+        None => AppState::new_unrooted_configured(
+            &runtime.worktrees,
+            &config.base_branch,
+            runtime.qa_agent,
+            runtime.harness_context.clone(),
+        ),
     }
     .with_notifier(Notifier::new(
-        &api_url,
+        &config.api_url,
         &identity.device_id,
         &identity.identity_private_key_b64,
     ));
+    let mut app = register_environment_projects(app, &config.base_branch);
+    app = app
+        .with_config(&runtime.config_path)
+        .map_err(|error| format!("cannot load config: {error}"))?;
+    if let Ok(dir) = std::env::var("BRIDGE_PROJECTS_DIR") {
+        app.set_projects_dir(std::path::PathBuf::from(dir));
+    }
+    app.with_task_store(&runtime.tasks_dir)
+        .map_err(|error| task_store_startup_error(&runtime.tasks_dir, &error))
+}
+
+fn register_environment_projects(mut app: AppState, base_branch: &str) -> AppState {
     for entry in std::env::var("BRIDGE_PROJECTS")
         .unwrap_or_default()
         .split(',')
@@ -241,51 +283,37 @@ async fn serve() {
         if entry.is_empty() {
             continue;
         }
-        let (path, branch) = entry
-            .split_once('=')
-            .unwrap_or((entry, base_branch.as_str()));
+        let (path, branch) = entry.split_once('=').unwrap_or((entry, base_branch));
         let id = app.add_project(std::path::PathBuf::from(path), branch.to_string());
         println!("  + project {id}: {path} (base {branch})");
     }
+    app
+}
 
-    // Persist projects + projects-dir so UI-added/cloned repos survive restarts,
-    // and restore them on boot. An env override for the projects folder wins.
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_path = env("BRIDGE_CONFIG", &format!("{home}/.build/config.json"));
-    let mut app = app.with_config(&config_path);
-    if let Ok(dir) = std::env::var("BRIDGE_PROJECTS_DIR") {
-        app.set_projects_dir(std::path::PathBuf::from(dir));
-    }
+fn task_store_startup_error(tasks_dir: &std::path::Path, error: &str) -> String {
+    format!(
+        "cannot start because the task store did not open\n  {error}\n  state lives in {} \n  check that no second bridge is running and the directory is readable and writable",
+        tasks_dir.display()
+    )
+}
 
-    // Durable task records: a restart re-attaches every task (worktrees survive on
-    // disk); a task that was mid-phase surfaces as `interrupted` for the user to
-    // re-dispatch, steer, or abandon. A corrupt task file fails boot loudly.
-    let tasks_dir = env("BRIDGE_TASKS_DIR", &format!("{home}/.build/tasks"));
-    let app = match app.with_task_store(&tasks_dir) {
-        Ok(app) => app,
-        Err(e) => {
-            // Continuing without the store is not on the table: the daemon
-            // would come up blind to every worktree it already owns. But this
-            // exit runs under launchd's KeepAlive, and the causes — a database
-            // another bridge still holds, a full disk, a state dir this user
-            // cannot write — do not heal between restarts. So the log gets the
-            // cause, the file, and what to do, rather than the same mute line
-            // every few seconds forever.
-            eprintln!("bridge: cannot start — the task store did not open.");
-            eprintln!("  {e}");
-            eprintln!("  state lives in {tasks_dir} (build.db plus its -wal and -shm).");
-            eprintln!(
-                "  check: no second bridge is already running                  (`launchctl list | grep getbuild`), the disk is not full (`df -h`),                  and {tasks_dir} is readable and writable by this user."
-            );
-            eprintln!("  restarting will not clear this; fix the cause above first.");
-            std::process::exit(1);
-        }
-    };
+async fn run_daemon(runtime: RuntimePaths, identity: DeviceIdentity, app: AppState) {
+    let repo_display = runtime
+        .config
+        .repo
+        .clone()
+        .unwrap_or_else(|| "<none>".to_string());
+    println!(
+        "bridge serve → {}  (repo={} worktrees={} base={} qa_agent={} mcp_socket={})",
+        runtime.device_url,
+        repo_display,
+        runtime.worktrees,
+        runtime.config.base_branch,
+        runtime.qa_agent,
+        runtime.mcp_socket
+    );
     let app = app.shared();
-    AppState::spawn_done_socket(app.clone(), mcp_socket.clone());
-    // Quiescence/crash watchdog (scope §5.4): a harness that exits or goes silent
-    // without ever calling `done` demotes its task to `idle_unreported` instead of
-    // leaving it stuck in planning/building for the daemon's whole life.
+    AppState::spawn_done_socket(app.clone(), runtime.mcp_socket.clone());
     let idle_threshold = std::env::var("BRIDGE_IDLE_SECONDS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
@@ -295,19 +323,12 @@ async fn serve() {
         Duration::from_secs(idle_threshold),
         Duration::from_secs(5),
     );
-    // Close keyed terminals whose scope vanished out-of-band (e.g. a user
-    // rm -rf'ing an external worktree); mutation-driven closure happens inline.
     AppState::spawn_terminal_reaper(app.clone(), Duration::from_secs(30));
     let handler = AppState::handler(app);
-
-    // Reconnect with exponential backoff (2s → 30s cap) so a relay outage doesn't
-    // become a tight reconnect loop hammering the server. A connection that lasted
-    // long enough to be "clean" resets the delay, so a brief blip still recovers
-    // fast. The policy lives in `Backoff` so it is unit-tested, not inline-and-hoped.
     let mut backoff = Backoff::new(Duration::from_secs(2), Duration::from_secs(30));
     loop {
         let connected_at = std::time::Instant::now();
-        match relay::run(&device_url, &identity, handler.clone()).await {
+        match relay::run(&runtime.device_url, &identity, handler.clone()).await {
             Ok(()) => eprintln!(
                 "relay disconnected; reconnecting in {}s",
                 backoff.current().as_secs()
@@ -317,11 +338,15 @@ async fn serve() {
                 backoff.current().as_secs()
             ),
         }
-        // A session that stayed up a while was healthy: start the next retry cheap.
         backoff.note_session(connected_at.elapsed());
         tokio::time::sleep(backoff.current()).await;
         backoff.increase();
     }
+}
+
+fn exit_startup(error: String) -> ! {
+    eprintln!("bridge: {error}");
+    std::process::exit(1)
 }
 
 /// Install the launchd LaunchAgent (macOS). Refuses unless this device is

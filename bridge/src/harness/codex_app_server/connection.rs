@@ -147,6 +147,12 @@ impl AppServerConnection {
         Ok(())
     }
 
+    /// Reads one JSONL frame from the app-server's stdout under the inbound bound
+    /// this connection owns, returning `None` at end of stream.
+    pub fn read_frame(&self, reader: &mut dyn Read) -> Result<Option<Value>, ConnectionError> {
+        read_jsonl_frame(reader, self.limits.inbound_frame_bytes)
+    }
+
     pub fn decode(&self, value: Value) -> Result<ConnectionEvent, ConnectionError> {
         let object = value.as_object().ok_or_else(|| {
             ConnectionError::Protocol("top-level message is not an object".to_string())
@@ -278,10 +284,7 @@ fn decode_notification(
     }))
 }
 
-pub fn read_jsonl_frame(
-    reader: &mut dyn Read,
-    limit: usize,
-) -> Result<Option<Value>, ConnectionError> {
+fn read_jsonl_frame(reader: &mut dyn Read, limit: usize) -> Result<Option<Value>, ConnectionError> {
     let Some(frame) = read_jsonl_bytes(reader, limit)? else {
         return Ok(None);
     };
@@ -413,13 +416,32 @@ mod tests {
         assert_eq!(flushes.load(Ordering::SeqCst), 3);
     }
 
+    fn frame_reader(inbound_frame_bytes: usize) -> AppServerConnection {
+        AppServerConnection::memory(
+            AppServerLimits {
+                inbound_frame_bytes,
+                ..AppServerLimits::default()
+            }
+            .connection(),
+        )
+    }
+
     #[test]
     fn oversized_frame_is_discarded_through_newline_before_the_error_returns() {
+        let connection = frame_reader(4);
         let mut reader = Cursor::new(b"12345-not-another-frame\n{}\n");
         assert!(matches!(
-            read_jsonl_frame(&mut reader, 4),
+            connection.read_frame(&mut reader),
             Err(ConnectionError::FrameTooLarge(4))
         ));
-        assert_eq!(read_jsonl_frame(&mut reader, 4).unwrap(), Some(json!({})));
+        assert_eq!(connection.read_frame(&mut reader).unwrap(), Some(json!({})));
+    }
+
+    #[test]
+    fn the_inbound_frame_limit_is_enforced_by_the_connection_that_owns_it() {
+        assert!(matches!(
+            frame_reader(4).read_frame(&mut Cursor::new(b"12345\n")),
+            Err(ConnectionError::FrameTooLarge(4))
+        ));
     }
 }

@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
 
-use super::connection::{read_jsonl_frame, AppServerConnection, SharedConnection};
-use super::limits::{AppServerLimits, ConnectionLimits, StateLimits};
+use super::connection::{AppServerConnection, SharedConnection};
+use super::limits::{AppServerLimits, StateLimits};
 use super::policy::{AfterResponse, ServerRequestDecision, ServerRequestPolicy};
 use super::process::{AppServerProcess, TerminalEventSink, TerminalSourceEvent};
 use super::protocol::{
@@ -146,7 +146,6 @@ struct SessionCore {
     last_message: Mutex<Instant>,
     started: Instant,
     state_limits: StateLimits,
-    connection_limits: ConnectionLimits,
     binary: PathBuf,
     shutting_down: AtomicBool,
     reconciliation_timer: ReconciliationTimer,
@@ -188,7 +187,6 @@ impl CodexAppServerSession {
             last_message: Mutex::new(Instant::now()),
             started: Instant::now(),
             state_limits: limits.state(),
-            connection_limits: limits.connection(),
             binary,
             shutting_down: AtomicBool::new(false),
             reconciliation_timer: ReconciliationTimer::new(),
@@ -559,7 +557,7 @@ fn read_until_settled(
 ) -> Option<String> {
     loop {
         let core = core.upgrade()?;
-        let frame = match read_jsonl_frame(stdout, core.connection_limits.inbound_frame_bytes) {
+        let frame = match core.connection.read_frame(stdout) {
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 let _ = core.apply_state(SessionEvent::Eof);

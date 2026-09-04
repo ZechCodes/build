@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use super::connection::{read_jsonl_frame, AppServerConnection};
+use super::connection::AppServerConnection;
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
 use super::protocol::{
@@ -274,11 +274,23 @@ fn outbound_limit_and_close_are_enforced_before_or_during_writes() {
     assert!(connection.notify(ClientNotification::Initialized).is_err());
 }
 
+fn frame_reader(inbound_frame_bytes: usize) -> AppServerConnection {
+    AppServerConnection::memory(
+        AppServerLimits {
+            inbound_frame_bytes,
+            ..limits()
+        }
+        .connection(),
+    )
+}
+
 #[test]
 fn jsonl_decoder_accepts_crlf_and_exact_limit_but_rejects_bad_frames() {
     let valid = b"{\"method\":\"initialized\"}\r\n";
     assert_eq!(
-        read_jsonl_frame(&mut Cursor::new(valid), valid.len(),).unwrap(),
+        frame_reader(valid.len())
+            .read_frame(&mut Cursor::new(valid))
+            .unwrap(),
         Some(json!({"method":"initialized"}))
     );
 
@@ -290,14 +302,20 @@ fn jsonl_decoder_accepts_crlf_and_exact_limit_but_rejects_bad_frames() {
         b"{}".to_vec(),
     ] {
         assert!(
-            read_jsonl_frame(&mut Cursor::new(bad.clone()), bad.len() + 2).is_err(),
+            frame_reader(bad.len() + 2)
+                .read_frame(&mut Cursor::new(bad.clone()))
+                .is_err(),
             "{bad:?}"
         );
     }
-    assert!(read_jsonl_frame(&mut Cursor::new(b"12345\n"), 4).is_err());
+    assert!(frame_reader(4)
+        .read_frame(&mut Cursor::new(b"12345\n"))
+        .is_err());
     let exact_crlf = b"1234\r\n";
     assert_eq!(
-        read_jsonl_frame(&mut Cursor::new(exact_crlf), 4).unwrap(),
+        frame_reader(4)
+            .read_frame(&mut Cursor::new(exact_crlf))
+            .unwrap(),
         Some(json!(1234))
     );
 }

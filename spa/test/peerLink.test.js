@@ -108,7 +108,7 @@ function stand({ signalImpl, servers = SERVERS, ...rest } = {}) {
     signal,
     fetchIceServers,
     RTCPeerConnectionImpl: FakePeerConnection,
-    remoteCandidates: (deliver) => {
+    onPush: (deliver) => {
       candidateSinks.push(deliver);
       return () => candidateSinks.splice(candidateSinks.indexOf(deliver), 1);
     },
@@ -148,7 +148,7 @@ describe("openPeerLink", () => {
     expect(signalled.filter(([method]) => method === "rtc.ice")).toEqual([
       ["rtc.ice", { candidate: { candidate: "candidate:1 1 udp" } }],
     ]);
-    expect(candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:2 1 udp" } })).toBe(true);
+    candidateSinks[0]({ type: "rtc.ice", candidate: { candidate: "candidate:2 1 udp" } });
     await tick();
     expect(peer.remoteCandidates).toEqual([{ candidate: "candidate:2 1 udp" }]);
   });
@@ -242,10 +242,10 @@ describe("openPeerLink", () => {
     expect(signalled.map(([method]) => method)).toContain("rtc.close");
   });
 
-  it("takes the bridge's candidates off the push stream and leaves everything else on it", async () => {
+  it("takes the bridge's candidates off the push stream and leaves everything else alone", async () => {
     const { peer, candidateSinks } = await upgrade();
 
-    expect(candidateSinks[0]({ type: "entity.changed", id: "run-7" })).toBe(false);
+    candidateSinks[0]({ type: "entity.changed", id: "run-7" });
     await tick();
     expect(peer.remoteCandidates).toEqual([]);
   });

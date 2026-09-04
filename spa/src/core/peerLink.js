@@ -30,14 +30,14 @@ const OPEN_TIMEOUT_MS = 15000;
  *   channels are down.
  * @param fetchIceServers mints a fresh list; called once per offer, including
  *   every ICE restart, which is how expiring TURN credentials are replaced.
- * @param remoteCandidates subscribes to the bridge's pushes: `(take) =>
- *   unsubscribe`, where `take(push)` answers whether the push was this link's.
- *   The `rtc.ice` shape is stated here and nowhere else.
+ * @param onPush the session's push subscription, `(fn) => unsubscribe`. The
+ *   bridge trickles its candidates as pushes, and what an `rtc.ice` push looks
+ *   like is stated here and nowhere else.
  */
 export async function openPeerLink({
   signal,
   fetchIceServers,
-  remoteCandidates,
+  onPush,
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
   openTimeoutMs = OPEN_TIMEOUT_MS,
 }) {
@@ -47,12 +47,11 @@ export async function openPeerLink({
     peer.createDataChannel(label, { negotiated: true, id, ordered: true }),
   );
   const carriers = channels.map((channel) => openCarrier({ channel }));
-  const unsubscribe = remoteCandidates((push) => {
-    if (push.type !== "rtc.ice") return false;
+  const unsubscribe = onPush((push) => {
+    if (push.type !== "rtc.ice") return;
     peer.addIceCandidate(push.candidate).catch(() => {
       /* a candidate the peer will not take costs one path, not the link */
     });
-    return true;
   });
 
   let torn = false;

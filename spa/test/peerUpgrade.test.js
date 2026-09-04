@@ -57,11 +57,16 @@ function fakeCarrier(name) {
 }
 
 function fakeSession() {
+  const listeners = new Set();
   return {
     deviceId: "dev-a",
-    call: vi.fn(),
-    signal: vi.fn(async () => ({})),
+    call: vi.fn(async () => ({})),
     peer: vi.fn(),
+    onPush: (fn) => {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+    push: (payload) => listeners.forEach((fn) => fn(payload)),
     onCarrier: vi.fn(),
     close: vi.fn(),
   };
@@ -72,13 +77,11 @@ function fakeLink() {
   return link;
 }
 
-/** What openPeerLink registers: a push handler that answers whether the push
- *  was its own. The `rtc.ice` shape lives in peerLink, so the policy layer is
- *  exercised through a handler that owns it exactly as the real one does. */
+/** What openPeerLink registers: a push handler that takes the candidates and
+ *  leaves the rest. The `rtc.ice` shape lives in peerLink, so the policy layer
+ *  is exercised through a handler that owns it exactly as the real one does. */
 const takeCandidate = (deliver) => (push) => {
-  if (push.type !== "rtc.ice") return false;
-  deliver(push.candidate);
-  return true;
+  if (push.type === "rtc.ice") deliver(push.candidate);
 };
 
 beforeEach(() => {
@@ -107,7 +110,8 @@ describe("the upgrade policy", () => {
     await tick();
 
     expect(api.fetchIceServers).toHaveBeenCalledTimes(1);
-    expect(session.signal).toHaveBeenCalledWith("rtc.offer", { sdp: "v=0" });
+    // The session routes `rtc.*` to the relay itself: this layer just calls it.
+    expect(session.call).toHaveBeenCalledWith("rtc.offer", { sdp: "v=0" });
     expect(session.peer).toHaveBeenCalledWith(link.app);
     expect(terminals.terminalsRideOn).toHaveBeenCalledWith(link.term);
   });
@@ -163,12 +167,11 @@ describe("the upgrade policy", () => {
   it("routes the bridge's trickled candidates to the upgrade, not to the surfaces", async () => {
     const link = fakeLink();
     let deliverCandidate;
-    peerLink.open.mockImplementation(async ({ remoteCandidates }) => {
-      link.close.mockImplementation(remoteCandidates(takeCandidate((c) => (deliverCandidate = c))));
+    peerLink.open.mockImplementation(async ({ onPush }) => {
+      link.close.mockImplementation(onPush(takeCandidate((c) => (deliverCandidate = c))));
       return link;
     });
     const session = fakeSession();
-    relay.openRelaySession.mockImplementation(async () => session);
     const options = [];
     relay.openRelaySession.mockImplementation(async (o) => {
       options.push(o);
@@ -178,6 +181,9 @@ describe("the upgrade policy", () => {
     adoptSession(session);
     await tick();
 
+    // The session hands every push to both: the link takes the candidates, and
+    // the surfaces are told about everything that is not signaling.
+    session.push({ type: "rtc.ice", candidate: { candidate: "candidate:1 1 udp" } });
     options[0].onPush({ type: "rtc.ice", candidate: { candidate: "candidate:1 1 udp" } });
     options[0].onPush({ type: "entity.changed", id: "run-7" });
 
@@ -212,27 +218,22 @@ describe("the upgrade policy", () => {
     const links = [fakeLink(), fakeLink()];
     const delivered = [];
     let opened = 0;
-    peerLink.open.mockImplementation(async ({ remoteCandidates }) => {
+    const sessions = [fakeSession(), fakeSession()];
+    peerLink.open.mockImplementation(async ({ onPush }) => {
       const mine = opened++;
       // A real link gives its subscription back when it is torn down, and takes
       // back its own and nobody else's.
-      links[mine].close.mockImplementation(remoteCandidates(takeCandidate((c) => delivered.push([mine, c]))));
+      links[mine].close.mockImplementation(onPush(takeCandidate((c) => delivered.push([mine, c]))));
       return links[mine];
     });
-    const sessions = [fakeSession(), fakeSession()];
-    const options = [];
-    relay.openRelaySession.mockImplementation(async (o) => {
-      options.push(o);
-      return sessions[0];
-    });
-    await openAppSession();
 
     adoptSession(sessions[0]);
     await tick();
     adoptSession(sessions[1]); // the first link is torn down as this one is adopted
     await tick();
 
-    options[0].onPush({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
+    sessions[0].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
+    sessions[1].push({ type: "rtc.ice", candidate: { candidate: "candidate:9 1 udp" } });
     expect(delivered).toEqual([[1, { candidate: "candidate:9 1 udp" }]]);
   });
 });

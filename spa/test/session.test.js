@@ -364,7 +364,7 @@ describe("a session that rides two carriers", () => {
     await completeHandshake(ws);
     const session = await promise;
     paused = true;
-    session.signal("rtc.offer", { sdp: "v=0" }).catch(() => {});
+    session.call("rtc.offer", { sdp: "v=0" }).catch(() => {});
     await tick();
     expect(ws.sent.at(-1).envelope.frameFields.payload.method).toBe("rtc.offer");
     await expect(session.call("board.list", {})).rejects.toThrow(/offline/);
@@ -377,7 +377,7 @@ describe("a session that rides two carriers", () => {
     const peer = fakeCarrier();
     session.peer(peer);
 
-    const answered = session.signal("rtc.offer", { sdp: "v=0" });
+    const answered = session.call("rtc.offer", { sdp: "v=0" });
     await tick();
     const sent = ws.sent.at(-1);
     expect(sent.type).toBe("e2ee_envelope");
@@ -509,6 +509,53 @@ describe("a session that rides two carriers", () => {
       const again = next.sent.find((m) => m.type === "session_init");
       expect(again.session_id).toBe(init.session_id);
       expect(events.lost).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+    session.close();
+  });
+
+  // The whole of policy 6, from the peer connection's point of view: the ICE
+  // restart it asks for while the relay is away is what the old teardown path
+  // ran on, and what must now simply wait.
+  it("answers an ICE restart asked for while the relay is away, once it is back", async () => {
+    const { promise, ws, events } = await startOpen();
+    await completeHandshake(ws, "dev-a");
+    const session = await promise;
+    session.peer(fakeCarrier());
+
+    vi.useFakeTimers();
+    const advance = (ms) => vi.advanceTimersByTimeAsync(ms);
+    try {
+      ws.close(); // the relay socket goes while the channel carries
+
+      const restart = session.call("rtc.offer", { sdp: "v=0 restart" });
+      await advance(0);
+
+      await advance(1000); // the link's own backoff brings the relay back
+      const next = FakeWebSocket.instances.at(-1);
+      next.emit("open");
+      await advance(0);
+      next.serverSend({ type: "device_key", device_id: "dev-a", transport_public_key: "pk-dev-a" });
+      await advance(0);
+      const again = next.sent.find((m) => m.type === "session_init");
+      next.serverSend({ type: "session_accept", session_id: again.session_id, envelope: {} });
+      await advance(0);
+
+      const offered = next.sent.at(-1);
+      expect(offered.type).toBe("e2ee_envelope");
+      expect(offered.envelope.frameFields.payload.method).toBe("rtc.offer");
+      next.serverSend({
+        type: "e2ee_envelope",
+        envelope: {
+          frameFields: {
+            payload: { id: offered.envelope.frameFields.payload.id, ok: true, result: { sdp: "v=0 answer" } },
+          },
+        },
+      });
+
+      await expect(restart).resolves.toEqual({ sdp: "v=0 answer" });
+      expect(events.lost).toBe(0); // App.offline never flipped
     } finally {
       vi.useRealTimers();
     }

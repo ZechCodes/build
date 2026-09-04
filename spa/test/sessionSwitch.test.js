@@ -6,15 +6,16 @@ import { createSessionSwitch } from "../src/core/sessionSwitch.js";
 
 function stand() {
   const rode = [];
+  const read = [];
   const onActive = vi.fn();
   const onIdle = vi.fn();
   const carriers = { relay: { name: "relay" }, peer: { name: "peer" }, second: { name: "second" } };
   const carrierSwitch = createSessionSwitch({
-    session: { rideOn: (carrier) => rode.push(carrier) },
+    session: { rideOn: (carrier) => rode.push(carrier), readFrom: (carrier) => read.push(carrier) },
     onActive,
     onIdle,
   });
-  return { carrierSwitch, rode, onActive, onIdle, ...carriers };
+  return { carrierSwitch, rode, read, onActive, onIdle, ...carriers };
 }
 
 describe("createSessionSwitch", () => {
@@ -71,7 +72,7 @@ describe("createSessionSwitch", () => {
   it("hands back what re-establishing returns, so a caller can wait for it", async () => {
     const { rode, relay } = stand();
     const carrierSwitch = createSessionSwitch({
-      session: { rideOn: (carrier) => rode.push(carrier) },
+      session: { rideOn: (carrier) => rode.push(carrier), readFrom: () => {} },
       onActive: async () => "re-attached",
     });
     await expect(carrierSwitch.relay(relay)).resolves.toBe("re-attached");
@@ -91,13 +92,52 @@ describe("createSessionSwitch", () => {
     expect(carrierSwitch.active()).toBeNull();
   });
 
-  it("keeps naming the relay slot while the peer carries, so signaling can pin to it", () => {
+  it("reads from every carrier it holds, not only the one that is carrying", () => {
+    const { carrierSwitch, read, rode, relay, peer, second } = stand();
+    carrierSwitch.relay(relay);
+    carrierSwitch.peer(peer);
+    carrierSwitch.relay(null);
+    carrierSwitch.relay(second); // the relay is back under a live channel
+
+    // Nothing changed about what carries, so nothing re-established — but the
+    // wire signaling is pinned to is one this session reads.
+    expect(rode).toEqual([relay, peer]);
+    expect(read).toEqual([relay, peer, second]);
+  });
+
+  it("routes signaling to the relay and everything else to whatever is carrying", () => {
     const { carrierSwitch, relay, peer } = stand();
     carrierSwitch.relay(relay);
     carrierSwitch.peer(peer);
-    expect(carrierSwitch.relayCarrier()).toBe(relay);
+
+    expect(carrierSwitch.wireFor("rtc.offer")).toBe(relay);
+    expect(carrierSwitch.wireFor("board.list")).toBe(peer);
+  });
+
+  it("makes a signaling call wait for the relay to come back, rather than failing it", async () => {
+    const { carrierSwitch, relay, peer, second } = stand();
+    carrierSwitch.relay(relay);
+    carrierSwitch.peer(peer);
+    carrierSwitch.relay(null); // the socket went; the link is already reconnecting
+
+    const waiting = carrierSwitch.wireFor("rtc.offer");
+    expect(waiting).toBeInstanceOf(Promise);
+    carrierSwitch.relay(second);
+
+    await expect(waiting).resolves.toBe(second);
+  });
+
+  it("answers a signaling call with nothing once the session is closed", async () => {
+    const { carrierSwitch, relay, peer } = stand();
+    carrierSwitch.relay(relay);
+    carrierSwitch.peer(peer);
     carrierSwitch.relay(null);
-    expect(carrierSwitch.relayCarrier()).toBeNull();
+
+    const waiting = carrierSwitch.wireFor("rtc.close");
+    carrierSwitch.close();
+
+    await expect(waiting).resolves.toBeNull();
+    expect(carrierSwitch.wireFor("rtc.close")).toBeNull();
   });
 
   it("re-establishes on a fresh relay carrier that replaces the old one", () => {

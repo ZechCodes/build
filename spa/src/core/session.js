@@ -5,7 +5,8 @@
 // `SessionRpc` owns the key, the frames and the pending calls, and
 // `SessionSwitch` owns which carrier is riding. What is written here is the
 // interface the app calls them through — `{ deviceId, call, peer, onCarrier,
-// close }` — and nothing about a socket.
+// close }` — and nothing about a socket. Which wire a call rides is the
+// switch's rule, asked once, in `call`.
 //
 // The socket the handshake ran on is this session's FIRST carrier, not its only
 // one: `peer(carrier)` hands it a DataChannel to ride instead, and the session
@@ -16,7 +17,7 @@
 
 import { createRelayLink } from "./relayLink.js";
 import { createSessionRpc } from "./sessionRpc.js";
-import { createSessionSwitch } from "./sessionSwitch.js";
+import { createSessionSwitch, isSignaling } from "./sessionSwitch.js";
 
 const DEFAULT_RPC_TIMEOUT_MS = 12000;
 
@@ -49,7 +50,10 @@ export async function openRelaySession({
   };
 
   const carrierSwitch = createSessionSwitch({
-    session: { rideOn: (carrier) => rpc?.rideOn(carrier) },
+    session: {
+      rideOn: (carrier) => rpc?.rideOn(carrier),
+      readFrom: (carrier) => rpc?.readFrom(carrier),
+    },
     onActive: () => onCarrierChange(),
     onIdle: severSession,
   });
@@ -68,6 +72,7 @@ export async function openRelaySession({
     onDeviceKey,
     onDeviceOffline,
     onSession: (opened) => {
+      if (severed) return; // this session ended; its caller is opening another
       // Whatever was riding the session before this one is not riding this one.
       carrierSwitch.peer(null);
       rpc = createSessionRpc({
@@ -89,17 +94,21 @@ export async function openRelaySession({
 
   return {
     deviceId: link.deviceId(),
+    /**
+     * One RPC over whichever wire this method belongs on — the switch's rule,
+     * not this module's.
+     *
+     * Signaling runs whether or not the app is paused: the pause holds the
+     * user's actions back, and `rtc.*` is the machinery that looks for a
+     * better wire under them.
+     */
     call: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
-      isPaused()
+      isPaused() && !isSignaling(method)
         ? Promise.reject(new Error("your device is offline — reconnecting…"))
-        : rpc.call(method, params, { timeoutMs }),
-    /** Signaling is pinned to the relay carrier: `rtc.*` never rides the
-     *  channel it negotiates, so an ICE restart works while the channels are
-     *  down (spec §Signaling). It runs whether or not the app is paused: the
-     *  pause holds the user's actions back, and this is the machinery that
-     *  looks for a better wire under them. */
-    signal: (method, params = {}, timeoutMs = DEFAULT_RPC_TIMEOUT_MS) =>
-      rpc.call(method, params, { timeoutMs, carrier: carrierSwitch.relayCarrier() }),
+        : rpc.call(method, params, { timeoutMs, carrier: carrierSwitch.wireFor(method) }),
+    /** Subscribe to what the bridge says without being asked — the upgrade's
+     *  own trickled candidates among it. Returns the unsubscribe. */
+    onPush: (fn) => rpc.onPush(fn),
     /** Ride this DataChannel instead of the relay, or `null` to fall back. */
     peer: (peerCarrier) => carrierSwitch.peer(peerCarrier),
     /** What re-establishes this session on a carrier it has just taken —

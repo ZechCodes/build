@@ -138,6 +138,30 @@ describe("createSessionRpc", () => {
     expect(channel.sent).toHaveLength(0);
   });
 
+  it("waits for a wire that is on its way, inside the call's own deadline", async () => {
+    const relay = fakeCarrier();
+    const rpc = rpcOn(fakeCarrier());
+    let arrive;
+    const onItsWay = new Promise((resolve) => (arrive = resolve));
+
+    const pinned = rpc.call("rtc.offer", {}, { carrier: onItsWay });
+    await tick();
+    expect(relay.sent).toHaveLength(0);
+
+    rpc.readFrom(relay); // the switch hands over every wire it holds
+    arrive(relay);
+    await tick();
+    relay.deliver({ id: relay.sent[0].frameFields.payload.id, ok: true, result: { sdp: "v=0" } });
+    await expect(pinned).resolves.toEqual({ sdp: "v=0" });
+  });
+
+  it("gives up on a wire that never comes, at the deadline the call set", async () => {
+    const rpc = rpcOn(fakeCarrier());
+    await expect(rpc.call("rtc.offer", {}, { carrier: new Promise(() => {}), timeoutMs: 5 })).rejects.toThrow(
+      /rtc.offer/,
+    );
+  });
+
   it("hands a frame nobody asked for to whoever is listening for pushes", async () => {
     const carrier = fakeCarrier();
     const rpc = rpcOn(carrier);

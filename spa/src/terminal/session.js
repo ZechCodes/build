@@ -102,7 +102,10 @@ export class TerminalSocket {
     // Which wire is riding is the switch's to say, and every method below asks
     // it rather than remembering.
     this._switch = createSessionSwitch({
-      session: { rideOn: (carrier) => this._rpc?.rideOn(carrier) },
+      session: {
+        rideOn: (carrier) => this._rpc?.rideOn(carrier),
+        readFrom: (carrier) => this._rpc?.readFrom(carrier),
+      },
       onActive: () => this._reattachAll(),
       onIdle: () => this._reportLost(),
     });

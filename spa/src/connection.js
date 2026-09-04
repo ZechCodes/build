@@ -11,6 +11,7 @@ import { $ } from "./dom.js";
 import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
 import { openPeerLink } from "./core/peerLink.js";
+import { isSignaling } from "./core/sessionSwitch.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
 import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, render, rememberSelectedDevice } from "./app.js";
@@ -52,10 +53,10 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     onLost: goOffline,
     // The bridge saying something moved. A frame nobody asked for reaches the
     // surface showing that state, which is what lets the polls stand down —
-    // unless a live upgrade claims it first, as the peer connection's own
-    // trickle is claimed by the link that is negotiating it.
+    // except the signaling pushes, which belong to the upgrade negotiating
+    // them and describe nothing the surfaces show.
     onPush: (payload) => {
-      if (!claimedByAnUpgrade(payload)) dispatchChangeEvent(payload);
+      if (!isSignaling(payload.type)) dispatchChangeEvent(payload);
     },
   });
 }
@@ -63,18 +64,6 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
 // ---- the peer path (spec §SPA carrier and migration policy) ------------------
 
 let peerLink = null;
-
-/** The pushes an upgrade in flight is listening for. Each link registers its own
- *  handler and takes it back by identity when it is torn down, so an upgrade
- *  that overtakes another never has the one it replaced unsubscribe it. What a
- *  push has to look like to be claimed is the link's business, not this
- *  layer's. */
-const upgradesListening = new Set();
-const subscribeToPushes = (take) => {
-  upgradesListening.add(take);
-  return () => upgradesListening.delete(take);
-};
-const claimedByAnUpgrade = (payload) => [...upgradesListening].some((take) => take(payload));
 
 /**
  * Upgrade a live session onto a direct peer path, in the background.
@@ -90,9 +79,11 @@ async function upgradeToPeer(session) {
   let link;
   try {
     link = await openPeerLink({
-      signal: (method, params) => session.signal(method, params),
+      // Every `rtc.*` call rides the relay for the peer's life — the session's
+      // own rule, not this layer's — and waits for it while it reconnects.
+      signal: (method, params) => session.call(method, params),
       fetchIceServers,
-      remoteCandidates: subscribeToPushes,
+      onPush: session.onPush,
     });
   } catch (error) {
     console.warn("staying on the relay:", error.message);

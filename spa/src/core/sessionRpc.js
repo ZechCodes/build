@@ -70,11 +70,15 @@ export function createSessionRpc({
     sessionId,
     deviceId,
 
-    /** The wire this session sends on now, `null` when nothing is carrying.
-     *  Every carrier it holds is read from, not only the one it sends on —
-     *  signaling is pinned to the relay, so its answers arrive there while a
-     *  channel carries everything else. Registering the same reader twice is
-     *  registering it once. */
+    /** Read this carrier's frames. Every carrier the session holds is read
+     *  from, not only the one it sends on: signaling is pinned to the relay, so
+     *  its answers arrive on a wire this session may not be sending over.
+     *  Registering the same reader twice is registering it once. */
+    readFrom(held) {
+      held?.onEnvelope(takeEnvelope);
+    },
+
+    /** The wire this session sends on now, `null` when nothing is carrying. */
     rideOn(taken) {
       carrier = taken || null;
       lastFrameAt = 0; // the wire that just went vouches for nothing here
@@ -97,16 +101,14 @@ export function createSessionRpc({
      * One encrypted request, and the reply it is waiting for.
      *
      * `carrier` pins the call to one wire — how signaling stays on the relay
-     * while a channel carries everything else.
+     * while a channel carries everything else. It may be the *promise* of a
+     * wire that is on its way back, and then the wait is inside this call's
+     * own deadline: nothing waits on a carrier longer than it would have
+     * waited for an answer over one.
      */
     async call(method, params = {}, { timeoutMs = defaultTimeoutMs, carrier: wire = carrier } = {}) {
-      if (closed || !wire) throw noCarrier();
+      if (closed) throw noCarrier();
       const id = "r" + ++requestId;
-      const envelope = await transport.encryptFrame({
-        sessionKeyB64,
-        outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
-        frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
-      });
       const answer = new Promise((resolve, reject) =>
         pending.set(id, {
           reject,
@@ -114,18 +116,23 @@ export function createSessionRpc({
         }),
       );
       // A frame that never crossed the wire has no answer coming: the call
-      // fails now rather than waiting out a timeout for a reply nobody will
+      // fails then rather than waiting out a timeout for a reply nobody will
       // send.
-      try {
-        await wire.send(envelope);
-      } catch (error) {
-        pending.delete(id);
-        throw error;
-      }
+      const delivered = (async () => {
+        const sending = await wire;
+        if (!sending) throw noCarrier();
+        await sending.send(
+          await transport.encryptFrame({
+            sessionKeyB64,
+            outerFields: { session_id: sessionId, route_to: `device:${deviceId}` },
+            frameFields: { frame_type: "data", sender: "client", payload: { method, id, params } },
+          }),
+        );
+      })();
       // However this settles, nothing is waiting for it any more: a call that
       // timed out must not leave an entry for a later loss to reject at nobody.
       return Promise.race([
-        answer,
+        delivered.then(() => answer),
         new Promise((_, reject) => setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs)),
       ]).finally(() => pending.delete(id));
     },

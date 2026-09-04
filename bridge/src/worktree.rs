@@ -1796,6 +1796,52 @@ mod tests {
         assert_eq!(found[0].isolation, Isolation::Worktree);
     }
 
+    /// The scan is the union of both backends' walks: a clone and a linked
+    /// worktree of the same project both surface, each saying what it is, and
+    /// each is base-synced first — for a clone that is a real fetch from the
+    /// project, so a base that moved after the clone was made is visible in
+    /// its counts.
+    #[test]
+    fn discover_lists_a_clone_and_a_linked_worktree_of_the_same_project() {
+        let (dir, repo) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let mgr = manager(&dir, &repo);
+        let clone = mgr.create("cloned", "main", Isolation::Cow).unwrap();
+        let linked = dir.path().join("worktrees").join("wt-linked");
+        git_in(
+            &repo,
+            &["worktree", "add", linked.to_str().unwrap(), "-b", "linked"],
+        );
+        commit_file(&repo, "moved-base");
+
+        let found = mgr.discover("main", &HashSet::new()).unwrap();
+
+        let isolations: Vec<(String, Isolation)> = found
+            .iter()
+            .map(|checkout| (checkout.name.clone(), checkout.isolation))
+            .collect();
+        assert_eq!(found.len(), 2, "{isolations:?}");
+        assert!(
+            isolations.contains(&("cloned".to_string(), Isolation::Cow)),
+            "{isolations:?}"
+        );
+        assert!(
+            isolations.contains(&("wt-linked".to_string(), Isolation::Worktree)),
+            "{isolations:?}"
+        );
+        let cloned = found
+            .iter()
+            .find(|checkout| checkout.path == std::fs::canonicalize(&clone.path).unwrap())
+            .expect("the clone is on the board");
+        assert_eq!(
+            cloned.behind,
+            Some(1),
+            "the clone's row does not reflect the base sync the scan ran"
+        );
+    }
+
     /// One broken stray must not fail the scan. A checkout git still lists but
     /// that is no Build checkout any more is refused a base sync and described
     /// by nobody; one git itself gives up on is never listed; and the healthy

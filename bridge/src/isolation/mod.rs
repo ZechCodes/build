@@ -310,7 +310,6 @@ mod tests {
         let (dir, repo) = init_repo();
         let availability = IsolationAvailability::of(&repo, &dir.path().join("worktrees"));
 
-        // A linked worktree is never locked, whatever the volume.
         assert_eq!(availability.lock_reason(Isolation::Worktree), None);
         // A clone is locked exactly when the probe could not make one, in the
         // probe's own words — no platform assumption either way.

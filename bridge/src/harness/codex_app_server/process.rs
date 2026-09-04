@@ -6,7 +6,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use super::limits::AppServerLimits;
+use super::limits::ProcessLimits;
 use crate::harness::HarnessError;
 use crate::pty::HarnessSpec;
 
@@ -79,7 +79,7 @@ impl AppServerProcess {
     pub fn spawn(
         spec: &HarnessSpec,
         root: PathBuf,
-        limits: &AppServerLimits,
+        limits: ProcessLimits,
         events: TerminalEventSink,
     ) -> Result<(AppServerProcess, ConnectionPipes), HarnessError> {
         let mut command = Command::new(crate::pty::resolve_binary(spec)?);
@@ -107,11 +107,7 @@ impl AppServerProcess {
             .stderr
             .take()
             .ok_or_else(|| HarnessError::Session("Codex stderr was not piped".to_string()))?;
-        drain_stderr(
-            stderr,
-            StderrTail::new(limits.stderr_line_bytes, limits.stderr_total_bytes),
-            Arc::clone(&events),
-        );
+        drain_stderr(stderr, StderrTail::new(limits), Arc::clone(&events));
         let process = AppServerProcess::new(Box::new(child));
         process.start_monitor(events);
         Ok((process, ConnectionPipes { stdin, stdout }))
@@ -292,7 +288,7 @@ fn drain_stderr_reader(mut reader: impl Read, mut tail: StderrTail) -> TerminalS
     }
 }
 
-struct StderrTail {
+pub(super) struct StderrTail {
     line_limit: usize,
     total_limit: usize,
     current: Vec<u8>,
@@ -300,12 +296,12 @@ struct StderrTail {
 }
 
 impl StderrTail {
-    fn new(line_limit: usize, total_limit: usize) -> StderrTail {
+    pub(super) fn new(limits: ProcessLimits) -> StderrTail {
         StderrTail {
-            line_limit,
-            total_limit,
-            current: Vec::with_capacity(line_limit),
-            retained: VecDeque::with_capacity(total_limit),
+            line_limit: limits.stderr_line_bytes,
+            total_limit: limits.stderr_total_bytes,
+            current: Vec::with_capacity(limits.stderr_line_bytes),
+            retained: VecDeque::with_capacity(limits.stderr_total_bytes),
         }
     }
 
@@ -345,7 +341,7 @@ impl StderrTail {
         self.retained.push_back(byte);
     }
 
-    fn epitaph(&self) -> Option<String> {
+    pub(super) fn epitaph(&self) -> Option<String> {
         let bytes = self.retained.iter().copied().collect::<Vec<_>>();
         let text = String::from_utf8_lossy(&bytes).trim().to_string();
         (!text.is_empty()).then_some(text)
@@ -359,11 +355,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc;
 
+    use super::super::limits::AppServerLimits;
     use super::*;
 
     #[test]
     fn stderr_tail_caps_each_line_and_the_aggregate() {
-        let mut tail = StderrTail::new(4, 7);
+        let mut tail = StderrTail::new(ProcessLimits {
+            stderr_line_bytes: 4,
+            stderr_total_bytes: 7,
+        });
         for byte in b"123456\nabc\ndef\n" {
             tail.push(*byte);
         }
@@ -384,7 +384,7 @@ mod tests {
         let (process, pipes) = AppServerProcess::spawn(
             &spec,
             root.path().to_path_buf(),
-            &AppServerLimits::default(),
+            AppServerLimits::default().process(),
             events,
         )
         .unwrap();
@@ -470,7 +470,7 @@ mod tests {
         }
 
         assert!(matches!(
-            drain_stderr_reader(FailedReader, StderrTail::new(16, 32)),
+            drain_stderr_reader(FailedReader, StderrTail::new(AppServerLimits::default().process())),
             TerminalSourceEvent::StderrSettled {
                 retained_tail: None,
                 drainer_error: Some(error),
@@ -481,7 +481,7 @@ mod tests {
     #[test]
     fn stderr_drainer_settles_with_the_retained_tail() {
         assert!(matches!(
-            drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(16, 32)),
+            drain_stderr_reader(Cursor::new(b"first\nsecond\n"), StderrTail::new(AppServerLimits::default().process())),
             TerminalSourceEvent::StderrSettled {
                 retained_tail: Some(tail),
                 drainer_error: None,

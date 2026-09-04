@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde_json::Value;
 
-use super::limits::AppServerLimits;
+use super::limits::TranslatorLimits;
 use super::protocol::{
     tag_for, ErrorNotification, ItemLifecycle, ItemNotification, ServerNotification,
 };
@@ -283,7 +283,7 @@ fn key_charge(key: &CompletedItemKey) -> usize {
 }
 
 pub struct CodexActivityTranslator {
-    limits: AppServerLimits,
+    limits: TranslatorLimits,
     open_tools: BTreeMap<String, OpenTool>,
     open_bytes: usize,
     completed: CompletedItemLedger,
@@ -291,7 +291,7 @@ pub struct CodexActivityTranslator {
 }
 
 impl CodexActivityTranslator {
-    pub fn new(limits: AppServerLimits) -> CodexActivityTranslator {
+    pub fn new(limits: TranslatorLimits) -> CodexActivityTranslator {
         CodexActivityTranslator {
             completed: CompletedItemLedger::new(
                 limits.completed_items,

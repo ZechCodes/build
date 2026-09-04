@@ -165,10 +165,10 @@ impl CodexAppServerSession {
             let _ = terminal_sender.send(event);
         });
         let (process, pipes) =
-            AppServerProcess::spawn(spec, root.clone(), &limits, Arc::clone(&events))?;
+            AppServerProcess::spawn(spec, root.clone(), limits.process(), Arc::clone(&events))?;
         let connection = Arc::new(AppServerConnection::new(
             Box::new(pipes.stdin),
-            limits.clone(),
+            limits.connection(),
         ));
         let (sender, receiver) = broadcast::channel(ACTIVITY_BACKLOG);
         let core = Arc::new(SessionCore {
@@ -180,7 +180,7 @@ impl CodexAppServerSession {
                 choice.effort,
                 resume_id,
             )),
-            translator: Mutex::new(CodexActivityTranslator::new(limits.clone())),
+            translator: Mutex::new(CodexActivityTranslator::new(limits.translator())),
             activity: Mutex::new(Some(sender)),
             terminal: Mutex::new(TerminalSnapshot::default()),
             published: Mutex::new(None),
@@ -207,7 +207,7 @@ impl SessionCore {
     fn apply_state(self: &Arc<Self>, event: SessionEvent) -> Result<(), HarnessError> {
         let (require_version, should_close, reconciliation_pending) = {
             let mut state = self.state.lock().unwrap();
-            let transition = match state.transition(event, self.elapsed(), &self.limits) {
+            let transition = match state.transition(event, self.elapsed(), self.limits.state()) {
                 Ok(transition) => transition,
                 Err(error) => {
                     let error = HarnessError::Session(error.to_string());
@@ -251,7 +251,7 @@ impl SessionCore {
             ))?;
         }
         self.reconciliation_timer
-            .set(reconciliation_pending, self.limits.reconciliation);
+            .set(reconciliation_pending, self.limits.state().reconciliation);
         Ok(())
     }
 
@@ -557,7 +557,7 @@ fn read_until_settled(
 ) -> Option<String> {
     loop {
         let core = core.upgrade()?;
-        let frame = match read_jsonl_frame(stdout, core.limits.inbound_frame_bytes) {
+        let frame = match read_jsonl_frame(stdout, core.limits.connection().inbound_frame_bytes) {
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 let _ = core.apply_state(SessionEvent::Eof);
@@ -735,7 +735,8 @@ mod tests {
 
     #[test]
     fn server_response_write_failure_prevents_after_response_and_report_actions() {
-        let connection = AppServerConnection::failing_writer(AppServerLimits::default());
+        let connection =
+            AppServerConnection::failing_writer(AppServerLimits::default().connection());
         let decision = ServerRequestDecision {
             response: ServerResponse::result(json!(1), json!({"decision":"decline"})),
             after_response: AfterResponse::FailTurn("must not run".to_string()),

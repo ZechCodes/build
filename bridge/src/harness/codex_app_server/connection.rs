@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::limits::AppServerLimits;
+use super::limits::ConnectionLimits;
 use super::protocol::{
     ClientNotification, ConnectionEvent, InboundNotification, InboundServerRequest,
     PendingOperation, RequestId, RpcError, ServerResponse,
@@ -37,11 +37,11 @@ pub struct AppServerConnection {
     writer: Mutex<Option<Box<dyn Write + Send>>>,
     pending: Mutex<BTreeMap<RequestId, PendingOperation>>,
     next_id: Mutex<RequestId>,
-    limits: AppServerLimits,
+    limits: ConnectionLimits,
 }
 
 impl AppServerConnection {
-    pub fn new(writer: Box<dyn Write + Send>, limits: AppServerLimits) -> AppServerConnection {
+    pub fn new(writer: Box<dyn Write + Send>, limits: ConnectionLimits) -> AppServerConnection {
         AppServerConnection {
             writer: Mutex::new(Some(writer)),
             pending: Mutex::new(BTreeMap::new()),
@@ -51,12 +51,12 @@ impl AppServerConnection {
     }
 
     #[cfg(test)]
-    pub fn memory(limits: AppServerLimits) -> AppServerConnection {
+    pub fn memory(limits: ConnectionLimits) -> AppServerConnection {
         AppServerConnection::new(Box::new(Vec::<u8>::new()), limits)
     }
 
     #[cfg(test)]
-    pub fn failing_writer(limits: AppServerLimits) -> AppServerConnection {
+    pub fn failing_writer(limits: ConnectionLimits) -> AppServerConnection {
         struct Fails;
         impl Write for Fails {
             fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
@@ -342,6 +342,7 @@ mod tests {
 
     use serde_json::json;
 
+    use super::super::limits::AppServerLimits;
     use super::*;
 
     #[test]
@@ -365,7 +366,10 @@ mod tests {
             }
         }
 
-        let connection = AppServerConnection::new(Box::new(FlushFails), AppServerLimits::default());
+        let connection = AppServerConnection::new(
+            Box::new(FlushFails),
+            AppServerLimits::default().connection(),
+        );
         let error = connection.close().unwrap_err().to_string();
         assert!(error.contains("exact close error"), "{error}");
         assert!(connection.close().is_ok());
@@ -388,7 +392,7 @@ mod tests {
         let flushes = Arc::new(AtomicUsize::new(0));
         let connection = AppServerConnection::new(
             Box::new(FlushFails(Arc::clone(&flushes))),
-            AppServerLimits::default(),
+            AppServerLimits::default().connection(),
         );
         assert!(connection
             .request(PendingOperation::Initialize)

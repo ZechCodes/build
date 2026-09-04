@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::limits::AppServerLimits;
+use super::limits::StateLimits;
 use super::protocol::{
     ConnectionEvent, InitializeResult, OperationResult, PendingOperation, RpcError,
     ThreadOpenResult, TurnCompletion, TurnStartResult, TurnSteerResult,
@@ -142,7 +142,7 @@ impl CodexSessionState {
         &self,
         event: SessionEvent,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<StateTransition, StateError> {
         let mut state = self.clone();
         let effects = state.apply(event, now, limits)?;
@@ -153,7 +153,7 @@ impl CodexSessionState {
         &mut self,
         event: SessionEvent,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match event {
             command @ (SessionEvent::Start
@@ -180,7 +180,7 @@ impl CodexSessionState {
     fn apply_command(
         &mut self,
         command: SessionEvent,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match command {
             SessionEvent::Start => self.start(),
@@ -194,7 +194,7 @@ impl CodexSessionState {
         &mut self,
         event: SessionEvent,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match event {
             SessionEvent::ThreadStarted(id) => self.thread_started(id, now),
@@ -218,7 +218,7 @@ impl CodexSessionState {
         &mut self,
         event: ConnectionEvent,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match event {
             ConnectionEvent::Response { operation, result } => {
@@ -234,7 +234,7 @@ impl CodexSessionState {
         &mut self,
         event: SessionEvent,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match event {
             SessionEvent::VersionEvidence(version) => self.version_evidence(version),
@@ -268,7 +268,7 @@ impl CodexSessionState {
     fn send_turn(
         &mut self,
         input: String,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let thread_id = self.thread_id.clone();
         match &mut self.phase {
@@ -298,7 +298,7 @@ impl CodexSessionState {
         }
     }
 
-    fn queue(&mut self, input: String, limits: &AppServerLimits) -> Result<(), StateError> {
+    fn queue(&mut self, input: String, limits: StateLimits) -> Result<(), StateError> {
         let bytes = input.len();
         if self.queued_turns.len() >= limits.queued_turns {
             return Err(StateError(format!(
@@ -339,7 +339,7 @@ impl CodexSessionState {
         operation: PendingOperation,
         result: Result<OperationResult, RpcError>,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         match operation {
             PendingOperation::Initialize => self.initialize_response(expect_initialize(result)?),
@@ -460,7 +460,7 @@ impl CodexSessionState {
         &mut self,
         operation: PendingOperation,
         result: Result<OperationResult, RpcError>,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let expected_resume = matches!(operation, PendingOperation::ResumeThread { .. });
         if expected_resume != self.resume_id.is_some() {
@@ -554,7 +554,7 @@ impl CodexSessionState {
         &mut self,
         input: String,
         result: Result<OperationResult, RpcError>,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::StartingTurn {
             input: retained,
@@ -647,7 +647,7 @@ impl CodexSessionState {
         &mut self,
         completion: TurnCompletion,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         if matches!(self.phase, Phase::StartingTurn { .. }) {
             return self.complete_starting_turn(completion, now);
@@ -689,7 +689,7 @@ impl CodexSessionState {
     fn complete_working_turn(
         &mut self,
         completion: TurnCompletion,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             unreachable!()
@@ -732,7 +732,7 @@ impl CodexSessionState {
         operation_input: String,
         result: Result<OperationResult, RpcError>,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let completion = self.take_pending_steer(&operation_turn_id, &operation_input)?;
         match result {
@@ -783,7 +783,7 @@ impl CodexSessionState {
         &mut self,
         returned_turn_id: String,
         completion: Option<TurnCompletion>,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &self.phase else {
             unreachable!()
@@ -841,7 +841,7 @@ impl CodexSessionState {
 
     fn release_next_steer(
         &mut self,
-        _limits: &AppServerLimits,
+        _limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Some(input) = self.pop_queue() else {
             return Ok(Vec::new());
@@ -871,7 +871,7 @@ impl CodexSessionState {
         &mut self,
         operation_turn_id: String,
         result: Result<(), RpcError>,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             return Err(StateError(
@@ -916,7 +916,7 @@ impl CodexSessionState {
         &mut self,
         completion: TurnCompletion,
         result: Result<(), RpcError>,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let Phase::Working(working) = &mut self.phase else {
             unreachable!()
@@ -958,7 +958,7 @@ impl CodexSessionState {
     fn finish_turn(
         &mut self,
         completion: TurnCompletion,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         self.remember_completion(completion.clone());
         if completion.error.is_some() {
@@ -972,7 +972,7 @@ impl CodexSessionState {
         self.last_completion = Some(completion);
     }
 
-    fn start_next_queued(&mut self, _limits: &AppServerLimits) -> Vec<SessionEffect> {
+    fn start_next_queued(&mut self, _limits: StateLimits) -> Vec<SessionEffect> {
         self.pop_queue()
             .map(|input| vec![self.begin_start_turn(input)])
             .unwrap_or_default()
@@ -987,7 +987,7 @@ impl CodexSessionState {
     fn check_timeouts(
         &mut self,
         now: Duration,
-        limits: &AppServerLimits,
+        limits: StateLimits,
     ) -> Result<Vec<SessionEffect>, StateError> {
         let since = match &self.phase {
             Phase::OpeningThread {

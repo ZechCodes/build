@@ -67,12 +67,15 @@ def ice_servers(
     if not key_id or not api_token:
         return deepcopy(STUN_ONLY)
 
-    response = send(
-        CREDENTIALS_URL.format(key_id=key_id),
-        json={"ttl": ttl_seconds},
-        headers={"Authorization": f"Bearer {api_token}"},
-        timeout=REQUEST_TIMEOUT_SECONDS,
-    )
+    try:
+        response = send(
+            CREDENTIALS_URL.format(key_id=key_id),
+            json={"ttl": ttl_seconds},
+            headers={"Authorization": f"Bearer {api_token}"},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.RequestException as exc:
+        raise IceServersUnavailable("cloudflare is unreachable") from exc
     if response.status_code != CREDENTIALS_CREATED:
         raise IceServersUnavailable(
             f"cloudflare answered {response.status_code} for TURN credentials"

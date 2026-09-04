@@ -7,6 +7,7 @@ No test reaches the network — every call goes through the injected ``send``.
 from __future__ import annotations
 
 import pytest
+import requests
 
 from buildapp.ice_servers import (
     CREDENTIALS_URL,
@@ -103,3 +104,12 @@ def test_a_response_without_ice_servers_fails_fast():
     send = _created({"unexpected": True})
     with pytest.raises(IceServersUnavailable):
         ice_servers(KEY_ID, API_TOKEN, send=send)
+
+
+def test_an_unreachable_cloudflare_fails_fast_with_context():
+    def unreachable(url: str, **kwargs):
+        raise requests.exceptions.ConnectTimeout("connect timed out")
+
+    with pytest.raises(IceServersUnavailable) as raised:
+        ice_servers(KEY_ID, API_TOKEN, send=unreachable)
+    assert isinstance(raised.value.__cause__, requests.exceptions.RequestException)

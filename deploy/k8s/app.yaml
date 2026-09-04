@@ -1,7 +1,8 @@
 # The Skrift app: auth, device registry, gateway tokens, web push, SPA host.
 # Secrets (build-app: SECRET_KEY, INTERNAL_API_SECRET, DATABASE_URL, VAPID_*,
-# SMTP_USERNAME, SMTP_PASSWORD, SMTP_FROM_ADDRESS, WAITLIST_NOTIFY_ADDRESS)
-# come from deploy/k8s/bootstrap-secrets.sh — never from git.
+# CF_TURN_KEY_ID, CF_TURN_KEY_API_TOKEN, SMTP_USERNAME, SMTP_PASSWORD,
+# SMTP_FROM_ADDRESS, WAITLIST_NOTIFY_ADDRESS) come from
+# deploy/k8s/bootstrap-secrets.sh — never from git.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,6 +79,26 @@ spec:
                 secretKeyRef:
                   name: build-app
                   key: VAPID_SUBJECT
+                  optional: true
+            # Cloudflare TURN, the relay for WebRTC peers that cannot hole-punch.
+            # The key mints short-lived per-user credentials and never leaves the
+            # api: no browser and no bridge holds it. `optional: true` because
+            # the ICE-servers route answers a STUN-only list without it, which is
+            # a working direct-path deployment — a missing key must not
+            # CreateContainerConfigError the whole app. Add real values with
+            # bootstrap-secrets.sh (CF_TURN_KEY_ID / CF_TURN_KEY_API_TOKEN
+            # exported from the Cloudflare dashboard).
+            - name: CF_TURN_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: CF_TURN_KEY_ID
+                  optional: true
+            - name: CF_TURN_KEY_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: build-app
+                  key: CF_TURN_KEY_API_TOKEN
                   optional: true
             # Outbound email (waitlist confirmation + owner notification) over
             # FastMail SMTP. The three SMTP keys are NOT optional: app.yaml

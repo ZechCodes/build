@@ -13,13 +13,13 @@ use std::time::Duration;
 use build_bridge::app::AppState;
 use build_bridge::carrier::testing::{client_request, next_report, reporting};
 use build_bridge::carrier::FrameIntake;
-use build_bridge::rtc::{chunk, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
+use build_bridge::rtc::{chunk, negotiated_channel, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
 use build_bridge::transport::{self, Envelope, DATA_FRAME_TYPE};
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use webrtc::data_channel::{DataChannel, DataChannelEvent, RTCDataChannelInit};
+use webrtc::data_channel::{DataChannel, DataChannelEvent};
 use webrtc::peer_connection::{
     PeerConnection, PeerConnectionBuilder, PeerConnectionEventHandler, RTCIceCandidateInit,
     RTCPeerConnectionIceEvent, RTCSessionDescription,
@@ -261,14 +261,7 @@ async fn negotiated(
     id: u16,
 ) -> Arc<dyn DataChannel> {
     connection
-        .create_data_channel(
-            label,
-            Some(RTCDataChannelInit {
-                ordered: true,
-                negotiated: Some(id),
-                ..Default::default()
-            }),
-        )
+        .create_data_channel(label, Some(negotiated_channel(id)))
         .await
         .expect("a negotiated channel needs no handshake")
 }

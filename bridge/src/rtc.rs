@@ -236,6 +236,17 @@ pub const DC_BUFFERED_HIGH: usize = 1024 * 1024;
 /// against the same two labels and ids, and one of those sides is a test.
 pub const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
 
+/// How one of [`NEGOTIATED_CHANNELS`] is created, on whichever side is
+/// creating it: ordered, and negotiated on the id both sides already agreed.
+/// Both ends of a channel must ask for the same thing, so both ends ask here.
+pub fn negotiated_channel(id: u16) -> RTCDataChannelInit {
+    RTCDataChannelInit {
+        ordered: true,
+        negotiated: Some(id),
+        ..Default::default()
+    }
+}
+
 /// Where a peer's own candidates are gathered from. Every interface, an
 /// ephemeral port: the browser's offer decides whether a direct pair or a TURN
 /// relay carries, and the device offers every path it has.
@@ -380,14 +391,7 @@ impl WebrtcPeer {
         let mut carriers = Vec::new();
         for (label, id) in NEGOTIATED_CHANNELS {
             let channel = connection
-                .create_data_channel(
-                    label,
-                    Some(RTCDataChannelInit {
-                        ordered: true,
-                        negotiated: Some(id),
-                        ..Default::default()
-                    }),
-                )
+                .create_data_channel(label, Some(negotiated_channel(id)))
                 .await?;
             carriers.push(DataChannelCarrier::ride(channel, self.intake.clone()));
         }

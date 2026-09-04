@@ -359,12 +359,9 @@ fn field_str(msg: &Value, key: &str) -> Result<String, RelayError> {
         .ok_or_else(|| RelayError::Protocol(format!("{key} missing")))
 }
 
-/// A frame the device could not honour. Never fatal to the socket, and dropped
-/// without a trace on purpose — a paired browser must not be able to drive
-/// stderr from the frame path — with one exception: a `session_init` replayed
-/// for a live session under a foreign key. That is the frame the spec drops,
-/// it means a client is contesting an open session, and one line per refusal
-/// is the only way to see it happen in production.
+/// A frame the device could not honour. Never fatal to the socket, and silent
+/// but for the one refusal the spec logs (§Shared session registry): a
+/// `session_init` contesting a live session under a foreign key.
 fn drop_protocol_error(err: &RelayError) {
     if let RelayError::Carrier(CarrierError::KeyMismatch(session_id)) = err {
         eprintln!(

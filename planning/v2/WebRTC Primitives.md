@@ -43,11 +43,14 @@ session key or a `CarrierId`.
 ```rust
 fn open(&self, session_id: &str, session_key: String, carrier: &CarrierHandle) -> Result<(), CarrierError>;
 fn admit(&self, envelope: &Envelope, carrier: &CarrierHandle) -> Result<(Frame, SessionSender), CarrierError>;
-fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<String>;
-fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<String>;
-fn end(&self, session_id: &str) -> Vec<String>;
+fn release_session(&self, session_id: &str, carrier: &CarrierHandle) -> Vec<SessionEnd>;
+fn release_carrier(&self, carrier: &CarrierHandle) -> Vec<SessionEnd>;
+fn end(&self, session_id: &str) -> Vec<SessionEnd>;
 ```
-The last three return the session ids that actually ended, from one private rule: *no carriers left, or `end`*. `admit`
+The last three return the openings that actually ended, from one private rule: *no carriers left, or `end`*. A
+`SessionEnd` is a session id stamped with the generation of the opening that ended, because an end's effects run behind
+the frames queued ahead of them and the same id may be minted again before they do: a late close reaches the opening it
+belongs to or nothing (`reopened_since`). `admit`
 records the ride, so a session rides a carrier the moment a frame for it arrives there. `open` is idempotent for a
 known session whose unwrapped key matches — that is the carrier re-attach a browser's relay reconnect performs, and it
 records the ride, so the carrier the session rode before may drop without ending it — and errors on a known session with
@@ -61,12 +64,19 @@ else dispatch. Builds and owns the `SessionRegistry`, and owns the `Dispatcher` 
 read folding — as one `Arc` shared by the relay loop and every DataChannel reader, and is the *effect* side of the teardown rule: for every session id the registry
 reports ended it emits that session's synthetic `close` frame. **Hides** the dispatcher, the fold, the lanes.
 ```rust
-pub fn new(handler: FrameHandler) -> Arc<Self>;
-pub fn open(&self, session_id: &str, opened: transport::OpenedSession, carrier: &CarrierHandle) -> Result<Envelope, CarrierError>;
-pub async fn accept(&self, envelope: Envelope, carrier: &CarrierHandle) -> Result<(), CarrierError>;
-pub fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
-pub fn close_carrier(&self, carrier: &CarrierHandle);
+pub fn new(handler: FrameHandler, transport: KeyPairB64) -> Arc<Self>;
+pub fn transport_public_key(&self) -> &str;
+pub(crate) fn open(&self, session_id: &str, init: &SessionInit, carrier: &CarrierHandle) -> Result<Envelope, CarrierError>;
+pub(crate) async fn accept(&self, envelope: Envelope, carrier: &CarrierHandle) -> Result<(), CarrierError>;
+pub(crate) fn close_session(&self, session_id: &str, carrier: &CarrierHandle);
+pub(crate) fn close_carrier(&self, carrier: &CarrierHandle);
 ```
+It is the **one owner of the device's transport keypair**: it opens every `session_init` — the one moment a session key
+exists outside the registry — and a carrier that has to publish the public half reads it back with
+`transport_public_key`, so the key a client wraps to is the key the device unwraps with by construction. Only `new` and
+that getter are public: `main.rs` builds one and hands it to `relay::run`, and the verbs a carrier drives it with are
+the crate's own.
+
 `&self`, not `&mut self`, so the sharing is real: the lane map moves behind its own `Mutex` inside the `Dispatcher`,
 held only long enough to clone a lane sender — **no lock crosses an await**. A lane is never born for a session that has
 ended: the sender the registry builds knows whether its opening is still open, and the dispatcher reads that under the

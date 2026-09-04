@@ -67,8 +67,14 @@ pub struct SessionSender {
     session_id: String,
     session_key: String,
     out: mpsc::UnboundedSender<OutboundEnvelope>,
+    still_open: Arc<AtomicBool>,
 }
 ```
+
+`still_open` is the opening this sender was built for, cleared by the registry when that
+opening ends. It is what "nothing runs for a session after its close" rests on: a frame
+admitted on one carrier and dispatched after another carrier ended the session reads it
+and never runs.
 
 - The relay writer task wraps each `OutboundEnvelope` as
   `{"type":"e2ee_envelope","session_id":…,"envelope":…}`.
@@ -83,8 +89,11 @@ The `session_id → session_key` map currently lives inside the relay read loop 
 with the socket. Move it to a `SessionRegistry` owned by `main.rs` and shared by both
 carriers. The relay loop inserts on `session_accept`; the DataChannel carrier looks keys
 up when a frame arrives with a known `session_id`. A frame for an unknown session is
-dropped and logged. `end_session` (relay `session_closed`, client `close` frame, or
-DataChannel close of the session's last carrier) removes the key.
+dropped without a trace: a paired browser must not be able to drive the device's stderr
+from the frame path. The one refusal the device logs is the `session_init` below that
+contests a live session under a foreign key, one line each, because that is a client
+contesting a session someone else holds. `end_session` (relay `session_closed`, client
+`close` frame, or DataChannel close of the session's last carrier) removes the key.
 
 The relay still has last-writer-wins semantics per device connection. When the bridge's
 relay socket reconnects, sessions minted on the previous socket are still valid on the

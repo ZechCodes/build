@@ -55,7 +55,14 @@ from the environment and aborts if any is unset. `SMTP_USERNAME`,
 `SMTP_PASSWORD` and `SMTP_FROM_ADDRESS` are required `secretKeyRef`s on the
 Deployment: run this step **before** the first deploy that carries the waitlist
 email code, or the pod fails with `CreateContainerConfigError` and, under the
-`Recreate` strategy, the site goes down with it. Verify with:
+`Recreate` strategy, the site goes down with it.
+
+`CF_TURN_KEY_ID` and `CF_TURN_KEY_API_TOKEN` — the Cloudflare TURN key the
+ICE-servers route mints per-user credentials from — cannot be invented either,
+but they are optional on the Deployment: export them to have the script patch
+them in, and without them the route answers a STUN-only list and peers that
+cannot hole-punch keep working over the relay. Their egress has a monthly check
+in [`../OPS.md`](../OPS.md). Verify with:
 
 ```bash
 kubectl --context do-nyc1-production-hosting -n 8ly get secret build-app \

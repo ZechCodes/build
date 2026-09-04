@@ -45,6 +45,16 @@ The E2EE crypto layer lives in the separate
 [`build-secure-transport`](https://github.com/ZechCodes/build-secure-transport) repo
 (Python + JS bindings; the bridge carries an interop-verified Rust port).
 
+**A second infrastructure party.** Browser and bridge negotiate a direct WebRTC DataChannel
+and use Cloudflare TURN only when neither peer can hole-punch, which makes Cloudflare a second
+infrastructure party beside the relay. Cloudflare sees TURN allocation source IPs and DTLS
+ciphertext; under that DTLS is the same secretbox envelope the relay carries, so even a broken
+DTLS session exposes no more than the relay already sees — session ids, sizes, timing — and
+never plaintext or session keys. The direct path adds the one exposure the relay path hid: each
+peer learns the other's IP. TURN credentials are short-lived, minted per authenticated user by
+the api, and reach the bridge inside the sealed session; the TURN key itself never leaves the
+api Secret.
+
 ## Develop
 
 ```bash

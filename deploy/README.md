@@ -37,6 +37,29 @@ No secrets to provision: dev defaults are baked into the compose file and can
 be overridden with `BUILD_SECRET_KEY`, `BUILD_INTERNAL_API_SECRET`,
 `BUILD_PAIRING_CODE`.
 
+## ICE servers (the WebRTC upgrade)
+
+Once a browser session is live over the relay it upgrades to a direct WebRTC
+DataChannel to the bridge, and falls back to Cloudflare TURN when neither peer
+can hole-punch. The browser fetches the server list from the api
+(`POST /api/rtc/ice-servers`, session-cookie authenticated) and forwards it to
+the bridge inside the sealed session, so the bridge needs no Cloudflare access.
+
+| Env key | Where it comes from | What it is |
+|---|---|---|
+| `CF_TURN_KEY_ID` | `build-app` Secret | Cloudflare TURN key the api mints short-lived per-user credentials from |
+| `CF_TURN_KEY_API_TOKEN` | `build-app` Secret | That key's API token. Never returned to a browser or a bridge |
+
+Both are optional (`optional: true` in [`k8s/app.yaml`](k8s/app.yaml);
+[`k8s/bootstrap-secrets.sh`](k8s/bootstrap-secrets.sh) patches them in when they
+are exported and reports their absence instead of failing). With neither set —
+which is how `compose.real.yml` runs — the route answers a STUN-only list and
+direct host candidates carry localhost sessions, so the local stack needs no
+Cloudflare account. A deployment without the key is supported too: peers that
+cannot hole-punch simply keep working over the relay.
+
+TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
+
 ## Known-stale harnesses
 
 `web/qa-reconnect.mjs`, `web/term-verify.mjs`, `web/term-browser.mjs` still

@@ -55,6 +55,7 @@ use crate::store::{
 };
 use crate::templates::{Templates, STAGES_MANIFEST_PATH};
 use crate::thread::ThreadDetail;
+use crate::timing::{FrameClock, FrameTimer};
 use crate::transport::Frame;
 use crate::worktree::{
     bounded_git_fetch, configured_remote_for_branch, discover_external_worktrees, ExternalWorktree,
@@ -1722,12 +1723,17 @@ fn spawn_diff_refresh(
 /// already owns, because there is no number to serve in its place; the frame
 /// waits, the daemon does not. Either way the git work runs with the lock
 /// released, so a slow worktree can no longer stop every other frame.
-fn warm_diff_caches(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) {
+fn warm_diff_caches(
+    state: &Arc<Mutex<AppState>>,
+    method: &str,
+    params: &Value,
+    timer: &FrameTimer,
+) {
     let Some(scope) = diff_caches_read_by(method, params) else {
         return;
     };
     let (work, observer) = {
-        let mut app = state.lock().unwrap();
+        let mut app = timer.lock(state);
         let work = app.claim_stale_diff_refreshes(&scope);
         (work, app.diff_compute_observer.clone())
     };
@@ -1751,7 +1757,7 @@ fn warm_diff_caches(state: &Arc<Mutex<AppState>>, method: &str, params: &Value) 
             }
         };
         let entry = waited_for.compute(observer.as_ref());
-        state.lock().unwrap().publish_diff_refresh(&key, entry);
+        timer.lock(state).publish_diff_refresh(&key, entry);
     }
 }
 
@@ -4348,7 +4354,9 @@ impl AppState {
     /// need the shared handle (background producers/pumps), so it dispatches
     /// through [`dispatch_frame`].
     pub fn handler(state: Arc<Mutex<AppState>>) -> FrameHandler {
-        Arc::new(move |sender, frame| dispatch_frame(&state, sender, frame))
+        FrameHandler::new(FrameClock::new(), move |sender, frame, timer| {
+            dispatch_frame(&state, sender, frame, timer)
+        })
     }
 
     /// Convenience for tests: own the state and build a handler in one step.
@@ -17379,13 +17387,18 @@ fn merge_cleanup_from(params: &Value, adopted: bool) -> Result<MergeCleanup, Str
 /// handled here because they need the shared `Arc` (background producer/pump) and
 /// the `SessionSender` (to push live output to this client); everything else runs
 /// under a short-held lock.
-fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Frame) -> Value {
+fn dispatch_frame(
+    state: &Arc<Mutex<AppState>>,
+    sender: SessionSender,
+    frame: Frame,
+    timer: FrameTimer,
+) -> Value {
     // A session ended (client `close` frame, or the relay's session_closed on
     // browser disconnect): release its attachments so the bridge stops encrypting
     // terminal output into a session nobody will ever read.
     if frame.frame_type == "close" {
         let changes = {
-            let mut app = state.lock().unwrap();
+            let mut app = timer.lock(state);
             app.drop_session(sender.session_id());
             app.changes()
         };
@@ -17410,43 +17423,46 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
         // capabilities that need somewhere to send to — the subscription
         // itself. Needs the caller's own `SessionSender`, which is why it is
         // here and not in `route`.
-        "session.hello" => session_hello(state, &sender),
-        "stream.start" => stream_start(state, &params),
+        "session.hello" => session_hello(state, &sender, &timer),
+        // Answered from the frame clock alone, never from `AppState`: the frame
+        // that asks what is wedging the daemon must not queue behind the wedge.
+        "bridge.stats" => Ok(timer.stats()),
+        "stream.start" => stream_start(state, &params, &timer),
         // Opening a terminal or an agent in a worktree IS interacting with it in
         // Build — it is the reason a hand-made worktree graduates out of the
         // Worktrees row. This arm bypasses `dispatch`, so it stamps for itself.
         "term.create" => {
-            let created = term_create(state, &params);
+            let created = term_create(state, &params, &timer);
             if created.is_ok() {
                 if let Some(scope_id) = params
                     .get("run_id")
                     .or_else(|| params.get("worktree_id"))
                     .and_then(Value::as_str)
                 {
-                    state.lock().unwrap().touch_attention(scope_id);
+                    timer.lock(state).touch_attention(scope_id);
                 }
             }
             created
         }
-        "term.attach" => term_attach(state, &sender, &params),
+        "term.attach" => term_attach(state, &sender, &params, &timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
-        "term.ack" => term_ack(state, &sender, &params),
-        "agent.attach" => agent_attach(state, &sender, &params),
+        "term.ack" => term_ack(state, &sender, &params, &timer),
+        "agent.attach" => agent_attach(state, &sender, &params, &timer),
         // Bypasses `dispatch` for the same reason `deliver` does: opening a
         // harness blocks for seconds on its readiness wait, and every terminal
         // pump needs the state lock free while it does.
-        "agent.start" => agent_start(state, &params),
+        "agent.start" => agent_start(state, &params, &timer),
         _ => {
             // Whatever this verb reads out of the diff caches is brought up to
             // date here, with the lock free. After it, the verb only reads
             // memory: no frame ever holds the app mutex through a worktree diff.
-            warm_diff_caches(state, &method, &params);
+            warm_diff_caches(state, &method, &params, &timer);
             // A verb whose git work must not run under the lock hands that
             // work back rather than doing it here; the drain below runs it with
             // the mutex released. See `AppState::deferred_work`.
             let (dispatched, deferred) = {
-                let mut app = state.lock().unwrap();
+                let mut app = timer.lock(state);
                 let queued_before = app.pending_agent_turns.len();
                 let (result, deferred) = app.dispatch_deferring(&method, &params);
                 if result.is_err() {
@@ -17466,7 +17482,7 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
                     // terminal pump and the relay's own read loop free to make
                     // progress meanwhile.
                     let done = deferred.run();
-                    let mut app = state.lock().unwrap();
+                    let mut app = timer.lock(state);
                     let queued_before = app.pending_agent_turns.len();
                     let applied = app.apply_deferred(&method, &params, done);
                     if applied.is_err() {
@@ -17501,11 +17517,15 @@ fn dispatch_frame(state: &Arc<Mutex<AppState>>, sender: SessionSender, frame: Fr
 ///
 /// Idempotent: a client may greet again after a reconnect, and the bus keeps
 /// one subscription per session id.
-fn session_hello(state: &Arc<Mutex<AppState>>, sender: &SessionSender) -> Result<Value, String> {
+fn session_hello(
+    state: &Arc<Mutex<AppState>>,
+    sender: &SessionSender,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     // The subscribe happens with the app mutex released — it takes the bus's
     // own leaf lock, and nothing in this daemon may nest one lock inside
     // another it did not have to.
-    let changes = state.lock().unwrap().changes();
+    let changes = timer.lock(state).changes();
     changes.subscribe(sender);
     Ok(json!({
         "push_events": true,
@@ -17529,14 +17549,18 @@ fn term_id_suffix(term_id: &str) -> u64 {
 ///
 /// Only a shell. A worktree's agent is not created here; it is
 /// [`ensure_agent_tab`]'s, and it is the only agent the worktree gets.
-fn term_create(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+fn term_create(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
     let scope = TermScope::parse(params)?;
     require_shell_kind(params)?;
 
     let (key, rx) = {
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         let root = scope.resolve_root(&mut s)?;
         // The cap counts the human's shells and never an agent: sixteen open
         // terminals must not be able to crowd a worktree's agent out of a
@@ -17585,6 +17609,7 @@ fn term_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let term_id = require_str(params, "term_id")?;
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
@@ -17593,7 +17618,7 @@ fn term_attach(
     // Snapshot the screen and register this client atomically under the lock, so
     // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
     // dupe across a reconnect.
-    let mut s = state.lock().unwrap();
+    let mut s = timer.lock(state);
     let key = s.tab_key_of_wire_id(&term_id)?;
     attach_to_tab(&mut s, &key, sender, cols, rows)
 }
@@ -17609,13 +17634,14 @@ fn term_ack(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     let term_id = require_str(params, "term_id")?;
     let cursor = params
         .get("cursor")
         .and_then(Value::as_u64)
         .ok_or("missing cursor")?;
-    let mut s = state.lock().unwrap();
+    let mut s = timer.lock(state);
     let key = s.tab_key_of_wire_id(&term_id)?;
     let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
     // A client that was never allowed to attach has nothing to acknowledge, so
@@ -17656,6 +17682,7 @@ fn agent_attach(
     state: &Arc<Mutex<AppState>>,
     sender: &SessionSender,
     params: &Value,
+    timer: &FrameTimer,
 ) -> Result<Value, String> {
     // Grid defaults = the orchestrator's agent PTY size (40 rows × 120 cols).
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(120) as u16;
@@ -17666,7 +17693,7 @@ fn agent_attach(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty());
 
-    let mut guard = state.lock().unwrap();
+    let mut guard = timer.lock(state);
     let s = &mut *guard;
     // The id is opaque (plan-… / run-…); what it resolves to is a worktree,
     // because that is what an agent works in. Without one, the scope params
@@ -17741,7 +17768,11 @@ fn agent_attach(
 /// carried), which is exactly start-vs-restart. The owner must be an entity that
 /// owns a worktree — `.build/mcp.json` routes `done` per owner, so an agent with
 /// nobody to report to is worse than none.
-fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+fn agent_start(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     // `run_id` is the adopting caller's spelling: a worktree surface with no run
     // yet mints one and forwards the verb, and that helper names the id it just
     // minted. Same entity either way.
@@ -17759,7 +17790,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         .filter(|id| !id.is_empty())
         .map(str::to_string);
     let (turn, waiting) = {
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         // The Agent tab's provider picker rides the start itself. Parsed under
         // the lock — what "claude" opens is the account's setting to answer —
         // but still before anything is touched, so an unrunnable provider
@@ -17831,7 +17862,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
         )?
     };
 
-    let mut s = state.lock().unwrap();
+    let mut s = timer.lock(state);
     // A fresh process is a new session either way — the lineage must not depend
     // on whether there happened to be mail.
     if spawned == Spawned::Fresh {
@@ -18825,7 +18856,11 @@ fn tool_call_outcome(outcome: crate::harness::ToolOutcome) -> crate::thread::Too
 /// Start a deterministic agent output stream: register it, then spawn a background
 /// producer that appends `count` ordered output events (one per `interval_ms`) and
 /// a terminal `done` event into the authoritative log.
-fn stream_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, String> {
+fn stream_start(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
     let count = params.get("count").and_then(Value::as_u64).unwrap_or(20);
     let interval_ms = params
         .get("interval_ms")
@@ -18834,7 +18869,7 @@ fn stream_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, S
         .clamp(0, 1000);
 
     let stream_id = {
-        let mut s = state.lock().unwrap();
+        let mut s = timer.lock(state);
         let id = format!("stream-{}", s.next_stream);
         s.next_stream += 1;
         s.streams.insert(
@@ -19595,7 +19630,7 @@ mod tests {
         )
         .into_handler();
         let call = |method: &str, params: Value| {
-            handler(SessionSender::detached("s"), req(method, params))
+            handler.call(SessionSender::detached("s"), req(method, params))
         };
 
         let started = call("stream.start", json!({ "count": 50, "interval_ms": 0 }));
@@ -19677,6 +19712,70 @@ mod tests {
         (state, handler)
     }
 
+    /// The verb that says what the daemon is doing must not wait on the daemon
+    /// doing it. `bridge.stats` reads the frame clock and never the state, so
+    /// the moment it is needed — a frame parked on the app mutex — is the
+    /// moment it still answers, naming the method that is holding it.
+    #[test]
+    fn bridge_stats_answers_while_another_frame_holds_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let clock = Arc::clone(handler.clock());
+
+        let (held, is_held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let timer = clock.frame("board.list");
+            let _guard = timer.lock(&state);
+            held.send(()).expect("the test is watching");
+            released.recv().expect("the test releases the lock");
+        });
+        is_held
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the frame took the app mutex");
+
+        let (answered, answers) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stats = handler.call(
+                SessionSender::detached("s-stats"),
+                req("bridge.stats", json!({})),
+            );
+            let _ = answered.send(stats);
+        });
+        let stats = answers
+            .recv_timeout(Duration::from_secs(5))
+            .expect("bridge.stats answers with the app mutex held by another frame");
+
+        assert_eq!(stats["ok"], true, "{stats:?}");
+        assert_eq!(
+            stats["result"]["lock_holder"], "board.list",
+            "the stats name the frame that is holding the lock: {stats:?}"
+        );
+        release.send(()).expect("the holder is still waiting");
+        holder.join().expect("the holding frame ends");
+    }
+
+    /// Frames are counted under the method they answered, so the stats say which
+    /// verb is slow rather than only that something is.
+    #[test]
+    fn bridge_stats_count_every_frame_under_its_own_method() {
+        let (dir, repo) = init_repo();
+        let (_state, handler) = shared_state_and_handler(&repo, dir.path());
+        let sender = SessionSender::detached("s-counting");
+        handler.call(sender.clone(), req("project.list", json!({})));
+        handler.call(sender.clone(), req("board.list", json!({})));
+        handler.call(sender.clone(), req("board.list", json!({})));
+
+        let stats = handler.call(sender, req("bridge.stats", json!({})))["result"].clone();
+        assert_eq!(stats["methods"]["board.list"]["served"], 2, "{stats:?}");
+        assert_eq!(stats["methods"]["project.list"]["served"], 1, "{stats:?}");
+        assert_eq!(stats["queue_depth"], 0);
+        assert_eq!(stats["lock_holder"], Value::Null);
+        // Three, not four: a frame is published when it ends, and the frame
+        // asking is still running.
+        assert_eq!(stats["frames_served"], 3, "{stats:?}");
+    }
+
     /// Poll an observable sender's captured pushes until the decrypted history
     /// satisfies `pred` (returning everything seen), or panic after 10 s.
     async fn wait_for_pushes(
@@ -19746,7 +19845,7 @@ mod tests {
 
         // Create in the primary scope: bash starts in the repo root and the
         // pump runs before any attach.
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -19759,7 +19858,7 @@ mod tests {
         assert_eq!(created["result"]["rows"], 24);
 
         // Listed under its scope, with metadata.
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -19773,7 +19872,7 @@ mod tests {
         // Attach with an observable sender, then type a command: the echo comes
         // back as keyed term.output pushes.
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let attached = handler(
+        let attached = handler.call(
             sender,
             req(
                 "term.attach",
@@ -19786,7 +19885,7 @@ mod tests {
         assert!(attached["result"]["cursor"].is_u64());
 
         let input = b64encode(b"echo keyed-term-ok\r");
-        let wrote = handler(
+        let wrote = handler.call(
             SessionSender::detached("s1"),
             req("term.input", json!({ "term_id": "term-1", "data": input })),
         );
@@ -19799,7 +19898,7 @@ mod tests {
         // Close: the PTY is killed AND reaped, the entry is gone, and every
         // attached client hears term.closed{reason:"closed"}.
         let pid = tab_pid(&state, "term-1").expect("the shell is registered");
-        let closed = handler(
+        let closed = handler.call(
             SessionSender::detached("s1"),
             req("term.close", json!({ "term_id": "term-1" })),
         );
@@ -19812,7 +19911,7 @@ mod tests {
         assert_eq!(state.lock().unwrap().shell_tab_count(), 0);
         assert!(process_reaped(pid), "the shell must be killed and reaped");
 
-        let relisted = handler(
+        let relisted = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -19830,23 +19929,23 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let (sender, _pushes, _key) = SessionSender::observable("s1");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         assert_eq!(attached["ok"], true, "{attached:?}");
         let cursor = attached["result"]["cursor"].as_u64().unwrap();
 
-        let acked = handler(
+        let acked = handler.call(
             SessionSender::detached("s1"),
             req("term.ack", json!({ "term_id": "term-1", "cursor": cursor })),
         );
         assert_eq!(acked["ok"], true, "{acked:?}");
         assert_eq!(acked["result"]["ok"], true, "{acked:?}");
 
-        let unknown = handler(
+        let unknown = handler.call(
             SessionSender::detached("s1"),
             req("term.ack", json!({ "term_id": "term-404", "cursor": 1 })),
         );
@@ -19860,12 +19959,12 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
-        let a = handler(
+        let a = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.attach",
@@ -19877,7 +19976,7 @@ mod tests {
 
         // Send a command (the PTY echoes it and runs it).
         let input = b64encode(b"echo build-terminal-ok\n");
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.input", json!({ "term_id": term_id, "data": input })),
         );
@@ -19885,7 +19984,7 @@ mod tests {
 
         // Reconnect = a fresh attach. The screen snapshot (vt100 model) must reflect
         // the prior output — that's snapshot-based resync, not byte replay.
-        let b = handler(
+        let b = handler.call(
             SessionSender::detached("s2"),
             req(
                 "term.attach",
@@ -19926,7 +20025,7 @@ mod tests {
             .expect("the external worktree is discoverable")
             .id;
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -19937,7 +20036,7 @@ mod tests {
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
         let shell_pid = tab_pid(&state, &term_id).expect("the shell is registered");
 
-        let adopted = handler(
+        let adopted = handler.call(
             SessionSender::detached("s1"),
             req(
                 "run.adopt",
@@ -19947,7 +20046,7 @@ mod tests {
         assert_eq!(adopted["ok"], true, "{adopted:?}");
         let run_id = run_id_of(&adopted);
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "run_id": run_id })),
         );
@@ -20076,7 +20175,7 @@ mod tests {
         )
         .unwrap();
 
-        let attached = handler(
+        let attached = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.attach",
@@ -20095,7 +20194,7 @@ mod tests {
         // A well-formed agent id for a worktree with no tab is still "unknown
         // term_id", so a stale client drops the tab instead of hanging on one
         // that swallows every keystroke.
-        let stale = handler(
+        let stale = handler.call(
             SessionSender::detached("s1"),
             req("term.attach", json!({ "term_id": "agent:nope" })),
         );
@@ -20123,7 +20222,7 @@ mod tests {
         )
         .unwrap();
 
-        let refused = handler(
+        let refused = handler.call(
             SessionSender::detached("s1"),
             req("term.close", json!({ "term_id": agent_wire_id })),
         );
@@ -20187,7 +20286,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -20197,7 +20296,7 @@ mod tests {
         assert_eq!(created["ok"], true, "{created:?}");
         assert_eq!(created["result"]["kind"], "shell");
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "project_id": project_id })),
         );
@@ -20206,7 +20305,7 @@ mod tests {
         assert_eq!(terminals[0]["kind"], "shell");
 
         // An unknown kind is refused BEFORE anything is spawned.
-        let bogus = handler(
+        let bogus = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -20231,13 +20330,13 @@ mod tests {
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         for _ in 0..MAX_USER_TERMINALS {
-            let created = handler(
+            let created = handler.call(
                 SessionSender::detached("s1"),
                 req("term.create", json!({ "project_id": project_id })),
             );
             assert_eq!(created["ok"], true, "{created:?}");
         }
-        let over = handler(
+        let over = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
@@ -20254,16 +20353,16 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         let pid = tab_pid(&state, "term-1").expect("the shell is registered");
 
         // The user types `exit`: the shell ends on its own (PTY EOF).
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.input",
@@ -21173,14 +21272,14 @@ mod tests {
         // The agent takes none of the sixteen, so fifteen more shells fit
         // beside the one shell tab...
         for n in 1..MAX_USER_TERMINALS {
-            let created = handler(
+            let created = handler.call(
                 SessionSender::detached("s1"),
                 req("term.create", json!({ "project_id": project_id })),
             );
             assert_eq!(created["ok"], true, "shell {n} of the cap: {created:?}");
         }
         // ...and the sixteenth does not: the shell tab is one of them.
-        let over = handler(
+        let over = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "project_id": project_id })),
         );
@@ -21410,16 +21509,16 @@ mod tests {
             &ModelChoice::default(),
         )
         .unwrap();
-        handler(
+        handler.call(
             SessionSender::detached("s-live"),
             req("term.create", json!({ "project_id": project_id })),
         );
         for session_id in ["s-live", "s-dead"] {
-            handler(
+            handler.call(
                 SessionSender::detached(session_id),
                 req("term.attach", json!({ "term_id": "term-1" })),
             );
-            handler(
+            handler.call(
                 SessionSender::detached(session_id),
                 req("term.attach", json!({ "term_id": agent_wire_id.clone() })),
             );
@@ -21433,7 +21532,12 @@ mod tests {
             created_at: String::new(),
             payload: Value::Null,
         };
-        let response = dispatch_frame(&state, SessionSender::detached("s-dead"), close);
+        let response = dispatch_frame(
+            &state,
+            SessionSender::detached("s-dead"),
+            close,
+            FrameClock::new().frame("close"),
+        );
         assert_eq!(response["ok"], true);
 
         let s = state.lock().unwrap();
@@ -23198,7 +23302,7 @@ mod tests {
 
     /// One RPC over the frame handler.
     fn call(handler: &FrameHandler, method: &str, params: Value) -> Value {
-        handler(SessionSender::detached("qa"), req(method, params))
+        handler.call(SessionSender::detached("qa"), req(method, params))
     }
 
     /// The tab key of the agent whose id is DERIVED from its owner — the one
@@ -32864,7 +32968,7 @@ mod tests {
         let (tab_key, wire_id) = insert_live_run(&state, &repo, dir.path().join("side"), "run-9");
 
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let res = handler(
+        let res = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -32894,7 +32998,7 @@ mod tests {
         })
         .await;
 
-        let again = handler(
+        let again = handler.call(
             SessionSender::detached("s2"),
             req("agent.attach", json!({ "id": "run-9" })),
         );
@@ -32930,7 +33034,7 @@ mod tests {
 
         // Nothing has ever run here: the tab exists as an empty screen, never
         // as an error — mounting it must not spawn anything.
-        let empty = handler(
+        let empty = handler.call(
             SessionSender::detached("s1"),
             req(
                 "agent.attach",
@@ -32946,7 +33050,7 @@ mod tests {
 
         // The primary checkout answers to the project scope alone, the same way
         // its shells do.
-        let primary = handler(
+        let primary = handler.call(
             SessionSender::detached("s1"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -32982,7 +33086,7 @@ mod tests {
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
-        let live = handler(
+        let live = handler.call(
             SessionSender::detached("s2"),
             req(
                 "agent.attach",
@@ -33008,7 +33112,7 @@ mod tests {
         let root = AppState::canonical_root(&repo);
 
         // Nothing has run here yet: no harness to name.
-        let empty = handler(
+        let empty = handler.call(
             SessionSender::detached("s1"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -33037,7 +33141,7 @@ mod tests {
         state.lock().unwrap().tabs.insert(key.clone(), tab);
         spawn_tab_pumps(&state, key.clone(), rx);
 
-        let ran = handler(
+        let ran = handler.call(
             SessionSender::detached("s2"),
             req("agent.attach", json!({ "project_id": project_id })),
         );
@@ -33048,12 +33152,12 @@ mod tests {
         );
 
         // A user's shell is not an agent, and reports no harness.
-        let shell = handler(
+        let shell = handler.call(
             SessionSender::detached("s3"),
             req("term.create", json!({ "project_id": project_id })),
         );
         assert_eq!(shell["ok"], true, "{shell:?}");
-        let attached = handler(
+        let attached = handler.call(
             SessionSender::detached("s3"),
             req(
                 "term.attach",
@@ -33085,7 +33189,7 @@ mod tests {
 
         // Nothing has ever run in the primary checkout: a blank, dead screen.
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let empty = handler(
+        let empty = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -33921,7 +34025,7 @@ mod tests {
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
         let (sender, _pushes, _key) = SessionSender::observable("closing");
-        let waiting = handler(
+        let waiting = handler.call(
             sender,
             req(
                 "agent.attach",
@@ -33973,7 +34077,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         insert_live_run(&state, &repo, dir.path().join("side"), "run-7");
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req("term.create", json!({ "run_id": "run-7" })),
         );
@@ -33981,10 +34085,10 @@ mod tests {
         let term_id = created["result"]["term_id"].as_str().unwrap().to_string();
 
         let (sender, mut pushes, key) = SessionSender::observable("s1");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": term_id })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": term_id })));
         assert_eq!(attached["ok"], true, "{attached:?}");
 
-        handler(
+        handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.input",
@@ -33997,7 +34101,7 @@ mod tests {
         })
         .await;
 
-        let listed = handler(
+        let listed = handler.call(
             SessionSender::detached("s1"),
             req("term.list", json!({ "run_id": "run-7" })),
         );
@@ -38673,7 +38777,7 @@ mod tests {
         assert_eq!(entry_of(&state)["can_finish"], false);
 
         // A shell is not an agent, so opening one must not start the pulse.
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -38808,7 +38912,7 @@ mod tests {
         let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let project_id = state.lock().unwrap().projects[0].id.clone();
 
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "worktree.create",
@@ -40006,6 +40110,7 @@ mod tests {
                 &state,
                 SessionSender::detached(session_id),
                 req(method, params),
+                FrameClock::new().frame(method),
             );
             let _ = answered.send(response);
         });
@@ -40131,6 +40236,7 @@ mod tests {
                 "git.stage",
                 json!({ "run_id": run_id, "paths": ["staged.txt"] }),
             ),
+            FrameClock::new().frame("git.stage"),
         );
         assert_eq!(staged["ok"], true, "{staged:?}");
 
@@ -40149,6 +40255,7 @@ mod tests {
             &state,
             SessionSender::detached("s-release"),
             req("run.release", json!({ "run_id": run_id })),
+            FrameClock::new().frame("run.release"),
         );
         assert_eq!(released["ok"], true, "{released:?}");
 
@@ -40184,6 +40291,7 @@ mod tests {
             &state,
             SessionSender::detached("s-second"),
             req("worktree.finish", params.clone()),
+            FrameClock::new().frame("worktree.finish"),
         );
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert!(
@@ -40208,6 +40316,7 @@ mod tests {
             &state,
             SessionSender::detached("s-third"),
             req("worktree.finish", params),
+            FrameClock::new().frame("worktree.finish"),
         );
         assert_eq!(
             replayed["ok"], true,
@@ -40539,7 +40648,7 @@ mod tests {
         let worktree_id = external_id(&mut app, &project_id, Some("terminal-finish"));
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
-        let created = handler(
+        let created = handler.call(
             SessionSender::detached("s1"),
             req(
                 "term.create",
@@ -40555,7 +40664,7 @@ mod tests {
             (term_key, pid)
         };
 
-        let finished = handler(
+        let finished = handler.call(
             SessionSender::detached("s1"),
             req(
                 "worktree.finish",
@@ -45039,7 +45148,7 @@ mod tests {
         let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         let (sender, rx, key) = SessionSender::observable("browser");
-        let hello = handler(sender.clone(), req("session.hello", json!({})));
+        let hello = handler.call(sender.clone(), req("session.hello", json!({})));
         assert_eq!(hello["ok"], true, "{hello:?}");
         (state, handler, sender, rx, key)
     }
@@ -45100,7 +45209,7 @@ mod tests {
     async fn greeting_twice_leaves_one_subscription() {
         let (dir, repo) = init_repo();
         let (state, handler, sender, mut rx, key) = greeted_push_session(&repo, dir.path());
-        handler(sender, req("session.hello", json!({})));
+        handler.call(sender, req("session.hello", json!({})));
         settled_pushes(&mut rx, &key).await;
 
         state.lock().unwrap().note_board_changed();
@@ -45200,7 +45309,7 @@ mod tests {
 
         let created = call(&handler, "term.create", json!({ "project_id": project_id }));
         assert_eq!(created["ok"], true, "{created:?}");
-        let attached = handler(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
         assert_eq!(attached["ok"], true, "{attached:?}");
         settled_pushes(&mut rx, &key).await; // everything the setup itself moved
 
@@ -45274,7 +45383,12 @@ mod tests {
             payload: Value::Null,
         };
         assert_eq!(
-            dispatch_frame(&state, SessionSender::detached("browser"), close)["ok"],
+            dispatch_frame(
+                &state,
+                SessionSender::detached("browser"),
+                close,
+                FrameClock::new().frame("close")
+            )["ok"],
             true
         );
         assert_eq!(state.lock().unwrap().changes().subscriber_count(), 0);

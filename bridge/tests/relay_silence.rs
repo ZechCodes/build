@@ -1,7 +1,7 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::relay::{self, DeviceIdentity, RelayError};
+use build_bridge::timing::FrameClock;
 use build_bridge::transport;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::json;
@@ -19,7 +19,10 @@ fn test_identity() -> DeviceIdentity {
 }
 
 fn idle_handler() -> relay::FrameHandler {
-    Arc::new(|_sender, frame| json!({ "echo": frame.payload }))
+    relay::FrameHandler::new(
+        FrameClock::new(),
+        |_sender, frame, _timer| json!({ "echo": frame.payload }),
+    )
 }
 
 async fn bind_relay() -> (TcpListener, String) {

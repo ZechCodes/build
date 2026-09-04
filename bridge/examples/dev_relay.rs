@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::timing::FrameClock;
 use build_bridge::transport;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -52,8 +53,10 @@ async fn main() {
     {
         let device_url = format!("{url}/ws/device");
         tokio::spawn(async move {
-            let handler: relay::FrameHandler =
-                Arc::new(|_sender, frame| json!({ "echo": frame.payload, "from": "bridge" }));
+            let handler = relay::FrameHandler::new(
+                FrameClock::new(),
+                |_sender, frame, _timer| json!({ "echo": frame.payload, "from": "bridge" }),
+            );
             if let Err(e) = relay::run(&device_url, &identity, handler).await {
                 eprintln!("device exited: {e}");
             }

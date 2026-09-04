@@ -31,6 +31,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::Connector;
 
 use build_bridge::relay::{self, DeviceIdentity};
+use build_bridge::timing::FrameClock;
 use build_bridge::transport;
 
 fn test_identity() -> DeviceIdentity {
@@ -134,7 +135,10 @@ async fn wss_connects_to_tls_server_with_injected_root() {
 
     let identity = test_identity();
     let url = format!("wss://localhost:{port}/ws/device");
-    let handler: relay::FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler = relay::FrameHandler::new(
+        FrameClock::new(),
+        |_sender, frame, _timer| json!({"echo": frame.payload}),
+    );
 
     let outcome = tokio::time::timeout(
         Duration::from_secs(10),
@@ -162,7 +166,10 @@ async fn wss_scheme_is_supported_without_injected_connector() {
     };
     let identity = test_identity();
     let url = format!("wss://127.0.0.1:{unused_port}/ws/device");
-    let handler: relay::FrameHandler = Arc::new(|_sender, frame| json!({"echo": frame.payload}));
+    let handler = relay::FrameHandler::new(
+        FrameClock::new(),
+        |_sender, frame, _timer| json!({"echo": frame.payload}),
+    );
 
     let err = tokio::time::timeout(
         Duration::from_secs(10),

@@ -10,8 +10,9 @@ import * as transport from "@build/secure-transport";
 import { $ } from "./dom.js";
 import { RELAY_URL } from "./config.js";
 import { openRelaySession } from "./core/session.js";
+import { openPeerLink } from "./core/peerLink.js";
 import { onlineStickyDeviceId } from "./core/devicePolicy.js";
-import { fetchGatewayToken } from "./api.js";
+import { fetchGatewayToken, fetchIceServers } from "./api.js";
 import { App, render, rememberSelectedDevice } from "./app.js";
 import {
   deviceName,
@@ -21,7 +22,7 @@ import {
   pinnedDeviceTransportKey,
   refreshDevices,
 } from "./devices.js";
-import { retargetTerminals } from "./terminal/manager.js";
+import { retargetTerminals, terminalsRideOn } from "./terminal/manager.js";
 import { flushCaptures } from "./core/composeView.js";
 import { dispatchChangeEvent, greetBridge } from "./core/changeEvents.js";
 import { setCacheDevice } from "./core/cacheScope.js";
@@ -50,9 +51,65 @@ export function openAppSession({ preferDeviceId = null, waitForDevice = false } 
     onDeviceOffline: markDeviceOffline,
     onLost: goOffline,
     // The bridge saying something moved. A frame nobody asked for reaches the
-    // surface showing that state, which is what lets the polls stand down.
-    onPush: dispatchChangeEvent,
+    // surface showing that state, which is what lets the polls stand down —
+    // except the peer connection's own trickle, which is the upgrade talking.
+    onPush: (payload) =>
+      payload.type === "rtc.ice" ? deliverBridgeCandidate(payload.candidate) : dispatchChangeEvent(payload),
   });
+}
+
+// ---- the peer path (spec §SPA carrier and migration policy) ------------------
+
+let peerLink = null;
+let deliverBridgeCandidate = () => {};
+
+/**
+ * Upgrade a live session onto a direct peer path, in the background.
+ *
+ * The user is already working over the relay: this fetches ICE servers, offers
+ * over the relay carrier, and migrates both streams once the two channels are
+ * open. A failure anywhere logs and leaves the session exactly where it is —
+ * the relay is the fallback, not a retry target, so the next attempt is the
+ * next relay session and nothing sooner.
+ */
+async function upgradeToPeer(session) {
+  if (!globalThis.RTCPeerConnection) return;
+  let link;
+  try {
+    link = await openPeerLink({
+      signal: (method, params) => session.signal(method, params),
+      fetchIceServers,
+      remoteCandidates: (deliver) => {
+        deliverBridgeCandidate = deliver;
+        return () => (deliverBridgeCandidate = () => {});
+      },
+    });
+  } catch (error) {
+    console.warn("staying on the relay:", error.message);
+    return;
+  }
+  if (App.session !== session) {
+    link.close(); // a device switch overtook the upgrade
+    return;
+  }
+  peerLink = link;
+  // The two channels are one connection: whichever goes first takes the other,
+  // and both streams migrate back to the relay together.
+  link.app.onClose(() => {
+    if (peerLink === link) dropPeerLink();
+  });
+  session.peer(link.app);
+  terminalsRideOn(link.term);
+}
+
+/** Give up the peer path and go back to the relay. */
+function dropPeerLink() {
+  const link = peerLink;
+  if (!link) return;
+  peerLink = null;
+  App.session?.peer(null);
+  terminalsRideOn(null);
+  link.close();
 }
 
 /** Greet a session that is live and unpaused: feature-detect push invalidation,
@@ -66,8 +123,12 @@ export function greetLiveBridge() {
 }
 
 export function adoptSession(session) {
+  dropPeerLink(); // whatever was carrying was carrying the session we just left
   App.session = session;
   App.call = session.call;
+  // Every later carrier change re-establishes the session on the wire it took:
+  // session.hello, and a read of every mounted surface.
+  session.onCarrier(greetLiveBridge);
   // Whose cache the surfaces read and write through from here on.
   setCacheDevice(session.deviceId);
   paintDevicePicker();
@@ -77,6 +138,7 @@ export function adoptSession(session) {
   flushCaptures().catch(() => {
     /* still unreachable: the queue keeps them for the next session */
   });
+  upgradeToPeer(session); // in the background: the user is live already
 }
 
 function restoreOnline() {
@@ -94,6 +156,7 @@ export function goOffline() {
   if (App.offline) return;
   App.offline = true;
   App.offlineSince = Date.now();
+  dropPeerLink();
   try {
     App.session?.close();
   } catch {

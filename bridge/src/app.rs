@@ -1741,7 +1741,7 @@ fn warm_diff_caches(
         let claim = match item {
             DiffCacheWork::Claimed(claim) => claim,
             DiffCacheWork::AwaitFirstValue(key) => {
-                wait_for_first_diff_value(state, &key, FIRST_COMPUTE_WAIT);
+                wait_for_first_diff_value(state, &key, FIRST_COMPUTE_WAIT, timer);
                 continue;
             }
         };
@@ -1763,11 +1763,19 @@ fn warm_diff_caches(
 
 /// Wait for another frame's first-ever compute of `key` to publish. This frame
 /// waits; the app mutex does not — it is taken only to look, and dropped again
-/// between looks.
-fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, budget: Duration) {
+/// between looks. Every look is one of the frame's own acquisitions and is
+/// timed as such: a frame that spends its budget contending here has to say so
+/// as `lock_wait`, not as time that went nowhere.
+fn wait_for_first_diff_value(
+    state: &Arc<Mutex<AppState>>,
+    key: &DiffCacheKey,
+    budget: Duration,
+    timer: &FrameTimer,
+) {
     let deadline = std::time::Instant::now() + budget;
     while std::time::Instant::now() < deadline {
-        if !state.lock().unwrap().diff_refresh_is_running(key) {
+        let still_computing = timer.lock(state).diff_refresh_is_running(key);
+        if !still_computing {
             return;
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -19879,13 +19887,13 @@ mod tests {
         assert_eq!(stats["frames_served"], 3, "{stats:?}");
     }
 
-    /// The `held=` a slow-frame line reports, in milliseconds.
-    fn held_millis(line: &str) -> f64 {
+    /// One of the four durations a slow-frame line reports, in milliseconds.
+    fn slow_frame_millis(line: &str, field: &str) -> f64 {
         line.split_whitespace()
-            .find_map(|field| field.strip_prefix("held="))
-            .and_then(|held| held.strip_suffix("ms"))
-            .and_then(|held| held.parse().ok())
-            .unwrap_or_else(|| panic!("no held= in {line}"))
+            .find_map(|entry| entry.strip_prefix(field))
+            .and_then(|duration| duration.strip_suffix("ms"))
+            .and_then(|duration| duration.parse().ok())
+            .unwrap_or_else(|| panic!("no {field} in {line}"))
     }
 
     /// This step exists to give the steps after it a before/after number, and
@@ -19927,8 +19935,53 @@ mod tests {
             .find(|line| line.starts_with("slow frame agent.start "))
             .unwrap_or_else(|| panic!("the cold start logged no slow frame: {lines:?}"));
         assert!(
-            held_millis(line) >= SLOW_FRAME.as_secs_f64() * 1000.0,
+            slow_frame_millis(line, "held=") >= SLOW_FRAME.as_secs_f64() * 1000.0,
             "the spawn's hold is the frame's own: {line}"
+        );
+    }
+
+    /// A frame that finds another frame already computing a cache entry nobody
+    /// has ever computed waits for that value — and looks for it under the app
+    /// mutex, every 20 ms, for as long as it waits. Those acquisitions are the
+    /// frame's own: untimed, a frame that spent five seconds contending for the
+    /// mutex 50 times a second reports the seconds as `total` and nothing as
+    /// `lock_wait`, which is the misreading the four durations exist to prevent.
+    #[test]
+    fn a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let (clock, lines) = recording_clock();
+        let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
+        let key = DiffCacheKey::RunStat("run-awaited".into());
+        state
+            .lock()
+            .unwrap()
+            .diff_refreshes_in_flight
+            .insert(key.clone());
+
+        // The frame holding the claim publishes under the app mutex, so the
+        // waiter can only learn the value landed by taking the mutex after it.
+        let computing = Arc::clone(&state);
+        let computed = key.clone();
+        let publisher = std::thread::spawn(move || {
+            let mut app = computing.lock().unwrap();
+            std::thread::sleep(SLOW_FRAME + Duration::from_millis(50));
+            app.diff_refreshes_in_flight.remove(&computed);
+        });
+
+        {
+            let timer = clock.frame("board.list");
+            wait_for_first_diff_value(&state, &key, FIRST_COMPUTE_WAIT, &timer);
+        }
+        publisher.join().expect("the first compute publishes");
+
+        let lines = lines.lock().unwrap();
+        let line = lines
+            .iter()
+            .find(|line| line.starts_with("slow frame board.list "))
+            .unwrap_or_else(|| panic!("the wait logged no slow frame: {lines:?}"));
+        assert!(
+            slow_frame_millis(line, "lock_wait=") > 0.0,
+            "the waiting frame's own acquisitions went unrecorded: {line}"
         );
     }
 

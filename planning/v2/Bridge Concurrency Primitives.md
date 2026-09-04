@@ -192,7 +192,10 @@ from the design above.
 - **Replaces** every bare `state.lock().unwrap()` in `dispatch_frame` and
   everything it calls on the frame's own thread — `session_hello`,
   `stream_start`, `term_create`, `term_attach`, `term_ack`, `agent_attach`,
-  `agent_start`, `warm_diff_caches`, and the delivery path
+  `agent_start`, `warm_diff_caches` (its `wait_for_first_diff_value` included:
+  the wait for another frame's first-ever compute looks at the cache under the
+  mutex every 20 ms, and those acquisitions are the waiting frame's), and the
+  delivery path
   (`deliver_pending_agent_turns`, `deliver`, `ensure_agent_tab`, which take the
   frame's `&FrameTimer`) — with `timer.lock(state)`. The delivery path is where
   the longest holds are, so leaving it bare would have made this step's
@@ -233,7 +236,8 @@ from the design above.
   `folded_reads_cost_the_queue_one_slot`. In `app.rs`:
   `bridge_stats_answers_while_another_frame_holds_the_app_mutex`,
   `bridge_stats_count_every_frame_under_its_own_method`,
-  `a_frames_delivery_path_reports_its_hold_and_names_its_method`.
+  `a_frames_delivery_path_reports_its_hold_and_names_its_method`,
+  `a_frame_waiting_for_a_first_compute_charges_its_polls_to_the_lock`.
 
 ## 2. `ScreenHandle` — the per-tab screen
 

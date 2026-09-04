@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 
 use crate::carrier::SessionSender;
 
+pub mod chunk;
+
 /// What a peer connection could not do. Never fatal to the session: a refused
 /// offer leaves the client working over the relay carrier, which the spec's
 /// upgrade policy already treats as the failure case.

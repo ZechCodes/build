@@ -568,16 +568,15 @@ impl ParentThreadFilter {
 
     fn server_request(
         method: ServerRequestMethod,
-        params: &Value,
+        inbound: &InboundServerRequest,
         expected_parent: Option<&str>,
-        method_name: &str,
     ) -> Result<ParentThreadRoute, String> {
         let Some(pointer) = method.routing_pointer else {
             return Ok(ParentThreadRoute::Unscoped);
         };
-        match params.pointer(pointer).and_then(Value::as_str) {
+        match inbound.params.pointer(pointer).and_then(Value::as_str) {
             Some(routing_id) => Ok(route_id(Some(routing_id), expected_parent)),
-            None => Err(format!("{method_name} routing id is missing")),
+            None => Err(format!("{} routing id is missing", inbound.method)),
         }
     }
 }
@@ -626,12 +625,7 @@ impl RoutedServerRequest {
                 route: ParentThreadRoute::Unscoped,
             });
         };
-        let route = ParentThreadFilter::server_request(
-            method,
-            &inbound.params,
-            expected_parent,
-            &inbound.method,
-        )?;
+        let route = ParentThreadFilter::server_request(method, inbound, expected_parent)?;
         Ok(RoutedServerRequest {
             request: (method.build)(inbound.id.clone()),
             route,

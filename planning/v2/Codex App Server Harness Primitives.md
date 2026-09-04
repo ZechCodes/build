@@ -153,14 +153,14 @@ The session coordinator samples whole Unix seconds and passes that value to
 
 Every inbound server request is decoded into `ServerRequest` exactly once, at
 one construction point, and `decide` is the only dispatch over that enum. The
-static method lookup table selects the variant and its focused params decoder;
-a known thread-scoped method takes its `ParentThreadRoute` from
-`ParentThreadFilter` first, and the route selects which decoder that one
-construction point runs. `ParentThreadRoute::Parent` and `Unscoped` run the
-focused typed params decoder and build the variant with typed params;
-`ParentThreadRoute::Child` builds the same variant without validating any
-non-routing param, because no child response depends on one. There is no second
-match on the method tag after construction, and no separate child policy.
+static method lookup table selects the variant and names its routing field; a
+known method takes its `ParentThreadRoute` from `ParentThreadFilter::server_request`
+first, which reads that routing field exactly once for every route and is the
+only place any request param is inspected. The variant is then built from the
+request id alone on every route, because no known response depends on a
+non-routing param, so no non-routing param of a parent or child request is ever
+inspected or validated. There is no second match on the method tag after
+construction, and no separate child policy.
 
 Any unknown method becomes `ServerRequest::Unknown { id, method }` without
 inspecting `params`; absent params and arbitrary valid JSON params, including
@@ -310,11 +310,15 @@ A failure at initialize or thread open closes the activity stream and emits
 - **Boundary:** Routes every thread-scoped notification and every known
   thread-scoped server request before typed lifecycle, policy, or activity
   handling.
-- **Interface:** `classify(method, params, expected_parent_thread) ->
-  ParentThreadRoute::{Parent, Child, Unscoped}`.
+- **Interface:** `notification(method, params, expected_parent_thread) ->
+  ParentThreadRoute::{Parent, Child, Unscoped}` and `server_request(method,
+  inbound, expected_parent_thread) -> Result<ParentThreadRoute, String>`, where
+  `method` is the lookup-table row and `inbound` the whole inbound request.
 - **Hides:** The routing-field differences among notification `threadId`,
   `thread/started.thread.parentThreadId`, current request `threadId`, and legacy
-  request `conversationId` shapes.
+  request `conversationId` shapes. An absent or non-string routing id on a
+  thread-scoped server request is the filter's single failure, raised before
+  policy on every route.
 
 The filter reads only the method's routing field. During thread opening, a
 `thread/started` value with `parentThreadId` is a child and a root value may

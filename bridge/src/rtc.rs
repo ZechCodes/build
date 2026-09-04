@@ -8,7 +8,6 @@
 //! the channels they negotiate, which do not exist yet when they are needed.
 
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -220,18 +219,13 @@ pub fn trickle_candidate(signaling: &SessionSender, candidate: Value) -> bool {
     signaling.push(json!({ "type": "rtc.ice", "candidate": candidate }))
 }
 
-/// How many bytes a channel may hold undelivered before its writer stops
-/// handing it more (spec §Backpressure). The queue behind it is the app's own
-/// bounded one, so a client that will not drain waits rather than growing the
-/// device's memory.
+/// How many bytes a channel may hold undelivered before it stops taking more
+/// (spec §Backpressure). The peer connection owns the waiting: a send past this
+/// blocks until the peer acknowledges enough of what it already holds, and
+/// fails the moment the channel is closing. The envelope queue behind it is
+/// unbounded, so parking a writer trades the channel's send buffer for device
+/// heap while a client that will not drain is attached.
 pub const DC_BUFFERED_HIGH: usize = 1024 * 1024;
-
-/// How long a parked writer waits before re-reading the channel's buffer when
-/// no buffered-amount-low event has woken it. The peer connection delivers
-/// those events on a bounded queue it may drop under a flood — exactly when a
-/// writer is parked — so the wake is the fast path and this is what keeps a
-/// dropped one costing latency rather than the channel.
-const BUFFER_RECHECK: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The two channels every peer carries, created identically on both sides with
 /// explicit ids so no in-band open handshake is needed (spec §DataChannels).
@@ -364,6 +358,7 @@ impl WebrtcPeer {
         let connection: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
                 .with_configuration(configuration)
+                .with_data_channel_send_buffer_limit(DC_BUFFERED_HIGH)
                 .with_handler(Arc::new(PeerEvents {
                     session_id: self.session_id.clone(),
                     signaling: self.signaling.clone(),
@@ -388,9 +383,6 @@ impl WebrtcPeer {
                         ..Default::default()
                     }),
                 )
-                .await?;
-            channel
-                .set_buffered_amount_low_threshold(DC_BUFFERED_HIGH as u32)
                 .await?;
             channels.extend(DataChannelCarrier::ride(channel, self.intake.clone()));
         }
@@ -536,28 +528,26 @@ impl DataChannelCarrier {
         intake: Arc<FrameIntake>,
     ) -> Vec<tokio::task::JoinHandle<()>> {
         let (carrier, envelopes) = CarrierHandle::open();
-        let gate = Arc::new(WriteGate::default());
         vec![
-            tokio::spawn(write_envelopes(channel.clone(), envelopes, gate.clone())),
-            tokio::spawn(read_messages(channel, intake, carrier, gate)),
+            tokio::spawn(write_envelopes(channel.clone(), envelopes)),
+            tokio::spawn(read_messages(channel, intake, carrier)),
         ]
     }
 }
 
 /// The channel's outbound half: every envelope for every session riding this
 /// carrier, split into messages the channel can carry and handed over no
-/// faster than it drains.
+/// faster than it drains — the channel itself holds the writer at
+/// [`DC_BUFFERED_HIGH`] and fails the send once it is closing.
 async fn write_envelopes(
     channel: Arc<dyn DataChannel>,
     mut envelopes: mpsc::UnboundedReceiver<OutboundEnvelope>,
-    gate: Arc<WriteGate>,
 ) {
     while let Some(outbound) = envelopes.recv().await {
         let Ok(json) = serde_json::to_string(outbound.envelope()) else {
             continue;
         };
         for message in chunk::split(&json) {
-            until_writable(channel.as_ref(), &gate).await;
             if channel.send_text(&message).await.is_err() {
                 return;
             }
@@ -572,7 +562,6 @@ async fn read_messages(
     channel: Arc<dyn DataChannel>,
     intake: Arc<FrameIntake>,
     carrier: CarrierHandle,
-    gate: Arc<WriteGate>,
 ) {
     let riding = RidingChannel { intake, carrier };
     let mut reassembler = chunk::Reassembler::default();
@@ -592,12 +581,10 @@ async fn read_messages(
                     }
                 }
             }
-            DataChannelEvent::OnBufferedAmountLow => gate.drained(),
             DataChannelEvent::OnClose => break,
             _ => {}
         }
     }
-    gate.shut();
 }
 
 /// This channel as one of the wires the intake's sessions ride. Dropping it —
@@ -621,51 +608,6 @@ impl RidingChannel {
 impl Drop for RidingChannel {
     fn drop(&mut self) {
         self.intake.close_carrier(&self.carrier);
-    }
-}
-
-/// Whether a channel can take more right now.
-///
-/// **Hides** the backpressure rule: a writer asks to be let through and is
-/// held while the channel is over [`DC_BUFFERED_HIGH`], woken by the
-/// buffered-amount-low event the reader hears. A shut gate lets everyone
-/// through, so a closing channel never leaves a writer parked on a buffer that
-/// will not drain again.
-#[derive(Default)]
-struct WriteGate {
-    drained: tokio::sync::Notify,
-    shut: std::sync::atomic::AtomicBool,
-}
-
-impl WriteGate {
-    /// Hold the writer until the channel may have drained. False once the gate
-    /// is shut, which is the writer's cue to stop parking at all.
-    async fn park(&self) -> bool {
-        if self.shut.load(Ordering::SeqCst) {
-            return false;
-        }
-        let _ = tokio::time::timeout(BUFFER_RECHECK, self.drained.notified()).await;
-        !self.shut.load(Ordering::SeqCst)
-    }
-
-    fn drained(&self) {
-        self.drained.notify_one();
-    }
-
-    fn shut(&self) {
-        self.shut.store(true, Ordering::SeqCst);
-        self.drained.notify_one();
-    }
-}
-
-/// Let one message through: the channel takes it once what it already holds is
-/// back under [`DC_BUFFERED_HIGH`], and a channel that can no longer say takes
-/// it now and fails on the send.
-async fn until_writable(channel: &dyn DataChannel, gate: &WriteGate) {
-    while matches!(channel.outstanding_bytes().await, Ok(buffered) if buffered > DC_BUFFERED_HIGH) {
-        if !gate.park().await {
-            return;
-        }
     }
 }
 
@@ -924,36 +866,5 @@ mod peer_transport_tests {
         let one = offered_server(&json!({ "urls": "stun:stun.cloudflare.com:3478" }));
 
         assert_eq!(one.urls, vec!["stun:stun.cloudflare.com:3478".to_string()]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_parked_writer_waits_for_the_channel_to_drain() {
-        let gate = Arc::new(WriteGate::default());
-
-        let parked = tokio::spawn({
-            let gate = gate.clone();
-            async move { gate.park().await }
-        });
-        tokio::task::yield_now().await;
-        gate.drained();
-
-        assert!(parked.await.unwrap(), "a drained channel takes more");
-    }
-
-    /// A buffered-amount-low event that never arrives — the peer connection
-    /// drops them under load — must cost the writer latency, not the channel.
-    #[tokio::test(start_paused = true)]
-    async fn a_writer_nobody_wakes_looks_again_by_itself() {
-        let gate = WriteGate::default();
-
-        assert!(gate.park().await);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_shut_gate_never_parks_a_writer_again() {
-        let gate = WriteGate::default();
-        gate.shut();
-
-        assert!(!gate.park().await, "a closing channel parks nobody");
     }
 }

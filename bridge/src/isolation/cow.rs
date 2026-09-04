@@ -26,17 +26,24 @@ use std::os::unix::io::AsRawFd;
 /// On macOS one `clonefile` clones a whole tree atomically. On Linux the tree
 /// is walked: directories and symlinks are recreated and every regular file is
 /// reflinked with `FICLONE`, and any other file type is an error. Anywhere
-/// else there is no clone at all. On any failure `dst` is removed before the
-/// error returns, so a failed clone leaves nothing behind.
-#[cfg(target_os = "macos")]
+/// else there is no clone at all. A failure that got as far as making `dst`
+/// removes it, so a half-made clone is never left behind; a destination that
+/// was already there is somebody else's and is left exactly as it was found.
 pub(crate) fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    clone_into(src, dst).inspect_err(|error| {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            discard(dst);
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn clone_into(src: &Path, dst: &Path) -> std::io::Result<()> {
     let source = to_c_path(src)?;
     let destination = to_c_path(dst)?;
     let cloned = unsafe { libc::clonefile(source.as_ptr(), destination.as_ptr(), 0) };
     if cloned != 0 {
-        let error = std::io::Error::last_os_error();
-        discard(dst);
-        return Err(error);
+        return Err(std::io::Error::last_os_error());
     }
     Ok(())
 }
@@ -48,22 +55,14 @@ fn to_c_path(path: &Path) -> std::io::Result<CString> {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn clone_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    clone_walk(src, dst).map_err(|error| {
-        discard(dst);
-        error
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn clone_walk(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn clone_into(src: &Path, dst: &Path) -> std::io::Result<()> {
     let source = std::fs::symlink_metadata(src)?;
     let file_type = source.file_type();
     if file_type.is_dir() {
         std::fs::create_dir(dst)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
-            clone_walk(&entry.path(), &dst.join(entry.file_name()))?;
+            clone_into(&entry.path(), &dst.join(entry.file_name()))?;
         }
         std::fs::set_permissions(dst, source.permissions())?;
         Ok(())
@@ -98,7 +97,7 @@ fn reflink_file(src: &Path, dst: &Path, mode: u32) -> std::io::Result<()> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub(crate) fn clone_tree(_src: &Path, _dst: &Path) -> std::io::Result<()> {
+fn clone_into(_src: &Path, _dst: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "copy-on-write cloning is only available on macOS and Linux",
@@ -119,6 +118,12 @@ impl IsolationBackend for CowBackend {
     }
 
     fn materialize(&self, project: &Path, branch: &str, path: &Path) -> Result<(), WorktreeError> {
+        if path.exists() {
+            return Err(WorktreeError::Refused(format!(
+                "{} already exists",
+                path.display()
+            )));
+        }
         refuse_if_mid_operation(project)?;
         clone_tree(project, path)?;
         populate_clone(project, branch, path).inspect_err(|_| {
@@ -274,7 +279,6 @@ fn verify_head_on_tip(project: &Path, branch: &str, path: &Path) -> Result<(), W
 
 /// Remove whatever a failed clone left at `dst` — a partial tree or a single
 /// file — so `clone_tree` never leaves a half-made destination behind.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn discard(dst: &Path) {
     if std::fs::remove_dir_all(dst).is_err() {
         let _ = std::fs::remove_file(dst);
@@ -311,6 +315,33 @@ mod tests {
         assert_eq!(
             std::fs::read_link(dst.join("link")).unwrap(),
             Path::new("subdir/file.txt")
+        );
+    }
+
+    /// The destination must not exist: cleaning up after a failure must never
+    /// delete something this call did not make, or a name collision the caller
+    /// did not see costs somebody their directory.
+    #[test]
+    fn clone_tree_leaves_an_occupied_destination_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        let src = dir.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("file.txt"), b"ours").unwrap();
+
+        let dst = dir.path().join("dst");
+        std::fs::create_dir(&dst).unwrap();
+        std::fs::write(dst.join("theirs.txt"), b"not ours").unwrap();
+
+        let error = clone_tree(&src, &dst).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists, "{error}");
+        assert_eq!(
+            std::fs::read(dst.join("theirs.txt")).unwrap(),
+            b"not ours",
+            "a failed clone deleted a directory it did not make"
         );
     }
 
@@ -472,6 +503,35 @@ mod tests {
         assert!(
             git_ok(&clone, &["checkout", "sidebranch"]),
             "the clone still thinks the linked worktree holds sidebranch"
+        );
+    }
+
+    /// Nothing is cloned onto an occupied path. The façade's uniqueness check
+    /// shields this today, but the precondition is the caller's to meet, not
+    /// something the cleanup discovers by deleting what it found.
+    #[test]
+    fn materialize_refuses_an_occupied_path_and_leaves_its_contents() {
+        let (dir, project) = init_repo();
+        if !cow_or_skip(dir.path()) {
+            return;
+        }
+        git_in(&project, &["branch", "feature"]);
+        let worktrees_root = dir.path().join("worktrees");
+        std::fs::create_dir_all(&worktrees_root).unwrap();
+        let occupied = worktrees_root.join("csv-export");
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(occupied.join("theirs.txt"), b"not ours").unwrap();
+
+        let refused = CowBackend.materialize(&project, "feature", &occupied);
+
+        assert!(
+            matches!(refused, Err(WorktreeError::Refused(_))),
+            "expected a refusal, got {refused:?}"
+        );
+        assert_eq!(
+            std::fs::read(occupied.join("theirs.txt")).unwrap(),
+            b"not ours",
+            "materialize deleted a directory it did not make"
         );
     }
 

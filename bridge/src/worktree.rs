@@ -632,6 +632,35 @@ pub fn find_primary_checkout(
     Ok(describe_checkouts(repo_path, base_branch, &target)?.pop())
 }
 
+/// The two facts a branch listing stamps a row with about the primary
+/// checkout at `repo_path`: the worktree id `run.adopt` adopts it by (the same
+/// id [`find_primary_checkout`] mints) and the branch it holds. Read straight
+/// off the repository — no status walk, no diffstat, no subprocess — because a
+/// listing is the drain's to answer, not a description to render. `None` when
+/// the checkout holds no branch: a detached or unborn HEAD, or a bare
+/// repository with no working tree. A path git cannot read as a repository is
+/// broken rather than branch-less, and says so through the error.
+pub fn primary_checkout_holder(
+    repo_path: &Path,
+) -> Result<Option<(String, String)>, WorktreeError> {
+    let canonical_path = std::fs::canonicalize(repo_path)?;
+    let repo = git2::Repository::open(&canonical_path)?;
+    if repo.is_bare() {
+        return Ok(None);
+    }
+    let head = match repo.head() {
+        Ok(head) => head,
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    if !head.is_branch() {
+        return Ok(None);
+    }
+    Ok(head
+        .shorthand()
+        .map(|branch| (external_worktree_id(&canonical_path), branch.to_string())))
+}
+
 /// Which of the repository's checkouts a scan describes. The membership test
 /// runs BEFORE any summary is computed: a summary costs several git
 /// invocations per checkout and the external scan runs on a poll.
@@ -1293,6 +1322,36 @@ mod tests {
             found.is_err(),
             "a directory git cannot read is broken, not checkout-less: {found:?}"
         );
+    }
+
+    /// The listing stamps a row with two facts about the primary checkout —
+    /// the id `run.adopt` adopts it by and the branch it holds — and pays for
+    /// nothing else: no status walk, no diffstat, no subprocess.
+    #[test]
+    fn primary_checkout_holder_names_the_branch_by_the_id_adoption_uses() {
+        let (_dir, repo) = init_repo();
+
+        let holder = primary_checkout_holder(&repo).unwrap();
+
+        let described = find_primary_checkout(&repo, "main").unwrap().unwrap();
+        assert_eq!(holder, Some((described.id, "main".to_string())));
+    }
+
+    #[test]
+    fn primary_checkout_holder_is_none_when_head_is_detached() {
+        let (_dir, repo) = init_repo();
+        git_in(&repo, &["checkout", "--detach"]);
+
+        assert_eq!(primary_checkout_holder(&repo).unwrap(), None);
+    }
+
+    #[test]
+    fn primary_checkout_holder_errors_on_a_directory_that_is_not_a_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_repo = dir.path().join("plain");
+        std::fs::create_dir(&not_a_repo).unwrap();
+
+        assert!(primary_checkout_holder(&not_a_repo).is_err());
     }
 
     #[test]

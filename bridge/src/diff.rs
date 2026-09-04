@@ -30,6 +30,17 @@ pub struct DiffStat {
     pub deletions: usize,
 }
 
+impl DiffStat {
+    /// The counts as the wire object every surface reads them in.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "files_changed": self.files_changed,
+            "insertions": self.insertions,
+            "deletions": self.deletions,
+        })
+    }
+}
+
 /// How a single path changed relative to base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeStatus {
@@ -701,6 +712,19 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::process::Command;
+
+    #[test]
+    fn a_diffstat_goes_on_the_wire_as_its_three_counts() {
+        let stat = DiffStat {
+            files_changed: 4,
+            insertions: 80,
+            deletions: 9,
+        };
+        assert_eq!(
+            stat.to_json(),
+            serde_json::json!({ "files_changed": 4, "insertions": 80, "deletions": 9 })
+        );
+    }
 
     fn run_git(repo: &Path, args: &[&str]) {
         assert!(Command::new("git")

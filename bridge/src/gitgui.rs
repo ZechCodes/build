@@ -503,11 +503,7 @@ fn status_payload_with_file_cap(repo_path: &Path, max_files: usize) -> Result<Va
         "stash_count": stash_count,
         "files": files,
         "files_truncated": files_truncated,
-        "stat": {
-            "files_changed": stat.files_changed,
-            "insertions": stat.insertions,
-            "deletions": stat.deletions,
-        },
+        "stat": stat.to_json(),
         "patch": patch,
         "truncated": truncated,
     }))
@@ -799,11 +795,7 @@ impl BranchRow {
             "behind": self.behind,
             "head_subject": self.head_subject,
             "head_time": self.head_time,
-            "stat": {
-                "files_changed": self.stat.files_changed,
-                "insertions": self.stat.insertions,
-                "deletions": self.stat.deletions,
-            },
+            "stat": self.stat.to_json(),
         })
     }
 }

@@ -453,7 +453,11 @@ impl PeerConnectionEventHandler for PeerEvents {
 /// Say once, when a session's peer starts carrying, which kind of path won:
 /// `host` and `srflx` are direct and free, `relay` is TURN egress somebody
 /// pays for. One line per session is what makes "how often is TURN actually
-/// used" answerable from the logs.
+/// used" answerable from the logs (spec §Open questions, closed).
+///
+/// It goes to stderr because everything this module says does: the daemon's
+/// log is one stream, and a measurement split off from the errors around it
+/// would be read out of order.
 async fn report_negotiated_path(
     session_id: String,
     connection: Arc<dyn PeerConnection>,
@@ -465,7 +469,7 @@ async fn report_negotiated_path(
     let report = connection
         .get_stats(std::time::Instant::now(), StatsSelector::None)
         .await;
-    println!(
+    eprintln!(
         "rtc: session {session_id} carrying over {} candidates",
         negotiated_path(&report)
     );

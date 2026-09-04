@@ -22,8 +22,6 @@ import requests
 __all__ = [
     "CF_TURN_KEY_API_TOKEN_ENV",
     "CF_TURN_KEY_ID_ENV",
-    "CREDENTIALS_URL",
-    "REQUEST_TIMEOUT_SECONDS",
     "STUN_ONLY",
     "TTL_SECONDS",
     "IceServersUnavailable",

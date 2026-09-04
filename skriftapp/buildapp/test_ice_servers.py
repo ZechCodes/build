@@ -9,16 +9,16 @@ from __future__ import annotations
 import pytest
 import requests
 
-from buildapp.ice_servers import (
-    CREDENTIALS_URL,
-    STUN_ONLY,
-    TTL_SECONDS,
-    IceServersUnavailable,
-    ice_servers,
-)
+from buildapp.ice_servers import STUN_ONLY, IceServersUnavailable, ice_servers
 
 KEY_ID = "key-abc"
 API_TOKEN = "token-xyz"
+CREDENTIALS_URL = (
+    "https://rtc.live.cloudflare.com/v1/turn/keys/key-abc"
+    "/credentials/generate-ice-servers"
+)
+SPEC_TTL_SECONDS = 86400
+EXPECTED_STUN = [{"urls": ["stun:stun.cloudflare.com:3478"]}]
 CLOUDFLARE_SERVERS = [
     {
         "urls": [
@@ -65,8 +65,8 @@ def test_asks_the_key_scoped_credentials_url_for_a_ttl_bound_credential():
     send = _created({"iceServers": CLOUDFLARE_SERVERS})
     ice_servers(KEY_ID, API_TOKEN, send=send)
     url, kwargs = send.calls[0]
-    assert url == CREDENTIALS_URL.format(key_id=KEY_ID)
-    assert kwargs["json"] == {"ttl": TTL_SECONDS}
+    assert url == CREDENTIALS_URL
+    assert kwargs["json"] == {"ttl": SPEC_TTL_SECONDS}
     assert kwargs["headers"]["Authorization"] == f"Bearer {API_TOKEN}"
     assert kwargs["timeout"] > 0
 
@@ -89,8 +89,9 @@ def test_without_a_configured_key_the_list_is_stun_only(key_id, api_token):
 
 def test_the_stun_fallback_cannot_be_mutated_through_a_caller():
     fallback = ice_servers("", "")
+    assert fallback is not STUN_ONLY
     fallback[0]["urls"].append("turn:attacker.example:3478")
-    assert ice_servers("", "") == STUN_ONLY
+    assert ice_servers("", "") == EXPECTED_STUN
 
 
 def test_a_non_201_from_cloudflare_fails_fast_with_the_status():

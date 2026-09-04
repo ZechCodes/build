@@ -787,10 +787,10 @@ pub struct BranchRow {
 }
 
 impl BranchRow {
-    /// The row's git facts as wire fields, for a caller that stamps its own
-    /// beside them.
-    pub fn into_fields(self) -> serde_json::Map<String, Value> {
-        let Value::Object(fields) = json!({
+    /// The row's git facts as a wire object, for a caller that merges its own
+    /// stamps into it.
+    pub fn into_json(self) -> Value {
+        json!({
             "name": self.name,
             "is_current": self.is_current,
             "remote": self.origin.remote(),
@@ -804,10 +804,7 @@ impl BranchRow {
                 "insertions": self.stat.insertions,
                 "deletions": self.stat.deletions,
             },
-        }) else {
-            unreachable!("a json object literal is an object")
-        };
-        fields
+        })
     }
 }
 
@@ -861,9 +858,6 @@ fn branch_row(
         head.summary().unwrap_or("").to_string(),
         GIT_SUBJECT_MAX_BYTES,
     );
-    // The branch's own weight against the project's base — same fork-point
-    // math as every other diffstat in the app, just read for a branch that
-    // may not be the one checked out.
     let stat =
         crate::diff::stat_branch_against_base(repo_path, &origin.ref_name(&name), base_branch)
             .map_err(|e| e.to_string())?;
@@ -920,16 +914,23 @@ fn remotes_in_fetch_precedence(repo: &git2::Repository) -> Result<Vec<String>, S
 /// branch), and one whose name is already listed — by a local branch, whose
 /// upstream that ref is and whose own row already carries it, or by a remote
 /// earlier in fetch precedence, which is where a fetch would come from.
+///
+/// Every other ref under that prefix is a branch of this remote, named by the
+/// suffix — so a remote whose own name contains a slash still splits where
+/// its refs say it does, which git2's remote-branch shorthand cannot promise.
 fn remote_branch_rows(
+    repo: &git2::Repository,
     repo_path: &Path,
     base_branch: &str,
-    references: git2::References,
     remote: &str,
     listed: &HashSet<String>,
 ) -> Result<Vec<BranchRow>, String> {
     let prefix = format!("refs/remotes/{remote}/");
     let mut rows = Vec::new();
-    for reference in references {
+    for reference in repo
+        .references_glob(&format!("{prefix}*"))
+        .map_err(|e| e.to_string())?
+    {
         let reference = reference.map_err(|e| e.to_string())?;
         if reference.kind() != Some(git2::ReferenceType::Direct) {
             continue;
@@ -976,12 +977,8 @@ pub fn branch_list(repo_path: &Path, base_branch: &str) -> Result<BranchListing,
         rows.push(local_branch_row(&repo, repo_path, base_branch, &branch)?);
     }
     let mut listed: HashSet<String> = rows.iter().map(|row| row.name.clone()).collect();
-    // One pass per remote rather than through git2's remote-branch shorthand,
-    // so a remote whose own name contains a slash still splits at the right
-    // place.
     for remote in remotes_in_fetch_precedence(&repo)? {
-        let references = repo.references().map_err(|e| e.to_string())?;
-        let remote_rows = remote_branch_rows(repo_path, base_branch, references, &remote, &listed)?;
+        let remote_rows = remote_branch_rows(&repo, repo_path, base_branch, &remote, &listed)?;
         listed.extend(remote_rows.iter().map(|row| row.name.clone()));
         rows.extend(remote_rows);
     }

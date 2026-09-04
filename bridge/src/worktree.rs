@@ -617,24 +617,34 @@ pub fn discover_external_worktrees(
 }
 
 /// The primary checkout described in the shape adoption takes for an external
-/// worktree, so one adoption path serves both. Read-only.
-pub fn describe_primary_checkout(
+/// worktree, or `None` when the repository has no working tree there to
+/// describe — a bare repository is the whole of that case. A repository that
+/// cannot be listed at all is broken rather than checkout-less, and says so
+/// through the error. Read-only.
+pub fn find_primary_checkout(
     repo_path: &Path,
     base_branch: &str,
-) -> Result<ExternalWorktree, WorktreeError> {
+) -> Result<Option<ExternalWorktree>, WorktreeError> {
     let primary_canonical = std::fs::canonicalize(repo_path)?;
     let target = ScanTarget::Primary {
         primary: &primary_canonical,
     };
-    describe_checkouts(repo_path, base_branch, &target)?
-        .pop()
-        .ok_or_else(|| {
-            WorktreeError::Command(format!(
-                "the primary checkout at {} cannot be described — a bare or detached repository \
-                 has no branch to adopt",
-                primary_canonical.display()
-            ))
-        })
+    Ok(describe_checkouts(repo_path, base_branch, &target)?.pop())
+}
+
+/// [`find_primary_checkout`] for a caller that has a checkout to adopt or
+/// nothing to do. Read-only.
+pub fn describe_primary_checkout(
+    repo_path: &Path,
+    base_branch: &str,
+) -> Result<ExternalWorktree, WorktreeError> {
+    find_primary_checkout(repo_path, base_branch)?.ok_or_else(|| {
+        WorktreeError::Command(format!(
+            "the primary checkout at {} cannot be described — a bare repository has no \
+             working tree to adopt",
+            repo_path.display()
+        ))
+    })
 }
 
 /// Which of the repository's checkouts a scan describes. The membership test

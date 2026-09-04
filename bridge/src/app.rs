@@ -3730,13 +3730,19 @@ impl AppState {
         let Some(project) = self.projects.iter().find(|p| p.id == project_id) else {
             return (Isolation::default(), None);
         };
+        self.decide_isolation(project, &project.orch.worktrees().availability())
+    }
+
+    /// The same decision made against an availability the caller already read,
+    /// so a project row reports its volume's answer and the isolation that
+    /// answer leads to without probing the volume twice.
+    fn decide_isolation(
+        &self,
+        project: &Project,
+        available: &IsolationAvailability,
+    ) -> (Isolation, Option<String>) {
         let requested = project.isolation.unwrap_or(self.isolation);
-        match project
-            .orch
-            .worktrees()
-            .availability()
-            .lock_reason(requested)
-        {
+        match available.lock_reason(requested) {
             None => (requested, None),
             Some(reason) => (Isolation::default(), Some(reason.to_string())),
         }
@@ -5962,6 +5968,7 @@ impl AppState {
             "project.create" => self.project_create(params),
             "project.clone" => self.project_clone(params),
             "project.set_remote" => self.project_set_remote(params),
+            "project.set_isolation" => self.project_set_isolation(params),
             "board.list" => Ok(self.board_list()),
             // Capture surface: what the user said, kept before anything routes it.
             "capture.create" => self.capture_create(params),
@@ -6520,8 +6527,28 @@ impl AppState {
 
     /// All registered projects, for the New-task picker and Settings.
     fn project_list(&self) -> Value {
-        let projects: Vec<Value> = self.projects.iter().map(project_json).collect();
+        let projects: Vec<Value> = self.projects.iter().map(|p| self.project_json(p)).collect();
         json!({ "projects": projects })
+    }
+
+    /// The wire row for a project: what it is, and the whole isolation picture
+    /// a control paints from — what this project chose (`null` while it
+    /// inherits), what the account chose, what its next checkout will be, and
+    /// what its volume can make.
+    fn project_json(&self, p: &Project) -> Value {
+        let available = p.orch.worktrees().availability();
+        let (effective, _) = self.decide_isolation(p, &available);
+        json!({
+            "project_id": p.id,
+            "name": p.name,
+            "path": p.repo_path.display().to_string(),
+            "base_branch": p.base_branch,
+            "remote": git_remote_origin(&p.repo_path),
+            "isolation": p.isolation,
+            "isolation_default": self.isolation,
+            "isolation_effective": effective,
+            "isolation_available": available,
+        })
     }
 
     /// Register a project from a host path. Validates it is a git repo with the
@@ -6549,7 +6576,7 @@ impl AppState {
             .iter()
             .find(|p| p.id == id)
             .expect("just added");
-        Ok(project_json(project))
+        Ok(self.project_json(project))
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -6836,7 +6863,7 @@ impl AppState {
             .iter()
             .find(|p| p.id == id)
             .expect("just added");
-        Ok(project_json(project))
+        Ok(self.project_json(project))
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch
@@ -6904,7 +6931,7 @@ impl AppState {
             .iter()
             .find(|p| p.id == id)
             .expect("just added");
-        Ok(project_json(project))
+        Ok(self.project_json(project))
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
@@ -6936,7 +6963,30 @@ impl AppState {
             .iter()
             .find(|p| p.id == project_id)
             .expect("exists");
-        Ok(project_json(project))
+        Ok(self.project_json(project))
+    }
+
+    /// Set (or clear, with a null isolation) a project's override of the
+    /// account's isolation. The choice is put to this project's volume before
+    /// it is stored, so a client only ever repaints from a row the bridge would
+    /// honour; naming no isolation at all is a missing param, not a clear.
+    fn project_set_isolation(&mut self, params: &Value) -> Result<Value, String> {
+        let project_id = require_str(params, "project_id")?;
+        let index = self
+            .projects
+            .iter()
+            .position(|p| p.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let isolation = match params.get("isolation") {
+            Some(Value::Null) => None,
+            _ => Some(accept_isolation(
+                &require_str(params, "isolation")?,
+                &self.projects[index].orch.worktrees().availability(),
+            )?),
+        };
+        self.projects[index].isolation = isolation;
+        self.persist();
+        Ok(self.project_json(&self.projects[index]))
     }
 
     /// The orchestrator for a project id.
@@ -15167,15 +15217,6 @@ fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), 
     }
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
-fn project_json(p: &Project) -> Value {
-    json!({
-        "project_id": p.id,
-        "name": p.name,
-        "path": p.repo_path.display().to_string(),
-        "base_branch": p.base_branch,
-        "remote": git_remote_origin(&p.repo_path),
-    })
-}
 
 /// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
 fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
@@ -19798,6 +19839,170 @@ mod tests {
         let saved = state.handle(req("settings.set", json!({ "isolation": "worktree" })));
         assert_eq!(saved["ok"], true, "{saved:?}");
         assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
+    }
+
+    /// A project row carries the whole isolation picture a control paints from:
+    /// what this project chose (nothing, while it inherits), what the account
+    /// chose, what its next checkout will actually be, and what its volume can
+    /// make — so no client composes any of it.
+    #[test]
+    fn a_project_row_carries_its_own_isolation_the_accounts_and_the_effective_one() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let listed = state.handle(req("project.list", json!({})));
+        let row = &listed["result"]["projects"][0];
+        assert!(
+            row["isolation"].is_null(),
+            "a project that inherits names none of its own: {row:?}"
+        );
+        assert_eq!(row["isolation_default"], "worktree", "{row:?}");
+        assert_eq!(row["isolation_effective"], "worktree", "{row:?}");
+        let available = &row["isolation_available"];
+        assert!(available["cow"].is_boolean(), "{row:?}");
+        assert_eq!(
+            available["reason"].is_null(),
+            available["cow"] == true,
+            "a locked clone carries its sentence and an available one carries none: {row:?}"
+        );
+    }
+
+    /// A project's override is stored, answered as the row the control repaints
+    /// from, and written where a reload will find it; naming no isolation at all
+    /// clears it back to inheriting and unwrites it.
+    #[test]
+    fn a_project_override_is_stored_and_a_null_clears_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, repo) = init_repo();
+        let cfg = tmp.path().join("config.json");
+        let mut state = qa_state(&repo, dir.path()).with_config(&cfg);
+        let project_id = state.projects[0].id.clone();
+        let persisted_override = |cfg: &std::path::Path| -> Value {
+            let written: Value =
+                serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap();
+            written["projects"][0]["isolation"].clone()
+        };
+
+        let saved = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "worktree" }),
+        ));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        assert_eq!(saved["result"]["isolation"], "worktree", "{saved:?}");
+        assert_eq!(state.projects[0].isolation, Some(Isolation::Worktree));
+        assert_eq!(persisted_override(&cfg), json!("worktree"));
+
+        let cleared = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": null }),
+        ));
+        assert_eq!(cleared["ok"], true, "{cleared:?}");
+        assert!(
+            cleared["result"]["isolation"].is_null(),
+            "a cleared override inherits again: {cleared:?}"
+        );
+        assert_eq!(state.projects[0].isolation, None);
+        assert_eq!(persisted_override(&cfg), Value::Null);
+    }
+
+    /// A project on a volume that cannot clone is refused the choice in the
+    /// volume's own words, keeps the setting it had, and reports a next checkout
+    /// of the isolation every volume can make even while the account asks for
+    /// the other one.
+    #[test]
+    fn a_project_cannot_choose_a_clone_its_volume_cannot_make() {
+        let (dir, repo) = init_repo();
+        let mut state = state_on_an_unclonable_project(dir.path(), &repo);
+        state.isolation = Isolation::Cow;
+        let project_id = state.projects[0].id.clone();
+
+        let refused = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "cow" }),
+        ));
+        assert_eq!(refused["ok"], false, "{refused:?}");
+        let sentence = refused["error"].as_str().unwrap().to_string();
+        assert!(
+            sentence.starts_with("copy-on-write isolation is unavailable: ")
+                && sentence.contains("linked worktree")
+                && sentence.ends_with("; locked to worktrees"),
+            "{sentence}"
+        );
+        assert_eq!(
+            state.projects[0].isolation, None,
+            "a refused choice stores nothing"
+        );
+
+        let listed = state.handle(req("project.list", json!({})));
+        let row = &listed["result"]["projects"][0];
+        assert!(row["isolation"].is_null(), "{row:?}");
+        assert_eq!(row["isolation_default"], "cow", "{row:?}");
+        assert_eq!(
+            row["isolation_effective"], "worktree",
+            "a locked volume makes the checkout every volume can: {row:?}"
+        );
+        assert_eq!(row["isolation_available"]["cow"], false, "{row:?}");
+        assert!(
+            row["isolation_available"]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("linked worktree"),
+            "{row:?}"
+        );
+    }
+
+    /// Where the volume clones, a project may ask for it while the account has
+    /// not: the row answers the override, the account's untouched default, and
+    /// the clone as the effective choice.
+    #[test]
+    fn a_project_may_choose_cloning_where_its_volume_clones() {
+        let (dir, repo) = init_repo();
+        if !crate::isolation::probe::cow_or_skip(dir.path()) {
+            return;
+        }
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+
+        let saved = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id, "isolation": "cow" }),
+        ));
+        assert_eq!(saved["ok"], true, "{saved:?}");
+        let row = &saved["result"];
+        assert_eq!(row["isolation"], "cow", "{row:?}");
+        assert_eq!(row["isolation_default"], "worktree", "{row:?}");
+        assert_eq!(row["isolation_effective"], "cow", "{row:?}");
+        assert_eq!(state.projects[0].isolation, Some(Isolation::Cow));
+    }
+
+    /// The setter fails fast on both ways of naming nothing: a project this
+    /// bridge does not hold, and a call that names no isolation at all — silence
+    /// is not the same as the explicit null that clears an override.
+    #[test]
+    fn project_set_isolation_refuses_an_unknown_project_and_an_unnamed_choice() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+
+        let unknown = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": "proj-nowhere", "isolation": null }),
+        ));
+        assert_eq!(unknown["ok"], false, "{unknown:?}");
+        assert_eq!(
+            unknown["error"].as_str().unwrap(),
+            "unknown project: proj-nowhere"
+        );
+
+        let project_id = state.projects[0].id.clone();
+        let unnamed = state.handle(req(
+            "project.set_isolation",
+            json!({ "project_id": project_id }),
+        ));
+        assert_eq!(unnamed["ok"], false, "{unnamed:?}");
+        assert_eq!(
+            unnamed["error"].as_str().unwrap(),
+            "missing required param: isolation"
+        );
     }
 
     /// Naming no provider means "the account's default harness"; naming one

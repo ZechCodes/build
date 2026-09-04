@@ -379,33 +379,50 @@ pub enum ServerNotification {
 
 impl ServerNotification {
     pub fn decode(method: &str, params: Value) -> Result<ServerNotification, String> {
-        match tag_for(NOTIFICATION_METHODS, method).unwrap_or(NotificationMethod::Unknown) {
-            NotificationMethod::ThreadStarted => Ok(ServerNotification::ThreadStarted {
-                thread_id: required_string(&params, "/thread/id", "thread/started thread id")?,
-                parent_thread_id: params
-                    .pointer("/thread/parentThreadId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            }),
-            NotificationMethod::TurnStarted => Ok(ServerNotification::TurnStarted {
-                thread_id: required_string(&params, "/threadId", "turn/started thread id")?,
-                turn_id: required_string(&params, "/turn/id", "turn/started turn id")?,
-            }),
-            NotificationMethod::TurnCompleted => Ok(ServerNotification::TurnCompleted {
-                thread_id: required_string(&params, "/threadId", "turn/completed thread id")?,
-                completion: TurnCompletion::from_params(&params)?,
-            }),
-            NotificationMethod::ItemStarted => {
-                item_notification(ItemLifecycle::Started, method, params)
-            }
-            NotificationMethod::ItemCompleted => {
-                item_notification(ItemLifecycle::Completed, method, params)
-            }
-            NotificationMethod::Error => decode(&params).map(ServerNotification::Error),
-            NotificationMethod::Delta => Ok(ServerNotification::Delta),
-            NotificationMethod::Unknown => Ok(ServerNotification::Unknown),
-        }
+        tag_for(NOTIFICATION_METHODS, method).map_or(Ok(ServerNotification::Unknown), |decode| {
+            decode(method, params)
+        })
     }
+}
+
+fn thread_started_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
+    Ok(ServerNotification::ThreadStarted {
+        thread_id: required_string(&params, "/thread/id", "thread/started thread id")?,
+        parent_thread_id: params
+            .pointer("/thread/parentThreadId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
+fn turn_started_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
+    Ok(ServerNotification::TurnStarted {
+        thread_id: required_string(&params, "/threadId", "turn/started thread id")?,
+        turn_id: required_string(&params, "/turn/id", "turn/started turn id")?,
+    })
+}
+
+fn turn_completed_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
+    Ok(ServerNotification::TurnCompleted {
+        thread_id: required_string(&params, "/threadId", "turn/completed thread id")?,
+        completion: TurnCompletion::from_params(&params)?,
+    })
+}
+
+fn item_started_notification(method: &str, params: Value) -> Result<ServerNotification, String> {
+    item_notification(ItemLifecycle::Started, method, params)
+}
+
+fn item_completed_notification(method: &str, params: Value) -> Result<ServerNotification, String> {
+    item_notification(ItemLifecycle::Completed, method, params)
+}
+
+fn error_notification(_method: &str, params: Value) -> Result<ServerNotification, String> {
+    decode(&params).map(ServerNotification::Error)
+}
+
+fn delta_notification(_method: &str, _params: Value) -> Result<ServerNotification, String> {
+    Ok(ServerNotification::Delta)
 }
 
 fn item_notification(
@@ -426,33 +443,20 @@ fn item_notification(
     }))
 }
 
-#[derive(Debug, Clone, Copy)]
-enum NotificationMethod {
-    ThreadStarted,
-    TurnStarted,
-    TurnCompleted,
-    ItemStarted,
-    ItemCompleted,
-    Error,
-    Delta,
-    Unknown,
-}
+type NotificationDecoder = fn(&str, Value) -> Result<ServerNotification, String>;
 
-const NOTIFICATION_METHODS: &[(&str, NotificationMethod)] = &[
-    ("thread/started", NotificationMethod::ThreadStarted),
-    ("turn/started", NotificationMethod::TurnStarted),
-    ("turn/completed", NotificationMethod::TurnCompleted),
-    ("item/started", NotificationMethod::ItemStarted),
-    ("item/completed", NotificationMethod::ItemCompleted),
-    ("error", NotificationMethod::Error),
-    ("item/agentMessage/delta", NotificationMethod::Delta),
-    (
-        "item/commandExecution/outputDelta",
-        NotificationMethod::Delta,
-    ),
-    ("item/fileChange/outputDelta", NotificationMethod::Delta),
-    ("item/reasoning/summaryTextDelta", NotificationMethod::Delta),
-    ("item/reasoning/textDelta", NotificationMethod::Delta),
+const NOTIFICATION_METHODS: &[(&str, NotificationDecoder)] = &[
+    ("thread/started", thread_started_notification),
+    ("turn/started", turn_started_notification),
+    ("turn/completed", turn_completed_notification),
+    ("item/started", item_started_notification),
+    ("item/completed", item_completed_notification),
+    ("error", error_notification),
+    ("item/agentMessage/delta", delta_notification),
+    ("item/commandExecution/outputDelta", delta_notification),
+    ("item/fileChange/outputDelta", delta_notification),
+    ("item/reasoning/summaryTextDelta", delta_notification),
+    ("item/reasoning/textDelta", delta_notification),
 ];
 
 #[derive(Debug, Clone, Copy)]
@@ -563,17 +567,18 @@ impl ParentThreadFilter {
     }
 
     fn server_request(
-        routing_pointer: Option<&str>,
+        method: ServerRequestMethod,
         params: &Value,
         expected_parent: Option<&str>,
-    ) -> ParentThreadRoute {
-        let Some(pointer) = routing_pointer else {
-            return ParentThreadRoute::Unscoped;
+        method_name: &str,
+    ) -> Result<ParentThreadRoute, String> {
+        let Some(pointer) = method.routing_pointer else {
+            return Ok(ParentThreadRoute::Unscoped);
         };
-        route_id(
-            params.pointer(pointer).and_then(Value::as_str),
-            expected_parent,
-        )
+        match params.pointer(pointer).and_then(Value::as_str) {
+            Some(routing_id) => Ok(route_id(Some(routing_id), expected_parent)),
+            None => Err(format!("{method_name} routing id is missing")),
+        }
     }
 }
 
@@ -622,19 +627,11 @@ impl RoutedServerRequest {
             });
         };
         let route = ParentThreadFilter::server_request(
-            method.routing_pointer,
+            method,
             &inbound.params,
             expected_parent,
-        );
-        if route != ParentThreadRoute::Child {
-            if let Some(pointer) = method.routing_pointer {
-                required_string(
-                    &inbound.params,
-                    pointer,
-                    &format!("{} routing id", inbound.method),
-                )?;
-            }
-        }
+            &inbound.method,
+        )?;
         Ok(RoutedServerRequest {
             request: (method.build)(inbound.id.clone()),
             route,

@@ -683,6 +683,7 @@ fn reconciliation_timer_loop(shared: Arc<(Mutex<TimerState>, Condvar)>, core: We
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::Duration;
 
     use serde_json::json;
@@ -749,6 +750,57 @@ mod tests {
 
     fn settled(snapshot: &TerminalSnapshot, event: TerminalSourceEvent) -> TerminalSnapshot {
         snapshot.with_terminal_event(CoordinatorTerminalEvent::SourceSettled(event))
+    }
+
+    fn scripted_session(
+        root: &Path,
+        script: &str,
+    ) -> (CodexAppServerSession, broadcast::Receiver<ActivityReport>) {
+        let spec = HarnessSpec::new("sh").arg("-c").arg(script);
+        CodexAppServerSession::spawn(
+            &spec,
+            root.to_path_buf(),
+            ModelChoice {
+                provider: AgentProvider::CodexAppServer,
+                model: Some("gpt-5.6-sol".to_string()),
+                effort: Some("high".to_string()),
+            },
+            None,
+            AppServerLimits::default(),
+        )
+        .unwrap()
+    }
+
+    fn opened_thread_script(root: &Path, thread_traffic: &str) -> String {
+        let initialize_response = r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#;
+        let thread_response = format!(
+            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
+            root.display()
+        );
+        format!(
+            "read initialize; printf '%s\\n' '{initialize_response}'; read initialized; read thread; printf '%s\\n' '{thread_response}'; {thread_traffic}"
+        )
+    }
+
+    fn drain_reports(
+        activity: &mut broadcast::Receiver<ActivityReport>,
+        until: impl Fn(&[ActivityReport]) -> bool,
+    ) -> Vec<ActivityReport> {
+        let mut reports = Vec::new();
+        for _ in 0..200 {
+            match activity.try_recv() {
+                Ok(report) => reports.push(report),
+                Err(broadcast::error::TryRecvError::Closed) => break,
+                Err(broadcast::error::TryRecvError::Empty) => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("activity receive failed: {error}"),
+            }
+            if until(&reports) {
+                break;
+            }
+        }
+        reports
     }
 
     #[test]
@@ -920,19 +972,7 @@ mod tests {
     #[test]
     fn stdout_eof_closes_activity_and_end_is_idempotent() {
         let root = tempfile::tempdir().unwrap();
-        let spec = HarnessSpec::new("sh").arg("-c").arg("read line");
-        let (session, mut activity) = CodexAppServerSession::spawn(
-            &spec,
-            root.path().to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: None,
-                effort: None,
-            },
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap();
+        let (session, mut activity) = scripted_session(root.path(), "read line");
         for _ in 0..100 {
             if matches!(
                 activity.try_recv(),
@@ -950,30 +990,15 @@ mod tests {
     #[test]
     fn stdout_eof_reports_unanswered_tools_before_closing_activity() {
         let root = tempfile::tempdir().unwrap();
-        let thread_response = format!(
-            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
-            root.path().display()
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "read turn; printf '%s\\n' '{}'; printf '%s\\n' '{}'",
+                r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
+                r#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"tool-1","type":"webSearch"}}}"#,
+            ),
         );
-        let command = format!(
-            "read initialize; printf '%s\\n' '{}'; read initialized; read thread; printf '%s\\n' '{}'; read turn; printf '%s\\n' '{}'; printf '%s\\n' '{}'",
-            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
-            thread_response,
-            r#"{"id":3,"result":{"turn":{"id":"turn-1"}}}"#,
-            r#"{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","item":{"id":"tool-1","type":"webSearch"}}}"#,
-        );
-        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
-        let (session, mut activity) = CodexAppServerSession::spawn(
-            &spec,
-            root.path().to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: Some("gpt-5.6-sol".to_string()),
-                effort: Some("high".to_string()),
-            },
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap();
+        let (session, mut activity) = scripted_session(root.path(), &script);
         for _ in 0..100 {
             if session.session_id().is_some() {
                 break;
@@ -986,17 +1011,7 @@ mod tests {
             })
             .unwrap();
 
-        let mut reports = Vec::new();
-        for _ in 0..100 {
-            match activity.try_recv() {
-                Ok(report) => reports.push(report),
-                Err(broadcast::error::TryRecvError::Closed) => break,
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("activity receive failed: {error}"),
-            }
-        }
+        let reports = drain_reports(&mut activity, |_| false);
         assert!(reports.iter().any(|report| matches!(
             report.activity,
             crate::harness::AgentActivity::ToolResult {
@@ -1009,49 +1024,22 @@ mod tests {
     #[test]
     fn child_thread_traffic_never_contaminates_the_parent_session() {
         let root = tempfile::tempdir().unwrap();
-        let thread_response = format!(
-            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
-            root.path().display()
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}' '{}'; read child_response; read hold",
+                r#"{"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":"thread-1"}}}"#,
+                r#"{"method":"error","params":{"threadId":"thread-child","malformed":true}}"#,
+                r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
+                r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
+                r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
+                r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
+                r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+            ),
         );
-        let command = format!(
-            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}' '{}'; read child_response; read hold",
-            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
-            thread_response,
-            r#"{"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":"thread-1"}}}"#,
-            r#"{"method":"error","params":{"threadId":"thread-child","malformed":true}}"#,
-            r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
-            r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
-            r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
-            r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
-            r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
-        );
-        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
-        let (session, mut activity) = CodexAppServerSession::spawn(
-            &spec,
-            root.path().to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: Some("gpt-5.6-sol".to_string()),
-                effort: Some("high".to_string()),
-            },
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap();
+        let (session, mut activity) = scripted_session(root.path(), &script);
 
-        let mut reports = Vec::new();
-        for _ in 0..200 {
-            match activity.try_recv() {
-                Ok(report) => reports.push(report),
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("activity receive failed: {error}"),
-            }
-            if !reports.is_empty() {
-                break;
-            }
-        }
+        let reports = drain_reports(&mut activity, |reports| !reports.is_empty());
         assert!(matches!(
             reports.as_slice(),
             [ActivityReport {
@@ -1068,46 +1056,19 @@ mod tests {
     #[test]
     fn child_traffic_never_advances_the_parent_quiet_clock() {
         let root = tempfile::tempdir().unwrap();
-        let thread_response = format!(
-            r#"{{"id":2,"result":{{"thread":{{"id":"thread-1"}},"model":"gpt-5.6-sol","reasoningEffort":"high","cwd":"{}","approvalPolicy":"never","sandbox":{{"type":"dangerFullAccess"}}}}}}"#,
-            root.path().display()
+        let script = opened_thread_script(
+            root.path(),
+            &format!(
+                "printf '%s\n' '{}'; read turn; printf '%s\n' '{}' '{}' '{}'; read child_response",
+                r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
+                r#"{"method":"item/started","params":{"threadId":"thread-child","turnId":"turn-child","item":{"id":"tool-child","type":"webSearch"}}}"#,
+                r#"{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}"#,
+                r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
+            ),
         );
-        let command = format!(
-            "read initialize; printf '%s\n' '{}'; read initialized; read thread; printf '%s\n' '{}'; printf '%s\n' '{}'; read turn; printf '%s\n' '{}' '{}' '{}'; read child_response",
-            r#"{"id":1,"result":{"userAgent":"build_bridge/0.153.0"}}"#,
-            thread_response,
-            r#"{"method":"error","params":{"threadId":"thread-1","turnId":"turn-1","error":{"message":"parent stays alive"},"willRetry":true}}"#,
-            r#"{"method":"item/started","params":{"threadId":"thread-child","turnId":"turn-child","item":{"id":"tool-child","type":"webSearch"}}}"#,
-            r#"{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}"#,
-            r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
-        );
-        let spec = HarnessSpec::new("sh").arg("-c").arg(command);
-        let (session, mut activity) = CodexAppServerSession::spawn(
-            &spec,
-            root.path().to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: Some("gpt-5.6-sol".to_string()),
-                effort: Some("high".to_string()),
-            },
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap();
+        let (session, mut activity) = scripted_session(root.path(), &script);
 
-        let mut reports = Vec::new();
-        for _ in 0..200 {
-            match activity.try_recv() {
-                Ok(report) => reports.push(report),
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("activity receive failed: {error}"),
-            }
-            if !reports.is_empty() {
-                break;
-            }
-        }
+        let mut reports = drain_reports(&mut activity, |reports| !reports.is_empty());
         assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(session.quiet_for() < Duration::from_secs(60));
 
@@ -1118,16 +1079,7 @@ mod tests {
             })
             .unwrap();
 
-        for _ in 0..200 {
-            match activity.try_recv() {
-                Ok(report) => reports.push(report),
-                Err(broadcast::error::TryRecvError::Closed) => break,
-                Err(broadcast::error::TryRecvError::Empty) => {
-                    std::thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("activity receive failed: {error}"),
-            }
-        }
+        reports.extend(drain_reports(&mut activity, |_| false));
         assert_eq!(reports.len(), 1, "{reports:?}");
         assert!(
             session.quiet_for() >= Duration::from_secs(60),
@@ -1141,21 +1093,10 @@ mod tests {
     #[test]
     fn protocol_failure_epitaph_precedes_stderr_fallback() {
         let root = tempfile::tempdir().unwrap();
-        let spec = HarnessSpec::new("sh")
-            .arg("-c")
-            .arg("read line; echo stderr-fallback >&2; echo '{bad}'");
-        let (session, _activity) = CodexAppServerSession::spawn(
-            &spec,
-            root.path().to_path_buf(),
-            ModelChoice {
-                provider: AgentProvider::CodexAppServer,
-                model: None,
-                effort: None,
-            },
-            None,
-            AppServerLimits::default(),
-        )
-        .unwrap();
+        let (session, _activity) = scripted_session(
+            root.path(),
+            "read line; echo stderr-fallback >&2; echo '{bad}'",
+        );
         for _ in 0..100 {
             if let Some(epitaph) = session.epitaph() {
                 assert!(epitaph.contains("invalid JSON"), "{epitaph}");

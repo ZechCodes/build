@@ -7,6 +7,8 @@
 #   VAPID_PRIVATE_KEY    — web-push VAPID private key (base64url raw P-256 scalar)
 #   VAPID_PUBLIC_KEY     — web-push VAPID public key (base64url uncompressed point)
 #   VAPID_SUBJECT        — optional contact claim, default mailto:ops@getbuild.ing
+#   CF_TURN_KEY_ID       — Cloudflare TURN key id (optional: absent means the
+#   CF_TURN_KEY_API_TOKEN  ICE-servers route answers a STUN-only list)
 #   SMTP_USERNAME        — FastMail login address
 #   SMTP_PASSWORD        — FastMail app password (not the account password)
 #   SMTP_FROM_ADDRESS    — an address or alias on that account, e.g. Build <hello@getbuild.ing>
@@ -18,6 +20,7 @@ controllers:
   - buildapp.health_controller:HealthController
   - buildapp.devices_controller:DevicesController
   - buildapp.push_controller:PushController
+  - buildapp.rtc_controller:RtcController
   - buildapp.waitlist_controller:WaitlistController
   - skrift.controllers.auth:AuthController
   - skrift.admin.controller:AdminController

@@ -110,3 +110,11 @@ def test_waitlist_controller_registered_in_both_configs():
         assert "buildapp.waitlist_controller:WaitlistController" in controllers, (
             f"{config_name} does not serve the public waitlist endpoint"
         )
+
+
+def test_rtc_controller_registered_in_every_config():
+    for config_name in ("app.yaml", "app.dev.yaml", "app.mail.yaml"):
+        controllers = load_config(config_name)["controllers"]
+        assert "buildapp.rtc_controller:RtcController" in controllers, (
+            f"{config_name} does not serve the ICE-servers route the SPA upgrades with"
+        )

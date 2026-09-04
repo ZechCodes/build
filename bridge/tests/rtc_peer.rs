@@ -11,10 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use build_bridge::app::AppState;
-use build_bridge::carrier::testing::client_request;
+use build_bridge::carrier::testing::{client_request, next_report};
 use build_bridge::carrier::FrameIntake;
-use build_bridge::rtc::{chunk, WebrtcPeerFactory};
-use build_bridge::transport::{self, Envelope, DATA_FRAME_TYPE};
+use build_bridge::carrier::{FrameHandler, SessionSender};
+use build_bridge::rtc::{chunk, WebrtcPeerFactory, NEGOTIATED_CHANNELS};
+use build_bridge::transport::{self, Envelope, Frame, DATA_FRAME_TYPE};
 use common::{connected_device, device_identity, recv, request_message, session_init_message};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -239,12 +240,17 @@ impl BrowserPeer {
                 .await
                 .expect("the browser opens a peer connection"),
         );
-        let app = BrowserChannel::watching(negotiated(&connection, "app", 0).await);
-        let term = BrowserChannel::watching(negotiated(&connection, "term", 1).await);
+        let mut opened = Vec::new();
+        for (label, id) in NEGOTIATED_CHANNELS {
+            opened.push(BrowserChannel::watching(
+                negotiated(&connection, label, id).await,
+            ));
+        }
+        let mut opened = opened.into_iter();
         BrowserPeer {
             connection,
-            app,
-            term,
+            app: opened.next().expect("the app channel is the first"),
+            term: opened.next().expect("the terminal channel is the second"),
             candidates,
         }
     }
@@ -269,8 +275,10 @@ async fn negotiated(
 }
 
 /// A bridge with the real peer transport: one intake, the app behind it, and
-/// the factory that builds a peer connection per session.
-fn peer_bridge(state_dir: &std::path::Path) -> Arc<FrameIntake> {
+/// the factory that builds a peer connection per session. Every frame the app
+/// is given is reported as `<frame_type>:<session_id>`, the synthetic `close`
+/// of a session that ended among them.
+fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::UnboundedReceiver<String>) {
     let peer_factory = WebrtcPeerFactory::new();
     let app = AppState::new_unrooted(
         state_dir.join("worktrees"),
@@ -280,12 +288,22 @@ fn peer_bridge(state_dir: &std::path::Path) -> Arc<FrameIntake> {
     )
     .with_peer_factory(peer_factory.clone())
     .shared();
-    let intake = FrameIntake::new(
-        AppState::handler(app),
-        transport::generate_transport_keypair(),
-    );
+    let (handler, reports) = reporting(AppState::handler(app));
+    let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
     peer_factory.carries(intake.clone());
-    intake
+    (intake, reports)
+}
+
+/// `handler`, with every frame it is given named the way
+/// `carrier::testing::reporting_handler` names one — over a handler that still
+/// answers, which the signaling this test upgrades over needs.
+fn reporting(handler: FrameHandler) -> (FrameHandler, mpsc::UnboundedReceiver<String>) {
+    let (reported, reports) = mpsc::unbounded_channel();
+    let watched: FrameHandler = Arc::new(move |sender: SessionSender, frame: Frame| {
+        let _ = reported.send(format!("{}:{}", frame.frame_type, frame.session_id));
+        handler(sender, frame)
+    });
+    (watched, reports)
 }
 
 /// The upgrade the spec's policy performs: the browser offers over the relay,
@@ -373,7 +391,7 @@ fn no_reachable_ice_servers() -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
     let state_dir = tempfile::tempdir().expect("a state dir");
-    let intake = peer_bridge(state_dir.path());
+    let (intake, _reports) = peer_bridge(state_dir.path());
     let (mut session, mut pushes, _demux) = browser_session("sess-peer", intake).await;
 
     let mut peer = upgraded(&mut session, &mut pushes).await;
@@ -392,7 +410,6 @@ async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
         "the same session answers the same over either carrier"
     );
 
-    // The terminal channel is the second wire, live and independent.
     let over_the_terminal_channel = peer.term.call(&session, "project.list", json!({})).await;
     assert_eq!(
         over_the_terminal_channel["result"], over_the_relay["result"],
@@ -416,7 +433,7 @@ async fn one_session_answers_the_same_over_the_relay_and_over_the_peer() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_too_large_for_one_message_crosses_in_parts() {
     let state_dir = tempfile::tempdir().expect("a state dir");
-    let intake = peer_bridge(state_dir.path());
+    let (intake, _reports) = peer_bridge(state_dir.path());
     let (mut session, mut pushes, _demux) = browser_session("sess-chunked", intake).await;
     let mut peer = upgraded(&mut session, &mut pushes).await;
 
@@ -437,7 +454,7 @@ async fn a_request_too_large_for_one_message_crosses_in_parts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_part_of_a_message_that_never_started_closes_the_channel() {
     let state_dir = tempfile::tempdir().expect("a state dir");
-    let intake = peer_bridge(state_dir.path());
+    let (intake, _reports) = peer_bridge(state_dir.path());
     let (mut session, mut pushes, _demux) = browser_session("sess-gap", intake).await;
     let mut peer = upgraded(&mut session, &mut pushes).await;
 
@@ -461,5 +478,52 @@ async fn a_part_of_a_message_that_never_started_closes_the_channel() {
     assert_eq!(
         after["ok"], true,
         "the session did not end with the channel it lost"
+    );
+}
+
+/// Every frame reported up to now, forgotten: what this test asserts about is
+/// what happens from here.
+fn drain_reports(reports: &mut mpsc::UnboundedReceiver<String>) {
+    while reports.try_recv().is_ok() {}
+}
+
+/// The other half of the teardown rule, the half the relay cannot show: a
+/// session whose last carrier is a channel ends when that channel does. Nothing
+/// above the wire is told which carrier went — the app hears the same synthetic
+/// `close` it hears when a relay socket is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_channel_that_carried_last_ends_the_session_with_it() {
+    let state_dir = tempfile::tempdir().expect("a state dir");
+    let (intake, mut reports) = peer_bridge(state_dir.path());
+    let (mut session, mut pushes, _demux) = browser_session("sess-last", intake).await;
+    let mut peer = upgraded(&mut session, &mut pushes).await;
+
+    let greeted = peer.app.call(&session, "session.hello", json!({})).await;
+    assert_eq!(greeted["ok"], true, "{greeted}");
+    drain_reports(&mut reports);
+
+    // The relay lets this session go while the channel is carrying it: one
+    // carrier released, and the client is still working.
+    session
+        .to_device
+        .send(json!({ "type": "session_closed", "session_id": session.session_id }))
+        .await
+        .expect("the relay carries the session_closed");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        reports.try_recv().is_err(),
+        "the session did not end with the relay carrier the channel outlived"
+    );
+
+    peer.app
+        .channel
+        .close()
+        .await
+        .expect("the browser closes the channel it was riding");
+
+    assert_eq!(
+        next_report(&mut reports).await,
+        format!("close:{}", session.session_id),
+        "the last carrier takes the session with it"
     );
 }

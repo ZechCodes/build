@@ -231,7 +231,10 @@ pub const DC_BUFFERED_HIGH: usize = 1024 * 1024;
 /// explicit ids so no in-band open handshake is needed (spec §DataChannels).
 /// They mirror today's two relay sockets: SCTP streams are independent, so a
 /// terminal flood does not head-of-line block an RPC reply.
-const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
+///
+/// Public because the other side of every one of these channels is written
+/// against the same two labels and ids, and one of those sides is a test.
+pub const NEGOTIATED_CHANNELS: [(&str, u16); 2] = [("app", 0), ("term", 1)];
 
 /// Where a peer's own candidates are gathered from. Every interface, an
 /// ephemeral port: the browser's offer decides whether a direct pair or a TURN

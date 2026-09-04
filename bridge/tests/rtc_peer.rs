@@ -279,18 +279,18 @@ async fn negotiated(
 /// is given is reported as `<frame_type>:<session_id>`, the synthetic `close`
 /// of a session that ended among them.
 fn peer_bridge(state_dir: &std::path::Path) -> (Arc<FrameIntake>, mpsc::UnboundedReceiver<String>) {
-    let peer_factory = WebrtcPeerFactory::new();
     let app = AppState::new_unrooted(
         state_dir.join("worktrees"),
         "main",
         false,
         state_dir.join("mcp.sock").to_string_lossy().into_owned(),
     )
-    .with_peer_factory(peer_factory.clone())
     .shared();
-    let (handler, reports) = reporting(AppState::handler(app));
+    let (handler, reports) = reporting(AppState::handler(app.clone()));
     let intake = FrameIntake::new(handler, transport::generate_transport_keypair());
-    peer_factory.carries(intake.clone());
+    app.lock()
+        .unwrap()
+        .set_peer_factory(WebrtcPeerFactory::new(intake.clone()));
     (intake, reports)
 }
 

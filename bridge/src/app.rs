@@ -2225,9 +2225,13 @@ impl AppState {
 
     /// Answer `rtc.offer` with peer connections `factory` builds. Without one
     /// the bridge has no peer transport and every offer is refused.
-    pub fn with_peer_factory(mut self, factory: Arc<dyn SessionPeerFactory>) -> Self {
+    ///
+    /// Settable after the state is shared because a real factory is built from
+    /// the intake, the intake from this state's own handler: the peer transport
+    /// is the last thing the daemon hands the app, not something it is born
+    /// with.
+    pub fn set_peer_factory(&mut self, factory: Arc<dyn SessionPeerFactory>) {
         self.peers = SessionPeers::with_factory(factory);
-        self
     }
 
     /// Enable persistence at `path`: load any saved projects + projects-dir from it
@@ -45423,15 +45427,15 @@ mod tests {
         Arc<crate::rtc::recording::RecordingPeerFactory>,
     ) {
         let factory = crate::rtc::recording::RecordingPeerFactory::new();
-        let state = AppState::new(
+        let mut app = AppState::new(
             repo.to_path_buf(),
             dir.join("wt"),
             "main",
             true,
             "/tmp/test-mcp.sock",
-        )
-        .with_peer_factory(factory.clone())
-        .shared();
+        );
+        app.set_peer_factory(factory.clone());
+        let state = app.shared();
         let handler = AppState::handler(Arc::clone(&state));
         (state, handler, factory)
     }

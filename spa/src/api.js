@@ -39,6 +39,14 @@ export async function revokeDevice(deviceId) {
   if (!response.ok) throw new Error("revoke failed");
 }
 
+// The ICE servers a WebRTC upgrade needs. Plain HTTP by design: the Cloudflare
+// TURN key is the api's alone, so the credential cannot come from the bridge.
+export async function fetchIceServers() {
+  const response = await fetch("/api/rtc/ice-servers", { method: "POST" });
+  if (!response.ok) throw new Error("could not mint ICE servers");
+  return (await response.json()).iceServers;
+}
+
 export async function fetchVapidPublicKey() {
   const response = await fetch("/api/push/vapid-public-key");
   if (!response.ok) throw new Error("push notifications are not configured on the server");

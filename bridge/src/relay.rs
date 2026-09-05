@@ -27,6 +27,19 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::carrier::{self, CarrierError, CarrierHandle, FrameIntake, OutboundEnvelope};
 use crate::transport::{self, Envelope, SessionInit};
 
+/// Install the process-level rustls crypto provider, once, before anything
+/// opens TLS.
+///
+/// Two providers are unified into this build — reqwest brings aws-lc-rs,
+/// webrtc's `rtc` brings ring — so rustls 0.23 cannot pick one on its own and
+/// the first `wss://` connect panics instead. aws-lc-rs is the one reqwest
+/// already runs on, so it is the one installed. A second install (a test, a
+/// second entry point) is refused by rustls and ignored here: the provider is
+/// in place either way.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 /// The signed-challenge path the relay expects (`{ts}.GET./ws/device`).
 const AUTH_PATH: &str = "/ws/device";
 
@@ -410,6 +423,26 @@ mod silence_tests {
         assert_eq!(
             super::silence_deadline(0),
             std::time::Duration::from_secs(3)
+        );
+    }
+}
+
+#[cfg(test)]
+mod crypto_provider_tests {
+    use super::install_crypto_provider;
+
+    /// With two provider features unified into the build (reqwest's aws-lc-rs,
+    /// webrtc's ring) rustls has no default until one is installed, and the
+    /// first wss:// connect panics. The daemon installs one before anything
+    /// opens TLS, and installing again — a test, a second entry point — is a
+    /// no-op rather than a failure.
+    #[test]
+    fn the_daemon_installs_a_process_crypto_provider_and_may_do_so_twice() {
+        install_crypto_provider();
+        install_crypto_provider();
+        assert!(
+            rustls::crypto::CryptoProvider::get_default().is_some(),
+            "no process-level crypto provider: a wss:// connect would panic"
         );
     }
 }

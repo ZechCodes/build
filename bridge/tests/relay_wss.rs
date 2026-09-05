@@ -36,11 +36,12 @@ use common::{device_identity, test_intake};
 
 mod common;
 
-/// rustls 0.23 requires a process crypto provider when more than one provider
-/// feature is unified into the build (reqwest enables aws-lc-rs). Installing is
-/// idempotent-enough for tests: a second call fails and is ignored.
+/// The provider the daemon installs at startup, installed the daemon's way:
+/// a test that brought its own would pass while `serve` panicked on its first
+/// wss:// connect, which is what happened once webrtc unified a second
+/// provider into the build.
 fn install_crypto_provider() {
-    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
+    relay::install_crypto_provider();
 }
 
 /// A TLS WebSocket server that accepts one connection with a fresh self-signed

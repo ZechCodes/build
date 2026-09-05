@@ -1035,6 +1035,59 @@ fn steers_are_serialized_and_success_releases_input_in_order() {
 }
 
 #[test]
+fn a_steer_success_naming_another_turn_fails_the_session() {
+    let steered = working_state()
+        .transition(
+            SessionEvent::SendTurn("one".to_string()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state;
+    let mismatch = steered
+        .transition(
+            correlated(steer_turn("one"), Ok(json!({"turnId":"turn-9"}))),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .expect_err("a steer success naming another turn desynchronizes the session");
+    let message = mismatch.to_string();
+    assert!(
+        message.contains("turn/steer response id mismatch"),
+        "{message}"
+    );
+    assert!(message.contains("turn-1"), "{message}");
+    assert!(message.contains("turn-9"), "{message}");
+
+    let queued = working_state()
+        .transition(
+            SessionEvent::SendTurn("one".to_string()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap()
+        .state
+        .transition(
+            SessionEvent::SendTurn("two".to_string()),
+            Duration::ZERO,
+            limits().state(),
+        )
+        .unwrap();
+    assert!(queued.effects.is_empty());
+    assert!(
+        queued
+            .state
+            .transition(
+                correlated(steer_turn("one"), Ok(json!({"turnId":"turn-9"}))),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .is_err(),
+        "a failed steer never releases the queued input"
+    );
+}
+
+#[test]
 fn steer_completion_race_replays_retained_input_exactly_once() {
     let pending = working_state()
         .transition(

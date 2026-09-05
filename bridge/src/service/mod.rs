@@ -325,15 +325,17 @@ pub fn with_install_path(
 #[cfg(test)]
 pub(super) mod fixtures {
     use super::{ServiceConfig, ServiceContext};
-    use std::path::PathBuf;
+    use std::path::Path;
 
     /// A config as `install-service` builds one: the binary where the installer
     /// put it, logs under the bridge's state dir, and the two URLs the daemon is
-    /// pinned to.
-    pub fn sample_config(home: &str) -> ServiceConfig {
+    /// pinned to. `home` is whatever names a directory — the platform tests
+    /// spell it as a literal, the orchestration tests hand over a temp dir.
+    pub fn sample_config(home: impl AsRef<Path>) -> ServiceConfig {
+        let home = home.as_ref();
         ServiceConfig {
-            binary_path: PathBuf::from(format!("{home}/.local/bin/build-bridge")),
-            log_dir: PathBuf::from(format!("{home}/.build/log")),
+            binary_path: home.join(".local/bin/build-bridge"),
+            log_dir: home.join(".build/log"),
             env: vec![
                 ("BRIDGE_RELAY_URL".into(), "wss://relay.getbuild.ing".into()),
                 ("BRIDGE_API_URL".into(), "https://getbuild.ing".into()),
@@ -343,9 +345,9 @@ pub(super) mod fixtures {
 
     /// The installing user: their home, and the numeric uid launchd addresses
     /// their gui domain by.
-    pub fn context(home: &str, uid: &str) -> ServiceContext {
+    pub fn context(home: impl AsRef<Path>, uid: &str) -> ServiceContext {
         ServiceContext {
-            home: PathBuf::from(home),
+            home: home.as_ref().to_path_buf(),
             uid: uid.to_string(),
         }
     }
@@ -478,16 +480,10 @@ mod tests {
         }
     }
 
-    /// The orchestration tests install under a temp home, so their context is
-    /// the shared fixture pointed at that directory.
-    fn context(home: &Path) -> ServiceContext {
-        fixtures::context(&home.to_string_lossy(), "501")
-    }
-
     #[test]
     fn install_writes_the_unit_then_runs_activation_in_order() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![
                 ShellCommand::tolerated("first", &["a"]),
@@ -521,7 +517,7 @@ mod tests {
     #[test]
     fn install_fails_when_a_required_command_fails_and_keeps_the_file_for_inspection() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![ShellCommand::required("bootstrap", &["gui/501", "unit"])],
             deactivate: vec![],
@@ -551,7 +547,7 @@ mod tests {
     #[test]
     fn install_ignores_a_tolerated_command_failure() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![
                 ShellCommand::tolerated("bootout", &["nothing-loaded"]),
@@ -570,12 +566,46 @@ mod tests {
         assert!(result.is_ok(), "a tolerated failure is not a failure");
     }
 
+    /// Both platforms start a user service with a bare PATH, and a bare PATH
+    /// cannot find the `claude` harness wherever the user's toolchain manager
+    /// put it, so the installing shell's PATH is pinned into the unit.
+    #[test]
+    fn the_daemon_environment_pins_the_installing_shells_path() {
+        let env = with_install_path(vec![("BRIDGE_API_URL".into(), "https://x".into())], || {
+            Some("/opt/homebrew/bin:/usr/bin".to_string())
+        });
+
+        assert_eq!(
+            env.iter().find(|(key, _)| key == "PATH").map(|(_, v)| v),
+            Some(&"/opt/homebrew/bin:/usr/bin".to_string())
+        );
+    }
+
+    /// An operator who set PATH deliberately meant it, so the shell's copy does
+    /// not overwrite it.
+    #[test]
+    fn an_explicit_path_in_the_env_is_left_alone() {
+        let env = with_install_path(vec![("PATH".into(), "/pinned".into())], || {
+            Some("/opt/homebrew/bin".to_string())
+        });
+
+        assert_eq!(env, vec![("PATH".to_string(), "/pinned".to_string())]);
+    }
+
+    /// A shell with no usable PATH pins nothing rather than an empty value the
+    /// daemon would then trust.
+    #[test]
+    fn a_blank_shell_path_is_not_pinned() {
+        assert_eq!(with_install_path(vec![], || Some("  ".into())), vec![]);
+        assert_eq!(with_install_path(vec![], || None), vec![]);
+    }
+
     /// The unit is a copy of the daemon's whole environment, so it is written
     /// like a secret file, not like a config file the umask decides on.
     #[test]
     fn install_writes_a_unit_only_its_owner_can_read() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![],
             deactivate: vec![],
@@ -597,7 +627,7 @@ mod tests {
     #[test]
     fn install_tightens_a_unit_an_earlier_install_left_world_readable() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![],
             deactivate: vec![],
@@ -650,7 +680,7 @@ mod tests {
     #[test]
     fn uninstall_deactivates_then_removes_the_unit() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![],
             deactivate: vec![ShellCommand::tolerated("disable", &["--now"])],
@@ -682,7 +712,7 @@ mod tests {
     #[test]
     fn uninstall_reports_nothing_installed_when_the_unit_is_absent() {
         let home = tempfile::tempdir().expect("temp home");
-        let ctx = context(home.path());
+        let ctx = fixtures::context(home.path(), "501");
         let manager = FakeManager {
             activate: vec![],
             deactivate: vec![],

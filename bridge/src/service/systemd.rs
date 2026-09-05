@@ -136,6 +136,24 @@ mod tests {
         assert!(unit.contains("Environment=\"BRIDGE_API_URL=https://getbuild.ing\"\n"));
     }
 
+    /// systemd starts user services with a bare PATH too, so the pinned PATH
+    /// has to arrive as an `Environment=` line like every other pair — the
+    /// reason `with_install_path` is shared rather than a launchd detail.
+    #[test]
+    fn the_unit_carries_the_pinned_path() {
+        let env = crate::service::with_install_path(vec![], || Some("/home/dev/.local/bin".into()));
+
+        let unit = Systemd.render_unit(&ServiceConfig {
+            env,
+            ..sample_config(HOME)
+        });
+
+        assert!(
+            unit.contains("Environment=\"PATH=/home/dev/.local/bin\"\n"),
+            "the daemon inherits the installing shell's PATH: {unit}"
+        );
+    }
+
     #[test]
     fn unit_quotes_values_with_spaces_quotes_and_backslashes() {
         let unit = Systemd.render_unit(&ServiceConfig {

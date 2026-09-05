@@ -131,32 +131,20 @@ mod tests {
         assert!(plist.contains("/Users/dev/.build/log/bridge.err.log"));
     }
 
+    /// launchd hands agents a bare PATH ("/usr/bin:/bin:/usr/sbin:/sbin"), so
+    /// the PATH the daemon needs to find `claude` has to reach the plist as an
+    /// environment key of its own.
     #[test]
-    fn daemon_env_pins_the_installing_shells_path() {
-        // launchd hands agents a bare PATH ("/usr/bin:/bin:/usr/sbin:/sbin"), so
-        // a daemon installed from a normal shell must carry that shell's PATH or
-        // it cannot find `claude` (or any other user-installed harness).
-        let env = with_install_path(vec![("BRIDGE_API_URL".into(), "https://x".into())], || {
-            Some("/opt/homebrew/bin:/usr/bin".to_string())
-        });
-        assert_eq!(
-            env.iter().find(|(key, _)| key == "PATH").map(|(_, v)| v),
-            Some(&"/opt/homebrew/bin:/usr/bin".to_string())
-        );
-        assert!(Launchd
-            .render_unit(&ServiceConfig {
-                env,
-                ..sample_config(HOME)
-            })
-            .contains("<key>PATH</key>"));
-    }
+    fn the_plist_carries_the_pinned_path() {
+        let env = with_install_path(vec![], || Some("/opt/homebrew/bin:/usr/bin".to_string()));
 
-    #[test]
-    fn an_explicit_path_in_the_env_is_left_alone() {
-        let env = with_install_path(vec![("PATH".into(), "/pinned".into())], || {
-            Some("/opt/homebrew/bin".to_string())
+        let plist = Launchd.render_unit(&ServiceConfig {
+            env,
+            ..sample_config(HOME)
         });
-        assert_eq!(env, vec![("PATH".to_string(), "/pinned".to_string())]);
+
+        assert!(plist.contains("<key>PATH</key>"));
+        assert!(plist.contains("<string>/opt/homebrew/bin:/usr/bin</string>"));
     }
 
     #[test]

@@ -1050,17 +1050,25 @@ settled differently, and why:
   raced into `git worktree add` with the same slug —
   `WorktreeManager::name_taken` is a check-then-act, and the app mutex was what
   used to serialize them. `is_usable_branch_name` and `slugify` are pure, so
-  the ref is read out of what the caller said before anything is reserved:
+  the ref is read out of what the caller said before anything is reserved
+  (through `worktree::branch_name_for`, the one place `build/<slug>` is
+  spelled — a reservation that did not match the ref `WorktreeManager` cuts
+  would make the collision check silently stop firing):
   `Named(ref)` for a ref spelled out (its existing checkout is taken over),
   `Minted { branch, slug }` for words (nothing on disk is taken over, and the
   slug namespace suffixes). The type owns its own variation — which ref, which
   git call, what a scan looks for — so no caller matches on it.
-- **The row is reserved last.** `release_row` is reachable only through
-  `apply_lifecycle`, so a `?` between the reservation and the deferral would
-  leave a row standing on the board forever, refusing every later verb that
-  matches it. Both verbs build the whole mutation first and reserve immediately
-  before `defer_lifecycle`, which makes "nothing fallible runs in between" true
-  by construction rather than by a coincidence between three functions.
+- **The row is reserved inside the deferral.** `release_row` is reachable only
+  through `apply_lifecycle`, so a `?` between the reservation and the deferral
+  would leave a row standing on the board forever, refusing every later verb
+  that matches it. So the two are one call:
+  `defer_lifecycle(row, mutation) -> Result<Value, String>` reserves, wraps the
+  row in `ReservedRow`, builds the job, holds it open for the tests and stores
+  it. `reserve_row` has one caller, `ReservedRow` is private and
+  `WorktreeLifecycleJob::reserving` is its only constructor, so "nothing
+  fallible runs in between" is a property of the type rather than of an
+  ordering a future verb has to remember. Each verb's decide phase ends in one
+  `self.defer_lifecycle(row, Box::new(mutation))`.
 - **The row is shared, not copied.** `AppState.pending_rows` and the
   reservation both hold `Arc<PendingRow>`, so the board and the job cannot
   disagree about the row in flight.
@@ -1129,6 +1137,7 @@ settled differently, and why:
   `two_dispatches_of_one_instruction_cut_one_branch`,
   `a_dispatch_onto_a_branch_being_created_is_refused`,
   `a_dispatch_that_fails_after_its_git_leaves_the_checkout_on_the_board`,
+  `a_dispatch_that_fails_after_queuing_its_turn_delivers_nothing`,
   `rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free`,
   `a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_free`,
   and the injected-failure dispatch tests, which now also assert the
@@ -1136,7 +1145,25 @@ settled differently, and why:
 - **One fault carrier, one seam per variant.** `BranchDispatchStep` and
   `fail_dispatch_at` live in `lifecycle.rs` beside the mutation, and the second
   `AppState` copy is deleted. `Adopt` and `Own` are the git phase's two seams,
-  `Open` the apply phase's, `Post` the branch Build already runs.
+  `Open` the apply phase's, `Post` the branch Build already runs, `Settle` the
+  window after an agent has been handed the instruction and before the write
+  that makes its run real.
+- **Dropping a failed request's turns is `AppState`'s rule.** A turn is not
+  deliverable until the mutation that queued it is durable, and the rule lived
+  in `dispatch_frame` alone: the MCP control socket's drain and both
+  synchronous test twins skipped it, so a socket dispatch that failed in its
+  apply phase — after `dispatch_to_run` had queued the branch agent's first
+  turn — spawned a harness for a run with no record. `dispatch_deferring` and
+  `apply_deferred` own it now, through one `drop_turns_queued_since`, and every
+  drain inherits it. `PendingAgentTurn.survives_refusal` is the exception the
+  rule needs: a recovery is written down and started and THEN its verb refuses
+  its caller to say so, so that turn outlives the refusal while everything
+  else's is dropped.
+- **The socket's lifecycle job runs on `spawn_blocking`.** It ran on the
+  connection's own tokio task, so several routers dispatching at once parked
+  that many runtime workers — the relay's read loop and every other harness's
+  done socket behind minutes of git. The app mutex was free throughout; this
+  was the executor.
 - **The worktrees root is fatal at boot.** `canonical_root` falls back to the
   path as given, so a root that could not be created leaves every placeholder
   id minted from a path the checkouts never land on. `main.rs` panics with the
@@ -1174,7 +1201,10 @@ settled differently, and why:
                                 result: Result<Performed, String> }
 
   impl AppState {
-      fn defer_lifecycle(&mut self, job: WorktreeLifecycleJob) -> Value;   // placeholder
+      /// Reserve the row and hand the git to the drain, in one call: nothing
+      /// fallible can run between a row and the job that releases it.
+      fn defer_lifecycle(&mut self, row: PendingRow, mutation: Box<dyn WorktreeMutation>)
+          -> Result<Value, String>;                                      // placeholder
       fn apply_lifecycle(&mut self, outcome: LifecycleOutcome) -> Result<Value, String>;
   }
   ```

@@ -5,7 +5,9 @@ import { $ } from "../dom.js";
 import { esc } from "../core/text.js";
 import { App } from "../app.js";
 import { refreshDevices } from "../devices.js";
-import { revokeDevice } from "../api.js";
+import { fetchDownloads, revokeDevice } from "../api.js";
+import { currentPlatformKey } from "../core/platform.js";
+import { downloadsPlaceholderHtml, mountDownloads } from "../core/downloads.js";
 import { openBrowser } from "../sheets/browser.js";
 import { openNewRepo } from "../sheets/newRepo.js";
 import { openSetRemote } from "../sheets/setRemote.js";
@@ -81,6 +83,11 @@ export async function renderSettings() {
       <div class="adderr" id="pusherr"></div>
     </div>
     <div class="panel">
+      <h3>⬇️ Downloads</h3>
+      <div class="dim" style="font-size:13px;margin-bottom:8px">Install the bridge on another machine, or update this one.</div>
+      ${downloadsPlaceholderHtml()}
+    </div>
+    <div class="panel">
       <h3>📱 Devices &amp; keys</h3>
       <div class="dim" style="font-size:13px;margin-bottom:8px">Only paired devices can read your tasks. When you add one, confirm its fingerprint matches what the bridge printed.</div>
       <div id="devlist"><span class="dim" style="font-size:13px">loading…</span></div>
@@ -116,6 +123,12 @@ export async function renderSettings() {
   };
   await refresh();
   await mountDefaultHarness($("#root"), { callRpc: (method, params) => App.call(method, params) });
+  // The same block the first-run gate mounts — one renderer, two hosts.
+  await mountDownloads($("#root"), {
+    fetchDownloads,
+    platformKey: currentPlatformKey(),
+    clipboard: navigator.clipboard,
+  });
   await mountAgentDefaults();
   bindThemeControl($("#themepick"));
   $("#newrepo").onclick = () => openNewRepo(refresh);
@@ -264,7 +277,7 @@ export async function renderSettings() {
           <button class="btn mini revoke" data-id="${esc(d.id)}">Revoke</button></div>`,
             )
             .join("")
-        : '<div class="dim" style="font-size:13px">No devices yet. Start a bridge, then add it with its pairing code.</div>';
+        : '<div class="dim" style="font-size:13px">No devices yet. Install the bridge above, then add it with its pairing code.</div>';
       $("#devlist").querySelectorAll(".revoke").forEach(
         (btn) =>
           (btn.onclick = async () => {

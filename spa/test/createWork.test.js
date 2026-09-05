@@ -121,6 +121,21 @@ describe("the create modal", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("closes an issue the same way when its reply outlives the timer", async () => {
+    App.call = vi.fn(async () => {
+      const timedOut = new Error("issue.create timed out");
+      timedOut.timedOut = true;
+      throw timedOut;
+    });
+    openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
+    type("Add a health endpoint");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(modal()).toBeNull();
+    expect(refreshFeed).toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("files an issue that starts nothing, carrying the harness choice", async () => {
     openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
     type("Add a health endpoint");

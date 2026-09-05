@@ -33,7 +33,7 @@ import {
   saveCaptureQueue,
   withoutQueued,
 } from "./compose.js";
-import { rpcTimedOut } from "./session.js";
+import { replyOrNothing } from "./session.js";
 import { esc } from "./text.js";
 import "../styles/shell.css";
 
@@ -414,13 +414,10 @@ async function submitManual() {
     agentParams: agentChoiceParams(catalog(), box.choice),
   });
   try {
-    const created = await App.call(method, params);
+    const created = await replyOrNothing(App.call(method, params));
     settleManualRoute(manualRouteDestination(box.kind, created, box.projectId));
   } catch (error) {
-    // A reply the browser stopped waiting for is not a refusal: the work is
-    // still being made, and the board is already carrying its row.
-    if (rpcTimedOut(error)) settleManualRoute(null);
-    else fail(messageOf(error));
+    fail(messageOf(error));
   }
 }
 

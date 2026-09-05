@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, rpcTimedOut } from "../src/core/session.js";
+import { DEFAULT_RPC_TIMEOUT_MS, openRelaySession, replyOrNothing, rpcTimedOut } from "../src/core/session.js";
 
 // ---- fakes -------------------------------------------------------------------
 
@@ -323,5 +323,25 @@ describe("openRelaySession", () => {
     expect(DEFAULT_RPC_TIMEOUT_MS).toBe(12000);
     expect(rpcTimedOut(new Error("worktree.create failed"))).toBe(false);
     expect(rpcTimedOut(null)).toBe(false);
+  });
+});
+
+// ---- carrying on without a reply ---------------------------------------------
+// The one rule every mutation that outlives the timer follows, in the module
+// that owns the timer: a reply the browser stopped waiting for is not a refusal.
+
+describe("a reply the browser stopped waiting for", () => {
+  const timedOut = () => Object.assign(new Error("worktree.create timed out"), { timedOut: true });
+
+  it("answers nothing, so the caller carries on with what the board already has", async () => {
+    await expect(replyOrNothing(Promise.reject(timedOut()))).resolves.toBeNull();
+  });
+
+  it("still raises a refusal, which is the daemon saying no", async () => {
+    await expect(replyOrNothing(Promise.reject(new Error("branch exists")))).rejects.toThrow("branch exists");
+  });
+
+  it("hands a reply that did arrive straight through", async () => {
+    await expect(replyOrNothing(Promise.resolve({ branch: "build/x" }))).resolves.toEqual({ branch: "build/x" });
   });
 });

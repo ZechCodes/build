@@ -19,7 +19,7 @@ import { loadAgentDefaults } from "./agentDefaults.js";
 import { agentChoiceParams, agentChoicePanelHtml, readAgentChoice, reconcileAgentChoice } from "./agentChoice.js";
 import { branchNamePreview } from "./toolbarModel.js";
 import { modalDialogHtml, openModal } from "./modal.js";
-import { rpcTimedOut } from "./session.js";
+import { replyOrNothing } from "./session.js";
 
 /** The two things a project can hold, in the order the tabs offer them. */
 export const CREATE_KINDS = ["branch", "issue"];
@@ -86,12 +86,10 @@ export function createWorkHtml(state) {
 }
 
 /** Cut the branch, and say where it opens — or nothing, when the reply does not
- *  name it. The daemon cuts the checkout with its state lock released and
- *  answers once the git lands, so a create can settle after this browser has
- *  stopped waiting. Either way the board is already carrying the row (the
- *  daemon puts it there before the git runs) and the record settles into it. */
+ *  name it. Either way the board is already carrying the row (the daemon puts
+ *  it there before the git runs) and the record settles into it. */
 async function createBranch(projectId, name) {
-  const created = await App.call("worktree.create", { project_id: projectId, name });
+  const created = await replyOrNothing(App.call("worktree.create", { project_id: projectId, name }));
   if (!created || !created.branch) return null;
   return { name: "branch", projectId: created.project_id || projectId, branch: created.branch, tab: "changes" };
 }
@@ -100,12 +98,15 @@ async function createBranch(projectId, name) {
  *  first message (the bridge dispatches planning on that post). An empty
  *  harness choice sends nothing, and the daemon's own default stands. */
 async function createIssue(projectId, goal, choice) {
-  const created = await App.call("issue.create", {
-    goal,
-    project_id: projectId,
-    dispatch: false,
-    ...agentChoiceParams(catalog(), choice),
-  });
+  const created = await replyOrNothing(
+    App.call("issue.create", {
+      goal,
+      project_id: projectId,
+      dispatch: false,
+      ...agentChoiceParams(catalog(), choice),
+    }),
+  );
+  if (!created) return null;
   return { name: "issue", projectId: created.project_id || projectId, id: created.issue_id || created.plan_id };
 }
 
@@ -201,12 +202,6 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
       const route = kind === "branch" ? await createBranch(projectId, value) : await createIssue(projectId, value, state.choice);
       settle(kind, route);
     } catch (error) {
-      // A reply the browser stopped waiting for is not a refusal: the create is
-      // still running, and its row is on the board.
-      if (rpcTimedOut(error)) {
-        settle(kind, null);
-        return;
-      }
       state.busy = false;
       state.error = error.message || String(error);
       paint();

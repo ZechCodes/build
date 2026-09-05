@@ -27,6 +27,24 @@ const DEFAULT_ACCEPT_TIMEOUT_MS = 10000;
  *  the push will bring it) asks this before calling the call a failure. */
 export const rpcTimedOut = (error) => Boolean(error && error.timedOut);
 
+/**
+ * The reply, or nothing when the browser stopped waiting for it.
+ *
+ * The daemon answers a mutation as soon as its own state change is durable and
+ * runs the git behind that answer, so a mutation can land after this timer has
+ * fired. The record is on the board either way and the push brings it, so a
+ * caller that has nothing left to do with the reply carries on with null. A
+ * refusal is the daemon saying no and still raises.
+ */
+export async function replyOrNothing(pending) {
+  try {
+    return await pending;
+  } catch (error) {
+    if (rpcTimedOut(error)) return null;
+    throw error;
+  }
+}
+
 /** The rejection the timer makes, saying which of the two it is. */
 function timedOutError(method) {
   const error = new Error(`${method} timed out`);

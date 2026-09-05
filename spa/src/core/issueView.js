@@ -59,7 +59,7 @@ import { refreshFeed } from "./taskFeed.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
-import { rpcTimedOut } from "./session.js";
+import { replyOrNothing } from "./session.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -604,18 +604,10 @@ export function mountIssueView(
   };
 
   /** Ask the daemon to open an implementation, and answer with what it opened —
-   *  or nothing, when the reply outlives the browser's timer. Cutting the
-   *  checkout runs with the daemon's state lock released, so the answer can
-   *  arrive after this browser has stopped waiting for it; the issue's own next
-   *  answer names the run either way. */
-  const openImplementation = async (method, params) => {
-    try {
-      return await guarded(() => callRpc(method, { ...params, ...MUTATION_THREAD_PAGE }));
-    } catch (error) {
-      if (!rpcTimedOut(error)) throw error;
-      return null;
-    }
-  };
+   *  or nothing, when the reply outlives the browser's timer. The issue's own
+   *  next answer names the run either way. */
+  const openImplementation = (method, params) =>
+    replyOrNothing(guarded(() => callRpc(method, { ...params, ...MUTATION_THREAD_PAGE })));
 
   const afterDispatch = (result) => {
     const runId = result && result.run_id;

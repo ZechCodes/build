@@ -34,10 +34,13 @@ from buildapp.invites import InviteState, invite_state
 from buildapp.models import Invite
 from buildapp.session_auth import session_user_id
 
-INVITES_ADMIN_PATH = "/admin/invites"
-REVOKE_PATH = "/admin/invites/{invite_id}/revoke"
+#: Where the whole controller hangs. The routes below are relative to it and the links
+#: the page renders are the two composed, so the prefix is written once.
+ADMIN_PREFIX = "/admin"
 INVITES_PAGE_ROUTE_PATH = "/invites"
-REVOKE_ROUTE_PATH = "/invites/{invite_id:uuid}/revoke"
+REVOKE_ROUTE_PATH = f"{INVITES_PAGE_ROUTE_PATH}/{{invite_id:uuid}}/revoke"
+INVITES_ADMIN_PATH = f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}"
+REVOKE_PATH = f"{INVITES_ADMIN_PATH}/{{invite_id}}/revoke"
 TEMPLATE_NAME = "admin/invites.html"
 
 SEND_INVITE_LABEL = "Send invite"
@@ -81,10 +84,22 @@ def build_invites_dashboard(
     return dashboard
 
 
+def invites_page_context(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Everything the template renders that this module owns: the rows, where the send
+    form posts, and the words on the two buttons. The template holds the markup; the
+    paths and the labels have one home, here."""
+    return {
+        "invites": rows,
+        "send_path": INVITES_ADMIN_PATH,
+        "send_label": SEND_INVITE_LABEL,
+        "revoke_label": REVOKE_LABEL,
+    }
+
+
 class InvitesAdminController(Controller):
     """Send an invite, watch it land, take it back."""
 
-    path = "/admin"
+    path = ADMIN_PREFIX
     guards = [auth_guard]
     dependencies = {
         "email_backend": Provide(provide_email_backend, sync_to_thread=False),
@@ -106,8 +121,10 @@ class InvitesAdminController(Controller):
             TEMPLATE_NAME,
             context={
                 "flash_messages": get_flash_messages(request),
-                "invites": build_invites_dashboard(
-                    rows, await addresses_by_id(db_session), utc_now()
+                **invites_page_context(
+                    build_invites_dashboard(
+                        rows, await addresses_by_id(db_session), utc_now()
+                    )
                 ),
                 **ctx,
             },

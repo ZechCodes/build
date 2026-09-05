@@ -13,12 +13,12 @@
 <section class="sk-panel">
     <div class="sk-panel-head"><h2>Send an invite</h2></div>
     <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
-    <form method="post" action="/admin/invites">
+    <form method="post" action="{{ send_path }}">
         {{ csrf_field() }}
         <label for="invite-email">Email address</label>
         <input id="invite-email" type="email" name="email" required autocomplete="off"
                placeholder="someone@example.com">
-        <button class="sk-btn" type="submit">Send invite</button>
+        <button class="sk-btn" type="submit">{{ send_label }}</button>
     </form>
     <p class="sk-muted">
         The invite works once, for 14 days, and only for the address it was sent to.
@@ -59,7 +59,7 @@
                         <!-- nosemgrep: python.django.security.django-no-csrf-token.django-no-csrf-token -->
                         <form method="post" action="{{ invite.revoke_path }}">
                             {{ csrf_field() }}
-                            <button class="sk-btn-outline" type="submit">Revoke</button>
+                            <button class="sk-btn-outline" type="submit">{{ revoke_label }}</button>
                         </form>
                         {% endif %}
                     </td>

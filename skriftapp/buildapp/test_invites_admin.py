@@ -28,13 +28,16 @@ from buildapp.email_test_support import email_settings
 from buildapp.invites import INVITE_TTL, InviteState
 from buildapp.invites_controller import InvitesController
 from buildapp.invites_admin import (
+    ADMIN_PREFIX,
     INVITES_ADMIN_PATH,
     INVITES_PAGE_ROUTE_PATH,
+    REVOKE_LABEL,
     REVOKE_PATH,
     SEND_INVITE_LABEL,
     TEMPLATE_NAME,
     InvitesAdminController,
     build_invites_dashboard,
+    invites_page_context,
 )
 from buildapp.models import Invite
 
@@ -65,7 +68,7 @@ def render_page(rows) -> str:
     """The real template, with admin/base.html stubbed and csrf_field() a fake — the
     same environment every admin template test renders through."""
     return admin_template_environment().get_template(TEMPLATE_NAME).render(
-        invites=rows,
+        **invites_page_context(rows),
         site_name=lambda: "Build",
         csrf_field=lambda: f'<input type="hidden" name="{CSRF_FIELD_NAME}" value="t">',
     )
@@ -171,7 +174,24 @@ def test_the_template_carries_a_send_form_with_a_csrf_field():
     assert f'action="{INVITES_ADMIN_PATH}"' in html
     assert 'method="post"' in html
     assert CSRF_FIELD_NAME in html
+
+
+def test_the_page_takes_its_path_and_both_button_labels_from_the_module():
+    """The template renders what the module says, so the constants the tests read are
+    the strings an operator clicks — not two copies that happen to agree."""
+    context = invites_page_context(build_invites_dashboard([invite()], {}, NOW))
+    assert context["send_path"] == INVITES_ADMIN_PATH
+    assert context["send_label"] == SEND_INVITE_LABEL
+    assert context["revoke_label"] == REVOKE_LABEL
+    html = render_page(build_invites_dashboard([invite()], {}, NOW))
     assert SEND_INVITE_LABEL in html
+    assert REVOKE_LABEL in html
+
+
+def test_the_admin_prefix_is_written_once():
+    assert InvitesAdminController.path == ADMIN_PREFIX
+    assert INVITES_ADMIN_PATH == f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}"
+    assert REVOKE_PATH.startswith(f"{ADMIN_PREFIX}{INVITES_PAGE_ROUTE_PATH}/")
 
 
 def test_the_template_offers_revoke_only_where_the_row_allows_it():

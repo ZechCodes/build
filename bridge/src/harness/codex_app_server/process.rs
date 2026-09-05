@@ -288,7 +288,7 @@ fn drain_stderr_reader(mut reader: impl Read, mut tail: StderrTail) -> TerminalS
     }
 }
 
-pub(super) struct StderrTail {
+struct StderrTail {
     line_limit: usize,
     total_limit: usize,
     current: Vec<u8>,
@@ -296,7 +296,7 @@ pub(super) struct StderrTail {
 }
 
 impl StderrTail {
-    pub(super) fn new(limits: ProcessLimits) -> StderrTail {
+    fn new(limits: ProcessLimits) -> StderrTail {
         StderrTail {
             line_limit: limits.stderr_line_bytes,
             total_limit: limits.stderr_total_bytes,
@@ -341,7 +341,7 @@ impl StderrTail {
         self.retained.push_back(byte);
     }
 
-    pub(super) fn epitaph(&self) -> Option<String> {
+    fn epitaph(&self) -> Option<String> {
         let bytes = self.retained.iter().copied().collect::<Vec<_>>();
         let text = String::from_utf8_lossy(&bytes).trim().to_string();
         (!text.is_empty()).then_some(text)

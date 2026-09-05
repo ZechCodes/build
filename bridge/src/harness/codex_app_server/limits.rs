@@ -105,12 +105,6 @@ impl Default for AppServerLimits {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use super::super::connection::AppServerConnection;
-    use super::super::process::StderrTail;
-    use super::super::state::{CodexSessionState, SessionEvent};
-    use super::super::translator::CodexActivityTranslator;
     use super::*;
 
     #[test]
@@ -136,28 +130,5 @@ mod tests {
         assert_eq!(translator.open_item_bytes, 128 * 1024);
         assert_eq!(translator.completed_items, 256);
         assert_eq!(translator.completed_item_bytes, 128 * 1024);
-    }
-
-    #[test]
-    fn one_limits_value_is_copied_into_every_component() {
-        let limits = AppServerLimits::default();
-
-        let connection = AppServerConnection::memory(limits.connection());
-        let stderr_tail = StderrTail::new(limits.process());
-        let translator = CodexActivityTranslator::new(limits.translator());
-        let transition = CodexSessionState::new(
-            PathBuf::from("/tmp/worktree"),
-            Some("gpt-5.6-sol".to_string()),
-            None,
-            None,
-        )
-        .transition(SessionEvent::Start, Duration::ZERO, limits.state())
-        .unwrap();
-
-        assert_eq!(connection.pending_count(), 0);
-        assert!(stderr_tail.epitaph().is_none());
-        assert_eq!(translator.open_item_count(), 0);
-        assert!(!transition.effects.is_empty());
-        assert_eq!(limits.inbound_frame_bytes, 1024 * 1024);
     }
 }

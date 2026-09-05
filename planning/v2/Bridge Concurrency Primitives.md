@@ -1020,6 +1020,69 @@ scan is about to land (`a_removal_of_a_checkout_the_scan_never_had_leaves_the_ru
 
 ## 5. `WorktreeLifecycleJob` — worktree work off the lock
 
+**Shipped, first half** (`worktree.create` and `branch.dispatch`;
+`bridge/src/lifecycle.rs`). The primitive is in place as declared — decide
+under the lock, `perform` holding nothing, apply under it again, with the
+reservation rolled back on a failure — and `DeferredWork::Lifecycle` carries
+it through the drain `DeferredWork::Finish` already used. What the build
+settled differently, and why:
+
+- **The epilogues live in `app.rs`, not `lifecycle.rs`.** A sibling module
+  cannot reach `AppState`'s private methods, and an epilogue is nothing but
+  those. So `lifecycle.rs` holds the job, the traits, the reservation and the
+  mutations — the halves that hold no state — and each verb's `impl
+  LifecycleEpilogue` sits beside the records it writes. The boundary the doc
+  wanted is stronger for it: a mutation cannot name a private `AppState`
+  method even by accident.
+- **`ReservedName` and `ReservedCheckout` are one impl, `ReservedRow`.** Both
+  claims ARE the row, and what a second verb collides with is a field of it, so
+  two empty `roll_back`s would have been one type spelled twice.
+  `PendingRow` gained `branch: Option<String>` to carry the dispatch's claim: a
+  dispatch onto a named branch has no checkout id yet, and the branch is the
+  only identity two racing dispatches share. `reserve_row` refuses on any of
+  the three — same `entity_id`, same `branch`, same `checkout_id` — within one
+  project. `TakenRun` and `MintedProject` arrive with the verbs that need them.
+- **The row is shared, not copied.** `AppState.pending_rows` and the
+  reservation both hold `Arc<PendingRow>`, so the board and the job cannot
+  disagree about the row in flight.
+- **`WorktreeChange` gained `rescan: bool`** — a checkout that is on disk and
+  could not be described. The amendment cannot carry it, so the apply phase
+  claims the project's scan instead.
+- **`board.list` ships them under a new top-level `pending` key**, not folded
+  into `items[]`: a row of an unknown `kind` is one an old client cannot
+  render, and a key it does not read is one it ignores. `pending_rows_json`
+  takes no project id, because `board.list` is every project's.
+- **The placeholder id is minted as declared**, through
+  `Orchestrator::planned_checkout_path` and a new
+  `worktree::canonical_planned_path` (the deepest existing ancestor
+  canonicalized, the missing segments joined back on), with the boot
+  canonicalization of the worktrees root in `main.rs`. The reply carries
+  `pending_worktree_id` beside `worktree_id`; they differ only when
+  `WorktreeManager::create` had to suffix the slug.
+- **`DeferredWork::Finish` has NOT collapsed into `Lifecycle`.** That collapse
+  rewrites `run.finish` and `branch.finish`, which are the second half's verbs;
+  it belongs to the step that moves them.
+- **`adopt_run` split exactly as declared** — `AdoptableCheckout::judge`,
+  `Orchestrator::prepare_adoption` (checkpoint + scaffold),
+  `Orchestrator::adopt_run` (pure). `run.adopt` calls all three under the app
+  mutex still, which is the same git it ran before; the second half moves it.
+- **One caller still pays for a dispatch's git under the lock.**
+  `dispatch_branch_now` runs the job inline for `route_to_branch` — the router
+  reaches a branch over the MCP control socket, which has no drain behind it,
+  and a nested verb that deferred would have the drain answer the frame in its
+  place. It is the only such caller, and it is named for what it does.
+- **`note_checkout_created` is deleted.** Both callers describe their checkout
+  in the run phase now, off the lock, and hand it back as
+  `WorktreeChange::appeared`.
+- **Tests** `worktree_create_runs_git_worktree_add_with_the_state_lock_free`
+  and `branch_dispatch_cuts_its_branch_with_the_state_lock_free` (both hold the
+  git open and answer `board.list` and `thread.post` meanwhile),
+  `a_creating_worktree_is_on_the_board_before_its_git_returns`,
+  `a_create_that_fails_rolls_its_reservation_back_and_leaves_no_row`,
+  `a_suffixed_slug_settles_the_placeholder_under_its_real_id`,
+  `a_second_create_of_a_name_being_cut_is_refused`, and the injected-failure
+  dispatch tests, which now also assert the reservation is gone.
+
 - **Boundary** `bridge/src/lifecycle.rs` (new; `WorktreeFinishJob` moves here as
   one mutation), between a lifecycle verb's decision and the git that carries it
   out.

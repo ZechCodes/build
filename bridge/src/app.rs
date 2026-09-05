@@ -4179,11 +4179,11 @@ impl AppState {
 
     /// Scan one project's checkouts here and now, with the app mutex in hand.
     ///
-    /// The rule this file is built around forbids exactly this, and the two
-    /// lifecycle verbs that still call it — adoption and dispatch, which must
-    /// decide against the checkouts that exist rather than a cached summary —
-    /// move to the lock-free run phase of `WorktreeLifecycleJob`. It is named
-    /// for what it does so that stays visible until they do.
+    /// The rule this file is built around forbids exactly this, and the one
+    /// lifecycle verb that still calls it — adoption, which must decide against
+    /// the checkouts that exist rather than a cached summary — moves to the
+    /// lock-free run phase of [`WorktreeLifecycleJob`] as dispatch already has.
+    /// It is named for what it does so that stays visible until it does.
     fn scan_external_worktrees_now(
         &mut self,
         project_id: &str,

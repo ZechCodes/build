@@ -330,10 +330,17 @@ impl TermScreen {
     }
 
     /// The same words, and this screen is finished: every client attached now
-    /// hears it, and so does every client that arrives from here on.
+    /// hears it, and so does every client that arrives from here on. Nobody
+    /// stays attached — a closed screen is one nobody watches and nothing
+    /// paints, so what its child still produces reaches no one.
     fn close(&mut self, term_id: &str, reason: &str) {
         self.push_closed(term_id, reason);
+        self.attached.clear();
         self.closed = Some(reason.to_string());
+    }
+
+    fn is_open(&self) -> bool {
+        self.closed.is_none()
     }
 }
 
@@ -461,13 +468,21 @@ impl ScreenHandle {
     }
 
     /// The pump's write: PTY bytes into the model and the coalescing buffer.
-    pub fn feed(&self, chunk: &[u8]) {
-        self.screen.lock().unwrap().process(chunk);
+    /// Answers whether the screen is still open — a closed screen is the
+    /// pump's signal to stop, because its tab is gone and its child may not
+    /// be for a while.
+    pub fn feed(&self, chunk: &[u8]) -> bool {
+        let mut screen = self.screen.lock().unwrap();
+        screen.process(chunk);
+        screen.is_open()
     }
 
     /// The pump's tick: whatever has accumulated, as one frame per client.
-    pub fn flush(&self) {
-        self.screen.lock().unwrap().flush(&self.term_id);
+    /// Answers whether the screen is still open, as [`Self::feed`] does.
+    pub fn flush(&self) -> bool {
+        let mut screen = self.screen.lock().unwrap();
+        screen.flush(&self.term_id);
+        screen.is_open()
     }
 
     /// A new session is painting here: blank the parser and resync every
@@ -833,6 +848,33 @@ mod tests {
             seen.iter()
                 .any(|push| push["type"] == "term.closed" && push["reason"] == "closed"),
             "the late client is told the terminal is gone: {seen:?}"
+        );
+    }
+
+    /// A close is the end of watching, not just a word: the clients are let go
+    /// with it, and the pump that feeds the screen is told to stop. A retired
+    /// tab's child may keep painting until its kill lands, and every byte it
+    /// paints would otherwise be pushed to clients that were just told the
+    /// terminal is gone.
+    #[test]
+    fn closing_a_screen_lets_its_clients_go_and_stops_its_pump() {
+        let screen = ScreenHandle::new("term-1", 80, 24);
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        screen.attach(&sender, Some((80, 24)));
+        assert!(screen.feed(b"before"), "an open screen keeps its pump");
+
+        screen.close("closed");
+
+        assert_eq!(screen.attached(), 0, "a closed screen keeps nobody");
+        assert!(
+            !screen.feed(b"after"),
+            "the pump is told the screen closed under it"
+        );
+        assert!(!screen.flush(), "and so is its tick");
+        let seen = drain_pushes(&mut pushes, &session_key);
+        assert!(
+            seen.iter().all(|push| push["type"] != "term.output"),
+            "nothing painted after the close reaches the client: {seen:?}"
         );
     }
 

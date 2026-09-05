@@ -18222,6 +18222,9 @@ fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
 /// started for: a kill is asynchronous now, so a replaced session's EOF can
 /// arrive after its replacement is already in the registry. The tab is only
 /// ended by the pump that holds that tab's own session.
+///
+/// A closed screen ends the pump without the registry: a retired tab's child
+/// may keep producing until its kill lands, and nobody is watching.
 fn spawn_tab_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
@@ -18245,7 +18248,7 @@ fn spawn_tab_pump(
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
+            let still_open = tokio::select! {
                 recv = rx.recv() => match recv {
                     Ok(chunk) => screen.feed(&chunk),
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -18255,6 +18258,9 @@ fn spawn_tab_pump(
                     }
                 },
                 _ = flush.tick() => screen.flush(),
+            };
+            if !still_open {
+                return;
             }
         }
     });
@@ -20279,6 +20285,72 @@ mod tests {
         })
         .await;
         assert!(!seen.is_empty(), "{seen:?}");
+
+        gate_handle.release();
+    }
+
+    /// A closed screen means nobody is watching and nothing is painting. The
+    /// kill is asynchronous, so between the close reply and the child's death
+    /// the PTY can keep producing — for a harness wedged in uninterruptible
+    /// I/O, without end. The pump used to stop the instant its tab left the
+    /// registry; now that it never consults the registry, the screen's own
+    /// closed state is what stops it, or it would parse and push `term.output`
+    /// forever to the clients it just told `term.closed`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_closed_tab_stops_painting_before_its_harness_dies() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        let harness = GatedHarness::new().refusing_to_die_until(gate);
+        let pty = harness.output.clone();
+        state
+            .lock()
+            .unwrap()
+            .tabs
+            .insert(key.clone(), gated_tab(&root, TabRole::Shell, harness));
+        spawn_tab_pumps(
+            &state,
+            key.clone(),
+            SessionOutput::painting(pty.subscribe()),
+        );
+        let (sender, mut pushes, session_key) = SessionSender::observable("watching");
+        let attached = handler.call(sender, req("term.attach", json!({ "term_id": "term-1" })));
+        assert_eq!(attached["ok"], true, "{attached:?}");
+
+        let closed = frame_on_a_thread(
+            &state,
+            "s-close",
+            "term.close",
+            json!({ "term_id": "term-1" }),
+        );
+        gate_handle.wait_for_arrival();
+        let closed = closed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the close answers without waiting for the reap");
+        assert_eq!(closed["ok"], true, "{closed:?}");
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed" && push["term_id"] == "term-1"
+        })
+        .await;
+
+        // The child, still alive, keeps painting into a tab nothing addresses.
+        let _ = pty.send(b"AFTER-CLOSE".to_vec());
+        wait_for(Duration::from_secs(5), || {
+            (pty.receiver_count() == 0).then_some(())
+        })
+        .await
+        .expect("the pump ends the moment its tab is retired, not when the child dies");
+        tokio::time::sleep(Duration::from_millis(TERM_FLUSH_MS * 5)).await;
+        let after_close = wait_for_pushes(&mut pushes, &session_key, |_| true).await;
+        assert!(
+            after_close.iter().all(|push| push["type"] != "term.output"),
+            "a client told its terminal closed was painted to afterwards: {after_close:?}"
+        );
 
         gate_handle.release();
     }

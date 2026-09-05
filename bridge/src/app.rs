@@ -1908,6 +1908,23 @@ fn authenticated_mcp_owner<'a>(
 }
 
 #[cfg(unix)]
+/// Run the git a socket line handed back — with the guard released, on a
+/// blocking thread so several harnesses at once park no runtime worker — and
+/// write it down under the same timer. The socket's twin of the drain in
+/// [`dispatch_frame`], for a router's tool and a coding agent's report alike.
+async fn apply_off_the_socket(
+    state: &Arc<Mutex<AppState>>,
+    timer: &FrameTimer,
+    deferred: DeferredWork,
+) -> Result<Value, String> {
+    let done = tokio::task::spawn_blocking(move || deferred.run())
+        .await
+        .expect("the lifecycle job panicked");
+    timer
+        .lock(state)
+        .apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+}
+
 fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -4407,6 +4424,7 @@ impl AppState {
             // reset the moment one succeeds.
             let mut accept_backoff =
                 crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
+            let clock = Arc::clone(&state.lock().unwrap().frame_clock);
             loop {
                 let (stream, _) = match listener.accept().await {
                     Ok(pair) => {
@@ -4422,8 +4440,8 @@ impl AppState {
                     }
                 };
                 let state = Arc::clone(&state);
+                let clock = Arc::clone(&clock);
                 tokio::spawn(async move {
-                    let clock = Arc::clone(&state.lock().unwrap().frame_clock);
                     let (read_half, mut write_half) = stream.into_split();
                     let mut lines = tokio::io::BufReader::new(read_half).lines();
                     while let Ok(Some(line)) = lines.next_line().await {
@@ -4473,21 +4491,13 @@ impl AppState {
                                 let (answered, deferred) =
                                     timer.lock(&state).router_deferring(&capture_id, action);
                                 let answered = match deferred {
+                                    // Minutes of git belong on a blocking
+                                    // thread, never on a runtime worker:
+                                    // several routers dispatching at once
+                                    // would otherwise park the relay's read
+                                    // loop and every other harness's socket.
                                     Some(deferred) => {
-                                        // Minutes of git belong on a blocking
-                                        // thread, never on a runtime worker:
-                                        // several routers dispatching at once
-                                        // would otherwise park the relay's read
-                                        // loop and every other harness's socket.
-                                        let done =
-                                            tokio::task::spawn_blocking(move || deferred.run())
-                                                .await
-                                                .expect("the lifecycle job panicked");
-                                        timer.lock(&state).apply_deferred(
-                                            MCP_CONTROL_METHOD,
-                                            &Value::Null,
-                                            done,
-                                        )
+                                        apply_off_the_socket(&state, &timer, deferred).await
                                     }
                                     None => answered,
                                 };
@@ -4528,14 +4538,9 @@ impl AppState {
                             // runtime worker.
                             let deferred = timer.lock(&state).done_deferring(&entity_id, report);
                             if let Some(deferred) = deferred {
-                                let done = tokio::task::spawn_blocking(move || deferred.run())
-                                    .await
-                                    .expect("the lifecycle job panicked");
-                                if let Err(error) = timer.lock(&state).apply_deferred(
-                                    MCP_CONTROL_METHOD,
-                                    &Value::Null,
-                                    done,
-                                ) {
+                                if let Err(error) =
+                                    apply_off_the_socket(&state, &timer, deferred).await
+                                {
                                     eprintln!("done report {entity_id}: {error}");
                                 }
                             }

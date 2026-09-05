@@ -231,7 +231,14 @@ from the design above.
 - **The MCP control socket is a frame too.** It reaches the same delivery path
   with no relay frame behind it, so it mints its own timer per socket line off
   the state's clock and records under `mcp.control` (app.rs:4462) — a name of
-  its own, since it is not a wire method.
+  its own, since it is not a wire method. The clock is read off the state once,
+  when the listener comes up, and cloned into every connection: a harness
+  dialling in used to make one bare acquisition of the app mutex to find the
+  clock it would be timed by, the acquisition §3 forbids the delivery runner
+  for the same reason. The git a socket line hands back — a router's tool, a
+  coding agent's report — runs through one `apply_off_the_socket` (blocking
+  thread, then `apply_deferred` under the line's timer), where the two arms
+  had spelled it twice.
 - **What is deliberately not timed.** The pump, the diff-refresh publish and the
   idle sweep are background threads: their holds belong to no frame, and a
   timer minted per chunk would count a pump as a frame served. A pump's

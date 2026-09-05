@@ -67,17 +67,25 @@ TURN egress is billed, so it has a monthly check in [`OPS.md`](OPS.md).
 
 The bridge is the one piece that runs on someone else's machine, so it ships as
 a GitHub release rather than an image. `.github/workflows/release.yml` builds it
-on a `bridge-vX.Y.Z` tag and publishes to a **separate public repo**, so that
-downloading a binary never means being handed this repository.
+on a `bridge-vX.Y.Z` tag and publishes to **this repository's own Releases**
+with the `GITHUB_TOKEN` Actions mints for the run — no PAT, no second repo.
+
+This repository is private for the alpha and goes public at launch, which is
+the one fact the download path bends around: while it is private the assets are
+not anonymously fetchable, so the api streams them to alpha members
+(`GET /app/downloads/…`, see [`../skriftapp/README.md`](../skriftapp/README.md));
+once it is public the same routes 302 to the release asset and the api needs no
+credential at all.
 
 ### Prerequisites (one-time, and none of them are created by the pipeline)
 
 | What | Where | Why |
 |---|---|---|
-| The releases repo, **public, with a default branch and at least one commit** | default `ZechCodes/build-releases` | `gh release create` needs a commit to hang the tag on. The workflow will not create it |
-| Secret `RELEASES_TOKEN` | build-web → Settings → Secrets | Fine-grained PAT with `contents: write` on the releases repo, and nothing else. The only secret the pipeline requires |
-| Variable `RELEASES_REPO` | build-web → Settings → Variables | Optional. Overrides the default owner/name. The api reads the same name from its own environment, and install.sh from `BUILD_RELEASES_REPO` — keep the three in step |
+| Secret `GITHUB_RELEASES_TOKEN` | build-app Secret, read by the api — **not** an Actions secret | Fine-grained PAT, `Contents: read` on `ZechCodes/build-web` and nothing else. It is what lets the api fetch a release asset out of a private repo. Optional (`optional: true` in [`k8s/app.yaml`](k8s/app.yaml); [`k8s/bootstrap-secrets.sh`](k8s/bootstrap-secrets.sh) patches it in when exported). **Remove it at launch** — with no token the api redirects to the public asset instead |
 | Secrets `APPLE_CERTIFICATE_P12`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_APP_PASSWORD` | build-web → Settings → Secrets | Optional. All five present ⇒ the macOS binaries are Developer-ID signed and notarized. Any one missing ⇒ a warning is logged, signing is skipped, and the unsigned builds publish anyway |
+
+The release pipeline itself needs no secret: `GITHUB_TOKEN` is issued per run,
+and only the `publish` job holds `contents: write`.
 
 Until those Apple credentials exist the macOS downloads are unsigned, and a
 macOS user gets one Gatekeeper refusal the first time they run the binary —
@@ -101,8 +109,8 @@ print its own `--version` and compared to the tag again before it is packaged.
 
 ### What a release contains
 
-Asset names carry no version, so `releases/latest/download/<name>` is a stable
-URL that the api, the web client and install.sh can all hardcode.
+Asset names carry no version, so `releases/latest` is the one release the api
+ever asks for, and the six names below are what it looks for inside it.
 
 | Asset | What it is |
 |---|---|
@@ -110,15 +118,18 @@ URL that the api, the web client and install.sh can all hardcode.
 | `build-bridge-macos-x86_64.tar.gz` | same |
 | `build-bridge-linux-x86_64.tar.gz` | same |
 | `build-bridge-linux-aarch64.tar.gz` | same |
-| `SHA256SUMS` | `sha256sum` format, one line per tarball plus `install.sh` |
+| `SHA256SUMS` | `sha256sum` format, one line per tarball |
 | `SHA256SUMS.sigstore.json` | keyless Sigstore bundle over `SHA256SUMS` |
-| `install.sh` | `scripts/install.sh` verbatim at the tag |
 
-All four are built on native runners — no cross toolchains — which is also what
-sets the floor: **Linux needs glibc 2.35 or newer** (Ubuntu 22.04, Debian 12,
-Fedora 36) and **macOS 13 or newer**. libgit2 and OpenSSL are compiled into the
-binary (`release-portable` in `bridge/Cargo.toml`), so glibc is the only shared
-library a download asks of its host.
+`install.sh` is not among them: the api serves it from the app image (`COPY
+scripts/install.sh` in the Containerfile) with a download token substituted in,
+so there is no copy on a release to drift from the one in this tree.
+
+All four builds are made on native runners — no cross toolchains — which is also
+what sets the floor: **Linux needs glibc 2.35 or newer** (Ubuntu 22.04, Debian
+12, Fedora 36) and **macOS 13 or newer**. libgit2 and OpenSSL are compiled into
+the binary (`release-portable` in `bridge/Cargo.toml`), so glibc is the only
+shared library a download asks of its host.
 
 There is no signing key to rotate or lose: cosign signs with the OIDC token
 GitHub mints for the workflow, so the certificate's identity *is*
@@ -130,25 +141,34 @@ without updating both. The release refuses to build when they disagree: the
 
 ### What a user does
 
+They copy their install line from Build — Settings → Downloads — and run it:
+
 ```bash
-curl -fsSL https://getbuild.ing/install.sh | sh
+curl -fsSL "https://getbuild.ing/install.sh?t=dl_…" | sh
 ```
 
-`GET /install.sh` on the app is a 302 to
-`https://github.com/<RELEASES_REPO>/releases/latest/download/install.sh`, so the
-one-liner works only once a release exists — before the first one it lands on a
-GitHub 404. The script maps `uname` to a platform key, downloads that tarball
-with `SHA256SUMS` and the bundle, verifies the digest (always) and the signature
-(whenever `cosign` is on PATH), installs the binary, then runs `build-bridge
-pair` — which prints a code and blocks until the human approves that device in
-Build — and `build-bridge install-service`, a launchd LaunchAgent on macOS or a
-`systemd --user` unit on Linux.
+The `t=` is a download token: minted for that member when the page renders,
+good for ten minutes, and spent by one binary download. A second install needs
+a freshly copied line. The api serves `/install.sh` with that token and its own
+origin substituted into the script, so nothing has to be typed or exported.
+
+install.sh maps `uname` to a platform key and then asks the api for three
+things in this order — `SHA256SUMS`, `SHA256SUMS.sigstore.json`, and the
+tarball last, because the tarball is the request that spends the token. It
+verifies the digest (always) and the signature (whenever `cosign` is on PATH),
+installs the binary, then runs `build-bridge pair` — which prints a code and
+blocks until the human approves that device in Build — and `build-bridge
+install-service`, a launchd LaunchAgent on macOS or a `systemd --user` unit on
+Linux.
+
+Two refusals a user can act on, and both name the same fix: a script with no
+token in it stops before it downloads anything (exit 2), and a `401` from the
+api — an expired, already-spent, or revoked line — ends the install with
+nothing written (exit 1). Copy a fresh line from Build.
 
 | Env | Default | Effect |
 |---|---|---|
-| `BUILD_BRIDGE_VERSION` | `latest` | `X.Y.Z` installs that release instead |
 | `BUILD_BRIDGE_INSTALL_DIR` | `$HOME/.local/bin` | where the binary lands |
-| `BUILD_RELEASES_REPO` | `ZechCodes/build-releases` | where to download from |
 | `BUILD_BRIDGE_SKIP_SERVICE` | unset | `1` stops after the binary — no pairing, no service |
 
 Verifying by hand is the same two commands the script runs:
@@ -164,8 +184,11 @@ cosign verify-blob \
 
 ### Smoke test after a release
 
+Copy a fresh install line from Settings → Downloads and run it with the service
+step skipped:
+
 ```bash
-BUILD_BRIDGE_SKIP_SERVICE=1 sh <(curl -fsSL https://getbuild.ing/install.sh)
+BUILD_BRIDGE_SKIP_SERVICE=1 sh -c "$(curl -fsSL 'https://getbuild.ing/install.sh?t=dl_…')"
 ~/.local/bin/build-bridge --version    # build-bridge X.Y.Z
 ```
 

@@ -713,20 +713,49 @@ mod tests {
             );
         }
     }
+    /// The part of a module that ships: everything before its inline test
+    /// module, so scaffolding that drives one carrier on purpose is not read as
+    /// a production dispatch.
+    fn production_source(source: &str) -> &str {
+        let mut consumed = 0;
+        let mut lines = source.lines().peekable();
+        while let Some(line) = lines.next() {
+            let opens_a_test_module = line == "#[cfg(test)]"
+                && lines
+                    .peek()
+                    .is_some_and(|next| next.starts_with("mod ") && next.ends_with(" {"));
+            if opens_a_test_module {
+                return &source[..consumed];
+            }
+            consumed += line.len() + 1;
+        }
+        source
+    }
+
     /// What in `source` claims a provider dispatch of its own, if anything.
     fn provider_dispatch_offence(source: &str) -> Option<String> {
         const PROVIDER_PATH: &str = "AgentProvider::";
-        const CONCRETE_HARNESS_TYPES: [&str; 3] = [
+        const CONCRETE_HARNESS_TYPES: [&str; 6] = [
+            "AdkHarness",
             "AdkSession",
-            "CodexAppServerSession",
+            "ClaudeHarness",
+            "CodexHarness",
             "CodexAppServerHarness",
+            "CodexAppServerSession",
         ];
 
-        for (mention, _) in source.match_indices(PROVIDER_PATH) {
-            let variant_onward = &source[mention + PROVIDER_PATH.len()..];
+        let shipped = production_source(source);
+        for (mention, _) in shipped.match_indices(PROVIDER_PATH) {
+            let variant_onward = &shipped[mention + PROVIDER_PATH.len()..];
             let after_variant =
                 variant_onward.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
-            if after_variant.starts_with(" =>") {
+            let arm_head = after_variant.trim_start_matches([')', ']', ' ', '\n']);
+            let guard_reaches_an_arrow = arm_head.starts_with("if ")
+                && arm_head
+                    .lines()
+                    .next()
+                    .is_some_and(|first| first.contains("=>"));
+            if arm_head.starts_with("=>") || guard_reaches_an_arrow {
                 let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
                 return Some(format!("matches on {PROVIDER_PATH}{variant}"));
             }
@@ -734,8 +763,39 @@ mod tests {
 
         CONCRETE_HARNESS_TYPES
             .into_iter()
-            .find(|harness_type| source.contains(harness_type))
+            .find(|harness_type| shipped.contains(harness_type))
             .map(|harness_type| format!("names {harness_type}"))
+    }
+
+    /// Every module that sits above `harness_for`: the crate's top-level
+    /// sources, minus `models.rs`, whose wire table is the one sanctioned
+    /// per-provider list. Read from disk rather than named one by one so a
+    /// module added later is guarded without anyone remembering to list it.
+    fn modules_above_harness_for() -> Vec<(String, String)> {
+        const SANCTIONED_PROVIDER_TABLE: &str = "models.rs";
+
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut modules: Vec<(String, String)> = std::fs::read_dir(&src)
+            .expect("the crate's src directory is readable")
+            .map(|entry| entry.expect("a readable src entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name != SANCTIONED_PROVIDER_TABLE)
+            })
+            .map(|path| {
+                let source = std::fs::read_to_string(&path).expect("a readable src module");
+                (
+                    format!(
+                        "src/{}",
+                        path.file_name().expect("a named module").to_string_lossy()
+                    ),
+                    source,
+                )
+            })
+            .collect();
+        modules.sort();
+        modules
     }
 
     /// `harness_for` is the only place a provider becomes an implementation. A
@@ -744,20 +804,52 @@ mod tests {
     /// added after it has to be added in two places instead of one.
     #[test]
     fn open_session_is_the_only_provider_dispatch() {
-        const CALLERS_ABOVE_HARNESS_FOR: [(&str, &str); 4] = [
-            ("src/app.rs", include_str!("../app.rs")),
-            ("src/agent.rs", include_str!("../agent.rs")),
-            ("src/orchestrator.rs", include_str!("../orchestrator.rs")),
-            ("src/run.rs", include_str!("../run.rs")),
-        ];
+        let modules = modules_above_harness_for();
+        assert!(
+            modules.iter().any(|(path, _)| path == "src/app.rs"),
+            "the scan reached the crate's own modules, so a green run means something"
+        );
 
-        for (path, source) in CALLERS_ABOVE_HARNESS_FOR {
-            if let Some(offence) = provider_dispatch_offence(source) {
+        for (path, source) in modules {
+            if let Some(offence) = provider_dispatch_offence(&source) {
                 panic!(
                     "{path} {offence}; only harness_for may dispatch on a provider, so a second \
                      dispatch above it makes the next provider a two-place change"
                 );
             }
         }
+    }
+
+    /// The guard fires on every shape a second dispatch actually takes, so a
+    /// green [`open_session_is_the_only_provider_dispatch`] is evidence rather
+    /// than a detector that quietly stopped matching.
+    #[test]
+    fn a_second_provider_dispatch_is_caught() {
+        const SECOND_DISPATCHES: [&str; 5] = [
+            "match provider {\n    AgentProvider::Codex => launch(),\n}",
+            "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
+            "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
+            "match provider {\n    AgentProvider::CodexAppServer\n        => launch(),\n}",
+            "let session: AdkSession = open(root);",
+        ];
+
+        for source in SECOND_DISPATCHES {
+            assert!(
+                provider_dispatch_offence(source).is_some(),
+                "a second dispatch went unnoticed: {source}"
+            );
+        }
+
+        let single_dispatch = "let provider = AgentProvider::from_wire(id)?;\nlet opened = \
+                              harness_for(provider).open_session(request)?;\nmatch named {\n    \
+                              Some(agent) if AgentProvider::from_wire(agent).is_some() => \
+                              Err(already_named()),\n}";
+        assert_eq!(provider_dispatch_offence(single_dispatch), None);
+
+        let dispatch_only_in_tests = format!(
+            "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
+            "let harness = ClaudeHarness;"
+        );
+        assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
     }
 }

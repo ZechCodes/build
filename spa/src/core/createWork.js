@@ -127,27 +127,38 @@ export function createWorkHtml(state) {
   return modalDialogHtml(createWorkBodyHtml(state), { className: "modal-create" });
 }
 
-/** Inert by contract: the record exists, and nothing runs behind it until the
- *  first message (the bridge dispatches planning on that post). An empty
- *  harness choice sends nothing, and the daemon's own default stands. */
-async function createIssue(projectId, goal, choice) {
-  const created = await App.call("issue.create", {
-    goal,
-    project_id: projectId,
-    dispatch: false,
-    ...agentChoiceParams(catalog(), choice),
-  });
-  return {
-    route: { name: "issue", projectId: created.project_id || projectId, id: created.issue_id || created.plan_id },
+/** Filing an issue: inert by contract — the record exists, and nothing runs
+ *  behind it until the first message (the bridge dispatches planning on that
+ *  post). An empty harness choice sends nothing, and the daemon's own default
+ *  stands. */
+const issueAction = (projectId, goal, choice) => ({
+  call: {
+    method: "issue.create",
+    params: { goal, project_id: projectId, dispatch: false, ...agentChoiceParams(catalog(), choice) },
+  },
+  land: (answer) => ({
+    route: { name: "issue", projectId: answer.project_id || projectId, id: answer.issue_id || answer.plan_id },
     focusComposer: false,
-  };
-}
+  }),
+});
 
-/** Press a picker row: make the one call it names — a checkout, an adoption, or
- *  nothing at all for a branch a run already owns — and say where it lands. */
-async function startBranch(projectId, row) {
-  const answer = row.call ? await App.call(row.call.method, row.call.params) : null;
-  return { route: branchStartRoute(projectId, row, answer), focusComposer: row.focusComposer };
+/** Pressing a picker row: the one call it names — a checkout, an adoption, or
+ *  nothing at all for a branch a run already owns — and where its answer
+ *  lands. */
+const branchAction = (projectId, row) => ({
+  call: row.call,
+  land: (answer) => ({ route: branchStartRoute(projectId, row, answer), focusComposer: row.focusComposer }),
+});
+
+/** What the form is asking to make, or null while it is asking for nothing —
+ *  the one place a tab decides which of the two this is. A branch tab with a
+ *  row highlighted means that row; with none, the branch its text would cut,
+ *  which is what this field meant before it had a list under it. */
+function createAction(state) {
+  const typed = (state.values[state.kind] || "").trim();
+  if (state.kind !== "branch") return typed ? issueAction(state.projectId, typed, state.choice) : null;
+  const row = pickerRows(state)[state.highlight] || (typed ? cutNewRow(state.projectId, typed) : null);
+  return row ? branchAction(state.projectId, row) : null;
 }
 
 /**
@@ -264,21 +275,11 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     paint();
   }
 
-  /** What the human is asking for: the row they highlighted, or — with none —
-   *  the branch the typed text would cut, which is what this field meant
-   *  before it had a list under it. */
-  function pickedRow(value) {
-    const rows = pickerRows(state);
-    return rows[state.highlight] || (value ? cutNewRow(projectId, value) : null);
-  }
-
   async function submit() {
     if (state.busy) return;
-    const { kind } = state;
-    const value = (state.values[kind] || "").trim();
-    const row = kind === "branch" ? pickedRow(value) : null;
-    if (kind === "branch" ? !row : !value) {
-      state.error = CREATE_COPY[kind].empty;
+    const action = createAction(state);
+    if (!action) {
+      state.error = CREATE_COPY[state.kind].empty;
       paint();
       return;
     }
@@ -291,13 +292,14 @@ export function openCreateWork({ projectId, projectName, kind = "branch", naviga
     state.error = "";
     paint();
     try {
-      const started = kind === "branch" ? await startBranch(projectId, row) : await createIssue(projectId, value, state.choice);
+      const answer = action.call ? await App.call(action.call.method, action.call.params) : null;
+      const { route, focusComposer } = action.land(answer);
       close();
       refreshFeed();
       // A checkout with nobody in it opens on the ghost composer, and that is
       // exactly where typing the first message belongs.
-      App.focusComposerOnMount = started.focusComposer;
-      navigate(started.route);
+      App.focusComposerOnMount = focusComposer;
+      navigate(route);
     } catch (error) {
       state.busy = false;
       state.error = error.message || String(error);

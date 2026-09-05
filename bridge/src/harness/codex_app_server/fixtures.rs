@@ -93,30 +93,33 @@ pub(super) fn harness_context() -> HarnessContext {
     }
 }
 
-pub(super) const CHECKED_IN_FIXTURES: [(&str, &str); 4] = [
-    (
-        "observed-session-start.jsonl",
-        include_str!(
-            "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-start.jsonl"
-        ),
-    ),
-    (
-        "observed-session-resume.jsonl",
-        include_str!(
-            "../../../tests/fixtures/codex-app-server/0.153.0/observed-session-resume.jsonl"
-        ),
-    ),
-    (
-        "observed-session-mcp.jsonl",
-        include_str!("../../../tests/fixtures/codex-app-server/0.153.0/observed-session-mcp.jsonl"),
-    ),
-    (
-        "synthetic-model-events.jsonl",
-        include_str!(
-            "../../../tests/fixtures/codex-app-server/0.153.0/synthetic-model-events.jsonl"
-        ),
-    ),
-];
+macro_rules! checked_in_fixture_corpus {
+    ($version:literal, $($name:literal),+ $(,)?) => {
+        pub(super) const CHECKED_IN_FIXTURE_DIRECTORY: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/codex-app-server/",
+            $version
+        );
+
+        pub(super) const CHECKED_IN_FIXTURES: &[(&str, &str)] = &[$((
+            $name,
+            include_str!(concat!(
+                "../../../tests/fixtures/codex-app-server/",
+                $version,
+                "/",
+                $name
+            )),
+        )),+];
+    };
+}
+
+checked_in_fixture_corpus!(
+    "0.153.0",
+    "observed-session-start.jsonl",
+    "observed-session-resume.jsonl",
+    "observed-session-mcp.jsonl",
+    "synthetic-model-events.jsonl",
+);
 
 pub(super) fn checked_in_fixture(name: &str) -> &'static str {
     CHECKED_IN_FIXTURES

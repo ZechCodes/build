@@ -29,10 +29,11 @@
 //! - `BRIDGE_PAIRING_CODE` dev/compose only: pair with this fixed code instead of
 //!   a random one, so a scripted approver can complete the flow
 //!
-//! `build-bridge install-service` (macOS) installs a launchd LaunchAgent that
-//! keeps `serve` running across crashes and logins. It is gated on pairing:
-//! the api must confirm this device is approved and owned by an account before
-//! anything is written. `uninstall-service` removes it.
+//! `build-bridge install-service` installs the platform's own "keep this
+//! running" unit: on macOS a launchd LaunchAgent, on Linux a systemd `--user`
+//! unit. Either way it keeps `serve` running across crashes and logins, and it
+//! is gated on pairing: the api must confirm this device is approved and owned
+//! by an account before anything is written. `uninstall-service` removes it.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -45,6 +46,7 @@ use build_bridge::harness::HarnessContext;
 use build_bridge::notify::Notifier;
 use build_bridge::relay::{self, DeviceIdentity};
 use build_bridge::rtc::WebrtcPeerFactory;
+use build_bridge::service::ServiceManager;
 use build_bridge::transport_ledger::{FanOutLedger, StderrLedger};
 use build_bridge::transport_report::TransportReporter;
 use build_bridge::{identity, pairing, service, transport};
@@ -63,7 +65,7 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "unknown command: {other}\nusage: build-bridge [serve|backup <path>|provision|install-service|uninstall-service]"
+                "unknown command: {other}\nusage: build-bridge [serve|backup <path>|provision|install-service|uninstall-service|--version]"
             );
             std::process::exit(2);
         }
@@ -405,24 +407,67 @@ fn exit_startup(error: String) -> ! {
     std::process::exit(1)
 }
 
-/// Install the launchd LaunchAgent (macOS). Refuses unless this device is
-/// paired: the api must report it approved and owned by an account. The gate
-/// runs BEFORE anything is written.
+/// Install the platform's service unit — a launchd LaunchAgent on macOS, a
+/// systemd `--user` unit on Linux. Refuses unless this device is paired: the
+/// api must report it approved and owned by an account. The gate runs BEFORE
+/// anything is written.
 async fn install_service() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("install-service writes a launchd LaunchAgent and is macOS-only");
-        std::process::exit(2);
-    }
-
     let cfg = bridge_config();
-    let api_url = cfg.api_url.clone();
-    let identity_path = cfg.identity_file.clone();
+    let owner = approved_owner_or_exit(&cfg).await;
+    let manager = manager_or_exit();
 
-    // Gate: local identity + live api approval, never the local flag alone.
-    let stored = match identity::load(&identity_path) {
+    let home = home_dir();
+    let log_dir = home.join(".build/log");
+    std::fs::create_dir_all(&log_dir).expect("create log dir");
+    let config = service::ServiceConfig {
+        binary_path: std::env::current_exe().expect("current executable path"),
+        log_dir: log_dir.clone(),
+        env: daemon_environment(&cfg),
+    };
+
+    match service::install(&*manager, &service_context(home), &config, &mut run_shell) {
+        Ok(unit_path) => {
+            println!(
+                "installed {} for account owner {owner}\n  unit: {}\n  logs: {}/bridge.log",
+                manager.name(),
+                unit_path.display(),
+                log_dir.display()
+            );
+            if let Some(hint) = manager.after_install_hint() {
+                println!("  {hint}");
+            }
+        }
+        Err(error) => {
+            eprintln!("install failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Remove the service unit: stop the daemon, then delete the file.
+fn uninstall_service() {
+    let manager = manager_or_exit();
+    match service::uninstall(&*manager, &service_context(home_dir()), &mut run_shell) {
+        Ok(service::Uninstalled::Removed(path)) => println!("removed {}", path.display()),
+        Ok(service::Uninstalled::NothingInstalled(path)) => {
+            println!("nothing installed at {}", path.display());
+        }
+        Err(error) => {
+            eprintln!("could not remove the {}: {error}", manager.name());
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The install gate: a local identity AND a live api confirmation that this
+/// device is approved and owned by an account, never the local flag alone.
+/// Returns the owner, or exits — there is nothing to install without one.
+async fn approved_owner_or_exit(cfg: &BridgeConfig) -> String {
+    let identity_path = &cfg.identity_file;
+    let stored = match identity::load(identity_path) {
         Ok(stored) => stored,
-        Err(e) => {
-            eprintln!("could not load identity from {identity_path:?}: {e}");
+        Err(error) => {
+            eprintln!("could not load identity from {identity_path:?}: {error}");
             std::process::exit(1);
         }
     };
@@ -430,12 +475,12 @@ async fn install_service() {
         None => Err("no identity".to_string()),
         Some(stored) => {
             let client = reqwest::Client::new();
-            pairing::fetch_status(&client, &api_url, &stored.device_id)
+            pairing::fetch_status(&client, &cfg.api_url, &stored.device_id)
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|error| error.to_string())
         }
     };
-    let owner = match service::check_install_gate(
+    match service::check_install_gate(
         stored.is_some(),
         api_status.as_ref().map_err(String::as_str),
     ) {
@@ -444,88 +489,55 @@ async fn install_service() {
             eprintln!("not installing: {gate}");
             std::process::exit(1);
         }
-    };
+    }
+}
 
-    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
-    let binary_path = std::env::current_exe().expect("current executable path");
-    let log_dir = home.join(".build/log");
-    std::fs::create_dir_all(&log_dir).expect("create log dir");
+/// The one platform decision in the crate, and the one place it is refused.
+fn manager_or_exit() -> Box<dyn ServiceManager> {
+    match service::manager_for(std::env::consts::OS) {
+        Some(manager) => manager,
+        None => {
+            eprintln!("install-service supports macOS (launchd) and Linux (systemd --user)");
+            std::process::exit(2);
+        }
+    }
+}
 
-    // Carry every BRIDGE_* var set right now, and pin the two URLs and the
-    // identity file to their resolved values so the daemon can't drift from
-    // what the gate just verified.
-    let mut daemon_env: Vec<(String, String)> = std::env::vars()
+/// What the daemon starts with: every BRIDGE_* var set right now, plus the two
+/// URLs and the identity file pinned to their resolved values so the daemon
+/// can't drift from what the gate just verified, plus the installing shell's
+/// PATH. Sorted, so re-installing the same setup writes the same unit.
+fn daemon_environment(cfg: &BridgeConfig) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = std::env::vars()
         .filter(|(key, _)| key.starts_with("BRIDGE_"))
         .collect();
     for (key, value) in [
-        ("BRIDGE_API_URL", api_url.clone()),
+        ("BRIDGE_API_URL", cfg.api_url.clone()),
         ("BRIDGE_RELAY_URL", cfg.relay_url.clone()),
         (
             "BRIDGE_IDENTITY_FILE",
-            identity_path.to_string_lossy().into_owned(),
+            cfg.identity_file.to_string_lossy().into_owned(),
         ),
     ] {
-        if !daemon_env.iter().any(|(k, _)| k == key) {
-            daemon_env.push((key.to_string(), value));
+        if !env.iter().any(|(existing, _)| existing == key) {
+            env.push((key.to_string(), value));
         }
     }
-    // launchd's bare PATH can't see `claude`; carry this shell's PATH.
-    let mut daemon_env = service::with_install_path(daemon_env, || std::env::var("PATH").ok());
-    daemon_env.sort();
-
-    let config = service::ServiceConfig {
-        binary_path,
-        log_dir: log_dir.clone(),
-        env: daemon_env,
-    };
-    let plist_file = service::plist_path(&home);
-    std::fs::create_dir_all(plist_file.parent().expect("plist parent"))
-        .expect("create LaunchAgents dir");
-    std::fs::write(&plist_file, service::render_launchd_plist(&config)).expect("write plist");
-
-    let uid = String::from_utf8(
-        std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .expect("id -u")
-            .stdout,
-    )
-    .expect("uid utf8")
-    .trim()
-    .to_string();
-    // Re-installs: boot the old instance out first; ignore "not loaded" errors.
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{uid}/{}", service::SERVICE_LABEL)])
-        .status();
-    let bootstrap = std::process::Command::new("launchctl")
-        .args([
-            "bootstrap",
-            &format!("gui/{uid}"),
-            &plist_file.to_string_lossy(),
-        ])
-        .status()
-        .expect("run launchctl bootstrap");
-    if !bootstrap.success() {
-        eprintln!("launchctl bootstrap failed (plist written to {plist_file:?})");
-        std::process::exit(1);
-    }
-    println!(
-        "installed {} for account owner {owner}\n  plist: {}\n  logs:  {}/bridge.log",
-        service::SERVICE_LABEL,
-        plist_file.display(),
-        log_dir.display()
-    );
+    let mut env = service::with_install_path(env, || std::env::var("PATH").ok());
+    env.sort();
+    env
 }
 
-/// Remove the LaunchAgent: stop the daemon and delete the plist.
-fn uninstall_service() {
-    if !cfg!(target_os = "macos") {
-        eprintln!("uninstall-service is macOS-only");
-        std::process::exit(2);
+fn service_context(home: std::path::PathBuf) -> service::ServiceContext {
+    service::ServiceContext {
+        home,
+        uid: current_uid(),
     }
-    let home = std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"));
-    let plist_file = service::plist_path(&home);
-    let uid = String::from_utf8(
+}
+
+/// The installing user's numeric id — launchd addresses their gui domain by it.
+fn current_uid() -> String {
+    String::from_utf8(
         std::process::Command::new("id")
             .arg("-u")
             .output()
@@ -534,20 +546,20 @@ fn uninstall_service() {
     )
     .expect("uid utf8")
     .trim()
-    .to_string();
-    let _ = std::process::Command::new("launchctl")
-        .args(["bootout", &format!("gui/{uid}/{}", service::SERVICE_LABEL)])
-        .status();
-    match std::fs::remove_file(&plist_file) {
-        Ok(()) => println!("removed {}", plist_file.display()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("nothing installed at {}", plist_file.display());
-        }
-        Err(e) => {
-            eprintln!("could not remove {}: {e}", plist_file.display());
-            std::process::exit(1);
-        }
-    }
+    .to_string()
+}
+
+/// The one place the bridge spawns a service-manager command. `Ok(false)` is
+/// "it ran and said no"; `Err` is "it could not be run at all".
+fn run_shell(command: &service::ShellCommand) -> std::io::Result<bool> {
+    std::process::Command::new(command.program)
+        .args(&command.args)
+        .status()
+        .map(|status| status.success())
+}
+
+fn home_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").expect("HOME is set"))
 }
 
 /// Resolve the runtime config from BRIDGE_* env against $HOME.
@@ -657,4 +669,25 @@ fn mcp_stdio() {
             }
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    /// `service::manager_for` is the crate's one platform branch: it turns
+    /// `std::env::consts::OS` into a `ServiceManager`, and everything above it
+    /// is platform-blind. A compile-time platform check in this file would be a
+    /// second dispatch, and the next platform would become a two-place change.
+    #[test]
+    fn main_dispatches_on_the_platform_in_exactly_one_place() {
+        let compile_time_platform_check = concat!("target", "_os");
+        let source = include_str!("main.rs");
+        assert!(
+            !source.contains(compile_time_platform_check),
+            "main.rs must leave the platform to service::manager_for"
+        );
+        assert!(
+            source.contains("service::manager_for(std::env::consts::OS)"),
+            "and it must ask service::manager_for, so the two stay one decision"
+        );
+    }
 }

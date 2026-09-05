@@ -20,11 +20,13 @@ from uuid import UUID
 from litestar import Controller, Request, get, post
 from litestar.exceptions import (
     ClientException,
+    HTTPException,
     NotAuthorizedException,
     NotFoundException,
 )
 from litestar.response import Response
-from sqlalchemy import delete, select
+from litestar.status_codes import HTTP_409_CONFLICT
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from buildapp import pairing_crypto
@@ -66,6 +68,11 @@ def device_summary(device: Device) -> dict:
         "transport_public_key_b64": device.transport_public_key_b64,
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
     }
+
+
+#: How many approved devices one account may hold. Enforced at approval — the
+#: one moment a device becomes an account's — so revoking frees a slot.
+MAX_DEVICES_PER_USER = 3
 
 
 class DevicesController(Controller):
@@ -167,7 +174,11 @@ class DevicesController(Controller):
 
     @post("/api/devices/approve", guards=[build_auth_guard])
     async def approve(self, request: Request, db_session: AsyncSession) -> Response:
-        """Bind a pending device (located by its pairing code) to the current user."""
+        """Bind a pending device (located by its pairing code) to the current user.
+
+        An account holds at most ``MAX_DEVICES_PER_USER`` approved devices: the
+        cap is checked here, the one moment a device becomes an account's, so a
+        revoked device frees its slot and a pending one waits for it."""
         user_id = require_user(request)
         body = require_json_object(await request.json())
         code = str(body.get("code", "")).strip()
@@ -176,6 +187,19 @@ class DevicesController(Controller):
         device = await self._pending_by_code(db_session, code)
         if device is None:
             raise NotFoundException("no pending device for that code")
+        owned = await db_session.scalar(
+            select(func.count())
+            .select_from(Device)
+            .where(Device.owner_user_id == user_id, Device.approved.is_(True))
+        )
+        if (owned or 0) >= MAX_DEVICES_PER_USER:
+            raise HTTPException(
+                status_code=HTTP_409_CONFLICT,
+                detail=(
+                    f"this account already has {MAX_DEVICES_PER_USER} devices — "
+                    "revoke one in Settings → Devices to add another"
+                ),
+            )
         device.owner_user_id = user_id
         device.approved = True
         device.pairing_code_hash = None

@@ -1197,6 +1197,142 @@ settled differently, and why:
   end panicked under the app mutex and poisoned it. The split is at the shorter
   of the measured length and the queue's.
 
+**Shipped, second half** (`run.adopt`, `run.abandon`, `run.delete`,
+`run.release`, `project.add` / `.clone` / `.create` / `.set_remote`). What the
+build settled differently, and why:
+
+- **`run.adopt` has one mutation, not two.** `AdoptExternalCheckout` and
+  `AdoptPrimaryCheckout` differ in exactly one step — which git finds the
+  checkout — and are identical afterwards (judge, checkpoint, scaffold,
+  `RunAdopted`). That is one mutation, `AdoptCheckout`, over an
+  `AdoptionTarget` that owns its own variation the way `DispatchTarget` does:
+  `Card { worktree_id, excluded }` scans, `Primary { repo_path }` runs
+  `describe_primary_checkout`, and each answers `scope()`, `checkout_id()` (the
+  identity two adoptions collide on, known before any git) and `amendment()`
+  (a card goes back on the board if the record fails; the primary checkout was
+  never a card and must not become one). Two mutations spelled the same
+  sequence twice.
+- **Convergence is an answer, not a refusal.** The decide phase's third early
+  return answers `{"run_id", "adopting": true}` from the row already claiming
+  this checkout, so a second browser gets the id of the run the first one is
+  opening — `createScopedAdoptingCall` (spa/src/core/adoption.js:20) reads
+  `view.run_id` and nothing else. Which rows can be converged on is
+  `PendingState::leaves_a_record`'s question, on the type: a verb discarding a
+  checkout leaves nothing to converge on.
+- **A checkout no run owns is adopted through the same job now.**
+  `adopt_implementation_checkout`'s `None` arm no longer calls `run_adopt`
+  under the mutex (the note in the first half's build said this was the
+  second half's to do). `AdoptImplementation.checkout` became an
+  `ImplementationCheckout`: `Owned(path)` is the run the branch already had,
+  `Unowned(AdoptionTarget)` runs `lifecycle::adopt` first and hands the
+  `RunAdopted` it earned to the epilogue, which opens that run instead of
+  taking one off the board. One job, two git steps in its one run phase — an
+  epilogue still never defers a second job.
+- **`TakenRun` was not built. The run travels in the mutation.** Nothing in a
+  discard's run phase can fail: the stage classification, the reap wait and
+  the removal are all best-effort by contract (`WorktreeManager::remove`'s
+  failure has always been logged, never fatal), so `DiscardCheckout::perform`
+  has no `?` and the run cannot be stranded off the board. A reservation that
+  puts the run back would only be reachable on a path that does not exist. The
+  legality of the abandon is judged in the decide phase instead
+  (`run_transition(state, Abandon)`, pure), so the epilogue's verdict cannot
+  refuse — `AdoptableCheckout::judge`'s rule, applied to the run.
+- **`run.delete` uses the same mutation.** It is the other caller of
+  `Orchestrator::discard_worktree`, and it ran that under the mutex. One
+  `DiscardedCheckout` covers all three outcomes — `Removed` (directory goes,
+  branch stays: abandon), `Pruned` (both go: delete), `Kept` (nothing on disk
+  is touched: the primary checkout, or a checkout adopted from the user) — and
+  owns the wait, which only a removal needs. `Orchestrator::discard_worktree`
+  and `discard_checkout_keeping_branch` collapse into one public
+  `discard_checkout(worktree, keep_branch)`: whether the branch stays is the
+  caller's fact and was never derivable there.
+- **What each discard still owes is a `DiscardSettlement`.** `RunAbandoned`
+  writes the verdict, the stage reconciliation and the Issue's lineage;
+  `RunDeleted` clears the card. Both take the `ActiveRun` and the
+  `StagePublications` as arguments, because the git phase carried them.
+- **`run.release` builds no job, as declared.** Re-read against the code: a
+  store delete, a map remove, `retire_agent_tabs` (receipts dropped — the kill
+  is already a thread's) and `rescan_external_worktrees` (already a spawn).
+  Its map cleanup and `run.delete`'s were the same seven lines twice, now
+  `AppState::forget_run`.
+- **`MintedProject` was not built either.** `add_project` mints from its own
+  counter and is idempotent by canonical path; minting in the decide phase
+  would put that fact in two places for a row nobody renders yet. What two
+  project verbs actually contend over is the directory, so the row's
+  `entity_id` IS the destination's checkout id — `project.clone` and
+  `project.create` racing one folder collide on the board instead of in `git
+  clone`. `project_id` on those rows is empty until the epilogue registers one.
+- **`project.create` moved with the other three.** It is four subprocesses
+  (`init`, `add`, `commit`, `remote add`) under the mutex and the same
+  primitive, so leaving it would have been the one project door still holding
+  the lock. `OpenRepo`, `CloneRepo` and `CreateRepo` all end in one
+  `open_repo(path, requested_base)` — canonicalize, open, default branch,
+  revparse, origin — and produce one `ProjectAdded`. Each removes what it made
+  in its own error path (`CloneRepo` a directory the clone left half-written,
+  `CreateRepo` a repository it did not finish), and `CreateRepo` removes
+  nothing when the directory was already there.
+- **`project_json` takes the remote it was told.** It shelled out for
+  `git remote get-url origin` on every call, which put a subprocess inside
+  every project epilogue. The four mutating verbs pass what their own git read
+  or wrote; `project.list` reads it at its call site, where it is visible — the
+  one remaining project-family read under the mutex, argued in the audit below.
+- **`defer_lifecycle_holding` is the second reservation door.** `run.abandon`
+  and `run.delete` take the run out of the registry between reserving the row
+  and building the job, and a refusal in between would have left the run
+  stranded. One call reserves, then runs an infallible `take`, then defers —
+  so "nothing fallible runs between a row and the job that releases it" stays a
+  property of the type. `reserve_lifecycle` and it share `lifecycle_job`, the
+  one place a job is held open for the tests.
+- **`scan_external_worktrees_now` is `#[cfg(test)]` now.** No production caller
+  is left: every verb that must decide against the checkouts that exist asks
+  in a run phase. `run_on_worktree` is deleted as a duplicate of
+  `run_owning_worktree_id`.
+- **Tests** `run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free`,
+  `run_adopt_answers_from_its_epilogue_with_the_runs_own_view`,
+  `two_adopts_of_one_checkout_converge_on_one_run`,
+  `run_adopt_refuses_a_detached_head_before_it_writes_a_checkpoint`,
+  `run_abandon_removes_its_checkout_with_the_state_lock_free`,
+  `run_abandon_judges_its_stages_with_the_state_lock_free`,
+  `run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout`,
+  `run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die`,
+  `project_add_reads_the_default_branch_with_the_state_lock_free`,
+  `project_clone_registers_its_project_from_the_landed_path`,
+  `project_set_remote_writes_its_config_with_the_state_lock_free`.
+
+**What still runs git under the app mutex**, after grepping `app.rs` for every
+`git2::Repository::open`, `Command::new("git")`, `git_in`, `git_stdout`,
+`git_default_branch`, `git_remote_origin`, `bounded_git_fetch`,
+`discover_external_worktrees` and `describe_primary_checkout`:
+
+1. `project_json`'s `git_remote_origin`, on `project.list` only. A read verb,
+   not a lifecycle one. Caching it on `Project` would make the shown remote
+   lie the moment the user edits `.git/config`; keeping it live and lock-free
+   needs the deferred-read surface (`DeferredRead`/`ReadSubject`) generalized
+   past diffs, which is its own change.
+2. `run_publish`'s `run_commit` + `git rev-parse HEAD` (app.rs:12925). The
+   write-ahead intent the publication contract depends on. `run.publish`'s own
+   migration.
+3. `dispatch_run_stage`'s `git rev-parse HEAD` (orchestrator.rs:2276), reached
+   by `run.stage_dispatch` and by an implementation epilogue resuming an
+   Issue's scheduler. Named in the first half's build notes;
+   `run.stage_dispatch`'s own migration.
+4. `recover_run`'s failed-recovery arm (`classify_stages_now`) and
+   `advance_issue_scheduler_here`, both boot-only: they run before the first
+   frame is served, when nothing waits on the mutex.
+5. The MCP `done` socket's recovery verification —
+   `restore_run_worktree` plus a `git2` open to check the reported HEAD
+   (app.rs:5198). The `done` report's own path.
+6. `prune_worktree_records` (`git worktree prune`, app.rs:14871), called from
+   `archive_vanished_runs`'s apply phase — the write-back of a sweep whose git
+   is already off the lock.
+7. `sweep_vanished_runs`'s `classify_stage_publication` — off the lock since
+   §4 (`VanishedRunSweep` is an `OffLockJob`); the open gate note asked
+   whether the sweep moves, and it already had.
+
+Everything else the grep finds is inside a `DiffCacheRefresh::compute`, a
+`WorktreeFinishJob::run`, a `DeferredRead`, an `OffLockJob::decide`, a
+`WorktreeMutation::perform`, or a test.
+
 - **Boundary** `bridge/src/lifecycle.rs` (new; `WorktreeFinishJob` moves here as
   one mutation), between a lifecycle verb's decision and the git that carries it
   out.

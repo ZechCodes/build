@@ -169,6 +169,13 @@ impl PendingState {
             PendingState::Discarding => "discarding",
         }
     }
+
+    /// Whether a record will stand where this row does once its verb lands. A
+    /// verb taking a checkout away leaves nothing for a second caller asking
+    /// after the same checkout to converge on.
+    pub fn leaves_a_record(self) -> bool {
+        matches!(self, PendingState::Creating)
+    }
 }
 
 /// What the decide phase reserved, and what undoes it.
@@ -320,6 +327,69 @@ impl WorktreeMutation for OpenImplementation {
     }
 }
 
+/// The checkout an Issue's implementation is being handed, and what reaching it
+/// costs. The type owns its own variation — which git runs, which run the
+/// implementation is written onto — so no caller matches on it.
+pub enum ImplementationCheckout {
+    /// A checkout a run already owns. Its path is known, nothing has to be
+    /// taken over, and the run is the one already on the board.
+    Owned(PathBuf),
+    /// A checkout no run owns yet. Build takes ownership of it first — the same
+    /// adoption `run.adopt` runs — and the run this implementation is written
+    /// onto is the one that adoption mints.
+    Unowned {
+        target: AdoptionTarget,
+        base_branch: String,
+    },
+}
+
+/// The checkout an implementation will be written into, as the git left it.
+struct ReachedCheckout {
+    path: PathBuf,
+    change: WorktreeChange,
+    /// The run the adoption on the way here minted, when the checkout had no
+    /// owner. The epilogue opens it instead of taking one off the board.
+    adopted: Option<crate::app::RunAdopted>,
+}
+
+impl ImplementationCheckout {
+    fn reach(
+        self,
+        project: &Orchestrator,
+        project_id: &str,
+        run_id: &str,
+        model_choice: &ModelChoice,
+    ) -> Result<ReachedCheckout, String> {
+        match self {
+            ImplementationCheckout::Owned(path) => Ok(ReachedCheckout {
+                path,
+                change: WorktreeChange::nothing(),
+                adopted: None,
+            }),
+            ImplementationCheckout::Unowned {
+                target,
+                base_branch,
+            } => {
+                let checkout = target.reach(project, &base_branch)?;
+                let adopted = adopt(
+                    project,
+                    project_id,
+                    &checkout,
+                    &base_branch,
+                    target.scope(),
+                    run_id,
+                    model_choice.clone(),
+                )?;
+                Ok(ReachedCheckout {
+                    path: checkout.path.clone(),
+                    change: target.amendment(&checkout),
+                    adopted: Some(adopted),
+                })
+            }
+        }
+    }
+}
+
 /// The same, into a checkout that already exists: whatever the branch was
 /// carrying is checkpointed under its own message first, so the baseline commit
 /// is exactly what the implementation adds to it.
@@ -329,7 +399,7 @@ pub struct AdoptImplementation {
     pub issue_id: String,
     pub issue: ImplementableIssue,
     pub run_id: String,
-    pub checkout: PathBuf,
+    pub checkout: ImplementationCheckout,
     pub store: crate::store::Store,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn crate::app::ImplementationCaller>,
@@ -337,26 +407,45 @@ pub struct AdoptImplementation {
 
 impl WorktreeMutation for AdoptImplementation {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let prepared =
-            self.project
-                .prepare_adopted_checkout(&self.issue, &self.checkout, &self.store);
-        let epilogue: Box<dyn LifecycleEpilogue> = match prepared {
-            Ok(base_sha) => Box::new(crate::app::ImplementationAdopted {
-                project_id: self.project_id,
-                issue_id: self.issue_id,
-                run_id: self.run_id,
-                base_sha,
-                model_choice: self.model_choice,
-                caller: self.caller,
-            }),
-            Err(error) => Box::new(crate::app::ImplementationRefused {
-                error: error.to_string(),
-                caller: self.caller,
-            }),
-        };
-        Ok(Performed {
-            change: WorktreeChange::nothing(),
-            epilogue,
+        let AdoptImplementation {
+            project,
+            project_id,
+            issue_id,
+            issue,
+            run_id,
+            checkout,
+            store,
+            model_choice,
+            caller,
+        } = *self;
+        let prepared = (|| -> Result<(ReachedCheckout, String), String> {
+            let reached = checkout.reach(&project, &project_id, &run_id, &model_choice)?;
+            let base_sha = project
+                .prepare_adopted_checkout(&issue, &reached.path, &store)
+                .map_err(|error| error.to_string())?;
+            Ok((reached, base_sha))
+        })();
+        Ok(match prepared {
+            Ok((reached, base_sha)) => Performed {
+                change: reached.change,
+                epilogue: Box::new(crate::app::ImplementationAdopted {
+                    project_id,
+                    issue_id,
+                    run_id,
+                    base_sha,
+                    adopted: reached.adopted,
+                    model_choice,
+                    caller,
+                }),
+            },
+            // A checkout Build took over on the way here keeps what the
+            // adoption wrote into it — a checkpoint commit and a scaffold —
+            // and no run is opened around it: the next scan lists it as the
+            // card it was.
+            Err(error) => Performed {
+                change: WorktreeChange::nothing(),
+                epilogue: Box::new(crate::app::ImplementationRefused { error, caller }),
+            },
         })
     }
 }
@@ -599,12 +688,8 @@ impl WorktreeMutation for DispatchCheckout {
         if dispatched.is_err() {
             // What this call cut, this call removes — and the branch under it
             // only if this call cut that too.
-            match minted.branch_was_cut {
-                true => self.project.discard_worktree(&minted.worktree),
-                false => self
-                    .project
-                    .discard_checkout_keeping_branch(&minted.worktree),
-            }
+            self.project
+                .discard_checkout(&minted.worktree, !minted.branch_was_cut);
         }
         dispatched
     }
@@ -693,4 +778,437 @@ pub fn adopt(
         scope,
         model_choice,
     })
+}
+
+/// The checkout an adoption takes ownership of, and the git that reaches it.
+///
+/// An adoption never acts on a cached card: what Build writes its ownership
+/// into has to be what is on disk now, so each arm names the git that asks.
+/// The type owns its own variation — which git, which scope, what the board's
+/// checkout list should say while the run is opened — so no caller matches on
+/// it.
+pub enum AdoptionTarget {
+    /// A checkout the board lists as its own card, named by the id that card
+    /// carries.
+    Card {
+        worktree_id: String,
+        /// Checkouts a run already owns, excluded from the scan exactly as the
+        /// board excludes them.
+        excluded: HashSet<PathBuf>,
+    },
+    /// The project's primary checkout — the repo root as a super-worktree. No
+    /// card stands for it, and every browser reaches it the same way.
+    Primary { repo_path: PathBuf },
+}
+
+impl AdoptionTarget {
+    pub fn scope(&self) -> AdoptionScope {
+        match self {
+            AdoptionTarget::Card { .. } => AdoptionScope::ExternalWorktree,
+            AdoptionTarget::Primary { .. } => AdoptionScope::PrimaryCheckout,
+        }
+    }
+
+    /// The identity two adoptions of one checkout collide on, known before any
+    /// git runs: the card's own id, or the id the repo root hashes to.
+    pub fn checkout_id(&self) -> String {
+        match self {
+            AdoptionTarget::Card { worktree_id, .. } => worktree_id.clone(),
+            AdoptionTarget::Primary { repo_path } => crate::worktree::external_worktree_id(
+                &crate::worktree::canonical_root(repo_path),
+            ),
+        }
+    }
+
+    fn reach(
+        &self,
+        project: &Orchestrator,
+        base_branch: &str,
+    ) -> Result<ExternalWorktree, String> {
+        match self {
+            AdoptionTarget::Card {
+                worktree_id,
+                excluded,
+            } => project
+                .scan_checkouts(base_branch, excluded)
+                .map_err(|error| error.to_string())?
+                .into_iter()
+                .find(|checkout| &checkout.id == worktree_id)
+                .ok_or_else(|| format!("unknown worktree_id: {worktree_id}")),
+            AdoptionTarget::Primary { repo_path } => {
+                crate::worktree::describe_primary_checkout(repo_path, base_branch)
+                    .map_err(|error| error.to_string())
+            }
+        }
+    }
+
+    /// What the board's checkout list is told while the run is being opened. A
+    /// card goes back on the board if that record fails; the primary checkout
+    /// was never a card and must not become one.
+    fn amendment(&self, checkout: &ExternalWorktree) -> WorktreeChange {
+        match self {
+            AdoptionTarget::Card { .. } => WorktreeChange::appeared(checkout.clone()),
+            AdoptionTarget::Primary { .. } => WorktreeChange::nothing(),
+        }
+    }
+}
+
+/// `run.adopt` — take ownership of a checkout that already exists and mint the
+/// run that stands for it. The scan that resolves the card, the checkpoint
+/// commit and the scaffold are all git; only the run record is not.
+pub struct AdoptCheckout {
+    pub project: Orchestrator,
+    pub project_id: String,
+    pub base_branch: String,
+    pub run_id: String,
+    pub target: AdoptionTarget,
+    pub model_choice: ModelChoice,
+    /// How much of the run's conversation the caller asked to be answered with.
+    pub detail: crate::thread::ThreadDetail,
+}
+
+impl WorktreeMutation for AdoptCheckout {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let checkout = self.target.reach(&self.project, &self.base_branch)?;
+        let adopted = adopt(
+            &self.project,
+            &self.project_id,
+            &checkout,
+            &self.base_branch,
+            self.target.scope(),
+            &self.run_id,
+            self.model_choice,
+        )?;
+        Ok(Performed {
+            change: self.target.amendment(&checkout),
+            epilogue: Box::new(crate::app::RunAdoptionSettled {
+                adopted,
+                detail: self.detail,
+            }),
+        })
+    }
+}
+
+/// What a run being taken off the board does with the directory it was working
+/// in.
+///
+/// The type owns its own variation — which git runs, and what the board's
+/// checkout list is told afterwards — so no caller matches on it.
+pub enum DiscardedCheckout {
+    /// A worktree Build minted or adopted, whose run is being abandoned: the
+    /// directory goes and the branch stays, because a run's work outlives the
+    /// run so it can be re-attempted.
+    Removed(crate::worktree::Worktree),
+    /// A worktree whose card is being cleared off the board altogether: the
+    /// directory and the branch under it both go.
+    Pruned(crate::worktree::Worktree),
+    /// Nothing on disk is touched: the project's primary checkout, which IS the
+    /// repository, or a checkout adopted from the user, whose files are theirs.
+    Kept,
+}
+
+impl DiscardedCheckout {
+    /// The directory this takes away, and whether the branch under it stays.
+    fn removal(&self) -> Option<(&crate::worktree::Worktree, bool)> {
+        match self {
+            DiscardedCheckout::Kept => None,
+            DiscardedCheckout::Removed(worktree) => Some((worktree, true)),
+            DiscardedCheckout::Pruned(worktree) => Some((worktree, false)),
+        }
+    }
+
+    /// Let go of the directory, waiting out the agents that were writing into
+    /// it first — only when there is a walk for a live child to trip.
+    fn discard(
+        &self,
+        project: &Orchestrator,
+        writers: &[crate::reaper::Retirement],
+        run_id: &str,
+    ) -> WorktreeChange {
+        let Some((worktree, keep_branch)) = self.removal() else {
+            return WorktreeChange::nothing();
+        };
+        for writer in writers {
+            if !writer.wait(crate::orchestrator::CHECKOUT_REAP_WAIT) {
+                eprintln!(
+                    "{run_id}: an agent did not die within {:?}; removing its checkout anyway",
+                    crate::orchestrator::CHECKOUT_REAP_WAIT
+                );
+            }
+        }
+        project.discard_checkout(worktree, keep_branch);
+        match worktree.path.exists() {
+            false => WorktreeChange {
+                gone: vec![crate::worktree::canonical_root(&worktree.path)],
+                ..WorktreeChange::default()
+            },
+            // The removal is best-effort and it did not get there. What stands
+            // is a checkout no run owns any more, which is a card — and only a
+            // scan can describe it.
+            true => WorktreeChange::undescribed(),
+        }
+    }
+}
+
+/// `run.abandon` and `run.delete` — take a run off the board and let go of the
+/// checkout it was working in.
+///
+/// Kill, reap, THEN remove: `remove_dir_all` walking a directory a child is
+/// still creating files in fails the walk, so the agents the decide phase
+/// retired are waited out here, where a harness wedged in uninterruptible I/O
+/// parks this job and nothing else.
+///
+/// Nothing here can fail. Every step is best-effort by contract — git's verdict
+/// on the stages, the reap, the removal — and the run itself is riding along,
+/// so a `perform` that could return `Err` would be a run stranded off the
+/// board. What is written down is the apply half's, under the mutex.
+pub struct DiscardCheckout {
+    pub project: Orchestrator,
+    pub checkout: DiscardedCheckout,
+    /// The agents the decide phase killed, waited out here before the removal.
+    pub retirements: Vec<crate::reaper::Retirement>,
+    /// What the run's stages are judged against — asked BEFORE the removal,
+    /// while the refs the answer depends on are still inspectable.
+    pub stages: crate::app::StagePublicationQuery,
+    /// The run itself, off the board for the length of the removal so nothing
+    /// answers verbs against a checkout that is being deleted.
+    pub active: Box<crate::orchestrator::ActiveRun>,
+    pub run_id: String,
+    /// What the verb that asked for this still owes the records.
+    pub settlement: Box<dyn crate::app::DiscardSettlement>,
+}
+
+impl WorktreeMutation for DiscardCheckout {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let published = self.stages.classify();
+        let change = self
+            .checkout
+            .discard(&self.project, &self.retirements, &self.run_id);
+        Ok(Performed {
+            change,
+            epilogue: Box::new(CheckoutDiscarded {
+                active: self.active,
+                published,
+                settlement: self.settlement,
+            }),
+        })
+    }
+}
+
+/// The checkout is let go of and the run is on its way back under the mutex.
+/// What is written down there is the verb's own.
+struct CheckoutDiscarded {
+    active: Box<crate::orchestrator::ActiveRun>,
+    published: crate::app::StagePublications,
+    settlement: Box<dyn crate::app::DiscardSettlement>,
+}
+
+impl LifecycleEpilogue for CheckoutDiscarded {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        self.settlement.settle(state, *self.active, self.published)
+    }
+}
+
+/// Read a repository off disk and settle everything registering it needs: the
+/// canonical path, the base branch — the one named, or the one the checkout is
+/// standing on — proved to resolve, and the `origin` it is wired to.
+///
+/// The one place a project's facts are read, whichever door reached the
+/// directory: opened where it stands, cloned into the projects folder, or
+/// created from nothing.
+fn open_repo(
+    path: PathBuf,
+    requested_base: Option<String>,
+) -> Result<crate::app::ProjectAdded, String> {
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    let repo =
+        git2::Repository::open(&path).map_err(|error| format!("not a git repository: {error}"))?;
+    let base = requested_base
+        .or_else(|| crate::app::git_default_branch(&path))
+        .unwrap_or_else(|| "main".to_string());
+    repo.revparse_single(&base)
+        .map_err(|_| format!("base branch '{base}' not found in repo"))?;
+    Ok(crate::app::ProjectAdded {
+        remote: crate::app::git_remote_origin(&path),
+        path,
+        base,
+    })
+}
+
+/// One repository's registration, once its directory is on disk. Every project
+/// door ends here, so what a project knows about itself is read in one place.
+fn opened(path: PathBuf, requested_base: Option<String>) -> Result<Performed, String> {
+    Ok(Performed {
+        change: WorktreeChange::nothing(),
+        epilogue: Box::new(open_repo(path, requested_base)?),
+    })
+}
+
+/// `project.add` — register a repository where the user already keeps it.
+pub struct OpenRepo {
+    pub path: PathBuf,
+    pub requested_base: Option<String>,
+}
+
+impl WorktreeMutation for OpenRepo {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        opened(self.path, self.requested_base)
+    }
+}
+
+/// `project.clone` — put a repository in the projects folder and register it,
+/// or register the one already standing there when it is the same repository.
+pub struct CloneRepo {
+    pub url: String,
+    pub name: String,
+    pub dest: PathBuf,
+    pub projects_dir: PathBuf,
+    pub requested_base: Option<String>,
+}
+
+impl WorktreeMutation for CloneRepo {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        if self.dest.exists() {
+            if !self.dest.join(".git").exists() {
+                return Err(format!(
+                    "'{}' already exists in the projects folder and is not a git repo",
+                    self.name
+                ));
+            }
+            if let Some(origin) = crate::app::git_remote_origin(&self.dest) {
+                if !crate::app::remotes_match(&origin, &self.url) {
+                    return Err(format!(
+                        "'{}' already exists with a different remote ({origin})",
+                        self.name
+                    ));
+                }
+            }
+            return opened(self.dest, self.requested_base);
+        }
+        std::fs::create_dir_all(&self.projects_dir)
+            .map_err(|error| format!("cannot create projects folder: {error}"))?;
+        let cloned = std::process::Command::new("git")
+            .arg("clone")
+            .arg(&self.url)
+            .arg(&self.dest)
+            .output()
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if !cloned.status.success() {
+            // A clone that got far enough to make the directory leaves nothing
+            // behind: a retry has to find the same empty folder this one did.
+            let _ = std::fs::remove_dir_all(&self.dest);
+            return Err(format!(
+                "git clone failed: {}",
+                String::from_utf8_lossy(&cloned.stderr).trim()
+            ));
+        }
+        opened(self.dest, self.requested_base)
+    }
+}
+
+/// `project.create` — make a repository from nothing and register it, with an
+/// initial commit so its base branch resolves and work can dispatch into it.
+pub struct CreateRepo {
+    pub name: String,
+    pub parent: PathBuf,
+    pub base_branch: String,
+    pub remote: Option<String>,
+}
+
+impl CreateRepo {
+    fn write(&self, dest: &std::path::Path) -> Result<(), String> {
+        std::fs::create_dir_all(&self.parent)
+            .map_err(|error| format!("cannot create {}: {error}", self.parent.display()))?;
+        if dest.exists() {
+            return Err(format!(
+                "'{}' already exists in {}",
+                self.name,
+                self.parent.display()
+            ));
+        }
+        std::fs::create_dir_all(dest)
+            .map_err(|error| format!("cannot create {}: {error}", self.name))?;
+        crate::app::git_in(dest, &["init", "-b", &self.base_branch])?;
+        std::fs::write(dest.join("README.md"), format!("# {}\n", self.name))
+            .map_err(|error| format!("cannot write README: {error}"))?;
+        crate::app::git_in(dest, &["add", "."])?;
+        // Commit with an explicit identity so it never depends on host git config.
+        crate::app::git_in(
+            dest,
+            &[
+                "-c",
+                "user.email=build@build.ing",
+                "-c",
+                "user.name=Build",
+                "commit",
+                "-m",
+                "Initial commit",
+            ],
+        )?;
+        if let Some(remote) = &self.remote {
+            crate::app::git_in(dest, &["remote", "add", "origin", remote])?;
+        }
+        Ok(())
+    }
+}
+
+impl WorktreeMutation for CreateRepo {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let dest = self.parent.join(&self.name);
+        let existed = dest.exists();
+        if let Err(error) = self.write(&dest) {
+            // Half a repository is worse than none: the retry has to start
+            // where this one did. A directory that was already there is not
+            // this call's to remove.
+            if !existed {
+                let _ = std::fs::remove_dir_all(&dest);
+            }
+            return Err(error);
+        }
+        opened(dest, Some(self.base_branch))
+    }
+}
+
+/// `project.set_remote` — point a project's `origin` somewhere, or unwire it.
+pub struct SetRemote {
+    pub project_id: String,
+    pub repo_path: PathBuf,
+    /// Empty clears the remote; removing one that is not there is not an error.
+    pub url: String,
+}
+
+impl WorktreeMutation for SetRemote {
+    fn perform(self: Box<Self>) -> Result<Performed, String> {
+        let remote = match (
+            self.url.is_empty(),
+            crate::app::git_remote_origin(&self.repo_path).is_some(),
+        ) {
+            (true, _) => {
+                let _ = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&self.repo_path)
+                    .args(["remote", "remove", "origin"])
+                    .output();
+                None
+            }
+            (false, true) => {
+                crate::app::git_in(
+                    &self.repo_path,
+                    &["remote", "set-url", "origin", &self.url],
+                )?;
+                Some(self.url)
+            }
+            (false, false) => {
+                crate::app::git_in(&self.repo_path, &["remote", "add", "origin", &self.url])?;
+                Some(self.url)
+            }
+        };
+        Ok(Performed {
+            change: WorktreeChange::nothing(),
+            epilogue: Box::new(crate::app::ProjectRemoteSet {
+                project_id: self.project_id,
+                remote,
+            }),
+        })
+    }
 }

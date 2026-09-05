@@ -21,8 +21,8 @@
 //!   `fix_run_stage`), `run_diff`, the interaction verbs (`message_run` /
 //!   `resume_run` / `run_request_changes`), the git finishers
 //!   (`run_approve_merge` / `run_commit` / `run_push` / `run_merge_and_push`),
-//!   `abandon_run`, and `adopt_run` (a run minted around a pre-existing
-//!   worktree, `plan_id` `None` — the only plan-less runs left).
+//!   `abandon_run_keeping_checkout`, and `adopt_run` (a run minted around a
+//!   pre-existing worktree, `plan_id` `None` — the only plan-less runs left).
 //!
 //! The caller owns each active entity and hands it back by `&mut` for each
 //! transition, so the orchestrator never hides state. The cross-entity seams —
@@ -751,6 +751,16 @@ pub(crate) const PROMPT_WRITE_EXIT_GRACE: std::time::Duration =
 /// so the old 6s bound left no margin at all under load — and an expired wait
 /// writes into the startup screen, where the alternate-screen clear eats it.
 pub(crate) const HARNESS_READY_GRACE: std::time::Duration = std::time::Duration::from_millis(20000);
+
+/// How long a checkout's removal waits for the agents that were writing into it
+/// to die.
+///
+/// `remove_dir_all` walking a directory a child is still creating files in
+/// fails the walk, so kill, reap, THEN remove is the order that makes the
+/// removal reliable. A SIGKILLed harness reaps in milliseconds; this is the
+/// bound on one wedged in uninterruptible I/O, after which the removal is
+/// attempted anyway — best-effort, as it has always been.
+pub(crate) const CHECKOUT_REAP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How many messages a resumed agent's catch-up packet carries.
 ///
@@ -2674,28 +2684,6 @@ impl Orchestrator {
         Ok(())
     }
 
-    /// Abandon a run from any non-terminal state: mark the run `Abandoned` and
-    /// remove its worktree. The worktree's agent is NOT this call's to kill —
-    /// an agent belongs to the worktree, not to the run, so the caller closes
-    /// the agent tab (see `run_abandon`). Per the run entity's contract the
-    /// BRANCH is kept — a run's work survives an abandon so it can be
-    /// re-attempted — unlike the fused path, which pruned both. Cleanup is
-    /// best-effort: a leftover worktree is logged, never a reason to fail the
-    /// abandon (the lifecycle verdict is what must persist).
-    pub fn abandon_run(&self, active: &mut ActiveRun) -> Result<(), OrchestratorError> {
-        self.abandon_run_keeping_checkout(active)?;
-        if let Err(cleanup) = self
-            .worktrees
-            .remove(&active.worktree, /* keep_branch */ true)
-        {
-            eprintln!(
-                "abandon run {}: run abandoned but worktree cleanup failed: {cleanup}",
-                active.worktree.name
-            );
-        }
-        Ok(())
-    }
-
     /// Abandon without touching the checkout — the lifecycle verdict alone.
     /// A run adopted around the PRIMARY checkout ends this way: that directory
     /// is the repository, and [`WorktreeManager::remove`] opens with
@@ -2815,21 +2803,16 @@ impl Orchestrator {
         Ok(self.worktrees.restore(worktree)?)
     }
 
-    /// Best-effort teardown of a leftover worktree + branch for a task being
-    /// deleted from the board. A failed cleanup is logged, never fatal — deleting
-    /// the task record is what removes it, and a stray worktree is only clutter.
-    pub fn discard_worktree(&self, worktree: &Worktree) {
-        self.discard_checkout(worktree, /* keep_branch */ false)
-    }
-
-    /// The same teardown, for a checkout whose branch Build did not cut: the
-    /// directory goes and the ref stays. A dispatch that checked out a branch
-    /// somebody else made and then failed must hand that branch back whole.
-    pub fn discard_checkout_keeping_branch(&self, worktree: &Worktree) {
-        self.discard_checkout(worktree, /* keep_branch */ true)
-    }
-
-    fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
+    /// Best-effort teardown of a leftover checkout: the directory always, and
+    /// the branch under it unless the caller is handing that back. A failed
+    /// cleanup is logged, never fatal — a stray worktree is only clutter, and
+    /// what removes a card is the record, not the directory.
+    ///
+    /// `keep_branch` is the caller's own fact and never derivable here: a run's
+    /// work outlives an abandon so it can be re-attempted, and a dispatch that
+    /// checked out a branch somebody else made must hand that branch back
+    /// whole.
+    pub fn discard_checkout(&self, worktree: &Worktree, keep_branch: bool) {
         if let Err(e) = self.worktrees.remove(worktree, keep_branch) {
             eprintln!("discard_worktree {}: {e}", worktree.name);
         }
@@ -5735,7 +5718,8 @@ mod tests {
         let branch = run.worktree.branch();
         let path = run.worktree.path.clone();
 
-        orch.abandon_run(&mut run).unwrap();
+        orch.abandon_run_keeping_checkout(&mut run).unwrap();
+        orch.discard_checkout(&run.worktree, /* keep_branch */ true);
         assert_eq!(run.run.state, RunState::Abandoned);
         assert!(!path.exists(), "the worktree is removed");
         // The branch survives — a run's work outlives an abandon so it can be

@@ -33,9 +33,12 @@ use crate::harness::{
 #[cfg(test)]
 use crate::lifecycle::{fail_dispatch_at, BranchDispatchStep};
 use crate::lifecycle::{
-    AdoptImplementation, CreateWorktree, DispatchCheckout, DispatchTarget, LifecycleEpilogue,
-    LifecycleOutcome, OpenImplementation, OpenPlanWorkspace, PendingRow, PendingState, Performed,
-    RestoreImplementationCheckout, WorktreeChange, WorktreeLifecycleJob, WorktreeMutation,
+    AdoptCheckout, AdoptImplementation, AdoptionTarget, CloneRepo, CreateRepo, CreateWorktree,
+    DiscardCheckout, DiscardedCheckout, DispatchCheckout, DispatchTarget,
+    ImplementationCheckout, LifecycleEpilogue, LifecycleOutcome, OpenImplementation,
+    OpenPlanWorkspace, OpenRepo, PendingRow, PendingState, Performed,
+    RestoreImplementationCheckout, SetRemote, WorktreeChange, WorktreeLifecycleJob,
+    WorktreeMutation,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -55,8 +58,8 @@ use crate::reaper::Retirement;
 use crate::relay::{FrameHandler, SessionSender};
 use crate::run::ValidationReport;
 use crate::run::{
-    PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
-    StagePublication,
+    run_transition, PublicationAttempt, RunEvent, RunId, RunState, StageProgress,
+    StageProgressState, StagePublication,
 };
 use crate::screen::{AttachSnapshot, ScreenHandle, TerminalHandle, TERM_FLUSH_MS};
 use crate::store::{
@@ -4172,11 +4175,12 @@ impl AppState {
 
     /// Scan one project's checkouts here and now, with the app mutex in hand.
     ///
-    /// The rule this file is built around forbids exactly this, and the one
-    /// lifecycle verb that still calls it — adoption, which must decide against
-    /// the checkouts that exist rather than a cached summary — moves to the
-    /// lock-free run phase of [`WorktreeLifecycleJob`] as dispatch already has.
-    /// It is named for what it does so that stays visible until it does.
+    /// Tests only, and nothing else: every verb that has to decide against the
+    /// checkouts that exist — a dispatch, an adoption, an implementation handed
+    /// a card — asks for them in the lock-free run phase of a
+    /// [`WorktreeLifecycleJob`]. What is left here is the tests' way to settle
+    /// the cache before they read an id out of it.
+    #[cfg(test)]
     fn scan_external_worktrees_now(
         &mut self,
         project_id: &str,
@@ -6539,7 +6543,11 @@ impl AppState {
 
     /// All registered projects, for the New-task picker and Settings.
     fn project_list(&self) -> Value {
-        let projects: Vec<Value> = self.projects.iter().map(project_json).collect();
+        let projects: Vec<Value> = self
+            .projects
+            .iter()
+            .map(|project| project_json(project, git_remote_origin(&project.repo_path)))
+            .collect();
         json!({ "projects": projects })
     }
 
@@ -6548,27 +6556,40 @@ impl AppState {
     /// than at first dispatch.
     fn project_add(&mut self, params: &Value) -> Result<Value, String> {
         let path = require_str(params, "path")?;
-        let repo_path = expand_tilde(&path);
-        let repo =
-            git2::Repository::open(&repo_path).map_err(|e| format!("not a git repository: {e}"))?;
-        // Use the requested branch, or fall back to the repo's checked-out default —
-        // so browsing to a repo and adding it "just works" without naming a branch.
-        let base_branch = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| git_default_branch(&repo_path))
-            .unwrap_or_else(|| "main".to_string());
-        repo.revparse_single(&base_branch)
-            .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
-        let id = self.add_project(repo_path, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        let path = expand_tilde(&path);
+        self.defer_project(
+            path.clone(),
+            path.display().to_string(),
+            Box::new(OpenRepo {
+                requested_base: requested_base_branch(params),
+                path,
+            }),
+        )
+    }
+
+    /// Reserve the directory a project verb is about to read or write and hand
+    /// its git to the drain. The directory is the row's identity: there is no
+    /// project id until the git lands, and what two project verbs collide over
+    /// is the folder, not a name.
+    fn defer_project(
+        &mut self,
+        dest: std::path::PathBuf,
+        title: String,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let row = PendingRow {
+            entity_id: crate::worktree::external_worktree_id(
+                &crate::worktree::canonical_planned_path(&dest),
+            ),
+            project_id: String::new(),
+            title,
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: None,
+            implements: None,
+            since: std::time::Instant::now(),
+        };
+        self.defer_lifecycle(row, mutation)
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -6777,68 +6798,22 @@ impl AppState {
             .map(str::trim)
             .filter(|s| !s.is_empty())
         {
-            Some(n) => n.to_string(),
+            Some(named) => named.to_string(),
             None => repo_name_from_url(&url),
         };
-        if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err(format!("invalid project name: {name:?}"));
-        }
-        std::fs::create_dir_all(&self.projects_dir)
-            .map_err(|e| format!("cannot create projects folder: {e}"))?;
+        let name = usable_project_name(name)?;
         let dest = self.projects_dir.join(&name);
-        if dest.exists() {
-            // Already in the projects folder — register the existing checkout instead
-            // of cloning again, as long as it's the same repo (matching remote).
-            if !dest.join(".git").exists() {
-                return Err(format!(
-                    "'{name}' already exists in the projects folder and is not a git repo"
-                ));
-            }
-            if let Some(origin) = git_remote_origin(&dest) {
-                if !remotes_match(&origin, &url) {
-                    return Err(format!(
-                        "'{name}' already exists with a different remote ({origin})"
-                    ));
-                }
-            }
-            return self.register_clone(params, dest);
-        }
-        let out = std::process::Command::new("git")
-            .arg("clone")
-            .arg(&url)
-            .arg(&dest)
-            .output()
-            .map_err(|e| format!("could not run git: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "git clone failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        self.register_clone(params, dest)
-    }
-
-    /// Register a freshly cloned (or already-present) checkout as a project,
-    /// defaulting the base branch to its checked-out branch.
-    fn register_clone(
-        &mut self,
-        params: &Value,
-        dest: std::path::PathBuf,
-    ) -> Result<Value, String> {
-        let base = params
-            .get("base_branch")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| git_default_branch(&dest))
-            .unwrap_or_else(|| "main".to_string());
-        let id = self.add_project(dest, base);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.defer_project(
+            dest.clone(),
+            name.clone(),
+            Box::new(CloneRepo {
+                url,
+                name,
+                dest,
+                projects_dir: self.projects_dir.clone(),
+                requested_base: requested_base_branch(params),
+            }),
+        )
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch
@@ -6846,99 +6821,69 @@ impl AppState {
     /// or the projects folder by default — and register it. An optional `remote`
     /// is wired as `origin` at creation.
     fn project_create(&mut self, params: &Value) -> Result<Value, String> {
-        let name = require_str(params, "name")?;
-        let name = name.trim();
-        if name.is_empty() || name.contains('/') || name.contains("..") {
-            return Err(format!("invalid project name: {name:?}"));
-        }
+        let name = usable_project_name(require_str(params, "name")?)?;
         let base_branch = params
             .get("base_branch")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|branch| !branch.is_empty())
             .unwrap_or("main")
             .to_string();
         let parent = match params
             .get("parent")
             .and_then(Value::as_str)
             .map(str::trim)
-            .filter(|s| !s.is_empty())
+            .filter(|parent| !parent.is_empty())
         {
-            Some(p) => expand_tilde(p),
+            Some(parent) => expand_tilde(parent),
             None => self.projects_dir.clone(),
         };
-        std::fs::create_dir_all(&parent)
-            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
-        let dest = parent.join(name);
-        if dest.exists() {
-            return Err(format!("'{name}' already exists in {}", parent.display()));
-        }
-        std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {name}: {e}"))?;
-        git_in(&dest, &["init", "-b", &base_branch])?;
-        std::fs::write(dest.join("README.md"), format!("# {name}\n"))
-            .map_err(|e| format!("cannot write README: {e}"))?;
-        git_in(&dest, &["add", "."])?;
-        // Commit with an explicit identity so it never depends on host git config.
-        git_in(
-            &dest,
-            &[
-                "-c",
-                "user.email=build@build.ing",
-                "-c",
-                "user.name=Build",
-                "commit",
-                "-m",
-                "Initial commit",
-            ],
-        )?;
-        if let Some(remote) = params
-            .get("remote")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            git_in(&dest, &["remote", "add", "origin", remote])?;
-        }
-        let id = self.add_project(dest, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        let dest = parent.join(&name);
+        self.defer_project(
+            dest,
+            name.clone(),
+            Box::new(CreateRepo {
+                name,
+                parent,
+                base_branch,
+                remote: params
+                    .get("remote")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|remote| !remote.is_empty())
+                    .map(str::to_string),
+            }),
+        )
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
     fn project_set_remote(&mut self, params: &Value) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         let url = require_str(params, "url")?;
-        let url = url.trim();
-        let repo_path = self
-            .projects
-            .iter()
-            .find(|p| p.id == project_id)
-            .map(|p| p.repo_path.clone())
-            .ok_or_else(|| format!("unknown project: {project_id}"))?;
-        if url.is_empty() {
-            // Clearing: removing a missing origin is not an error.
-            let _ = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo_path)
-                .args(["remote", "remove", "origin"])
-                .output();
-        } else if git_remote_origin(&repo_path).is_some() {
-            git_in(&repo_path, &["remote", "set-url", "origin", url])?;
-        } else {
-            git_in(&repo_path, &["remote", "add", "origin", url])?;
-        }
-        self.persist();
         let project = self
             .projects
             .iter()
-            .find(|p| p.id == project_id)
-            .expect("exists");
-        Ok(project_json(project))
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| format!("unknown project: {project_id}"))?;
+        let repo_path = project.repo_path.clone();
+        let row = PendingRow {
+            entity_id: project_id.clone(),
+            project_id: project_id.clone(),
+            title: project.name.clone(),
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: None,
+            implements: None,
+            since: std::time::Instant::now(),
+        };
+        self.defer_lifecycle(
+            row,
+            Box::new(SetRemote {
+                project_id,
+                repo_path,
+                url: url.trim().to_string(),
+            }),
+        )
     }
 
     /// The orchestrator for a project id.
@@ -7858,16 +7803,43 @@ impl AppState {
         row: PendingRow,
         mutation: Box<dyn WorktreeMutation>,
     ) -> Result<WorktreeLifecycleJob, String> {
-        let job = WorktreeLifecycleJob::reserving(self.reserve_row(row)?, mutation);
-        // Every lifecycle job is held open here, in one place, so no verb has
-        // to remember to offer the tests a seam.
+        let row = self.reserve_row(row)?;
+        Ok(self.lifecycle_job(row, mutation))
+    }
+
+    /// Reserve a verb's row, take out of the registry whatever it has to hold
+    /// while its git runs, and hand that git to the drain — one call, so the
+    /// row is claimed before anything is torn down and nothing fallible runs
+    /// between the row and the job that releases it.
+    ///
+    /// `take` runs with the row already on the board and cannot refuse: every
+    /// refusal a verb has belongs before this call.
+    fn defer_lifecycle_holding(
+        &mut self,
+        row: PendingRow,
+        take: impl FnOnce(&mut AppState) -> Box<dyn WorktreeMutation>,
+    ) -> Result<Value, String> {
+        let row = self.reserve_row(row)?;
+        let mutation = take(self);
+        let job = self.lifecycle_job(row, mutation);
+        Ok(self.defer_job(job))
+    }
+
+    /// One reserved row's job, held open for the tests in one place so no verb
+    /// has to remember to offer them a seam.
+    fn lifecycle_job(
+        &self,
+        row: Arc<PendingRow>,
+        mutation: Box<dyn WorktreeMutation>,
+    ) -> WorktreeLifecycleJob {
+        let job = WorktreeLifecycleJob::reserving(row, mutation);
         #[cfg(test)]
         let job = {
             let mut job = job;
             job.hold_at(self.off_lock_gate.clone());
             job
         };
-        Ok(job)
+        job
     }
 
     /// Hand one reserved job to the drain, which runs it with the app mutex
@@ -11542,7 +11514,7 @@ impl AppState {
         }
         let project_id = self.project_of(issue_id)?;
         let requested_choice = model_choice_from(params, self.default_harness)?;
-        let run_id = match self.run_on_worktree(&project_id, worktree_id) {
+        let (run_id, checkout) = match self.run_owning_worktree_id(&project_id, worktree_id) {
             Some(run_id) => {
                 // The primary checkout is the repository, not a worktree to
                 // hand an Issue: committing stage docs there lands them on the
@@ -11567,27 +11539,23 @@ impl AppState {
                         other.0
                     ));
                 }
-                run_id
+                let checkout = self.runs[&run_id].worktree.path.clone();
+                (run_id, ImplementationCheckout::Owned(checkout))
             }
-            None => {
-                // STILL UNDER THE APP MUTEX, deliberately: `run_adopt` forces a
-                // whole-repository scan and writes a checkpoint commit, and
-                // both stay there until `run.adopt` itself moves onto a job of
-                // its own. An epilogue cannot defer a second job into a drain
-                // that has already run, so chaining the two is that step's, not
-                // this one's. Everything else about this verb — the checkout a
-                // run already owns, and every `run.create` that names none — is
-                // off the lock.
-                let adopted = self.run_adopt(&json!({
-                    "project_id": project_id,
-                    "worktree_id": worktree_id,
-                }))?;
-                adopted
-                    .get("run_id")
-                    .and_then(Value::as_str)
-                    .ok_or("run.adopt returned no run_id")?
-                    .to_string()
-            }
+            // Nobody owns it yet, so this implementation's git takes it over
+            // first — the scan that resolves the card and the checkpoint commit
+            // that writes Build's ownership into it, both off the lock, and the
+            // run they mint is the one the implementation is written onto.
+            None => (
+                format!("run-{}", uuid::Uuid::new_v4()),
+                ImplementationCheckout::Unowned {
+                    target: AdoptionTarget::Card {
+                        worktree_id: worktree_id.to_string(),
+                        excluded: self.bound_worktree_paths(),
+                    },
+                    base_branch: self.base_for(&project_id)?,
+                },
+            ),
         };
 
         let has_active_run = self.runs.iter().any(|(id, run)| {
@@ -11608,7 +11576,6 @@ impl AppState {
             has_active_run,
         })
         .map_err(err)?;
-        let checkout = self.runs[&run_id].worktree.path.clone();
         let project = self.orch_for(&project_id)?.clone();
         // The run stays on the board while its checkout is checkpointed: it is
         // the same run either way, and a run that vanished from every poll for
@@ -11639,23 +11606,6 @@ impl AppState {
                 caller,
             }),
         )
-    }
-
-    /// The live run that owns a checkout, matched by the same path hash the
-    /// feed's rows carry. A terminal run has let its worktree go, so it never
-    /// answers here — the checkout is adoptable again.
-    fn run_on_worktree(&self, project_id: &str, worktree_id: &str) -> Option<String> {
-        self.runs
-            .iter()
-            .filter(|(run_id, active)| {
-                !active.run.state.is_terminal()
-                    && self.entity_project.get(*run_id).map(String::as_str) == Some(project_id)
-            })
-            .find(|(_, active)| {
-                crate::worktree::external_worktree_id(&Self::canonical_root(&active.worktree.path))
-                    == worktree_id
-            })
-            .map(|(run_id, _)| run_id.clone())
     }
 
     /// `run.create`'s apply half on a checkout that was cut for it: open the
@@ -11710,23 +11660,34 @@ impl AppState {
             issue_id,
             run_id,
             base_sha,
+            adopted,
             model_choice,
             caller,
         } = opened;
         let opened = (|| -> Result<(), String> {
-            let mut active = self.take_run(&run_id)?;
-            let adopted = (|| -> Result<(AgentTurn, String), String> {
+            // The run this is written onto: the one the branch already had, or
+            // the one the adoption in this job's git phase just earned.
+            let mut active = match &adopted {
+                Some(adopted) => adopted.open_run(self)?,
+                None => self.take_run(&run_id)?,
+            };
+            let handed_over = (|| -> Result<(AgentTurn, String), String> {
                 let plan = self.plans.get(&issue_id).ok_or("unknown plan_id")?;
                 self.orch_for(&project_id)?
                     .open_adopted_implementation(&mut active, plan, base_sha, model_choice)
                     .map_err(err)
             })();
-            let (turn, agent_id) = match adopted {
+            let (turn, agent_id) = match handed_over {
                 Ok(opened) => opened,
                 Err(error) => {
-                    // Nothing was handed over: the branch keeps the run it had.
-                    self.runs.insert(run_id.clone(), active);
-                    return Err(error);
+                    // Nothing was handed over. The branch keeps the run it had
+                    // — or, when this job earned it one, keeps the plain
+                    // adopted run its checkout is now Build's under.
+                    let put_back = self.finish_run_mutation(run_id.clone(), active);
+                    return Err(match put_back {
+                        Ok(()) => error,
+                        Err(store) => format!("{error}; and the run could not be saved: {store}"),
+                    });
                 }
             };
             let branch = active.worktree.branch();
@@ -13134,36 +13095,96 @@ impl AppState {
         Ok(view)
     }
 
+    /// Abandon a run: end it, take its agents down, and take back the checkout
+    /// it was working in — the directory, never the branch, because a run's
+    /// work outlives the run so it can be re-attempted.
+    ///
+    /// Every refusal is spent here, before anything is torn down. What the
+    /// drain runs is git that cannot fail the verb: the stage publications the
+    /// removal is about to make unreadable, the wait for the agents to die, and
+    /// the removal itself.
     fn run_abandon(&mut self, params: &Value) -> Result<Value, String> {
         let run_id = require_str(params, "run_id")?;
         let project_id = self.project_of(&run_id)?;
-        let mut active = self.take_run(&run_id)?;
-        let issue_id = active.run.plan_id.as_ref().map(|id| id.0.clone());
-        let branch = active.worktree.branch();
-        // Reconcile publication while the checkout and refs are still
-        // inspectable. Every Build-owned removal path must decide completion
-        // before deleting the evidence it needs to decide it.
-        let published = self.classify_stages_now(&run_id, &active);
-        let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
-        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        let active = self.runs.get(&run_id).ok_or("unknown run_id")?;
+        // Judged before a single agent is killed: an abandon that is not legal
+        // must leave the run exactly as it found it.
+        run_transition(&active.run.state, RunEvent::Abandon)
+            .map_err(|illegal| illegal.to_string())?;
         // Abandoning removes the run's worktree — which for a primary run is
         // the repository. That run ends by letting go of the checkout instead.
-        let keeps_checkout = self.owns_primary_checkout(&run_id, &active);
-        let result = self.orch_for(&project_id).and_then(|orch| {
-            if keeps_checkout {
-                orch.abandon_run_keeping_checkout(&mut active).map_err(err)
-            } else {
-                orch.abandon_run(&mut active).map_err(err)
-            }
-        });
-        if result.is_ok() {
-            // The worktree removal inside `abandon_run` is best-effort, so the
-            // orphan reaper — which only sweeps tabs whose root is GONE —
-            // cannot be trusted to take the agent with it. A human who
-            // abandoned a run must not keep paying for the agent that was
-            // working on it, so the kill is explicit, the way release and
-            // delete kill theirs.
-            self.retire_agent_tabs(&active.worktree.path);
+        let keeps_checkout = self.owns_primary_checkout(&run_id, active);
+        let row = PendingRow {
+            entity_id: run_id.clone(),
+            project_id: project_id.clone(),
+            title: active.run.goal.clone(),
+            branch: None,
+            state: PendingState::Discarding,
+            checkout_id: Some(crate::worktree::external_worktree_id(&Self::canonical_root(
+                &active.worktree.path,
+            ))),
+            implements: None,
+            since: std::time::Instant::now(),
+        };
+        let project = self.orch_for(&project_id)?.clone();
+        let detail = thread_detail(params);
+        self.defer_lifecycle_holding(row, move |state| {
+            let active = state
+                .runs
+                .remove(&run_id)
+                .expect("the run was read out of the map above");
+            state.invalidate_run_stat(&run_id);
+            let stages = state.stage_publication_query(&run_id, &active);
+            // A human who abandoned a run must not keep paying for the agent
+            // that was working on it, so the kill is explicit — and the removal
+            // waits it out rather than walking a directory a live child is
+            // still writing into.
+            let retirements = state.retire_agent_tabs(&active.worktree.path);
+            Box::new(DiscardCheckout {
+                project,
+                checkout: match keeps_checkout {
+                    true => DiscardedCheckout::Kept,
+                    false => DiscardedCheckout::Removed(active.worktree.clone()),
+                },
+                retirements,
+                stages,
+                settlement: Box::new(RunAbandoned {
+                    issue_id: active.run.plan_id.as_ref().map(|id| id.0.clone()),
+                    run_id: run_id.clone(),
+                    project_id,
+                    detail,
+                }),
+                active: Box::new(active),
+                run_id,
+            })
+        })
+    }
+
+    /// Write down an abandon whose git has returned: the run's verdict, the
+    /// stages the removal made unverifiable, and the Issue's lineage.
+    ///
+    /// The run comes back on the board here whichever way the rest goes —
+    /// `answer_run_mutation` is what puts it back — so nothing below can strand
+    /// it.
+    fn settle_abandoned_run(
+        &mut self,
+        abandoned: RunAbandoned,
+        mut active: ActiveRun,
+        published: StagePublications,
+    ) -> Result<Value, String> {
+        let RunAbandoned {
+            run_id,
+            project_id,
+            issue_id,
+            detail,
+        } = abandoned;
+        let branch = active.worktree.branch();
+        let worktree_id = crate::worktree::external_worktree_id(&active.worktree.path);
+        let verdict = self
+            .orch_for(&project_id)
+            .and_then(|orch| orch.abandon_run_keeping_checkout(&mut active).map_err(err));
+        let affected_stages = reconcile_missing_run_worktree(&mut active, &published);
+        if verdict.is_ok() {
             // The run is out of the map, so its lineage closes on the thread
             // this call holds rather than through the owner lookup.
             let now = now_rfc3339();
@@ -13177,7 +13198,7 @@ impl AppState {
                     now,
                 );
             }
-            // A branch may carry several agents and the kill above took every
+            // A branch may carry several agents and the decide phase took every
             // one of them. `Abandoned` closed the first agent's turn (and, for
             // a planned implementation, its Issue's — see
             // `mirror_run_outcome_to_issue`); the agents beside it were told
@@ -13191,9 +13212,8 @@ impl AppState {
                 }
             }
         }
-        let (view, persisted) =
-            self.answer_run_mutation(run_id.clone(), active, thread_detail(params));
-        result?;
+        let (view, persisted) = self.answer_run_mutation(run_id.clone(), active, detail);
+        verdict?;
         persisted?;
         if let Some(issue_id) = &issue_id {
             // Abandoning is deleting the branch with nothing merged out of it,
@@ -13268,8 +13288,13 @@ impl AppState {
             return Ok(json!({ "ok": true, "retained_as_issue_lineage": true }));
         }
         let worktree = active.worktree.clone();
-        let adopted = active.adopted;
-        let project_id = self.entity_project.get(&run_id).cloned();
+        // A failed run still holds its worktree; deleting an adopted run's card
+        // must never delete the user's files (delete removes the card, not the
+        // worktree it was minted around).
+        let prunes_checkout = worktree.path.exists() && !active.adopted;
+        let title = active.run.goal.clone();
+        let project_id = self.project_of(&run_id)?;
+        let project = self.orch_for(&project_id)?.clone();
 
         if let Some(store) = &self.store {
             store
@@ -13277,41 +13302,59 @@ impl AppState {
                 .map_err(|e| format!("run store: {e}"))?;
         }
 
-        let active = self.runs.remove(&run_id).expect("checked above");
-        // The run is gone, so its agent's `done` reports would have no owner to
-        // route to. Close the worktree's agent — the worktree itself survives
-        // (deleting an adopted run's card must never touch the user's files),
-        // and reopening the Agent tab there re-adopts.
-        self.retire_agent_tabs(&active.worktree.path);
+        let row = PendingRow {
+            entity_id: run_id.clone(),
+            project_id: project_id.clone(),
+            title,
+            branch: None,
+            state: PendingState::Discarding,
+            checkout_id: Some(crate::worktree::external_worktree_id(&Self::canonical_root(
+                &worktree.path,
+            ))),
+            implements: None,
+            since: std::time::Instant::now(),
+        };
+        self.defer_lifecycle_holding(row, move |state| {
+            let active = state
+                .runs
+                .remove(&run_id)
+                .expect("the run was read out of the map above");
+            // The card is gone, so this agent's `done` reports would have no
+            // owner to route to. Close the worktree's agent — the worktree
+            // itself may well survive, and reopening the Agent tab there
+            // re-adopts.
+            let retirements = state.retire_agent_tabs(&active.worktree.path);
+            let stages = state.stage_publication_query(&run_id, &active);
+            Box::new(DiscardCheckout {
+                project,
+                checkout: match prunes_checkout {
+                    true => DiscardedCheckout::Pruned(worktree.clone()),
+                    false => DiscardedCheckout::Kept,
+                },
+                retirements,
+                stages,
+                settlement: Box::new(RunDeleted {
+                    run_id: run_id.clone(),
+                    project_id,
+                    checkout: worktree.path,
+                }),
+                active: Box::new(active),
+                run_id,
+            })
+        })
+    }
 
-        // A failed run still holds its worktree; deleting an adopted run's card
-        // must never delete the user's files (delete removes the card, not the
-        // worktree it was minted around).
-        if worktree.path.exists() && !adopted {
-            if let Some(orch) = project_id
-                .as_deref()
-                .and_then(|pid| self.orch_for(pid).ok())
-            {
-                orch.discard_worktree(&worktree);
-            }
-        }
-
-        self.entity_project.remove(&run_id);
-        self.entity_project_path.remove(&run_id);
-        self.entity_created_at.remove(&run_id);
-        self.entity_updated_at.remove(&run_id);
-        self.entity_state_changed_at.remove(&run_id);
-        self.entity_last_state.remove(&run_id);
-        self.run_files_changed_at.remove(&run_id);
-        self.invalidate_run_stat(&run_id);
-
-        if worktree.path.exists() {
-            if let Some(pid) = project_id {
-                self.rescan_external_worktrees(&pid);
-            }
-        }
-        self.reap_orphaned_terminals();
-        Ok(json!({ "ok": true }))
+    /// Forget every trace of a run whose record has been deleted. The map entry
+    /// itself went in the decide phase; this is the bookkeeping beside it.
+    fn forget_run(&mut self, run_id: &str) {
+        self.entity_project.remove(run_id);
+        self.entity_project_path.remove(run_id);
+        self.entity_created_at.remove(run_id);
+        self.entity_updated_at.remove(run_id);
+        self.entity_state_changed_at.remove(run_id);
+        self.entity_last_state.remove(run_id);
+        self.run_files_changed_at.remove(run_id);
+        self.invalidate_run_stat(run_id);
     }
 
     /// Mint a plan-less run around an existing checkout (`plan_id` None): one of
@@ -13331,59 +13374,93 @@ impl AppState {
             .get("primary")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let (checkout, scope) = if adopting_primary {
+        let target = if adopting_primary {
             if let Some(run_id) = self.primary_run_of(&project_id) {
-                let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(
-                    &run_id,
-                    active,
-                    thread_detail(params),
-                    DigestScope::Detail,
-                ));
+                return Ok(self.owning_run_view(&run_id, params));
             }
-            let repo_path = self.repo_path_for(&project_id)?;
-            (
-                crate::worktree::describe_primary_checkout(&repo_path, &base)
-                    .map_err(|e| e.to_string())?,
-                AdoptionScope::PrimaryCheckout,
-            )
+            AdoptionTarget::Primary {
+                repo_path: self.repo_path_for(&project_id)?,
+            }
         } else {
             let worktree_id = require_str(params, "worktree_id")?;
             if let Some(run_id) = self.run_owning_worktree_id(&project_id, &worktree_id) {
-                let active = self.runs.get(&run_id).expect("found by scanning the map");
-                return Ok(self.run_view(
-                    &run_id,
-                    active,
-                    thread_detail(params),
-                    DigestScope::Detail,
-                ));
+                return Ok(self.owning_run_view(&run_id, params));
             }
-            // Force a fresh scan: adoption must never act on a stale card.
-            (
-                self.scan_external_worktrees_now(&project_id)?
-                    .into_iter()
-                    .find(|w| w.id == worktree_id)
-                    .ok_or_else(|| format!("unknown worktree_id: {worktree_id}"))?,
-                AdoptionScope::ExternalWorktree,
-            )
+            AdoptionTarget::Card {
+                worktree_id,
+                excluded: self.bound_worktree_paths(),
+            }
         };
+        let checkout_id = target.checkout_id();
+        // The repo root is reachable from every reload and every second
+        // browser, and a card is adoptable from more than one surface. An asker
+        // who arrives while the checkout is being taken over converges on the
+        // run that adoption is opening rather than minting a second owner.
+        if let Some(opening) = self.run_being_opened_on(&project_id, &checkout_id) {
+            return Ok(json!({ "run_id": opening, "adopting": true }));
+        }
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
-        // Judged and checkpointed by the one adoption every caller shares: a
-        // refusal leaves the checkout exactly as it was found.
+        let row = PendingRow {
+            entity_id: run_id.clone(),
+            project_id: project_id.clone(),
+            title: self.checkout_title(&project_id, &checkout_id),
+            branch: None,
+            state: PendingState::Creating,
+            checkout_id: Some(checkout_id),
+            implements: None,
+            since: std::time::Instant::now(),
+        };
         let project = self.orch_for(&project_id)?.clone();
-        let adopted = crate::lifecycle::adopt(
-            &project,
-            &project_id,
-            &checkout,
-            &base,
-            scope,
-            &run_id,
-            model_choice,
-        )?;
-        let active = adopted.open_run(self)?;
-        let (view, persisted) = self.answer_run_mutation(run_id, active, thread_detail(params));
-        persisted?;
-        Ok(view)
+        self.defer_lifecycle(
+            row,
+            Box::new(AdoptCheckout {
+                project,
+                project_id,
+                base_branch: base,
+                run_id,
+                target,
+                model_choice,
+                detail: thread_detail(params),
+            }),
+        )
+    }
+
+    /// The view an adopting caller gets when the checkout it named already has
+    /// an owner: that run, in full.
+    fn owning_run_view(&self, run_id: &str, params: &Value) -> Value {
+        let active = self
+            .runs
+            .get(run_id)
+            .expect("the caller found this run by scanning the map");
+        self.run_view(run_id, active, thread_detail(params), DigestScope::Detail)
+    }
+
+    /// The run a verb in flight is opening on this checkout, if one is. A verb
+    /// that is taking a checkout away leaves nothing to converge on, which is
+    /// [`PendingState::leaves_a_record`]'s question.
+    fn run_being_opened_on(&self, project_id: &str, checkout_id: &str) -> Option<String> {
+        self.pending_rows
+            .iter()
+            .find(|row| {
+                row.project_id == project_id
+                    && row.checkout_id.as_deref() == Some(checkout_id)
+                    && row.state.leaves_a_record()
+            })
+            .map(|row| row.entity_id.clone())
+    }
+
+    /// What to call a checkout on the row standing in for it: the branch the
+    /// last scan saw it on, or the project it belongs to when no card does.
+    fn checkout_title(&self, project_id: &str, checkout_id: &str) -> String {
+        self.external_scan_of(project_id)
+            .and_then(|cache| {
+                cache
+                    .worktrees
+                    .iter()
+                    .find(|checkout| checkout.id == checkout_id)
+            })
+            .and_then(|checkout| checkout.branch.clone())
+            .unwrap_or_else(|| self.project_name_by_id(project_id))
     }
 
     /// Finish a completed run through the same durable worktree archive path as
@@ -13568,21 +13645,19 @@ impl AppState {
                 .delete_run(&run_id)
                 .map_err(|e| format!("run store: {e}"))?;
         }
+        let project_id = self.entity_project.get(&run_id).cloned();
         let active = self.runs.remove(&run_id).expect("checked above");
         // Un-adopting hands the worktree back to the human; Build's agent in it
         // reported `done` to a run that no longer exists, so it goes with the
-        // run. Reopening the Agent tab there adopts again.
+        // run. Reopening the Agent tab there adopts again. The receipts are
+        // dropped: the tabs left the registry, which is what makes the agents
+        // unaddressable, and nothing here is waiting to delete a directory.
         self.retire_agent_tabs(&active.worktree.path);
-        let project_id = self.entity_project.remove(&run_id);
-        self.entity_project_path.remove(&run_id);
-        self.entity_created_at.remove(&run_id);
-        self.entity_updated_at.remove(&run_id);
-        self.entity_state_changed_at.remove(&run_id);
-        self.entity_last_state.remove(&run_id);
-        self.run_files_changed_at.remove(&run_id);
-        self.invalidate_run_stat(&run_id);
-        if let Some(pid) = project_id {
-            self.rescan_external_worktrees(&pid);
+        self.forget_run(&run_id);
+        // Build touches no disk here, so the checkout it hands back is
+        // described by the scan this claims rather than by an amendment.
+        if let Some(project_id) = project_id {
+            self.rescan_external_worktrees(&project_id);
         }
         self.reap_orphaned_terminals();
         Ok(json!({ "ok": true }))
@@ -15906,18 +15981,43 @@ fn write_in_dir(dir: &std::path::Path, rel: &str, contents: &str) -> Result<(), 
     }
     std::fs::write(path, contents).map_err(|e| e.to_string())
 }
-fn project_json(p: &Project) -> Value {
+/// One project's wire view. The remote is passed in rather than read here: a
+/// verb that just wrote it knows what it wrote, and every read of it is a git
+/// subprocess that has to be made somewhere the caller can see.
+fn project_json(p: &Project, remote: Option<String>) -> Value {
     json!({
         "project_id": p.id,
         "name": p.name,
         "path": p.repo_path.display().to_string(),
         "base_branch": p.base_branch,
-        "remote": git_remote_origin(&p.repo_path),
+        "remote": remote,
     })
 }
 
+/// A project name that can be a directory: not empty, one path segment, and
+/// nothing that climbs out of the folder it is going into.
+fn usable_project_name(name: impl AsRef<str>) -> Result<String, String> {
+    let name = name.as_ref().trim();
+    if name.is_empty() || name.contains('/') || name.contains("..") {
+        return Err(format!("invalid project name: {name:?}"));
+    }
+    Ok(name.to_string())
+}
+
+/// The base branch a project verb was told to use, if it was told one. With
+/// none, the repository's own checked-out default answers — read off the disk
+/// where the rest of the repository is read.
+fn requested_base_branch(params: &Value) -> Option<String> {
+    params
+        .get("base_branch")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(str::to_string)
+}
+
 /// Run a git subcommand in `dir`, mapping a non-zero exit to a readable error.
-fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
+pub(crate) fn git_in(dir: &std::path::Path, args: &[&str]) -> Result<(), String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -15971,7 +16071,7 @@ fn repo_name_from_url(url: &str) -> String {
 }
 
 /// The `origin` remote URL of a repo, if it has one.
-fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
+pub(crate) fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -15987,7 +16087,7 @@ fn git_remote_origin(dir: &std::path::Path) -> Option<String> {
 
 /// Whether two clone URLs point at the same repo, ignoring a trailing `/` or
 /// `.git`. A loose check — enough to catch "already cloned" without surprises.
-fn remotes_match(a: &str, b: &str) -> bool {
+pub(crate) fn remotes_match(a: &str, b: &str) -> bool {
     let norm = |s: &str| {
         s.trim()
             .trim_end_matches('/')
@@ -15998,7 +16098,7 @@ fn remotes_match(a: &str, b: &str) -> bool {
 }
 
 /// The checked-out branch name of a freshly cloned repo (its default branch).
-fn git_default_branch(dir: &std::path::Path) -> Option<String> {
+pub(crate) fn git_default_branch(dir: &std::path::Path) -> Option<String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -16955,6 +17055,10 @@ pub struct ImplementationAdopted {
     pub issue_id: String,
     pub run_id: String,
     pub base_sha: String,
+    /// The adoption this job's git phase ran on the way in, when the checkout
+    /// had no owner. The run it minted is opened here rather than taken off the
+    /// board, and nothing else about the implementation differs.
+    pub adopted: Option<RunAdopted>,
     pub model_choice: ModelChoice,
     pub caller: Box<dyn ImplementationCaller>,
 }
@@ -17318,6 +17422,132 @@ impl RunAdopted {
         );
         state.note_worktree_gone(&self.project_id, &self.checkout.path);
         Ok(active)
+    }
+}
+
+/// `run.adopt`'s apply half: the checkout is Build's on disk, and the run that
+/// stands for it is opened, persisted and answered with here. Nothing is owed
+/// on top of the adoption, so this is [`RunAdopted`] and the reply alone.
+pub struct RunAdoptionSettled {
+    pub adopted: RunAdopted,
+    pub detail: crate::thread::ThreadDetail,
+}
+
+impl LifecycleEpilogue for RunAdoptionSettled {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        let active = self.adopted.open_run(state)?;
+        let (view, persisted) =
+            state.answer_run_mutation(self.adopted.run_id.clone(), active, self.detail);
+        persisted?;
+        Ok(view)
+    }
+}
+
+/// Every project door's apply half: a repository is on disk, read, and ready to
+/// be registered. `project.add`, `project.clone` and `project.create` differ
+/// only in how the directory got there.
+pub struct ProjectAdded {
+    pub path: std::path::PathBuf,
+    pub base: String,
+    pub remote: Option<String>,
+}
+
+impl LifecycleEpilogue for ProjectAdded {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        // Idempotent, as it has always been: a repository already registered
+        // under this canonical path answers with the project it already is.
+        let id = state.add_project(self.path, self.base);
+        state.persist();
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == id)
+            .expect("just added");
+        Ok(project_json(project, self.remote))
+    }
+}
+
+/// `project.set_remote`'s apply half: git has been told, and the config write
+/// and the answer are what is left.
+pub struct ProjectRemoteSet {
+    pub project_id: String,
+    pub remote: Option<String>,
+}
+
+impl LifecycleEpilogue for ProjectRemoteSet {
+    fn apply(self: Box<Self>, state: &mut AppState) -> Result<Value, String> {
+        state.persist();
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == self.project_id)
+            .ok_or_else(|| format!("unknown project: {}", self.project_id))?;
+        Ok(project_json(project, self.remote))
+    }
+}
+
+/// What a run whose checkout has just been let go of still owes the records.
+/// `run.abandon` writes a verdict onto it; `run.delete` clears its card away.
+///
+/// The run and git's verdict on its stages arrive as arguments because the git
+/// phase carried them: the run rides through the removal so that no failure can
+/// strand it, and the stages were judged while the refs still stood.
+pub trait DiscardSettlement: Send {
+    fn settle(
+        self: Box<Self>,
+        state: &mut AppState,
+        active: ActiveRun,
+        published: StagePublications,
+    ) -> Result<Value, String>;
+}
+
+/// `run.abandon`'s apply half: the agents are dead, the checkout is gone, and
+/// what is left is the verdict — on the run, on the stages the removal made
+/// unverifiable, and on the Issue the run was implementing.
+pub struct RunAbandoned {
+    pub run_id: String,
+    pub project_id: String,
+    /// The Issue this run was implementing, told what it lost.
+    pub issue_id: Option<String>,
+    pub detail: crate::thread::ThreadDetail,
+}
+
+impl DiscardSettlement for RunAbandoned {
+    fn settle(
+        self: Box<Self>,
+        state: &mut AppState,
+        active: ActiveRun,
+        published: StagePublications,
+    ) -> Result<Value, String> {
+        state.settle_abandoned_run(*self, active, published)
+    }
+}
+
+/// `run.delete`'s apply half: the card is being cleared off the board, so every
+/// trace of the run in memory goes with the record the decide phase deleted.
+pub struct RunDeleted {
+    pub run_id: String,
+    pub project_id: String,
+    /// The directory the run worked in, consulted to tell a checkout that
+    /// survived the delete — the user's own files — from one that was pruned.
+    pub checkout: std::path::PathBuf,
+}
+
+impl DiscardSettlement for RunDeleted {
+    fn settle(
+        self: Box<Self>,
+        state: &mut AppState,
+        _active: ActiveRun,
+        _published: StagePublications,
+    ) -> Result<Value, String> {
+        state.forget_run(&self.run_id);
+        if self.checkout.exists() {
+            // The checkout outlived its card — it was the user's — so it goes
+            // back to the board as the bare one it is.
+            state.rescan_external_worktrees(&self.project_id);
+        }
+        state.reap_orphaned_terminals();
+        Ok(json!({ "ok": true }))
     }
 }
 
@@ -17783,7 +18013,7 @@ fn remove_registered_worktree(
 
 /// Everything one run's stage publications have to be decided against, taken
 /// under the state lock so the deciding needs none.
-struct StagePublicationQuery {
+pub struct StagePublicationQuery {
     run_id: String,
     repo_path: Option<std::path::PathBuf>,
     branch: String,
@@ -17795,7 +18025,7 @@ struct StagePublicationQuery {
 
 /// What git says about each of a run's completed stages.
 #[derive(Default)]
-struct StagePublications(HashMap<String, StagePublication>);
+pub struct StagePublications(HashMap<String, StagePublication>);
 
 /// One vanished run, with git's verdict on its stages already in hand.
 struct DecidedVanishedRun {
@@ -17841,7 +18071,7 @@ impl OffLockJob for VanishedRunSweep {
 impl StagePublicationQuery {
     /// The git half: a bounded fetch and two graph walks per completed stage.
     /// MUST run with the state lock released.
-    fn classify(&self) -> StagePublications {
+    pub fn classify(&self) -> StagePublications {
         let Some(repo_path) = self.repo_path.as_ref() else {
             return StagePublications::default();
         };
@@ -21141,6 +21371,150 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    /// Registering a project opens the repository, shells out for its default
+    /// branch and resolves it — three disk reads on a directory the daemon has
+    /// never seen, none of which may hold the app mutex.
+    #[test]
+    fn project_add_reads_the_default_branch_with_the_state_lock_free() {
+        let (dir_a, repo_a) = init_repo();
+        let (_dir_b, repo_b) = init_repo();
+        let mut app = AppState::new(
+            repo_a,
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let added = frame_on_a_thread(
+            &state,
+            "s-add",
+            "project.add",
+            json!({ "path": repo_b.to_str().unwrap() }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the add is holding the app mutex through its git"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being read");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let added = added
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the add answers once its git is done");
+        assert_eq!(added["ok"], true, "{added:?}");
+        assert_eq!(added["result"]["base_branch"], "main", "{added:?}");
+        assert_eq!(
+            state.lock().unwrap().projects.len(),
+            2,
+            "the project is registered by the epilogue"
+        );
+    }
+
+    /// The clone lands somewhere the decide phase never saw, so what the reply
+    /// says about the project is read out of the directory git left.
+    #[test]
+    fn project_clone_registers_its_project_from_the_landed_path() {
+        let (dir_src, repo_src) = init_repo();
+        let mut app = AppState::new(
+            repo_src.clone(),
+            dir_src.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        app.projects_dir = dir_src.path().join("projects");
+        let projects_dir = app.projects_dir.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let cloned = frame_on_a_thread(
+            &state,
+            "s-clone",
+            "project.clone",
+            json!({ "url": repo_src.to_str().unwrap(), "name": "landed" }),
+        );
+        gate_handle.wait_for_arrival();
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a repository is being cloned");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let cloned = cloned
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the clone answers once its git is done");
+        assert_eq!(cloned["ok"], true, "{cloned:?}");
+        let landed = std::path::PathBuf::from(cloned["result"]["path"].as_str().unwrap());
+        assert_eq!(
+            landed,
+            crate::worktree::canonical_root(&projects_dir.join("landed")),
+            "{cloned:?}"
+        );
+        assert!(landed.join("README.md").exists(), "the clone is on disk");
+        assert_eq!(
+            cloned["result"]["remote"].as_str().map(str::to_string),
+            git_remote_origin(&landed),
+            "the reply carries the origin the clone wired"
+        );
+    }
+
+    /// Setting a remote is three git subprocesses at worst, and a project's
+    /// wire view is read for every one of them.
+    #[test]
+    fn project_set_remote_writes_its_config_with_the_state_lock_free() {
+        let (dir_a, repo_a) = init_repo();
+        let mut app = AppState::new(
+            repo_a.clone(),
+            dir_a.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let wired = frame_on_a_thread(
+            &state,
+            "s-remote",
+            "project.set_remote",
+            json!({ "project_id": project_id, "url": "https://example.invalid/one.git" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the remote write is holding the app mutex"
+        );
+        let listed = frame_on_a_thread(&state, "s-list", "project.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the project list answers while a remote is being written");
+        assert_eq!(listed["ok"], true, "{listed:?}");
+
+        gate_handle.release();
+        let wired = wired
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the remote write answers once its git is done");
+        assert_eq!(wired["ok"], true, "{wired:?}");
+        assert_eq!(
+            wired["result"]["remote"], "https://example.invalid/one.git",
+            "{wired:?}"
+        );
+        assert_eq!(
+            git_remote_origin(&repo_a).as_deref(),
+            Some("https://example.invalid/one.git")
         );
     }
 
@@ -35454,6 +35828,158 @@ mod tests {
         );
     }
 
+    /// Adoption is a whole-repository scan, a checkpoint commit and a scaffold
+    /// — the git this whole split exists to keep off the app mutex.
+    #[test]
+    fn run_adopt_of_the_primary_checkout_reads_git_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let adopted = frame_on_a_thread(
+            &state,
+            "s-adopt",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the adoption is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a checkout is being adopted");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let adopted = adopted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the adoption answers once its git is done");
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["primary"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["state"], "review", "{adopted:?}");
+    }
+
+    /// The reply is built after the git, by the epilogue, so it carries what
+    /// only the checkout on disk could say — the branch the scan found it on.
+    #[test]
+    fn run_adopt_answers_from_its_epilogue_with_the_runs_own_view() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        add_external_worktree(&repo, dir.path(), "feature-y", "feature-y");
+        let worktree_id = state
+            .scan_external_worktrees_now(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|checkout| checkout.branch.as_deref() == Some("feature-y"))
+            .expect("the external worktree is discoverable")
+            .id;
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], true, "{adopted:?}");
+        assert_eq!(adopted["result"]["branch"], "feature-y", "{adopted:?}");
+        assert_eq!(adopted["result"]["adopted"], true, "{adopted:?}");
+        let run_id = run_id_of(&adopted);
+        let fetched = state.handle(req("run.get", json!({ "run_id": run_id })));
+        assert_eq!(
+            fetched["result"]["worktree_path"], adopted["result"]["worktree_path"],
+            "the deferred reply is the run's own view: {fetched:?}"
+        );
+    }
+
+    /// The repo root is reachable from every reload and every second browser.
+    /// While one adoption's git runs the checkout has no run yet, so the second
+    /// asker has to converge on the run the first is opening rather than mint a
+    /// second owner of one directory.
+    #[test]
+    fn two_adopts_of_one_checkout_converge_on_one_run() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let first = frame_on_a_thread(
+            &state,
+            "s-one",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        );
+        gate_handle.wait_for_arrival();
+        let second = frame_on_a_thread(
+            &state,
+            "s-two",
+            "run.adopt",
+            json!({ "project_id": project_id, "primary": true }),
+        )
+        .recv_timeout(Duration::from_secs(10))
+        .expect("a second browser is answered while the first adoption runs");
+        assert_eq!(second["ok"], true, "{second:?}");
+
+        gate_handle.release();
+        let first = first
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the first adoption answers once its git is done");
+        assert_eq!(first["ok"], true, "{first:?}");
+        assert_eq!(
+            second["result"]["run_id"], first["result"]["run_id"],
+            "both askers name one run: {second:?} {first:?}"
+        );
+        assert_eq!(
+            state.lock().unwrap().runs.len(),
+            1,
+            "the primary checkout has one owner"
+        );
+    }
+
+    /// Construction is the validation: a checkout that cannot be adopted is
+    /// refused before anything is written into it, so the work standing in it
+    /// is left exactly as it was found.
+    #[test]
+    fn run_adopt_refuses_a_detached_head_before_it_writes_a_checkpoint() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "loose", "loose");
+        assert!(Command::new("git")
+            .args(["-C", path.to_str().unwrap(), "checkout", "--detach"])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(path.join("scratch.txt"), "unsaved\n").unwrap();
+        let worktree_id = state
+            .scan_external_worktrees_now(&project_id)
+            .unwrap()
+            .into_iter()
+            .find(|checkout| checkout.path == crate::worktree::canonical_root(&path))
+            .expect("the detached checkout is discoverable")
+            .id;
+
+        let adopted = state.handle(req(
+            "run.adopt",
+            json!({ "project_id": project_id, "worktree_id": worktree_id }),
+        ));
+        assert_eq!(adopted["ok"], false, "{adopted:?}");
+        let pending = Command::new("git")
+            .args(["-C", path.to_str().unwrap(), "status", "--porcelain"])
+            .output()
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&pending.stdout).contains("scratch.txt"),
+            "the refusal wrote no checkpoint commit"
+        );
+        assert!(state.runs.is_empty(), "no run was minted");
+    }
+
     // ---- the primary checkout as a super-worktree -----------------------------
 
     /// Adopt the project's primary checkout — the same verb, the same run, the
@@ -35627,6 +36153,169 @@ mod tests {
             repo.join("README.md").exists(),
             "clearing the card must never delete the repository"
         );
+    }
+
+    /// Removing a checkout is `remove_dir_all` over a whole working tree, and a
+    /// run being abandoned must not stop every other frame while it runs.
+    #[test]
+    fn run_abandon_removes_its_checkout_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "going-away");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the abandon is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while a checkout is being removed");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once its git is done");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed");
+    }
+
+    /// Whether a stage's commits ever left this machine is a bounded fetch and
+    /// two graph walks per stage, and it has to be asked while the refs still
+    /// stand — so it is the first thing the removal's own phase does.
+    #[test]
+    fn run_abandon_judges_its_stages_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let (issue_id, run_id) = planned_run_in_review(&mut app, "abandon judged off the lock");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        gate_handle.wait_for_arrival();
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the stages are being judged");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once its git is done");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        let stages = state
+            .lock()
+            .unwrap()
+            .handle(req("issue.stages", json!({ "issue_id": issue_id })));
+        assert!(
+            stages["result"]["stages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|stage| stage["execution"] == "incomplete"
+                    && stage["invalidation_reason"].as_str().is_some()),
+            "the verdict git gave off the lock is written onto the stages: {stages:?}"
+        );
+    }
+
+    /// A child still creating files in a directory fails the `remove_dir_all`
+    /// walking it, so the order is kill, reap, THEN remove — and the reap is
+    /// waited out where a wedged harness parks this job and nothing else.
+    #[test]
+    fn run_abandon_waits_for_its_agents_to_die_before_removing_the_checkout() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "wedged-agent");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let root = AppState::canonical_root(&checkout);
+        let (death, death_handle) = OffLockGate::new();
+        let agent_id = crate::agent::derived_agent_id(&run_id);
+        app.tabs.insert(
+            derived_agent_key(&root, &run_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        );
+        death_handle.wait_for_arrival();
+        assert!(
+            checkout.exists(),
+            "the checkout is not removed out from under a process still writing into it"
+        );
+        assert!(
+            state.try_lock().is_ok(),
+            "the wait for the agent is holding the app mutex"
+        );
+
+        death_handle.release();
+        let abandoned = abandoned
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the abandon answers once the agent is reaped");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed after the reap");
+    }
+
+    /// The wait is bounded and the removal is best-effort, as it has always
+    /// been: an agent that will not die never strands a run on the board.
+    #[test]
+    fn run_abandon_removes_the_checkout_anyway_when_an_agent_will_not_die() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let run_id = adopted_run(&mut app, &repo, dir.path(), "never-dies");
+        let checkout = app.runs[&run_id].worktree.path.clone();
+        let root = AppState::canonical_root(&checkout);
+        let (death, death_handle) = OffLockGate::new();
+        let agent_id = crate::agent::derived_agent_id(&run_id);
+        app.tabs.insert(
+            derived_agent_key(&root, &run_id),
+            gated_tab(
+                &root,
+                gated_agent_role(&agent_id),
+                GatedHarness::new().refusing_to_die_until(death),
+            ),
+        );
+        let state = app.shared();
+
+        let abandoned = frame_on_a_thread(
+            &state,
+            "s-abandon",
+            "run.abandon",
+            json!({ "run_id": run_id }),
+        )
+        .recv_timeout(crate::orchestrator::CHECKOUT_REAP_WAIT + Duration::from_secs(25))
+        .expect("the abandon gives up on the reap and lands anyway");
+        assert_eq!(abandoned["ok"], true, "{abandoned:?}");
+        assert_eq!(abandoned["result"]["state"], "abandoned", "{abandoned:?}");
+        assert!(!checkout.exists(), "the checkout is removed anyway");
+
+        death_handle.release();
     }
 
     /// Which checkout a run owns is read back off the run record's own paths,

@@ -31,7 +31,18 @@ export async function approveDevice(code) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ code }),
   });
-  if (!response.ok) throw new Error("approve failed");
+  if (!response.ok) throw new Error(await refusalDetail(response, "approve failed"));
+}
+
+/** The sentence the api refused with, when it gave one — the device cap says
+ *  what to do about itself — else `fallback`. */
+async function refusalDetail(response, fallback) {
+  try {
+    const detail = (await response.json())?.detail;
+    return typeof detail === "string" && detail ? detail : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 export async function revokeDevice(deviceId) {

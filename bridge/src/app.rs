@@ -19545,6 +19545,38 @@ mod tests {
         );
     }
 
+    /// One setting, two words for it: a client mid-upgrade sends both, and the
+    /// word this bridge writes back is the one it keeps.
+    #[test]
+    fn a_client_that_sends_both_harness_words_is_read_by_the_newer_one() {
+        let (dir, repo) = init_repo();
+        let mut state = AppState::new(
+            repo,
+            dir.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        );
+
+        let set = state.handle(req(
+            "settings.set",
+            json!({ "claude_mode": "tui", "default_harness": "codex" }),
+        ));
+
+        assert_eq!(set["ok"], true, "{set:?}");
+        assert_eq!(set["result"]["default_harness"], "codex", "{set:?}");
+        assert_eq!(state.default_harness, AgentProvider::Codex);
+
+        let refused = state.handle(req(
+            "settings.set",
+            json!({ "claude_mode": "telepathy", "default_harness": "codex" }),
+        ));
+        assert_eq!(
+            refused["ok"], false,
+            "and a word it cannot read is still refused, whichever key carries it: {refused:?}"
+        );
+    }
+
     /// A bridge upgraded in place keeps the carrier its human chose, with no
     /// migration step: the old key is read when the new one is absent, and
     /// never written again.

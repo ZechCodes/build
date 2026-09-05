@@ -27,7 +27,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
     harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
-    TerminalView, Turn,
+    Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
@@ -49,6 +49,7 @@ use crate::run::{
     PublicationAttempt, RunEvent, RunId, RunState, StageProgress, StageProgressState,
     StagePublication,
 };
+use crate::screen::{AttachSnapshot, ScreenHandle, TerminalHandle, TERM_FLUSH_MS};
 use crate::store::{
     now_rfc3339, PersistedArchivedWorktree, PersistedPlan, PersistedRun, Store,
     WorktreeFinishAction, WorktreeFinishStatus,
@@ -226,96 +227,6 @@ impl TermScope {
     }
 }
 
-/// Authoritative server-side screen: vt100 model + attach list + coalescing
-/// buffer + the monotonic byte cursor. Snapshot resync, not byte replay. One
-/// model for every tab — a shell and an agent reconnect the same way.
-struct TermScreen {
-    parser: vt100::Parser,
-    attached: Vec<AttachedClient>,
-    /// Output coalescing buffer: PTY bytes accumulate here and flush on a timer,
-    /// so a repaint becomes one frame instead of ten.
-    pending: Vec<u8>,
-    /// Total output bytes processed — the live-tail cursor.
-    total: u64,
-    /// When the last flood-collapse snapshot went out, or `None` if this screen
-    /// has never collapsed one. Rate-limits the collapse; a per-client attach
-    /// snapshot is a different thing and does not touch it.
-    last_flood_snapshot_at: Option<std::time::Instant>,
-    /// How long one flood collapse holds off the next. Always
-    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`] in production; a test widens it so that
-    /// real time cannot slip past the window while the test is doing the work
-    /// the window is supposed to suppress.
-    snapshot_min_interval: Duration,
-    /// Set when a flush dropped its backlog without sending anything. Until the
-    /// rate-limit window reopens and the snapshot ships, this screen owes the
-    /// client a resync and must not send raw output — the bytes it would carry
-    /// are no longer contiguous.
-    snapshot_due: bool,
-    cols: u16,
-    rows: u16,
-}
-
-/// One client attached to a screen, and how far behind it is running.
-///
-/// The bridge cannot see the browser's receive queue, so the client tells it:
-/// every applied frame is acknowledged with the cursor it reached
-/// (`term.ack`), and the gap between that and the live cursor is the only
-/// measure of a client that is not draining.
-struct AttachedClient {
-    sender: SessionSender,
-    /// The highest cursor this client has reported applying. Seeded at attach
-    /// with the cursor the attach snapshot carries.
-    acked_cursor: u64,
-    /// The highest cursor actually pushed to this client. While it is paused
-    /// the live cursor runs ahead of this, and this — not the live cursor — is
-    /// the most its acks can ever reach, so the resume is measured against it.
-    sent_cursor: u64,
-    /// Whether this client has ever acknowledged anything. A client that has
-    /// not is exempt from flow control — an older SPA sends no acks, and
-    /// measuring it by a cursor it never reports would stall it forever.
-    sent_ack: bool,
-    /// Set once the client fell past [`TERM_UNACKED_BUDGET_BYTES`]. It receives
-    /// nothing until it has acked everything it was sent (`sent_cursor`), and
-    /// comes back on a snapshot because the frames it missed left a hole in
-    /// its byte stream.
-    paused: bool,
-}
-
-impl AttachedClient {
-    /// Output bytes this client has been sent but not acknowledged.
-    fn lag(&self, total: u64) -> u64 {
-        total.saturating_sub(self.acked_cursor)
-    }
-
-    /// Whether this client is too far behind to keep feeding. Only a client
-    /// that acks at all can be judged this way.
-    fn falling_behind(&self, total: u64) -> bool {
-        self.sent_ack && self.lag(total) > TERM_UNACKED_BUDGET_BYTES
-    }
-}
-
-/// Flush coalesced terminal output at ~100 fps.
-const TERM_FLUSH_MS: u64 = 10;
-/// How many bytes one client may leave unacknowledged before the bridge stops
-/// feeding it.
-///
-/// Every frame for a browser tab rides ONE FIFO (bridge channel → relay queue →
-/// browser demux), so a client that cannot drain as fast as a PTY floods does
-/// not just fall behind: it becomes an unbounded queue that everything else —
-/// the liveness ping, every keystroke — waits behind. A megabyte is far more
-/// than any screen and far less than a stall, and past it chasing the client
-/// with bytes it will never catch up on is worse than resyncing it with one
-/// snapshot the moment it drains.
-const TERM_UNACKED_BUDGET_BYTES: u64 = 1024 * 1024;
-/// If a single flush exceeds this, send the current screen snapshot instead of
-/// the raw byte backlog — collapses a massive burst (scroll/flood) to one frame
-/// and bounds per-frame size. The vt100 model makes this lossless for the screen.
-const TERM_SNAPSHOT_THRESHOLD: usize = 128 * 1024;
-/// Minimum gap between two flood-collapse snapshots on one screen. Bounds a
-/// sustained flood to ~10 screens/sec, which is all a human can perceive —
-/// without it a 10 ms flush cadence would push up to 100 full screens/sec
-/// through the relay and starve every other frame behind them.
-const TERM_SNAPSHOT_MIN_INTERVAL_MS: u64 = 100;
 /// At most this many user terminals daemon-wide, all worktrees combined. An
 /// agent tab never counts against it — there is at most one per worktree, and
 /// it must stay reachable however many shells are open.
@@ -337,204 +248,6 @@ const ATTACHMENTS_PER_MESSAGE_MAX: usize = 10;
 
 const FS_READ_MAX_BYTES: u64 = 1_048_576;
 const FS_MEDIA_READ_MAX_BYTES: u64 = 32 * 1_048_576;
-
-impl TermScreen {
-    fn new(cols: u16, rows: u16) -> TermScreen {
-        TermScreen {
-            parser: vt100::Parser::new(rows, cols, 2000),
-            attached: Vec::new(),
-            pending: Vec::new(),
-            total: 0,
-            last_flood_snapshot_at: None,
-            snapshot_min_interval: Duration::from_millis(TERM_SNAPSHOT_MIN_INTERVAL_MS),
-            snapshot_due: false,
-            cols,
-            rows,
-        }
-    }
-
-    /// Test-only: age the last flood-collapse stamp by `ago`, so a screen that
-    /// just collapsed reports the rate-limit window as reopened. The real gap is
-    /// 100 ms; sleeping it in every flood test would be paid on every run for no
-    /// added coverage — only the clock moves, the screen model is untouched.
-    #[cfg(test)]
-    fn backdate_last_flood_snapshot(&mut self, ago: Duration) {
-        self.last_flood_snapshot_at = self.last_flood_snapshot_at.map(|at| {
-            at.checked_sub(ago)
-                .expect("a stamp old enough to age by the rate-limit window")
-        });
-    }
-
-    /// The current screen serialized as escape sequences — write it to a fresh
-    /// terminal and the screen is reproduced.
-    fn snapshot(&self) -> String {
-        b64encode(&self.parser.screen().contents_formatted())
-    }
-
-    fn set_size(&mut self, cols: u16, rows: u16) {
-        self.parser.set_size(rows, cols);
-        self.cols = cols;
-        self.rows = rows;
-    }
-
-    /// Feed PTY bytes: advance the screen model, the cursor, and the pending
-    /// coalescing buffer.
-    fn process(&mut self, chunk: &[u8]) {
-        self.parser.process(chunk);
-        self.total += chunk.len() as u64;
-        self.pending.extend_from_slice(chunk);
-    }
-
-    /// Register a client for live output, dropping any prior sender with the
-    /// same session id first (a reconnect on the same id).
-    ///
-    /// The new client starts acknowledged up to the live cursor: the attach
-    /// response carries that same cursor with the screen snapshot, so it owes
-    /// nothing for anything that came before. It starts unpaused and, until its
-    /// first ack, exempt from flow control.
-    fn register(&mut self, sender: &SessionSender) {
-        self.attached
-            .retain(|client| client.sender.session_id() != sender.session_id());
-        self.attached.push(AttachedClient {
-            sender: sender.clone(),
-            acked_cursor: self.total,
-            sent_cursor: self.total,
-            sent_ack: false,
-            paused: false,
-        });
-    }
-
-    /// Record what a client has applied, and resync it once a paused client
-    /// has drained everything it was actually sent.
-    ///
-    /// A paused client missed frames, so the raw stream it left is no longer
-    /// contiguous with what it holds (the INVARIANT raw output rides on). It
-    /// comes back on one snapshot at the live cursor — a full screen, so it
-    /// replaces whatever the client was left holding — and resumes from there.
-    /// A client whose connection died while paused is dropped here, since a
-    /// paused client is not fed and a failed push is the only proof left.
-    fn ack(&mut self, term_id: &str, session_id: &str, cursor: u64) {
-        let total = self.total;
-        let Some(index) = self.index_of_session(session_id) else {
-            return;
-        };
-        let client = &mut self.attached[index];
-        client.sent_ack = true;
-        // A cursor past what the bridge has produced acknowledges nothing real;
-        // clamping keeps a confused client measurable rather than exempt.
-        client.acked_cursor = client.acked_cursor.max(cursor.min(total));
-        // A paused client is fed nothing, so the live cursor runs away from it
-        // without bound — measuring the resume against the live cursor could
-        // hold a client that drained everything it was ever sent paused
-        // forever, with no frame left that could unpause it. Its own last sent
-        // frame is the most it can ack, and acking that means its queue is
-        // empty: resync it now.
-        if !client.paused || client.acked_cursor < client.sent_cursor {
-            return;
-        }
-        // PTY bytes arrive on their own channel, so an ack can land between a
-        // `process` and the flush that would have shipped it. Those bytes are
-        // already on the screen this resync serializes, so the next flush must
-        // not hand them to the resumed client a second time as raw output.
-        // Flushing first empties `pending` — the clients that are keeping up
-        // get those bytes now, the paused one is skipped as always — and
-        // leaves the snapshot standing exactly at the live cursor.
-        self.flush(term_id);
-        // The flush drops clients whose connection is gone, so the index has to
-        // be taken again; this client is paused, so it cannot be one of them.
-        let Some(index) = self.index_of_session(session_id) else {
-            return;
-        };
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        let client = &mut self.attached[index];
-        client.paused = false;
-        client.sent_cursor = self.total;
-        // The snapshot is a fresh baseline, exactly like the attach snapshot
-        // in `register`: the client owes nothing before it. Leaving the old
-        // acked cursor standing would count the whole paused gap as unacked
-        // debt and re-pause the client on the very next flush.
-        client.acked_cursor = self.total;
-        if !client.sender.push(payload) {
-            self.attached.remove(index);
-        }
-    }
-
-    fn index_of_session(&self, session_id: &str) -> Option<usize> {
-        self.attached
-            .iter()
-            .position(|client| client.sender.session_id() == session_id)
-    }
-
-    /// Push one frame to every client that is keeping up: a client past its
-    /// unacked budget is paused and skipped (its own resync will catch it up),
-    /// a client already paused stays skipped, and a client whose connection is
-    /// gone is dropped.
-    fn push_to_keeping_up(&mut self, payload: Value) {
-        let total = self.total;
-        self.attached.retain_mut(|client| {
-            if client.falling_behind(total) {
-                client.paused = true;
-            }
-            if client.paused {
-                return true;
-            }
-            if !client.sender.push(payload.clone()) {
-                return false;
-            }
-            // Every frame this method carries stands at the live cursor.
-            client.sent_cursor = total;
-            true
-        });
-    }
-
-    /// Flush pending bytes as one keyed push to every attached client — raw
-    /// output, or a screen snapshot when the backlog crosses the collapse
-    /// threshold. Senders whose connection is gone are dropped.
-    ///
-    /// Collapsing is rate-limited to one snapshot per
-    /// [`TERM_SNAPSHOT_MIN_INTERVAL_MS`]. A flush that crosses the threshold
-    /// inside that window drops its backlog silently and records the debt in
-    /// `snapshot_due`: the vt100 model and the cursor already advanced in
-    /// [`Self::process`], so the screen the next snapshot carries is still
-    /// exactly right. While the debt stands nothing raw may go out — those bytes
-    /// would land on a client whose stream now has a hole in it.
-    fn flush(&mut self, term_id: &str) {
-        let collapsing = self.snapshot_due || self.pending.len() > TERM_SNAPSHOT_THRESHOLD;
-        if !collapsing {
-            if self.pending.is_empty() {
-                return;
-            }
-            let payload = json!({ "type": "term.output", "term_id": term_id, "data": b64encode(&self.pending), "cursor": self.total });
-            self.pending.clear();
-            self.push_to_keeping_up(payload);
-            return;
-        }
-
-        // The backlog is skipped either way — the screen model already holds it.
-        self.pending.clear();
-        let window_reopened = self
-            .last_flood_snapshot_at
-            .is_none_or(|at| at.elapsed() >= self.snapshot_min_interval);
-        if !window_reopened {
-            self.snapshot_due = true;
-            return;
-        }
-        self.snapshot_due = false;
-        self.last_flood_snapshot_at = Some(std::time::Instant::now());
-        let payload = json!({ "type": "term.reset", "term_id": term_id, "data": self.snapshot(), "cursor": self.total });
-        self.push_to_keeping_up(payload);
-    }
-
-    /// Tell every attached client this terminal ended, and why. A paused client
-    /// hears it too: flow control withholds output, never the fact that there
-    /// is no more of it coming.
-    fn push_closed(&self, term_id: &str, reason: &str) {
-        let payload = json!({ "type": "term.closed", "term_id": term_id, "reason": reason });
-        for client in &self.attached {
-            client.sender.push(payload.clone());
-        }
-    }
-}
 
 /// The shell user terminals run: `BRIDGE_TERM_SHELL` override → the daemon
 /// env's `SHELL` → the account's passwd shell → bash. Terminals are windows
@@ -685,7 +398,7 @@ struct Tab {
     /// capability, not a guarantee, and a screen kept for a session that has
     /// none would be a second answer to a question with one:
     /// [`AgentSession::terminal`](crate::harness::AgentSession::terminal).
-    screen: Option<TermScreen>,
+    screen: Option<ScreenHandle>,
     /// False once the PTY stream has ended. An agent tab is RETAINED after its
     /// process dies so the tab still shows the last screen; a shell tab is
     /// removed by its pump instead, so this is only ever false for an agent.
@@ -732,29 +445,28 @@ impl Tab {
         self.live && !matches!(self.session.status(), AgentStatus::Ended { .. })
     }
 
-    /// The terminal this tab's session offers, or the reason it has none.
-    fn require_terminal(&self) -> Result<&dyn TerminalView, String> {
-        self.session
-            .terminal()
-            .ok_or_else(|| no_terminal_here(&self.wire_id()))
-    }
-
-    /// The terminal and the grid it paints into.
+    /// The terminal and the grid it paints into, owned rather than borrowed:
+    /// the caller takes it out of the registry and writes to it with the app
+    /// mutex released, which is what keeps a child that stopped draining its
+    /// PTY from wedging the daemon.
     ///
-    /// One question answers for both: they are made together in
+    /// One question answers for both halves: they are made together in
     /// [`Tab::spawn`] and a session with no terminal has neither, so there is
     /// no state in which a tab has a screen to hand a client and nothing
     /// behind it.
-    fn require_terminal_and_screen(
-        &mut self,
-    ) -> Result<(&dyn TerminalView, &mut TermScreen), String> {
-        let refusal = no_terminal_here(&self.wire_id());
-        let Tab {
-            session, screen, ..
-        } = self;
-        match (session.terminal(), screen.as_mut()) {
-            (Some(terminal), Some(screen)) => Ok((terminal, screen)),
-            _ => Err(refusal),
+    fn terminal_handle(&self) -> Result<TerminalHandle, String> {
+        TerminalHandle::of(&self.session, &self.screen)
+            .ok_or_else(|| no_terminal_here(&self.wire_id()))
+    }
+
+    /// Everything a tab's pumps need, taken before the tab is handed to the
+    /// registry: they run for the tab's whole life and must not have to ask
+    /// the registry for the handles they hold.
+    fn pumps(&self, output: SessionOutput) -> TabPumps {
+        TabPumps {
+            session: Arc::clone(&self.session),
+            screen: self.screen.clone(),
+            output,
         }
     }
 
@@ -809,13 +521,16 @@ impl Tab {
             },
         };
         let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
+        let screen = session
+            .terminal()
+            .map(|_| ScreenHandle::new(&tab_id, cols, rows));
         Ok((
             Tab {
                 tab_id,
                 root,
                 role,
                 created_at: now_rfc3339(),
-                screen: session.terminal().map(|_| TermScreen::new(cols, rows)),
+                screen,
                 session,
                 live: true,
                 call_sequences: HashMap::new(),
@@ -824,6 +539,19 @@ impl Tab {
             rx,
         ))
     }
+}
+
+/// What a tab's pumps run on: the session they watch, the screen they paint
+/// into, and the streams they read.
+///
+/// Taken off the tab before it is handed to the registry, so a pump holds
+/// everything it needs for the tab's whole life and never asks the app mutex
+/// for it. The session travels because the EOF a pump sees belongs to the
+/// session it was started for and to no replacement that took the tab since.
+struct TabPumps {
+    session: Arc<dyn AgentSession>,
+    screen: Option<ScreenHandle>,
+    output: SessionOutput,
 }
 
 /// Whether [`ensure_agent_tab`] found the tab or created it — the ONE input to
@@ -2007,7 +1735,7 @@ pub struct AppState {
     /// session's first frames reach a client that mounted the tab long before
     /// it: the alternative is a screen that stays blank until the human
     /// unmounts and remounts. An entry lives only until that first spawn.
-    agent_screens_awaiting_spawn: HashMap<TabKey, TermScreen>,
+    agent_screens_awaiting_spawn: HashMap<TabKey, ScreenHandle>,
     /// Turns queued by the verbs running under the state lock, drained by
     /// [`dispatch_frame`] once that lock is free. The synchronous test entry
     /// point ([`AppState::handle`]) has no `Arc` to deliver over, so it leaves
@@ -3927,10 +3655,9 @@ impl AppState {
             let Some(tab) = self.tabs.remove(&key) else {
                 continue;
             };
-            let wire_id = tab.wire_id();
             tab.session.end();
             if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "closed");
+                screen.close("closed");
             }
         }
     }
@@ -5999,8 +5726,6 @@ impl AppState {
             "stream.state" => self.stream_state(params),
             "term.list" => self.term_list(params),
             "term.close" => self.term_close(params),
-            "term.input" => self.term_input(params),
-            "term.resize" => self.term_resize(params),
             other => Err(format!("unknown method: {other}")),
         }
     }
@@ -6024,14 +5749,14 @@ impl AppState {
             .filter_map(|(key, tab)| {
                 // A shell IS its terminal, so the filter above already excluded
                 // the only role that can be without one.
-                let screen = tab.screen.as_ref()?;
+                let (cols, rows) = tab.screen.as_ref()?.size();
                 Some((
                     term_id_suffix(&key.tab_id),
                     json!({
                         "term_id": tab.tab_id,
                         "kind": SHELL_TAB_KIND,
-                        "cols": screen.cols,
-                        "rows": screen.rows,
+                        "cols": cols,
+                        "rows": rows,
                         "created_at": tab.created_at,
                     }),
                 ))
@@ -6055,59 +5780,29 @@ impl AppState {
         let tab = self.tabs.remove(&key).ok_or("unknown term_id")?;
         tab.session.end();
         if let Some(screen) = &tab.screen {
-            screen.push_closed(&term_id, "closed");
+            screen.close("closed");
         }
         Ok(json!({ "ok": true }))
     }
 
-    /// Write client keystrokes (base64) to a tab's PTY, by id. Input to the
-    /// agent tab is allowed by design — its PTY is a full terminal on the
-    /// user's machine and the terminal is the basement — and an agent whose
-    /// process has ended surfaces "no active agent session" rather than
-    /// swallowing the keystrokes.
-    ///
-    /// An agent with no terminal has no basement to type into, and hears about
-    /// it ([`no_terminal_here`]) before its state is consulted: that is a
-    /// property of the session, not of whether it happens to be running.
-    fn term_input(&mut self, params: &Value) -> Result<Value, String> {
-        let term_id = require_str(params, "term_id")?;
-        let data = b64decode(&require_str(params, "data")?)?;
-        let key = self.tab_key_of_wire_id(&term_id)?;
-        let tab = self.tabs.get(&key).ok_or("unknown term_id")?;
-        let terminal = tab.require_terminal()?;
-        if !tab.session_is_live() {
-            return Err("no active agent session".to_string());
-        }
-        terminal.write_input(&data).map_err(|e| e.to_string())?;
-        Ok(json!({ "ok": true }))
-    }
-
-    /// Resize a tab's PTY and screen model, by id. The resize only applies
-    /// while the session is live; a dead resize is a no-op `live: false` so a
-    /// retained last screen is never garbled.
-    ///
-    /// A session with no terminal refuses instead, live or not: a viewport
-    /// means nothing to a session with no grid, so `live: false` there would be
-    /// a quiet "nothing to do" in place of a reason.
-    fn term_resize(&mut self, params: &Value) -> Result<Value, String> {
-        let term_id = require_str(params, "term_id")?;
-        let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
-        let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
-        let size = PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        };
-        let key = self.tab_key_of_wire_id(&term_id)?;
-        let tab = self.tabs.get_mut(&key).ok_or("unknown term_id")?;
-        let live = tab.session_is_live();
-        let (terminal, screen) = tab.require_terminal_and_screen()?;
-        if live {
-            terminal.resize(size).map_err(|e| e.to_string())?;
-            screen.set_size(cols, rows);
-        }
-        Ok(json!({ "ok": true, "live": live }))
+    /// What one tab hands a client that attaches to it, taken out of the
+    /// registry so the attach itself runs with the app mutex released.
+    fn attachment(&self, key: &TabKey) -> Result<TabAttachment, String> {
+        let tab = self.tabs.get(key).ok_or("unknown term_id")?;
+        Ok(TabAttachment {
+            facts: TabFacts {
+                term_id: tab.wire_id(),
+                live: tab.live,
+                // Which harness is behind this screen. Null for a shell, and
+                // null for a worktree nothing has ever run in — the client
+                // leads its start offer with its own default there instead.
+                provider: match tab.role {
+                    TabRole::Agent { provider, .. } => Some(provider),
+                    TabRole::Shell => None,
+                },
+            },
+            terminal: tab.terminal_handle()?,
+        })
     }
 
     /// A session ended: detach it from every tab so the pumps stop encrypting
@@ -6120,19 +5815,13 @@ impl AppState {
     /// they render at — with the last one gone there is nothing to hold, and
     /// the spawn is sized the way an unwatched spawn always was.
     fn drop_session(&mut self, session_id: &str) {
-        for tab in self.tabs.values_mut() {
-            if let Some(screen) = &mut tab.screen {
-                screen
-                    .attached
-                    .retain(|client| client.sender.session_id() != session_id);
+        for tab in self.tabs.values() {
+            if let Some(screen) = &tab.screen {
+                screen.detach(session_id);
             }
         }
-        self.agent_screens_awaiting_spawn.retain(|_, screen| {
-            screen
-                .attached
-                .retain(|client| client.sender.session_id() != session_id);
-            !screen.attached.is_empty()
-        });
+        self.agent_screens_awaiting_spawn
+            .retain(|_, screen| screen.detach(session_id));
     }
 
     /// Close every tab whose worktree is gone from disk (spec §2.6.3), killing
@@ -6172,7 +5861,7 @@ impl AppState {
             }
             tab.session.end();
             if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "reaped");
+                screen.close("reaped");
             }
             reaped.push(wire_id);
         }
@@ -6202,7 +5891,7 @@ impl AppState {
             let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) else {
                 continue;
             };
-            screen.push_closed(&key.tab_id, "reaped");
+            screen.close("reaped");
             reaped.push(key.tab_id);
         }
         reaped
@@ -6263,7 +5952,7 @@ impl AppState {
                     epitaph: tab
                         .screen
                         .as_ref()
-                        .and_then(screen_epitaph)
+                        .and_then(ScreenHandle::epitaph)
                         .or_else(|| tab.session.epitaph()),
                 }));
             }
@@ -8367,14 +8056,13 @@ impl AppState {
     fn retire_agent(&mut self, root: &std::path::Path, agent_id: &str) {
         let key = TabKey::agent(&Self::canonical_root(root), agent_id);
         if let Some(tab) = self.tabs.remove(&key) {
-            let wire_id = tab.wire_id();
             tab.session.end();
             if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "closed");
+                screen.close("closed");
             }
         }
         if let Some(screen) = self.agent_screens_awaiting_spawn.remove(&key) {
-            screen.push_closed(&key.tab_id, "closed");
+            screen.close("closed");
         }
         self.mcp_session_tokens.remove(agent_id);
         self.pending_agent_turns
@@ -9606,10 +9294,9 @@ impl AppState {
         };
         let root = Self::canonical_root(&session.scratch_dir);
         if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
-            let wire_id = tab.wire_id();
             tab.session.end();
             if let Some(screen) = &tab.screen {
-                screen.push_closed(&wire_id, "agent_session_ended");
+                screen.close("agent_session_ended");
             }
         }
         self.mcp_session_tokens.remove(&session.agent_id);
@@ -17311,28 +16998,6 @@ impl HarnessExit {
     }
 }
 
-/// The last words on a retained screen: its final non-empty lines, trimmed and
-/// bounded. `None` for a harness that painted nothing worth repeating.
-fn screen_epitaph(screen: &TermScreen) -> Option<String> {
-    const MAX_LINES: usize = 3;
-    const MAX_CHARS: usize = 240;
-    let contents = screen.parser.screen().contents();
-    let mut lines: Vec<&str> = contents
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.is_empty() {
-        return None;
-    }
-    let tail = lines.split_off(lines.len().saturating_sub(MAX_LINES));
-    let mut said = tail.join(" · ");
-    if said.chars().count() > MAX_CHARS {
-        said = said.chars().take(MAX_CHARS).collect::<String>() + "…";
-    }
-    Some(said)
-}
-
 /// An entity went quiet (or its agent exited) without reporting: record the
 /// reason. The session lineage is deliberately left alone — a quiet agent is
 /// still an agent, and one that exited has already had its session closed by
@@ -17480,6 +17145,11 @@ fn dispatch_frame(
             created
         }
         "term.attach" => term_attach(state, &sender, &params, &timer),
+        // A write to a child's pty blocks while the child is not draining, so
+        // both of these take the handle under the lock and write with it
+        // released.
+        "term.input" => term_input(state, &params, &timer),
+        "term.resize" => term_resize(state, &params, &timer),
         // Needs the caller's own session: an ack speaks for one client's
         // receive queue, not for the screen.
         "term.ack" => term_ack(state, &sender, &params, &timer),
@@ -17594,7 +17264,7 @@ fn term_create(
     let scope = TermScope::parse(params)?;
     require_shell_kind(params)?;
 
-    let (key, rx) = {
+    let (key, pumps) = {
         let mut s = timer.lock(state);
         let root = scope.resolve_root(&mut s)?;
         // The cap counts the human's shells and never an agent: sixteen open
@@ -17621,10 +17291,11 @@ fn term_create(
             rows,
             None,
         )?;
+        let pumps = tab.pumps(rx);
         s.tabs.insert(key.clone(), tab);
-        (key, rx)
+        (key, pumps)
     };
-    spawn_tab_pumps(state, key.clone(), rx);
+    spawn_tab_pumps(state, key.clone(), pumps);
     Ok(json!({
         "term_id": key.tab_id,
         "kind": SHELL_TAB_KIND,
@@ -17650,12 +17321,76 @@ fn term_attach(
     let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
     let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
 
-    // Snapshot the screen and register this client atomically under the lock, so
-    // the pump pushes only bytes *after* the cursor to the new sender — no gap, no
-    // dupe across a reconnect.
-    let mut s = timer.lock(state);
-    let key = s.tab_key_of_wire_id(&term_id)?;
-    attach_to_tab(&mut s, &key, sender, cols, rows)
+    let attachment = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        s.attachment(&key)?
+    };
+    Ok(attach_to_tab(attachment, sender, cols, rows))
+}
+
+/// Write client keystrokes (base64) to a tab's PTY, by id. Input to the agent
+/// tab is allowed by design — its PTY is a full terminal on the user's machine
+/// and the terminal is the basement — and an agent whose process has ended
+/// surfaces "no active agent session" rather than swallowing the keystrokes.
+///
+/// An agent with no terminal has no basement to type into, and hears about it
+/// ([`no_terminal_here`]) before its state is consulted: that is a property of
+/// the session, not of whether it happens to be running.
+///
+/// The handle is taken under the lock and written to with it RELEASED. A child
+/// that has stopped draining its pty blocks the write for as long as it likes;
+/// under the mutex that one child wedges the whole daemon, and off it, one
+/// worker.
+fn term_input(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    let data = b64decode(&require_str(params, "data")?)?;
+    let terminal = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        let terminal = tab.terminal_handle()?;
+        if !tab.session_is_live() {
+            return Err("no active agent session".to_string());
+        }
+        terminal
+    };
+    terminal.write_input(&data)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// Resize a tab's PTY and screen model, by id. The resize only applies while
+/// the session is live; a dead resize is a no-op `live: false` so a retained
+/// last screen is never garbled.
+///
+/// A session with no terminal refuses instead, live or not: a viewport means
+/// nothing to a session with no grid, so `live: false` there would be a quiet
+/// "nothing to do" in place of a reason.
+///
+/// Off the lock for the same reason as [`term_input`]: the ioctl goes to a
+/// child that may not answer.
+fn term_resize(
+    state: &Arc<Mutex<AppState>>,
+    params: &Value,
+    timer: &FrameTimer,
+) -> Result<Value, String> {
+    let term_id = require_str(params, "term_id")?;
+    let cols = params.get("cols").and_then(Value::as_u64).unwrap_or(80) as u16;
+    let rows = params.get("rows").and_then(Value::as_u64).unwrap_or(24) as u16;
+    let (live, terminal) = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        (tab.session_is_live(), tab.terminal_handle()?)
+    };
+    if live {
+        terminal.resize(cols, rows)?;
+    }
+    Ok(json!({ "ok": true, "live": live }))
 }
 
 /// Report how far this client has applied a tab's output — the client half of
@@ -17676,14 +17411,18 @@ fn term_ack(
         .get("cursor")
         .and_then(Value::as_u64)
         .ok_or("missing cursor")?;
-    let mut s = timer.lock(state);
-    let key = s.tab_key_of_wire_id(&term_id)?;
-    let tab = s.tabs.get_mut(&key).ok_or("unknown term_id")?;
-    // A client that was never allowed to attach has nothing to acknowledge, so
-    // it hears the same refusal rather than acking into a screen that is not
-    // there.
-    let (_, screen) = tab.require_terminal_and_screen()?;
-    screen.ack(&term_id, sender.session_id(), cursor);
+    let screen = {
+        let s = timer.lock(state);
+        let key = s.tab_key_of_wire_id(&term_id)?;
+        let tab = s.tabs.get(&key).ok_or("unknown term_id")?;
+        // A client that was never allowed to attach has nothing to acknowledge,
+        // so it hears the same refusal rather than acking into a screen that is
+        // not there.
+        tab.terminal_handle()?.screen().clone()
+    };
+    // The ack may push one resync snapshot to the caller, so it happens with the
+    // app mutex released like every other write to a screen.
+    screen.ack(sender.session_id(), cursor);
     Ok(json!({ "ok": true }))
 }
 
@@ -17766,27 +17505,28 @@ fn agent_attach(
         // worktree's agent will be born onto — because it must go live where it
         // stands when that delivery comes, not sit blank until the human
         // unmounts and remounts the tab.
+        let term_id = agent_tab_id(&agent_id);
         let screen = s
             .agent_screens_awaiting_spawn
             .entry(key.clone())
-            .or_insert_with(|| TermScreen::new(cols, rows));
-        if screen.cols != cols || screen.rows != rows {
-            screen.set_size(cols, rows);
-        }
-        screen.register(sender);
-        return Ok(json!({
-            "term_id": agent_tab_id(&agent_id),
-            "live": false,
-            "snapshot": screen.snapshot(),
-            "cursor": screen.total,
-            "cols": screen.cols,
-            "rows": screen.rows,
-            // Explicit, not omitted: the contract says provider is null where
-            // no agent has ever run, and attach_to_tab always emits the key.
-            "provider": Value::Null,
-        }));
+            .or_insert_with(|| ScreenHandle::new(&term_id, cols, rows))
+            .clone();
+        drop(guard);
+        let reading = screen.attach(sender, Some((cols, rows)));
+        // A screen with no session behind it is dead by definition, and names
+        // no harness: nothing has ever run here to name one.
+        return Ok(attach_view(
+            TabFacts {
+                term_id,
+                live: false,
+                provider: None,
+            },
+            reading,
+        ));
     }
-    attach_to_tab(s, &key, sender, cols, rows)
+    let attachment = s.attachment(&key)?;
+    drop(guard);
+    Ok(attach_to_tab(attachment, sender, cols, rows))
 }
 
 /// Open a worktree's agent with nothing to say to it — the surface's "Start
@@ -17918,58 +17658,48 @@ fn agent_start(
     }))
 }
 
-/// Register `sender` on a tab's screen and describe what it should render.
-///
-/// The one attach body both verbs run: match the PTY and screen model to this
-/// client's viewport (a TUI draws to the size it was told, so a mismatch
-/// garbles), then hand back the snapshot and the monotonic cursor the pump
-/// will push from. A DEAD tab is never resized — its retained screen is the
-/// last thing its agent painted and must stay legible.
-///
-/// The caller holds the state lock across this, which is what makes the
-/// snapshot and the registration atomic: no bytes land between them.
-fn attach_to_tab(
-    state: &mut AppState,
-    key: &TabKey,
-    sender: &SessionSender,
-    cols: u16,
-    rows: u16,
-) -> Result<Value, String> {
-    let tab = state
-        .tabs
-        .get_mut(key)
-        .expect("the key came from the registry");
-    let live = tab.live;
-    let wire_id = tab.wire_id();
-    // Which harness is behind this screen. Null for a shell, and null from the
-    // no-tab-yet branch above — a worktree nothing has run in has no answer, and
-    // the client leads its start offer with its own default there instead.
-    let provider = match tab.role {
-        TabRole::Agent { provider, .. } => Some(provider),
-        TabRole::Shell => None,
-    };
-    // Both verbs refuse here, because both end here: a session with no terminal
-    // has no snapshot to hand back and no viewport to be told about.
-    let (terminal, screen) = tab.require_terminal_and_screen()?;
-    if live && (screen.cols != cols || screen.rows != rows) {
-        let _ = terminal.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        });
-        screen.set_size(cols, rows);
-    }
-    screen.register(sender);
-    Ok(json!({
-        "term_id": wire_id,
-        "live": live,
-        "provider": provider,
-        "snapshot": screen.snapshot(),
-        "cursor": screen.total,
+/// What a client is told about the tab it just attached to.
+struct TabFacts {
+    term_id: String,
+    live: bool,
+    provider: Option<AgentProvider>,
+}
+
+/// One tab's client-facing surface, taken out of the registry together: what
+/// the reply says about the tab, and the terminal the client attaches to.
+struct TabAttachment {
+    facts: TabFacts,
+    terminal: TerminalHandle,
+}
+
+/// The attach reply, written in one place so both verbs answer in one shape.
+fn attach_view(facts: TabFacts, screen: AttachSnapshot) -> Value {
+    json!({
+        "term_id": facts.term_id,
+        "live": facts.live,
+        "provider": facts.provider,
+        "snapshot": screen.snapshot,
+        "cursor": screen.cursor,
         "cols": screen.cols,
         "rows": screen.rows,
-    }))
+    })
+}
+
+/// Register `sender` on a tab's screen and describe what it should render.
+///
+/// The one attach body both verbs run: match the PTY to this client's viewport
+/// (a TUI draws to the size it was told, so a mismatch garbles), then hand back
+/// the snapshot and the monotonic cursor the pump will push from. A DEAD tab is
+/// never resized — its retained screen is the last thing its agent painted and
+/// must stay legible.
+///
+/// Called with the app mutex RELEASED. What makes the snapshot and the
+/// registration atomic is the screen's OWN lock, which the pump feeds through:
+/// no byte can land between them.
+fn attach_to_tab(attachment: TabAttachment, sender: &SessionSender, cols: u16, rows: u16) -> Value {
+    let viewport = attachment.facts.live.then_some((cols, rows));
+    let reading = attachment.terminal.attach(sender, viewport);
+    attach_view(attachment.facts, reading)
 }
 
 /// Find-or-create the one agent tab rooted at `root`.
@@ -18038,10 +17768,9 @@ fn ensure_agent_tab(
                     .collect();
                 for other in stale {
                     if let Some(tab) = s.tabs.remove(&other) {
-                        let wire_id = tab.wire_id();
                         tab.session.end();
                         if let Some(screen) = &tab.screen {
-                            screen.push_closed(&wire_id, "closed");
+                            screen.close("closed");
                         }
                     }
                 }
@@ -18160,20 +17889,22 @@ fn ensure_agent_tab(
                 // attached. The new PTY takes the retained screen's grid so the
                 // two agree.
                 Some(terminal) => {
+                    let (cols, rows) = screen.size();
                     let _ = terminal.resize(PtySize {
-                        rows: screen.rows,
-                        cols: screen.cols,
+                        rows,
+                        cols,
                         pixel_width: 0,
                         pixel_height: 0,
                     });
                     tab.screen = Some(screen);
                 }
                 // The replacement paints nothing, so the retained grid has
-                // nothing to become — see [`close_a_screen_with_no_terminal`].
-                None => close_a_screen_with_no_terminal(&screen, &key.tab_id),
+                // nothing to become — see [`a_screen_with_no_terminal_left`].
+                None => screen.close(NO_TERMINAL_LEFT),
             }
         }
         let wire_id = tab.wire_id();
+        let pumps;
         {
             let mut s = timer.lock(state);
             // Clients that mounted the Agent tab before this worktree had one
@@ -18200,33 +17931,23 @@ fn ensure_agent_tab(
                 })?
             });
             if let Some(waiting) = waiting {
-                match tab.require_terminal_and_screen() {
-                    Ok((terminal, screen)) => {
-                        let _ = terminal.resize(PtySize {
-                            rows: waiting.rows,
-                            cols: waiting.cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
-                        screen.set_size(waiting.cols, waiting.rows);
-                        for client in &waiting.attached {
-                            screen.register(&client.sender);
-                        }
-                    }
+                match tab.terminal_handle() {
+                    Ok(terminal) => terminal.adopt_clients_of(&waiting),
                     // There is no real screen to carry them onto — see
-                    // [`close_a_screen_with_no_terminal`].
-                    Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
+                    // [`a_screen_with_no_terminal_left`].
+                    Err(_) => waiting.close(NO_TERMINAL_LEFT),
                 }
             }
             let running = tab
                 .session
                 .active_model()
                 .or_else(|| model_choice.model.clone());
+            pumps = tab.pumps(rx);
             s.tabs.insert(key.clone(), tab);
             s.agent_spawns_in_flight.remove(&key);
             s.record_agent_active_model(owner, agent_id, running);
         }
-        spawn_tab_pumps(state, key, rx);
+        spawn_tab_pumps(state, key, pumps);
         return Ok((wire_id, Spawned::Fresh));
     }
 }
@@ -18234,9 +17955,9 @@ fn ensure_agent_tab(
 /// What a delivery reports when the tab it just ensured is already gone.
 const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn could be delivered";
 
-/// End a screen the spawn that was supposed to fill it can never fill.
+/// Why a screen the spawn was supposed to fill is closed instead.
 ///
-/// Both screens `ensure_agent_tab` may be holding — the retained grid of the
+/// Both screens [`ensure_agent_tab`] may be holding — the retained grid of the
 /// session being replaced, and the one clients that mounted the Agent tab early
 /// are waiting on — exist to be carried onto the new session's screen. A
 /// session with no terminal has none, so there is nothing to carry them to and
@@ -18247,9 +17968,7 @@ const TAB_CLOSED_UNDER_A_TURN: &str = "the agent tab closed before its turn coul
 /// tell one. The rail reads `has_terminal: false` off the digest by then and
 /// stops offering the terminal; this is what closes the door for a client that
 /// was already through it.
-fn close_a_screen_with_no_terminal(screen: &TermScreen, term_id: &str) {
-    screen.push_closed(term_id, "no_terminal");
-}
+const NO_TERMINAL_LEFT: &str = "no_terminal";
 
 /// The one pipe from Build to a worktree's agent.
 ///
@@ -18396,33 +18115,46 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>, timer: &FrameTimer)
 /// One or the other and never both, because the two capabilities are
 /// alternatives — and never neither, because the death rites hang off a stream
 /// closing ([`open_session`] refuses a session with no stream at all).
-fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, output: SessionOutput) {
-    spawn_tab_pump(state, key.clone(), output.bytes);
+fn spawn_tab_pumps(state: &Arc<Mutex<AppState>>, key: TabKey, pumps: TabPumps) {
+    let TabPumps {
+        session,
+        screen,
+        output,
+    } = pumps;
+    spawn_tab_pump(state, key.clone(), session, screen, output.bytes);
     spawn_activity_pump(state, key, output.activity, output.surfaces);
 }
 
 /// Pump one tab's PTY into its screen model, coalescing at `TERM_FLUSH_MS` and
 /// flushing one keyed frame to every attached client.
 ///
+/// **It never takes the app mutex to paint.** The screen is its own lock, held
+/// by this task for the microseconds a chunk takes to parse, so three agents
+/// flooding at once contend with each other's readers and with nothing else in
+/// the daemon. The app mutex is taken exactly twice, at EOF, to write down that
+/// the session ended.
+///
 /// Start of session: the parser is reset to a blank screen of the current grid
 /// and `term.reset` is pushed (clients wipe; a replacement process starts
-/// clean) — `screen.total` is NEVER reset, because client dedupe rides the
-/// monotonic cursor. On EOF a Shell tab is removed, reaped, and pushed
-/// `term.closed{exited}`; an Agent tab is RETAINED with `live = false` and
-/// pushed `term.closed{agent_session_ended}`, because the tab must still show
-/// the last screen.
+/// clean) — the cursor is NEVER reset, because client dedupe rides it. On EOF a
+/// Shell tab is removed, reaped, and pushed `term.closed{exited}`; an Agent tab
+/// is RETAINED with `live = false` and pushed `term.closed{agent_session_ended}`,
+/// because the tab must still show the last screen.
 ///
-/// One pump per tab for the tab's whole life: with one PTY per worktree there
-/// is no phase boundary to generation-guard against — a missing tab is the
-/// only stop condition.
+/// One pump per tab for the tab's whole life, and it pumps the session it was
+/// started for: a kill is asynchronous now, so a replaced session's EOF can
+/// arrive after its replacement is already in the registry. The tab is only
+/// ended by the pump that holds that tab's own session.
 fn spawn_tab_pump(
     state: &Arc<Mutex<AppState>>,
     key: TabKey,
+    session: Arc<dyn AgentSession>,
+    screen: Option<ScreenHandle>,
     rx: Option<broadcast::Receiver<Vec<u8>>>,
 ) {
     // No terminal, no bytes: the pump exists to paint a stream into a grid, and
     // a session that offers none has nothing for it to do.
-    let Some(mut rx) = rx else {
+    let (Some(mut rx), Some(screen)) = (rx, screen) else {
         return;
     };
     if tokio::runtime::Handle::try_current().is_err() {
@@ -18432,96 +18164,79 @@ fn spawn_tab_pump(
     }
     let state = Arc::clone(state);
     tokio::spawn(async move {
-        let term_id = {
-            let mut s = state.lock().unwrap();
-            let Some(tab) = s.tabs.get_mut(&key) else {
-                return;
-            };
-            let term_id = tab.wire_id();
-            // A session with no terminal produces no bytes, so there is nothing
-            // to pump: the pump is only ever spawned beside a PTY.
-            let Some(screen) = tab.screen.as_mut() else {
-                return;
-            };
-            screen.parser = vt100::Parser::new(screen.rows, screen.cols, 2000);
-            screen.pending.clear();
-            // This reset resyncs every attached client, so a snapshot a previous
-            // session's flood left owing is already paid.
-            screen.snapshot_due = false;
-            let payload = json!({
-                "type": "term.reset",
-                "term_id": term_id,
-                "data": screen.snapshot(),
-                "cursor": screen.total,
-            });
-            screen.push_to_keeping_up(payload);
-            term_id
-        };
+        screen.restart();
         let mut flush = tokio::time::interval(Duration::from_millis(TERM_FLUSH_MS));
         flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 recv = rx.recv() => match recv {
-                    Ok(chunk) => {
-                        let mut s = state.lock().unwrap();
-                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        let Some(screen) = tab.screen.as_mut() else { return; };
-                        screen.process(&chunk);
-                    }
+                    Ok(chunk) => screen.feed(&chunk),
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => {
-                        let mut s = state.lock().unwrap();
-                        let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                        let ended_agent = match &tab.role {
-                            TabRole::Agent { owner, agent_id, .. } => {
-                                Some((owner.clone(), agent_id.clone()))
-                            }
-                            TabRole::Shell => None,
-                        };
-                        match ended_agent {
-                            Some((owner, agent_id)) => {
-                                tab.live = false;
-                                if let Some(screen) = tab.screen.as_mut() {
-                                    screen.flush(&term_id);
-                                    screen.push_closed(&term_id, "agent_session_ended");
-                                }
-                                // One final reading, so a session shorter than
-                                // a sweep tick is still named — and the respawn
-                                // that needs the name is the very next thing
-                                // after a close. It RECORDS; it never clears: a
-                                // terminal resumed in place writes no new
-                                // transcript, so a locator finding nothing is
-                                // its normal answer here, and clearing on that
-                                // would throw a good name away at every
-                                // restart. A name that no longer resolves is
-                                // caught at the reservation instead.
-                                note_session_self_report(&mut s, &key, &owner, &agent_id);
-                                // The process is what a session IS, so this is
-                                // where the conversation's lineage closes — and
-                                // where a turn the dead process was holding is
-                                // closed, so the row stops reading as working.
-                                s.record_agent_session_end(&owner, &agent_id);
-                            }
-                            None => {
-                                let Some(tab) = s.tabs.remove(&key) else { return; };
-                                tab.session.end();
-                                if let Some(screen) = &tab.screen {
-                                    screen.push_closed(&term_id, "exited");
-                                }
-                            }
-                        }
+                        end_of_session(&state, &key, &session, &screen);
                         return;
                     }
                 },
-                _ = flush.tick() => {
-                    let mut s = state.lock().unwrap();
-                    let Some(tab) = s.tabs.get_mut(&key) else { return; };
-                    let Some(screen) = tab.screen.as_mut() else { return; };
-                    screen.flush(&term_id);
-                }
+                _ = flush.tick() => screen.flush(),
             }
         }
     });
+}
+
+/// The death rites of the session a byte pump was watching.
+///
+/// The app mutex is taken twice, with the screen's own work between: what the
+/// tab becomes is bookkeeping, what the clients are told is the screen's, and
+/// the reading a dying session owes is neither.
+fn end_of_session(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+    session: &Arc<dyn AgentSession>,
+    screen: &ScreenHandle,
+) {
+    let ended_agent = {
+        let mut s = state.lock().unwrap();
+        let Some(tab) = s.tabs.get_mut(key) else {
+            return;
+        };
+        // The session this pump watched, and not whatever replaced it: a
+        // retirement runs on its own thread now, so a killed session's EOF can
+        // land after its replacement is in the registry.
+        if !Arc::ptr_eq(&tab.session, session) {
+            return;
+        }
+        match &tab.role {
+            TabRole::Agent {
+                owner, agent_id, ..
+            } => {
+                tab.live = false;
+                Some((owner.clone(), agent_id.clone()))
+            }
+            TabRole::Shell => {
+                s.tabs.remove(key);
+                None
+            }
+        }
+    };
+    let Some((owner, agent_id)) = ended_agent else {
+        screen.close("exited");
+        session.end();
+        return;
+    };
+    screen.flush();
+    screen.close("agent_session_ended");
+    let mut s = state.lock().unwrap();
+    // One final reading, so a session shorter than a sweep tick is still named
+    // — and the respawn that needs the name is the very next thing after a
+    // close. It RECORDS; it never clears: a terminal resumed in place writes no
+    // new transcript, so a locator finding nothing is its normal answer here,
+    // and clearing on that would throw a good name away at every restart. A
+    // name that no longer resolves is caught at the reservation instead.
+    note_session_self_report(&mut s, key, &owner, &agent_id);
+    // The process is what a session IS, so this is where the conversation's
+    // lineage closes — and where a turn the dead process was holding is closed,
+    // so the row stops reading as working.
+    s.record_agent_session_end(&owner, &agent_id);
 }
 
 /// Pump one session's reported activity into the conversation it speaks in.
@@ -18977,7 +18692,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     s
 }
 
-fn b64encode(bytes: &[u8]) -> String {
+pub(crate) fn b64encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -19020,6 +18735,18 @@ mod tests {
 
         fn a_frame(state: &Arc<Mutex<AppState>>) -> FrameTimer {
             Arc::clone(&state.lock().unwrap().frame_clock).frame("test")
+        }
+
+        /// Start a tab's pumps the way a verb does, for a test that put the
+        /// tab in the registry by hand: the real function is handed what the
+        /// tab holds, which a verb takes off the tab before it hands it over.
+        pub(super) fn spawn_tab_pumps(
+            state: &Arc<Mutex<AppState>>,
+            key: TabKey,
+            output: SessionOutput,
+        ) {
+            let pumps = state.lock().unwrap().tabs[&key].pumps(output);
+            super::super::spawn_tab_pumps(state, key, pumps)
         }
 
         pub(super) fn spawn_activity_pump(
@@ -19079,7 +18806,10 @@ mod tests {
             super::super::deliver_pending_agent_turns(state, &a_frame(state))
         }
     }
-    use untimed::{deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump};
+    use untimed::{
+        deliver, deliver_pending_agent_turns, ensure_agent_tab, spawn_activity_pump,
+        spawn_tab_pumps,
+    };
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -19170,16 +18900,9 @@ mod tests {
     /// The grid a tab's terminal paints into. Every tab a test spawns has one:
     /// only a hand-built terminal-free session does not, and no test that
     /// speaks about a screen owns one of those.
-    fn screen_of(tab: &Tab) -> &TermScreen {
+    fn screen_of(tab: &Tab) -> &ScreenHandle {
         tab.screen
             .as_ref()
-            .expect("a tab spawned in a PTY has a screen")
-    }
-
-    /// The same grid, for a test that attaches a client to it.
-    fn screen_of_mut(tab: &mut Tab) -> &mut TermScreen {
-        tab.screen
-            .as_mut()
             .expect("a tab spawned in a PTY has a screen")
     }
 
@@ -20003,15 +19726,24 @@ mod tests {
     /// A frame that inserts a tab starts its pumps one statement after its own
     /// lock block releases, on the frame's thread. An acquisition there is the
     /// frame's — charged to nothing and named as nobody's if it is bare — so
-    /// the pumps take what they need from the session output they are handed
-    /// and touch no lock at all: they start while another frame holds it.
+    /// the pumps take what they need from the tab they are handed and touch no
+    /// lock at all: they start while another frame holds it.
     #[tokio::test]
     async fn a_tabs_pumps_start_while_another_frame_holds_the_app_mutex() {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new_unrooted(dir.path(), "main", true, "unused").shared();
         let key = derived_agent_key(dir.path(), "run-pumped");
-        let (_activity, subscribed) = broadcast::channel(4);
-        let (_revision, watched) = tokio::sync::watch::channel(0u64);
+        let (tab, output) = Tab::spawn(
+            TabRole::Shell,
+            &HarnessSpec::new("cat"),
+            key.tab_id.clone(),
+            dir.path().to_path_buf(),
+            80,
+            24,
+            None,
+        )
+        .expect("the tab spawns");
+        let pumps = tab.pumps(output);
         let held = state.lock().unwrap();
 
         let runtime = tokio::runtime::Handle::current();
@@ -20019,17 +19751,213 @@ mod tests {
         let (started, start) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let _in_runtime = runtime.enter();
-            spawn_tab_pumps(
-                &starting,
-                key,
-                SessionOutput::reporting(subscribed, Some(watched)),
-            );
+            super::spawn_tab_pumps(&starting, key, pumps);
             let _ = started.send(());
         });
         start
             .recv_timeout(Duration::from_secs(2))
             .expect("the pumps started with the app mutex held by another frame");
         drop(held);
+        tab.session.end();
+    }
+
+    /// The convoy this step exists to prevent, from the pump's side: an agent
+    /// painting a full-speed TUI parses every chunk under its OWN screen lock,
+    /// so a frame holding the app mutex — a board read, a commit, anything —
+    /// does not stop the paint, and the paint does not stop it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_streaming_pty_never_takes_the_app_mutex() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let key = TabKey {
+            root: root.clone(),
+            tab_id: "term-1".to_string(),
+        };
+        let (tab, output) = Tab::spawn(
+            TabRole::Shell,
+            &HarnessSpec::new("yes"),
+            key.tab_id.clone(),
+            root,
+            80,
+            24,
+            None,
+        )
+        .expect("the flooding tab spawns");
+        let screen = screen_of(&tab).clone();
+        let session = Arc::clone(&tab.session);
+        let pumps = tab.pumps(output);
+        state.lock().unwrap().tabs.insert(key.clone(), tab);
+        super::spawn_tab_pumps(&state, key, pumps);
+
+        // The app mutex is held for the whole of this, the way a slow frame
+        // holds it. The screen must keep filling underneath.
+        let held = state.lock().unwrap();
+        let painted = painted_bytes_within(&screen, Duration::from_secs(10));
+        drop(held);
+
+        assert!(
+            painted > 0,
+            "a flooding PTY painted nothing while a frame held the app mutex"
+        );
+        session.end();
+    }
+
+    /// How far a screen's cursor gets inside `budget`, polled without ever
+    /// awaiting — the caller is holding a lock the runtime must not park.
+    fn painted_bytes_within(screen: &ScreenHandle, budget: Duration) -> u64 {
+        let deadline = std::time::Instant::now() + budget;
+        while std::time::Instant::now() < deadline {
+            let painted = screen.cursor();
+            if painted > 0 {
+                return painted;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        0
+    }
+
+    /// The other half of the same rule: a screen that is busy — parsing a
+    /// flood, serializing a snapshot, pushing to a slow client — holds nothing
+    /// but itself, so every other frame in the daemon answers straight through
+    /// it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_frame_answers_while_a_screen_lock_is_held() {
+        let (dir, repo) = init_repo();
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
+        let project_id = state.lock().unwrap().projects[0].id.clone();
+        let created = handler.call(
+            SessionSender::detached("s1"),
+            req("term.create", json!({ "project_id": project_id })),
+        );
+        assert_eq!(created["ok"], true, "{created:?}");
+        let key = state
+            .lock()
+            .unwrap()
+            .tab_key_of_wire_id("term-1")
+            .expect("the shell is registered");
+        let screen = screen_of(&state.lock().unwrap().tabs[&key]).clone();
+
+        let held = screen.hold();
+        assert!(
+            state.try_lock().is_ok(),
+            "a screen lock is not the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a screen is busy");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        drop(held);
+
+        state.lock().unwrap().tabs[&key].session.end();
+    }
+
+    /// A harness that has stopped draining its pty blocks the write to it for
+    /// as long as it likes. Under the app mutex that one child wedged the whole
+    /// daemon; off it, it costs one worker and nothing else.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn term_input_to_a_pty_that_is_not_draining_leaves_the_app_mutex_free() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let agent_id = "agent-wedged";
+        let key = TabKey::agent(&root, agent_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        state
+            .lock()
+            .unwrap()
+            .tabs
+            .insert(key.clone(), wedged_agent_tab(&root, agent_id, gate));
+
+        let typed = frame_on_a_thread(
+            &state,
+            "s-typed",
+            "term.input",
+            json!({ "term_id": agent_tab_id(agent_id), "data": b64encode(b"ls\r") }),
+        );
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the pty write is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        let answered = read
+            .recv_timeout(Duration::from_secs(5))
+            .expect("an unrelated read is answered while a pty write is stuck");
+        assert_eq!(answered["ok"], true, "{answered:?}");
+
+        gate_handle.release();
+        let typed = typed
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the write answers once the child takes it");
+        assert_eq!(typed["ok"], true, "{typed:?}");
+    }
+
+    /// An agent tab whose terminal never takes a byte: every `write_input`
+    /// parks in `gate` until the test lets it go, which is what a harness that
+    /// has stopped reading its pty does to the frame writing to it.
+    fn wedged_agent_tab(root: &std::path::Path, agent_id: &str, gate: OffLockGate) -> Tab {
+        let (output, _) = broadcast::channel(4);
+        let session = Arc::new(WedgedTerminal { gate, output });
+        Tab {
+            tab_id: agent_tab_id(agent_id),
+            root: root.to_path_buf(),
+            role: TabRole::Agent {
+                owner: "run-wedged".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::default(),
+            },
+            created_at: now_rfc3339(),
+            screen: Some(ScreenHandle::new(&agent_tab_id(agent_id), 80, 24)),
+            session,
+            live: true,
+            call_sequences: HashMap::new(),
+            last_delivered_at: None,
+        }
+    }
+
+    /// A session whose terminal accepts nothing.
+    struct WedgedTerminal {
+        gate: OffLockGate,
+        output: broadcast::Sender<Vec<u8>>,
+    }
+
+    impl AgentSession for WedgedTerminal {
+        fn send_turn(&self, _turn: &Turn) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn status(&self) -> AgentStatus {
+            AgentStatus::Waiting
+        }
+        fn quiet_for(&self) -> Duration {
+            Duration::ZERO
+        }
+        fn exited_within(&self, _timeout: Duration) -> bool {
+            false
+        }
+        fn end(&self) {}
+        fn backdate_last_output(&self, _ago: Duration) {}
+        fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
+            Some(self)
+        }
+    }
+
+    impl crate::harness::TerminalView for WedgedTerminal {
+        fn subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
+            self.output.subscribe()
+        }
+        fn write_input(&self, _bytes: &[u8]) -> Result<(), HarnessError> {
+            self.gate.arrive();
+            Ok(())
+        }
+        fn resize(&self, _size: PtySize) -> Result<(), HarnessError> {
+            Ok(())
+        }
+        fn pid(&self) -> Option<u32> {
+            None
+        }
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history
@@ -20665,7 +20593,8 @@ mod tests {
         else {
             return String::new();
         };
-        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot()).unwrap()).into_owned()
+        String::from_utf8_lossy(&b64decode(&screen_of(tab).snapshot().snapshot).unwrap())
+            .into_owned()
     }
 
     /// Poll the agent tab's screen until it shows `needle` (the pump feeds it),
@@ -21803,10 +21732,7 @@ mod tests {
                 .find(|tab| tab.wire_id() == wire_id)
                 .map(screen_of)
                 .expect("the tab is still registered")
-                .attached
-                .iter()
-                .map(|client| client.sender.session_id().to_string())
-                .collect()
+                .attached_sessions()
         };
         assert_eq!(
             attached_to("term-1"),
@@ -23584,7 +23510,7 @@ mod tests {
     /// The terminal a tab's session offers. Tests are the only place that
     /// reaches for one without a client asking: the daemon goes through
     /// [`Tab::require_terminal`], which says why when there is none.
-    fn agent_terminal(tab: &Tab) -> &dyn TerminalView {
+    fn agent_terminal(tab: &Tab) -> &dyn crate::harness::TerminalView {
         tab.session
             .terminal()
             .expect("a PTY session offers a terminal")
@@ -23593,7 +23519,9 @@ mod tests {
     /// The OS process behind a tab, asked through the terminal that owns it —
     /// a process id is the basement's, and no other carrier has one to give.
     fn agent_pid(tab: &Tab) -> Option<u32> {
-        tab.session.terminal().and_then(TerminalView::pid)
+        tab.session
+            .terminal()
+            .and_then(crate::harness::TerminalView::pid)
     }
 
     /// [`planned_run_in_review`] over the frame handler — the entry point that
@@ -30745,10 +30673,8 @@ mod tests {
         while std::time::Instant::now() < deadline {
             match rx.try_recv() {
                 Ok(chunk) => {
-                    if let Some(screen) =
-                        state.tabs.get_mut(key).and_then(|tab| tab.screen.as_mut())
-                    {
-                        screen.process(&chunk);
+                    if let Some(screen) = state.tabs.get(key).and_then(|tab| tab.screen.as_ref()) {
+                        screen.feed(&chunk);
                     }
                 }
                 Err(broadcast::error::TryRecvError::Empty) => {
@@ -33612,7 +33538,7 @@ mod tests {
             &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-waited-for")],
         );
         assert_eq!(
-            (screen.cols, screen.rows),
+            screen.size(),
             (100, 30),
             "the spawned agent is sized to the viewport of the client already watching it"
         );
@@ -33651,7 +33577,7 @@ mod tests {
                 let s = state.lock().unwrap();
                 let tab = &s.tabs[&key];
                 if !tab.live {
-                    break screen_of(tab).total;
+                    break screen_of(tab).cursor();
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -33662,8 +33588,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("late");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(90, 25);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
         }
 
@@ -33743,8 +33669,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("waiting");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(90, 25);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 90, 25);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key.clone(), waiting);
         }
 
@@ -33814,8 +33740,8 @@ mod tests {
         wait_for_agent_screen(&state, &root, "FIRST-SESSION").await;
         let (sender, mut pushes, session_key) = SessionSender::observable("watching");
         {
-            let mut s = state.lock().unwrap();
-            screen_of_mut(s.tabs.get_mut(&key).expect("the agent tab")).register(&sender);
+            let s = state.lock().unwrap();
+            screen_of(&s.tabs[&key]).attach(&sender, None);
         }
         state.lock().unwrap().tabs[&key].session.end();
         wait_for(Duration::from_secs(5), || {
@@ -33878,8 +33804,8 @@ mod tests {
         let (sender, mut pushes, session_key) = SessionSender::observable("s1");
         {
             let mut s = state.lock().unwrap();
-            let mut waiting = TermScreen::new(80, 24);
-            waiting.register(&sender);
+            let waiting = ScreenHandle::new(&key.tab_id, 80, 24);
+            waiting.attach(&sender, None);
             s.agent_screens_awaiting_spawn.insert(key, waiting);
         }
         std::fs::remove_dir_all(&vanishing).unwrap();
@@ -33901,468 +33827,6 @@ mod tests {
         assert_eq!(closed["type"], "term.closed", "{closed:?}");
         assert_eq!(closed["term_id"], wire_id);
         assert_eq!(closed["reason"], "reaped");
-    }
-
-    /// Drain every decrypted push a test sender has captured so far.
-    fn drain_pushes(
-        rx: &mut tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
-        session_key: &str,
-    ) -> Vec<Value> {
-        let mut seen = Vec::new();
-        while let Ok(message) = rx.try_recv() {
-            seen.push(SessionSender::decrypt_push(session_key, &message));
-        }
-        seen
-    }
-
-    /// A screen with one observable client attached, ready to flush.
-    ///
-    /// The rate-limit window is widened far past the production 100 ms: a debug
-    /// build parsing 128 KB through vt100 on a machine running the whole suite
-    /// in parallel can itself outlast the real window, which would let a test
-    /// about suppression watch a legitimate snapshot go out. Every test that
-    /// needs the window to reopen says so with `backdate_last_flood_snapshot`.
-    const HELD_FLOOD_WINDOW: Duration = Duration::from_secs(60);
-
-    fn flooded_screen() -> (
-        TermScreen,
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
-        String,
-    ) {
-        let (sender, pushes, session_key) = SessionSender::observable("flood-client");
-        let mut screen = TermScreen::new(80, 24);
-        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&sender);
-        (screen, pushes, session_key)
-    }
-
-    /// More than one flush's worth of backlog: enough to cross the collapse
-    /// threshold on its own.
-    fn flood_chunk() -> Vec<u8> {
-        vec![b'x'; TERM_SNAPSHOT_THRESHOLD + 1]
-    }
-
-    /// A flood produces an over-threshold backlog every 10 ms tick. Collapsing
-    /// each one to a full-screen snapshot is ~100 screens/sec through the relay,
-    /// which head-of-line-blocks everything behind it. The first collapse goes
-    /// out; the next one inside the rate-limit window drops its backlog and
-    /// sends nothing at all.
-    #[test]
-    fn a_second_flood_collapse_inside_the_window_sends_nothing() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        let first = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(first.len(), 1, "the first collapse goes out: {first:?}");
-        assert_eq!(first[0]["type"], "term.reset", "{first:?}");
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        let second = drain_pushes(&mut pushes, &session_key);
-        assert!(
-            second.is_empty(),
-            "a collapse inside the rate-limit window sends nothing: {second:?}"
-        );
-        assert!(
-            screen.pending.is_empty(),
-            "the dropped backlog is cleared, not carried into the next flush"
-        );
-        assert!(
-            screen.snapshot_due,
-            "dropping bytes owes the client a resync snapshot"
-        );
-    }
-
-    /// The tail of a flood is the part a human actually reads. Once the window
-    /// reopens, the owed snapshot goes out on the next flush even if barely any
-    /// bytes arrived in that tick — otherwise the last screen of a flood is the
-    /// one that never ships.
-    #[test]
-    fn the_owed_snapshot_ships_once_the_window_reopens() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        drain_pushes(&mut pushes, &session_key);
-        assert!(screen.snapshot_due);
-
-        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
-        let cursor_before_tail = screen.total;
-        screen.process(b"tail");
-        screen.flush("term-1");
-
-        let tail = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(tail.len(), 1, "exactly one resync frame: {tail:?}");
-        assert_eq!(tail[0]["type"], "term.reset", "{tail:?}");
-        assert_eq!(
-            tail[0]["cursor"].as_u64().unwrap(),
-            cursor_before_tail + 4,
-            "the snapshot carries the live cursor: {tail:?}"
-        );
-        assert!(!screen.snapshot_due, "the debt is settled");
-
-        // An empty tick after the debt is settled sends nothing.
-        screen.flush("term-1");
-        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
-    }
-
-    /// Raw `term.output` bytes must be contiguous — the client applies them by
-    /// cursor. Once a flood-collapse has dropped bytes, raw output would paint
-    /// a garbled screen, so nothing but the resync snapshot may go out until the
-    /// debt is settled.
-    #[test]
-    fn no_raw_output_ships_between_a_dropped_backlog_and_its_resync() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        screen.process(&flood_chunk());
-        screen.flush("term-1");
-        assert!(screen.snapshot_due);
-        drain_pushes(&mut pushes, &session_key);
-
-        // Small ticks while the debt stands: each one is dropped silently.
-        for _ in 0..5 {
-            screen.process(b"garble");
-            screen.flush("term-1");
-        }
-        screen.backdate_last_flood_snapshot(HELD_FLOOD_WINDOW + Duration::from_millis(10));
-        screen.process(b"garble");
-        screen.flush("term-1");
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert!(
-            seen.iter().all(|push| push["type"] != "term.output"),
-            "no raw output crosses a gap in the byte stream: {seen:?}"
-        );
-        assert_eq!(
-            seen.iter()
-                .filter(|push| push["type"] == "term.reset")
-                .count(),
-            1,
-            "one resync closes the gap: {seen:?}"
-        );
-    }
-
-    /// The ordinary case — a prompt, a command, some output — is untouched by
-    /// the flood rate limit: raw frames with advancing cursors, no snapshots.
-    #[test]
-    fn small_steady_output_still_ships_raw_with_advancing_cursors() {
-        let (mut screen, mut pushes, session_key) = flooded_screen();
-
-        for line in ["one\r\n", "two\r\n", "three\r\n"] {
-            screen.process(line.as_bytes());
-            screen.flush("term-1");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(seen.len(), 3, "one frame per flush: {seen:?}");
-        assert!(
-            seen.iter().all(|push| push["type"] == "term.output"),
-            "small output never collapses to a snapshot: {seen:?}"
-        );
-        let cursors: Vec<u64> = seen
-            .iter()
-            .map(|push| push["cursor"].as_u64().unwrap())
-            .collect();
-        assert_eq!(cursors, vec![5, 10, 17], "{seen:?}");
-        assert_eq!(output_text(&seen, "term-1"), "one\r\ntwo\r\nthree\r\n");
-    }
-
-    /// One chunk of output well under the flood-collapse threshold, so a flush
-    /// of it ships as raw `term.output`. Sixteen of them exceed the unacked
-    /// budget — the ack tests count in these.
-    const ACK_TEST_CHUNK: usize = 100 * 1024;
-
-    fn chunk_of(bytes: usize) -> Vec<u8> {
-        vec![b'x'; bytes]
-    }
-
-    /// One client's capture: everything the bridge pushed to it, and the
-    /// session key those pushes decrypt with.
-    type ClientCapture = (
-        tokio::sync::mpsc::UnboundedReceiver<tokio_tungstenite::tungstenite::Message>,
-        String,
-    );
-
-    /// A screen with two observable clients attached, each with its own capture.
-    fn two_client_screen() -> (TermScreen, ClientCapture, ClientCapture) {
-        let (first_sender, first_pushes, first_key) = SessionSender::observable("client-one");
-        let (second_sender, second_pushes, second_key) = SessionSender::observable("client-two");
-        let mut screen = TermScreen::new(80, 24);
-        screen.snapshot_min_interval = HELD_FLOOD_WINDOW;
-        screen.register(&first_sender);
-        screen.register(&second_sender);
-        (
-            screen,
-            (first_pushes, first_key),
-            (second_pushes, second_key),
-        )
-    }
-
-    /// Push one chunk and flush it, then have `acking` acknowledge everything
-    /// the screen has produced so far.
-    fn flush_chunk_acked_by(screen: &mut TermScreen, acking: &str) {
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", acking, screen.total);
-    }
-
-    /// A client that acknowledges what it received is keeping up by definition,
-    /// so nothing about flow control may interrupt its stream — however much
-    /// output flows through it.
-    #[test]
-    fn a_client_that_keeps_acking_keeps_receiving_raw_output() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-one");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(seen.len(), 16, "every flush reached the client: {seen:?}");
-        assert!(
-            seen.iter().all(|push| push["type"] == "term.output"),
-            "an acking client is never resynced out of the raw stream: {seen:?}"
-        );
-        assert_eq!(
-            seen.last().unwrap()["cursor"].as_u64().unwrap(),
-            screen.total
-        );
-    }
-
-    /// A client whose acks stop is a client that is not draining: its frames are
-    /// piling up in the bridge's channel and the relay's queue, and every frame
-    /// behind them — the liveness ping, the human's keystrokes — waits on the
-    /// pile. Past the budget it stops being fed. The other client is a different
-    /// connection and must not be slowed by its neighbour.
-    #[test]
-    fn a_client_that_stops_acking_stops_being_fed_and_the_other_does_not() {
-        let (mut screen, (mut silent_pushes, silent_key), (mut acking_pushes, acking_key)) =
-            two_client_screen();
-
-        // Both acknowledge the first flush, so neither is exempt as never-acked.
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-        drain_pushes(&mut silent_pushes, &silent_key);
-        drain_pushes(&mut acking_pushes, &acking_key);
-
-        // client-one goes silent while output keeps flowing past the budget.
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-
-        // It is fed until the flush that carries it PAST the budget: ten 100 KiB
-        // chunks fit inside a megabyte, the eleventh does not.
-        let fits_in_budget = (TERM_UNACKED_BUDGET_BYTES / ACK_TEST_CHUNK as u64) as usize;
-        let silent = drain_pushes(&mut silent_pushes, &silent_key);
-        assert_eq!(
-            silent.len(),
-            fits_in_budget,
-            "a client past its unacked budget stops being fed: {silent:?}"
-        );
-        let fed_bytes: u64 = silent
-            .iter()
-            .map(|push| b64decode(push["data"].as_str().unwrap()).unwrap().len() as u64)
-            .sum();
-        assert!(
-            fed_bytes <= TERM_UNACKED_BUDGET_BYTES,
-            "nothing past the budget went out: {fed_bytes}"
-        );
-
-        let acking = drain_pushes(&mut acking_pushes, &acking_key);
-        assert_eq!(
-            acking.len(),
-            16,
-            "the client that kept acking kept receiving: {acking:?}"
-        );
-    }
-
-    /// A paused client drains, acks, and comes back under budget. It missed
-    /// frames while paused, so the raw stream it left is no longer contiguous
-    /// with what it holds: exactly one snapshot resyncs it, and raw output
-    /// resumes from there.
-    #[test]
-    fn an_ack_under_budget_resyncs_the_paused_client_once_then_resumes_raw_output() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        drain_pushes(&mut pushes, &session_key);
-
-        // It catches up on everything the bridge has produced.
-        let caught_up_at = screen.total;
-        screen.ack("term-1", "client-one", caught_up_at);
-        let resync = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resync.len(), 1, "exactly one resync frame: {resync:?}");
-        assert_eq!(
-            resync[0]["type"], "term.reset",
-            "the resync is a snapshot, never raw bytes over a gap: {resync:?}"
-        );
-        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), caught_up_at);
-
-        // A second ack at the same cursor does not resync again.
-        screen.ack("term-1", "client-one", caught_up_at);
-        assert!(drain_pushes(&mut pushes, &session_key).is_empty());
-
-        // And the stream is raw again.
-        flush_chunk_acked_by(&mut screen, "client-one");
-        let resumed = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resumed.len(), 1, "{resumed:?}");
-        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
-    }
-
-    /// Walk one client's frames as that client applies them, and return where
-    /// its stream stands afterwards. A `term.reset` replaces the screen and
-    /// moves the stream to its own cursor; a `term.output` must begin exactly
-    /// where the stream stands, since raw bytes are applied on top of what the
-    /// client already holds. A raw frame that starts behind the stream would be
-    /// re-applied bytes, one that starts ahead of it a hole — both are the
-    /// contiguity break the INVARIANT forbids.
-    fn assert_stream_contiguous(frames: &[Value], start: u64) -> u64 {
-        let mut applied = start;
-        for frame in frames {
-            let cursor = frame["cursor"].as_u64().unwrap();
-            match frame["type"].as_str().unwrap() {
-                "term.reset" => applied = cursor,
-                "term.output" => {
-                    let bytes = b64decode(frame["data"].as_str().unwrap()).unwrap().len() as u64;
-                    assert_eq!(
-                        cursor - bytes,
-                        applied,
-                        "raw output must begin where the client's stream stands: {frame:?}"
-                    );
-                    applied = cursor;
-                }
-                other => panic!("unexpected frame while streaming: {other} in {frame:?}"),
-            }
-        }
-        applied
-    }
-
-    /// PTY bytes arrive on their own channel, so an ack can land between a
-    /// `process` and the flush that would have shipped it. The resync snapshot
-    /// serializes the live screen, which already holds those bytes — so the
-    /// next flush must not also hand them to the resumed client as raw output
-    /// on top of the screen it just applied.
-    #[test]
-    fn an_ack_between_a_process_and_its_flush_does_not_replay_the_snapshotted_bytes() {
-        let (mut screen, (mut resumed_pushes, resumed_key), (mut acking_pushes, acking_key)) =
-            two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-        for _ in 0..16 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        drain_pushes(&mut resumed_pushes, &resumed_key);
-        drain_pushes(&mut acking_pushes, &acking_key);
-        let streams_stand_at = screen.total;
-
-        // A chunk lands mid-cycle: processed, not yet flushed, when the paused
-        // client's ack arrives and resyncs it.
-        screen.process(b"mid-cycle");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.process(b"after-resync");
-        screen.flush("term-1");
-
-        let resumed = drain_pushes(&mut resumed_pushes, &resumed_key);
-        assert_eq!(
-            assert_stream_contiguous(&resumed, streams_stand_at),
-            screen.total,
-            "the resumed client ends holding everything the bridge produced: {resumed:?}"
-        );
-
-        // The client that never paused keeps its own contiguous raw stream —
-        // the mid-cycle bytes are shipped to it, not dropped on the floor.
-        let acking = drain_pushes(&mut acking_pushes, &acking_key);
-        assert_eq!(
-            assert_stream_contiguous(&acking, streams_stand_at),
-            screen.total,
-            "the client that kept up misses nothing: {acking:?}"
-        );
-        assert!(
-            output_text(&acking, "term-1").contains("mid-cycle"),
-            "{acking:?}"
-        );
-    }
-
-    /// A paused client receives nothing, so the highest cursor it can ever ack
-    /// is the last frame it was sent before pausing. A sustained flood runs the
-    /// live cursor far past that frame — measuring the resume against the live
-    /// cursor would leave the client paused forever, with no frame in existence
-    /// that could ever unpause it. Draining everything it was actually sent is
-    /// all a paused client can do, and it must be enough: the resync snapshot
-    /// covers the withheld gap by construction.
-    #[test]
-    fn a_paused_client_resumes_after_acking_all_it_was_sent_even_when_the_flood_ran_far_ahead() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        screen.process(&chunk_of(ACK_TEST_CHUNK));
-        screen.flush("term-1");
-        screen.ack("term-1", "client-one", screen.total);
-        screen.ack("term-1", "client-two", screen.total);
-
-        // client-one goes silent; the flood runs 32 chunks (~3.2 MiB) — far
-        // more than the unacked budget past anything client-one was sent.
-        for _ in 0..32 {
-            flush_chunk_acked_by(&mut screen, "client-two");
-        }
-        let sent = drain_pushes(&mut pushes, &session_key);
-        let last_received = sent.last().unwrap()["cursor"].as_u64().unwrap();
-        assert!(
-            screen.total - last_received > TERM_UNACKED_BUDGET_BYTES,
-            "the flood must outrun the paused client by more than the budget"
-        );
-
-        // It drains its queue and acks the last frame it was given — the
-        // highest cursor it can ever report.
-        screen.ack("term-1", "client-one", last_received);
-        let resync = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(
-            resync.len(),
-            1,
-            "draining everything sent earns the resync: {resync:?}"
-        );
-        assert_eq!(resync[0]["type"], "term.reset", "{resync:?}");
-        assert_eq!(resync[0]["cursor"].as_u64().unwrap(), screen.total);
-
-        // And the raw stream is back.
-        flush_chunk_acked_by(&mut screen, "client-one");
-        let resumed = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(resumed.len(), 1, "{resumed:?}");
-        assert_eq!(resumed[0]["type"], "term.output", "{resumed:?}");
-    }
-
-    /// A client from before acks existed never sends one, and it must not be
-    /// starved for that: with no ack to measure by, there is no evidence it is
-    /// falling behind, so it keeps today's behaviour.
-    #[test]
-    fn a_client_that_never_acks_is_never_paused() {
-        let (mut screen, (mut pushes, session_key), _) = two_client_screen();
-
-        for _ in 0..16 {
-            screen.process(&chunk_of(ACK_TEST_CHUNK));
-            screen.flush("term-1");
-        }
-
-        let seen = drain_pushes(&mut pushes, &session_key);
-        assert_eq!(
-            seen.len(),
-            16,
-            "an ack-less client is fed exactly as it always was: {seen:?}"
-        );
     }
 
     /// A human can close the browser while waiting on the Agent tab of a
@@ -34397,7 +33861,7 @@ mod tests {
                 .unwrap()
                 .agent_screens_awaiting_spawn
                 .values()
-                .all(|screen| screen.attached.is_empty()),
+                .all(|screen| screen.attached() == 0),
             "an ended session is detached from the screen it was waiting on"
         );
 
@@ -34416,11 +33880,11 @@ mod tests {
         let tab =
             &s.tabs[&derived_agent_key(&AppState::canonical_root(&repo), "run-closed-client")];
         assert!(
-            screen_of(tab).attached.is_empty(),
+            screen_of(tab).attached() == 0,
             "a session that ended is never carried onto the agent it waited for"
         );
         assert_eq!(
-            (screen_of(tab).cols, screen_of(tab).rows),
+            screen_of(tab).size(),
             (120, 40),
             "with nobody left waiting, the spawn keeps the size Build chose"
         );
@@ -38569,19 +38033,20 @@ mod tests {
     #[test]
     fn the_terminal_verbs_refuse_an_agent_with_no_terminal() {
         let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
+        let (state, handler) = shared_state_and_handler(&repo, dir.path());
         let root = AppState::canonical_root(&repo);
         let agent_id = "agent-protocol";
-        state.tabs.insert(
+        state.lock().unwrap().tabs.insert(
             TabKey::agent(&root, agent_id),
             terminal_free_agent_tab(&root, "run-protocol", agent_id),
         );
         let term_id = agent_tab_id(agent_id);
 
-        let typed = state.handle(req(
+        let typed = call(
+            &handler,
             "term.input",
             json!({ "term_id": term_id, "data": b64encode(b"ls\r") }),
-        ));
+        );
         assert_eq!(typed["ok"], false, "{typed:?}");
         let refusal = typed["error"].as_str().unwrap().to_string();
         assert!(
@@ -38589,10 +38054,11 @@ mod tests {
             "the refusal names the agent and where its work is read: {refusal}"
         );
 
-        let resized = state.handle(req(
+        let resized = call(
+            &handler,
             "term.resize",
             json!({ "term_id": term_id, "cols": 100, "rows": 30 }),
-        ));
+        );
         assert_eq!(
             resized["ok"], false,
             "a viewport means nothing to a session with no grid: {resized:?}"

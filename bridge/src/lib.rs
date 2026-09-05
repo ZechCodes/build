@@ -66,6 +66,7 @@ pub mod relay_server;
 pub mod review_rules;
 pub mod router;
 pub mod run;
+pub mod screen;
 pub mod service;
 pub mod store;
 pub mod templates;

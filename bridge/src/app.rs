@@ -607,6 +607,21 @@ enum Spawned {
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
 
+/// The agent a verb's parameters name, resolved whole.
+///
+/// Five readings that only make sense together and are only ever taken
+/// together: which entity, which of its agents, the checkout that agent works
+/// in, the harness it runs, and whether its thread holds anything it has not
+/// been told about. A verb that has one of these has everything it needs to
+/// queue a turn and to answer.
+struct AddressedAgent {
+    entity_id: String,
+    agent_id: String,
+    root: std::path::PathBuf,
+    model_choice: ModelChoice,
+    has_unread: bool,
+}
+
 /// Who is on the other end of an authenticated MCP control frame.
 ///
 /// The kind decides the tool surface, and it is read off the identity the frame
@@ -3655,6 +3670,55 @@ impl AppState {
             .clone();
         self.finish_run_mutation(entity_id.to_string(), active)?;
         Ok(agent_id)
+    }
+
+    /// Resolve the agent a verb's parameters address, minting one where asking
+    /// for an agent is what the verb means.
+    ///
+    /// The order is the rule. The provider picker rides the parameters, so it
+    /// is parsed and written FIRST: an unrunnable provider refuses before
+    /// anything has been opened, and the agent resolved after it is resolved on
+    /// the choice the human just made. Then the entity's own agent — named, or
+    /// the primary, which a branch the human emptied is given — then the
+    /// checkout it works in and the harness it runs, which is the AGENT's and
+    /// not the entity's: the several agents on a branch need not share one.
+    fn addressed_agent(&mut self, params: &Value) -> Result<AddressedAgent, String> {
+        // `run_id` is the adopting caller's spelling: a worktree surface with no
+        // run yet mints one and forwards the verb, and that helper names the id
+        // it just minted. Same entity either way.
+        let entity_id = params
+            .get("id")
+            .or_else(|| params.get("run_id"))
+            .or_else(|| params.get("plan_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or("missing id")?
+            .to_string();
+        if has_agent_choice(params) {
+            let chosen = model_choice_from(params, self.default_harness)?;
+            self.set_entity_model_choice(&entity_id, chosen)?;
+        }
+        let named = params
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty());
+        let agent_id = match named {
+            None => self.ensure_primary_agent(&entity_id)?,
+            named => self.resolve_agent(&entity_id, named)?.id,
+        };
+        let root = self.entity_agent_root(&entity_id)?;
+        let entity_choice = self.entity_model_choice(&entity_id)?;
+        let roster = self.entity_agents(&entity_id)?;
+        let agent = roster
+            .by_id(&agent_id)
+            .expect("the agent was just resolved on this roster");
+        Ok(AddressedAgent {
+            has_unread: agent.thread.has_unread(),
+            model_choice: roster.turn_choice(&agent_id, &entity_choice),
+            entity_id,
+            agent_id,
+            root,
+        })
     }
 
     /// The agent an entity dispatches with. A start with no turn behind it still
@@ -17714,84 +17778,39 @@ fn agent_start(
     params: &Value,
     timer: &FrameTimer,
 ) -> Result<Value, String> {
-    // `run_id` is the adopting caller's spelling: a worktree surface with no run
-    // yet mints one and forwards the verb, and that helper names the id it just
-    // minted. Same entity either way.
-    let entity_id = params
-        .get("id")
-        .or_else(|| params.get("run_id"))
-        .or_else(|| params.get("plan_id"))
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .ok_or("missing id")?;
-    let requested_agent = params
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .map(str::to_string);
-    let (turns, agent_id, waiting) = {
+    let (turns, agent) = {
         let mut s = timer.lock(state);
-        // The Agent tab's provider picker rides the start itself. Parsed under
-        // the lock — what "claude" opens is the account's setting to answer —
-        // but still before anything is touched, so an unrunnable provider
-        // refuses instead of opening an agent on the old one.
-        let requested_choice = has_agent_choice(params)
-            .then(|| model_choice_from(params, s.default_harness))
-            .transpose()?;
-        if let Some(choice) = requested_choice {
-            s.set_entity_model_choice(&entity_id, choice)?;
-        }
-        // A start with no agent named on a branch that has none is the human
-        // asking for one: the same door a post takes, on the entity's own
-        // choice — which the provider they just named, if they named one, has
-        // already been written to.
-        let agent_id = match requested_agent.as_deref() {
-            None => s.ensure_primary_agent(&entity_id)?,
-            named => s.resolve_agent(&entity_id, named)?.id,
-        };
-        let root = s.entity_agent_root(&entity_id)?;
-        let roster = s.entity_agents(&entity_id)?;
-        let thread = &roster
-            .by_id(&agent_id)
-            .expect("the agent was just resolved on this roster")
-            .thread;
-        // The button means "give me an agent", not "go do something" — so a
-        // start with nothing waiting says nothing, and the human drives from
-        // there. But the reviewer's words are durable on the thread and an
-        // agent only learns of them by being TOLD to call
-        // `read_unread_messages`; a fresh harness has no reason to. Restarting
-        // after a crash with messages outstanding would silently ignore every
-        // one of them.
-        let waiting = thread.has_unread();
-        // The agent's own harness, not the entity's: the Resume the TUI pane
-        // offers names no provider precisely because the agent is locked to
-        // one, and a branch's several agents need not share it.
-        let model_choice = roster.turn_choice(&agent_id, &s.entity_model_choice(&entity_id)?);
+        let agent = s.addressed_agent(params)?;
         s.pending_agent_turns.push(PendingAgentTurn {
-            root,
-            owner: entity_id.clone(),
-            agent_id: agent_id.clone(),
-            model_choice,
-            // A hand-started agent has no context, so what waits for it gets
-            // the cold form: the conversation protocol and the catch-up packet
-            // around the nudge.
-            say: waiting.then(|| TurnText {
+            root: agent.root.clone(),
+            owner: agent.entity_id.clone(),
+            agent_id: agent.agent_id.clone(),
+            model_choice: agent.model_choice.clone(),
+            // The button means "give me an agent", not "go do something" — so a
+            // start with nothing waiting says nothing, and the human drives from
+            // there. But the reviewer's words are durable on the thread and an
+            // agent only learns of them by being TOLD to call
+            // `read_unread_messages`; a fresh harness has no reason to.
+            // Restarting after a crash with messages outstanding would silently
+            // ignore every one of them. A hand-started agent has no context, so
+            // what waits for it gets the cold form: the conversation protocol
+            // and the catch-up packet around the nudge.
+            say: agent.has_unread.then(|| TurnText {
                 cold: crate::orchestrator::conversation_prompt(NEW_THREAD_MESSAGES_PROMPT),
                 warm: NEW_THREAD_MESSAGES_PROMPT.to_string(),
             }),
             phase: "start",
             wants_catch_up: true,
         });
-        s.touch_attention(&entity_id);
-        (s.take_pending_turns(), agent_id, waiting)
+        s.touch_attention(&agent.entity_id);
+        (s.take_pending_turns(), agent)
     };
     DeliveryRunner::spawn(state, turns);
 
     Ok(json!({
-        "term_id": agent_tab_id(&agent_id),
-        "agent_id": agent_id,
-        "notified": waiting,
+        "term_id": agent_tab_id(&agent.agent_id),
+        "agent_id": agent.agent_id,
+        "notified": agent.has_unread,
     }))
 }
 

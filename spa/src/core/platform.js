@@ -20,10 +20,10 @@ const isHandheld = (shape) => /iphone|ipad|ipod|android/i.test(shapeText(shape))
 const isMac = (shape) => /mac/i.test(shapeText(shape));
 const isLinux = (shape) => /linux/i.test(shapeText(shape));
 
-// "Intel Mac OS X" appears on Apple silicon too; an explicit x86_64 token does
-// not, and userAgentData.architecture, when the browser offers it, is decisive.
-const isMacIntel = ({ architecture, ...shape }) =>
-  architecture === undefined ? /x86_64|x86-64/i.test(shapeText(shape)) : architecture === "x86";
+// "Intel Mac OS X" appears on Apple silicon too, so the shape's own text says
+// nothing here: userAgentData.architecture is the whole rule, and its absence
+// means Apple silicon.
+const isMacIntel = ({ architecture }) => architecture === "x86";
 
 const isArm = (shape) => /aarch64|arm64|armv8/i.test(shapeText(shape));
 

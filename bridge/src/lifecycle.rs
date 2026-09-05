@@ -269,61 +269,49 @@ pub struct DispatchCheckout {
 
 impl WorktreeMutation for DispatchCheckout {
     fn perform(self: Box<Self>) -> Result<Performed, String> {
-        let (checkout, minted) = self.open_checkout()?;
-        match self.take_ownership(&checkout) {
-            Ok(performed) => Ok(performed),
-            Err(error) => {
-                // What this call cut, this call removes. A checkout it merely
-                // found is handed back with every file intact.
-                if let Some(minted) = minted {
-                    match minted.branch_was_cut {
-                        true => self.project.discard_worktree(&minted.worktree),
-                        false => self
-                            .project
-                            .discard_checkout_keeping_branch(&minted.worktree),
-                    }
-                }
-                Err(error)
+        // A checkout that was already there is never this call's to remove:
+        // taking ownership of one touches nothing that has to be put back.
+        if let Some(found) = self.find_checkout()? {
+            return self.take_ownership(&found);
+        }
+        let minted = self.cut_branch()?;
+        let dispatched = self
+            .project
+            .describe_checkout(&minted.worktree.path, &self.base_branch)
+            .map_err(|error| error.to_string())
+            .and_then(|checkout| self.take_ownership(&checkout));
+        if dispatched.is_err() {
+            // What this call cut, this call removes — and the branch under it
+            // only if this call cut that too.
+            match minted.branch_was_cut {
+                true => self.project.discard_worktree(&minted.worktree),
+                false => self
+                    .project
+                    .discard_checkout_keeping_branch(&minted.worktree),
             }
         }
+        dispatched
     }
 }
 
 impl DispatchCheckout {
-    /// The checkout this dispatch works in, and what it had to create to have
-    /// one. A named branch a run already owns never reaches here — that
-    /// dispatch joins the run and builds no job at all.
-    fn open_checkout(&self) -> Result<(ExternalWorktree, Option<NamedBranchCheckout>), String> {
+    /// The bare checkout of the branch this dispatch names, if this project has
+    /// one. A dispatch that named no branch has nothing to look for: it always
+    /// cuts a new branch rather than adopting whatever is lying around. A named
+    /// branch a run already owns never reaches here — that dispatch joins the
+    /// run and builds no job at all.
+    fn find_checkout(&self) -> Result<Option<ExternalWorktree>, String> {
+        let Some(branch) = self.branch.as_deref() else {
+            return Ok(None);
+        };
         // Forced rather than cached: a dispatch decides against the checkouts
         // that exist now, not against a summary from a scan interval ago.
-        let found = match &self.branch {
-            Some(branch) => self
-                .project
-                .scan_checkouts(&self.base_branch, &self.excluded)
-                .map_err(|error| error.to_string())?
-                .into_iter()
-                .find(|checkout| checkout.branch.as_deref() == Some(branch.as_str())),
-            None => None,
-        };
-        if let Some(checkout) = found {
-            return Ok((checkout, None));
-        }
-        let minted = self.cut_branch()?;
-        match self
+        Ok(self
             .project
-            .describe_checkout(&minted.worktree.path, &self.base_branch)
-        {
-            Ok(checkout) => Ok((checkout, Some(minted))),
-            Err(error) => {
-                match minted.branch_was_cut {
-                    true => self.project.discard_worktree(&minted.worktree),
-                    false => self
-                        .project
-                        .discard_checkout_keeping_branch(&minted.worktree),
-                }
-                Err(error.to_string())
-            }
-        }
+            .scan_checkouts(&self.base_branch, &self.excluded)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|checkout| checkout.branch.as_deref() == Some(branch)))
     }
 
     /// Cut the branch this dispatch has nowhere else to put its work.

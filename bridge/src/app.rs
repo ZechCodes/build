@@ -12,7 +12,7 @@
 //! over MCP; the orchestrator code path is identical.
 
 use std::collections::HashMap;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,16 +26,16 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::changes::{ChangeBus, ANNOUNCED_EVENTS, DEFAULT_COALESCE_WINDOW};
 use crate::harness::{
-    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext, SessionOutput,
-    TerminalView, Turn,
+    harness_for, open_session, AgentSession, AgentStatus, Carrier, HarnessContext,
+    SessionIdentitySource, SessionOutput, TerminalView, Turn,
 };
 use crate::mcp::{BridgeAction, CommentResolution, DoneOutputs, DonePhase, DoneReport, DoneStatus};
 use crate::models::{self, AgentProvider, ModelChoice};
 use crate::notify::{Notifier, NotifyThrottle};
 use crate::orchestrator::{
-    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentTurn, Orchestrator, OrchestratorError,
-    ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource, SessionLocatorFactory, SpawnOptions,
-    TranscriptProbe,
+    ActivePlan, ActiveRun, AdoptionScope, Agent, AgentLaunch, AgentTurn, Orchestrator,
+    OrchestratorError, ReportConsumed, ReportOutcome, ResumeIdProbe, RunSource,
+    SessionLocatorFactory, SpawnOptions, TranscriptProbe,
 };
 use crate::plan::StageManifestEntry;
 use crate::plan::{
@@ -757,6 +757,45 @@ impl Tab {
         }
     }
 
+    fn adopt_replaced_screen(mut self, carried: Option<TermScreen>, term_id: &str) -> Self {
+        let Some(screen) = carried else {
+            return self;
+        };
+        let Some(terminal) = self.session.terminal() else {
+            close_a_screen_with_no_terminal(&screen, term_id);
+            return self;
+        };
+        let _ = terminal.resize(PtySize {
+            rows: screen.rows,
+            cols: screen.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        self.screen = Some(screen);
+        self
+    }
+
+    fn adopt_waiting_screen(mut self, waiting: Option<TermScreen>, term_id: &str) -> Self {
+        let Some(waiting) = waiting else {
+            return self;
+        };
+        let Ok((terminal, screen)) = self.require_terminal_and_screen() else {
+            close_a_screen_with_no_terminal(&waiting, term_id);
+            return self;
+        };
+        let _ = terminal.resize(PtySize {
+            rows: waiting.rows,
+            cols: waiting.cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+        screen.set_size(waiting.cols, waiting.rows);
+        for client in &waiting.attached {
+            screen.register(&client.sender);
+        }
+        self
+    }
+
     /// Spawn `role`'s program at `root`, returning the tab and whichever stream
     /// its session offers, subscribed before its first word can be missed.
     ///
@@ -765,10 +804,8 @@ impl Tab {
     /// byte pump to run — its work reaches the conversation through the
     /// activity pump instead.
     ///
-    /// `locator` is how the session opened here will name the conversation it
-    /// is having, and it arrives from the caller because it has to be built
-    /// before this: it snapshots the harness's transcript tree, and a snapshot
-    /// taken after the child started could contain the child's own file.
+    /// A terminal uses a launch-known identity from `spec` when available;
+    /// otherwise `locator` carries the provider's pre-spawn transcript watcher.
     fn spawn(
         role: TabRole,
         spec: &HarnessSpec,
@@ -794,17 +831,23 @@ impl Tab {
             TabRole::Agent { provider, .. } if !harness_for(*provider).has_terminal() => {
                 Carrier::Protocol
             }
-            TabRole::Agent { .. } => Carrier::Terminal {
-                size,
-                turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
-                locator,
-            },
+            TabRole::Agent { .. } => {
+                let identity = match &spec.known_session_id {
+                    Some(known) => Some(SessionIdentitySource::Known(known.clone())),
+                    None => locator.map(SessionIdentitySource::Located),
+                };
+                Carrier::Terminal {
+                    size,
+                    turn_ready_grace: Some(crate::orchestrator::HARNESS_READY_GRACE),
+                    identity,
+                }
+            }
             // The human's own shell is having no conversation, so there is no
             // name for a locator to find.
             TabRole::Shell => Carrier::Terminal {
                 size,
                 turn_ready_grace: None,
-                locator: None,
+                identity: None,
             },
         };
         let (session, rx) = open_session(spec, root.clone(), carrier).map_err(|e| e.to_string())?;
@@ -844,6 +887,79 @@ enum Spawned {
 /// giving up. Comfortably past a harness's own readiness grace, because the
 /// winner holds the reservation across it.
 const AGENT_SPAWN_WAIT: Duration = Duration::from_secs(30);
+
+struct AgentSpawnReservation {
+    state: Arc<Mutex<AppState>>,
+    key: TabKey,
+    agent_id: String,
+    session_token: String,
+    active: bool,
+}
+
+impl AgentSpawnReservation {
+    fn claim(
+        state: &Arc<Mutex<AppState>>,
+        app: &mut AppState,
+        key: TabKey,
+        agent_id: &str,
+    ) -> Self {
+        let session_token = uuid::Uuid::new_v4().to_string();
+        app.mcp_session_tokens
+            .insert(agent_id.to_string(), session_token.clone());
+        app.agent_spawns_in_flight.insert(key.clone());
+        Self {
+            state: Arc::clone(state),
+            key,
+            agent_id: agent_id.to_string(),
+            session_token,
+            active: true,
+        }
+    }
+}
+
+impl Drop for AgentSpawnReservation {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let mut app = self.state.lock().unwrap();
+        app.agent_spawns_in_flight.remove(&self.key);
+        if app
+            .mcp_session_tokens
+            .get(&self.agent_id)
+            .is_some_and(|current| constant_time_token_eq(current, &self.session_token))
+        {
+            app.mcp_session_tokens.remove(&self.agent_id);
+        }
+    }
+}
+
+struct ReservedAgentTab {
+    reservation: AgentSpawnReservation,
+    launch: AgentLaunch,
+    continue_session: bool,
+    resume_session_id: Option<String>,
+    phase: &'static str,
+    carried: Option<TermScreen>,
+    locator_factory: SessionLocatorFactory,
+}
+
+struct AgentTabPublication {
+    root: std::path::PathBuf,
+    key: TabKey,
+    owner: String,
+    agent_id: String,
+    model_choice: ModelChoice,
+    phase: &'static str,
+    tab: Tab,
+    reservation: AgentSpawnReservation,
+}
+
+enum AgentTabClaim {
+    Warm(String),
+    Waiting,
+    Reserved(Box<ReservedAgentTab>),
+}
 
 /// Who is on the other end of an authenticated MCP control frame.
 ///
@@ -1763,7 +1879,7 @@ fn wait_for_first_diff_value(state: &Arc<Mutex<AppState>>, key: &DiffCacheKey, b
 /// streamed to attached clients. The closure is shared across projects via
 /// `Agent: Clone`; which provider it builds for is decided per spawn, by the
 /// `ModelChoice` the entity carries.
-fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
+fn build_agent(qa_agent: bool, context: HarnessContext) -> Agent {
     if qa_agent {
         // A warm no-op harness that drains stdin like a real interactive CLI
         // (a non-reading child would let the PTY input queue fill and block
@@ -1783,13 +1899,6 @@ fn build_agent(qa_agent: bool, mcp_socket: String) -> Agent {
         // Real agents are interactive TUIs. The provider's own `Harness` owns
         // argv, environment and whatever the worktree needs to be prepared
         // with; Orchestrator submits the prompt through the session.
-        let context = HarnessContext {
-            bridge_exe: std::env::current_exe()
-                .ok()
-                .and_then(|path| path.to_str().map(str::to_string))
-                .unwrap_or_else(|| "build-bridge".to_string()),
-            mcp_socket,
-        };
         Agent::WarmBuilder(Arc::new(
             move |_prompt: &str, choice: &ModelChoice, options: &SpawnOptions| {
                 let harness = harness_for(choice.provider);
@@ -1861,6 +1970,8 @@ pub struct AppState {
     default_harness: AgentProvider,
     /// Where to persist the projects + settings, if persistence is enabled.
     config_path: Option<std::path::PathBuf>,
+    #[cfg(test)]
+    config_persist_failure: Option<ConfigPersistStep>,
     agent: Agent,
     harness: String,
     /// Project-scoped plans, keyed by `plan_id`.
@@ -1878,9 +1989,13 @@ pub struct AppState {
     /// Single-flight per capture: one router at a time decides where one thing
     /// the user said goes, however many times something asks for it to.
     router_sessions: HashMap<String, crate::router::RouterSession>,
-    /// Build's own state directory — where router scratch is cut, beside the
-    /// store rather than inside any repository.
+    /// Build's own state directory, fixed at construction. Router scratch is
+    /// cut here, beside the store; attaching a store validates its parent and
+    /// never changes this root.
     state_root: std::path::PathBuf,
+    /// The canonical executable fact supplied by [`HarnessContext`]. Every
+    /// project orchestrator receives this same path for MCP scaffolding.
+    bridge_exe: std::path::PathBuf,
     /// The provider/model routing runs on when the config file names one.
     /// `None` is the account default at low effort.
     router_choice: Option<ModelChoice>,
@@ -2006,9 +2121,10 @@ pub struct AppState {
     /// queue and this counter are what tell the idle sweep the difference
     /// between an agent on its way and an agent that never arrived.
     agent_turns_in_flight: HashMap<String, usize>,
-    /// Current unlogged MCP capability per lifecycle owner. Knowing an Issue or
-    /// implementation id is intentionally insufficient to forge local control
-    /// frames; replacing an agent tab rotates this token.
+    /// Current unlogged MCP capability, keyed by agent id for that agent's
+    /// current session. Knowing an Issue or implementation id is intentionally
+    /// insufficient to forge local control frames; replacing an agent tab
+    /// rotates that agent's token.
     mcp_session_tokens: HashMap<String, String>,
     /// `term-<n>` mint counter — monotonic, never reused within a daemon life.
     next_term: u64,
@@ -2054,6 +2170,81 @@ pub struct AppState {
     changes: Arc<ChangeBus>,
 }
 
+struct StoredTasks {
+    store: Store,
+    plans: Vec<PersistedPlan>,
+    runs: Vec<PersistedRun>,
+    archived_worktrees: Vec<PersistedArchivedWorktree>,
+    captures: Vec<crate::capture::Capture>,
+    attention: HashMap<String, crate::attention::Attention>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("read config {}: {source}", path.display())]
+    Read {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("parse config {}: {source}", path.display())]
+    Parse {
+        path: std::path::PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConfigPersistStep {
+    Write,
+    Rename,
+}
+
+fn read_config(path: &std::path::Path) -> Result<Option<Value>, ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            })
+        }
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+fn load_stored_tasks(dir: std::path::PathBuf) -> Result<StoredTasks, String> {
+    let store = Store::new(dir).map_err(|error| error.to_string())?;
+    store
+        .refuse_a_rolled_back_store()
+        .map_err(|error| error.to_string())?;
+    match store.import_json_store() {
+        Ok(0) => {}
+        Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
+        Err(error) => return Err(format!("store import failed: {error}")),
+    }
+    Ok(StoredTasks {
+        plans: store.load_all_plans().map_err(|error| error.to_string())?,
+        runs: store.load_all_runs().map_err(|error| error.to_string())?,
+        archived_worktrees: store
+            .load_all_archived_worktrees()
+            .map_err(|error| error.to_string())?,
+        captures: store
+            .load_all_captures()
+            .map_err(|error| error.to_string())?,
+        attention: store.load_attention(),
+        store,
+    })
+}
+
 fn constant_time_token_eq(actual: &str, expected: &str) -> bool {
     let actual = actual.as_bytes();
     let expected = expected.as_bytes();
@@ -2095,6 +2286,115 @@ fn bind_done_listener(path: &std::path::Path) -> std::io::Result<tokio::net::Uni
     Ok(listener)
 }
 
+#[cfg(unix)]
+async fn serve_done_listener(state: Arc<Mutex<AppState>>, listener: tokio::net::UnixListener) {
+    let mut accept_backoff =
+        crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                accept_backoff.reset();
+                tokio::spawn(handle_done_stream(Arc::clone(&state), stream));
+            }
+            Err(error) => {
+                let wait = accept_backoff.current();
+                eprintln!("done socket: accept error: {error}; retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+                accept_backoff.increase();
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+async fn handle_done_stream(state: Arc<Mutex<AppState>>, stream: tokio::net::UnixStream) {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut lines = tokio::io::BufReader::new(read_half).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if let Some(response) = handle_authenticated_mcp_frame(&state, &frame) {
+            let _ = write_half.write_all(response.to_string().as_bytes()).await;
+            let _ = write_half.write_all(b"\n").await;
+            let _ = write_half.flush().await;
+        }
+    }
+}
+
+fn handle_authenticated_mcp_frame(state: &Arc<Mutex<AppState>>, frame: &Value) -> Option<Value> {
+    let addressed = {
+        let app = state.lock().unwrap();
+        authenticated_mcp_owner(frame, &app.mcp_session_tokens)
+            .map(str::to_string)
+            .and_then(|agent_id| app.addressed_session(agent_id))
+    };
+    match addressed {
+        Some(AddressedSession::Router { capture_id, .. }) => {
+            handle_router_mcp_frame(state, frame, &capture_id)
+        }
+        Some(AddressedSession::Coding {
+            entity_id,
+            agent_id,
+        }) => handle_coding_mcp_frame(state, frame, &entity_id, &agent_id),
+        None => Some(json!({ "ok": false, "error": "unauthorized MCP session" })),
+    }
+}
+
+fn handle_router_mcp_frame(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    capture_id: &str,
+) -> Option<Value> {
+    if let Ok(report) =
+        serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
+    {
+        state.lock().unwrap().on_router_done(capture_id, report);
+        return None;
+    }
+    let action = serde_json::from_value::<BridgeAction>(
+        frame.get("request").cloned().unwrap_or(Value::Null),
+    )
+    .ok()?;
+    let result = state
+        .lock()
+        .unwrap()
+        .on_router_mcp_action(capture_id, action);
+    deliver_pending_agent_turns(state);
+    Some(mcp_action_response(result))
+}
+
+fn handle_coding_mcp_frame(
+    state: &Arc<Mutex<AppState>>,
+    frame: &Value,
+    entity_id: &str,
+    agent_id: &str,
+) -> Option<Value> {
+    if let Ok(report) =
+        serde_json::from_value::<DoneReport>(frame.get("report").cloned().unwrap_or(Value::Null))
+    {
+        state.lock().unwrap().on_agent_done(entity_id, report);
+        deliver_pending_agent_turns(state);
+        return None;
+    }
+    let action = serde_json::from_value::<BridgeAction>(
+        frame.get("request").cloned().unwrap_or(Value::Null),
+    )
+    .ok()?;
+    let result = state
+        .lock()
+        .unwrap()
+        .on_agent_mcp_action(entity_id, agent_id, action);
+    Some(mcp_action_response(result))
+}
+
+fn mcp_action_response(result: Result<Value, String>) -> Value {
+    match result {
+        Ok(result) => json!({ "ok": true, "result": result }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    }
+}
+
 impl AppState {
     pub fn new(
         repo_path: impl Into<std::path::PathBuf>,
@@ -2102,6 +2402,40 @@ impl AppState {
         base_branch: impl Into<String>,
         qa_agent: bool,
         mcp_socket: impl Into<String>,
+    ) -> Self {
+        let context = HarnessContext::resolved(mcp_socket.into().into(), default_state_root())
+            .expect("resolve the default harness context");
+        Self::new_with_context(
+            Some(repo_path.into()),
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
+    }
+
+    pub fn new_configured(
+        repo_path: impl Into<std::path::PathBuf>,
+        worktrees_root: impl Into<std::path::PathBuf>,
+        base_branch: impl Into<String>,
+        qa_agent: bool,
+        context: HarnessContext,
+    ) -> Self {
+        Self::new_with_context(
+            Some(repo_path.into()),
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
+    }
+
+    fn new_with_context(
+        repo_path: Option<std::path::PathBuf>,
+        worktrees_root: std::path::PathBuf,
+        base_branch: String,
+        qa_agent: bool,
+        context: HarnessContext,
     ) -> Self {
         let harness = if qa_agent { "QA agent" } else { "Claude Code" }.to_string();
         let transcript_probe: TranscriptProbe = if qa_agent {
@@ -2114,22 +2448,28 @@ impl AppState {
         } else {
             default_session_locator_factory()
         };
+        let state_root = context.state_root.clone();
+        let bridge_exe = context.bridge_exe.clone();
+        let agent = build_agent(qa_agent, context);
         let mut state = AppState {
             projects: Vec::new(),
             entity_project: HashMap::new(),
             entity_project_path: HashMap::new(),
-            worktrees_root: worktrees_root.into(),
+            worktrees_root,
             projects_dir: default_projects_dir(),
             default_harness: DEFAULT_HARNESS,
             config_path: None,
-            agent: build_agent(qa_agent, mcp_socket.into()),
+            #[cfg(test)]
+            config_persist_failure: None,
+            agent,
             harness,
             plans: HashMap::new(),
             runs: HashMap::new(),
             store: None,
             captures: HashMap::new(),
             router_sessions: HashMap::new(),
-            state_root: default_state_root(),
+            state_root,
+            bridge_exe,
             router_choice: None,
             archived_worktrees: HashMap::new(),
             entity_created_at: HashMap::new(),
@@ -2170,7 +2510,9 @@ impl AppState {
             notify_throttle: NotifyThrottle::default(),
             changes: ChangeBus::new(DEFAULT_COALESCE_WINDOW),
         };
-        state.add_project(repo_path.into(), base_branch.into());
+        if let Some(repo_path) = repo_path {
+            state.add_project(repo_path, base_branch);
+        }
         state
     }
 
@@ -2184,16 +2526,30 @@ impl AppState {
         qa_agent: bool,
         mcp_socket: impl Into<String>,
     ) -> Self {
-        let mut state = Self::new(
-            "/nonexistent",
-            worktrees_root,
-            base_branch,
+        let context = HarnessContext::resolved(mcp_socket.into().into(), default_state_root())
+            .expect("resolve the default harness context");
+        Self::new_with_context(
+            None,
+            worktrees_root.into(),
+            base_branch.into(),
             qa_agent,
-            mcp_socket,
-        );
-        state.projects.clear();
-        state.next_project = 1;
-        state
+            context,
+        )
+    }
+
+    pub fn new_unrooted_configured(
+        worktrees_root: impl Into<std::path::PathBuf>,
+        base_branch: impl Into<String>,
+        qa_agent: bool,
+        context: HarnessContext,
+    ) -> Self {
+        Self::new_with_context(
+            None,
+            worktrees_root.into(),
+            base_branch.into(),
+            qa_agent,
+            context,
+        )
     }
 
     /// Enable web-push attention notifications: every task-state change into a
@@ -2205,70 +2561,78 @@ impl AppState {
 
     /// Enable persistence at `path`: load any saved projects + projects-dir from it
     /// (skipping repos that no longer exist), and remember it for future writes.
-    pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+    pub fn with_config(mut self, path: impl Into<std::path::PathBuf>) -> Result<Self, ConfigError> {
         let path = path.into();
-        if let Ok(text) = std::fs::read_to_string(&path) {
-            if let Ok(cfg) = serde_json::from_str::<Value>(&text) {
-                if let Some(dir) = cfg.get("projects_dir").and_then(Value::as_str) {
-                    self.projects_dir = expand_tilde(dir);
-                }
-                // The new key first, then the one a bridge written before it
-                // saved: an upgrade in place keeps the human's choice with no
-                // migration step, and the old key is never written again. An
-                // absent key is the stated default.
-                if let Some(named) = cfg.get("default_harness").and_then(Value::as_str) {
-                    match AgentProvider::from_wire(named) {
-                        Some(harness) => self.default_harness = harness,
-                        None => {
-                            eprintln!(
-                                "config default_harness: unknown {named:?}; using the default"
-                            )
-                        }
-                    }
-                } else if let Some(named) = cfg.get("claude_mode").and_then(Value::as_str) {
-                    match models::carrier_of_claude_mode(named) {
-                        Some(harness) => self.default_harness = harness,
-                        None => {
-                            eprintln!("config claude_mode: unknown {named:?}; using the default")
-                        }
-                    }
-                }
-                // Routing runs on the account default at low effort unless this
-                // names something else. A choice the harness would refuse is
-                // dropped rather than kept: a router that cannot spawn would
-                // fail every capture on the device.
-                if let Some(choice) = cfg
-                    .get("router_model")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value::<ModelChoice>(value).ok())
-                {
-                    match choice.validate() {
-                        Ok(()) => self.router_choice = Some(choice),
-                        Err(error) => eprintln!("config router_model: {error}; using the default"),
-                    }
-                }
-                for p in cfg
-                    .get("projects")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    if let Some(repo) = p.get("path").and_then(Value::as_str) {
-                        let base = p
-                            .get("base_branch")
-                            .and_then(Value::as_str)
-                            .unwrap_or("main")
-                            .to_string();
-                        let repo = std::path::PathBuf::from(repo);
-                        if repo.exists() {
-                            self.add_project(repo, base);
-                        }
-                    }
-                }
-            }
+        if let Some(config) = read_config(&path)? {
+            self.apply_config(&config);
         }
         self.config_path = Some(path);
-        self
+        Ok(self)
+    }
+
+    fn apply_config(&mut self, config: &Value) {
+        if let Some(dir) = config.get("projects_dir").and_then(Value::as_str) {
+            self.projects_dir = expand_tilde(dir);
+        }
+        self.apply_default_harness_config(config);
+        self.apply_router_config(config);
+        self.restore_configured_projects(config);
+    }
+
+    fn apply_default_harness_config(&mut self, config: &Value) {
+        let configured = config
+            .get("default_harness")
+            .and_then(Value::as_str)
+            .map(|named| ("default_harness", named, AgentProvider::from_wire(named)))
+            .or_else(|| {
+                config
+                    .get("claude_mode")
+                    .and_then(Value::as_str)
+                    .map(|named| ("claude_mode", named, models::carrier_of_claude_mode(named)))
+            });
+        match configured {
+            Some((_, _, Some(harness))) => self.default_harness = harness,
+            Some((key, named, None)) => {
+                eprintln!("config {key}: unknown {named:?}; using the default")
+            }
+            None => {}
+        }
+    }
+
+    fn apply_router_config(&mut self, config: &Value) {
+        let Some(choice) = config
+            .get("router_model")
+            .cloned()
+            .and_then(|value| serde_json::from_value::<ModelChoice>(value).ok())
+        else {
+            return;
+        };
+        match crate::router::validate_router_choice(&choice) {
+            Ok(()) => self.router_choice = Some(choice),
+            Err(error) => eprintln!("config router_model: {error}; using the default"),
+        }
+    }
+
+    fn restore_configured_projects(&mut self, config: &Value) {
+        let projects = config
+            .get("projects")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        for project in projects {
+            let Some(repo) = project.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let base = project
+                .get("base_branch")
+                .and_then(Value::as_str)
+                .unwrap_or("main")
+                .to_string();
+            let repo = std::path::PathBuf::from(repo);
+            if repo.exists() {
+                self.add_project(repo, base);
+            }
+        }
     }
 
     /// Override where cloned repos land and the browser starts (e.g. from an env).
@@ -2283,60 +2647,55 @@ impl AppState {
     /// rather than silently dropping a task.
     pub fn with_task_store(mut self, dir: impl Into<std::path::PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
-        // Router scratch belongs beside the store, in Build's own state
-        // directory: one place that is neither a repository nor a temp dir the
-        // system may clear under a running session.
-        if let Some(parent) = dir.parent() {
-            self.state_root = parent.to_path_buf();
+        let parent = dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let resolved_parent = std::fs::canonicalize(parent)
+            .map_err(|error| format!("resolve task store parent {}: {error}", parent.display()))?;
+        if resolved_parent != self.state_root {
+            return Err(format!(
+                "task store parent {} does not match configured state root {}",
+                resolved_parent.display(),
+                self.state_root.display()
+            ));
         }
-        let store = Store::new(dir).map_err(|e| e.to_string())?;
-        // One-way import of the JSON record tree this store replaced. A no-op
-        // once it has run; the imported files are parked, never deleted, so a
-        // database that turns out to be wrong can be thrown away and rebuilt.
-        // Before anything is read: if an older bridge has been run against this
-        // directory since the import, two copies of the user's work exist and
-        // only one of them is about to be served.
-        store
-            .refuse_a_rolled_back_store()
-            .map_err(|error| error.to_string())?;
-        match store.import_json_store() {
-            Ok(0) => {}
-            Ok(imported) => eprintln!("store: imported {imported} records from the JSON store"),
-            Err(error) => return Err(format!("store import failed: {error}")),
-        }
-        let plans = store.load_all_plans().map_err(|e| e.to_string())?;
-        let runs = store.load_all_runs().map_err(|e| e.to_string())?;
-        let archived_worktrees = store
-            .load_all_archived_worktrees()
-            .map_err(|e| e.to_string())?;
-        let captures = store.load_all_captures().map_err(|e| e.to_string())?;
-        // Attention survives a restart, or Monday would look like a fresh install.
-        self.attention = store.load_attention();
-        self.store = Some(store);
-        self.archived_worktrees = archived_worktrees
+        let stored = load_stored_tasks(dir)?;
+        self.restore_stored_tasks(stored)?;
+        Ok(self)
+    }
+
+    fn restore_stored_tasks(&mut self, stored: StoredTasks) -> Result<(), String> {
+        self.attention = stored.attention;
+        self.store = Some(stored.store);
+        self.archived_worktrees = stored
+            .archived_worktrees
             .into_iter()
             .map(|record| (record.worktree_id.clone(), record))
             .collect();
-        self.recover_captures(captures)?;
+        self.recover_captures(stored.captures)?;
         self.recover_completed_worktree_finishes();
-        // Plans first: a run re-derives its `plan_path` from the owning plan's
-        // record, so the plan must already be in the map.
+        self.restore_plans_before_runs(stored.plans, stored.runs)?;
+        self.seed_conversation_attention_sequences();
+        self.seed_anchors_for_records_without_one();
+        self.resume_stored_issue_schedulers()
+    }
+
+    fn restore_plans_before_runs(
+        &mut self,
+        plans: Vec<PersistedPlan>,
+        runs: Vec<PersistedRun>,
+    ) -> Result<(), String> {
         for record in plans {
             self.recover_plan(record)?;
         }
         for record in runs {
             self.recover_run(record)?;
         }
-        // Everything on disk has already been announced. Seed the push
-        // watermarks from it so the restart re-announces nothing, and so the
-        // next attention event is news rather than a first observation.
-        self.seed_conversation_attention_sequences();
-        // Every entity that predates anchors gets the one it would have had.
-        self.seed_anchors_for_records_without_one();
-        // Issue implementation intent is the scheduler's durable source of
-        // truth. Reconcile it only after every implementation lineage record
-        // has been restored, so an approved waiting stage can resume without
-        // minting a duplicate worktree after a daemon restart.
+        Ok(())
+    }
+
+    fn resume_stored_issue_schedulers(&mut self) -> Result<(), String> {
         let issue_ids = self
             .plans
             .iter()
@@ -2346,7 +2705,7 @@ impl AppState {
         for issue_id in issue_ids {
             self.advance_issue_scheduler(&issue_id, &json!({ "issue_id": issue_id }))?;
         }
-        Ok(self)
+        Ok(())
     }
 
     /// Re-attach one persisted plan on boot. The canonical docs live in the
@@ -2966,17 +3325,17 @@ impl AppState {
     /// to. A warm delivery never calls this — the session it continues is
     /// already open, and a second `start_session` would read back as an agent
     /// restart that never happened.
-    fn record_agent_session_start(&mut self, turn: &PendingAgentTurn) {
+    fn record_agent_session_start(&mut self, owner: &str, model_choice: &ModelChoice, phase: &str) {
         // A router owns no conversation — it decides which one the capture
         // becomes. What its session start records is that there is now a
         // process to have lost, which is what makes a dead one detectable.
-        if let Some(session) = self.router_sessions.get_mut(&turn.owner) {
-            session.started = true;
+        if let Some(session) = self.router_sessions.get_mut(owner) {
+            session.mark_started();
             self.note_board_changed();
             return;
         }
-        self.edit_owner_thread("record_agent_session_start", &turn.owner, |thread| {
-            open_session_lineage(thread, turn)
+        self.edit_owner_thread("record_agent_session_start", owner, |thread| {
+            open_session_lineage(thread, model_choice, phase)
         });
         self.note_board_changed();
     }
@@ -3577,24 +3936,98 @@ impl AppState {
         }
     }
 
-    /// Persist projects + projects-dir to the config file, if one is configured.
-    fn persist(&self) {
-        let Some(path) = &self.config_path else {
-            return;
-        };
-        let cfg = json!({
-            "projects_dir": self.projects_dir.display().to_string(),
-            "default_harness": self.default_harness,
+    fn config_value(
+        &self,
+        projects_dir: &std::path::Path,
+        default_harness: AgentProvider,
+    ) -> Value {
+        self.config_value_with_project(projects_dir, default_harness, None)
+    }
+
+    fn config_value_with_project(
+        &self,
+        projects_dir: &std::path::Path,
+        default_harness: AgentProvider,
+        prospective_project: Option<&Project>,
+    ) -> Value {
+        json!({
+            "projects_dir": projects_dir.display().to_string(),
+            "default_harness": default_harness,
             "router_model": self.router_choice,
-            "projects": self.projects.iter().map(|p| json!({
+            "projects": self.projects.iter().chain(prospective_project).map(|p| json!({
                 "path": p.repo_path.display().to_string(),
                 "base_branch": p.base_branch,
             })).collect::<Vec<_>>(),
-        });
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        })
+    }
+
+    /// Persist projects and settings atomically, if persistence is configured.
+    fn persist_config(&self, config: &Value) -> Result<(), String> {
+        let Some(path) = &self.config_path else {
+            return Ok(());
+        };
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
         }
-        let _ = std::fs::write(path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
+        let bytes = serde_json::to_vec_pretty(config)
+            .map_err(|error| format!("serialize config {}: {error}", path.display()))?;
+        let temporary = path.with_extension("tmp");
+        match std::fs::remove_file(&temporary) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "prepare config {}: cannot remove {}: {error}",
+                    path.display(),
+                    temporary.display()
+                ))
+            }
+        }
+        let write_result = (|| -> Result<(), String> {
+            #[cfg(test)]
+            if self.config_persist_failure == Some(ConfigPersistStep::Write) {
+                return Err(format!(
+                    "write config {}: injected write failure",
+                    path.display()
+                ));
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
+            file.write_all(&bytes)
+                .and_then(|()| file.sync_all())
+                .map_err(|error| format!("write config {}: {error}", path.display()))?;
+            #[cfg(test)]
+            if self.config_persist_failure == Some(ConfigPersistStep::Rename) {
+                return Err(format!(
+                    "write config {}: injected rename failure",
+                    path.display()
+                ));
+            }
+            std::fs::rename(&temporary, path)
+                .map_err(|error| format!("write config {}: {error}", path.display()))
+        })();
+        if let Err(write_error) = write_result {
+            match std::fs::remove_file(&temporary) {
+                Ok(()) => return Err(write_error),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(write_error)
+                }
+                Err(cleanup_error) => {
+                    return Err(format!(
+                        "{write_error}; cannot remove temporary config {}: {cleanup_error}",
+                        temporary.display()
+                    ))
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Register a project (repo + base branch) and return its id. Idempotent: a
@@ -3605,8 +4038,12 @@ impl AppState {
         if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
             return existing.id.clone();
         }
+        let project = self.project_candidate(repo_path, base_branch);
+        self.insert_project(project)
+    }
+
+    fn project_candidate(&self, repo_path: std::path::PathBuf, base_branch: String) -> Project {
         let id = format!("proj-{}", self.next_project);
-        self.next_project += 1;
         let name = repo_path
             .file_name()
             .and_then(|s| s.to_str())
@@ -3618,20 +4055,64 @@ impl AppState {
             worktrees,
             self.agent.clone(),
             Templates::default(),
+            self.bridge_exe.clone(),
         );
-        self.projects.push(Project {
-            id: id.clone(),
+        Project {
+            id,
             name,
             repo_path,
             base_branch,
             orch,
             external_scan: None,
             primary_summary: None,
-        });
+        }
+    }
+
+    fn insert_project(&mut self, project: Project) -> String {
+        let id = project.id.clone();
+        self.projects.push(project);
+        self.next_project += 1;
         // A project is a section of the feed; registering one adds every row
         // its checkouts stand behind.
         self.note_board_changed();
         id
+    }
+
+    /// Persist a prospective project before making it visible in memory. When
+    /// the caller created the checkout, remove only that checkout if persistence
+    /// fails; an existing user repository is never cleanup-owned here.
+    fn register_project_transaction(
+        &mut self,
+        repo_path: std::path::PathBuf,
+        base_branch: String,
+        created_checkout: Option<std::path::PathBuf>,
+    ) -> Result<Value, String> {
+        let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
+        if let Some(existing) = self.projects.iter().find(|p| p.repo_path == repo_path) {
+            return Ok(project_json(existing));
+        }
+        let project = self.project_candidate(repo_path, base_branch);
+        let prospective = self.config_value_with_project(
+            &self.projects_dir,
+            self.default_harness,
+            Some(&project),
+        );
+        if let Err(persist_error) = self.persist_config(&prospective) {
+            return Err(match created_checkout {
+                Some(path) => match std::fs::remove_dir_all(&path) {
+                    Ok(()) => persist_error,
+                    Err(cleanup_error) => format!(
+                        "{persist_error}; cannot remove created project {}: {cleanup_error}",
+                        path.display()
+                    ),
+                },
+                None => persist_error,
+            });
+        }
+        self.insert_project(project);
+        Ok(project_json(
+            self.projects.last().expect("inserted project"),
+        ))
     }
 
     /// Canonical paths of every Build-bound worktree — one per run: they are
@@ -4383,122 +4864,7 @@ impl AppState {
                 }
             };
             eprintln!("done socket: listening on {path}");
-            // A single accept error must not permanently stop `done` reporting, but
-            // a *persistent* one (EMFILE/ENFILE on fd exhaustion) leaves the listener
-            // readable so accept returns Err immediately — `continue` alone would spin
-            // a worker at 100% CPU and flood the log. Back off between failed accepts;
-            // reset the moment one succeeds.
-            let mut accept_backoff =
-                crate::backoff::Backoff::new(Duration::from_millis(100), Duration::from_secs(5));
-            loop {
-                let (stream, _) = match listener.accept().await {
-                    Ok(pair) => {
-                        accept_backoff.reset();
-                        pair
-                    }
-                    Err(e) => {
-                        let wait = accept_backoff.current();
-                        eprintln!("done socket: accept error: {e}; retrying in {wait:?}");
-                        tokio::time::sleep(wait).await;
-                        accept_backoff.increase();
-                        continue;
-                    }
-                };
-                let state = Arc::clone(&state);
-                tokio::spawn(async move {
-                    let (read_half, mut write_half) = stream.into_split();
-                    let mut lines = tokio::io::BufReader::new(read_half).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                            continue;
-                        };
-                        // The legacy `task_id` spelling remains opaque and
-                        // compatible, but it is not authentication. Only the
-                        // current harness process knows the rotated capability.
-                        let addressed = {
-                            let guard = state.lock().unwrap();
-                            authenticated_mcp_owner(&v, &guard.mcp_session_tokens)
-                                .map(str::to_string)
-                                .and_then(|agent_id| guard.addressed_session(agent_id))
-                        };
-                        // A router session is neither a plan nor a run, and its
-                        // tools are not a coding agent's. The split is made
-                        // here, once, off the authenticated identity — so a
-                        // harness writing its own frames still only ever
-                        // reaches the surface it was spawned on.
-                        if let Some(AddressedSession::Router {
-                            capture_id,
-                            agent_id: _,
-                        }) = &addressed
-                        {
-                            let capture_id = capture_id.clone();
-                            if let Ok(report) = serde_json::from_value::<DoneReport>(
-                                v.get("report").cloned().unwrap_or(Value::Null),
-                            ) {
-                                state.lock().unwrap().on_router_done(&capture_id, report);
-                                continue;
-                            }
-                            if let Ok(action) = serde_json::from_value::<BridgeAction>(
-                                v.get("request").cloned().unwrap_or(Value::Null),
-                            ) {
-                                let response = match state
-                                    .lock()
-                                    .unwrap()
-                                    .on_router_mcp_action(&capture_id, action)
-                                {
-                                    Ok(result) => json!({ "ok": true, "result": result }),
-                                    Err(error) => json!({ "ok": false, "error": error }),
-                                };
-                                // A dispatch queues the branch agent's first
-                                // turn; sending it needs the lock free.
-                                deliver_pending_agent_turns(&state);
-                                let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                                let _ = write_half.write_all(b"\n").await;
-                                let _ = write_half.flush().await;
-                            }
-                            continue;
-                        }
-                        let Some(AddressedSession::Coding {
-                            entity_id,
-                            agent_id,
-                        }) = addressed
-                        else {
-                            let response =
-                                json!({ "ok": false, "error": "unauthorized MCP session" });
-                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                            let _ = write_half.write_all(b"\n").await;
-                            let _ = write_half.flush().await;
-                            continue;
-                        };
-                        if let Ok(report) = serde_json::from_value::<DoneReport>(
-                            v.get("report").cloned().unwrap_or(Value::Null),
-                        ) {
-                            state.lock().unwrap().on_agent_done(&entity_id, report);
-                            // A report can start the next phase (a built stage
-                            // hands itself to validation). The turn is queued
-                            // under the lock above; sending it needs the lock
-                            // free, exactly as on the relay's frame path.
-                            deliver_pending_agent_turns(&state);
-                            continue;
-                        }
-                        if let Ok(action) = serde_json::from_value::<BridgeAction>(
-                            v.get("request").cloned().unwrap_or(Value::Null),
-                        ) {
-                            let response = match state
-                                .lock()
-                                .unwrap()
-                                .on_agent_mcp_action(&entity_id, &agent_id, action)
-                            {
-                                Ok(result) => json!({ "ok": true, "result": result }),
-                                Err(error) => json!({ "ok": false, "error": error }),
-                            };
-                            let _ = write_half.write_all(response.to_string().as_bytes()).await;
-                            let _ = write_half.write_all(b"\n").await;
-                            let _ = write_half.flush().await;
-                        }
-                    }
-                });
-            }
+            serve_done_listener(state, listener).await;
         });
     }
 
@@ -4515,10 +4881,10 @@ impl AppState {
     }
 
     /// Execute an MCP thread request against the conversation owner resolved
-    /// from the lifecycle owner baked into that session's MCP command. Planned
-    /// implementations report `done` as their run id, but all unread/reply
-    /// actions resolve to the owning Issue (legacy plan id). Planless adopted
-    /// runs retain their independent worktree conversation.
+    /// from the agent identity baked into that session's MCP command. The
+    /// authenticated agent resolves to its current plan or run; planned runs
+    /// resolve unread/reply actions to the owning Issue (legacy plan id), while
+    /// planless adopted runs retain their independent worktree conversation.
     #[cfg(test)]
     fn on_mcp_action(&mut self, entity_id: &str, action: BridgeAction) -> Result<Value, String> {
         let agent_id = self.entity_agents(entity_id)?.resolve(None)?.id.clone();
@@ -6436,14 +6802,7 @@ impl AppState {
             .unwrap_or_else(|| "main".to_string());
         repo.revparse_single(&base_branch)
             .map_err(|_| format!("base branch '{base_branch}' not found in repo"))?;
-        let id = self.add_project(repo_path, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(repo_path, base_branch, None)
     }
 
     /// Browse host directories so the user can pick a repo without typing a path.
@@ -6610,8 +6969,8 @@ impl AppState {
                 let named = named.as_str().unwrap_or_default();
                 Some(AgentProvider::from_wire(named).ok_or_else(|| {
                     format!(
-                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\" \
-                         or \"codex\")"
+                        "unknown default_harness {named:?} (expected \"claude_adk\", \"claude\", \
+                         \"codex\" or \"pi\")"
                     )
                 })?)
             }
@@ -6630,15 +6989,19 @@ impl AppState {
         if projects_dir.is_none() && default_harness.is_none() && codex_mode.is_none() {
             return Err("settings.set: nothing to set".to_string());
         }
-        if let Some(dir) = projects_dir {
+        let prospective_projects_dir = if let Some(dir) = projects_dir {
             std::fs::create_dir_all(&dir)
                 .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-            self.projects_dir = std::fs::canonicalize(&dir).unwrap_or(dir);
-        }
-        if let Some(harness) = default_harness {
-            self.default_harness = harness;
-        }
-        self.persist();
+            std::fs::canonicalize(&dir)
+                .map_err(|error| format!("cannot resolve {}: {error}", dir.display()))?
+        } else {
+            self.projects_dir.clone()
+        };
+        let prospective_default_harness = default_harness.unwrap_or(self.default_harness);
+        let prospective = self.config_value(&prospective_projects_dir, prospective_default_harness);
+        self.persist_config(&prospective)?;
+        self.projects_dir = prospective_projects_dir;
+        self.default_harness = prospective_default_harness;
         Ok(self.settings_get())
     }
 
@@ -6676,7 +7039,7 @@ impl AppState {
                     ));
                 }
             }
-            return self.register_clone(params, dest);
+            return self.register_clone(params, dest, None);
         }
         let out = std::process::Command::new("git")
             .arg("clone")
@@ -6690,7 +7053,7 @@ impl AppState {
                 String::from_utf8_lossy(&out.stderr).trim()
             ));
         }
-        self.register_clone(params, dest)
+        self.register_clone(params, dest.clone(), Some(dest))
     }
 
     /// Register a freshly cloned (or already-present) checkout as a project,
@@ -6699,6 +7062,7 @@ impl AppState {
         &mut self,
         params: &Value,
         dest: std::path::PathBuf,
+        created_checkout: Option<std::path::PathBuf>,
     ) -> Result<Value, String> {
         let base = params
             .get("base_branch")
@@ -6706,14 +7070,7 @@ impl AppState {
             .map(str::to_string)
             .or_else(|| git_default_branch(&dest))
             .unwrap_or_else(|| "main".to_string());
-        let id = self.add_project(dest, base);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(dest, base, created_checkout)
     }
 
     /// Create a brand-new git repo (with an initial commit so its base branch
@@ -6774,14 +7131,7 @@ impl AppState {
         {
             git_in(&dest, &["remote", "add", "origin", remote])?;
         }
-        let id = self.add_project(dest, base_branch);
-        self.persist();
-        let project = self
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .expect("just added");
-        Ok(project_json(project))
+        self.register_project_transaction(dest.clone(), base_branch, Some(dest))
     }
 
     /// Set (or clear, with an empty url) a project's `origin` remote.
@@ -6802,7 +7152,6 @@ impl AppState {
         } else {
             git_in(&repo_path, &["remote", "add", "origin", url])?;
         }
-        self.persist();
         let project = self
             .projects
             .iter()
@@ -9082,15 +9431,13 @@ impl AppState {
         // The router routes TO projects; with none there is no destination to
         // reach and no point spawning one to discover that.
         let project_id = self.default_project()?;
-        let choice = crate::router::router_model_choice(
-            self.default_agent_provider(),
-            self.router_choice.as_ref(),
-        );
-        let session = crate::router::RouterSession::new(capture_id, &self.state_root, choice);
-        std::fs::create_dir_all(&session.scratch_dir).map_err(|error| {
+        let choice = crate::router::router_model_choice(self.router_choice.as_ref());
+        let session = crate::router::RouterSession::new(capture_id, &self.state_root, choice)
+            .map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(session.scratch_dir()).map_err(|error| {
             format!(
                 "could not cut router scratch at {}: {error}",
-                session.scratch_dir.display()
+                session.scratch_dir().display()
             )
         })?;
         // Written before the turn is queued: the router reads the record, and
@@ -9111,10 +9458,10 @@ impl AppState {
         self.entity_project
             .insert(capture_id.to_string(), project_id);
         self.pending_agent_turns.push(PendingAgentTurn {
-            root: session.scratch_dir.clone(),
+            root: session.scratch_dir().to_path_buf(),
             owner: capture_id.to_string(),
-            agent_id: session.agent_id.clone(),
-            model_choice: session.choice.clone(),
+            agent_id: session.agent_id().to_string(),
+            model_choice: session.choice().clone(),
             // A router is one decision long, so there is no warm half: every
             // turn it ever hears is the whole job — and no conversation, so no
             // catch-up packet either.
@@ -9127,23 +9474,13 @@ impl AppState {
         Ok(())
     }
 
-    /// The provider a device routes on when nothing has been configured.
-    ///
-    /// Pinned rather than read off the account: routing is a headless-shaped
-    /// job — one decision long, with no terminal for anyone to watch — and
-    /// there is exactly one headless carrier. A human whose default harness is
-    /// a TUI must not have every capture stranded on it.
-    fn default_agent_provider(&self) -> AgentProvider {
-        AgentProvider::ClaudeAdk
-    }
-
     /// The capture a router session speaks for, from the agent id its harness
     /// authenticated with.
     fn capture_of_router_agent(&self, agent_id: &str) -> Option<String> {
         self.router_sessions
             .values()
-            .find(|session| session.agent_id == agent_id)
-            .map(|session| session.capture_id.clone())
+            .find(|session| session.agent_id() == agent_id)
+            .map(|session| session.capture_id().to_string())
     }
 
     /// Execute one router tool against Build.
@@ -9621,23 +9958,23 @@ impl AppState {
         let Some(session) = self.router_sessions.remove(capture_id) else {
             return;
         };
-        let root = Self::canonical_root(&session.scratch_dir);
-        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, &session.agent_id)) {
+        let root = Self::canonical_root(session.scratch_dir());
+        if let Some(tab) = self.tabs.remove(&TabKey::agent(&root, session.agent_id())) {
             let wire_id = tab.wire_id();
             tab.session.end();
             if let Some(screen) = &tab.screen {
                 screen.push_closed(&wire_id, "agent_session_ended");
             }
         }
-        self.mcp_session_tokens.remove(&session.agent_id);
+        self.mcp_session_tokens.remove(session.agent_id());
         self.entity_project.remove(capture_id);
         // Bridge-owned, per capture, and holding nothing but what the harness
         // wrote for itself — so it goes with the session that made it.
-        if let Err(error) = std::fs::remove_dir_all(&session.scratch_dir) {
+        if let Err(error) = std::fs::remove_dir_all(session.scratch_dir()) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 eprintln!(
                     "router {capture_id}: could not wipe {}: {error}",
-                    session.scratch_dir.display()
+                    session.scratch_dir().display()
                 );
             }
         }
@@ -9653,14 +9990,14 @@ impl AppState {
         let finished: Vec<String> = self
             .router_sessions
             .values()
-            .filter(|session| session.started)
+            .filter(|session| session.started())
             .filter(|session| {
                 !self.agent_is_live(
-                    &Self::canonical_root(&session.scratch_dir),
-                    &session.agent_id,
+                    &Self::canonical_root(session.scratch_dir()),
+                    session.agent_id(),
                 )
             })
-            .map(|session| session.capture_id.clone())
+            .map(|session| session.capture_id().to_string())
             .collect();
         for capture_id in &finished {
             self.settle_router_session(capture_id);
@@ -15139,9 +15476,9 @@ fn default_projects_dir() -> std::path::PathBuf {
     expand_tilde("~/.build/projects")
 }
 
-/// Build's own state directory, `~/.build` — where the store lives, and where
-/// router scratch is cut. Overridden by whatever directory the store is
-/// actually configured at, so a test's temp store keeps its scratch beside it.
+/// The default state root for constructors without an explicit
+/// [`HarnessContext`]. A task store must share this parent; attaching one never
+/// changes the root.
 fn default_state_root() -> std::path::PathBuf {
     expand_tilde("~/.build")
 }
@@ -17191,17 +17528,21 @@ fn issue_session(active: &ActivePlan) -> Option<(std::path::PathBuf, String)> {
 
 /// Open a conversation's session lineage for a newly spawned agent process,
 /// chaining it off the previous session so the thread still reads as a chain.
-fn open_session_lineage(thread: &mut crate::thread::Thread, turn: &PendingAgentTurn) {
+fn open_session_lineage(
+    thread: &mut crate::thread::Thread,
+    model_choice: &ModelChoice,
+    phase: &str,
+) {
     let session_id = thread.start_session(
-        turn.model_choice.provider.label(),
-        turn.model_choice.model.as_deref(),
-        turn.model_choice.effort.as_deref(),
-        turn.phase,
+        model_choice.provider.label(),
+        model_choice.model.as_deref(),
+        model_choice.effort.as_deref(),
+        phase,
         &now_rfc3339(),
     );
     thread.push_event(
         crate::thread::ThreadEventKind::RunStarted,
-        Some(format!("{} run started", turn.phase)),
+        Some(format!("{phase} run started")),
         Some(session_id),
         None,
         now_rfc3339(),
@@ -18167,6 +18508,7 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
             &turn.cold,
             &turn.warm,
         )?
@@ -18177,15 +18519,11 @@ fn agent_start(state: &Arc<Mutex<AppState>>, params: &Value) -> Result<Value, St
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
         )?
     };
 
     let mut s = state.lock().unwrap();
-    // A fresh process is a new session either way — the lineage must not depend
-    // on whether there happened to be mail.
-    if spawned == Spawned::Fresh {
-        s.record_agent_session_start(&turn);
-    }
     s.touch_attention(&entity_id);
     Ok(json!({
         "term_id": term_id,
@@ -18272,242 +18610,249 @@ fn ensure_agent_tab(
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
+    phase: &'static str,
 ) -> Result<(String, Spawned), String> {
     let root = AppState::canonical_root(root);
     let key = TabKey::agent(&root, agent_id);
     let deadline = std::time::Instant::now() + AGENT_SPAWN_WAIT;
     loop {
-        // Under the lock: hand back a live tab, or reserve the spawn. The lock
-        // is dropped across the spawn below (it blocks for seconds on the
-        // harness's readiness wait, and every terminal pump needs this lock),
-        // so the reservation is what the losing caller waits on.
-        let reserved = {
-            let mut s = state.lock().unwrap();
-            if let Some(tab) = s.tabs.get(&key) {
-                let same_owner = matches!(
-                    &tab.role,
-                    TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
-                );
-                if same_owner && tab.session_is_live() {
-                    return Ok((tab.wire_id(), Spawned::Warm));
-                }
-            }
-            if s.agent_spawns_in_flight.contains(&key) {
-                None
-            } else {
-                let carried = s.tabs.remove(&key).and_then(|dead| {
-                    dead.session.end();
-                    dead.screen
-                });
-                // A checkout outlives the entity that owned it — a planning
-                // worktree is torn down and a run cuts a new one at the same
-                // path, an adopted worktree is released and re-adopted. Agents
-                // of the entity that USED to own this directory are stale: they
-                // would keep working in it and report `done` for an owner that
-                // no longer holds it. Several agents of the CURRENT owner are
-                // exactly what a branch is allowed to have, so only the others
-                // go.
-                let stale: Vec<TabKey> = s
-                    .tabs
-                    .iter()
-                    .filter(|(other, tab)| {
-                        other.root == root
-                            && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
-                    })
-                    .map(|(other, _)| other.clone())
-                    .collect();
-                for other in stale {
-                    if let Some(tab) = s.tabs.remove(&other) {
-                        let wire_id = tab.wire_id();
-                        tab.session.end();
-                        if let Some(screen) = &tab.screen {
-                            screen.push_closed(&wire_id, "closed");
-                        }
-                    }
-                }
-                // A router session belongs to no project — deciding which one
-                // the capture belongs to is its job. Any project's
-                // orchestrator builds the same harness spec for it, since the
-                // spec is made from the cwd and the owner id alone.
-                let project_id = match s.project_of(owner) {
-                    Ok(project_id) => project_id,
-                    Err(unknown) if crate::router::is_router_agent(agent_id) => {
-                        s.default_project().map_err(|_| unknown)?
-                    }
-                    Err(unknown) => return Err(unknown),
-                };
-                // What this spawn picks back up, decided in order, and the
-                // order is the rule.
-                //
-                // 1. A recorded name the provider still holds is resumed
-                //    EXACTLY — the conversation Build was speaking to, with no
-                //    cwd guess beside it. Verified first, so a dead name costs
-                //    zero restarts instead of one, and the claude uuid an agent
-                //    carried onto codex is cleared here rather than choking the
-                //    resume.
-                let resume_session_id = match s.recorded_resume_id(owner, agent_id) {
-                    Some(named) if (s.resume_id_probe)(&root, model_choice.provider, &named) => {
-                        Some(named)
-                    }
-                    Some(_gone) => {
-                        s.record_agent_resume_id(owner, agent_id, None);
-                        None
-                    }
-                    None => None,
-                };
-                // 2. No name, but this agent's record shows history: the same
-                //    agent continuing its own conversation, which `--continue`
-                //    guesses at as the newest one in the checkout, still gated
-                //    on the transcript probe.
-                // 3. Otherwise fresh, on every carrier. A brand-new agent
-                //    record has no conversation to pick up, and the checkout's
-                //    old one belongs to whoever had it — adoption included:
-                //    Build cannot show a history it never heard.
-                let continue_session = resume_session_id.is_none()
-                    && s.may_pick_up_a_conversation(owner, agent_id)
-                    && (s.transcript_probe)(&root, model_choice.provider);
-                // Built here, before the child exists, so the transcripts it
-                // snapshots as "not mine" cannot include the child's own.
-                let locator = (s.session_locator_factory)(&root, model_choice.provider);
-                let orch = s.orch_for(&project_id)?;
-                // Unconditional: under `--strict-mcp-config` a missing config
-                // kills the harness before it reads a byte of the prompt, and
-                // the scaffold is idempotent. The config is written per AGENT,
-                // so two agents sharing a checkout report as themselves.
-                orch.scaffold_agent_worktree(&root, agent_id).map_err(err)?;
-                let session_token = uuid::Uuid::new_v4().to_string();
-                let spec = orch.agent_harness_spec(
+        match claim_agent_tab(state, &root, &key, owner, agent_id, model_choice, phase)? {
+            AgentTabClaim::Warm(wire_id) => return Ok((wire_id, Spawned::Warm)),
+            AgentTabClaim::Waiting => wait_for_agent_claim(&root, deadline)?,
+            AgentTabClaim::Reserved(reserved) => {
+                return spawn_reserved_agent_tab(
+                    state,
+                    root,
+                    key,
+                    owner,
                     agent_id,
-                    &root,
                     model_choice,
-                    continue_session,
-                    resume_session_id,
-                    &session_token,
-                );
-                let size = orch.pty_size();
-                s.mcp_session_tokens
-                    .insert(agent_id.to_string(), session_token.clone());
-                s.agent_spawns_in_flight.insert(key.clone());
-                Some((spec, size, carried, session_token, locator))
+                    *reserved,
+                )
             }
-        };
+        }
+    }
+}
 
-        let Some((spec, size, carried, session_token, locator)) = reserved else {
-            // Someone else is spawning this root's agent: wait for their tab
-            // rather than start a second harness beside it.
-            if std::time::Instant::now() >= deadline {
-                return Err(format!(
-                    "timed out waiting for the agent starting in {}",
-                    root.display()
-                ));
+fn claim_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    root: &std::path::Path,
+    key: &TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    phase: &'static str,
+) -> Result<AgentTabClaim, String> {
+    let mut app = state.lock().unwrap();
+    if let Some(wire_id) = live_agent_wire_id(&app, key, owner) {
+        return Ok(AgentTabClaim::Warm(wire_id));
+    }
+    if app.agent_spawns_in_flight.contains(key) {
+        return Ok(AgentTabClaim::Waiting);
+    }
+    let carried = app.remove_replaced_agent(key);
+    app.close_stale_agents(root, owner);
+    let project_id = project_for_agent(&app, owner, agent_id)?;
+    let (continue_session, resume_session_id) =
+        app.agent_resume_options(root, owner, agent_id, model_choice.provider);
+    let launch = app.orch_for(&project_id)?.agent_launch();
+    let locator_factory = Arc::clone(&app.session_locator_factory);
+    let reservation = AgentSpawnReservation::claim(state, &mut app, key.clone(), agent_id);
+    Ok(AgentTabClaim::Reserved(Box::new(ReservedAgentTab {
+        reservation,
+        launch,
+        continue_session,
+        resume_session_id,
+        phase,
+        carried,
+        locator_factory,
+    })))
+}
+
+fn live_agent_wire_id(app: &AppState, key: &TabKey, owner: &str) -> Option<String> {
+    let tab = app.tabs.get(key)?;
+    let same_owner = matches!(
+        &tab.role,
+        TabRole::Agent { owner: tab_owner, .. } if tab_owner == owner
+    );
+    (same_owner && tab.session_is_live()).then(|| tab.wire_id())
+}
+
+fn project_for_agent(app: &AppState, owner: &str, agent_id: &str) -> Result<String, String> {
+    match app.project_of(owner) {
+        Ok(project_id) => Ok(project_id),
+        Err(unknown) if crate::router::is_router_agent(agent_id) => {
+            app.default_project().map_err(|_| unknown)
+        }
+        Err(unknown) => Err(unknown),
+    }
+}
+
+fn wait_for_agent_claim(
+    root: &std::path::Path,
+    deadline: std::time::Instant,
+) -> Result<(), String> {
+    if std::time::Instant::now() >= deadline {
+        return Err(format!(
+            "timed out waiting for the agent starting in {}",
+            root.display()
+        ));
+    }
+    std::thread::sleep(Duration::from_millis(25));
+    Ok(())
+}
+
+fn spawn_reserved_agent_tab(
+    state: &Arc<Mutex<AppState>>,
+    root: std::path::PathBuf,
+    key: TabKey,
+    owner: &str,
+    agent_id: &str,
+    model_choice: &ModelChoice,
+    reserved: ReservedAgentTab,
+) -> Result<(String, Spawned), String> {
+    let ReservedAgentTab {
+        reservation,
+        launch,
+        continue_session,
+        resume_session_id,
+        phase,
+        carried,
+        locator_factory,
+    } = reserved;
+    let locator = locator_factory(&root, model_choice.provider);
+    let prepared = launch
+        .prepare(
+            agent_id,
+            &root,
+            model_choice,
+            continue_session,
+            resume_session_id,
+            &reservation.session_token,
+        )
+        .map_err(err)?;
+    let (tab, output) = Tab::spawn(
+        TabRole::Agent {
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            provider: model_choice.provider,
+        },
+        &prepared.spec,
+        key.tab_id.clone(),
+        root.clone(),
+        prepared.pty_size.cols,
+        prepared.pty_size.rows,
+        locator,
+    )?;
+    let tab = tab.adopt_replaced_screen(carried, &key.tab_id);
+    let wire_id = tab.wire_id();
+    {
+        let mut app = state.lock().unwrap();
+        app.publish_agent_tab(AgentTabPublication {
+            root,
+            key: key.clone(),
+            owner: owner.to_string(),
+            agent_id: agent_id.to_string(),
+            model_choice: model_choice.clone(),
+            phase,
+            tab,
+            reservation,
+        });
+    }
+    spawn_tab_pumps(state, key, output);
+    Ok((wire_id, Spawned::Fresh))
+}
+
+impl AppState {
+    fn remove_replaced_agent(&mut self, key: &TabKey) -> Option<TermScreen> {
+        self.tabs.remove(key).and_then(|dead| {
+            dead.session.end();
+            dead.screen
+        })
+    }
+
+    fn close_stale_agents(&mut self, root: &std::path::Path, owner: &str) {
+        let stale = self
+            .tabs
+            .iter()
+            .filter(|(other, tab)| {
+                other.root == root
+                    && matches!(&tab.role, TabRole::Agent { owner: had, .. } if had != owner)
+            })
+            .map(|(other, _)| other.clone())
+            .collect::<Vec<_>>();
+        for key in stale {
+            if let Some(tab) = self.tabs.remove(&key) {
+                let wire_id = tab.wire_id();
+                tab.session.end();
+                if let Some(screen) = &tab.screen {
+                    screen.push_closed(&wire_id, "closed");
+                }
             }
-            std::thread::sleep(Duration::from_millis(25));
-            continue;
-        };
+        }
+    }
 
-        let spawned = Tab::spawn(
-            TabRole::Agent {
-                owner: owner.to_string(),
-                agent_id: agent_id.to_string(),
-                provider: model_choice.provider,
-            },
-            &spec,
-            key.tab_id.clone(),
-            root.clone(),
-            size.cols,
-            size.rows,
-            locator,
+    fn agent_resume_options(
+        &mut self,
+        root: &std::path::Path,
+        owner: &str,
+        agent_id: &str,
+        provider: AgentProvider,
+    ) -> (bool, Option<String>) {
+        let resume_session_id = match self.recorded_resume_id(owner, agent_id) {
+            Some(named) if (self.resume_id_probe)(root, provider, &named) => Some(named),
+            Some(_) => {
+                self.record_agent_resume_id(owner, agent_id, None);
+                None
+            }
+            None => None,
+        };
+        let continue_session = resume_session_id.is_none()
+            && self.may_pick_up_a_conversation(owner, agent_id)
+            && (self.transcript_probe)(root, provider);
+        (continue_session, resume_session_id)
+    }
+
+    fn take_waiting_screen(&mut self, root: &std::path::Path, key: &TabKey) -> Option<TermScreen> {
+        let first_here = !self
+            .tabs
+            .keys()
+            .any(|other| other.is_agent() && other.root == root);
+        self.agent_screens_awaiting_spawn.remove(key).or_else(|| {
+            first_here.then(|| {
+                self.agent_screens_awaiting_spawn.remove(&TabKey::agent(
+                    root,
+                    &crate::worktree::external_worktree_id(root),
+                ))
+            })?
+        })
+    }
+
+    fn publish_agent_tab(&mut self, mut publication: AgentTabPublication) {
+        let waiting = self.take_waiting_screen(&publication.root, &publication.key);
+        publication.tab = publication
+            .tab
+            .adopt_waiting_screen(waiting, &publication.key.tab_id);
+        let running = publication
+            .tab
+            .session
+            .active_model()
+            .or_else(|| publication.model_choice.model.clone());
+        self.tabs.insert(publication.key.clone(), publication.tab);
+        self.complete_spawn_reservation(publication.reservation);
+        self.record_agent_active_model(&publication.owner, &publication.agent_id, running);
+        // The caller starts the output pumps only after this publication lock is
+        // released, so EOF cannot close the session before its start is visible.
+        self.record_agent_session_start(
+            &publication.owner,
+            &publication.model_choice,
+            publication.phase,
         );
-        let (mut tab, rx) = match spawned {
-            Ok(spawned) => spawned,
-            Err(error) => {
-                let mut state = state.lock().unwrap();
-                state.agent_spawns_in_flight.remove(&key);
-                if state
-                    .mcp_session_tokens
-                    .get(agent_id)
-                    .is_some_and(|current| constant_time_token_eq(current, &session_token))
-                {
-                    state.mcp_session_tokens.remove(agent_id);
-                }
-                return Err(error);
-            }
-        };
-        if let Some(screen) = carried {
-            match tab.session.terminal() {
-                // Reconnect is snapshot + cursor: a replacement process must
-                // never rewind that cursor, and clients already attached stay
-                // attached. The new PTY takes the retained screen's grid so the
-                // two agree.
-                Some(terminal) => {
-                    let _ = terminal.resize(PtySize {
-                        rows: screen.rows,
-                        cols: screen.cols,
-                        pixel_width: 0,
-                        pixel_height: 0,
-                    });
-                    tab.screen = Some(screen);
-                }
-                // The replacement paints nothing, so the retained grid has
-                // nothing to become — see [`close_a_screen_with_no_terminal`].
-                None => close_a_screen_with_no_terminal(&screen, &key.tab_id),
-            }
-        }
-        let wire_id = tab.wire_id();
-        {
-            let mut s = state.lock().unwrap();
-            // Clients that mounted the Agent tab before this worktree had one
-            // are attached to a screen with no PTY. Carry them — and the
-            // viewport they render at, the same rule an attach to a live tab
-            // follows — onto the real screen, under the SAME lock acquisition
-            // that publishes the tab, so a client attaching during the spawn is
-            // on one screen or the other and never between them. The waiting
-            // screen's cursor is not carried: it painted nothing, while a
-            // retained screen's cursor is the one that must never rewind.
-            let first_here = !s
-                .tabs
-                .keys()
-                .any(|other| other.is_agent() && other.root == root);
-            let waiting = s.agent_screens_awaiting_spawn.remove(&key).or_else(|| {
-                // Clients that mounted the tab before this worktree had an
-                // agent addressed it by the WORKTREE; the first agent born here
-                // is the one they were waiting for.
-                first_here.then(|| {
-                    s.agent_screens_awaiting_spawn.remove(&TabKey::agent(
-                        &root,
-                        &crate::worktree::external_worktree_id(&root),
-                    ))
-                })?
-            });
-            if let Some(waiting) = waiting {
-                match tab.require_terminal_and_screen() {
-                    Ok((terminal, screen)) => {
-                        let _ = terminal.resize(PtySize {
-                            rows: waiting.rows,
-                            cols: waiting.cols,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                        });
-                        screen.set_size(waiting.cols, waiting.rows);
-                        for client in &waiting.attached {
-                            screen.register(&client.sender);
-                        }
-                    }
-                    // There is no real screen to carry them onto — see
-                    // [`close_a_screen_with_no_terminal`].
-                    Err(_) => close_a_screen_with_no_terminal(&waiting, &key.tab_id),
-                }
-            }
-            let running = tab
-                .session
-                .active_model()
-                .or_else(|| model_choice.model.clone());
-            s.tabs.insert(key.clone(), tab);
-            s.agent_spawns_in_flight.remove(&key);
-            s.record_agent_active_model(owner, agent_id, running);
-        }
-        spawn_tab_pumps(state, key, rx);
-        return Ok((wire_id, Spawned::Fresh));
+    }
+
+    fn complete_spawn_reservation(&mut self, mut reservation: AgentSpawnReservation) {
+        self.agent_spawns_in_flight.remove(&reservation.key);
+        reservation.active = false;
     }
 }
 
@@ -18550,10 +18895,11 @@ fn deliver(
     owner: &str,
     agent_id: &str,
     model_choice: &ModelChoice,
+    phase: &'static str,
     cold: &str,
     warm: &str,
 ) -> Result<(String, Spawned), String> {
-    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice)?;
+    let (wire_id, spawned) = ensure_agent_tab(state, root, owner, agent_id, model_choice, phase)?;
     let prompt = match spawned {
         Spawned::Fresh => cold,
         Spawned::Warm => warm,
@@ -18592,9 +18938,9 @@ fn deliver(
 /// Send every turn the verbs that just ran queued, now that the state lock is
 /// free.
 ///
-/// A cold delivery starts a new harness process, so it opens the conversation's
-/// session lineage — the record the thread reads back as "the revise agent
-/// started here". A warm delivery continues the session already open.
+/// A cold delivery starts a new harness process, whose publication has already
+/// opened the conversation's session lineage. A warm delivery continues the
+/// session already open.
 fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
     // Taking the queue and marking those owners in flight happen under ONE lock
     // acquisition, so there is no instant in which a queued turn is invisible to
@@ -18638,22 +18984,19 @@ fn deliver_pending_agent_turns(state: &Arc<Mutex<AppState>>) {
             &turn.owner,
             &turn.agent_id,
             &turn.model_choice,
+            turn.phase,
             &turn.cold,
             &turn.warm,
         );
         let mut s = state.lock().unwrap();
-        match delivered {
-            Ok((_, Spawned::Fresh)) => s.record_agent_session_start(&turn),
-            Ok((_, Spawned::Warm)) => {}
+        if let Err(error) = delivered {
             // The turn stays durable on the thread — the agent picks it up with
             // `read_unread_messages` the next time a tab opens — but nothing is
             // reading that thread right now, so the entity itself has to carry
             // the reason. The idle sweep finishes the job: an entity left
             // working with no agent tab is demoted on the next pass.
-            Err(error) => {
-                eprintln!("deliver to {}: {error}", turn.owner);
-                s.record_agent_delivery_failure(&turn, &error);
-            }
+            eprintln!("deliver to {}: {error}", turn.owner);
+            s.record_agent_delivery_failure(&turn, &error);
         }
         // Off the queue and out of flight: from here the entity's agent tab is
         // the whole truth about whether an agent is there.
@@ -19269,7 +19612,7 @@ fn b64decode(s: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
 
     use crate::harness::claude;
@@ -19279,6 +19622,13 @@ mod tests {
     use crate::harness::surfaces::{AgentSurfaces, SurfaceRevision};
     use crate::harness::{AgentSession, HarnessError, Turn};
     use crate::pty::{PtySession, AGENT_WORKING_WINDOW};
+
+    fn test_build_agent(mcp_socket: impl Into<std::path::PathBuf>) -> Agent {
+        build_agent(
+            false,
+            HarnessContext::resolved(mcp_socket.into(), default_state_root()).unwrap(),
+        )
+    }
 
     // --- fs.tree / fs.read (spec §4) --------------------------------------------
 
@@ -19293,6 +19643,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let repo = init_repo_named(dir.path(), "repo");
         (dir, repo)
+    }
+
+    fn test_bridge_exe() -> PathBuf {
+        std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
     }
 
     /// A repository under `parent`, named. A project is named after its
@@ -19438,6 +19792,174 @@ mod tests {
     }
 
     #[test]
+    fn project_add_persistence_failures_leave_state_and_user_repo_unchanged() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let (_added_repo_directory, added_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let response = state.handle(req(
+                "project.add",
+                json!({ "path": added_repo.to_str().unwrap() }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(added_repo.join(".git").exists(), "user repo must remain");
+        }
+    }
+
+    #[test]
+    fn project_clone_persistence_failures_leave_state_and_remove_new_clone() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let (_source_directory, source_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let projects_dir = directory.path().join("projects");
+            std::fs::create_dir(&projects_dir).unwrap();
+            let existing_clone_path = projects_dir.join("existing-project");
+            git2::Repository::clone(source_repo.to_str().unwrap(), &existing_clone_path).unwrap();
+            let clone_path = projects_dir.join("cloned-project");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            state.projects_dir = projects_dir;
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let existing_response = state.handle(req(
+                "project.clone",
+                json!({
+                    "url": source_repo.to_str().unwrap(),
+                    "name": "existing-project",
+                }),
+            ));
+
+            assert_eq!(existing_response["ok"], false, "{existing_response:?}");
+            assert!(existing_response["error"]
+                .as_str()
+                .unwrap()
+                .contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                existing_clone_path.join(".git").exists(),
+                "an existing checkout is user-owned"
+            );
+
+            let response = state.handle(req(
+                "project.clone",
+                json!({
+                    "url": source_repo.to_str().unwrap(),
+                    "name": "cloned-project",
+                }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                !clone_path.exists(),
+                "failed clone registration is cleaned up"
+            );
+            assert!(source_repo.join(".git").exists(), "source repo must remain");
+        }
+    }
+
+    #[test]
+    fn project_create_persistence_failures_leave_state_and_remove_new_repo() {
+        for failure in [ConfigPersistStep::Write, ConfigPersistStep::Rename] {
+            let directory = tempfile::tempdir().unwrap();
+            let (_initial_repo_directory, initial_repo) = init_repo();
+            let config = directory.path().join("config.json");
+            let parent = directory.path().join("created-projects");
+            let created_path = parent.join("new-project");
+            let mut state = AppState::new(
+                initial_repo,
+                directory.path().join("worktrees"),
+                "main",
+                true,
+                "/tmp/test-mcp.sock",
+            )
+            .with_config(&config)
+            .unwrap();
+            let projects_before = state.project_list();
+            let next_project_before = state.next_project;
+            state.config_persist_failure = Some(failure);
+
+            let response = state.handle(req(
+                "project.create",
+                json!({
+                    "name": "new-project",
+                    "parent": parent.to_str().unwrap(),
+                }),
+            ));
+
+            assert_eq!(response["ok"], false, "{response:?}");
+            assert!(response["error"].as_str().unwrap().contains("injected"));
+            assert_eq!(state.project_list(), projects_before);
+            assert_eq!(state.next_project, next_project_before);
+            assert!(
+                !created_path.exists(),
+                "failed project creation is cleaned up"
+            );
+        }
+    }
+
+    #[test]
+    fn project_remote_change_does_not_write_unchanged_config() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_directory, repo) = init_repo();
+        let config = directory.path().join("config.json");
+        let mut state = AppState::new(
+            repo.clone(),
+            directory.path().join("worktrees"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(config)
+        .unwrap();
+        let project_id = state.projects[0].id.clone();
+        state.config_persist_failure = Some(ConfigPersistStep::Write);
+
+        let response = state.handle(req(
+            "project.set_remote",
+            json!({ "project_id": project_id, "url": "https://example.com/repo.git" }),
+        ));
+
+        assert_eq!(response["ok"], true, "{response:?}");
+        assert_eq!(
+            git_remote_origin(&repo).as_deref(),
+            Some("https://example.com/repo.git")
+        );
+    }
+
+    #[test]
     fn fs_list_browses_dirs_and_flags_git_repos() {
         let (dir_a, repo_a) = init_repo();
         let mut state = AppState::new(
@@ -19549,7 +20071,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(&cfg);
+            .with_config(&cfg)
+            .unwrap();
             state.handle(req(
                 "project.add",
                 json!({ "path": repo_b.to_str().unwrap() }),
@@ -19567,7 +20090,8 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         )
-        .with_config(&cfg);
+        .with_config(&cfg)
+        .unwrap();
         assert_eq!(
             reloaded.handle(req("project.list", json!({})))["result"]["projects"]
                 .as_array()
@@ -19580,6 +20104,66 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("myprojects")
+        );
+    }
+
+    #[test]
+    fn missing_config_is_the_only_absent_config_case() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing-config.json");
+        assert_eq!(read_config(&missing).unwrap(), None);
+    }
+
+    #[test]
+    fn malformed_config_fails_with_its_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("malformed-config.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let error = read_config(&path).unwrap_err().to_string();
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert!(error.contains("parse"), "{error}");
+    }
+
+    #[test]
+    fn config_read_failure_fails_with_its_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = read_config(directory.path()).unwrap_err().to_string();
+        assert!(
+            error.contains(directory.path().to_str().unwrap()),
+            "{error}"
+        );
+        assert!(error.contains("read"), "{error}");
+    }
+
+    #[test]
+    fn settings_write_failure_is_reported_and_leaves_the_default_harness_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = directory.path().join("config.json");
+        let mut state = AppState::new(
+            repo,
+            directory.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        std::fs::create_dir(&config).unwrap();
+
+        let response = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+
+        assert_eq!(response["ok"], false, "{response:?}");
+        assert!(
+            response["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(config.to_str().unwrap())),
+            "{response:?}"
+        );
+        assert_eq!(state.default_harness, DEFAULT_HARNESS);
+        assert!(
+            !config.with_extension("tmp").exists(),
+            "a failed atomic write leaves no temporary config behind"
         );
     }
 
@@ -19618,7 +20202,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(&cfg);
+            .with_config(&cfg)
+            .unwrap();
             state.handle(req(
                 "settings.set",
                 json!({ "projects_dir": tmp.path().join("myprojects").to_str().unwrap() }),
@@ -19635,7 +20220,8 @@ mod tests {
             true,
             "/tmp/test-mcp.sock",
         )
-        .with_config(&cfg);
+        .with_config(&cfg)
+        .unwrap();
         let settings = reloaded.handle(req("settings.get", json!({})))["result"].clone();
         assert_eq!(settings["default_harness"], "claude");
         assert_eq!(settings["claude_mode"], "tui");
@@ -19645,6 +20231,37 @@ mod tests {
                 .unwrap()
                 .contains("myprojects"),
             "setting one field moves no other: {settings:?}"
+        );
+    }
+
+    #[test]
+    fn pi_round_trips_as_the_persisted_coding_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let config = temp.path().join("config.json");
+        let mut state = AppState::new(
+            repo.clone(),
+            temp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(&config)
+        .unwrap();
+        let set = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        assert_eq!(set["result"]["default_harness"], "pi");
+        let mut reloaded = AppState::new(
+            repo,
+            temp.path().join("wt"),
+            "main",
+            true,
+            "/tmp/test-mcp.sock",
+        )
+        .with_config(config)
+        .unwrap();
+        assert_eq!(
+            reloaded.handle(req("settings.get", json!({})))["result"]["default_harness"],
+            "pi"
         );
     }
 
@@ -19672,8 +20289,8 @@ mod tests {
         assert_eq!(refused["ok"], false, "{refused:?}");
         assert_eq!(
             refused["error"].as_str().unwrap(),
-            "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\" or \
-             \"codex\")"
+            "unknown default_harness \"telepathy\" (expected \"claude_adk\", \"claude\", \
+             \"codex\" or \"pi\")"
         );
         assert_eq!(
             state.handle(req("settings.get", json!({})))["result"],
@@ -19729,7 +20346,8 @@ mod tests {
                 true,
                 "/tmp/test-mcp.sock",
             )
-            .with_config(cfg);
+            .with_config(cfg)
+            .unwrap();
             state.handle(req("settings.get", json!({})))["result"].clone()
         };
 
@@ -19846,6 +20464,7 @@ mod tests {
             ("claude", AgentProvider::Claude),
             ("claude_adk", AgentProvider::ClaudeAdk),
             ("codex", AgentProvider::Codex),
+            ("pi", AgentProvider::Pi),
         ] {
             assert_eq!(
                 carrier_of(
@@ -19856,6 +20475,34 @@ mod tests {
                 "{token} names one harness"
             );
         }
+    }
+
+    #[test]
+    fn pi_setting_drives_omitted_coding_provider_without_overriding_a_concrete_provider() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let set = state.handle(req("settings.set", json!({ "default_harness": "pi" })));
+        assert_eq!(set["ok"], true, "{set:?}");
+
+        let omitted = state.handle(req(
+            "plan.create",
+            json!({ "goal": "use the account default", "dispatch": false }),
+        ));
+        assert_eq!(omitted["ok"], true, "{omitted:?}");
+        assert_eq!(omitted["result"]["provider"], "pi", "{omitted:?}");
+        assert_eq!(omitted["result"]["agents"][0]["provider"], "pi");
+
+        let concrete = state.handle(req(
+            "plan.create",
+            json!({
+                "goal": "keep the provider displayed by the client",
+                "dispatch": false,
+                "provider": "codex",
+            }),
+        ));
+        assert_eq!(concrete["ok"], true, "{concrete:?}");
+        assert_eq!(concrete["result"]["provider"], "codex", "{concrete:?}");
+        assert_eq!(concrete["result"]["agents"][0]["provider"], "codex");
     }
 
     /// A client that names a concrete carrier gets that carrier. The setting
@@ -19874,7 +20521,7 @@ mod tests {
             state.plans[&plan_id_of(&filed)].model_choice.provider
         };
 
-        for default in ["claude_adk", "claude", "codex"] {
+        for default in ["claude_adk", "claude", "codex", "pi"] {
             let set = state.handle(req("settings.set", json!({ "default_harness": default })));
             assert_eq!(set["ok"], true, "{set:?}");
             assert_eq!(
@@ -19911,25 +20558,6 @@ mod tests {
             before,
             "the choice a later start and every resume read is untouched"
         );
-    }
-
-    /// Routing is a headless-shaped job — one decision long, no terminal for
-    /// anyone to watch — and there is exactly one headless carrier. So it pins
-    /// that one: a human who makes Codex their default must not strand every
-    /// capture on a harness the router cannot drive.
-    #[test]
-    fn the_router_pins_the_headless_carrier_under_every_default() {
-        let (dir, repo) = init_repo();
-        let mut state = qa_state(&repo, dir.path());
-        assert_eq!(state.default_agent_provider(), AgentProvider::ClaudeAdk);
-        for default in ["claude", "codex", "claude_adk"] {
-            state.handle(req("settings.set", json!({ "default_harness": default })));
-            assert_eq!(
-                state.default_agent_provider(),
-                AgentProvider::ClaudeAdk,
-                "the router does not follow a default of {default}"
-            );
-        }
     }
 
     #[tokio::test]
@@ -20422,6 +21050,7 @@ mod tests {
             "run-attach",
             &crate::agent::derived_agent_id("run-attach"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -20469,6 +21098,7 @@ mod tests {
             "run-unclosable",
             &crate::agent::derived_agent_id("run-unclosable"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -20694,6 +21324,7 @@ mod tests {
             "run-one-agent",
             &crate::agent::derived_agent_id("run-one-agent"),
             &choice,
+            "start",
         )
         .expect("the agent spawns");
         let (second_id, second) = ensure_agent_tab(
@@ -20702,6 +21333,7 @@ mod tests {
             "run-one-agent",
             &crate::agent::derived_agent_id("run-one-agent"),
             &choice,
+            "start",
         )
         .expect("the agent is found");
 
@@ -20750,6 +21382,7 @@ mod tests {
                     "run-race",
                     &crate::agent::derived_agent_id("run-race"),
                     &ModelChoice::default(),
+                    "start",
                 )
             }));
         }
@@ -20777,6 +21410,56 @@ mod tests {
         assert!(s.agent_spawns_in_flight.is_empty());
     }
 
+    #[test]
+    fn harness_spec_construction_does_not_hold_the_app_state_lock() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-slow-spec");
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        {
+            let release_rx = Arc::clone(&release_rx);
+            let agent = Agent::WarmBuilder(Arc::new(move |_, _, _| {
+                arrived_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+                Ok(HarnessSpec::new("sh")
+                    .arg("-c")
+                    .arg("printf '\\033[?2004h'; cat >/dev/null"))
+            }));
+            let mut app = state.lock().unwrap();
+            let worktrees = app.worktrees_root.clone();
+            app.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
+        }
+        let spawning_state = Arc::clone(&state);
+        let spawn = std::thread::spawn(move || {
+            ensure_agent_tab(
+                &spawning_state,
+                &root,
+                "run-slow-spec",
+                &crate::agent::derived_agent_id("run-slow-spec"),
+                &ModelChoice::default(),
+                "start",
+            )
+        });
+        arrived_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the harness builder started");
+
+        assert!(
+            state.try_lock().is_ok(),
+            "unrelated app state remains available while a harness spec is built"
+        );
+
+        release_tx.send(()).unwrap();
+        spawn.join().unwrap().unwrap();
+    }
+
     /// The cold/warm rule: a tab that had to be spawned gets the full prompt (a
     /// cold agent has no context to read messages into), and a tab that was
     /// already alive gets the short nudge — the messages are already durable in
@@ -20794,6 +21477,7 @@ mod tests {
             "run-deliver",
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -20815,6 +21499,7 @@ mod tests {
             "run-deliver",
             &crate::agent::derived_agent_id("run-deliver"),
             &choice,
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -20895,6 +21580,7 @@ mod tests {
             "run-lock",
             &agent_id,
             &ModelChoice::default(),
+            "build",
             "COLD-CONTEXT-PROMPT",
             "WARM-NUDGE-PROMPT",
         )
@@ -21010,19 +21696,11 @@ mod tests {
         let (state, _handler) = shared_state_and_handler(&repo, dir.path());
         let (tab_key, _wire_id) =
             insert_live_run(&state, &repo, dir.path().join("side"), "run-eof");
-        state
-            .lock()
-            .unwrap()
-            .record_agent_session_start(&PendingAgentTurn {
-                root: tab_key.root.clone(),
-                owner: "run-eof".into(),
-                agent_id: crate::agent::derived_agent_id("run-eof"),
-                model_choice: ModelChoice::default(),
-                cold: String::new(),
-                warm: String::new(),
-                phase: "build",
-                wants_catch_up: false,
-            });
+        state.lock().unwrap().record_agent_session_start(
+            "run-eof",
+            &ModelChoice::default(),
+            "build",
+        );
         assert_eq!(open_session_count(&state, "run-eof"), 1);
 
         state.lock().unwrap().tabs[&tab_key].session.end();
@@ -21371,8 +22049,13 @@ mod tests {
     /// Point a QA state's only project at a different agent — the seam every
     /// test that cares about what actually gets spawned goes through.
     fn use_agent(state: &Arc<Mutex<AppState>>, repo: &std::path::Path, wt: PathBuf, agent: Agent) {
-        state.lock().unwrap().projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), wt, agent, Templates::default());
+        state.lock().unwrap().projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            wt,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
     }
 
     /// The rendered turn is always multi-line (the conversation protocol block
@@ -21391,11 +22074,11 @@ mod tests {
             dir.path().join("wt2"),
             Agent::WarmBuilder(std::sync::Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
                         .arg("cat > \"$1\"")
                         .arg("build-agent-capture")
-                        .arg(capture_for_builder.to_string_lossy())
+                        .arg(capture_for_builder.to_string_lossy()))
                 },
             )),
         );
@@ -21406,6 +22089,7 @@ mod tests {
             "run-paste",
             &crate::agent::derived_agent_id("run-paste"),
             &ModelChoice::default(),
+            "build",
             "Paste framing marker\nsecond line",
             "warm",
         )
@@ -21434,46 +22118,107 @@ mod tests {
         );
     }
 
-    /// The prompt-write race, end to end: a harness that exits instantly closes
-    /// its PTY (the write fails with EIO) *before* the OS makes its exit status
-    /// reapable, so a single status poll says "running". That must not
-    /// fail the delivery — the tab is still the agent's tab, and the crash is
-    /// the idle monitor's to report, not the delivery's.
-    #[tokio::test]
-    async fn a_harness_that_exits_under_the_prompt_write_still_keeps_its_tab() {
+    /// A fresh session is recorded before its output pump can observe EOF. An
+    /// immediately exiting child used to let the pump record the end first and
+    /// the delivery record a stale open session afterward.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_immediately_exiting_harness_leaves_one_closed_session() {
         let (dir, repo) = init_repo();
         let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-exits");
         use_agent(&state, &repo, dir.path().join("wt2"), instant_exit_agent());
+        let agent_id = crate::agent::derived_agent_id("run-exits");
+        {
+            let mut app = state.lock().unwrap();
+            app.runs.insert(
+                "run-exits".into(),
+                crate::orchestrator::ActiveRun::reattach(
+                    &fake_run_record("run-exits"),
+                    ".build/plan.md".into(),
+                ),
+            );
+            app.pending_agent_turns.push(PendingAgentTurn {
+                root: AppState::canonical_root(&root),
+                owner: "run-exits".into(),
+                agent_id: agent_id.clone(),
+                model_choice: ModelChoice::default(),
+                cold: "cold".into(),
+                warm: "warm".into(),
+                phase: "build",
+                wants_catch_up: false,
+            });
+        }
 
-        let delivered = deliver(
-            &state,
-            &root,
-            "run-exits",
-            &crate::agent::derived_agent_id("run-exits"),
-            &ModelChoice::default(),
-            "cold",
-            "warm",
-        );
+        deliver_pending_agent_turns(&state);
 
-        assert!(
-            delivered.is_ok(),
-            "a write against an exiting harness is benign: {delivered:?}"
-        );
+        let key = TabKey::agent(&AppState::canonical_root(&root), &agent_id);
+        wait_for(Duration::from_secs(5), || {
+            (!state.lock().unwrap().tabs[&key].live).then_some(())
+        })
+        .await
+        .expect("the pump observes the child exit");
         let s = state.lock().unwrap();
-        assert!(
-            s.tabs.contains_key(&derived_agent_key(
-                &AppState::canonical_root(&root),
-                "run-exits"
-            )),
-            "the tab is retained so the crash is legible"
+        let thread = primary_thread(&s.runs["run-exits"].agents);
+        assert_eq!(
+            thread
+                .sessions
+                .iter()
+                .filter(|session| session.ended_at.is_none())
+                .count(),
+            0,
+            "EOF must not be followed by a stale session start: {:?}",
+            thread.sessions
         );
+        let session_events = thread
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                crate::thread::ThreadItem::Event(event)
+                    if matches!(
+                        event.event,
+                        crate::thread::ThreadEventKind::RunStarted
+                            | crate::thread::ThreadEventKind::SessionEnded
+                    ) =>
+                {
+                    Some((event.event, event.sequence))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            session_events
+                .iter()
+                .filter(|(kind, _)| *kind == crate::thread::ThreadEventKind::SessionEnded)
+                .count(),
+            1,
+            "the process produces exactly one session end: {session_events:?}"
+        );
+        assert_eq!(
+            session_events.len(),
+            2,
+            "one start and one end are the whole session timeline: {session_events:?}"
+        );
+        assert_eq!(
+            session_events[0].0,
+            crate::thread::ThreadEventKind::RunStarted,
+            "the fresh session starts before it can end: {session_events:?}"
+        );
+        assert_eq!(
+            session_events[1].0,
+            crate::thread::ThreadEventKind::SessionEnded,
+            "no stale start may appear after the end: {session_events:?}"
+        );
+        assert!(
+            session_events[0].1 < session_events[1].1,
+            "the recorded start precedes the recorded end: {session_events:?}"
+        );
+        assert!(!s.tabs[&key].live, "the retained tab is non-live");
     }
 
     /// An agent that is gone before it reads a byte.
     fn instant_exit_agent() -> Agent {
         Agent::WarmBuilder(std::sync::Arc::new(
             |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                HarnessSpec::new("sh").arg("-c").arg("exit 0")
+                Ok(HarnessSpec::new("sh").arg("-c").arg("exit 0"))
             },
         ))
     }
@@ -21499,6 +22244,7 @@ mod tests {
             "run-cap",
             &crate::agent::derived_agent_id("run-cap"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         // One of the human's own shells, held as a tab rather than in `terms`.
@@ -21566,6 +22312,97 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_listener_rejects_rotated_and_wrong_tokens_and_keeps_canonical_errors() {
+        async fn request(path: &Path, frame: Value) -> Value {
+            let mut stream = tokio::net::UnixStream::connect(path).await.unwrap();
+            stream
+                .write_all(format!("{frame}\n").as_bytes())
+                .await
+                .unwrap();
+            let mut response = String::new();
+            tokio::io::BufReader::new(stream)
+                .read_line(&mut response)
+                .await
+                .unwrap();
+            serde_json::from_str(&response).unwrap()
+        }
+
+        let (directory, repo) = init_repo();
+        let mut app = qa_state(&repo, directory.path());
+        let created = app.handle(req(
+            "plan.create",
+            json!({ "goal": "authenticate MCP", "dispatch": false }),
+        ));
+        let entity_id = plan_id_of(&created);
+        let agent_id = crate::agent::derived_agent_id(&entity_id);
+        let state = app.shared();
+        let (stale_reservation, current_reservation, stale_token, current_token) = {
+            let mut app = state.lock().unwrap();
+            let key = TabKey::agent(directory.path(), &agent_id);
+            let stale = AgentSpawnReservation::claim(&state, &mut app, key.clone(), &agent_id);
+            let stale_token = stale.session_token.clone();
+            let current = AgentSpawnReservation::claim(&state, &mut app, key, &agent_id);
+            let current_token = current.session_token.clone();
+            (stale, current, stale_token, current_token)
+        };
+        let socket = directory.path().join("authenticated-mcp.sock");
+        let listener = bind_done_listener(&socket).unwrap();
+        let server = tokio::spawn(serve_done_listener(Arc::clone(&state), listener));
+
+        for token in [stale_token.as_str(), "wrong-token"] {
+            let response = request(
+                &socket,
+                json!({
+                    "task_id": agent_id,
+                    "session_token": token,
+                    "request": { "action": "read_unread_messages" }
+                }),
+            )
+            .await;
+            assert_eq!(
+                response,
+                json!({ "ok": false, "error": "unauthorized MCP session" })
+            );
+        }
+
+        let accepted = request(
+            &socket,
+            json!({
+                "task_id": agent_id,
+                "session_token": current_token,
+                "request": { "action": "read_unread_messages" }
+            }),
+        )
+        .await;
+        assert_eq!(accepted["ok"], true, "{accepted}");
+
+        let done = crate::mcp::DoneServer::for_owner(&agent_id).handle_message(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"done","arguments":{"phase":"build"}}}"#,
+        );
+        let done_error: Value = serde_json::from_str(done.reply.as_deref().unwrap()).unwrap();
+        assert_eq!(done_error["result"]["isError"], true);
+        assert!(done_error["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("invalid done arguments:"));
+
+        let post = crate::mcp::DoneServer::for_owner(&agent_id).handle_message(
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"post_thread_message","arguments":{}}}"#,
+        );
+        let post_error: Value = serde_json::from_str(post.reply.as_deref().unwrap()).unwrap();
+        assert_eq!(post_error["result"]["isError"], true);
+        assert_eq!(
+            post_error["result"]["content"][0]["text"],
+            "body is required"
+        );
+
+        server.abort();
+        drop(current_reservation);
+        drop(stale_reservation);
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn done_socket_is_explicitly_owner_only() {
         use std::os::unix::fs::PermissionsExt;
@@ -21580,21 +22417,24 @@ mod tests {
     /// An agent tab is a MANAGED agent: the spec it spawns from carries Build's
     /// `done` MCP server and the owner id that routes reports back through the
     /// owner lookup. The socket lives inside the harness builder's closure, so
-    /// `agent_harness_spec` is the only way the app layer can reach it — and a
-    /// spec that dropped the config or the owner would open an agent Build
-    /// cannot talk to, in a tab that looks entirely healthy.
+    /// launch preparation is the only way the app layer can reach it — and a
+    /// prepared spec that dropped the config or the owner would open an agent
+    /// Build cannot talk to, in a tab that looks entirely healthy.
     #[test]
-    fn agent_harness_spec_carries_the_done_mcp_server_and_the_owner_id() {
+    fn prepared_agent_spec_carries_the_done_mcp_server_and_the_owner_id() {
         // claude's pre-trust writes a registry; keep it off the developer's own.
         let config_dir = tempfile::tempdir().unwrap();
         std::env::set_var("CLAUDE_CONFIG_DIR", config_dir.path());
+        let (directory, repo) = init_repo();
+        let cwd = directory.path().join("wt-1");
+        std::fs::create_dir(&cwd).unwrap();
         let orch = Orchestrator::new(
-            "/repo",
-            "/repo/.worktrees",
-            build_agent(false, "/tmp/build mcp.sock".into()),
+            repo,
+            directory.path().join("worktrees"),
+            test_build_agent("/tmp/build mcp.sock"),
             Templates::default(),
+            test_bridge_exe(),
         );
-        let cwd = std::path::Path::new("/repo/.worktrees/wt-1");
         let claude = ModelChoice {
             provider: AgentProvider::Claude,
             model: None,
@@ -21606,28 +22446,38 @@ mod tests {
             effort: None,
         };
 
-        let spec = orch.agent_harness_spec("agent-42", cwd, &claude, false, None, "token-42");
-        assert_eq!(spec.binary, "claude");
-        let args = spec.args.join(" ");
+        let spec = orch
+            .agent_launch()
+            .prepare("agent-42", &cwd, &claude, false, None, "token-42")
+            .unwrap();
+        assert_eq!(spec.spec.binary, "claude");
+        let args = spec.spec.args.join(" ");
         assert!(
             args.contains("--mcp-config .build/mcp-agent-42.json --strict-mcp-config"),
             "the harness reads the config written for THIS agent: {args}"
         );
         assert!(!args.contains("--continue"), "{args}");
         assert!(
-            spec.env
+            spec.spec
+                .env
                 .iter()
                 .any(|(key, value)| key == "BRIDGE_MCP_SOCKET" && value == "/tmp/build mcp.sock"),
             "{:?}",
-            spec.env
+            spec.spec.env
         );
         // A replaced tab picks its own conversation back up.
-        let resumed = orch.agent_harness_spec("run-42", cwd, &claude, true, None, "token-43");
-        assert!(resumed.args.join(" ").contains("--continue"));
+        let resumed = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &claude, true, None, "token-43")
+            .unwrap();
+        assert!(resumed.spec.args.join(" ").contains("--continue"));
 
-        let spec = orch.agent_harness_spec("run-42", cwd, &codex, false, None, "token-42");
-        assert_eq!(spec.binary, "codex");
-        let args = spec.args.join(" ");
+        let spec = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &codex, false, None, "token-42")
+            .unwrap();
+        assert_eq!(spec.spec.binary, "codex");
+        let args = spec.spec.args.join(" ");
         assert!(
             args.contains(r#"mcp_servers.build.args=["mcp","--task","run-42"]"#),
             "{args}"
@@ -21637,14 +22487,199 @@ mod tests {
             "{args}"
         );
         assert!(
-            args.contains(r#"projects."/repo/.worktrees/wt-1".trust_level="trusted""#),
+            args.contains(&format!(
+                r#"projects."{}".trust_level="trusted""#,
+                cwd.display()
+            )),
             "{args}"
         );
         assert!(!args.ends_with("resume --last"), "{args}");
-        let resumed = orch.agent_harness_spec("run-42", cwd, &codex, true, None, "token-43");
-        assert!(resumed.args.join(" ").ends_with("resume --last"));
+        let resumed = orch
+            .agent_launch()
+            .prepare("run-42", &cwd, &codex, true, None, "token-43")
+            .unwrap();
+        assert!(resumed.spec.args.join(" ").ends_with("resume --last"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
+    }
+
+    #[test]
+    fn pi_launch_identity_reaches_the_session_through_tab_spawn() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let repo = init_repo_named(directory.path(), "repo");
+        let worktree = directory.path().join("pi-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let state_root = directory.path().join("state");
+        let context = HarnessContext::resolved(directory.path().join("mcp.sock"), state_root)
+            .expect("resolve isolated Pi context");
+        let orchestrator = Orchestrator::new(
+            repo,
+            directory.path().join("worktrees"),
+            build_agent(false, context),
+            Templates::default(),
+            test_bridge_exe(),
+        );
+        let agent_id = "agent-pi-tab-spawn";
+        let mut prepared = orchestrator
+            .agent_launch()
+            .prepare(
+                agent_id,
+                &worktree,
+                &ModelChoice {
+                    provider: AgentProvider::Pi,
+                    model: None,
+                    effort: None,
+                },
+                false,
+                None,
+                "pi-token",
+            )
+            .expect("prepare the production Pi launch");
+        let fake_pi = directory.path().join("pi");
+        std::fs::write(
+            &fake_pi,
+            "#!/bin/sh\nprintf '\\033[?2004h'\ncat >/dev/null\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_pi, std::fs::Permissions::from_mode(0o700)).unwrap();
+        prepared.spec.binary = fake_pi.to_string_lossy().into_owned();
+
+        let (tab, _output) = Tab::spawn(
+            TabRole::Agent {
+                owner: "run-pi-identity".to_string(),
+                agent_id: agent_id.to_string(),
+                provider: AgentProvider::Pi,
+            },
+            &prepared.spec,
+            agent_tab_id(agent_id),
+            AppState::canonical_root(&worktree),
+            prepared.pty_size.cols,
+            prepared.pty_size.rows,
+            None,
+        )
+        .expect("the Pi-shaped tab spawns");
+
+        assert_eq!(
+            tab.session.session_id().as_deref(),
+            Some(agent_id),
+            "Tab::spawn must carry Pi's launch-known identity into AgentSession"
+        );
+        tab.session.end();
+    }
+
+    fn pi_extension_child_death_spec(directory: &Path, agent_id: &str) -> HarnessSpec {
+        use std::os::unix::fs::PermissionsExt;
+
+        let extension = directory.join("build-tools.mjs");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/harness/build-tools.ts"),
+            &extension,
+        )
+        .unwrap();
+        let child = directory.join("fake-build-bridge");
+        std::fs::copy(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/pi-mcp-child.mjs"),
+            &child,
+        )
+        .unwrap();
+        std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        HarnessSpec::new("node")
+            .arg(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/pi-extension-driver.mjs")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .known_session_id(agent_id)
+            .env("BUILD_PI_EXTENSION_PATH", extension.to_string_lossy())
+            .env("BUILD_PI_MCP_COMMAND", child.to_string_lossy())
+            .env("BUILD_PI_MCP_OWNER", agent_id)
+            .env("BRIDGE_MCP_SOCKET", "/tmp/build-pi-death.sock")
+            .env("BRIDGE_MCP_TOKEN", "pi-death-token")
+            .env("BUILD_PI_MCP_TIMEOUT_MS", "5000")
+            .env("FAKE_MCP_MODE", "child_exit")
+            .env("PI_DRIVER_SCENARIO", "happy")
+    }
+
+    #[tokio::test]
+    async fn pi_mcp_child_death_runs_the_normal_tab_exit_path() {
+        let (directory, repo) = init_repo();
+        let mut app = qa_state(&repo, directory.path());
+        let run_id = "run-pi-mcp-death";
+        let root = insert_run(
+            &mut app,
+            &repo,
+            directory.path(),
+            run_id,
+            RunState::Building,
+        );
+        let agent_id = crate::agent::derived_agent_id(run_id);
+        let key = TabKey::agent(&root, &agent_id);
+        let choice = ModelChoice {
+            provider: AgentProvider::Pi,
+            model: None,
+            effort: None,
+        };
+        app.runs.get_mut(run_id).unwrap().model_choice = choice.clone();
+        app.runs
+            .get_mut(run_id)
+            .unwrap()
+            .agents
+            .resolve_mut(None)
+            .unwrap()
+            .choice = choice.clone();
+        app.record_agent_session_start(run_id, &choice, "build");
+        let (mut tab, output) = Tab::spawn(
+            TabRole::Agent {
+                owner: run_id.to_string(),
+                agent_id: agent_id.clone(),
+                provider: AgentProvider::Pi,
+            },
+            &pi_extension_child_death_spec(directory.path(), &agent_id),
+            agent_tab_id(&agent_id),
+            root,
+            120,
+            40,
+            None,
+        )
+        .expect("the Pi extension fixture starts through a PTY");
+        assert_eq!(tab.session.session_id().as_deref(), Some(agent_id.as_str()));
+        let (sender, mut pushes, session_key) = SessionSender::observable("pi-death-observer");
+        screen_of_mut(&mut tab).register(&sender);
+        app.tabs.insert(key.clone(), tab);
+        let state = app.shared();
+        spawn_tab_pumps(&state, key.clone(), output);
+
+        wait_for_push(&mut pushes, &session_key, |push| {
+            push["type"] == "term.closed"
+                && push["term_id"] == key.tab_id
+                && push["reason"] == "agent_session_ended"
+        })
+        .await;
+        wait_for(Duration::from_secs(5), || {
+            (open_session_count(&state, run_id) == 0).then_some(())
+        })
+        .await
+        .expect("normal exit handling closes the conversation session");
+
+        let app = state.lock().unwrap();
+        let retained = &app.tabs[&key];
+        assert!(!retained.live, "the retained Pi tab must be non-live");
+        assert!(
+            matches!(retained.session.status(), AgentStatus::Ended { .. }),
+            "the Pi process must be reaped as ended"
+        );
+        assert!(primary_thread(&app.runs[run_id].agents)
+            .items
+            .iter()
+            .any(|item| matches!(
+                item,
+                crate::thread::ThreadItem::Event(event)
+                    if event.event == crate::thread::ThreadEventKind::SessionEnded
+            )));
     }
 
     /// The tab spawns the spec the orchestrator built FOR IT: the run as
@@ -21663,16 +22698,21 @@ mod tests {
                 move |prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     assert!(prompt.is_empty(), "a turn never rides in argv: {prompt:?}");
                     recorder.lock().unwrap().push(options.clone());
-                    HarnessSpec::new("sh").arg("-c").arg(
+                    Ok(HarnessSpec::new("sh").arg("-c").arg(
                         "printf 'SPEC-FROM-THE-ORCHESTRATOR'; printf '\\033[?2004h'; cat >/dev/null",
-                    )
+                    ))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.transcript_probe = Arc::new(|_, _| true);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         ensure_agent_tab(
@@ -21681,6 +22721,7 @@ mod tests {
             "run-wired",
             &crate::agent::derived_agent_id("run-wired"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
 
@@ -21707,6 +22748,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_harness_spec_error_releases_the_reservation_and_never_spawns() {
+        let (dir, repo) = init_repo();
+        let (state, _handler, root) = agent_tab_fixture(&repo, dir.path(), "run-spec-fail");
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        {
+            let attempts = Arc::clone(&attempts);
+            let agent = Agent::WarmBuilder(Arc::new(move |_, _, _| {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(HarnessError::Setup("injected Pi setup failure".to_string()))
+            }));
+            let mut app = state.lock().unwrap();
+            let worktrees = app.worktrees_root.clone();
+            app.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
+        }
+        let agent_id = crate::agent::derived_agent_id("run-spec-fail");
+        let error = ensure_agent_tab(
+            &state,
+            &root,
+            "run-spec-fail",
+            &agent_id,
+            &ModelChoice::default(),
+            "start",
+        )
+        .unwrap_err();
+        assert!(error.contains("injected Pi setup failure"), "{error}");
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let app = state.lock().unwrap();
+        let key = derived_agent_key(&root, "run-spec-fail");
+        assert!(!app.agent_spawns_in_flight.contains(&key));
+        assert!(!app.mcp_session_tokens.contains_key(&agent_id));
+        assert!(!app.tabs.contains_key(&key));
+    }
+
     /// The registry key is the CANONICAL worktree path, so the same worktree
     /// reaching the daemon by a different spelling — a run scope hands back
     /// `worktrees_root/<name>` uncanonicalized while an external worktree is
@@ -21725,6 +22806,7 @@ mod tests {
             "run-alias",
             &crate::agent::derived_agent_id("run-alias"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         let (aliased_id, aliased) = ensure_agent_tab(
@@ -21733,6 +22815,7 @@ mod tests {
             "run-alias",
             &crate::agent::derived_agent_id("run-alias"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -21757,6 +22840,7 @@ mod tests {
             "run-detach",
             &crate::agent::derived_agent_id("run-detach"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
         handler(
@@ -21837,6 +22921,213 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e == "ultra"));
+        let pi = providers
+            .iter()
+            .find(|provider| provider["id"] == "pi")
+            .unwrap();
+        assert_eq!(pi["label"], "Pi");
+        assert_eq!(pi["models"], json!([]));
+        assert_eq!(
+            pi["efforts"],
+            json!(["off", "minimal", "low", "medium", "high", "xhigh", "max"])
+        );
+    }
+
+    #[test]
+    fn pi_specs_use_the_configured_store_state_root() {
+        let state_dir = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let private_state = state_dir.path().join("configured-state");
+        let worktree = state_dir.path().join("worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let context =
+            HarnessContext::resolved(state_dir.path().join("mcp.sock"), private_state.clone())
+                .unwrap();
+        let state = AppState::new_configured(
+            repo,
+            state_dir.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        )
+        .with_task_store(private_state.join("tasks"))
+        .unwrap();
+        assert_eq!(
+            state.state_root,
+            std::fs::canonicalize(&private_state).unwrap()
+        );
+        let Agent::WarmBuilder(build) = &state.agent else {
+            panic!("real agent is provider-aware");
+        };
+        let spec = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Pi,
+                model: None,
+                effort: Some("minimal".to_string()),
+            },
+            &SpawnOptions {
+                owner_id: "agent-state-root".to_string(),
+                mcp_session_token: "token".to_string(),
+                cwd: worktree,
+                ..SpawnOptions::default()
+            },
+        )
+        .unwrap();
+        let canonical_state = std::fs::canonicalize(&private_state).unwrap();
+        assert!(Path::new(&spec.args[3]).starts_with(canonical_state.join("harness/pi")));
+        assert!(Path::new(&spec.args[5]).starts_with(canonical_state.join("harness/pi")));
+        let bridge = spec
+            .env
+            .iter()
+            .find(|(key, _)| key == "BUILD_PI_MCP_COMMAND")
+            .unwrap();
+        assert!(Path::new(&bridge.1).is_absolute());
+        assert_eq!(
+            PathBuf::from(&bridge.1),
+            std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap()
+        );
+    }
+
+    #[test]
+    fn every_harness_path_uses_the_contexts_canonical_bridge_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let bridge_exe = directory.path().join("canonical-build-bridge");
+        std::fs::write(&bridge_exe, "test executable").unwrap();
+        let bridge_exe = std::fs::canonicalize(bridge_exe).unwrap();
+        let state_root = directory.path().join("state");
+        std::fs::create_dir(&state_root).unwrap();
+        let context = HarnessContext {
+            bridge_exe: bridge_exe.clone(),
+            mcp_socket: directory.path().join("mcp.sock"),
+            state_root: std::fs::canonicalize(state_root).unwrap(),
+        };
+        let state = AppState::new_configured(
+            repo,
+            directory.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        );
+        let Agent::WarmBuilder(build) = &state.agent else {
+            panic!("real agent is provider-aware");
+        };
+        let worktree = directory.path().join("agent-worktree");
+        std::fs::create_dir(&worktree).unwrap();
+        let options = SpawnOptions {
+            owner_id: "agent-one-executable".to_string(),
+            mcp_session_token: "token".to_string(),
+            cwd: worktree.clone(),
+            ..SpawnOptions::default()
+        };
+
+        let pi = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Pi,
+                model: None,
+                effort: None,
+            },
+            &options,
+        )
+        .unwrap();
+        assert!(pi.env.iter().any(|(key, value)| {
+            key == "BUILD_PI_MCP_COMMAND" && Path::new(value) == bridge_exe
+        }));
+
+        let codex = build(
+            "",
+            &ModelChoice {
+                provider: AgentProvider::Codex,
+                model: None,
+                effort: None,
+            },
+            &options,
+        )
+        .unwrap();
+        let bridge_exe_text = bridge_exe.to_string_lossy();
+        assert!(
+            codex.args.join(" ").contains(bridge_exe_text.as_ref()),
+            "Codex must receive the same executable: {:?}",
+            codex.args
+        );
+
+        state.projects[0]
+            .orch
+            .agent_launch()
+            .prepare(
+                &options.owner_id,
+                &worktree,
+                &ModelChoice::default(),
+                false,
+                None,
+                &options.mcp_session_token,
+            )
+            .unwrap();
+        let scaffold: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                worktree.join(crate::orchestrator::mcp_config_path(&options.owner_id)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            scaffold["mcpServers"]["build"]["command"],
+            bridge_exe.to_string_lossy().as_ref(),
+            "Claude's scaffold must use the same executable fact"
+        );
+    }
+
+    #[test]
+    fn task_store_parent_must_match_the_configured_state_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_repo_dir, repo) = init_repo();
+        let configured_state = directory.path().join("configured-state");
+        let other_state = directory.path().join("other-state");
+        std::fs::create_dir(&other_state).unwrap();
+        let context =
+            HarnessContext::resolved(directory.path().join("mcp.sock"), configured_state.clone())
+                .unwrap();
+
+        let error = AppState::new_configured(
+            repo,
+            directory.path().join("worktrees"),
+            "main",
+            false,
+            context,
+        )
+        .with_task_store(other_state.join("tasks"))
+        .err()
+        .expect("a detached task store must be rejected");
+
+        assert!(
+            error.contains(&configured_state.display().to_string()),
+            "{error}"
+        );
+        assert!(
+            error.contains(&other_state.display().to_string()),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn configured_pi_router_is_rejected_and_the_default_stays_claude_adk() {
+        let (dir, repo) = init_repo();
+        let config = dir.path().join("config.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "router_model": { "provider": "pi", "effort": "low" },
+                "projects": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let state = AppState::new(repo, dir.path().join("wt"), "main", true, "/tmp/mcp.sock")
+            .with_config(config)
+            .unwrap();
+        assert!(state.router_choice.is_none());
     }
 
     /// Build mints a fresh worktree per run, and an interactive harness gates a
@@ -21847,7 +23138,7 @@ mod tests {
     /// `--config`, so nothing outside this spawn is touched.
     #[test]
     fn codex_argv_pre_trusts_the_worktree_it_will_run_in() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21861,7 +23152,8 @@ mod tests {
                 cwd: std::path::PathBuf::from("/tmp/build worktrees/run-9"),
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         let args = spec.args.join(" ");
         assert!(
             args.contains(r#"projects."/tmp/build worktrees/run-9".trust_level="trusted""#),
@@ -21876,14 +23168,14 @@ mod tests {
     /// detector must be disabled for every Codex process it owns.
     #[test]
     fn codex_argv_disables_the_fallback_paste_burst_detector() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
             provider: AgentProvider::Codex,
             ..ModelChoice::default()
         };
-        let spec = build("one line", &choice, &SpawnOptions::default());
+        let spec = build("one line", &choice, &SpawnOptions::default()).unwrap();
 
         assert!(
             spec.args
@@ -21896,7 +23188,7 @@ mod tests {
 
     #[test]
     fn real_tui_argv_includes_the_selected_model_and_effort() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/m.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/m.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21904,7 +23196,7 @@ mod tests {
             model: Some("claude-opus-4-8".into()),
             effort: Some("xhigh".into()),
         };
-        let spec = build("do the thing", &choice, &SpawnOptions::default());
+        let spec = build("do the thing", &choice, &SpawnOptions::default()).unwrap();
         let args = spec.args.join(" ");
         assert_eq!(spec.binary, "claude");
         assert!(!args
@@ -21919,7 +23211,8 @@ mod tests {
             "do the thing",
             &ModelChoice::default(),
             &SpawnOptions::default(),
-        );
+        )
+        .unwrap();
         assert!(!spec.args.join(" ").contains("--model"));
         // A continuation spawn resumes the cwd's conversation, flag placed right
         // after the permission arg and before any model args.
@@ -21930,7 +23223,8 @@ mod tests {
                 continue_session: true,
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         let args = spec.args.join(" ");
         assert!(
             args.contains("--dangerously-skip-permissions --continue --model"),
@@ -21940,7 +23234,7 @@ mod tests {
 
     #[test]
     fn codex_tui_argv_wires_done_mcp_and_resumes_by_cwd() {
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/build mcp.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/build mcp.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -21953,7 +23247,7 @@ mod tests {
             owner_id: "run-7".into(),
             ..SpawnOptions::default()
         };
-        let spec = build("do the thing", &choice, &options);
+        let spec = build("do the thing", &choice, &options).unwrap();
         assert_eq!(spec.binary, "codex");
         let args = spec.args.join(" ");
         assert!(!args.contains("exec"), "{args}");
@@ -21981,7 +23275,8 @@ mod tests {
                 owner_id: "run-7".into(),
                 ..SpawnOptions::default()
             },
-        );
+        )
+        .unwrap();
         assert!(resumed.args.join(" ").ends_with("resume --last"));
     }
 
@@ -23787,15 +25082,11 @@ mod tests {
     /// and `run.create` reads/writes through it, so every lifecycle test needs
     /// one.
     fn qa_state(repo: &std::path::Path, dir: &std::path::Path) -> AppState {
-        AppState::new(
-            repo.to_path_buf(),
-            dir.join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.join("store"))
-        .unwrap()
+        let context = HarnessContext::resolved(dir.join("test-mcp.sock"), dir.to_path_buf())
+            .expect("resolve QA harness context");
+        AppState::new_configured(repo.to_path_buf(), dir.join("wt"), "main", true, context)
+            .with_task_store(dir.join("store"))
+            .unwrap()
     }
 
     /// A QA daemon behind the shared `Arc` plus its frame handler — the entry
@@ -25189,15 +26480,12 @@ mod tests {
             recovery_id = state.runs[&run_id].recovery.as_ref().unwrap().id.clone();
         }
 
-        let state = AppState::new(
-            repo,
-            dir.path().join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.path().join("store"))
-        .expect("a pending recovery must not abort daemon startup");
+        let context =
+            HarnessContext::resolved(dir.path().join("test-mcp.sock"), dir.path().to_path_buf())
+                .unwrap();
+        let state = AppState::new_configured(repo, dir.path().join("wt"), "main", true, context)
+            .with_task_store(dir.path().join("store"))
+            .expect("a pending recovery must not abort daemon startup");
         let recovery = state.runs[&run_id]
             .recovery
             .as_ref()
@@ -30335,7 +31623,7 @@ mod tests {
              \n\
              So the file contains exactly: BUILD-DELIVERED\n";
 
-        let Agent::WarmBuilder(build) = build_agent(false, "/tmp/unused-e2e.sock".into()) else {
+        let Agent::WarmBuilder(build) = test_build_agent("/tmp/unused-e2e.sock") else {
             panic!("real agent should be a provider-aware warm TUI");
         };
         let choice = ModelChoice {
@@ -30352,7 +31640,7 @@ mod tests {
         };
         // Building the spec is what pre-trusts the workspace — the dialog this
         // guards against fires precisely because the directory is brand new.
-        let spec = build(prompt, &choice, &options);
+        let spec = build(prompt, &choice, &options).unwrap();
 
         // The three lines under test, mirroring what `open_session` waits out
         // and what `deliver` then hands over — spelled out against the concrete
@@ -30546,6 +31834,7 @@ mod tests {
             dir.path().join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
 
         let abandoned = state.handle(req("run.abandon", json!({ "run_id": run_id })));
@@ -30786,6 +32075,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (mut active, _turn) = side
@@ -31214,6 +32504,7 @@ mod tests {
             "run-spoken-to",
             &crate::agent::derived_agent_id("run-spoken-to"),
             &ModelChoice::default(),
+            "build",
             "get to work",
             "there is more",
         )
@@ -31671,16 +32962,14 @@ mod tests {
         let runs_dir = dir.path().join("store").join("runs");
         std::fs::create_dir_all(&runs_dir).unwrap();
         std::fs::write(runs_dir.join("run-bad.json"), "{ not json").unwrap();
-        let err = AppState::new(
-            repo.clone(),
-            dir.path().join("wt"),
-            "main",
-            true,
-            "/tmp/test-mcp.sock",
-        )
-        .with_task_store(dir.path().join("store"))
-        .err()
-        .expect("boot should fail on a corrupt record");
+        let context =
+            HarnessContext::resolved(dir.path().join("test-mcp.sock"), dir.path().to_path_buf())
+                .unwrap();
+        let err =
+            AppState::new_configured(repo.clone(), dir.path().join("wt"), "main", true, context)
+                .with_task_store(dir.path().join("store"))
+                .err()
+                .expect("boot should fail on a corrupt record");
         assert!(err.contains("run-bad.json"), "{err}");
     }
 
@@ -32649,6 +33938,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (active, _turn) = side
@@ -32708,6 +33998,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let plan = approved_side_plan(&side, &store, &format!("plan-of-{run_id}"));
         let (active, _turn) = side
@@ -32973,7 +34264,7 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let projects_dir = transcripts.path().to_path_buf();
@@ -32982,8 +34273,13 @@ mod tests {
             s.transcript_probe = Arc::new(move |cwd, provider| {
                 provider == AgentProvider::Claude && claude::transcript_exists(&projects_dir, cwd)
             });
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             // Both are respawns: a session of each agent's own has opened
             // before, which is what puts them in the crash window a guess is
             // for. What separates them is only what is on disk.
@@ -33107,6 +34403,7 @@ mod tests {
             side_root.join("wt"),
             Agent::Warm(HarnessSpec::new("true")),
             Templates::default(),
+            test_bridge_exe(),
         );
         let (active, _turn) = side
             .dispatch_plan(
@@ -33727,6 +35024,7 @@ mod tests {
             "run-waited-for",
             &crate::agent::derived_agent_id("run-waited-for"),
             &ModelChoice::default(),
+            "build",
             "COLD-PROMPT-FOR-A-WAITING-CLIENT",
             "WARM-NUDGE",
         )
@@ -33797,6 +35095,7 @@ mod tests {
             "run-respawn-race",
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
+            "build",
             "FIRST-SESSION",
             "warm",
         )
@@ -33830,6 +35129,7 @@ mod tests {
             "run-respawn-race",
             &crate::agent::derived_agent_id("run-respawn-race"),
             &choice,
+            "build",
             "SECOND-SESSION",
             "warm",
         )
@@ -33866,10 +35166,15 @@ mod tests {
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         let agent = Agent::WarmBuilder(Arc::new(
-            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| spec.clone(),
+            move |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| Ok(spec.clone()),
         ));
-        s.projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        s.projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            worktrees,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
         ModelChoice {
             provider: AgentProvider::ClaudeAdk,
             ..ModelChoice::default()
@@ -33911,6 +35216,7 @@ mod tests {
             "run-headless-wait",
             &agent_id,
             &choice,
+            "build",
             "cold",
             "warm",
         )
@@ -33964,6 +35270,7 @@ mod tests {
             "run-carrier-swap",
             &agent_id,
             &ModelChoice::default(),
+            "build",
             "FIRST-SESSION",
             "warm",
         )
@@ -33994,6 +35301,7 @@ mod tests {
             "run-carrier-swap",
             &agent_id,
             &choice,
+            "build",
             "SECOND-SESSION",
             "warm",
         )
@@ -34564,6 +35872,7 @@ mod tests {
             "run-closed-client",
             &crate::agent::derived_agent_id("run-closed-client"),
             &ModelChoice::default(),
+            "build",
             "COLD-PROMPT",
             "WARM-NUDGE",
         )
@@ -35974,6 +37283,7 @@ mod tests {
             "run-pulse",
             &crate::agent::derived_agent_id("run-pulse"),
             &ModelChoice::default(),
+            "start",
         )
         .unwrap();
 
@@ -38119,11 +39429,16 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorded.lock().unwrap().push(options.clone());
-                    spec.clone()
+                    Ok(spec.clone())
                 },
             ));
-            s.projects[0].orch =
-                Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.to_path_buf(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             ModelChoice {
                 provider: AgentProvider::ClaudeAdk,
                 ..ModelChoice::default()
@@ -38151,10 +39466,12 @@ mod tests {
                 },
                 options,
                 &crate::harness::HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: std::path::PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }
@@ -38391,7 +39708,7 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
@@ -38400,8 +39717,13 @@ mod tests {
             // picked up is the whole question.
             s.transcript_probe = Arc::new(|_, _| true);
             s.resume_id_probe = Arc::new(|_, _, id| id == "sess-named");
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             // 1. A name Build wrote down, and the provider still holds it.
             s.runs
                 .get_mut("run-named")
@@ -38514,14 +39836,19 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, id| id == "sess-pty");
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let posted = call(
@@ -38606,10 +39933,12 @@ mod tests {
                 &ModelChoice::default(),
                 options,
                 &crate::harness::HarnessContext {
-                    bridge_exe: "/usr/local/bin/build-bridge".to_string(),
-                    mcp_socket: "/tmp/build-mcp.sock".to_string(),
+                    bridge_exe: std::path::PathBuf::from("/usr/local/bin/build-bridge"),
+                    mcp_socket: std::path::PathBuf::from("/tmp/build-mcp.sock"),
+                    state_root: std::path::PathBuf::from("/tmp/build-state"),
                 },
             )
+            .unwrap()
             .args
             .join(" ")
     }
@@ -38630,15 +39959,20 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
                     // Announces its line editor, takes the turn, and leaves.
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
-                        .arg("printf '\\033[?2004h'; exit 0")
+                        .arg("printf '\\033[?2004h'; exit 0"))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let posted = call(
@@ -38680,12 +40014,17 @@ mod tests {
         );
         {
             let agent = Agent::WarmBuilder(Arc::new(
-                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| warm_tui_spec(),
+                |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| Ok(warm_tui_spec()),
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
         }
 
         let chosen = call(
@@ -38839,16 +40178,21 @@ mod tests {
         {
             let agent = Agent::WarmBuilder(Arc::new(
                 |_prompt: &str, _choice: &ModelChoice, _options: &SpawnOptions| {
-                    HarnessSpec::new("sh")
+                    Ok(HarnessSpec::new("sh")
                         .arg("-c")
-                        .arg("printf '\\033[?2004h'; exit 0")
+                        .arg("printf '\\033[?2004h'; exit 0"))
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, _| true);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             s.runs
                 .get_mut("run-quiet")
                 .expect("the run")
@@ -38896,14 +40240,19 @@ mod tests {
         let agent = Agent::WarmBuilder(Arc::new(
             move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                 recorder.lock().unwrap().push(options.clone());
-                warm_tui_spec()
+                Ok(warm_tui_spec())
             },
         ));
         let mut s = state.lock().unwrap();
         let worktrees = s.worktrees_root.clone();
         s.transcript_probe = Arc::new(|_, _| true);
-        s.projects[0].orch =
-            Orchestrator::new(repo.to_path_buf(), worktrees, agent, Templates::default());
+        s.projects[0].orch = Orchestrator::new(
+            repo.to_path_buf(),
+            worktrees,
+            agent,
+            Templates::default(),
+            test_bridge_exe(),
+        );
         drop(s);
         specs_built
     }
@@ -39040,14 +40389,19 @@ mod tests {
             let agent = Agent::WarmBuilder(Arc::new(
                 move |_prompt: &str, _choice: &ModelChoice, options: &SpawnOptions| {
                     recorder.lock().unwrap().push(options.clone());
-                    warm_tui_spec()
+                    Ok(warm_tui_spec())
                 },
             ));
             let mut s = state.lock().unwrap();
             let worktrees = s.worktrees_root.clone();
             s.resume_id_probe = Arc::new(|_, _, _| false);
-            s.projects[0].orch =
-                Orchestrator::new(repo.clone(), worktrees, agent, Templates::default());
+            s.projects[0].orch = Orchestrator::new(
+                repo.clone(),
+                worktrees,
+                agent,
+                Templates::default(),
+                test_bridge_exe(),
+            );
             s.runs
                 .get_mut("run-poisoned")
                 .expect("the run")
@@ -39751,6 +41105,7 @@ mod tests {
             "run-in-the-worktree",
             &crate::agent::derived_agent_id("run-in-the-worktree"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
         assert_eq!(
@@ -39828,6 +41183,7 @@ mod tests {
             "agent-in-the-worktree",
             &crate::agent::derived_agent_id("agent-in-the-worktree"),
             &ModelChoice::default(),
+            "start",
         )
         .expect("the agent spawns");
         assert!(
@@ -44512,7 +45868,7 @@ mod tests {
         let created = state.handle(req("capture.create", json!({ "text": text })));
         assert_eq!(created["ok"], true, "{created:?}");
         let capture_id = created["result"]["id"].as_str().unwrap().to_string();
-        let agent_id = state.router_sessions[&capture_id].agent_id.clone();
+        let agent_id = state.router_sessions[&capture_id].agent_id().to_string();
         (capture_id, agent_id)
     }
 
@@ -44537,20 +45893,23 @@ mod tests {
         );
         let session = state.router_sessions[&capture_id].clone();
         assert_eq!(
-            session.scratch_dir,
-            dir.path().join("router-scratch").join(&capture_id)
+            session.scratch_dir(),
+            std::fs::canonicalize(dir.path())
+                .unwrap()
+                .join("router-scratch")
+                .join(&capture_id)
         );
         assert!(
-            session.scratch_dir.is_dir(),
+            session.scratch_dir().is_dir(),
             "the scratch is cut before the spawn"
         );
         assert!(
-            !session.scratch_dir.starts_with(&repo),
+            !session.scratch_dir().starts_with(&repo),
             "a router never works inside a checkout: {}",
-            session.scratch_dir.display()
+            session.scratch_dir().display()
         );
         assert_eq!(
-            session.choice.effort.as_deref(),
+            session.choice().effort.as_deref(),
             Some("low"),
             "routing is cheap thinking over a lot of context"
         );
@@ -44561,7 +45920,7 @@ mod tests {
             .find(|turn| turn.owner == capture_id)
             .expect("the router is given a turn");
         assert_eq!(turn.agent_id, agent_id);
-        assert_eq!(turn.root, session.scratch_dir);
+        assert_eq!(turn.root, session.scratch_dir());
         assert_eq!(turn.phase, "route");
         assert!(turn.cold.contains("fix the login redirect"));
         assert!(turn.cold.contains("dispatch_branch"));
@@ -44585,7 +45944,7 @@ mod tests {
         state.begin_routing(&capture_id).unwrap();
         state.begin_routing(&capture_id).unwrap();
 
-        assert_eq!(state.router_sessions[&capture_id].agent_id, agent_id);
+        assert_eq!(state.router_sessions[&capture_id].agent_id(), agent_id);
         assert!(
             state.pending_agent_turns.is_empty(),
             "the router already deciding this capture is the one deciding it"
@@ -45022,7 +46381,9 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "make the thing faster");
         asked_with_two_options(&mut state, &capture_id);
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
 
         let cancelled = state.handle(req("capture.cancel", json!({ "capture_id": capture_id })));
         assert_eq!(cancelled["ok"], true, "{cancelled:?}");
@@ -45117,7 +46478,8 @@ mod tests {
 
         let session = state.router_sessions[&capture_id].clone();
         assert_ne!(
-            session.agent_id, primary_agent,
+            session.agent_id(),
+            primary_agent,
             "a fresh session decides again"
         );
         let turn = state
@@ -45164,7 +46526,9 @@ mod tests {
         let (dir, repo) = init_repo();
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "ship it");
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
 
         state.on_router_done(
             &capture_id,
@@ -45194,7 +46558,9 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
-        let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
+        let scratch = state.router_sessions[&capture_id]
+            .scratch_dir()
+            .to_path_buf();
         state
             .on_router_mcp_action(
                 &capture_id,
@@ -45240,7 +46606,7 @@ mod tests {
         );
 
         // The one whose harness came up, and then went away with it.
-        state.router_sessions.get_mut(&died).unwrap().started = true;
+        state.router_sessions.get_mut(&died).unwrap().mark_started();
         assert_eq!(state.reap_finished_router_sessions(), vec![died.clone()]);
 
         assert_eq!(capture_record(&mut state, &died)["state"], "failed");
@@ -45460,7 +46826,7 @@ mod tests {
         let retried = state.handle(req("capture.reroute", json!({ "capture_id": capture_id })));
         assert_eq!(retried["ok"], true, "{retried:?}");
         assert_eq!(retried["result"]["state"], "routing");
-        assert_ne!(state.router_sessions[&capture_id].agent_id, primary_agent);
+        assert_ne!(state.router_sessions[&capture_id].agent_id(), primary_agent);
         assert!(state
             .pending_agent_turns
             .iter()

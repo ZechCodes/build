@@ -127,6 +127,28 @@ describe("the create modal", () => {
     expect(modal()).toBeNull();
   });
 
+  it("files an untouched issue with the agent displayed when the account default is not offered", async () => {
+    App.modelCatalog = {
+      default_provider: "pi",
+      providers: [
+        { id: "pi", label: "Pi", models: [], efforts: [] },
+        { id: "claude_adk", label: "Claude Code", models: [], efforts: [] },
+        { id: "codex", label: "Codex", models: [], efforts: [] },
+      ],
+    };
+    openCreateWork({ projectId: "p2", projectName: "mascot", kind: "issue", navigate });
+    expect(modal().querySelector("#create-choice-provider").value).toBe("claude_adk");
+    type("Add a health endpoint");
+    modal().querySelector("[data-create-go]").click();
+    await flush();
+    expect(App.call).toHaveBeenCalledWith("issue.create", {
+      goal: "Add a health endpoint",
+      project_id: "p2",
+      dispatch: false,
+      provider: "claude_adk",
+    });
+  });
+
   it("submits a branch on Enter, and an issue only on a modified Enter", async () => {
     openCreateWork({ projectId: "p1", projectName: "relaydb", navigate });
     type("spike");

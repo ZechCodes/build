@@ -1,13 +1,14 @@
 name: Release the bridge
 
 # Pushing a `bridge-vX.Y.Z` tag publishes the device daemon: four native
-# builds, one SHA256SUMS, a keyless Sigstore signature over it, and the
-# install script — as a GitHub release on a SEPARATE public repo (the
-# `RELEASES_REPO` variable, default ZechCodes/build-releases), so that
-# downloading a binary never means handing anyone this repository.
+# builds, one SHA256SUMS and a keyless Sigstore signature over it, as a GitHub
+# release on THIS repository. One repo, so the only credential is the
+# `GITHUB_TOKEN` Actions already mints — no PAT, no second repo to keep in
+# step. Downloading is the api's job, not this repository's: it serves
+# install.sh from the app image and streams the assets to alpha members, so
+# the script is not among them.
 #
-# The pipeline neither creates that repo nor pushes a tag; see
-# deploy/README.md for the procedure and its prerequisites.
+# The pipeline does not push a tag; see deploy/README.md for the procedure.
 
 on:
   push:
@@ -35,23 +36,22 @@ env:
 jobs:
   # Nothing is built until the tag and the crate agree on a version, because a
   # release whose binary prints a different number than its name is worse than
-  # no release. install.sh's own gates are here for the same reason — it ships
-  # as an asset, so a broken one is a broken release, not a lint failure after
-  # the fact: it is linted, run against a mirror on disk, and checked for the
-  # signing identity this workflow will sign with.
+  # no release. install.sh's own gates are here for the same reason — it is
+  # what downloads and verifies these assets, so a broken one is a broken
+  # release however the script reaches a user: it is linted, run against a
+  # mirror on disk, and checked for the signing identity this workflow signs
+  # with.
   version:
     name: The tag names a version this tree can build
     runs-on: ubuntu-22.04
     outputs:
       version: ${{ steps.derive.outputs.version }}
-      releases_repo: ${{ steps.derive.outputs.releases_repo }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - id: derive
         env:
           TAG: ${{ github.ref_name }}
-          RELEASES_REPO: ${{ vars.RELEASES_REPO || 'ZechCodes/build-releases' }}
         run: |
           set -euo pipefail
           version="${TAG#bridge-v}"
@@ -60,10 +60,9 @@ jobs:
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "releases_repo=${RELEASES_REPO}" >> "$GITHUB_OUTPUT"
-          echo "releasing build-bridge ${version} to ${RELEASES_REPO}"
+          echo "releasing build-bridge ${version}"
 
-      - name: The install script is published verbatim, so it is linted first
+      - name: The install script is piped into a stranger's sh, so it is linted first
         run: shellcheck -s sh scripts/*.sh
 
       - name: The install script does what it promises
@@ -284,14 +283,11 @@ jobs:
           path: assets
           merge-multiple: true
 
-      - name: install.sh ships as an asset and is signed with the rest
-        run: cp scripts/install.sh assets/install.sh
-
       - name: SHA256SUMS
         working-directory: assets
         run: |
           set -euo pipefail
-          sha256sum build-bridge-*.tar.gz install.sh > SHA256SUMS
+          sha256sum build-bridge-*.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
@@ -318,13 +314,16 @@ jobs:
           path: assets
           if-no-files-found: error
 
-  # The only job that writes anything outside this repo, and the only one that
-  # holds a token. Re-running it is safe: the release is created if missing and
-  # every asset is uploaded with --clobber.
+  # The only job that writes anything, and the only one that may: `contents:
+  # write` is declared here and nowhere else, so every other job in this
+  # workflow runs read-only over the same token. Re-running it is safe: the
+  # release is created if missing and every asset is uploaded with --clobber.
   publish:
-    name: Publish to the releases repo
+    name: Publish to this repository
     needs: [version, apple-creds, checksums]
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -347,9 +346,9 @@ jobs:
           cat > notes.md <<NOTES
           build-bridge ${VERSION}, built from ${SOURCE_REPO}@${COMMIT}.
 
-          Install:
-
-              curl -fsSL https://getbuild.ing/install.sh | sh
+          Install: copy the install line from Build → Settings → Downloads (it carries a
+          short-lived token) and run it. These assets are not downloadable by hand while
+          the repository is private.
 
           ${macos_line}
           Linux builds target glibc 2.35 or newer; macOS builds target macOS 13 or newer.
@@ -367,10 +366,10 @@ jobs:
 
       - name: Create the release if this tag has none, then upload every asset
         env:
-          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ needs.version.outputs.version }}
-          REPO: ${{ needs.version.outputs.releases_repo }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if ! gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then

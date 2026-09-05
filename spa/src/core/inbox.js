@@ -120,7 +120,6 @@ const pendingItem = (row) => ({
   project: row.project,
   title: row.title,
   branch: row.branch || null,
-  state: row.state,
   pending: row.state,
   placeholder: true,
   working: true,

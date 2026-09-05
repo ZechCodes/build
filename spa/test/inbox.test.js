@@ -361,6 +361,17 @@ describe("the rows a lifecycle verb in flight leaves", () => {
     expect(entries[0].facts).toBe("");
   });
 
+  // The verb in flight is said in one place, `pending`. A row's `state` is the
+  // run vocabulary the list filters on, and a verb name that happened to match
+  // a finished state would have dropped the row out of the list.
+  it("keeps a row listed and unfinished whatever its verb is called", () => {
+    const entries = listed(mergePendingRows([], [creating({ state: "merged" })]));
+    expect(entries).toHaveLength(1);
+    expect(entries[0].state).toBe("working");
+    expect(entries[0].merged).toBe(false);
+    expect(entries[0].pending).toBe("merged");
+  });
+
   // Every verb in that menu would race the one the daemon is already running,
   // which it refuses anyway. The row says what is happening and offers nothing.
   it("offers no verbs on a row a verb is already running on", () => {

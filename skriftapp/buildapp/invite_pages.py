@@ -22,10 +22,8 @@ from litestar.status_codes import (
 )
 
 from buildapp.invites import EMAIL_MISMATCH, InviteState, RedemptionRefusal
-from buildapp.landing_page import fill_slots, read_landing_file, render_panel_page
+from buildapp.landing_page import HOME_LINK, Link, render_panel_page
 
-BUTTON_FRAGMENT_NAME = "panel-button.html"
-LINK_FRAGMENT_NAME = "panel-link.html"
 ACTION_SEPARATOR = " "
 
 APP_PATH = "/app/"
@@ -35,7 +33,6 @@ WAITLIST_PATH = "/#waitlist"
 OPEN_BUILD_LABEL = "OPEN BUILD"
 REQUEST_ACCESS_LABEL = "REQUEST ACCESS"
 SIGN_OUT_LABEL = "Sign out"
-HOME_LABEL = "home page"
 
 UNKNOWN_TITLE = "Invite not found — Build"
 UNKNOWN_HEADING = "This invite link is not valid."
@@ -69,20 +66,6 @@ INVITE_ONLY_MESSAGE_TEMPLATE = (
 )
 
 
-@dataclass(frozen=True)
-class Link:
-    label: str
-    href: str
-    primary: bool = False
-
-    def render(self) -> str:
-        fragment = BUTTON_FRAGMENT_NAME if self.primary else LINK_FRAGMENT_NAME
-        return fill_slots(
-            read_landing_file(fragment),
-            {"href": escape(self.href), "label": escape(self.label)},
-        )
-
-
 def render_links(links: tuple[Link, ...]) -> str:
     return ACTION_SEPARATOR.join(link.render() for link in links)
 
@@ -112,7 +95,6 @@ class PageOutcome:
         )
 
 
-HOME_LINK = Link(label=HOME_LABEL, href="/")
 APP_LINK = Link(label=OPEN_BUILD_LABEL, href=APP_PATH, primary=True)
 SIGN_OUT_LINK = Link(label=SIGN_OUT_LABEL, href=LOGOUT_PATH)
 REQUEST_ACCESS_LINK = Link(label=REQUEST_ACCESS_LABEL, href=WAITLIST_PATH, primary=True)

@@ -5,8 +5,12 @@ head, a stylesheet and a footer instead of each declaring their own."""
 from __future__ import annotations
 
 from buildapp.landing_page import (
+    BUTTON_FRAGMENT_NAME,
+    HOME_LINK,
+    LINK_FRAGMENT_NAME,
     PANEL_NAME,
     SHELL_NAME,
+    Link,
     fill_slots,
     read_landing_file,
     render_panel_page,
@@ -111,3 +115,31 @@ def test_a_panel_page_carries_no_description_and_no_script():
     )
     assert '<meta name="description" content="">' in html
     assert "<script" not in html
+
+
+def test_a_link_renders_as_a_plain_anchor_and_a_primary_one_as_a_button():
+    plain = Link(label="home page", href="/").render()
+    primary = Link(label="OPEN BUILD", href="/app/", primary=True).render()
+    assert plain == '<a href="/">home page</a>'
+    assert 'class="button-primary"' in primary
+    assert 'href="/app/"' in primary
+    assert "OPEN BUILD" in primary
+
+
+def test_a_link_escapes_its_href_and_its_label():
+    rendered = Link(label="<script>x</script>", href='/"onmouseover="alert(1)').render()
+    assert "<script" not in rendered
+    assert '"onmouseover="' not in rendered
+
+
+def test_both_link_styles_come_from_the_two_fragments_this_module_names():
+    assert LINK_FRAGMENT_NAME == "panel-link.html"
+    assert BUTTON_FRAGMENT_NAME == "panel-button.html"
+    for name in (LINK_FRAGMENT_NAME, BUTTON_FRAGMENT_NAME):
+        assert "{{href}}" in read_landing_file(name)
+        assert "{{label}}" in read_landing_file(name)
+
+
+def test_the_home_link_is_one_value_every_page_renders():
+    assert HOME_LINK.href == "/"
+    assert HOME_LINK.render() == '<a href="/">home page</a>'

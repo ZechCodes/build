@@ -85,12 +85,7 @@ impl TerminalSnapshot {
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::StdoutSettled {
                 reader_error,
             }) => {
-                if !next.stdout_settled {
-                    next.stdout_settled = true;
-                    if let Some(reason) = reader_error {
-                        next.retain_terminal_error(reason);
-                    }
-                }
+                next.settle_stdout(reader_error);
             }
             CoordinatorTerminalEvent::SourceSettled(TerminalSourceEvent::ProcessSettled {
                 exit_code,
@@ -105,7 +100,7 @@ impl TerminalSnapshot {
                 retained_tail,
                 drainer_error,
             }) => {
-                next.stderr.get_or_insert(StderrOutcome {
+                next.settle_stderr(StderrOutcome {
                     retained_tail,
                     drainer_error,
                 });
@@ -124,20 +119,29 @@ impl TerminalSnapshot {
 
     fn settle_expired_source(&mut self, source: TerminalSource) -> bool {
         match source {
-            TerminalSource::Stdout => {
-                let was_pending = !self.stdout_settled;
-                self.stdout_settled = true;
-                was_pending
-            }
-            TerminalSource::Stderr => {
-                let was_pending = self.stderr.is_none();
-                self.stderr.get_or_insert(StderrOutcome {
-                    retained_tail: None,
-                    drainer_error: None,
-                });
-                was_pending
-            }
+            TerminalSource::Stdout => self.settle_stdout(None),
+            TerminalSource::Stderr => self.settle_stderr(StderrOutcome {
+                retained_tail: None,
+                drainer_error: None,
+            }),
         }
+    }
+
+    fn settle_stdout(&mut self, reader_error: Option<String>) -> bool {
+        if self.stdout_settled {
+            return false;
+        }
+        self.stdout_settled = true;
+        if let Some(reason) = reader_error {
+            self.retain_terminal_error(reason);
+        }
+        true
+    }
+
+    fn settle_stderr(&mut self, outcome: StderrOutcome) -> bool {
+        let was_pending = self.stderr.is_none();
+        self.stderr.get_or_insert(outcome);
+        was_pending
     }
 
     pub fn outcome(&self) -> Option<TerminalOutcome> {
@@ -720,7 +724,7 @@ mod tests {
     use super::*;
     use crate::harness::codex_app_server::fixtures::{
         initialize_result, selected_choice, supported_user_agent, thread_opened_at,
-        SELECTED_EFFORT, THREAD_ID, TURN_ID,
+        CHILD_THREAD_ID, CHILD_TURN_ID, SELECTED_EFFORT, THREAD_ID, TURN_ID,
     };
     use crate::harness::codex_app_server::policy::AfterResponse;
     use crate::harness::codex_app_server::protocol::ServerResponse;
@@ -742,7 +746,7 @@ mod tests {
 
     #[test]
     fn child_thread_start_is_routed_away_before_and_after_parent_readiness() {
-        let child_start = json!({"thread":{"id":"thread-child","parentThreadId":"thread-parent"}});
+        let child_start = json!({"thread":{"id":CHILD_THREAD_ID,"parentThreadId":"thread-parent"}});
         assert_eq!(
             ParentThreadFilter::notification("thread/started", &child_start, None),
             ParentThreadRoute::Child
@@ -750,7 +754,7 @@ mod tests {
         assert_eq!(
             ParentThreadFilter::notification(
                 "turn/started",
-                &json!({"threadId":"thread-child"}),
+                &json!({"threadId":CHILD_THREAD_ID}),
                 Some("thread-parent"),
             ),
             ParentThreadRoute::Child
@@ -1160,12 +1164,12 @@ mod tests {
             root.path(),
             &format!(
                 "printf '%s\n' '{}' '{}' '{}' '{}' '{}' '{}' '{}'; read child_response; read hold",
-                json!({"method":"thread/started","params":{"thread":{"id":"thread-child","parentThreadId":THREAD_ID}}}),
-                r#"{"method":"error","params":{"threadId":"thread-child","malformed":true}}"#,
-                r#"{"method":"item/started","params":{"threadId":"thread-child","item":{}}}"#,
-                r#"{"method":"item/agentMessage/delta","params":{"threadId":"thread-child"}}"#,
-                r#"{"method":"future/notification","params":{"threadId":"thread-child"}}"#,
-                r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
+                json!({"method":"thread/started","params":{"thread":{"id":CHILD_THREAD_ID,"parentThreadId":THREAD_ID}}}),
+                json!({"method":"error","params":{"threadId":CHILD_THREAD_ID,"malformed":true}}),
+                json!({"method":"item/started","params":{"threadId":CHILD_THREAD_ID,"item":{}}}),
+                json!({"method":"item/agentMessage/delta","params":{"threadId":CHILD_THREAD_ID}}),
+                json!({"method":"future/notification","params":{"threadId":CHILD_THREAD_ID}}),
+                json!({"id":9,"method":"item/tool/requestUserInput","params":{"threadId":CHILD_THREAD_ID}}),
                 json!({"method":"error","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"error":{"message":"parent stays alive"},"willRetry":true}}),
             ),
         );
@@ -1193,9 +1197,9 @@ mod tests {
             &format!(
                 "printf '%s\n' '{}'; read turn; printf '%s\n' '{}' '{}' '{}'; read child_response",
                 json!({"method":"error","params":{"threadId":THREAD_ID,"turnId":TURN_ID,"error":{"message":"parent stays alive"},"willRetry":true}}),
-                r#"{"method":"item/started","params":{"threadId":"thread-child","turnId":"turn-child","item":{"id":"tool-child","type":"webSearch"}}}"#,
-                r#"{"method":"turn/completed","params":{"threadId":"thread-child","turn":{"id":"turn-child","status":"completed"}}}"#,
-                r#"{"id":9,"method":"item/tool/requestUserInput","params":{"threadId":"thread-child"}}"#,
+                json!({"method":"item/started","params":{"threadId":CHILD_THREAD_ID,"turnId":CHILD_TURN_ID,"item":{"id":"tool-child","type":"webSearch"}}}),
+                json!({"method":"turn/completed","params":{"threadId":CHILD_THREAD_ID,"turn":{"id":CHILD_TURN_ID,"status":"completed"}}}),
+                json!({"id":9,"method":"item/tool/requestUserInput","params":{"threadId":CHILD_THREAD_ID}}),
             ),
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
@@ -1261,10 +1265,12 @@ mod tests {
     #[test]
     fn ended_is_published_only_after_stdout_process_and_stderr_settle() {
         let root = tempfile::tempdir().unwrap();
-        let (session, mut activity) = scripted_session(
-            root.path(),
-            "exec 1>&-; (sleep 1; echo late >&2) & exec cat >/dev/null",
+        let stderr_release = root.path().join("release-stderr");
+        let script = format!(
+            "exec 1>&-; (until [ -e '{}' ]; do sleep 0.01; done; echo late >&2) & exec cat >/dev/null",
+            stderr_release.display()
         );
+        let (session, mut activity) = scripted_session(root.path(), &script);
         wait_until("settled stdout and reaped its process", || {
             let snapshot = session.core.terminal.lock().unwrap();
             snapshot.stdout_settled && snapshot.process.is_some()
@@ -1280,6 +1286,7 @@ mod tests {
             Err(broadcast::error::TryRecvError::Closed)
         ));
 
+        std::fs::write(&stderr_release, b"").unwrap();
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })
         });
@@ -1376,6 +1383,10 @@ mod tests {
         wait_until("published its terminal outcome", || {
             matches!(session.status(), AgentStatus::Ended { .. })
         });
+        assert!(
+            session.core.terminal.lock().unwrap().expiry.is_some(),
+            "the stdout expiry never fired"
+        );
         assert_eq!(session.epitaph().as_deref(), Some("boom"));
     }
 

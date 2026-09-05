@@ -9,8 +9,8 @@ use serde_json::{json, Value};
 use super::connection::{AppServerConnection, ConnectionError};
 use super::fixtures::{
     initialize_result, item_envelope, item_envelope_at, selected_choice, supported_user_agent,
-    thread_opened, EXACT_THREAD_ID, SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID,
-    WORKTREE_ROOT,
+    thread_opened, thread_opened_with, CHILD_THREAD_ID, CHILD_TURN_ID, EXACT_THREAD_ID,
+    SELECTED_EFFORT, SELECTED_MODEL, THREAD_ID, TURN_ID, WORKTREE_ROOT,
 };
 use super::limits::AppServerLimits;
 use super::policy::{AfterResponse, ServerRequestPolicy};
@@ -351,7 +351,7 @@ fn request_shapes_put_model_and_effort_only_where_the_protocol_accepts_them() {
     assert_eq!(frames[1]["params"]["approvalPolicy"], "never");
     assert_eq!(frames[1]["params"]["sandbox"], "danger-full-access");
     assert_eq!(frames[2]["params"]["model"], SELECTED_MODEL);
-    assert_eq!(frames[2]["params"]["effort"], "high");
+    assert_eq!(frames[2]["params"]["effort"], SELECTED_EFFORT);
     assert!(frames[3]["params"].get("model").is_none());
     assert!(frames[3]["params"].get("effort").is_none());
     assert_eq!(frames[3]["params"]["expectedTurnId"], TURN_ID);
@@ -486,15 +486,8 @@ fn initialize_error_fails_the_session() {
 
 #[test]
 fn a_below_floor_user_agent_fails_without_asking_the_probe() {
-    let refused = initialize_transition(&format!("{CLIENT_NAME}/0.152.9"));
-    let asked_probe = refused.as_ref().is_ok_and(|transition| {
-        transition
-            .effects
-            .contains(&SessionEffect::RequireVersionEvidence)
-    });
-    assert!(!asked_probe);
-    let error = refused
-        .expect_err("a below-floor user agent fails startup")
+    let error = initialize_transition(&format!("{CLIENT_NAME}/0.152.9"))
+        .expect_err("a below-floor user agent fails startup instead of asking the probe")
         .to_string();
     assert!(error.contains("0.152.9"), "{error}");
     assert!(error.contains("0.153.0"), "{error}");
@@ -736,6 +729,38 @@ fn thread_open_error_without_notification_fails() {
 }
 
 #[test]
+fn thread_open_settings_must_match_the_requested_session() {
+    let mismatches = [
+        (json!({"cwd":"/tmp/elsewhere"}), "thread cwd mismatch"),
+        (
+            json!({"approvalPolicy":"onRequest"}),
+            "approvalPolicy=never",
+        ),
+        (
+            json!({"sandbox":{"type":"workspaceWrite"}}),
+            "danger-full-access sandbox",
+        ),
+        (json!({"model":"gpt-5.6-mini"}), "Codex opened model"),
+    ];
+    for (overrides, complaint) in mismatches {
+        let error = initialize_transition(&supported_user_agent())
+            .unwrap()
+            .state
+            .transition(
+                correlated(
+                    start_thread(),
+                    Ok(thread_opened_with(THREAD_ID, None, overrides.clone())),
+                ),
+                Duration::ZERO,
+                limits().state(),
+            )
+            .expect_err("a thread opened with the wrong settings fails startup")
+            .to_string();
+        assert!(error.contains(complaint), "{overrides}: {error}");
+    }
+}
+
+#[test]
 fn thread_notification_and_response_orders_converge_and_ids_must_match() {
     let opening = initialize_transition(&supported_user_agent())
         .unwrap()
@@ -788,7 +813,7 @@ fn thread_response_before_notification_is_ready_and_the_duplicate_is_inert() {
     assert_eq!(duplicate.state.session_id().as_deref(), Some(THREAD_ID));
     assert_eq!(
         duplicate.state.active_model().as_deref(),
-        Some("gpt-5.6-sol")
+        Some(SELECTED_MODEL)
     );
 }
 
@@ -911,7 +936,7 @@ fn completion_before_start_response_applies_accepted_turn_facts() {
         .unwrap()
         .state;
 
-    assert_eq!(settled.active_effort().as_deref(), Some("high"));
+    assert_eq!(settled.active_effort().as_deref(), Some(SELECTED_EFFORT));
 }
 
 #[test]
@@ -1697,6 +1722,27 @@ fn server_request_decoder_types_known_requests_and_retains_only_unknown_methods(
 }
 
 #[test]
+fn known_thread_scoped_requests_without_a_routing_id_fail_before_policy() {
+    for expected_parent in [None, Some("thread-parent")] {
+        for params in [json!({}), json!({"threadId":7}), json!([]), Value::Null] {
+            let failure = RoutedServerRequest::decode(
+                &InboundServerRequest {
+                    id: json!(3),
+                    method: "currentTime/read".to_string(),
+                    params: params.clone(),
+                },
+                expected_parent,
+            )
+            .expect_err("a thread-scoped request needs its routing id");
+            assert_eq!(
+                failure, "currentTime/read routing id is missing",
+                "{params}"
+            );
+        }
+    }
+}
+
+#[test]
 fn error_notifications_require_the_typed_liveness_shape() {
     assert!(matches!(
         ServerNotification::decode(
@@ -1747,7 +1793,7 @@ fn unknown_server_requests_ignore_arbitrary_params_before_policy() {
 
 #[test]
 fn parent_thread_filter_isolates_every_child_notification_before_decoding() {
-    let child_thread = "thread-child";
+    let child_thread = CHILD_THREAD_ID;
     let cases = [
         (
             "thread/started",
@@ -1793,47 +1839,47 @@ fn every_known_child_thread_request_receives_a_safe_continue_response() {
     let cases = [
         (
             "item/commandExecution/requestApproval",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"decision":"decline"}}),
         ),
         (
             "item/fileChange/requestApproval",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"decision":"decline"}}),
         ),
         (
             "execCommandApproval",
-            json!({"conversationId":"thread-child"}),
+            json!({"conversationId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"decision":{"denied":{"rejection":"Build does not approve commands"}}}}),
         ),
         (
             "applyPatchApproval",
-            json!({"conversationId":"thread-child"}),
+            json!({"conversationId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"decision":{"denied":{"rejection":"Build does not approve file changes"}}}}),
         ),
         (
             "mcpServer/elicitation/request",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"action":"decline"}}),
         ),
         (
             "item/tool/requestUserInput",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
         ),
         (
             "item/permissions/requestApproval",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
         ),
         (
             "item/tool/call",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"error":{"code":-32601,"message":"method not supported"}}),
         ),
         (
             "currentTime/read",
-            json!({"threadId":"thread-child"}),
+            json!({"threadId":CHILD_THREAD_ID}),
             json!({"id":7,"result":{"currentTimeAt":1234}}),
         ),
     ];
@@ -1852,7 +1898,7 @@ fn child_requests_with_malformed_non_routing_params_still_receive_the_safe_respo
     let routed = routed_request(
         json!(11),
         "item/commandExecution/requestApproval",
-        json!({"threadId":"thread-child","command":42,"cwd":[]}),
+        json!({"threadId":CHILD_THREAD_ID,"command":42,"cwd":[]}),
     );
     assert_eq!(routed.route, ParentThreadRoute::Child);
     let decision = ServerRequestPolicy::decide(routed.request, routed.route, 0);
@@ -1867,7 +1913,7 @@ fn child_requests_with_malformed_non_routing_params_still_receive_the_safe_respo
 #[test]
 fn unscoped_requests_keep_their_tabled_session_failure_on_every_route() {
     for method in ["account/chatgptAuthTokens/refresh", "attestation/generate"] {
-        for params in [json!({"threadId":"thread-child"}), Value::Null, json!([])] {
+        for params in [json!({"threadId":CHILD_THREAD_ID}), Value::Null, json!([])] {
             let routed = routed_request(json!(12), method, params.clone());
             assert_eq!(
                 routed.route,
@@ -2307,7 +2353,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
         "thread/started",
         json!({
             "thread":{
-                "id":"thread-child",
+                "id":CHILD_THREAD_ID,
                 "parentThreadId":THREAD_ID
             }
         }),
@@ -2323,8 +2369,8 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
     let child = ServerNotification::decode(
         "item/started",
         item_envelope_at(
-            "thread-child",
-            "turn-child",
+            CHILD_THREAD_ID,
+            CHILD_TURN_ID,
             json!({"id":"child-command","type":"commandExecution"}),
         ),
     )
@@ -2340,7 +2386,7 @@ fn child_thread_events_are_isolated_while_parent_subagent_activity_is_retained()
             "id":"subagent",
             "type":"subAgentActivity",
             "agentPath":"worker",
-            "agentThreadId":"thread-child",
+            "agentThreadId":CHILD_THREAD_ID,
             "kind":"completed"
         })),
     )

@@ -309,7 +309,7 @@ fn read_jsonl_bytes(
             0 if frame.is_empty() => return Ok(None),
             0 => return Err(ConnectionError::UnterminatedFrame),
             _ if byte[0] == b'\n' => break,
-            _ if frame.len() == limit && byte[0] != b'\r' => {
+            _ if oversteps_inbound_limit(frame.len(), byte[0], limit) => {
                 return discard_oversized_frame(reader, limit)
             }
             _ => frame.push(byte[0]),
@@ -322,6 +322,10 @@ fn read_jsonl_bytes(
         return Err(ConnectionError::Protocol("blank JSONL frame".to_string()));
     }
     Ok(Some(frame))
+}
+
+fn oversteps_inbound_limit(frame_len: usize, byte: u8, limit: usize) -> bool {
+    frame_len > limit || (frame_len == limit && byte != b'\r')
 }
 
 fn discard_oversized_frame(
@@ -469,22 +473,58 @@ mod tests {
     }
 
     #[test]
-    fn malformed_frames_fail_without_being_decoded_as_events() {
-        for bad in [
-            b"\n".to_vec(),
-            b"{bad}\n".to_vec(),
-            b"{} trailing\n".to_vec(),
-            vec![0xff, b'\n'],
-            b"{}".to_vec(),
-            b"{}\n".to_vec(),
-            b"[]\n".to_vec(),
-        ] {
-            let mut reader = Cursor::new(bad.clone());
-            assert!(
-                frame_reader(bad.len() + 2).read_event(&mut reader).is_err(),
-                "{bad:?}"
-            );
+    fn a_carriage_return_at_the_limit_does_not_lift_the_inbound_bound() {
+        let connection = frame_reader(20);
+        let overrun = [
+            b"12345678901234567890\r".as_slice(),
+            b"x".repeat(64).as_slice(),
+            b"\n{\"method\":\"next\"}\n",
+        ]
+        .concat();
+        let mut reader = Cursor::new(overrun);
+        assert!(matches!(
+            connection.read_event(&mut reader),
+            Err(ConnectionError::FrameTooLarge(20))
+        ));
+        assert_eq!(
+            notification_method(connection.read_event(&mut reader).unwrap()),
+            "next"
+        );
+    }
+
+    fn read_frame(bytes: Vec<u8>) -> Result<Option<ConnectionEvent>, ConnectionError> {
+        frame_reader(bytes.len() + 2).read_event(&mut Cursor::new(bytes))
+    }
+
+    #[test]
+    fn malformed_frames_fail_at_the_stage_that_owns_them() {
+        let protocol_violations = [
+            (b"\n".to_vec(), "blank JSONL frame"),
+            (b"{}\n".to_vec(), "message has neither id nor method"),
+            (b"[]\n".to_vec(), "top-level message is not an object"),
+        ];
+        for (bad, violation) in protocol_violations {
+            match read_frame(bad.clone()) {
+                Err(ConnectionError::Protocol(message)) => assert_eq!(message, violation),
+                other => panic!("{bad:?} yielded {other:?}"),
+            }
         }
+        assert!(matches!(
+            read_frame(b"{bad}\n".to_vec()),
+            Err(ConnectionError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            read_frame(b"{} trailing\n".to_vec()),
+            Err(ConnectionError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            read_frame(vec![0xff, b'\n']),
+            Err(ConnectionError::InvalidUtf8(_))
+        ));
+        assert!(matches!(
+            read_frame(b"{}".to_vec()),
+            Err(ConnectionError::UnterminatedFrame)
+        ));
     }
 
     #[test]

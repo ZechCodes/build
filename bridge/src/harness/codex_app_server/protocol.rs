@@ -765,15 +765,11 @@ impl ServerResponse {
     /// The JSON-RPC `-32601` reply Build sends for every server request it
     /// refuses to serve, whether the method is known but unsupported or unknown.
     pub fn method_not_found(id: Value, message: impl Into<String>) -> ServerResponse {
-        ServerResponse::error(id, JSON_RPC_METHOD_NOT_FOUND, message)
-    }
-
-    fn error(id: Value, code: i64, message: impl Into<String>) -> ServerResponse {
         ServerResponse {
             id,
             result: None,
             error: Some(RpcErrorBody {
-                code,
+                code: JSON_RPC_METHOD_NOT_FOUND,
                 message: message.into(),
                 data: None,
             }),

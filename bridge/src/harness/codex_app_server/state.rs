@@ -375,12 +375,12 @@ impl CodexSessionState {
             self.phase = Phase::AwaitingVersion;
             return Ok(vec![SessionEffect::RequireVersionEvidence]);
         };
-        match check_user_agent(&user_agent) {
-            VersionCheck::Supported => self.finish_initialize(),
-            VersionCheck::TooOld(observed) => Err(version_rejection(format!(
-                "Codex {observed} is unsupported"
-            ))),
-            VersionCheck::Unavailable => {
+        match leading_user_agent_version(&user_agent) {
+            Some(version) => {
+                accept_version(version)?;
+                self.finish_initialize()
+            }
+            None => {
                 self.phase = Phase::AwaitingVersion;
                 Ok(vec![SessionEffect::RequireVersionEvidence])
             }
@@ -407,9 +407,7 @@ impl CodexSessionState {
             .ok_or_else(|| {
                 version_rejection(format!("could not parse Codex version from {observed:?}"))
             })?;
-        if version < minimum_version() {
-            return Err(version_rejection(format!("Codex {version} is unsupported")));
-        }
+        accept_version(version)?;
         self.finish_initialize()
     }
 
@@ -1237,30 +1235,22 @@ fn operational_report(summary: String) -> SessionEffect {
     }))
 }
 
-enum VersionCheck {
-    Supported,
-    TooOld(Version),
-    Unavailable,
+fn leading_user_agent_version(user_agent: &str) -> Option<Version> {
+    let leading = user_agent.split_whitespace().next()?;
+    let (name, raw_version) = leading.split_once('/')?;
+    if name != CLIENT_NAME || raw_version.contains('/') {
+        return None;
+    }
+    parse_version(raw_version)
 }
 
-fn check_user_agent(user_agent: &str) -> VersionCheck {
-    let Some(leading) = user_agent.split_whitespace().next() else {
-        return VersionCheck::Unavailable;
-    };
-    let Some((name, raw_version)) = leading.split_once('/') else {
-        return VersionCheck::Unavailable;
-    };
-    if name != CLIENT_NAME || raw_version.contains('/') {
-        return VersionCheck::Unavailable;
+fn accept_version(observed: Version) -> Result<(), StateError> {
+    if observed < minimum_version() {
+        return Err(version_rejection(format!(
+            "Codex {observed} is unsupported"
+        )));
     }
-    let Some(version) = parse_version(raw_version) else {
-        return VersionCheck::Unavailable;
-    };
-    if version < minimum_version() {
-        VersionCheck::TooOld(version)
-    } else {
-        VersionCheck::Supported
-    }
+    Ok(())
 }
 
 fn parse_version(raw: &str) -> Option<Version> {

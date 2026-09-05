@@ -782,13 +782,13 @@ mod tests {
         let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src")
             .join("harness");
-        rust_sources_under(&harness_modules)
+        shipped_rust_sources_under(&harness_modules)
             .iter()
             .flat_map(|path| {
                 let source = std::fs::read_to_string(path).expect("a readable harness module");
                 production_source(&source)
                     .lines()
-                    .filter_map(|line| line.strip_prefix(SESSION_IMPL))
+                    .filter_map(|line| line.split_once(SESSION_IMPL).map(|(_, rest)| rest))
                     .map(|implementor| {
                         implementor
                             .split(|c: char| !(c.is_alphanumeric() || c == '_'))
@@ -801,41 +801,175 @@ mod tests {
             .collect()
     }
 
-    /// Every Rust source directly inside `directory`, without descending.
-    fn rust_sources_directly_in(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+    /// Every entry directly inside `directory`.
+    fn entries(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(directory)
             .expect("a readable source directory")
             .map(|entry| entry.expect("a readable source entry").path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "rs"))
             .collect()
     }
 
-    /// Every Rust source inside `directory` and the directories under it.
-    fn rust_sources_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let nested = std::fs::read_dir(directory)
-            .expect("a readable source directory")
-            .map(|entry| entry.expect("a readable source entry").path())
-            .filter(|path| path.is_dir())
-            .flat_map(|subdirectory| rust_sources_under(&subdirectory));
-        rust_sources_directly_in(directory)
+    fn is_rust_source(path: &std::path::Path) -> bool {
+        path.extension().is_some_and(|extension| extension == "rs")
+    }
+
+    /// Every Rust source directly inside `directory`, without descending.
+    fn rust_sources_directly_in(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        entries(directory)
             .into_iter()
-            .chain(nested)
+            .filter(|path| is_rust_source(path))
             .collect()
+    }
+
+    /// Every Rust source that ships from `directory` and the directories under
+    /// it, leaving out the modules the directory's declaring file gates behind
+    /// `#[cfg(test)]`, whose whole bodies are test code.
+    fn shipped_rust_sources_under(directory: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let test_only_modules = test_only_modules_declared_for(directory);
+        let (subdirectories, files): (Vec<_>, Vec<_>) = entries(directory)
+            .into_iter()
+            .partition(|path| path.is_dir());
+        files
+            .into_iter()
+            .filter(|path| is_rust_source(path))
+            .filter(|path| {
+                let module = path
+                    .file_stem()
+                    .expect("a Rust source names its module")
+                    .to_string_lossy();
+                !test_only_modules
+                    .iter()
+                    .any(|test_only| *test_only == module)
+            })
+            .chain(
+                subdirectories
+                    .iter()
+                    .flat_map(|subdirectory| shipped_rust_sources_under(subdirectory)),
+            )
+            .collect()
+    }
+
+    /// The modules that the file declaring `directory`'s children — its
+    /// `mod.rs`, or the sibling `<directory>.rs` — places behind
+    /// `#[cfg(test)]`.
+    fn test_only_modules_declared_for(directory: &std::path::Path) -> Vec<String> {
+        const TEST_GATE: &str = "#[cfg(test)]";
+        const DECLARATION: &str = "mod ";
+
+        let Some(declaring_file) = [directory.join("mod.rs"), directory.with_extension("rs")]
+            .into_iter()
+            .find(|candidate| candidate.is_file())
+        else {
+            return Vec::new();
+        };
+        let source = std::fs::read_to_string(declaring_file).expect("a readable module file");
+        let mut gated = Vec::new();
+        let mut lines = source.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line.trim() != TEST_GATE {
+                continue;
+            }
+            let declared = lines
+                .peek()
+                .and_then(|next| next.trim().strip_suffix(';'))
+                .and_then(|declaration| declaration.rsplit_once(DECLARATION))
+                .map(|(_, module)| module.to_string());
+            gated.extend(declared);
+        }
+        gated
     }
 
     const PROVIDER_PATH: &str = "AgentProvider::";
 
+    fn is_identifier_char(character: char) -> bool {
+        character.is_alphanumeric() || character == '_'
+    }
+
+    /// Whether `character` can sit inside a pattern between its brackets: an
+    /// identifier, a binding, an alternation, or the whitespace around them.
+    fn is_pattern_filler(character: char) -> bool {
+        is_identifier_char(character)
+            || character.is_whitespace()
+            || matches!(character, ':' | '|' | '&' | '@')
+    }
+
     /// The variant a provider mention at `mention` names, and the code that
-    /// follows it once closing delimiters and whitespace are skipped.
+    /// follows the pattern the mention sits in — the rest of its tuple, struct
+    /// or slice and the brackets that close them — so a mention anywhere in an
+    /// arm's pattern lands on the arm's `=>`.
     fn variant_and_continuation(shipped: &str, mention: usize) -> (&str, &str) {
         let variant_onward = &shipped[mention + PROVIDER_PATH.len()..];
-        let after_variant =
-            variant_onward.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_');
+        let after_variant = variant_onward.trim_start_matches(is_identifier_char);
         let variant = &variant_onward[..variant_onward.len() - after_variant.len()];
         (
             variant,
-            after_variant.trim_start_matches([')', ']', ' ', '\n']),
+            &after_variant[pattern_remainder_length(after_variant)..],
         )
+    }
+
+    /// How many bytes of `after_variant` still belong to the pattern the
+    /// mention sits in. Brackets opened after the mention are consumed whole;
+    /// a bracket closing an enclosing group is consumed too, but a comma past
+    /// that point separates arms or arguments and ends the pattern, as does a
+    /// brace opened at the pattern's own level.
+    fn pattern_remainder_length(after_variant: &str) -> usize {
+        let mut depth = 0_i32;
+        let mut characters = after_variant.char_indices().peekable();
+        while let Some((index, character)) = characters.next() {
+            match character {
+                filler if is_pattern_filler(filler) => {}
+                '.' if characters.peek().is_some_and(|(_, next)| *next == '.') => {
+                    characters.next();
+                }
+                ',' if depth >= 0 => {}
+                '(' | '[' => depth += 1,
+                '{' if depth > 0 => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                _ => return index,
+            }
+        }
+        after_variant.len()
+    }
+
+    /// Whether the code before a provider mention places it in an arm's
+    /// pattern rather than its body: walking back over the rest of the pattern
+    /// reaches the arm's start before it reaches a `=>`.
+    fn sits_in_an_arm_pattern(preceding: &str) -> bool {
+        let mut depth = 0_i32;
+        let mut remaining = preceding;
+        loop {
+            if remaining.ends_with("=>") {
+                return false;
+            }
+            let Some(character) = remaining.chars().next_back() else {
+                return true;
+            };
+            remaining = &remaining[..remaining.len() - character.len_utf8()];
+            match character {
+                filler if is_pattern_filler(filler) || filler == '.' => {}
+                ',' if depth > 0 => {}
+                ')' | ']' | '}' => depth += 1,
+                '(' | '[' | '{' if depth > 0 => depth -= 1,
+                '(' | '[' => {}
+                '{' if remaining.trim_end().ends_with("=>") => return false,
+                '{' if !names_a_struct(remaining) => return true,
+                '{' => {}
+                _ => return true,
+            }
+        }
+    }
+
+    /// Whether the code ending at a `{` names a struct or enum variant before
+    /// it — an upper-case path — rather than the scrutinee of a `match` or the
+    /// condition of a block.
+    fn names_a_struct(before_brace: &str) -> bool {
+        let path = before_brace.trim_end();
+        let path_start = path.trim_end_matches(|c: char| is_identifier_char(c) || c == ':');
+        path[path_start.len()..]
+            .split("::")
+            .next()
+            .and_then(|segment| segment.chars().next())
+            .is_some_and(char::is_uppercase)
     }
 
     /// Whether the mention sits in the pattern of the nearest `let` — between
@@ -888,12 +1022,7 @@ mod tests {
         let shipped = production_source(source);
         for (mention, _) in shipped.match_indices(PROVIDER_PATH) {
             let (variant, arm_head) = variant_and_continuation(shipped, mention);
-            let guard_reaches_an_arrow = arm_head.starts_with("if ")
-                && arm_head
-                    .lines()
-                    .next()
-                    .is_some_and(|first| first.contains("=>"));
-            if arm_head.starts_with("=>") || guard_reaches_an_arrow {
+            if arm_head.starts_with("=>") && sits_in_an_arm_pattern(&shipped[..mention]) {
                 return Some(format!("matches on {PROVIDER_PATH}{variant}"));
             }
             if compares_against_a_provider(shipped, mention) {
@@ -963,7 +1092,10 @@ mod tests {
     /// than a detector that quietly stopped matching.
     #[test]
     fn a_second_provider_dispatch_is_caught() {
-        const SECOND_DISPATCHES: [&str; 13] = [
+        const SECOND_DISPATCHES: [&str; 16] = [
+            "match (provider, resume) {\n    (AgentProvider::Codex, true) => launch(),\n}",
+            "match agent {\n    Agent { provider: AgentProvider::Codex, .. } => launch(),\n}",
+            "match providers {\n    [AgentProvider::Codex, ..] => launch(),\n}",
             "match provider {\n    AgentProvider::Codex => launch(),\n}",
             "match named {\n    Some(AgentProvider::Codex) => launch(),\n}",
             "match provider {\n    AgentProvider::Codex if resume => launch(),\n}",
@@ -1010,11 +1142,49 @@ mod tests {
             None
         );
 
+        let constructed_in_an_arm_body = "match found {\n    Ok(_) => AgentProvider::Claude,\n    \
+                                         Err(_) => AgentProvider::Codex,\n}";
+        assert_eq!(provider_dispatch_offence(constructed_in_an_arm_body), None);
+
+        let struct_built_in_an_arm_body = "match found {\n    Some(model) => ModelChoice { \
+                                          provider: AgentProvider::Codex, model },\n    None => \
+                                          fallback(),\n}";
+        assert_eq!(provider_dispatch_offence(struct_built_in_an_arm_body), None);
+
         let dispatch_only_in_tests = format!(
             "pub fn run() {{}}\n#[cfg(test)]\nmod tests {{\n    {}\n}}\n",
             "let harness = ClaudeHarness;"
         );
         assert_eq!(provider_dispatch_offence(&dispatch_only_in_tests), None);
+    }
+
+    /// The walk that finds opened sessions reads every shipped harness module
+    /// and none of the test-only ones, so a session type is found wherever it
+    /// is implemented and test scaffolding never widens the ban list.
+    #[test]
+    fn the_session_walk_reads_shipped_modules_and_skips_test_only_ones() {
+        let harness_modules = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("harness");
+        let walked: Vec<String> = shipped_rust_sources_under(&harness_modules)
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&harness_modules)
+                    .expect("a walked path sits under src/harness")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        for shipped in ["adk.rs", "codex_app_server/session.rs"] {
+            assert!(walked.iter().any(|path| path == shipped), "{walked:?}");
+        }
+        for test_only in [
+            "stream_fixtures.rs",
+            "codex_app_server/fixtures.rs",
+            "codex_app_server/tests.rs",
+        ] {
+            assert!(!walked.iter().any(|path| path == test_only), "{walked:?}");
+        }
     }
 
     /// The ban list the guard reads, the registry that constructs harnesses and

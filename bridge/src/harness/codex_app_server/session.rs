@@ -1244,7 +1244,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let stderr_release = root.path().join("release-stderr");
         let script = format!(
-            "exec 1>&-; (until [ -e '{}' ]; do sleep 0.01; done; echo late >&2) & exec cat >/dev/null",
+            "(until [ -e '{}' ]; do sleep 0.01; done; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
             stderr_release.display()
         );
         let (session, mut activity) = scripted_session(root.path(), &script);
@@ -1290,7 +1290,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (session, mut activity) = scripted_session_under(
             root.path(),
-            "exec 1>&-; (sleep 30; echo late >&2) & exec cat >/dev/null",
+            "(sleep 30; echo late >&2) >/dev/null & exec 1>&-; exec cat >/dev/null",
             AppServerLimits {
                 source_settle_grace: Duration::from_millis(100),
                 ..AppServerLimits::default()

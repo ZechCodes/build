@@ -5555,14 +5555,26 @@ impl AppState {
         let Ok(store) = self.require_store() else {
             return;
         };
-        let live: std::collections::HashSet<String> = self
-            .runs
-            .keys()
-            .chain(self.plans.keys())
-            .cloned()
-            .chain(self.attention_worktree_ids())
-            .chain(self.live_row_keys())
-            .collect();
+        // A project whose checkouts have never been scanned is not evidence
+        // that its checkouts are gone: a worktree's attention record lives
+        // nowhere but this map, and pruning it against a list nobody has filled
+        // yet would delete it. Keep everything until the first scan lands; the
+        // next write prunes.
+        let live: std::collections::HashSet<String> = if self
+            .projects
+            .iter()
+            .any(|project| project.external_scan.is_none())
+        {
+            self.attention.keys().cloned().collect()
+        } else {
+            self.runs
+                .keys()
+                .chain(self.plans.keys())
+                .cloned()
+                .chain(self.attention_worktree_ids())
+                .chain(self.live_row_keys())
+                .collect()
+        };
         if let Err(e) = store.save_attention(&self.attention, &live) {
             eprintln!("attention: {e}");
         }
@@ -45468,6 +45480,38 @@ mod tests {
         })
         .await
         .expect("the scan the refusal claimed resolves the id");
+    }
+
+    /// A daemon that has not scanned a project yet does not know which of its
+    /// checkouts are gone — and a bare checkout's attention record lives
+    /// nowhere but the attention map. The first stamp after a restart must not
+    /// prune that map against a scan nobody has run.
+    #[test]
+    fn attention_survives_a_stamp_taken_before_the_first_scan() {
+        let (dir, repo) = init_repo();
+        let mut state = qa_state(&repo, dir.path());
+        let project_id = state.projects[0].id.clone();
+        let path = add_external_worktree(&repo, dir.path(), "kept", "feature-kept");
+        state.scan_external_worktrees_now(&project_id).unwrap();
+        let worktree_id =
+            crate::worktree::external_worktree_id(&std::fs::canonicalize(&path).unwrap());
+
+        let seen = state.handle(req("entity.seen", json!({ "entity_id": worktree_id })));
+        assert_eq!(seen["ok"], true, "{seen:?}");
+        assert!(state.attention.contains_key(&worktree_id));
+
+        // A restart: the map comes back from the store, the scan has not run.
+        state.projects[0].external_scan = None;
+        state.persist_attention();
+
+        let reloaded = Store::new(dir.path().join("store"))
+            .expect("store opens")
+            .load_attention();
+        assert!(
+            reloaded.contains_key(&worktree_id),
+            "the checkout's attention was pruned against a scan nobody had run: {:?}",
+            reloaded.keys().collect::<Vec<_>>()
+        );
     }
 
     /// A create is not a reason to forget every other checkout. The new one

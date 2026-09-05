@@ -375,23 +375,30 @@ pub struct DispatchCheckout {
     /// board excludes them.
     pub excluded: HashSet<PathBuf>,
     pub model_choice: ModelChoice,
+    /// The capture this dispatch is the destination of, when a route is what
+    /// asked for it. Written down by the apply phase, against the branch that
+    /// is real by then.
+    pub routed: Option<crate::app::RoutedCapture>,
     #[cfg(test)]
     pub fault: Option<BranchDispatchStep>,
 }
 
 impl WorktreeMutation for DispatchCheckout {
-    fn perform(self: Box<Self>) -> Result<Performed, String> {
+    fn perform(mut self: Box<Self>) -> Result<Performed, String> {
         // A checkout that was already there is never this call's to remove:
         // taking ownership of one touches nothing that has to be put back.
         if let Some(found) = self.find_checkout()? {
             return self.take_ownership(&found);
         }
         let minted = self.cut_branch()?;
-        let dispatched = self
+        let described = self
             .project
             .describe_checkout(&minted.worktree.path, &self.base_branch)
-            .map_err(|error| error.to_string())
-            .and_then(|checkout| self.take_ownership(&checkout));
+            .map_err(|error| error.to_string());
+        let dispatched = match described {
+            Ok(checkout) => self.take_ownership(&checkout),
+            Err(error) => Err(error),
+        };
         if dispatched.is_err() {
             // What this call cut, this call removes — and the branch under it
             // only if this call cut that too.
@@ -433,7 +440,7 @@ impl DispatchCheckout {
 
     /// Take Build's ownership of the checkout this dispatch reached, and owe the
     /// apply phase the instruction on top of it.
-    fn take_ownership(&self, checkout: &ExternalWorktree) -> Result<Performed, String> {
+    fn take_ownership(&mut self, checkout: &ExternalWorktree) -> Result<Performed, String> {
         #[cfg(test)]
         fail_dispatch_at(self.fault, BranchDispatchStep::Adopt)?;
         let adopted = adopt(
@@ -452,6 +459,7 @@ impl DispatchCheckout {
             epilogue: Box::new(crate::app::BranchDispatched {
                 adopted,
                 instruction: self.instruction.clone(),
+                routed: self.routed.take(),
             }),
         })
     }

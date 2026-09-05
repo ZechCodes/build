@@ -4460,10 +4460,28 @@ impl AppState {
                             if let Ok(action) = serde_json::from_value::<BridgeAction>(
                                 v.get("request").cloned().unwrap_or(Value::Null),
                             ) {
-                                let response = match timer
-                                    .lock(&state)
-                                    .on_router_mcp_action(&capture_id, action)
-                                {
+                                // A router tool whose git must not run under the
+                                // app mutex — reaching a branch is a whole
+                                // checkout — hands that work back here, exactly
+                                // as a browser frame does, and it runs with the
+                                // guard released.
+                                let (answered, deferred) = {
+                                    let mut app = timer.lock(&state);
+                                    let answered = app.on_router_mcp_action(&capture_id, action);
+                                    (answered, app.deferred_work.take())
+                                };
+                                let answered = match deferred {
+                                    Some(deferred) => {
+                                        let done = deferred.run();
+                                        timer.lock(&state).apply_deferred(
+                                            MCP_CONTROL_METHOD,
+                                            &Value::Null,
+                                            done,
+                                        )
+                                    }
+                                    None => answered,
+                                };
+                                let response = match answered {
                                     Ok(result) => json!({ "ok": true, "result": result }),
                                     Err(error) => json!({ "ok": false, "error": error }),
                                 };
@@ -5772,6 +5790,22 @@ impl AppState {
                 self.apply_deferred(method, params, done)
             }
             None => outcome,
+        }
+    }
+
+    /// One router tool, drained — the synchronous twin of
+    /// [`AppState::dispatch`], for the tests that speak to the daemon directly
+    /// and have no mutex to release. Running it is what the MCP control socket
+    /// does with the guard released.
+    #[cfg(test)]
+    fn router_action(&mut self, capture_id: &str, action: BridgeAction) -> Result<Value, String> {
+        let answered = self.on_router_mcp_action(capture_id, action);
+        match self.deferred_work.take() {
+            Some(deferred) => {
+                let done = deferred.run();
+                self.apply_deferred(MCP_CONTROL_METHOD, &Value::Null, done)
+            }
+            None => answered,
         }
     }
 
@@ -8962,13 +8996,25 @@ impl AppState {
         let text = self.captures[&capture_id].text.clone();
         let rationale = Some("rerouted by the user".to_string());
         match kind.as_str() {
-            "issue" => self.route_to_issue(&capture_id, &project_id, &text, rationale),
-            "branch" => self.route_to_branch(&capture_id, &project_id, branch, &text, rationale),
+            "issue" => {
+                self.route_to_issue(&capture_id, &project_id, &text, rationale)?;
+                self.capture_get(&json!({ "capture_id": capture_id }))
+            }
+            // The dispatch's git runs through the drain, so the row this answers
+            // with is read once the branch is real — in the apply phase, which
+            // is where the route is written down.
+            "branch" => self.route_to_branch(
+                &capture_id,
+                &project_id,
+                branch,
+                &text,
+                rationale,
+                capture_after_routing,
+            ),
             other => Err(format!(
                 "capture.reroute: {other:?} is not a destination — branch and issue are the work"
             )),
-        }?;
-        self.capture_get(&json!({ "capture_id": capture_id }))
+        }
     }
 
     fn capture_list(&self) -> Value {
@@ -9247,6 +9293,7 @@ impl AppState {
                 branch.as_deref(),
                 &instruction,
                 rationale,
+                the_dispatch_itself,
             ),
             BridgeAction::AskUser { question, options } => {
                 self.router_ask_user(capture_id, &question, &options)
@@ -9494,27 +9541,20 @@ impl AppState {
         branch: Option<&str>,
         instruction: &str,
         rationale: Option<String>,
+        answer: fn(&AppState, &str, Value) -> Result<Value, String>,
     ) -> Result<Value, String> {
-        let dispatched = self.dispatch_branch_now(&json!({
-            "project_id": project_id,
-            "branch": branch,
-            "instruction": instruction,
-        }))?;
-        let branch = dispatched["branch"]
-            .as_str()
-            .ok_or("the dispatch named no branch")?
-            .to_string();
-        self.record_routing(
-            capture_id,
-            crate::capture::CaptureRouting {
-                project_id: project_id.to_string(),
-                kind: crate::capture::CaptureTarget::Branch,
-                target_id: branch,
-                routed_at: now_rfc3339(),
+        self.dispatch_branch(
+            &json!({
+                "project_id": project_id,
+                "branch": branch,
+                "instruction": instruction,
+            }),
+            Some(RoutedCapture {
+                capture_id: capture_id.to_string(),
                 rationale,
-            },
-        )?;
-        Ok(dispatched)
+                answer,
+            }),
+        )
     }
 
     /// The router asks the one question that would let it decide. The capture
@@ -13666,6 +13706,17 @@ impl AppState {
     /// branch it cuts. The agent is always brand new: an instruction is never
     /// dropped into a conversation someone else is having.
     fn branch_dispatch(&mut self, params: &Value) -> Result<Value, String> {
+        self.dispatch_branch(params, None)
+    }
+
+    /// `branch.dispatch`, and the capture it is the destination of when a route
+    /// is what asked for it. Every dispatch runs its git through the drain: a
+    /// router reaching a branch is the same verb as a browser dispatching one.
+    fn dispatch_branch(
+        &mut self,
+        params: &Value,
+        routed: Option<RoutedCapture>,
+    ) -> Result<Value, String> {
         let project_id = require_str(params, "project_id")?;
         if !self.projects.iter().any(|project| project.id == project_id) {
             return Err(format!("branch.dispatch: unknown project_id: {project_id}"));
@@ -13705,7 +13756,10 @@ impl AppState {
                 true => requested_choice,
                 false => self.entity_model_choice(&run_id)?,
             };
-            return self.join_dispatched_run(&project_id, &run_id, &instruction, choice);
+            let branch = target.branch().to_string();
+            let dispatched =
+                self.join_dispatched_run(&project_id, &run_id, &instruction, choice)?;
+            return self.answer_dispatch(routed, &project_id, &branch, dispatched);
         }
 
         // Nothing fallible runs between the reservation and the deferral: a `?`
@@ -13720,6 +13774,7 @@ impl AppState {
             target,
             instruction: instruction.clone(),
             model_choice: requested_choice,
+            routed,
             #[cfg(test)]
             fault: self.dispatch_fault,
         };
@@ -13738,28 +13793,6 @@ impl AppState {
         )))
     }
 
-    /// `branch.dispatch` as a step of another verb: run its git here and now
-    /// rather than handing it to the drain.
-    ///
-    /// The drain answers the FRAME with whatever a lifecycle job settled, and a
-    /// verb that dispatches on its way to an answer of its own — the router
-    /// reaching a branch, over a control socket with no drain behind it —
-    /// cannot let that happen. It pays for the git under the app mutex, which
-    /// is what every dispatch did before the split, and it is the only caller
-    /// left that does.
-    fn dispatch_branch_now(&mut self, params: &Value) -> Result<Value, String> {
-        let joined = self.branch_dispatch(params)?;
-        match self.deferred_work.take() {
-            Some(DeferredWork::Lifecycle(job)) => self.apply_lifecycle(job.run()),
-            // A dispatch onto a branch Build already runs cuts nothing and
-            // builds no job: it has answered already.
-            other => {
-                self.deferred_work = other;
-                Ok(joined)
-            }
-        }
-    }
-
     /// Open the run `branch.dispatch` just checkpointed a checkout for, and put
     /// its agent to work — the apply half of [`BranchDispatched`], and the only
     /// half that touches state.
@@ -13772,17 +13805,50 @@ impl AppState {
         let BranchDispatched {
             adopted,
             instruction,
+            routed,
         } = dispatched;
         #[cfg(test)]
         fail_dispatch_at(self.dispatch_fault, BranchDispatchStep::Open)?;
         let project_id = adopted.project_id.clone();
         let run_id = adopted.run_id.clone();
+        let branch = adopted.checkout.branch.clone();
         let choice = adopted.model_choice.clone();
         let mut active = adopted.open_run(self)?;
         let agent = self.dispatch_to_run(&run_id, &mut active, &instruction, choice);
         self.finish_run_mutation(run_id.clone(), active)?;
         self.touch_attention(&run_id);
-        Ok(agent.json(&project_id, &run_id))
+        self.answer_dispatch(
+            routed,
+            &project_id,
+            &branch,
+            agent.json(&project_id, &run_id),
+        )
+    }
+
+    /// Answer a dispatch, and — when it is where a capture was routed — write
+    /// that route down first. The branch is real by now either way, which is
+    /// what the record names.
+    fn answer_dispatch(
+        &mut self,
+        routed: Option<RoutedCapture>,
+        project_id: &str,
+        branch: &str,
+        dispatched: Value,
+    ) -> Result<Value, String> {
+        let Some(routed) = routed else {
+            return Ok(dispatched);
+        };
+        self.record_routing(
+            &routed.capture_id,
+            crate::capture::CaptureRouting {
+                project_id: project_id.to_string(),
+                kind: crate::capture::CaptureTarget::Branch,
+                target_id: branch.to_string(),
+                routed_at: now_rfc3339(),
+                rationale: routed.rationale,
+            },
+        )?;
+        (routed.answer)(self, &routed.capture_id, dispatched)
     }
 
     /// `branch.dispatch` onto a branch Build already runs: the run is there,
@@ -16096,6 +16162,37 @@ impl LifecycleEpilogue for WorktreeCreated {
     }
 }
 
+/// The capture a dispatch is the destination of. Recorded once the branch it
+/// went to is real, which is why it rides the dispatch rather than its caller:
+/// a router reaching a branch and a user rerouting one both answer from the
+/// apply phase, with no git under the app mutex on the way.
+pub struct RoutedCapture {
+    pub capture_id: String,
+    pub rationale: Option<String>,
+    /// What the caller answers with — the capture's own record for the user's
+    /// reroute, which redraws the row; where the work went for the router's
+    /// tool, which is told what it did.
+    pub answer: fn(&AppState, &str, Value) -> Result<Value, String>,
+}
+
+/// The reroute's answer: the capture as its row now reads.
+fn capture_after_routing(
+    state: &AppState,
+    capture_id: &str,
+    _dispatched: Value,
+) -> Result<Value, String> {
+    state.capture_get(&json!({ "capture_id": capture_id }))
+}
+
+/// The router tool's answer: where the work went.
+fn the_dispatch_itself(
+    _state: &AppState,
+    _capture_id: &str,
+    dispatched: Value,
+) -> Result<Value, String> {
+    Ok(dispatched)
+}
+
 /// The agent one dispatch put on a branch, and the branch it is working.
 struct DispatchedAgent {
     branch: String,
@@ -16167,6 +16264,7 @@ impl RunAdopted {
 pub struct BranchDispatched {
     pub adopted: RunAdopted,
     pub instruction: String,
+    pub routed: Option<RoutedCapture>,
 }
 
 impl LifecycleEpilogue for BranchDispatched {
@@ -29528,6 +29626,86 @@ mod tests {
                 .as_u64()
                 .is_some_and(|served| served >= 1),
             "the socket's frames are counted since boot: {stats}"
+        );
+    }
+
+    /// A router reaching a branch is a whole checkout of the repository, and it
+    /// arrives over the control socket rather than over a frame. It runs the
+    /// same way every other dispatch does: the socket takes the job out under
+    /// the guard and runs it with the guard released, so a routed capture no
+    /// longer serializes the daemon for the length of a `git worktree add`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_router_dispatch_over_the_socket_cuts_its_branch_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let state = qa_state_timed_by(FrameClock::new(), &repo, dir.path());
+        let (gate, gate_handle) = OffLockGate::new();
+        let (capture_id, project_id, agent_id, session_token) = {
+            let mut app = state.lock().unwrap();
+            let project_id = app.projects[0].id.clone();
+            let (capture_id, agent_id) = captured(&mut app, "finish the toast on the login branch");
+            app.pending_agent_turns.clear();
+            let session_token = uuid::Uuid::new_v4().to_string();
+            app.mcp_session_tokens
+                .insert(agent_id.clone(), session_token.clone());
+            app.off_lock_gate = Some(gate);
+            (capture_id, project_id, agent_id, session_token)
+        };
+
+        let socket_path = dir.path().join("done.sock");
+        AppState::spawn_done_socket(
+            Arc::clone(&state),
+            socket_path.to_string_lossy().into_owned(),
+        );
+        let mut socket = connect_when_bound(&socket_path).await;
+        let request = json!({
+            "task_id": agent_id,
+            "session_token": session_token,
+            "request": {
+                "action": "dispatch_branch",
+                "project_id": project_id,
+                "instruction": "finish the toast",
+                "rationale": "continues the login work",
+            },
+        });
+        socket
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        socket.flush().await.unwrap();
+
+        let gate_handle = tokio::task::spawn_blocking(move || {
+            gate_handle.wait_for_arrival();
+            gate_handle
+        })
+        .await
+        .unwrap();
+        assert!(
+            state.try_lock().is_ok(),
+            "the router's dispatch is holding the app mutex through its git"
+        );
+        gate_handle.release();
+
+        let mut lines = tokio::io::BufReader::new(socket).lines();
+        let answered = tokio::time::timeout(Duration::from_secs(30), lines.next_line())
+            .await
+            .expect("the socket answers the router")
+            .unwrap()
+            .expect("the socket answers the router");
+        let answered: Value = serde_json::from_str(&answered).unwrap();
+        assert_eq!(answered["ok"], true, "{answered:?}");
+        assert_eq!(
+            answered["result"]["branch"], "build/finish-the-toast",
+            "the router is told where the work went: {answered:?}"
+        );
+        let app = state.lock().unwrap();
+        let routing = app.captures[&capture_id]
+            .routing
+            .as_ref()
+            .expect("the route is written down once the branch is real");
+        assert_eq!(routing.target_id, "build/finish-the-toast");
+        assert_eq!(
+            routing.rationale.as_deref(),
+            Some("continues the login work")
         );
     }
 
@@ -47497,7 +47675,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -47574,7 +47752,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
 
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -47628,7 +47806,7 @@ mod tests {
         state.pending_agent_turns.clear();
 
         let dispatched = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::DispatchBranch {
                     project_id: project_id.clone(),
@@ -47672,7 +47850,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "make the thing faster");
 
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -47701,7 +47879,7 @@ mod tests {
     /// client cannot see is a choice nobody can tap.
     fn asked_with_two_options(state: &mut AppState, capture_id: &str) {
         state
-            .on_router_mcp_action(
+            .router_action(
                 capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -47890,7 +48068,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, _) = captured(&mut state, "make the thing faster");
 
-        let too_many = state.on_router_mcp_action(
+        let too_many = state.router_action(
             &capture_id,
             BridgeAction::AskUser {
                 question: "which project is this about?".to_string(),
@@ -47954,7 +48132,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "ship it");
         let project_id = state.projects[0].id.clone();
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id,
@@ -47977,7 +48155,7 @@ mod tests {
         let mut state = qa_state(&repo, dir.path());
         let (capture_id, primary_agent) = captured(&mut state, "make the thing faster");
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project is this about?".to_string(),
@@ -48042,7 +48220,7 @@ mod tests {
         assert_eq!(unasked["ok"], false, "{unasked:?}");
 
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::AskUser {
                     question: "which project?".to_string(),
@@ -48096,7 +48274,7 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
         let scratch = state.router_sessions[&capture_id].scratch_dir.clone();
         state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id,
@@ -48165,7 +48343,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "fix the login redirect");
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -48225,7 +48403,7 @@ mod tests {
 
         let (touched_capture, _) = captured(&mut state, "fix the login redirect");
         let filed = state
-            .on_router_mcp_action(
+            .router_action(
                 &touched_capture,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -48266,7 +48444,7 @@ mod tests {
 
         let (branch_capture, _) = captured(&mut state, "finish the toast");
         state
-            .on_router_mcp_action(
+            .router_action(
                 &branch_capture,
                 BridgeAction::DispatchBranch {
                     project_id: project_id.clone(),
@@ -48338,6 +48516,46 @@ mod tests {
         );
     }
 
+    /// The user's own reroute reaches a branch through the same drain: it is an
+    /// ordinary frame, and the checkout it cuts must not hold the daemon still
+    /// while it is being made.
+    #[test]
+    fn rerouting_a_capture_to_a_branch_cuts_it_with_the_state_lock_free() {
+        let (dir, repo) = init_repo();
+        let mut app = qa_state(&repo, dir.path());
+        let project_id = app.projects[0].id.clone();
+        let (capture_id, _) = captured(&mut app, "add the CSV export");
+        let (gate, gate_handle) = OffLockGate::new();
+        app.off_lock_gate = Some(gate);
+        let state = app.shared();
+
+        let rerouted = frame_on_a_thread(
+            &state,
+            "s-reroute",
+            "capture.reroute",
+            json!({ "capture_id": capture_id, "project_id": project_id, "kind": "branch" }),
+        );
+        gate_handle.wait_for_arrival();
+        assert!(
+            state.try_lock().is_ok(),
+            "the reroute is holding the app mutex through its git"
+        );
+        let board = frame_on_a_thread(&state, "s-board", "board.list", json!({}))
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the board answers while the reroute cuts its branch");
+        assert_eq!(board["ok"], true, "{board:?}");
+
+        gate_handle.release();
+        let rerouted = rerouted
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the reroute answers once its git is done");
+        assert_eq!(rerouted["ok"], true, "{rerouted:?}");
+        assert_eq!(
+            rerouted["result"]["routing"]["target_id"], "build/add-the-csv-export",
+            "the reroute still answers with the capture's own row: {rerouted:?}"
+        );
+    }
+
     /// A failed route's retry is the same door: no destination named, so the
     /// router decides again.
     #[test]
@@ -48376,7 +48594,7 @@ mod tests {
         let project_id = state.projects[0].id.clone();
         let (capture_id, _) = captured(&mut state, "ship it");
         let file = |state: &mut AppState| {
-            state.on_router_mcp_action(
+            state.router_action(
                 &capture_id,
                 BridgeAction::CreateIssue {
                     project_id: project_id.clone(),
@@ -48412,7 +48630,7 @@ mod tests {
         );
 
         let router_reaching_in = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ReadUnreadMessages)
+            .router_action(&capture_id, BridgeAction::ReadUnreadMessages)
             .unwrap_err();
         assert!(
             router_reaching_in.contains("read_unread_messages")
@@ -48432,12 +48650,12 @@ mod tests {
         let (capture_id, _) = captured(&mut state, "ship it");
 
         let projects = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ListProjects)
+            .router_action(&capture_id, BridgeAction::ListProjects)
             .unwrap();
         assert_eq!(projects["projects"].as_array().unwrap().len(), 1);
 
         let work = state
-            .on_router_mcp_action(&capture_id, BridgeAction::ListWork)
+            .router_action(&capture_id, BridgeAction::ListWork)
             .unwrap();
         let rows = work["work"].as_array().unwrap();
         assert!(
@@ -48450,7 +48668,7 @@ mod tests {
         );
 
         let conversation = state
-            .on_router_mcp_action(
+            .router_action(
                 &capture_id,
                 BridgeAction::ReadConversation {
                     entity_id: issue_id.clone(),
@@ -48465,7 +48683,7 @@ mod tests {
             .unwrap()
             .contains("add a greeting"));
 
-        let unknown = state.on_router_mcp_action(
+        let unknown = state.router_action(
             &capture_id,
             BridgeAction::ReadConversation {
                 entity_id: "run-nowhere".to_string(),
@@ -48598,7 +48816,7 @@ mod tests {
             let action = handled
                 .action
                 .unwrap_or_else(|| panic!("{tool} reached no daemon action: {:?}", handled.reply));
-            state.on_router_mcp_action(&self.capture_id, action)
+            state.router_action(&self.capture_id, action)
         }
 
         /// A read tool's answer, as the list it promises.

@@ -18226,14 +18226,17 @@ fn end_of_session(
     };
     screen.flush();
     screen.close("agent_session_ended");
-    let mut s = state.lock().unwrap();
     // One final reading, so a session shorter than a sweep tick is still named
     // — and the respawn that needs the name is the very next thing after a
     // close. It RECORDS; it never clears: a terminal resumed in place writes no
     // new transcript, so a locator finding nothing is its normal answer here,
     // and clearing on that would throw a good name away at every restart. A
-    // name that no longer resolves is caught at the reservation instead.
-    note_session_self_report(&mut s, key, &owner, &agent_id);
+    // name that no longer resolves is caught at the reservation instead. The
+    // reading itself is a filesystem walk, so it happens here, between the two
+    // acquisitions, and not inside either.
+    let report = SelfReport::read(session);
+    let mut s = state.lock().unwrap();
+    s.note_self_report(&owner, &agent_id, report);
     // The process is what a session IS, so this is where the conversation's
     // lineage closes — and where a turn the dead process was holding is closed,
     // so the row stops reading as working.
@@ -18298,11 +18301,13 @@ fn spawn_activity_pump(
             };
             match reported {
                 Ok(report) => {
-                    let mut s = state.lock().unwrap();
-                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                    let Some((owner, agent_id, session)) = agent_session_of_tab(&state, &key)
+                    else {
                         return;
                     };
-                    note_session_self_report(&mut s, &key, &owner, &agent_id);
+                    let said = SelfReport::read(&session);
+                    let mut s = state.lock().unwrap();
+                    s.note_self_report(&owner, &agent_id, said);
                     record_activity(&mut s, &key, &owner, &agent_id, &report);
                 }
                 // A turn that called forty tools while the lock was busy is a
@@ -18310,17 +18315,19 @@ fn spawn_activity_pump(
                 // lost, and the events after it still belong in the timeline.
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => {
-                    let mut s = state.lock().unwrap();
-                    let Some((owner, agent_id)) = agent_of_tab(&s, &key) else {
+                    let Some((owner, agent_id, session)) = agent_session_of_tab(&state, &key)
+                    else {
                         return;
                     };
+                    let said = SelfReport::read(&session);
+                    let mut s = state.lock().unwrap();
                     let Some(tab) = s.tabs.get_mut(&key) else {
                         return;
                     };
                     tab.live = false;
                     let unanswered_call_sequences = take_unanswered_call_sequences(tab);
-                    match named_conversation(&s, &key) {
-                        Some(_) => note_session_self_report(&mut s, &key, &owner, &agent_id),
+                    match said.named {
+                        Some(_) => s.note_self_report(&owner, &agent_id, said),
                         // A session that ended having never announced a
                         // conversation of its own is the shape of one spawned
                         // with an id that no longer resolves: the child exits
@@ -18363,45 +18370,59 @@ enum PumpWake {
     SurfacesUnwatchable,
 }
 
-/// The name the session in `key`'s tab has given its conversation, or `None`
-/// for a carrier that names none and for one that has not named one yet.
-fn named_conversation(state: &AppState, key: &TabKey) -> Option<String> {
-    state.tabs.get(key)?.session.session_id()
+/// What a session says about itself: the conversation it is having, and the
+/// model it is running.
+///
+/// Read from the session, never through the registry. For a terminal the name
+/// comes from a locator listing the harness's transcript tree — a filesystem
+/// walk that grows with every conversation the human has ever had — so the
+/// caller holds an `Arc` and asks with the app mutex released.
+struct SelfReport {
+    named: Option<String>,
+    model: Option<String>,
 }
 
-/// Keep the agent's record naming the conversation its session is having.
-///
-/// Compared before it is written, so a session that names its conversation once
-/// costs one write however long it lives. A name that has not arrived leaves
-/// the record alone: what it carries is the last session's, which is exactly
-/// what a resume should use if this one dies before naming its own.
-///
-/// Both carriers' capture points come through here, so a name a child announced
-/// and a name a locator found are the same record written by the same hand.
-fn note_named_conversation(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(named) = named_conversation(state, key) else {
-        return;
-    };
-    if state.recorded_resume_id(owner, agent_id).as_deref() == Some(named.as_str()) {
-        return;
+impl SelfReport {
+    fn read(session: &Arc<dyn AgentSession>) -> SelfReport {
+        SelfReport {
+            named: session.session_id(),
+            model: session.active_model(),
+        }
     }
-    state.record_agent_resume_id(owner, agent_id, Some(named));
 }
 
-fn announced_model(state: &AppState, key: &TabKey) -> Option<String> {
-    state.tabs.get(key)?.session.active_model()
+impl AppState {
+    /// Write down what a session said about itself.
+    ///
+    /// Compared before it is written, so a session that names its conversation
+    /// once costs one write however long it lives. A name that has not arrived
+    /// leaves the record alone: what it carries is the last session's, which is
+    /// exactly what a resume should use if this one dies before naming its own.
+    ///
+    /// Both carriers' capture points come through here, so a name a child
+    /// announced and a name a locator found are the same record written by the
+    /// same hand.
+    fn note_self_report(&mut self, owner: &str, agent_id: &str, report: SelfReport) {
+        if let Some(named) = report.named {
+            if self.recorded_resume_id(owner, agent_id).as_deref() != Some(named.as_str()) {
+                self.record_agent_resume_id(owner, agent_id, Some(named));
+            }
+        }
+        if let Some(running) = report.model {
+            self.record_agent_active_model(owner, agent_id, Some(running));
+        }
+    }
 }
 
-fn note_announced_model(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    let Some(running) = announced_model(state, key) else {
-        return;
-    };
-    state.record_agent_active_model(owner, agent_id, Some(running));
-}
-
-fn note_session_self_report(state: &mut AppState, key: &TabKey, owner: &str, agent_id: &str) {
-    note_named_conversation(state, key, owner, agent_id);
-    note_announced_model(state, key, owner, agent_id);
+/// One live agent tab's identity and its session, taken out of the registry so
+/// the session can be asked anything with the app mutex released.
+fn agent_session_of_tab(
+    state: &Arc<Mutex<AppState>>,
+    key: &TabKey,
+) -> Option<(String, String, Arc<dyn AgentSession>)> {
+    let s = state.lock().unwrap();
+    let (owner, agent_id) = agent_of_tab(&s, key)?;
+    Some((owner, agent_id, Arc::clone(&s.tabs.get(key)?.session)))
 }
 
 /// The terminal carrier's capture point: ask every live agent session for the
@@ -18422,7 +18443,6 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     /// One live agent, taken out of the registry so the name can be asked for
     /// with the lock released, and put back by `key` once it is known.
     struct LiveAgent {
-        key: TabKey,
         owner: String,
         agent_id: String,
         session: Arc<dyn AgentSession>,
@@ -18433,13 +18453,12 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
     let live: Vec<LiveAgent> = {
         let s = state.lock().unwrap();
         s.tabs
-            .iter()
-            .filter(|(_, tab)| tab.live)
-            .filter_map(|(key, tab)| match &tab.role {
+            .values()
+            .filter(|tab| tab.live)
+            .filter_map(|tab| match &tab.role {
                 TabRole::Agent {
                     owner, agent_id, ..
                 } => Some(LiveAgent {
-                    key: key.clone(),
                     owner: owner.clone(),
                     agent_id: agent_id.clone(),
                     session: Arc::clone(&tab.session),
@@ -18450,22 +18469,21 @@ fn capture_conversation_names(state: &Arc<Mutex<AppState>>) {
             })
             .collect()
     };
-    let moved: Vec<(TabKey, String, String)> = live
+    let moved: Vec<(String, String, SelfReport)> = live
         .into_iter()
         .filter_map(|agent| {
-            let named = agent.session.session_id();
-            let running = agent.session.active_model();
-            let name_moved = named.is_some() && agent.recorded != named;
-            let model_moved = running.is_some() && agent.recorded_model != running;
-            (name_moved || model_moved).then_some((agent.key, agent.owner, agent.agent_id))
+            let said = SelfReport::read(&agent.session);
+            let name_moved = said.named.is_some() && agent.recorded != said.named;
+            let model_moved = said.model.is_some() && agent.recorded_model != said.model;
+            (name_moved || model_moved).then_some((agent.owner, agent.agent_id, said))
         })
         .collect();
     if moved.is_empty() {
         return;
     }
     let mut s = state.lock().unwrap();
-    for (key, owner, agent_id) in moved {
-        note_session_self_report(&mut s, &key, &owner, &agent_id);
+    for (owner, agent_id, said) in moved {
+        s.note_self_report(&owner, &agent_id, said);
     }
 }
 
@@ -19934,6 +19952,8 @@ mod tests {
         output: broadcast::Sender<Vec<u8>>,
         on_write: Option<OffLockGate>,
         on_end: Option<OffLockGate>,
+        on_self_report: Option<OffLockGate>,
+        named: Option<String>,
     }
 
     impl GatedHarness {
@@ -19943,6 +19963,8 @@ mod tests {
                 output,
                 on_write: None,
                 on_end: None,
+                on_self_report: None,
+                named: None,
             }
         }
 
@@ -19956,6 +19978,18 @@ mod tests {
         /// does not return.
         fn refusing_to_die_until(mut self, gate: OffLockGate) -> GatedHarness {
             self.on_end = Some(gate);
+            self
+        }
+
+        /// A harness that answers `named` when asked what conversation it is
+        /// having — slowly, the way a locator listing a transcript tree does.
+        fn naming_its_conversation_through(
+            mut self,
+            gate: OffLockGate,
+            named: &str,
+        ) -> GatedHarness {
+            self.on_self_report = Some(gate);
+            self.named = Some(named.to_string());
             self
         }
     }
@@ -19979,6 +20013,12 @@ mod tests {
             }
         }
         fn backdate_last_output(&self, _ago: Duration) {}
+        fn session_id(&self) -> Option<String> {
+            if let Some(gate) = &self.on_self_report {
+                gate.arrive();
+            }
+            self.named.clone()
+        }
         fn terminal(&self) -> Option<&dyn crate::harness::TerminalView> {
             Some(self)
         }
@@ -20156,6 +20196,76 @@ mod tests {
             "a dead session's EOF closed the tab that replaced it"
         );
         living.end();
+    }
+
+    /// A terminal names its conversation by listing the harness's transcript
+    /// tree — a filesystem walk that grows with every conversation the human
+    /// has ever had. The sweep already took the session out of the registry to
+    /// ask, and then asked a SECOND time through the registry to write the
+    /// answer down, under the lock. There is one reading now, and it is off the
+    /// lock.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_agent_tabs_last_reading_leaves_the_app_mutex_free() {
+        let (dir, repo) = init_repo();
+        let (state, _handler) = shared_state_and_handler(&repo, dir.path());
+        let root = AppState::canonical_root(&repo);
+        let run_id = adopted_run(
+            &mut state.lock().unwrap(),
+            &repo,
+            dir.path(),
+            "feature-named",
+        );
+        let agent_id = primary_agent_id(&state.lock().unwrap(), &run_id);
+        let (gate, gate_handle) = OffLockGate::new();
+        let key = TabKey::agent(&root, &agent_id);
+        state.lock().unwrap().tabs.insert(
+            key.clone(),
+            gated_tab(
+                &root,
+                TabRole::Agent {
+                    owner: run_id.clone(),
+                    agent_id: agent_id.clone(),
+                    provider: AgentProvider::default(),
+                },
+                GatedHarness::new().naming_its_conversation_through(gate, "conversation-7"),
+            ),
+        );
+
+        let captured = {
+            let capturing = Arc::clone(&state);
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                capture_conversation_names(&capturing);
+                let _ = done.send(());
+            });
+            finished
+        };
+        gate_handle.wait_for_arrival();
+
+        assert!(
+            state.try_lock().is_ok(),
+            "the reading is holding the app mutex"
+        );
+        let read = frame_on_a_thread(&state, "s-read", "project.list", json!({}));
+        assert_eq!(
+            read.recv_timeout(Duration::from_secs(5))
+                .expect("an unrelated read is answered while a session is being read")["ok"],
+            true
+        );
+
+        gate_handle.release();
+        captured
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the sweep reads a session once, not twice");
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .recorded_resume_id(&run_id, &agent_id)
+                .as_deref(),
+            Some("conversation-7"),
+            "and writes down what it read"
+        );
     }
 
     /// Poll an observable sender's captured pushes until the decrypted history

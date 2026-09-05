@@ -16,6 +16,8 @@ from buildapp.email_message import (
     LIST_UNSUBSCRIBE_HEADER,
     LIST_UNSUBSCRIBE_POST_HEADER,
     ONE_CLICK_HEADER_VALUE,
+    deliver_emails,
+    resolve_public_base_url,
 )
 from buildapp.email_test_support import (
     OWNER_ADDRESS,
@@ -38,8 +40,6 @@ from buildapp.waitlist_mail import (
     build_confirmation_email,
     build_owner_notification_email,
     build_signup_emails,
-    deliver_waitlist_emails,
-    resolve_public_base_url,
     resolve_waitlist_email_context,
     waitlist_signup_email_task,
 )
@@ -192,7 +192,7 @@ def test_deliver_sends_every_message_through_the_backend():
     messages = build_signup_emails(
         signup_email=SIGNER, context=waitlist_email_context(notify_address=OWNER_ADDRESS)
     )
-    asyncio.run(deliver_waitlist_emails(email_backend, messages))
+    asyncio.run(deliver_emails(email_backend, messages))
     assert [sent.to for sent in email_backend.sent] == [SIGNER, OWNER_ADDRESS]
     assert email_backend.sent[0].subject == CONFIRMATION_SUBJECT
     assert email_backend.sent[0].headers[LIST_UNSUBSCRIBE_HEADER] == (
@@ -205,7 +205,7 @@ def test_deliver_swallows_a_failed_send_logs_it_and_continues(caplog):
         signup_email=SIGNER, context=waitlist_email_context(notify_address=OWNER_ADDRESS)
     )
     with caplog.at_level(logging.ERROR):
-        asyncio.run(deliver_waitlist_emails(FailingEmailBackend(), messages))
+        asyncio.run(deliver_emails(FailingEmailBackend(), messages))
     failures = [record for record in caplog.records if record.levelno == logging.ERROR]
     assert len(failures) == len(messages)
     logged = [record.getMessage() for record in failures]

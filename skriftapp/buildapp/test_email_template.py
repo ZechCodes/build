@@ -35,6 +35,8 @@ from buildapp.email_test_support import UNSUBSCRIBE_URL
 HEADING = "You’re on the list."
 PARAGRAPHS = ("First paragraph of the message.", "Second paragraph of the message.")
 SIZE_LITERAL_PATTERN = r"(\d+(?:\.\d+)?)px"
+ACTION_URL = "https://getbuild.ing/invite/inv_token"
+ACTION_LABEL = "ACCEPT INVITE"
 
 
 def render_html_body(unsubscribe_url: str | None = UNSUBSCRIBE_URL) -> str:
@@ -144,3 +146,75 @@ def test_font_stack_names_real_fallbacks():
     for family in ("ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"):
         assert family in EMAIL_FONT_STACK
     assert EMAIL_FONT_STACK in render_html_body()
+
+
+def test_an_action_renders_as_a_button_in_html_and_a_labelled_line_in_text():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action_url=ACTION_URL,
+        action_label=ACTION_LABEL,
+    )
+    text = render_email_text(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action_url=ACTION_URL,
+        action_label=ACTION_LABEL,
+    )
+    assert f'href="{ACTION_URL}"' in html
+    assert ACTION_LABEL in html
+    assert text.splitlines()[-1] == f"{ACTION_LABEL}: {ACTION_URL}"
+
+
+def test_the_action_row_sits_between_the_copy_and_any_footer():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=UNSUBSCRIBE_URL,
+        action_url=ACTION_URL,
+        action_label=ACTION_LABEL,
+    )
+    assert html.index(PARAGRAPHS[-1]) < html.index(ACTION_URL) < html.index(FOOTER_PREFIX)
+
+
+def test_the_action_row_escapes_both_its_url_and_its_label():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action_url='https://getbuild.ing/invite/"onmouseover="alert(1)',
+        action_label="<script>alert(2)</script>",
+    )
+    assert "<script" not in html
+    assert '"onmouseover="' not in html
+
+
+def test_a_message_with_no_action_renders_exactly_as_it_did_before():
+    assert render_html_body() == render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=UNSUBSCRIBE_URL,
+        action_url=None,
+        action_label=None,
+    )
+    assert render_text_body() == render_email_text(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=UNSUBSCRIBE_URL,
+        action_url=None,
+        action_label=None,
+    )
+    assert ACTION_URL not in render_html_body()
+
+
+def test_an_action_url_with_no_label_renders_nothing():
+    html = render_email_html(
+        heading=HEADING,
+        paragraphs=PARAGRAPHS,
+        unsubscribe_url=None,
+        action_url=ACTION_URL,
+        action_label=None,
+    )
+    assert ACTION_URL not in html

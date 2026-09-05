@@ -37,9 +37,27 @@ OUTLOOK_LAYOUT_OPENER = (
 )
 OUTLOOK_LAYOUT_CLOSER = "<!--[if mso]></td></tr></table><![endif]-->"
 
+EMAIL_ACTION_PADDING_BOTTOM_PX = 24
+EMAIL_ACTION_PADDING = "12px 20px"
+
 WORDMARK = "build_"
 FOOTER_PREFIX = "Not you?"
 UNSUBSCRIBE_LINK_LABEL = "Unsubscribe"
+
+
+def render_action_row(action_url: str, action_label: str) -> str:
+    """The optional call-to-action, in the landing's button style. Inline colours and a
+    padded anchor rather than a real button: Outlook and Gmail drop both."""
+    return (
+        f'<tr><td style="padding-bottom:{EMAIL_ACTION_PADDING_BOTTOM_PX}px">'
+        f'<a href="{escape(action_url)}" '
+        f'style="display:inline-block;padding:{EMAIL_ACTION_PADDING};'
+        f"background:{EMAIL_ACCENT};color:{EMAIL_BACKGROUND};"
+        f"font-size:{EMAIL_BODY_FONT_SIZE_PX}px;"
+        f"letter-spacing:{EMAIL_WORDMARK_LETTER_SPACING};"
+        f'text-decoration:none">{escape(action_label)}</a>'
+        "</td></tr>"
+    )
 
 
 def render_footer_row(unsubscribe_url: str) -> str:
@@ -56,8 +74,20 @@ def render_footer_row(unsubscribe_url: str) -> str:
     )
 
 
+def _action_markup(action_url: str | None, action_label: str | None) -> str:
+    """An action needs both halves — a URL with nothing to call it is not a button."""
+    if action_url is None or action_label is None:
+        return ""
+    return render_action_row(action_url, action_label)
+
+
 def render_email_html(
-    *, heading: str, paragraphs: tuple[str, ...], unsubscribe_url: str | None
+    *,
+    heading: str,
+    paragraphs: tuple[str, ...],
+    unsubscribe_url: str | None,
+    action_url: str | None = None,
+    action_label: str | None = None,
 ) -> str:
     paragraph_markup = "".join(
         f'<p style="margin:0 0 {EMAIL_PARAGRAPH_SPACING_PX}px 0;'
@@ -88,6 +118,7 @@ def render_email_html(
         f"color:{EMAIL_TEXT_PRIMARY};font-size:{EMAIL_HEADING_FONT_SIZE_PX}px;"
         f'line-height:{EMAIL_HEADING_LINE_HEIGHT}">{escape(heading)}</td></tr>'
         f"<tr><td>{paragraph_markup}</td></tr>"
+        f"{_action_markup(action_url, action_label)}"
         f"{footer_markup}"
         "</table>"
         f"{OUTLOOK_LAYOUT_CLOSER}"
@@ -97,11 +128,23 @@ def render_email_html(
 
 
 def render_email_text(
-    *, heading: str, paragraphs: tuple[str, ...], unsubscribe_url: str | None
+    *,
+    heading: str,
+    paragraphs: tuple[str, ...],
+    unsubscribe_url: str | None,
+    action_url: str | None = None,
+    action_label: str | None = None,
 ) -> str:
+    action_lines = (
+        ()
+        if action_url is None or action_label is None
+        else (f"{action_label}: {action_url}",)
+    )
     footer_lines = (
         ()
         if unsubscribe_url is None
         else (f"{UNSUBSCRIBE_LINK_LABEL}: {unsubscribe_url}",)
     )
-    return "\n\n".join((WORDMARK, heading, *paragraphs, *footer_lines))
+    return "\n\n".join(
+        (WORDMARK, heading, *paragraphs, *action_lines, *footer_lines)
+    )

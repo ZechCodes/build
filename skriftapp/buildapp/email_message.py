@@ -1,15 +1,25 @@
 """The outbound message value and the one sender every Build email goes through: compose
 renders both bodies from the shared layout, and send hands exactly those fields to the
 configured Skrift email backend. A message with no unsubscribe link carries no
-List-Unsubscribe header and no footer."""
+List-Unsubscribe header and no footer.
+
+Also the shared plumbing every mailing route needs: where this deployment lives
+(``resolve_public_base_url``), where the backend comes from (``provide_email_backend``),
+and the fail-soft delivery loop background tasks run (``deliver_emails``) — one home
+each, because the waitlist and the invites both send mail."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
+from litestar import Request
+from skrift.config import Settings
 from skrift.lib.email_backends import EmailBackend
 
 from buildapp.email_template import render_email_html, render_email_text
+
+logger = logging.getLogger(__name__)
 
 LIST_UNSUBSCRIBE_HEADER = "List-Unsubscribe"
 LIST_UNSUBSCRIBE_POST_HEADER = "List-Unsubscribe-Post"
@@ -44,16 +54,21 @@ def compose_email(
     paragraphs: tuple[str, ...],
     unsubscribe_url: str | None,
     one_click: bool,
+    action_url: str | None = None,
+    action_label: str | None = None,
 ) -> OutboundEmail:
+    body = {
+        "heading": heading,
+        "paragraphs": paragraphs,
+        "unsubscribe_url": unsubscribe_url,
+        "action_url": action_url,
+        "action_label": action_label,
+    }
     return OutboundEmail(
         to=to,
         subject=subject,
-        text_body=render_email_text(
-            heading=heading, paragraphs=paragraphs, unsubscribe_url=unsubscribe_url
-        ),
-        html_body=render_email_html(
-            heading=heading, paragraphs=paragraphs, unsubscribe_url=unsubscribe_url
-        ),
+        text_body=render_email_text(**body),
+        html_body=render_email_html(**body),
         headers=list_unsubscribe_headers(unsubscribe_url, one_click=one_click),
     )
 
@@ -66,3 +81,30 @@ async def send_email_message(email_backend: EmailBackend, message: OutboundEmail
         html_body=message.html_body,
         headers=message.headers,
     )
+
+
+async def deliver_emails(
+    email_backend: EmailBackend, messages: tuple[OutboundEmail, ...]
+) -> None:
+    """Send each message, logging rather than raising on failure.
+
+    Deliberately fail-soft: this runs after the response has gone out and the row is
+    committed, so a dead SMTP server must not lose the remaining messages — or surface
+    as an error the visitor already got a 200 instead of."""
+    for message in messages:
+        try:
+            await send_email_message(email_backend, message)
+        except Exception:
+            logger.exception("email delivery failed for %s", message.to)
+
+
+def resolve_public_base_url(settings: Settings) -> str:
+    """Where this deployment lives, as an origin with no trailing slash — the base of
+    every link this app puts in an email or a redirect."""
+    return (
+        settings.email.public_base_url or settings.auth.redirect_base_url or ""
+    ).rstrip("/")
+
+
+def provide_email_backend(request: Request) -> EmailBackend:
+    return request.app.state.email_backend

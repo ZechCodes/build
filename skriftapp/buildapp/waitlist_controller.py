@@ -18,6 +18,7 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from buildapp.email_message import provide_email_backend
 from buildapp.models import WaitlistSignup
 from buildapp.request_body import require_json_object
 from buildapp.unsubscribe_pages import (
@@ -42,10 +43,6 @@ UNSUBSCRIBE_ROUTE_PATH = f"{UNSUBSCRIBE_PATH_PREFIX}{{unsubscribe_token:str}}"
 
 def provide_waitlist_email_context() -> WaitlistEmailContext:
     return resolve_waitlist_email_context(get_settings(), os.environ)
-
-
-def provide_email_backend(request: Request) -> EmailBackend:
-    return request.app.state.email_backend
 
 
 async def invalid_token_response() -> Response:

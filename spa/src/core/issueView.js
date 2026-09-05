@@ -59,6 +59,7 @@ import { refreshFeed } from "./taskFeed.js";
 import { entryKeyOf } from "./inbox.js";
 import { INBOX_SCOPE } from "./inboxView.js";
 import { removeRecord, runOptimistic } from "./optimistic.js";
+import { rpcTimedOut } from "./session.js";
 
 export const ISSUE_VIEW_POLL_MS = 1600;
 
@@ -415,13 +416,7 @@ export function mountIssueView(
           ))
         )
           throw new Error("cancelled");
-        const result = await guarded(() =>
-          callRpc("issue.implement_all", {
-            ...implementParams(issueId, assignment, { catalog }),
-            ...MUTATION_THREAD_PAGE,
-          }),
-        );
-        afterDispatch(result);
+        afterDispatch(await openImplementation("issue.implement_all", implementParams(issueId, assignment, { catalog })));
       });
     }
     wireAssignment(listHost);
@@ -558,13 +553,9 @@ export function mountIssueView(
       await refresh();
     });
     bindAction(viewerHost.querySelector("#implementstage"), "starting…", async () => {
-      const result = await guarded(() =>
-        callRpc("issue.implement_stage", {
-          ...implementParams(issueId, assignment, { catalog, stageId: stage.id }),
-          ...MUTATION_THREAD_PAGE,
-        }),
+      afterDispatch(
+        await openImplementation("issue.implement_stage", implementParams(issueId, assignment, { catalog, stageId: stage.id })),
       );
-      afterDispatch(result);
     });
     bindAction(viewerHost.querySelector("#fixstage"), "sending…", async () => {
       await guarded(() =>
@@ -610,6 +601,20 @@ export function mountIssueView(
     const list = stages();
     const index = list.findIndex((candidate) => candidate.id === stage.id);
     return index >= 0 && list.slice(0, index).every((candidate) => stageStateToken(candidate) === "validated");
+  };
+
+  /** Ask the daemon to open an implementation, and answer with what it opened —
+   *  or nothing, when the reply outlives the browser's timer. Cutting the
+   *  checkout runs with the daemon's state lock released, so the answer can
+   *  arrive after this browser has stopped waiting for it; the issue's own next
+   *  answer names the run either way. */
+  const openImplementation = async (method, params) => {
+    try {
+      return await guarded(() => callRpc(method, { ...params, ...MUTATION_THREAD_PAGE }));
+    } catch (error) {
+      if (!rpcTimedOut(error)) throw error;
+      return null;
+    }
   };
 
   const afterDispatch = (result) => {

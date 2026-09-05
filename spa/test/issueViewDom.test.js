@@ -48,6 +48,7 @@ async function mount(overrides = {}) {
     planDoc = { contents: "# The whole plan" },
     fail = null,
     hold = null,
+    timeout = null,
     ...options
   } = overrides;
   const host = document.createElement("div");
@@ -58,6 +59,11 @@ async function mount(overrides = {}) {
     callRpc: async (method, params) => {
       calls.push([method, params]);
       if (fail && fail[method]) throw new Error(fail[method]);
+      if (timeout && timeout[method]) {
+        const timedOut = new Error(`${method} timed out`);
+        timedOut.timedOut = true;
+        throw timedOut;
+      }
       if (hold && hold[method]) return new Promise(() => {});
       if (method === "issue.get") return issue;
       if (method === "issue.stages") return { stages };
@@ -477,6 +483,31 @@ describe("the issue view", () => {
     await flush();
     const dispatched = calls.find(([method]) => method === "issue.implement_all");
     expect(dispatched[1]).toEqual({ issue_id: "issue-1", base_branch: "release", thread_limit: FIRST_PAGE_ITEMS });
+    view.dispose();
+  });
+
+  // Opening an implementation cuts a checkout, which the daemon runs with its
+  // state lock released. A reply the browser stopped waiting for is not a
+  // refusal: the issue's own next answer names the run that was opened.
+  it("carries on when the implement outlives the browser's timer", async () => {
+    const routed = [];
+    const ready = issuePayload({ state: "approved", stages: [{ id: "s1", state: "approved" }] });
+    const { host, view, calls } = await mount({
+      issue: ready,
+      stages: [stage({ state: "approved", approval: "approved" })],
+      timeout: { "issue.implement_all": true },
+      navigate: (route) => routed.push(route),
+    });
+    const before = calls.filter(([method]) => method === "issue.get").length;
+
+    host.querySelector("#implementall").click();
+    await flush();
+    document.querySelector("#confirm-scrim [data-confirm-ok]").click();
+    await flush();
+
+    expect(document.querySelectorAll(".notice")).toHaveLength(0);
+    expect(routed).toEqual([]);
+    expect(calls.filter(([method]) => method === "issue.get").length).toBeGreaterThan(before);
     view.dispose();
   });
 

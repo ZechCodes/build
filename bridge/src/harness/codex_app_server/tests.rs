@@ -1044,12 +1044,9 @@ fn a_steer_success_naming_another_turn_fails_the_session() {
         )
         .unwrap()
         .state;
+    let mismatched_steer = || correlated(steer_turn("one"), Ok(json!({"turnId":"turn-9"})));
     let mismatch = steered
-        .transition(
-            correlated(steer_turn("one"), Ok(json!({"turnId":"turn-9"}))),
-            Duration::ZERO,
-            limits().state(),
-        )
+        .transition(mismatched_steer(), Duration::ZERO, limits().state())
         .expect_err("a steer success naming another turn desynchronizes the session");
     let message = mismatch.to_string();
     assert!(
@@ -1059,14 +1056,7 @@ fn a_steer_success_naming_another_turn_fails_the_session() {
     assert!(message.contains("turn-1"), "{message}");
     assert!(message.contains("turn-9"), "{message}");
 
-    let queued = working_state()
-        .transition(
-            SessionEvent::SendTurn("one".to_string()),
-            Duration::ZERO,
-            limits().state(),
-        )
-        .unwrap()
-        .state
+    let queued = steered
         .transition(
             SessionEvent::SendTurn("two".to_string()),
             Duration::ZERO,
@@ -1074,16 +1064,14 @@ fn a_steer_success_naming_another_turn_fails_the_session() {
         )
         .unwrap();
     assert!(queued.effects.is_empty());
+    let queued_message = queued
+        .state
+        .transition(mismatched_steer(), Duration::ZERO, limits().state())
+        .expect_err("a failed steer never releases the queued input")
+        .to_string();
     assert!(
-        queued
-            .state
-            .transition(
-                correlated(steer_turn("one"), Ok(json!({"turnId":"turn-9"}))),
-                Duration::ZERO,
-                limits().state(),
-            )
-            .is_err(),
-        "a failed steer never releases the queued input"
+        queued_message.contains("turn/steer response id mismatch"),
+        "{queued_message}"
     );
 }
 
